@@ -364,19 +364,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint docker/fastapi.Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/fastapi.Dockerfile
           failure-threshold: warning
 
       - name: Lint docker/laravel.Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/laravel.Dockerfile
           failure-threshold: warning
 
       - name: Lint docker/dagster.Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/dagster.Dockerfile
           failure-threshold: warning
