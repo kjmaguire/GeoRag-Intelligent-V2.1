@@ -224,6 +224,16 @@ async def test_anthropic_call_includes_third_cache_block(monkeypatch):
     object.__setattr__(settings, "ANTHROPIC_ENABLE_PROMPT_CACHING", True)
     object.__setattr__(settings, "ANTHROPIC_USE_PRIORITY_TIER", False)
 
+    # Z.1 — bypass the external-LLM egress gate; this test pins SDK-side
+    # cache_control wiring, not workspace policy (covered by
+    # tests/test_anthropic_egress_gate.py).
+    async def _passthrough(*, workspace_id, pg_pool=None):
+        return None
+    monkeypatch.setattr(
+        "app.agent.egress_gate.assert_external_llm_allowed",
+        _passthrough,
+    )
+
     captured: dict = {}
 
     async def _create(**kwargs):
@@ -265,6 +275,14 @@ async def test_anthropic_call_omits_third_block_when_facts_none(monkeypatch):
     object.__setattr__(settings, "LLM_BACKEND", "anthropic")
     object.__setattr__(settings, "REQUIRE_POOLED_ANTHROPIC_CLIENT", False)
     object.__setattr__(settings, "ANTHROPIC_ENABLE_PROMPT_CACHING", True)
+
+    # Z.1 — bypass the external-LLM egress gate (covered separately).
+    async def _passthrough(*, workspace_id, pg_pool=None):
+        return None
+    monkeypatch.setattr(
+        "app.agent.egress_gate.assert_external_llm_allowed",
+        _passthrough,
+    )
 
     captured: dict = {}
 
@@ -336,6 +354,15 @@ async def test_all_false_classifier_returns_refusal_response(monkeypatch):
     # Bypass the LLM pre-check (only relevant when LLM_BACKEND != anthropic).
     from app.config import settings
     object.__setattr__(settings, "LLM_BACKEND", "anthropic")
+
+    # Z.1 — bypass the external-LLM egress gate; this test pins the refusal
+    # short-circuit, not the egress policy (covered in test_anthropic_egress_gate).
+    async def _egress_passthrough(*, workspace_id, pg_pool=None):
+        return None
+    monkeypatch.setattr(
+        "app.agent.egress_gate.assert_external_llm_allowed",
+        _egress_passthrough,
+    )
 
     # Sentinels: if these are called we've failed the short-circuit.
     async def _sentinel_call_llm(*_a, **_kw):

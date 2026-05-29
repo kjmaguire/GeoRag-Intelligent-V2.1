@@ -1847,6 +1847,50 @@ def _build_terminal_refusal_payload(
 # ---------------------------------------------------------------------------
 
 
+async def _insert_answer_run_with_retry(
+    pg_pool: Any,
+    sql: str,
+    *args: Any,
+) -> Any:
+    """Run the silver.answer_runs INSERT with bounded exponential backoff.
+
+    Three attempts spaced 0.5s → 1.0s → 2.0s. Transient asyncpg /
+    PostgreSQL errors during answer write-out (PgBouncer saturation, brief
+    network blip, PG restart) shouldn't cost us a lineage row. The final
+    failure re-raises so the caller can decide whether to escalate.
+    """
+    import asyncio as _asyncio  # noqa: PLC0415
+
+    last_exc: BaseException | None = None
+    delays = (0.5, 1.0, 2.0)
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            async with pg_pool.acquire() as conn:
+                return await conn.fetchrow(sql, *args)
+        except Exception as exc:  # noqa: BLE001 — bounded retry surface
+            last_exc = exc
+            if attempt < len(delays):
+                logger.warning(
+                    "agentic_retrieval.persist: answer_runs INSERT "
+                    "attempt %d/%d failed (%s) — retrying in %.1fs",
+                    attempt,
+                    len(delays),
+                    type(exc).__name__,
+                    delay,
+                )
+                await _asyncio.sleep(delay)
+            else:
+                logger.warning(
+                    "agentic_retrieval.persist: answer_runs INSERT "
+                    "attempt %d/%d failed (%s) — retries exhausted",
+                    attempt,
+                    len(delays),
+                    type(exc).__name__,
+                )
+    assert last_exc is not None  # noqa: S101 — invariant: loop ran at least once
+    raise last_exc
+
+
 async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Write the answer-run row + lineage payload.
 
@@ -1859,11 +1903,19 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
       1. Build a ``LineagePayload`` from the response + tool results
       2. Insert a single row into ``silver.answer_runs`` carrying the OIUR
-         schema version, lineage JSONB columns, and basic model metadata
-      3. Swallow any DB failure with a warning — the answer has already been
-         streamed back to the caller and lineage is best-effort here. Plan
-         Step 1.5's fail-closed contract still applies to the legacy
-         path (which retains the original strict-fail behaviour).
+         schema version, lineage JSONB columns, and basic model metadata.
+         The INSERT is wrapped in
+         :func:`_insert_answer_run_with_retry` — 3 attempts with
+         exponential backoff (0.5s, 1.0s, 2.0s) so transient asyncpg /
+         PgBouncer / PG flaps don't silently lose lineage rows.
+      3. On terminal failure (all 3 retries exhausted) the answer has
+         already been streamed back to the caller, so the answer_runs
+         write is non-fatal — but we escalate: ``logger.error`` with
+         ``extra={"alert": True}`` for Loki/Alertmanager, AND increment
+         :data:`metrics.AGENTIC_PERSIST_FAILURES` so Prometheus can page
+         on a sustained > 0 rate. Plan Step 1.5's fail-closed contract
+         still applies to the legacy path (which retains the original
+         strict-fail behaviour).
 
     The pg_pool comes from ``state.deps`` (whatever the FastAPI lifespan
     handed in); missing pool → no-op + log.
@@ -1935,44 +1987,44 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         )
 
     try:
-        async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO silver.answer_runs (
-                    workspace_id,
-                    project_id,
-                    query_text,
-                    query_class,
-                    workspace_data_version_at_query,
-                    citation_lifecycle_state,
-                    model_name,
-                    session_id,
-                    lineage_retrieved_sources,
-                    lineage_filters_applied,
-                    lineage_qaqc_filters_applied,
-                    answer_schema_version,
-                    confidence,
-                    latency_ms
-                ) VALUES (
-                    $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7::uuid,
-                    $8::jsonb, $9::jsonb, $10::jsonb, $11, $12, $13
-                )
-                RETURNING answer_run_id
-                """,
+        row = await _insert_answer_run_with_retry(
+            pg_pool,
+            """
+            INSERT INTO silver.answer_runs (
                 workspace_id,
                 project_id,
-                state.query,
-                spec_query_class,
-                citation_state,
-                _settings.effective_llm_model,
-                cols["session_id"],
-                _json.dumps(cols["lineage_retrieved_sources"]),
-                _json.dumps(cols["lineage_filters_applied"]),
-                _json.dumps(cols["lineage_qaqc_filters_applied"]),
-                cols["answer_schema_version"],
-                _response_confidence,
-                _latency_ms,
+                query_text,
+                query_class,
+                workspace_data_version_at_query,
+                citation_lifecycle_state,
+                model_name,
+                session_id,
+                lineage_retrieved_sources,
+                lineage_filters_applied,
+                lineage_qaqc_filters_applied,
+                answer_schema_version,
+                confidence,
+                latency_ms
+            ) VALUES (
+                $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7::uuid,
+                $8::jsonb, $9::jsonb, $10::jsonb, $11, $12, $13
             )
+            RETURNING answer_run_id
+            """,
+            workspace_id,
+            project_id,
+            state.query,
+            spec_query_class,
+            citation_state,
+            _settings.effective_llm_model,
+            cols["session_id"],
+            _json.dumps(cols["lineage_retrieved_sources"]),
+            _json.dumps(cols["lineage_filters_applied"]),
+            _json.dumps(cols["lineage_qaqc_filters_applied"]),
+            cols["answer_schema_version"],
+            _response_confidence,
+            _latency_ms,
+        )
 
         if row and state.response is not None:
             from uuid import UUID as _UUID  # noqa: PLC0415
@@ -2289,7 +2341,26 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             _cite_count,
         )
     except Exception:
-        logger.exception("agentic_retrieval.persist: answer_runs INSERT failed")
+        # Terminal failure after 3 retries — escalate via structured log
+        # (Alertmanager picks up extra={"alert": True}) and bump the
+        # Prometheus counter so dashboards/PromQL can rate-alert. The
+        # answer is already streamed back to the user so we keep this
+        # path non-fatal — but the lineage row is permanently lost.
+        try:
+            from app.metrics import AGENTIC_PERSIST_FAILURES  # noqa: PLC0415
+
+            AGENTIC_PERSIST_FAILURES.labels(stage="answer_runs").inc()
+        except Exception:  # pragma: no cover — never block on metrics
+            logger.debug(
+                "agentic_retrieval.persist: AGENTIC_PERSIST_FAILURES "
+                "counter inc failed",
+                exc_info=True,
+            )
+        logger.error(
+            "agentic_retrieval.persist: answer_runs INSERT failed after retries",
+            exc_info=True,
+            extra={"alert": True},
+        )
 
     # Return the (possibly mutated) response so LangGraph propagates the
     # stamped answer_run_id back to the caller. Mutation-in-place would

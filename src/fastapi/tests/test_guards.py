@@ -20,8 +20,10 @@ from app.agent.guards import (
 # ---------------------------------------------------------------------------
 
 
-def test_enum_has_all_16_plan_codes():
-    """Plan §4b lists 16 codes. Lock them down."""
+def test_enum_has_all_17_plan_codes():
+    """Plan §4b lists 16 quality codes; Z.1 / Appendix C §5 adds
+    EGRESS_BLOCKED for external-LLM egress refusals. Lock the
+    complete set (17) down."""
     expected = {
         "NO_EVIDENCE_FOUND",
         "ENTITY_NOT_FOUND",
@@ -39,6 +41,8 @@ def test_enum_has_all_16_plan_codes():
         "MISSING_ASSAY_UNITS",
         "SOURCE_SCOPE_VIOLATION",
         "UNSUPPORTED_QUERY_TYPE",
+        # Z.1 / Appendix C §5 — external-LLM egress profile gate.
+        "EGRESS_BLOCKED",
     }
     actual = {m.value for m in GuardErrorCode}
     assert actual == expected, f"missing={expected - actual}  extra={actual - expected}"

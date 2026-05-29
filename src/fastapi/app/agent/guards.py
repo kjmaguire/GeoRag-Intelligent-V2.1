@@ -78,6 +78,16 @@ class GuardErrorCode(str, Enum):
     # ── Query-failure codes (1) ─────────────────────────────────────────
     UNSUPPORTED_QUERY_TYPE = "UNSUPPORTED_QUERY_TYPE"
 
+    # ── Egress / policy codes (1) ───────────────────────────────────────
+    # Z.1 / Appendix C §5 — external-LLM egress gate. Raised when the
+    # active backend wants to call out to a third-party LLM provider
+    # (currently Anthropic) but the current workspace's profile does not
+    # have ``allow_external_llm`` set to true. The user-facing render is
+    # a hard refusal — no call to Anthropic is made and no workspace
+    # data leaves the trust boundary. Operators flip the workspace
+    # setting ``profile.allow_external_llm = true`` to permit egress.
+    EGRESS_BLOCKED = "EGRESS_BLOCKED"
+
 
 # ---------------------------------------------------------------------------
 # Warning-string → GuardErrorCode pattern table

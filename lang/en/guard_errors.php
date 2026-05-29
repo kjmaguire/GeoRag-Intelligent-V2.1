@@ -87,6 +87,14 @@ return [
     'UNSUPPORTED_QUERY_TYPE' => 'This question falls outside what I can answer from the ingested '
         .'documents. :reason. You may want to :specific_alternative_action.',
 
+    // ── Egress / policy code (1) ────────────────────────────────────────
+    // Z.1 / Appendix C §5 — external-LLM egress gate refused the call
+    // because the active workspace has not opted into external LLM use
+    // (profile.allow_external_llm is false or absent). The refusal is a
+    // hard stop — no Anthropic call is made.
+    'EGRESS_BLOCKED' => 'External LLM access is disabled for this workspace. '
+        .'Contact your admin to enable.',
+
     // ── Out-of-band (plan §4c death-loop response) ──────────────────────
     'DEATH_LOOP' => 'I was unable to find evidence to answer this question. The '
         .'following filters returned no results: :filters. You may want '

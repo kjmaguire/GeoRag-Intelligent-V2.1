@@ -143,6 +143,13 @@ from georag_dagster.assets.index_public_geoscience import (
 )
 from georag_dagster.assets.smdi_deposits import smdi_deposits_refresh
 from georag_dagster.assets.commit_ingestion_run import commit_ingestion_run
+# Appendix F-data-dictionary / Z.7 — per-table JSON dump + ERD groupings
+# + CI drift guard. Lands snapshots in S3 under
+# catalogs/data_dictionary/<UTC date>/.
+from georag_dagster.assets.data_dictionary_dump import (
+    data_dictionary_dump,
+    data_dictionary_drift_check,
+)
 from georag_dagster.assets.silver_drill_traces import silver_drill_traces
 from georag_dagster.assets.silver_cog_rasters import (
     bronze_raster_uploads,
@@ -784,6 +791,9 @@ defs = Definitions(
         # docs/handoffs/smdi_ingestion_2026_05_25.md for the unification
         # question.
         smdi_deposits_refresh,
+        # --- Catalog (Appendix F / Z.7) ---
+        # Daily JSON dump of silver + gold schema → S3 catalogs bucket.
+        data_dictionary_dump,
     ],
     asset_checks=[
         # Silver — collars (3 blocking checks)
@@ -825,6 +835,8 @@ defs = Definitions(
         cog_readable_check,
         # Reranker label dataset — blocking gate on triple count + leakage rate
         reranker_label_dataset_minimum_size_check,
+        # Catalog drift guard — compares today's data dictionary to yesterday's.
+        data_dictionary_drift_check,
     ],
     schedules=[
         full_ingest_schedule,

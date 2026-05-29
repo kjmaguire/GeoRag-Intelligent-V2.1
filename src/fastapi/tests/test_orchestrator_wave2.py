@@ -168,6 +168,19 @@ def _enable_anthropic(monkeypatch):
     object.__setattr__(settings, "REQUIRE_POOLED_ANTHROPIC_CLIENT", False)
     object.__setattr__(settings, "ANTHROPIC_ENABLE_PROMPT_CACHING", False)
     object.__setattr__(settings, "ANTHROPIC_USE_PRIORITY_TIER", False)
+
+    # Z.1 — these legacy tests pin SDK call shapes (message list, system
+    # blocks, multi-turn payloads). They predate the external-LLM egress
+    # gate (Appendix C §5) which now refuses calls without a workspace
+    # opt-in. Bypass the gate here so the SDK-shape assertions still run.
+    # The gate itself is exercised by tests/test_anthropic_egress_gate.py.
+    async def _passthrough(*, workspace_id, pg_pool=None):
+        return None
+
+    monkeypatch.setattr(
+        "app.agent.egress_gate.assert_external_llm_allowed",
+        _passthrough,
+    )
     yield settings
 
 

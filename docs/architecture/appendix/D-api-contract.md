@@ -133,6 +133,32 @@ tests:
   - src/fastapi/tests/test_ingest_pdf_e2e.py
 ```
 
+## 5b. Error catalog (typed guard codes)
+
+Chat / RAG responses always return HTTP 200 (or 207 for partial answers);
+quality and policy refusals ride as typed codes in the response body so
+the React layer can surface a structured UI (clickable picker, conflict
+diff, refusal banner) instead of a generic 5xx page.
+
+The canonical inventory of internal codes is
+[`src/fastapi/app/agent/guards.py`](../../../src/fastapi/app/agent/guards.py)
+(`GuardErrorCode`). The user-facing message templates live in
+[`lang/en/guard_errors.php`](../../../lang/en/guard_errors.php) and the
+catalog page at
+[`docs/architecture/user_facing_error_catalog.md`](../user_facing_error_catalog.md).
+
+Codes summarised here for the API contract surface:
+
+| Group | Codes | When fired |
+|---|---|---|
+| Retrieval failure | `NO_EVIDENCE_FOUND`, `ENTITY_NOT_FOUND`, `AMBIGUOUS_HOLE_ID`, `AMBIGUOUS_FORMATION_NAME`, `AMBIGUOUS_PROPERTY_NAME`, `OVER_FILTERED_QUERY`, `SPATIAL_QUERY_EMPTY`, `SPATIAL_CRS_MISMATCH`, `GRAPH_PATH_NOT_FOUND` | Retrieval returned no usable evidence or the query is ambiguous |
+| Evidence quality | `NUMERIC_GROUNDING_FAILED`, `CITATION_INCOMPLETE`, `CONFLICTING_SOURCES`, `MISSING_DEPTH_INTERVAL`, `MISSING_ASSAY_UNITS`, `SOURCE_SCOPE_VIOLATION` | §04i guards (Layers 2-6) rejected the assembled answer |
+| Query type | `UNSUPPORTED_QUERY_TYPE` | Query is outside the answerable surface |
+| Egress / policy | `EGRESS_BLOCKED` | `LLM_BACKEND=anthropic` but the workspace profile has not opted in (`profile.allow_external_llm != true`). Refusal is hard; no Anthropic call is made. Implementation: [`app.agent.egress_gate`](../../../src/fastapi/app/agent/egress_gate.py) (Z.1 / Appendix C §5) |
+
+Death-loop refusal (out of band: not a `GuardErrorCode` but rendered the
+same way) uses the `DEATH_LOOP` translation key.
+
 ## 6. Idempotency posture
 
 - **POST uploads**: idempotent on `sha256` — duplicate upload returns the

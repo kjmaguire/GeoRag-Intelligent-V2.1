@@ -97,6 +97,12 @@ from app.agent.llm_calls import (  # noqa: E402
     get_run_token_usage,
     reset_run_token_usage,
 )
+# Z.1 / Appendix C §5 — external-LLM egress profile gate. Aliased with a
+# leading underscore so the orchestrator's `except` branch reads as a
+# private gate-handling tag rather than an importable public name.
+from app.agent.egress_gate import (  # noqa: E402
+    ExternalLlmEgressBlocked as _ExternalLlmEgressBlocked,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2774,6 +2780,8 @@ async def run_deterministic_rag(
                 project_preamble=project_preamble,
                 project_facts=project_facts,
                 user_id=getattr(deps, "user_id", None),
+                workspace_id=getattr(deps, "workspace_id", None),
+                pg_pool=getattr(deps, "pg_pool", None),
                 token_callback=active_token_cb,
                 previous_answer=previous_llm_text if attempt > 0 else None,
                 correction_hint=correction_hint or None,
@@ -2807,6 +2815,25 @@ async def run_deterministic_rag(
                 "specific question, or ask an operator to raise "
                 "MAX_LLM_CALLS_PER_QUERY."
             )
+            break
+        except _ExternalLlmEgressBlocked as egx:
+            # Z.1 / Appendix C §5 — workspace policy refused external-LLM egress.
+            # This is a deliberate policy refusal, NOT a network failure, so
+            # we do NOT fall through to the retriable-failover branch below
+            # (which would attempt a vLLM call — but the user explicitly
+            # asked for the Anthropic backend and the workspace is opted out;
+            # silently routing them to vLLM would be the wrong UX). Surface
+            # the typed guard message and stop.
+            logger.warning(
+                "run_deterministic_rag: external-LLM egress blocked "
+                "(workspace=%s reason=%s) — refusing Anthropic call",
+                getattr(deps, "workspace_id", None), egx.reason,
+            )
+            _backend_chain.append(
+                f"{settings.LLM_BACKEND}:{settings.effective_llm_model}"
+                f":refused:egress_blocked"
+            )
+            llm_text = egx.user_message
             break
         except Exception as exc:
             # B1 — one-shot failover on retriable errors (429/529/timeout).
@@ -2859,6 +2886,8 @@ async def run_deterministic_rag(
                             project_preamble=project_preamble,
                             project_facts=project_facts,
                             user_id=getattr(deps, "user_id", None),
+                            workspace_id=getattr(deps, "workspace_id", None),
+                            pg_pool=getattr(deps, "pg_pool", None),
                             audit_label="failover",
                             enable_thinking=False,
                         )
@@ -2990,6 +3019,8 @@ async def run_deterministic_rag(
                             system_prompt=active_system_prompt,
                             project_preamble=project_preamble,
                             project_facts=project_facts,
+                            workspace_id=getattr(deps, "workspace_id", None),
+                            pg_pool=getattr(deps, "pg_pool", None),
                         )
                         _backend_chain.append(f"anthropic:{_ant_fallback_model}")
                     except Exception as ant_exc:

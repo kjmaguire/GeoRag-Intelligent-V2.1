@@ -52,6 +52,7 @@ from pydantic import BaseModel, Field
 
 from app.agents import AgentContext, register_runtime
 from app.agents.phase0 import (
+    graph_tenant_audit as _graph_tenant_audit_agent,
     index_health_check as _index_health_check_agent,
     lineage_walk as _lineage_walk_agent,
     llm_incident_diagnosis_run as _llm_incident_agent,
@@ -144,6 +145,29 @@ tenant_isolation_audit = hatchet.workflow(
 async def _run_tenant_isolation(input: AgentRunInput, ctx: Context) -> dict:
     async with _agent_runtime():
         r = await _tenant_isolation_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
+        return r.value or {}
+
+
+# =============================================================================
+# 1b. Graph Tenant Auditor — Z-roadmap Z.9, nightly 02:30 UTC
+#
+# Sibling to tenant_isolation_audit (PG-side, 02:00 UTC). Offset by 30
+# minutes so the two auditors don't contend for the Hatchet ai-pool
+# slot or write to silver.tenant_isolation_audit at the same instant.
+# =============================================================================
+graph_tenant_audit = hatchet.workflow(
+    name="graph_tenant_audit",
+    on_crons=["30 2 * * *"],
+    input_validator=AgentRunInput,
+)
+
+
+@graph_tenant_audit.task(execution_timeout="10m")
+async def _run_graph_tenant_audit(input: AgentRunInput, ctx: Context) -> dict:
+    async with _agent_runtime():
+        r = await _graph_tenant_audit_agent(
+            ctx=_ctx_from(input, ctx), **input.kwargs
+        )
         return r.value or {}
 
 
@@ -308,6 +332,7 @@ INGESTION_AGENT_WORKFLOWS = [
 
 AI_AGENT_WORKFLOWS = [
     tenant_isolation_audit,
+    graph_tenant_audit,
     lineage_walk,
     model_upgrade_watch_run,
     vllm_security_check_run,
@@ -320,6 +345,7 @@ ALL_AGENT_WORKFLOWS = INGESTION_AGENT_WORKFLOWS + AI_AGENT_WORKFLOWS
 
 __all__ = [
     "tenant_isolation_audit",
+    "graph_tenant_audit",
     "lineage_walk",
     "storage_tiering_run",
     "index_health_check",

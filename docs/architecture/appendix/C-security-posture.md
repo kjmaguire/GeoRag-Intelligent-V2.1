@@ -67,7 +67,7 @@ kestra ←── HMAC-signed inbound webhooks (EXTERNAL_NOTIFICATION_HMAC_SECRET
 
 | Risk | State | Mitigation | Next action |
 |---|---|---|---|
-| Workspace data sent to Anthropic when `LLM_BACKEND=anthropic` | **Open** | Env flag controls the backend, but no per-workspace gating | Profile-gate `LLM_BACKEND=anthropic` so on-prem profiles refuse the flag; per-workspace policy `workspace.workspace_settings.allow_external_llm: bool` checked at call site |
+| Workspace data sent to Anthropic when `LLM_BACKEND=anthropic` | Live | Per-workspace `silver.workspace_settings.extra_payload.allow_external_llm: bool` checked at the Anthropic call site (default-deny; missing flag = refuse). Implementation: [`src/fastapi/app/agent/egress_gate.py`](../../../src/fastapi/app/agent/egress_gate.py) raises `ExternalLlmEgressBlocked` (mapped to `GuardErrorCode.EGRESS_BLOCKED`); refusal surfaced via [`lang/en/guard_errors.php`](../../../lang/en/guard_errors.php) `EGRESS_BLOCKED` template. Test pin: `src/fastapi/tests/test_anthropic_egress_gate.py`. | Add a Settings-page toggle that flips `allow_external_llm` per workspace (admin-only); document the env-level `LLM_BACKEND` profile gate at deployment time |
 | Anthropic prompt caching includes evidence text | Live | `ANTHROPIC_ENABLE_PROMPT_CACHING=true` is a perf knob; the cached prompt is the same evidence the user supplied | Surface this in the Settings page so operators see what gets cached |
 | Cross-workspace prompt cache reuse | Partial | Prompt cache key includes workspace_id via prompt prefix | Add explicit cache-key salt = `workspace_id` |
 

@@ -28,6 +28,7 @@ import pytest
 PHASE0_MODULES = [
     "app.agents.phase0.store_reconciliation",
     "app.agents.phase0.tenant_isolation_auditor",
+    "app.agents.phase0.graph_tenant_auditor",
     "app.agents.phase0.lineage_reporter",
     "app.agents.phase0.storage_tiering",
     "app.agents.phase0.index_health",

@@ -679,6 +679,8 @@ async def _call_anthropic_llm(
     token_callback: Callable[[str], Awaitable[None]] | None = None,
     previous_answer: str | None = None,
     correction_hint: str | None = None,
+    workspace_id: str | None = None,
+    pg_pool: Any = None,
 ) -> str:
     """Call the Anthropic Messages API with prompt caching on the system prompt.
 
@@ -702,7 +704,26 @@ async def _call_anthropic_llm(
     ``status_callback`` — the stream must never break the RAG run).
     Thinking blocks are NOT forwarded through the callback — those remain
     internal and are only logged in aggregate.
+
+    Z.1 / Appendix C §5 — external-LLM egress gate
+    ----------------------------------------------
+    Before any Anthropic client construction or network egress, we check
+    the active workspace's ``profile.allow_external_llm`` policy via
+    :func:`app.agent.egress_gate.assert_external_llm_allowed`. When the
+    workspace has not opted in (or no workspace context is supplied),
+    the gate raises :class:`ExternalLlmEgressBlocked` and the call is
+    refused — no prompt content leaves the trust boundary.
     """
+    # Z.1 — external-LLM egress profile gate. Fired BEFORE the Anthropic
+    # client construction below so a workspace that has not opted in
+    # never even instantiates the SDK, let alone sends bytes over TLS.
+    from app.agent.egress_gate import assert_external_llm_allowed  # noqa: PLC0415
+
+    await assert_external_llm_allowed(
+        workspace_id=workspace_id,
+        pg_pool=pg_pool,
+    )
+
     # Prefer a pooled client injected from app.state (B2). If it's missing,
     # hard-fail in prod (R11) — the pooled client should always be present
     # when LLM_BACKEND=anthropic; absence means app.state was never
@@ -962,6 +983,8 @@ async def _call_llm(
     project_preamble: str | None = None,
     project_facts: str | None = None,
     user_id: str | None = None,
+    workspace_id: str | None = None,
+    pg_pool: Any = None,
     token_callback: Callable[[str], Awaitable[None]] | None = None,
     previous_answer: str | None = None,
     correction_hint: str | None = None,
@@ -1048,6 +1071,8 @@ async def _call_llm(
             token_callback=token_callback,
             previous_answer=previous_answer,
             correction_hint=correction_hint,
+            workspace_id=workspace_id,
+            pg_pool=pg_pool,
         )
     # OpenAI-compatible path. Ollama review #2: token_callback is now
     # honoured here too — `_call_openai_compatible_llm` flips

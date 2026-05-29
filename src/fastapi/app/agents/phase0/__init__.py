@@ -34,6 +34,7 @@ Prometheus rules, not a Python agent):
     - Support Packet Agent          support_packet_assemble
 """
 
+from .graph_tenant_auditor import graph_tenant_audit
 from .index_health import index_health_check
 from .lineage_reporter import lineage_walk
 from .llm_incident_diagnosis import llm_incident_diagnosis_run
@@ -47,6 +48,7 @@ from .vllm_security_check import vllm_security_check_run
 
 __all__ = [
     "tenant_isolation_audit",
+    "graph_tenant_audit",
     "lineage_walk",
     "index_health_check",
     "store_reconciliation_run",

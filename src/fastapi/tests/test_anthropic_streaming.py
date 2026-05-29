@@ -112,6 +112,33 @@ def _enable_anthropic(monkeypatch):
     yield settings
 
 
+# Z.1 — every _call_anthropic_llm test must pass the egress-gate check so
+# the SDK code path under test is actually reached. These streaming tests
+# pin SDK behaviour, not policy; we wire a permissive workspace + pool so
+# the gate returns "flag_enabled" without touching real PG.
+
+_ALLOWED_WORKSPACE_ID = "a0000000-0000-0000-0000-000000000001"
+
+
+def _permissive_pool():
+    """Build a fake asyncpg.Pool whose fetchrow returns allow_external_llm=True."""
+    from unittest.mock import MagicMock
+
+    async def _fetchrow(_sql: str, _workspace_id: str):
+        return {"extra_payload": {"allow_external_llm": True}}
+
+    conn = SimpleNamespace(fetchrow=_fetchrow)
+
+    class _AcquireCM:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *a):
+            return False
+
+    return SimpleNamespace(acquire=MagicMock(return_value=_AcquireCM()))
+
+
 @pytest.mark.asyncio
 async def test_no_callback_uses_blocking_create(_enable_anthropic):
     client = _make_client_blocking("final answer text")
@@ -119,6 +146,8 @@ async def test_no_callback_uses_blocking_create(_enable_anthropic):
         "context + question",
         temperature=0.1,
         client=client,
+        workspace_id=_ALLOWED_WORKSPACE_ID,
+        pg_pool=_permissive_pool(),
     )
     assert out == "final answer text"
     client.messages.create.assert_awaited_once()
@@ -139,6 +168,8 @@ async def test_callback_streams_chunks(_enable_anthropic):
         temperature=0.1,
         client=client,
         token_callback=_capture,
+        workspace_id=_ALLOWED_WORKSPACE_ID,
+        pg_pool=_permissive_pool(),
     )
 
     assert received == chunks
@@ -159,6 +190,8 @@ async def test_callback_exception_does_not_break_stream(_enable_anthropic):
         temperature=0.1,
         client=client,
         token_callback=_broken,
+        workspace_id=_ALLOWED_WORKSPACE_ID,
+        pg_pool=_permissive_pool(),
     )
     # Despite every callback invocation raising, the orchestrator still
     # accumulates the final text via get_final_message.
@@ -181,6 +214,8 @@ async def test_empty_chunks_are_skipped(_enable_anthropic):
         temperature=0.1,
         client=client,
         token_callback=_capture,
+        workspace_id=_ALLOWED_WORKSPACE_ID,
+        pg_pool=_permissive_pool(),
     )
     assert received == ["real", "text"]
     assert out == "realtext"

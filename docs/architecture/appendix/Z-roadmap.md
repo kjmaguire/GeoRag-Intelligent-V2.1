@@ -20,7 +20,7 @@ include a sketch of what the chapter or appendix will contain.
 | `georag` SUPERUSER framing | ✅ documented in [Ch 02 §1.1](../manual/02-data-stores.md#11-known-security-issue--georag-role-is-superuser) + [Ch 11 §3](../manual/11-tenancy-and-rls.md) + [Appendix C §2](C-security-posture.md#2-tenant-isolation) |
 | Martin `martin_ro` promoted to tracked security item | ✅ [Ch 02 §1.2](../manual/02-data-stores.md) + [Appendix C §2](C-security-posture.md) |
 | Qdrant prod auth posture | ✅ [Ch 02 §3](../manual/02-data-stores.md) + [Appendix C §6](C-security-posture.md#6-qdrant-access-control) |
-| Anthropic profile-gate | ✅ tracked in [Appendix C §5](C-security-posture.md#5-external-llm-data-egress); implementation **planned** |
+| Anthropic profile-gate | ✅ tracked in [Appendix C §5](C-security-posture.md#5-external-llm-data-egress); implementation **Live** — per-workspace `allow_external_llm` checked at `_call_anthropic_llm` entry (default-deny). [`src/fastapi/app/agent/egress_gate.py`](../../../src/fastapi/app/agent/egress_gate.py); test pin [`src/fastapi/tests/test_anthropic_egress_gate.py`](../../../src/fastapi/tests/test_anthropic_egress_gate.py) |
 | `persist_node` best-effort | ✅ documented + fix proposed in [Ch 06 §2.1](../manual/06-retrieval-and-agents.md#21-persistence-is-currently-best-effort--fix-required); implementation **planned** |
 | Memory paths → checked-in notes | ✅ [docs/architecture/notes/INDEX.md](../notes/INDEX.md) |
 

@@ -127,6 +127,17 @@ Each row: `internal code → user template → UI surface → suggested user act
 - **UI surface:** info message; no answer shown.
 - **Follow-up:** if `specific_alternative_action` is "search the public-geo layer", offer a button.
 
+### Egress / policy codes
+
+#### `EGRESS_BLOCKED`
+
+> "External LLM access is disabled for this workspace. Contact your admin to enable."
+
+- **UI surface:** critical banner (red) with a hard refusal — no answer is rendered.
+- **Follow-up:** "Open workspace settings" link for users with admin role; otherwise "Request access" message.
+- **Note:** fires when `LLM_BACKEND=anthropic` is active but `silver.workspace_settings.extra_payload.allow_external_llm` is not `true`. Implementation: `app.agent.egress_gate.assert_external_llm_allowed` (Z.1 / Appendix C §5).
+- **Why this is a guard code, not a 5xx:** the call was refused by policy, not by an outage. The user needs an actionable next step (talk to an admin), and the API contract is unchanged — the refusal rides as a typed code in the response body.
+
 ### Out-of-band: death loop
 
 (Not a GuardErrorCode but lives in this catalog because the user sees the message.)

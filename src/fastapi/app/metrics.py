@@ -189,6 +189,17 @@ LLM_CALL_BUDGET_EXCEEDED = Counter(
     "Queries that hit MAX_LLM_CALLS_PER_QUERY and were aborted.",
 )
 
+# Z.1 / Appendix C §5 — external-LLM egress gate firings. A non-zero rate
+# means workspaces are configured for LLM_BACKEND=anthropic but their
+# profile policy refuses egress; either the operator forgot to enable
+# allow_external_llm or a misconfiguration is routing protected workspaces
+# to the external backend. The `reason` label distinguishes the cases.
+EXTERNAL_LLM_EGRESS_BLOCKED = Counter(
+    "georag_external_llm_egress_blocked_total",
+    "External-LLM calls refused by the workspace profile gate (Appendix C §5).",
+    labelnames=("reason",),
+)
+
 LLM_CALLS_PER_QUERY = Histogram(
     "georag_llm_calls_per_query",
     "Distribution of total LLM calls made per RAG run (excludes cache hits).",
@@ -423,4 +434,30 @@ READINESS_PROBE_DURATION = Histogram(
     "Latency of the visualization readiness probe served by /v1/viz/readiness.",
     labelnames=("workspace_scoped",),  # "true" | "false"
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
+)
+
+# ---------------------------------------------------------------------------
+# Agentic-retrieval persistence reliability (persist_node retry exhaustion).
+#
+# persist_node retries the silver.answer_runs INSERT 3 times with
+# exponential backoff (0.5s / 1.0s / 2.0s) before treating the failure
+# as terminal. The answer has already been streamed to the caller, so a
+# terminal failure is non-fatal for the request — but the lineage row is
+# permanently lost and the operator needs paging.
+#
+# A sustained > 0 rate on this counter means asyncpg can't reach
+# Postgres reliably during answer write-out (PgBouncer saturation,
+# transient network partition, PG restart loop). Pair with the
+# answer_runs INSERT log line (now logger.error with extra={"alert": True})
+# in Loki for the failing query payload.
+#
+# Labels kept low-cardinality:
+#   - stage: "answer_runs" (the only stage today; future child-row INSERTs
+#     can register their own values).
+# ---------------------------------------------------------------------------
+
+AGENTIC_PERSIST_FAILURES = Counter(
+    "georag_agentic_persist_failures_total",
+    "agentic-retrieval persist_node DB writes that exhausted all retries.",
+    labelnames=("stage",),
 )
