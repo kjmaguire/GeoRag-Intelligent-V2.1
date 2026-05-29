@@ -1986,6 +1986,38 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             (_time_for_latency.monotonic() - state.run_start_monotonic) * 1000
         )
 
+    # FK-safety (option (b) from §39 follow-up). silver.answer_runs.project_id
+    # has a FK to silver.projects. Real production callers occasionally pass
+    # workspace UUIDs or stale project_ids that don't resolve — the resulting
+    # ForeignKeyViolationError used to take down the whole persist (incl. the
+    # trace row, because enqueue_trace was inside `if row is not None`).
+    # Validate-then-NULL keeps the row alive at the cost of one cheap
+    # SELECT — far cheaper than retrying the INSERT 3× and then losing the
+    # trace forever. The FK column itself is nullable (ON DELETE SET NULL).
+    if project_id is not None:
+        try:
+            async with pg_pool.acquire() as _fk_conn:
+                _project_exists = await _fk_conn.fetchval(
+                    "SELECT 1 FROM silver.projects WHERE project_id = $1::uuid",
+                    project_id,
+                )
+            if _project_exists is None:
+                logger.warning(
+                    "agentic_retrieval.persist: project_id %s not present in "
+                    "silver.projects — dropping to NULL on INSERT",
+                    project_id,
+                )
+                project_id = None
+        except Exception:
+            # Don't let the FK pre-check fail the persist. If the SELECT
+            # itself dies, fall through with the original project_id — the
+            # retry helper will handle the eventual FK error.
+            logger.debug(
+                "agentic_retrieval.persist: project_id FK pre-check failed; "
+                "trusting caller-supplied value",
+                exc_info=True,
+            )
+
     try:
         row = await _insert_answer_run_with_retry(
             pg_pool,
@@ -2059,7 +2091,14 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         # Plan §0e retrieval-trace observability — enqueue a RetrievalTrace
         # for the silver.query_traces buffer. Fire-and-forget: the writer
         # never raises, so this can't break the answer path.
-        if row is not None:
+        #
+        # §39 follow-up (c): the trace is now emitted even when the
+        # answer_runs INSERT failed (row is None). Previously this block
+        # was gated on `if row is not None:`, which meant FK violations or
+        # pool exhaustion that killed the row also killed observability.
+        # `answer_run_id` falls through as None in that case — the
+        # RetrievalTrace schema explicitly allows it (trace_writer.py L91).
+        if True:  # noqa: SIM103 — see comment above; trace must run regardless
             try:
                 from app.services.trace_writer import (  # noqa: PLC0415
                     GuardResults,
@@ -2257,7 +2296,9 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 _trace = RetrievalTrace(
                     workspace_id=workspace_id,
                     project_id=project_id,
-                    answer_run_id=row["answer_run_id"],
+                    # §39 follow-up (c) — answer_run_id may be None when
+                    # the INSERT failed; the schema allows it.
+                    answer_run_id=(row["answer_run_id"] if row is not None else None),
                     otel_trace_id=None,
                     user_query=state.query,
                     system_prompt_tokens=getattr(
