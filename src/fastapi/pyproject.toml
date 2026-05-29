@@ -30,7 +30,7 @@ dependencies = [
     # API-breaking changes in sentence-transformers compatibility —
     # deferred until sentence-transformers ships its 5.x-compatible
     # release. Tracked: `docs/phase_h_python_deps_audit.md`.
-    "transformers>=4.40,<5.0",
+    "transformers>=4.40,<6.0",
     "httpx>=0.28",
     "prometheus-fastapi-instrumentator>=7.0",
     # Sentry observability — pairs with sentry/sentry-laravel on the Laravel
