@@ -123,7 +123,7 @@ jobs:
       url: http://localhost
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Install SOPS for secret decryption.
       - name: Install SOPS
@@ -250,7 +250,7 @@ jobs:
       url: https://staging.your-georag-domain.example.com
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install SOPS
         run: |
@@ -429,7 +429,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install SOPS
         run: |
