@@ -20,7 +20,7 @@
         "clsx": "^2.1.1",
         "jszip": "^3.10.1",
         "laravel-echo": "^2.3.4",
-        "lucide-react": "^1.8.0",
+        "lucide-react": "^1.17.0",
         "maplibre-gl": "^5.23.0",
         "plotly.js-dist-min": "^3.5.0",
         "proj4": "^2.20.8",
