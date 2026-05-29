@@ -89,10 +89,43 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Schemas the data dictionary covers.  Bronze is excluded by design —
-# bronze is the raw landing zone and its shape is governed by upstream
-# vendors, not the GeoRAG schema contract.
-SCHEMAS: tuple[str, ...] = ("silver", "gold")
+# Schemas the data dictionary covers. Expanded 2026-05-29 to match the
+# 14-schema vision in F-data-dictionary.md (item #5 follow-up). Bronze
+# is included because even though its shape is governed by upstream
+# vendors, the *landing tables* are GeoRAG-owned and worth cataloging
+# (column names + nullability + FKs to silver). The drift guard treats
+# bronze columns as "informational only" — additions/removals don't
+# fail the check (vendors evolve their feeds; that's expected).
+#
+# Schemas matched to F-data-dictionary §1 draft:
+#   bronze, silver, gold       — medallion core
+#   audit, usage               — operations + cost tracking
+#   outbox, workflow           — orchestration + transactional outbox
+#   workspace                  — tenancy + multi-workspace state
+#   public_geo                 — public-geoscience source-of-truth
+#   interpretation, targeting  — modelled outputs
+#   ops, eval                  — operational + evaluation catalogs
+#   public                     — built-in PG schema (mostly extensions)
+SCHEMAS: tuple[str, ...] = (
+    "bronze",
+    "silver",
+    "gold",
+    "audit",
+    "usage",
+    "outbox",
+    "workflow",
+    "workspace",
+    "public_geo",
+    "interpretation",
+    "targeting",
+    "ops",
+    "eval",
+    "public",
+)
+
+# Schemas whose drift is informational-only (vendor-driven; don't alarm
+# on column add/remove). The drift-check asset reads this set.
+DRIFT_INFORMATIONAL_SCHEMAS: frozenset[str] = frozenset({"bronze", "public"})
 
 # S3 bucket + prefix template.  The bucket name "catalogs" is reserved
 # for this asset family per the appendix; do not collide with the

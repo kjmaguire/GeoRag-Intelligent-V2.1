@@ -9,7 +9,7 @@
 >
 > The original draft below is preserved for spec-vs-implementation traceability. The implementation diverges from the draft in three places worth flagging:
 >
-> 1. The agent only walks `silver.*` + `gold.*` schemas (not the full 14-schema list the draft envisaged). Wider coverage is the obvious follow-up.
+> 1. ~~The agent only walks `silver.*` + `gold.*` schemas (not the full 14-schema list the draft envisaged). Wider coverage is the obvious follow-up.~~ **CLOSED 2026-05-29 (later same day)** — `SCHEMAS` constant in the asset now covers the full 14-schema vision (`bronze, silver, gold, audit, usage, outbox, workflow, workspace, public_geo, interpretation, targeting, ops, eval, public`). Bronze + `public` are tracked as `DRIFT_INFORMATIONAL_SCHEMAS` — column add/remove there doesn't alarm (vendor feeds evolve; built-in PG extensions are noisy).
 > 2. Output is one **single** `data_dictionary.json` array, not per-schema `docs/architecture/data_dict/<schema>.md` files. The MinIO-as-canonical pattern is simpler for the drift check.
 > 3. The CI drift guard is a Dagster asset_check, not a standalone GitHub Action workflow. Same semantics, different runner.
 
