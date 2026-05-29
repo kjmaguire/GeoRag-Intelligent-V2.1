@@ -1,6 +1,19 @@
 # Appendix F — Data Dictionary + ERD
 
-Status: **Draft.** Defines the contract for an *auto-generated* data
+> **Status (2026-05-29)**: **Live (initial cut)** — generator implemented per Z.7 punchlist.
+>
+> - `data_dictionary_dump` Dagster asset at `src/dagster/georag_dagster/assets/data_dictionary_dump.py` walks `silver.*` + `gold.*`, dumps the per-table JSON shape defined in §3 below, and persists to `s3://catalogs/data_dictionary/<UTC-date>/`.
+> - `data_dictionary_drift_check` sibling asset_check fails on column-removed / type-changed / PK-changed and forward-compat-passes on column-added.
+> - ERD via `eralchemy2` with a hand-rolled Graphviz DOT fallback (always produced); SchemaSpy still on the future-enhancement list.
+> - 22 tests in `src/dagster/tests/test_data_dictionary_dump.py`, all passing.
+>
+> The original draft below is preserved for spec-vs-implementation traceability. The implementation diverges from the draft in three places worth flagging:
+>
+> 1. The agent only walks `silver.*` + `gold.*` schemas (not the full 14-schema list the draft envisaged). Wider coverage is the obvious follow-up.
+> 2. Output is one **single** `data_dictionary.json` array, not per-schema `docs/architecture/data_dict/<schema>.md` files. The MinIO-as-canonical pattern is simpler for the drift check.
+> 3. The CI drift guard is a Dagster asset_check, not a standalone GitHub Action workflow. Same semantics, different runner.
+
+Status (legacy heading, retained for diff continuity): **Draft.** Defines the contract for an *auto-generated* data
 dictionary + ERD, plus a manual seed for the highest-value tables. The
 generator is the source of truth once it lands; the seed is what to ship
 in the interim.
