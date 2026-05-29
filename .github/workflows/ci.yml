@@ -437,7 +437,7 @@ jobs:
       # Login to GHCR only on main branch pushes (PRs build without pushing).
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
