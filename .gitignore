@@ -80,3 +80,21 @@ src/fastapi/C:/
 # Keep the directory so first-time runs don't error.
 src/fastapi/bench_results/*.json
 !src/fastapi/bench_results/.gitkeep
+
+# §38/§39 reranker overnight — host-side artifacts that bind-mount or
+# get stamped into the repo from docker exec calls. The real durable
+# copies live in MinIO under `reranker-checkpoints/` / `reranker-labels/`.
+# These rules just keep `git status` quiet on Kyle's working tree.
+#
+#   src/fastapi/data/      — older local mirror of reranker_dataset_v1
+#                            (the same data lives in MinIO reranker-labels)
+#   src/fastapi/scripts/   — Docker bind-mount echo of repo /scripts;
+#                            edits belong in /scripts only.
+#   tmp/                   — ad-hoc PHP/Python probe scripts left behind by
+#                            older debugging sessions; not source files
+#   bronze/                — textbook PDF dumps, belong in SeaweedFS/MinIO
+#                            not git (GBs of binary corpus data)
+src/fastapi/data/
+src/fastapi/scripts/
+/tmp/
+/bronze/

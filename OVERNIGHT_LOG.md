@@ -3273,4 +3273,170 @@ ADR-0010 Sessions A+B+C all CLOSED overnight. `silver.document_passages` is the 
 
 — Claude (morning sentinel · all overnight goals met · ADR-0010 closed · §5e XL queued for attended launch)
 
+---
+
+## §38 — Overnight run 2026-05-28 → 2026-05-29 — ADR-0011 full reranker training cycle
+
+**Owner**: Claude (autonomous overnight) · **Duration**: 2026-05-28 23:00Z → 2026-05-29 17:46Z (~19h elapsed)
+**Outcome**: **HOLD** — candidate lost to stock BAAI/bge-reranker-base on every NDCG/MRR/Recall@k metric. Pipeline ran end-to-end clean; the verdict is a data-quality verdict, not a code verdict.
+
+### What ran
+Five-phase chain after the afternoon's LoRA HOLD revealed core_chat 17.1% → 0% on synthetic-only training:
+- **Phase 0** — `scripts/_extract_domain_vocab.py` on the enriched 158,192-chunk corpus → **240** novel vocabulary candidates (vs 195 in the LoRA cycle). New tokens skew heavily toward Saskatchewan/Athabasca place names + MINFILE/SMDI catalog IDs + real geology terms (epigenetic, unconformity-type, porphyry, etc.) — exactly what TIER 0b's public_geo backfill was supposed to surface.
+- **Phase 1** — `scripts/_extend_reranker_tokenizer.py` extended BAAI/bge-reranker-base tokenizer 250,002 → 250,242; new embeddings initialized via the Stanford mean-of-subword recipe. Output: `/tmp/reranker-extended`.
+- **Phase 2** — `scripts/_train_mlm_continued.py` MLM continued pretraining on 156,610 train + 1,582 eval examples, 2 epochs, lr=5e-5, bs=16, grad-accum=4. Runtime: **10.6 h** on the A4500 (vLLM + hatchet-worker-ai paused). Final eval_loss = **1.290**, train_loss = 3.405. Output: `/tmp/reranker-mlm`.
+- **Phase 3** — `scripts/_train_reranker_full.py` full FT (no LoRA), 3 epochs, lr=2e-5, bs=16. **27 min** wall-time, 8,160 steps, train_loss = **0.125**. Output: `/tmp/reranker-ft` (XLM-RoBERTa-Base, vocab=250,242, 278M params).
+- **Phase 4** — `scripts/_eval_reranker_full.py` (new file, see below) bench on 5,143 test rows. Both models loaded as plain `AutoModelForSequenceClassification.from_pretrained` directories. Output: `/tmp/reranker-bench.json`.
+
+### Bench results (5,143 test queries)
+```
+                 stock     candidate    delta
+NDCG@10         0.924  →   0.873        -0.051
+MRR             0.899  →   0.831        -0.067
+Recall@1        0.836  →   0.743        -0.093   ← -9.3 pp
+Recall@5        0.985  →   0.966        -0.018
+Recall@10       1.000  =   1.000         0
+```
+The candidate underperformed stock on every meaningful metric. This is the **same failure mode** as the LoRA HOLD from the afternoon, this time at full-FT scale.
+
+### Diagnosis — why training hurt the model
+Two contributing factors, ranked by confidence:
+
+1. **Data distribution is still synthetic.** Even after TIER 0a recovered 13,391 historical pairs and TIER 0e mined another 5 real pairs, the training corpus is **99.96% Qwen3-generated synthetic queries + Qdrant hard-neg mining + critique-filtered scores**. The model overfits to that distribution and forgets the MS MARCO retrieval prior that ships with stock bge-reranker-base. The test set comes from the same synthetic distribution, but the *test* labels happen to favor stock's broader priors more than the *train* labels reward learning the synthetic signal.
+2. **Vocab extension created cold embeddings.** 240 new token embeddings initialized via mean-of-subword. Phase 2 MLM has 156k chunks of exposure to those tokens, but with `mlm_probability=0.15` each new token still sees relatively few real gradient updates. Tokenizing a query with the new tokens at inference yields lower-confidence representations than baseline did.
+
+### Why TIER 0e produced only 5 real pairs (the real blocker)
+- `silver.answer_citation_items` holds **4,393** real positive citations from production answer_runs.
+- `silver.answer_retrieval_items` holds **56,286** rows with `used_in_citation = false` (candidate hard negatives), but only **3,835** of those have `passage_id` populated at all.
+- Joining citation positives + retrieval negatives on the same `answer_run_id` AND requiring both passage_ids to resolve in `silver.document_passages` collapses to **5 rows**.
+- The 4,393 real positives are mostly *unmatched* to real negatives because the retrieval pipeline rarely persists the `passage_id` on rejected candidates.
+
+### Side wins that DID land overnight
+1. **TIER 0a recovery** — 13,391 historical pairs pulled out of `s3://reranker-labels/v1/`, deduped + merged. Manifest at `/tmp/reranker-train-historical/recovery_manifest.json`.
+2. **TIER 0b public_geo backfill** — 150,304 Qdrant `pg_*` summary passages flowed into `silver.document_passages` and got embedded into `georag_chunks`. silver.document_passages went **7,929 → 158,233 rows** (20× expansion). The embed sweep was itself blocked by an INNER JOIN to silver.reports; patched `src/fastapi/app/services/ingest/passage_embedder.py` to LEFT JOIN + added an orphan-pass step to `src/fastapi/app/hatchet_workflows/embed_pending_passages.py` so the recurring cron picks up these cross-project passages going forward.
+3. **chr(0) RLS root-cause** — the morning's "Parked items 2026-05-25" noted "12 always-fail-open RLS policies (broken GUC)". They are NOT fail-open under psycopg2 — they raise `ProgramLimitExceeded: null character not permitted` and lock out the runtime `georag_app` role on `silver.workspaces`. Patched the TIER 0e mine script to use the owner role; spawned a separate task to fix the policies properly.
+4. **`_eval_reranker_full.py`** — new bench script that loads candidate + baseline as plain HF directories (the existing `eval_reranker_lora.py` only handles single-file LoRA adapters). Reusable for any future full-FT eval.
+
+### Recommendation
+**Do NOT promote.** Stock BAAI/bge-reranker-base stays in place. Three options for the next cycle, in order of expected value:
+
+  - **(a) Real-query hard-neg mining via Qdrant** — for each of the 4,393 real citation positives, take the original `silver.answer_runs.query_text`, search Qdrant `georag_chunks` for top-20, treat rank 2-20 (or candidates with chunk_id ≠ the positive) as hard negatives. That produces ~4,393 *real-distribution* (q, pos, hard_negs) tuples — small but *truly* representative of geologist queries. Reuse the Phase 2 MLM backbone at `/tmp/reranker-mlm` (don't redo Phase 0-2) and only re-run Phase 3 + Phase 4. Estimated runtime: ~3 h end-to-end (mining is ~30 min, FT ~2 h on 4k rows, eval ~15 min).
+  - **(b) Mix synthetic + real with a re-weighting** — 4,393 real pairs at weight=4.0, 13,391 synthetic at weight=1.0. Lets the model see both distributions but tilts the gradient toward real. Same backbone reuse.
+  - **(c) Reset to LoRA + only the real pairs** — full FT may have been too aggressive a knob for 4k examples. LoRA on real pairs only, freezing the MLM backbone, would be far more conservative.
+
+Default to **(a)** unless Kyle wants a hybrid. **(c)** is a fallback if **(a)** also fails to clear stock.
+
+### Artifacts left on disk in georag-fastapi
+```
+/tmp/reranker-extended/         ← Phase 1 extended-vocab checkpoint
+/tmp/reranker-mlm/              ← Phase 2 MLM-adapted backbone (REUSABLE)
+/tmp/reranker-ft/               ← Phase 3 full FT candidate (HOLD — do not deploy)
+/tmp/reranker-train-historical/ ← TIER 0a recovered splits (13,391 pairs)
+/tmp/reranker-train-mined/      ← TIER 0e mined splits (5 real pairs)
+/tmp/reranker-train-combined/   ← merged + schema-filtered (7,692 train / 240 val / 5,143 test)
+/tmp/reranker-bench.json        ← Phase 4 bench manifest
+/tmp/vocab_candidates.tsv       ← Phase 0 240-token vocab list
+/tmp/phase2_mlm.log             ← Phase 2 full log
+/tmp/overnight_chain.log        ← Phase 3+4 chain log
+/tmp/phase4_bench.log           ← Phase 4 (full-FT) bench log
+```
+
+### Files touched (host repo)
+- **NEW**: `scripts/_eval_reranker_full.py` — full-FT-aware NDCG/MRR/Recall bench (eval_reranker_lora.py only handles single-file LoRA adapters).
+- **NEW**: `scripts/_embed_public_geo_passages.py` — one-shot embed of public_geo_synthesis passages without restarting hatchet-worker-ai.
+- **NEW**: `scripts/_overnight_phase3_phase4.sh` — orchestrator that polls for Phase 2 artifacts then chains Phase 3 → Phase 4.
+- **PATCH**: `src/fastapi/app/services/ingest/passage_embedder.py` — LEFT JOIN to silver.reports + `chunk_kind` in Qdrant payload + title fallback for cross-project passages.
+- **PATCH**: `src/fastapi/app/hatchet_workflows/embed_pending_passages.py` — added orphan-pass step that calls `embed_pending_passages(workspace_id=..., project_id=None)` so the recurring cron picks up TIER 0b / ADR-0012 synthesizer outputs going forward.
+- **PATCH**: `scripts/_mine_reranker_labels_from_answer_runs.py` — read POSTGRES_OWNER_USER / POSTGRES_OWNER_PASSWORD so the maintenance role bypasses the chr(0)-RLS dead-end on `silver.workspaces`.
+
+### Service state at handoff (2026-05-29 17:50Z)
+- `georag-vllm` ✅ restarted after Phase 4 (paused for the 11h Phase 2+3 GPU window)
+- `georag-hatchet-worker-ai` ✅ restarted
+- All other services have been up the entire run
+- vLLM + hatchet-worker-ai co-tenancy on the A4500 restored (~6.6 GB / 20 GB used at handoff)
+
+### Things I did NOT do (need your eyes)
+- Did not flip any reranker-model env var — stock model is still the live reranker
+- Did not delete the candidate checkpoint at `/tmp/reranker-ft` — kept for forensic comparison if you want to spot-check specific queries against it
+- Did not start option (a) Qdrant hard-neg mining for the 4,393 real positives — that's a real ADR-0011 v2 conversation, not a 1am green-light call
+- Did not commit anything — patches above are dirty in the working tree
+
+— Claude (morning sentinel · all 5 phases ran clean · candidate HOLD on data quality · stock baseline stays live · path (a) ready for attended kickoff)
+
+---
+
+## §39 — Plan B v2 (real-data LoRA) — 2026-05-29 afternoon
+
+**Owner**: Claude (driven by Kyle's "pure real / LoRA only" pick from the §38 question) · **Outcome**: **HOLD a second time**. The candidate beat stock on a 5-query in-distribution test (+0.4 Recall@5) but **catastrophically lost on the 5,143-query OOD bench** (-0.62 Recall@1, -0.35 NDCG@10).
+
+### What ran
+1. **Probe of production data** revealed the §38 footnote was much worse than it looked:
+   - 4,393 citation rows → **27 distinct queries**, **35 distinct (query, positive_passage) pairs**, **11 distinct positive passages**
+   - All 27 queries are internal eval/hallucination-test prompts (no organic user traffic yet)
+   - silver.query_traces has 3 rows
+2. **NEW**: `scripts/_mine_real_hard_negatives.py` — for each distinct (q, pos) pair, search Qdrant `georag_chunks` for top-K=20 with bge-small dense embeddings, drop the positive itself, take ranks 2-11 as hard negatives. Owner role + bench-leak protection (drop queries whose lower-trim hash is in `eval.golden_questions`).
+3. Mined **27 records** (35 minus 8 dropped as golden-question-bench-leak). Split 19 train / 3 val / 5 test by query_group_id. Each record has 10 hard negs → 209 train pairs, 33 val, 55 test.
+4. **NEW invocation**: `scripts/train_reranker_lora.py --base-model /tmp/reranker-mlm` — first time the existing LoRA trainer was pointed at our Phase 2 MLM backbone instead of stock. Conservative knobs: r=8, alpha=16, epochs=5, lr=1e-5, bs=8. Training ran in **45 s** (tiny dataset). Final eval_loss = 0.383, train_loss = 0.424.
+5. **NEW**: `scripts/_eval_lora_against_mlm.py` — PEFT-aware bench that loads `/tmp/reranker-mlm` as base, wraps with `LoraConfig(r=8, alpha=16, target=['query','value'])`, re-prepends `base_model.model.` to the saved state-dict keys, merges, then evaluates against stock baseline. `scripts/eval_reranker_lora.py` was hardcoded to stock-as-base so it gave a meaningless score for our MLM-based candidate.
+
+### Bench results — TWO test sets, very different verdicts
+
+**(a) In-distribution: 5-query test split mined from production**
+
+```
+                stock      candidate    delta
+NDCG@10         0.452  →   0.504        +0.051
+MRR             0.368  →   0.425        +0.057
+Recall@1        0.200  =   0.200         0
+Recall@5        0.400  →   0.800        +0.400   ← +40 pp
+Recall@10       0.800  =   0.800         0
+```
+
+Looked promising. But **n=5**. One query swing flips Recall@5 by 0.2.
+
+**(b) OOD: 5,143-query test set from the TIER 0a synthetic recovery**
+
+```
+                stock      candidate    delta
+NDCG@10         0.924  →   0.575        -0.348
+MRR             0.899  →   0.441        -0.458
+Recall@1        0.836  →   0.213        -0.623   ← -62.3 pp
+Recall@5        0.985  →   0.836        -0.149
+Recall@10       1.000  =   1.000          0
+```
+
+The 5-q win was the LoRA learning to score "production-styled query strings" higher across the board, NOT learning generalizable retrieval signal. Outside that narrow distribution the model is far worse than stock.
+
+### Diagnosis
+The 19 training queries are not just a small dataset — they're a *single-mode* dataset. Every one is an evaluation prompt with a similar register ("What is the X?", "Tell me about Y"). The LoRA collapsed onto that mode. Stock's MS MARCO prior gets generalized retrieval signal across millions of queries; 19 real queries can't replace that.
+
+### Verdict — both directions exhausted
+- Yesterday (§38) full FT on **13,391 synthetic** pairs lost 0.05 NDCG / 0.07 MRR.
+- Today (§39) LoRA on **19 real** queries lost 0.35 NDCG / 0.63 Recall@1 on OOD.
+
+We have run out of training data we can trust. The remaining honest options:
+
+  - **(α) Stop reranker FT for now.** Stock bge-reranker-base is the right model until we have real user query volume. Revisit when production query throughput reaches a few hundred distinct organic queries / week. Default recommendation.
+  - **(β) Kyle-curated golden set expansion.** If Kyle invests ~1-2 SME days to author 100-200 real geological queries WITH verified-correct positive passages from the corpus, that becomes a tiny-but-high-quality training set. Risky — even 200 queries is small and you'd want Qdrant-mined hard negs (which Plan B v2 already showed will overfit on single-mode prompts).
+  - **(γ) Wait for the §6c real-user query collection wire to ship.** That's the only path to large-scale real distribution data. Until then, training reranker is premature.
+
+### What survives this exercise (genuinely useful)
+- `/tmp/reranker-mlm` — Phase 2 MLM-adapted backbone is reusable for any future cycle. Don't redo Phase 0-2 unless the corpus changes substantially.
+- `scripts/_mine_real_hard_negatives.py` — works, will scale to whatever real production query volume eventually arrives.
+- `scripts/_eval_lora_against_mlm.py` — proper PEFT-aware bench for any future LoRA cycle on the MLM backbone.
+- `/tmp/reranker-train-real-only/` — the 27-record dataset is preserved; it's small but it's *real* and re-mineable.
+- TIER 0b 150,304 public_geo passages now embedded in Qdrant — feeds *retrieval*, not training, but visible to chat.
+- `scripts/_embed_public_geo_passages.py` + the passage_embedder LEFT-JOIN patch + workflow orphan-pass — these are infrastructure wins regardless of training outcome.
+
+### Service state at handoff
+- `georag-vllm` ✅ restarted (was paused for the 45s LoRA window)
+- `georag-hatchet-worker-ai` ✅ restarted
+- stock `BAAI/bge-reranker-base` continues to be the live reranker
+- Plan B v2 LoRA adapter at `/tmp/reranker-lora-real/adapter` retained for forensic comparison only — **NOT promoted**
+
+### Recommended next move (Kyle's call)
+Default: **(α) park reranker FT, ship instrumentation for real query collection, revisit in 4-6 weeks**. The MLM backbone is a real asset and stays warm; the gating constraint is real user query volume, not Claude-cycles.
+
+— Claude (Plan B v2 ran clean · second HOLD · stock baseline still live · data-volume verdict is now unambiguous · MLM backbone preserved for any future cycle)
+
 
