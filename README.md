@@ -1,4 +1,4 @@
-# GeoRAG Intelligence V1.0
+# GeoRAG Intelligence V2.1
 
 GeoRAG is a geological intelligence platform that ingests decades of fragmented exploration data (drill logs, NI 43-101 reports, geophysics, GIS layers) and lets geologists query it in natural language with cited answers, interactive visualizations, and export to industry modeling tools. Designed for junior mining and exploration companies with private-cloud or on-premise deployment.
 
