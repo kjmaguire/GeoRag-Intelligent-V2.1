@@ -1,0 +1,148 @@
+# =============================================================================
+# Phase 2 Step 6 — Kestra flow: support_packet_dispatch
+#
+# Closes the v2.0 deep-eval Dim 5 (-1pt) — Phase 0 ships the Support Packet
+# Agent assembly logic at:
+#   src/fastapi/app/agents/phase0/support_packet.py
+# but the Kestra dispatch leg was not yet built. This flow fills the gap.
+#
+# What it does
+# ------------
+# Triggered by a Hatchet workflow failure (or any ops-initiated incident),
+# the flow:
+#   1. POSTs an incident envelope to FastAPI's
+#      /internal/v1/agents/support_packet/assemble endpoint.
+#   2. The FastAPI side runs the Support Packet Agent (R2 idempotent on
+#      incident_id), assembles trace + workflow_runs + audit_ledger +
+#      log bundle, uploads it to SeaweedFS warm tier, and writes
+#      silver.support_packets.
+#   3. Kestra emails the operator a link to the assembled bundle via
+#      its built-in `Sendmail` task (operators can swap for Slack/etc).
+#
+# Why Kestra owns this leg
+# ------------------------
+# Master plan §1 makes Kestra the integration-boundary owner. Outbound
+# operator notifications (email, Slack, PagerDuty) are integration-boundary
+# work — they cross a SaaS edge. Hatchet would also work but per §1
+# Kestra is the correct tool because:
+#   * Kestra has built-in Sendmail / Slack tasks.
+#   * Failure-driven notification fan-out is exactly Kestra's pattern.
+#   * Hatchet owning email creds + retry would duplicate Kestra's role.
+#
+# Triggering
+# ----------
+# The flow exposes a webhook trigger (same pattern as external_notification).
+# Hatchet workflows that detect failure or ops-initiated incidents POST to
+# this URL with a JSON envelope:
+#   {
+#     "workspace_id": "<uuid>",
+#     "incident_id":  "<stable id — used as R2 idempotency key>",
+#     "trigger_kind": "workflow_failure" | "ops_manual" | "alert",
+#     "context":      {
+#       "trace_id":      "<otel trace id, if available>",
+#       "workflow_kind": "<e.g. generate_report>",
+#       "alert_label":   "<prometheus alert name, if alert-triggered>",
+#       "summary":       "<one-line ops-readable summary>"
+#     },
+#     "notify_to": ["<operator email or slack channel>"]
+#   }
+#
+# Prerequisites
+# -------------
+#   - Per-flow JWT minted + written to Kestra KV as
+#         `flow_jwt_support_packet_dispatch`
+#   - SUPPORT_PACKET_HMAC_SECRET set on the AI worker env
+#   - Feature flag `flows.support_packet_dispatch.enabled` = true
+#   - SeaweedFS tier-warm bucket reachable from FastAPI (already provisioned
+#     by Phase 0 Step 1)
+# =============================================================================
+
+id: support_packet_dispatch
+namespace: georag
+
+description: |
+  Outbound notification + Support Packet assembly trigger. Hatchet
+  workflow failures and ops-initiated incidents POST here; Kestra forwards
+  to FastAPI for bundle assembly + emails the operator the link.
+
+labels:
+  georag.phase: phase2
+  georag.flow_kind: outbound-notification
+  georag.agent: support_packet
+
+variables:
+  fastapi_url: "{{ globals.georag.fastapi_internal_url }}"
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Forward to FastAPI for Support Packet assembly. Returns the bundle's
+  # SeaweedFS URL + the silver.support_packets row id.
+  # ---------------------------------------------------------------------------
+  - id: assemble_packet
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.fastapi_url }}/internal/v1/agents/support_packet/assemble"
+    method: POST
+    contentType: application/json
+    headers:
+      Authorization: "Bearer {{ kv('flow_jwt_support_packet_dispatch') }}"
+      X-GeoRAG-Source: "kestra:support_packet_dispatch"
+    body: "{{ trigger.body | json }}"
+
+  # ---------------------------------------------------------------------------
+  # Email the operator(s) a link to the assembled bundle. The
+  # `notify_to` array from the trigger envelope is fanned out via Kestra's
+  # built-in Sendmail. Operators that prefer Slack swap this task for
+  # `io.kestra.plugin.notifications.slack.SlackIncomingWebhook`.
+  # ---------------------------------------------------------------------------
+  - id: notify_operators
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{ trigger.body.notify_to ?? [] }}"
+    tasks:
+      - id: send_email
+        type: io.kestra.plugin.notifications.mail.MailSend
+        host: "{{ globals.georag.smtp_host }}"
+        port: "{{ globals.georag.smtp_port }}"
+        from: "georag-support-cockpit@{{ globals.georag.smtp_from_domain }}"
+        to: "{{ taskrun.value }}"
+        subject: "GeoRAG support packet ready — incident {{ trigger.body.incident_id }}"
+        htmlTextContent: |
+          A GeoRAG support packet has been assembled.
+
+          Incident: {{ trigger.body.incident_id }}
+          Trigger:  {{ trigger.body.trigger_kind }}
+          Summary:  {{ trigger.body.context.summary | default('(none)') }}
+          Trace:    {{ trigger.body.context.trace_id | default('(none)') }}
+
+          Bundle URL: {{ outputs.assemble_packet.body.bundle_url }}
+          (signed; valid for 7 days)
+
+          Packet ID: {{ outputs.assemble_packet.body.packet_id }}
+
+  # ---------------------------------------------------------------------------
+  # Write a workflow_runs row so the §1 universal-write contract is honored.
+  # The Hatchet side writes its own row; this is the Kestra side of the
+  # same workflow's record.
+  # ---------------------------------------------------------------------------
+  - id: record_workflow_run
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.fastapi_url }}/internal/v1/workflow_runs"
+    method: POST
+    contentType: application/json
+    headers:
+      Authorization: "Bearer {{ kv('flow_jwt_support_packet_dispatch') }}"
+    body: |
+      {
+        "engine": "kestra",
+        "workflow_kind": "support_packet_dispatch",
+        "engine_run_id": "{{ execution.id }}",
+        "status": "success",
+        "trace_id": "{{ trigger.body.context.trace_id ?? null }}",
+        "workspace_id": "{{ trigger.body.workspace_id ?? null }}",
+        "input_summary": { "incident_id": "{{ trigger.body.incident_id }}" },
+        "output_summary": { "bundle_url": "{{ outputs.assemble_packet.body.bundle_url ?? null }}" }
+      }
+
+triggers:
+  - id: webhook_dispatch
+    type: io.kestra.plugin.core.trigger.Webhook
+    key: "{{ secret('SUPPORT_PACKET_DISPATCH_WEBHOOK_KEY') }}"

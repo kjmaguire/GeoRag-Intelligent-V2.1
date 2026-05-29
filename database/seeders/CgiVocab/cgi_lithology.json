@@ -1,0 +1,57 @@
+{
+    "_meta": {
+        "vocab_name": "CGI Simple Lithology",
+        "vocab_uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016",
+        "entity_type": "technical_term",
+        "source": "cgi_vocab",
+        "note": "Curated subset of CGI Simple Lithology 2016 covering the rock types most commonly referenced in NI 43-101 reports. Igneous + sedimentary + metamorphic + miscellaneous. Aliases include common alternative spellings, hyphenated variants, and short forms used in drill logs."
+    },
+    "entries": [
+        {"canonical": "granite",      "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/granite",      "aliases": ["granitic", "granitoid", "granitic rock"]},
+        {"canonical": "granodiorite", "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/granodiorite", "aliases": ["granodioritic"]},
+        {"canonical": "diorite",      "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/diorite",      "aliases": ["dioritic"]},
+        {"canonical": "syenite",      "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/syenite",      "aliases": ["syenitic"]},
+        {"canonical": "gabbro",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/gabbro",       "aliases": ["gabbroic", "gabbroid"]},
+        {"canonical": "dolerite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/dolerite",     "aliases": ["diabase"]},
+        {"canonical": "peridotite",   "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/peridotite",   "aliases": ["ultramafic", "ultramafic rock"]},
+        {"canonical": "dunite",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/dunite",       "aliases": []},
+        {"canonical": "pyroxenite",   "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/pyroxenite",   "aliases": []},
+        {"canonical": "basalt",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/basalt",       "aliases": ["basaltic", "basaltic rock"]},
+        {"canonical": "andesite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/andesite",     "aliases": ["andesitic"]},
+        {"canonical": "dacite",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/dacite",       "aliases": ["dacitic"]},
+        {"canonical": "rhyolite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/rhyolite",     "aliases": ["rhyolitic"]},
+        {"canonical": "trachyte",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/trachyte",     "aliases": ["trachytic"]},
+        {"canonical": "tuff",         "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/tuff",         "aliases": ["tuffaceous", "lithic tuff", "crystal tuff", "ash tuff"]},
+        {"canonical": "agglomerate",  "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/agglomerate",  "aliases": ["volcanic agglomerate"]},
+
+        {"canonical": "sandstone",    "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/sandstone",    "aliases": ["sst", "sand stone", "arenite", "psammite"]},
+        {"canonical": "siltstone",    "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/siltstone",    "aliases": ["silt stone"]},
+        {"canonical": "mudstone",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/mudstone",     "aliases": ["mud stone", "argillite"]},
+        {"canonical": "shale",        "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/shale",        "aliases": ["black shale", "carbonaceous shale"]},
+        {"canonical": "conglomerate", "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/conglomerate", "aliases": ["cgl", "conglom", "pebble conglomerate"]},
+        {"canonical": "breccia",      "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/breccia",      "aliases": ["bx", "tectonic breccia", "hydrothermal breccia", "intrusive breccia"]},
+        {"canonical": "limestone",    "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/limestone",    "aliases": ["ls", "lime stone", "calcareous"]},
+        {"canonical": "dolomite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/dolomite",     "aliases": ["dolostone", "dol"]},
+        {"canonical": "chert",        "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/chert",        "aliases": ["cherty", "siliceous"]},
+        {"canonical": "evaporite",    "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/evaporite",    "aliases": ["evaporites", "salt", "halite", "gypsum"]},
+        {"canonical": "iron formation","uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/iron-formation","aliases": ["BIF", "banded iron formation", "banded iron", "ironstone"]},
+
+        {"canonical": "schist",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/schist",       "aliases": ["schistose", "mica schist", "biotite schist", "muscovite schist", "chlorite schist", "talc schist"]},
+        {"canonical": "gneiss",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/gneiss",       "aliases": ["gneissic", "granitic gneiss", "biotite gneiss", "augen gneiss"]},
+        {"canonical": "phyllite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/phyllite",     "aliases": ["phyllitic"]},
+        {"canonical": "slate",        "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/slate",        "aliases": ["slaty", "roofing slate"]},
+        {"canonical": "marble",       "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/marble",       "aliases": ["calcite marble", "dolomitic marble", "metacarbonate"]},
+        {"canonical": "quartzite",    "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/quartzite",    "aliases": ["meta-quartzite", "qzite"]},
+        {"canonical": "amphibolite",  "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/amphibolite",  "aliases": ["amphibolitic"]},
+        {"canonical": "granulite",    "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/granulite",    "aliases": []},
+        {"canonical": "eclogite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/eclogite",     "aliases": []},
+        {"canonical": "mylonite",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/mylonite",     "aliases": ["mylonitic", "ultramylonite", "protomylonite"]},
+        {"canonical": "hornfels",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/hornfels",     "aliases": ["hornfelsic"]},
+        {"canonical": "skarn",        "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/skarn",        "aliases": ["skarn rock", "calc-silicate", "calcsilicate"]},
+        {"canonical": "greenstone",   "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/greenstone",   "aliases": ["greenstone belt", "metabasalt", "meta-volcanic"]},
+
+        {"canonical": "regolith",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/regolith",     "aliases": ["weathered", "saprolite", "overburden"]},
+        {"canonical": "till",         "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/till",         "aliases": ["glacial till", "diamicton", "diamictite"]},
+        {"canonical": "alluvium",     "uri": "http://resource.geosciml.org/classifier/cgi/lithology/2016/alluvium",     "aliases": ["alluvial", "alluvial sediment"]}
+    ]
+}

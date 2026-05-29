@@ -1,0 +1,744 @@
+# Martin tile server — PostGIS function sources only
+# Connects directly to PostgreSQL (NOT PgBouncer)
+# See §04d-tile in georag-architecture.html for full spec
+#
+# SCHEMA NAMING NOTE (2026-05-18):
+# Phase 0 locked the canonical schema name as `public_geoscience`, but the
+# DB-side ALTER SCHEMA public_geo RENAME TO public_geoscience migration
+# has NOT been applied yet. Every `schema:` entry below targets `public_geo`
+# to match the actual live DB. When the Phase 0 rename migration ships,
+# do a single `s/public_geo/public_geoscience/g` here and remove this note.
+listen_addresses: '0.0.0.0:3000'
+keep_alive: 75
+worker_processes: 2
+
+# ── Tile cache ───────────────────────────────────────────────────────────────
+# Pinned explicitly per MART-02 audit item (Module 8 Chunk 8.3).
+# Container memory limit is 512 MB (docker-compose.yml mem_limit).
+#
+# IMPORTANT: Martin 1.x divides cache_size_mb across THREE internal caches:
+#   tile cache  = cache_size_mb / 2     (e.g. 512 / 2 = 256 MB)
+#   sprite cache = cache_size_mb / 8   (e.g. 512 / 8 = 64 MB)
+#   font cache   = cache_size_mb / 8   (e.g. 512 / 8 = 64 MB)
+#   → Total = cache_size_mb × (1/2 + 1/8 + 1/8) = cache_size_mb × 0.75
+#
+# At 512 MB: tile cache = 256 MB, sprite = 64 MB, font = 64 MB.
+# Total cache use ≈ 384 MB, leaving ~128 MB for the process + connection pool.
+# (pool_size: 20 × ~2 MB each ≈ 40 MB + OS/heap overhead)
+#
+# Startup log confirms: "Initializing tile cache with maximum size 256 MB"
+cache_size_mb: 512
+
+# ── Preferred encoding ──────────────────────────────────────────────────────
+# MVT (protobuf) tiles compress ~60-80% with gzip. Martin serves pre-compressed
+# responses when the client sends Accept-Encoding: gzip. This is the single
+# biggest network win for tile latency — a 40KB tile becomes ~10KB on the wire.
+preferred_encoding: gzip
+
+postgres:
+  connection_string: '${DATABASE_URL}'
+  pool_size: 20
+  auto_publish: false
+  # Martin 1.x config schema: `functions` (was function_sources) and
+  # `tables` (was table_sources). Renamed in the 1.0 release.
+  #
+  # Module 8 Chunks 8.1/8.2 — §05d tile-freshness spine.
+  # All function sources implement RETURNS TABLE(mvt bytea, etag_hash text).
+  # Martin advertises these as /tiles/<id>/{z}/{x}/{y} endpoints.
+  #
+  # BLOCKED silver functions (4 of 7) are NOT wired here because their source
+  # tables do not exist. The SQL stubs RAISE EXCEPTION to prevent silent 500s.
+  # Wire them in a follow-up migration once the silver tables are created:
+  #   - pg_boundaries_by_project  → needs silver.project_boundaries
+  #   - pg_formations_by_project  → needs silver.geological_formations
+  #   - pg_historic_workings_by_project → needs silver.historic_workings
+  #   - pg_geochem_by_project     → needs silver.geochemistry schema redesign
+  functions:
+    # ── Silver workspace-scoped layers (3 of 7 implemented) ──────────────
+    pg_collars_by_project:
+      schema: silver
+      function: pg_collars_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_drill_traces_by_project:
+      schema: silver
+      function: pg_drill_traces_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_seismic_by_project:
+      schema: silver
+      function: pg_seismic_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    # ── Silver workspace-scoped layers (4 of 7 unblocked by Chunk 8.2b) ──
+    pg_boundaries_by_project:
+      schema: silver
+      function: pg_boundaries_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_formations_by_project:
+      schema: silver
+      function: pg_formations_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_historic_workings_by_project:
+      schema: silver
+      function: pg_historic_workings_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    # ── §B/S/G build-out 2026-05-22 — gold cross-section lines ──────────
+    # LineString section lines from gold.cross_section_panels.section_line_geom.
+    # Lets the MapLibre project map render section lines drawn from the
+    # B6 cross-section visualization. Migration:
+    # 2026_05_22_020000_add_cross_section_mvt_and_geophysics_unique.
+    pg_cross_section_lines_by_project:
+      schema: silver
+      function: pg_cross_section_lines_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_geochem_by_project:
+      schema: silver
+      function: pg_geochem_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    # ── Public Geoscience function wrappers (§05d etag_hash contract) ────
+    # Parallel to the existing tables: sources below. Chunk 8.4 will migrate
+    # the Laravel proxy to prefer these function endpoints. Until then, both
+    # code paths are active.
+    pg_mines_fn:
+      schema: public_geo
+      function: pg_mines_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_mineral_occurrences_fn:
+      schema: public_geo
+      function: pg_mineral_occurrences_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_drillhole_collars_fn:
+      schema: public_geo
+      function: pg_drillhole_collars_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_rock_samples_fn:
+      schema: public_geo
+      function: pg_rock_samples_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_assessment_surveys_fn:
+      schema: public_geo
+      function: pg_assessment_surveys_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_resource_potential_fn:
+      schema: public_geo
+      function: pg_resource_potential_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_mineral_dispositions_fn:
+      schema: public_geo
+      function: pg_mineral_dispositions_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    pg_bedrock_geology_fn:
+      schema: public_geo
+      function: pg_bedrock_geology_tiles
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
+    # ── Significant intersections — proportional-circle drillhole layer ──
+    # Reads gold.significant_intersections joined to silver.collars.
+    # Params (passed via the Martin URL): workspace_id (required),
+    # element (default 'Au'), min_grade (default 0), cutoff_grade
+    # (optional), project_id (optional). See migration
+    # 2026_05_20_061000 for the full contract.
+    significant_intersections_by_project:
+      schema: silver
+      function: significant_intersections_by_project
+      minzoom: 0
+      maxzoom: 22
+
+    # ── §6.13 — density choropleth (h3 aggregate of mineral data) ────
+    # Reads gold.h3_density_mineral. Zoom-adaptive resolution picker
+    # inside the SQL function: z≤5→res 5, z≤10→res 7, else→res 9.
+    # Optional ?commodity= URL filter (e.g. /density_choropleth_h3/3/2/1?commodity=au)
+    density_choropleth_h3:
+      schema: silver
+      function: density_choropleth_h3
+      minzoom: 0
+      maxzoom: 22
+
+  # ── Public Geoscience (plan §09a) ────────────────────────────────────
+  # Views over the canonical pg_* tables. Martin wraps each view's `geom`
+  # column with ST_AsMVT at tile-serve time. Clients consume through the
+  # Sanctum-protected Laravel proxy at /tiles/public-geoscience/<id>/…
+  tables:
+    # ── SMDI standalone (plan v1.1, 2026-05-24) ──────────────────────
+    # Saskatchewan Mineral Deposit Index — raw point features in
+    # public.smdi_deposits. Parallel to pg_mineral_occurrences (see
+    # docs/handoffs/smdi_ingestion_2026_05_25.md for the unification
+    # question). Property list intentionally trimmed: objectid/global_id/
+    # utm13e/utm13n/fetched_at omitted (not needed client-side, adds tile
+    # byte weight at the 6 K point scale).
+    smdi_deposits:
+      schema: public
+      table: smdi_deposits
+      geometry_column: geom
+      srid: 4326
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      properties:
+        smdi: text
+        name: text
+        primary_commodities: text
+        associated_commodities: text
+        symbology_grouping: text
+        status: text
+        production: bool
+        reserves_resources: bool
+        discovery_type: text
+        weblink: text
+
+    pg_mines:
+      schema: public_geo
+      table: v_pg_mines_mvt
+      geometry_column: geom
+      srid: 4326
+      # id_column omitted — our primary key is UUID, which the MVT spec
+      # (uint64 feature IDs) can't carry. MapLibre queryRenderedFeatures
+      # still returns properties correctly without a feature ID.
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        source_feature_id: text
+        name: text
+        status: text
+        commodities: text[]
+        commodity_grouping: text
+        operator: text
+        source_url: text
+
+    pg_mineral_occurrences:
+      schema: public_geo
+      table: v_pg_mineral_occurrences_mvt
+      geometry_column: geom
+      srid: 4326
+      # id_column omitted — our primary key is UUID, which the MVT spec
+      # (uint64 feature IDs) can't carry. MapLibre queryRenderedFeatures
+      # still returns properties correctly without a feature ID.
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        source_feature_id: text
+        external_id: text
+        name: text
+        status: text
+        primary_commodities: text[]
+        associated_commodities: text[]
+        commodity_grouping: text
+        discovery_type: text
+        production_flag: bool
+        source_url: text
+
+    pg_drillhole_collars:
+      schema: public_geo
+      table: v_pg_drillhole_collars_mvt
+      geometry_column: geom
+      srid: 4326
+      # id_column omitted — our primary key is UUID, which the MVT spec
+      # (uint64 feature IDs) can't carry. MapLibre queryRenderedFeatures
+      # still returns properties correctly without a feature ID.
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        source_feature_id: text
+        drillhole_id: text
+        drillhole_name: text
+        company: text
+        project_name: text
+        drill_type: text
+        commodity_of_interest: text[]
+        # total_length_m in the view is COALESCE(d.total_length_m, 0).
+        # 520 source rows have NULL depth; emitting NULL in a float8 MVT
+        # property broke MapLibre's tile parser (the whole tile got
+        # rejected and no circle rendered — the root cause of "drillhole
+        # clicks do nothing"). has_total_length lets the popup distinguish
+        # "0 m recorded" from "no depth available".
+        total_length_m: float8
+        has_total_length: bool
+        core_availability: text
+
+    pg_rock_samples:
+      schema: public_geo
+      table: v_pg_rock_samples_mvt
+      geometry_column: geom
+      srid: 4326
+      # id_column omitted — our primary key is UUID, which the MVT spec
+      # (uint64 feature IDs) can't carry. MapLibre queryRenderedFeatures
+      # still returns properties correctly without a feature ID.
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        station: text
+        sample_number: text
+        geologist: text
+        geographic_area: text
+        report_number: text
+        nts_250k: text
+
+    pg_assessment_surveys:
+      schema: public_geo
+      table: v_pg_assessment_surveys_mvt
+      geometry_column: geom
+      srid: 4326
+      # id_column omitted — our primary key is UUID, which the MVT spec
+      # (uint64 feature IDs) can't carry. MapLibre queryRenderedFeatures
+      # still returns properties correctly without a feature ID.
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      buffer: 256
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        survey_type: text
+
+    pg_resource_potential:
+      schema: public_geo
+      table: v_pg_resource_potential_mvt
+      geometry_column: geom
+      srid: 4326
+      # id_column omitted — our primary key is UUID, which the MVT spec
+      # (uint64 feature IDs) can't carry. MapLibre queryRenderedFeatures
+      # still returns properties correctly without a feature ID.
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      buffer: 256
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        commodity: text
+        commodity_grouping: text
+        # Same trap as drillhole total_length_m: all 908 rows have
+        # NULL potential_rank in the SK feed and Martin's int4
+        # encoding of a null breaks the whole tile for MapLibre.
+        # View now coalesces to 0 + exposes has_potential_rank.
+        potential_rank: int4
+        has_potential_rank: bool
+        methodology_ref: text
+
+    # ── Tier 2+3 sources (plan Phases 2–6) ───────────────────────────────
+    # The entries below are gated BEHIND their canonical tables + MVT views
+    # existing. Martin 1.x fails hard on an unresolved `table` reference
+    # rather than warning, so publishing them before their migrations run
+    # would crash the tile server. Uncomment each block ONLY when:
+    #   1. The corresponding migration has been applied
+    #      (database/migrations/2026_04_15_1*_create_pg_*_tables.php)
+    #   2. The matching Silver asset has been materialized at least once
+    #      (otherwise the view exists but returns zero rows — harmless but
+    #      confusing for anyone pulling the /tiles endpoint)
+    # Until then, the Tile Proxy whitelist must also NOT list these.
+    #
+    # The pre-written entries below are frozen from the post-field-inventory
+    # schema design in docs/field-inventory-sk-tier2-tier3.md. When the
+    # migration/Silver for an entity ships, move the block OUT of this
+    # comment and UP into the active `tables:` section above.
+
+    # -- Tenure (migration EXISTS + Silver/Bronze wired 2026-04-16) --
+    # MVT view is present from migration 2026_04_15_100000 — Martin will
+    # serve empty 204 tiles until the paired Silver asset is materialized.
+    pg_mineral_dispositions:
+      schema: public_geo
+      table: v_pg_mineral_dispositions_mvt
+      geometry_column: geom
+      srid: 4326
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      buffer: 256
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        source_feature_id: text
+        disposition_number: text
+        disposition_type: text
+        status: text
+        holder_name: text
+        issue_date: text
+        expiry_date: text
+        area_ha: float8
+        commodity_codes: text[]
+        geographic_area: text
+        source_url: text
+
+    # ── Tier 2 — Geology — Bedrock 250K (migration + Silver/Bronze wired 2026-04-18) ─
+    # MVT view ships with migration 2026_04_18_170000. Martin serves empty
+    # 204 tiles until the paired Silver asset is materialized for the first time.
+    # Full stratigraphic hierarchy (eon/era/period/group/formation/member) is
+    # preserved to let frontend filter on any level. `structural_domain` is the
+    # source DOMAIN field (renamed to avoid SQL reserved-word collision).
+    pg_bedrock_geology:
+      schema: public_geo
+      table: v_pg_bedrock_geology_mvt
+      geometry_column: geom
+      srid: 4326
+      minzoom: 0
+      maxzoom: 22
+      clip_geom: true
+      buffer: 256
+      properties:
+        jurisdiction_code: text
+        source_id: text
+        source_feature_id: text
+        unit_code: text
+        unit_name: text
+        eon: text
+        era: text
+        period: text
+        group_name: text
+        formation: text
+        member: text
+        structural_domain: text
+        lithology: text
+        scale: text
+
+    # pg_surficial_geology:
+    #   schema: public_geo
+    #   table: v_pg_surficial_geology_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   buffer: 256
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     unit_code: text
+    #     material: text
+    #     main_environment: text
+    #     colour_code: text
+    #     scale: text
+
+    # pg_geological_faults:
+    #   schema: public_geo
+    #   table: v_pg_geological_faults_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     fault_name: text
+    #     fault_type: text
+    #     scale: text
+    #     reference_title: text
+
+    # pg_geological_dykes:
+    #   schema: public_geo
+    #   table: v_pg_geological_feature_lines_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     feature_name: text
+    #     feature_type: text
+    #     scale: text
+
+    # pg_geological_feature_points:
+    #   schema: public_geo
+    #   table: v_pg_geological_feature_points_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     feature_name: text
+    #     feature_type: text
+    #     scale: text
+
+    # pg_geological_feature_lines:
+    #   schema: public_geo
+    #   table: v_pg_geological_feature_lines_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     feature_name: text
+    #     feature_type: text
+    #     scale: text
+
+    # # ── Tier 2 — Petroleum (plan Phase 4) ────────────────────────────────
+    # pg_petroleum_wells:
+    #   schema: public_geo
+    #   table: v_pg_petroleum_wells_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     uwi: text
+    #     well_name: text
+    #     operator: text
+    #     status: text
+    #     well_type: text
+    #     total_depth_m: float8
+    #     spud_date: text
+    #     pool_name: text
+    #     formation: text
+
+    # pg_petroleum_well_trajectories:
+    #   schema: public_geo
+    #   table: v_pg_petroleum_well_trajectories_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     uwi: text
+    #     well_name: text
+    #     operator: text
+    #     total_length_m: float8
+
+    # pg_petroleum_pools:
+    #   schema: public_geo
+    #   table: v_pg_petroleum_pools_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   buffer: 256
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     pool_code: text
+    #     pool_name: text
+    #     geographic_area: text
+    #     fluid_type: text
+    #     zone_type: text
+    #     area_ha: float8
+
+    # # ── Tier 2 — Geophysics vectors (plan Phase 5) ──────────────────────
+    # pg_geophysics_control_points:
+    #   schema: public_geo
+    #   table: v_pg_geophysics_control_points_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     line_id: text
+    #     survey_type: text
+    #     survey_year: int4
+    #     line_name: text
+
+    # pg_geophysics_survey_coverage:
+    #   schema: public_geo
+    #   table: v_pg_geophysics_survey_coverage_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   buffer: 256
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     survey_id: text
+    #     survey_type: text
+    #     survey_name: text
+    #     survey_year: int4
+    #     line_spacing_m: float8
+    #     flight_height_m: float8
+    #     contractor: text
+
+    # # ── Tier 3 — Reference data (plan Phase 6) ──────────────────────────
+    # pg_geological_domains:
+    #   schema: public_geo
+    #   table: v_pg_geological_domains_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   buffer: 256
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     domain_name: text
+    #     domain_type: text
+    #     parent_domain: text
+    #     domain_context: text
+    #     timing: text
+    #     mapkey: text
+
+    # pg_regional_compilation_points:
+    #   schema: public_geo
+    #   table: v_pg_regional_compilation_point_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     feature_type: text
+    #     feature_name: text
+    #     body_id: text
+    #     status: text
+    #     file_number: text
+
+    # pg_regional_compilation_polygons:
+    #   schema: public_geo
+    #   table: v_pg_regional_compilation_polygon_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   buffer: 256
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     feature_type: text
+    #     feature_name: text
+
+    # pg_geoscience_publications:
+    #   schema: public_geo
+    #   table: v_pg_geoscience_publications_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   buffer: 256
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     report_number: text
+    #     map_number: text
+    #     title: text
+    #     authors: text
+    #     scale: float8
+    #     year_published: int4
+    #     publication_type: text
+    #     weblink: text
+
+    # pg_geochronology_samples:
+    #   schema: public_geo
+    #   table: v_pg_geochronology_samples_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     sample_id: text
+    #     age_ma: float8
+    #     isotopic_system: text
+    #     mineral_dated: text
+    #     unit_name: text
+    #     geological_entity: text
+
+    # pg_geochemistry_samples:
+    #   schema: public_geo
+    #   table: v_pg_geochemistry_samples_mvt
+    #   geometry_column: geom
+    #   srid: 4326
+    #   minzoom: 0
+    #   maxzoom: 22
+    #   clip_geom: true
+    #   properties:
+    #     jurisdiction_code: text
+    #     source_id: text
+    #     sample_id: text
+    #     sample_type: text
+    #     station: text
+    #     collection_year: int4

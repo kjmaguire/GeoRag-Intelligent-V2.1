@@ -1,0 +1,24 @@
+# vLLM scrape job — overlay
+# ==============================================================
+# Layer this on top of the canonical prometheus.yml when the vLLM
+# service is running (see docker/compose.vllm.yml). vLLM exposes
+# Prometheus-format metrics natively at /metrics — no sidecar
+# exporter required (replaces the moe-telemetry sidecar).
+#
+# Pair with docker/prometheus/rules/vllm-alerts.yml for matching
+# alert definitions.
+#
+# Usage: import via prometheus.yml's `scrape_configs:` block, or
+# include via `--config.file` overlay if your prometheus build
+# supports include directives.
+
+scrape_configs:
+  - job_name: "vllm"
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets: ["vllm:8000"]
+        labels:
+          component: "llm"
+          backend: "vllm"

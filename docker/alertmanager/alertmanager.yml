@@ -1,0 +1,72 @@
+# Module 10 Chunk 10.4 — Alertmanager configuration.
+#
+# V1 routes every alert to a single webhook receiver. Operators wire the real
+# integration (Slack, PagerDuty, Opsgenie, email) per environment by overriding
+# the webhook_configs[].url via env or by mounting a per-env config file.
+#
+# Routing tree:
+#   default → critical-webhook   (severity=critical, group_wait 10s)
+#           → warn-webhook       (severity=warning,  group_wait 30s)
+#           → null               (everything else, dropped)
+#
+# Templates and silences are not used in V1; add as needed.
+
+global:
+  resolve_timeout: 5m
+  # SMTP / Slack / PagerDuty config goes here when wired.
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+route:
+  receiver: warn-webhook
+  group_by: ['alertname', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: critical-webhook
+      group_wait: 10s
+      repeat_interval: 1h
+    - matchers:
+        - severity = "warning"
+      receiver: warn-webhook
+    # Drop everything else (Martin DORMANT alerts that fire as info).
+    - matchers:
+        - severity = "info"
+      receiver: dev-null
+
+# ---------------------------------------------------------------------------
+# Receivers
+# ---------------------------------------------------------------------------
+receivers:
+  - name: critical-webhook
+    webhook_configs:
+      - url: 'http://localhost:9999/alertmanager/critical'
+        send_resolved: true
+        # Prod cutover: replace this whole file with
+        # docker/alertmanager/alertmanager.production.yml.example (Slack +
+        # PagerDuty receivers pre-wired; just substitute env placeholders).
+        # See ops/runbooks/secret-management.md for the SOPS-encrypted env
+        # bootstrap.
+
+  - name: warn-webhook
+    webhook_configs:
+      - url: 'http://localhost:9999/alertmanager/warn'
+        send_resolved: true
+
+  - name: dev-null
+    # No webhook_configs → alerts matching here are silently dropped.
+    webhook_configs: []
+
+# ---------------------------------------------------------------------------
+# Inhibition rules — suppress lower-severity alerts when higher fires
+# ---------------------------------------------------------------------------
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['alertname', 'service']

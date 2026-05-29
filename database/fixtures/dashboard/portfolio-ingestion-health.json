@@ -1,0 +1,10 @@
+{
+    "data": [
+        { "project_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "project_name": "Talbot Lake Au-Cu", "bronze": 433, "silver": 649, "gold": 974, "index": 3247, "failed": 109, "total": 5412 },
+        { "project_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901", "project_name": "Eastmain Greenstone", "bronze": 194, "silver": 389, "gold": 544, "index": 2682, "failed": 78, "total": 3887 },
+        { "project_id": "c3d4e5f6-a7b8-9012-cdef-123456789012", "project_name": "Coppermine River", "bronze": 736, "silver": 589, "gold": 379, "index": 316, "failed": 84, "total": 2104 },
+        { "project_id": "d4e5f6a7-b8c9-0123-defa-234567890123", "project_name": "Tintina Gold Belt", "bronze": 176, "silver": 263, "gold": 351, "index": 1814, "failed": 321, "total": 2925 }
+    ],
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

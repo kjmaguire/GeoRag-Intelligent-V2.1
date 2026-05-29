@@ -1,0 +1,99 @@
+# Module 10 Chunk 10.6 — Promtail configuration.
+#
+# Two scrape targets:
+#   1. authz_audit_files — tails Laravel's storage/logs/authz_audit-*.log
+#      (daily rotation, 30-day retention per Module 9 9.8). Parsed as JSON
+#      so the `event`, `actor_user_id`, `target_workspace_id`,
+#      `target_resource`, `reason` fields become Loki labels.
+#   2. docker_containers — tails container stdout/stderr via Docker discovery
+#      so FastAPI + Octane + Horizon log lines are searchable in Grafana.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # 1. Laravel authz_audit log file (Module 9 Chunk 9.8 channel).
+  # The MessageLogged listener writes JSON-shaped Monolog records here;
+  # parse the structured event payload into labels for the authz dashboard.
+  # ---------------------------------------------------------------------------
+  - job_name: authz_audit
+    static_configs:
+      - labels:
+          job: authz_audit
+          channel: authz_audit
+          service: laravel
+          __path__: /laravel-logs/authz_audit-*.log
+    pipeline_stages:
+      # V1.5-04 — Laravel now writes JSON via Monolog\Formatter\JsonFormatter.
+      # Each line is a complete JSON document with `message`, `context`,
+      # `level_name`, `datetime`, etc. The structured authz.deny payload
+      # is nested under `context`. Parse it with one stage, no regex.
+      - json:
+          expressions:
+            level: level_name
+            message: message
+            event: '"context".event'
+            actor_user_id: '"context".actor_user_id'
+            target_workspace_id: '"context".target_workspace_id'
+            target_resource: '"context".target_resource'
+            reason: '"context".reason'
+            datetime: datetime
+      - labels:
+          level:
+          event:
+          reason:
+          target_workspace_id:
+      - timestamp:
+          source: datetime
+          format: RFC3339Nano
+          fallback_formats:
+            - '2006-01-02T15:04:05.999999Z'
+            - '2006-01-02 15:04:05'
+
+  # ---------------------------------------------------------------------------
+  # 2. Docker container stdout/stderr — FastAPI + Octane + Horizon + Reverb.
+  # We scrape the containers tagged with com.georag.scrape="true". For now
+  # apply blanket scraping; refine via labels once volume warrants.
+  # ---------------------------------------------------------------------------
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 30s
+    relabel_configs:
+      # Promote the container name (sans leading slash) to a Loki label.
+      - source_labels: [__meta_docker_container_name]
+        target_label: container
+        regex: '/(.*)'
+        replacement: '$1'
+      # Use the compose service label as `service`.
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+      # Ignore monitoring noise (loki, promtail, prometheus log themselves).
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        regex: '(loki|promtail|prometheus|alertmanager|grafana)'
+        action: drop
+    pipeline_stages:
+      - docker: {}
+      # If the container emits a JSON log line with a `traceparent` field,
+      # promote it to a Loki label so we can correlate across services.
+      - json:
+          expressions:
+            traceparent:
+            request_id:
+            level:
+      - labels:
+          traceparent:
+          request_id:
+          level:

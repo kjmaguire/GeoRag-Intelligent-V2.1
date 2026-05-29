@@ -1,0 +1,199 @@
+{
+  "started_at": "2026-05-08T18:55:57",
+  "baseline_model": "qwen3:30b-a3b",
+  "test_models": [
+    "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q5_K_M"
+  ],
+  "gen_params": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "max_tokens": 4096,
+    "seed": 42
+  },
+  "prompts": [
+    "Andes",
+    "Passive Margin",
+    "Faults",
+    "Geochem",
+    "Drilling"
+  ],
+  "per_model": {
+    "qwen3:30b-a3b": [
+      {
+        "prompt_key": "Andes",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 33.8,
+        "completion_tokens": 3434,
+        "tok_per_sec": 101.58,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a concise yet comprehensive explanation of the **tectonic evolution of the Andes**, structured around **key phases** and illustrated with **structural cross-section reasoning**. The Andes are"
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.6666666666666666,
+        "score_keyword": 0.6666666666666666,
+        "score_judge": null,
+        "latency_s": 22.62,
+        "completion_tokens": 2376,
+        "tok_per_sec": 105.06,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a **sequenced stratigraphic column** for a typical passive margin basin, ordered from **oldest (basal) to youngest (topmost)**, with **justifications for depositional environments** based on "
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 27.85,
+        "completion_tokens": 2847,
+        "tok_per_sec": 102.21,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a clear, concise differentiation of **thrust faults** and **normal faults** in terms of their **mechanics** within **compressional** (shortening) and **extensional** (stretching) tectonic reg"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 24.48,
+        "completion_tokens": 2478,
+        "tok_per_sec": 101.23,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Interpreting a **gold-arsenic (Au-As) geochemical anomaly in a greenstone belt** requires integrating structural, lithological, and hydrothermal context. Below is a structured interpretation, addressi"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.5714285714285714,
+        "score_keyword": 0.5714285714285714,
+        "score_judge": null,
+        "latency_s": 32.1,
+        "completion_tokens": 3167,
+        "tok_per_sec": 98.66,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a **comprehensive, risk-optimized Phase-1 diamond drilling program** for an IOCG (Iron Oxide Copper Gold) prospect, designed for **minimal historical data** and **limited magnetic survey cove"
+      }
+    ],
+    "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q5_K_M": [
+      {
+        "prompt_key": "Andes",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 90.37,
+        "completion_tokens": 2094,
+        "tok_per_sec": 23.17,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The tectonic evolution of the Andes is a classic example of a **convergent margin** driven by the **subduction of the Nazca Plate beneath the South American Plate**. This process has shaped the Andes "
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.6666666666666666,
+        "score_keyword": 0.6666666666666666,
+        "score_judge": null,
+        "latency_s": 36.75,
+        "completion_tokens": 1198,
+        "tok_per_sec": 32.6,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "In a **passive margin basin**, stratigraphic layers are deposited in a relatively stable tectonic setting, typically along the trailing edge of a continental plate after rifting and seafloor spreading"
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 0.8333333333333334,
+        "score_keyword": 0.8333333333333334,
+        "score_judge": null,
+        "latency_s": 25.7,
+        "completion_tokens": 855,
+        "tok_per_sec": 33.27,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The mechanics of **thrust faults** and **normal faults** are fundamentally linked to the type of tectonic stress regime\u2014**compressional** or **extensional**\u2014acting on the Earth's crust. Here's a clear"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 0.8333333333333334,
+        "score_keyword": 0.8333333333333334,
+        "score_judge": null,
+        "latency_s": 37.34,
+        "completion_tokens": 1225,
+        "tok_per_sec": 32.81,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "A gold-arsenic (Au-As) geochemical anomaly in a greenstone belt is a significant indicator with strong exploration implications. Greenstone belts are ancient volcanic-sedimentary terranes commonly ass"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.5714285714285714,
+        "score_keyword": 0.5714285714285714,
+        "score_judge": null,
+        "latency_s": 62.23,
+        "completion_tokens": 1941,
+        "tok_per_sec": 31.19,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Designing a Phase-1 diamond drilling program for an Iron-Oxide Copper-Gold (IOCG) prospect with 200 meters of magnetic survey coverage and no historical drilling requires a strategic, risk-mitigated a"
+      }
+    ]
+  },
+  "aggregate": {
+    "qwen3:30b-a3b": {
+      "avg_score": 0.848,
+      "avg_score_keyword": 0.848,
+      "avg_score_judge": null,
+      "judge_runs": 0,
+      "avg_tok_per_sec": 101.75,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    },
+    "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q5_K_M": {
+      "avg_score": 0.781,
+      "avg_score_keyword": 0.781,
+      "avg_score_judge": null,
+      "judge_runs": 0,
+      "avg_tok_per_sec": 30.61,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    }
+  },
+  "judge": {
+    "enabled": false,
+    "model": null
+  },
+  "recommendation": {
+    "required_score": 0.763,
+    "min_tokens_per_sec": 5.0,
+    "baseline_avg_score": 0.848,
+    "winners": [
+      {
+        "model": "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q5_K_M",
+        "score": 0.781,
+        "tok_s": 30.61
+      }
+    ],
+    "selected": "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q5_K_M",
+    "reason": "Passed both gates: score \u2265 0.763 and tok/s \u2265 5.0. MoE preferred among passing."
+  },
+  "finished_at": "2026-05-08T19:02:30"
+}

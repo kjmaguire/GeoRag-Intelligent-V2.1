@@ -1,0 +1,12 @@
+{
+    "data": {
+        "total": 812,
+        "helpful": 633,
+        "citation_issue": 114,
+        "wrong_irrelevant": 65,
+        "positive_rate": 0.78,
+        "top_issue": "Stale source"
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 900
+}

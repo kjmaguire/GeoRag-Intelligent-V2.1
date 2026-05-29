@@ -1,0 +1,20 @@
+{
+  "adr": "ADR-0011 Phase 1",
+  "base_model": "BAAI/bge-reranker-base",
+  "vocab_tsv": "/tmp/hf_cache/_vocab/candidates.tsv",
+  "pre_vocab_size": 250002,
+  "post_vocab_size": 250197,
+  "tokens_added": 195,
+  "tokens_requested": 195,
+  "pre_embedding_shape": [
+    250002,
+    768
+  ],
+  "post_embedding_shape": [
+    250197,
+    768
+  ],
+  "init_recipe": "mean of subword embeddings (BioBERT/SciBERT recipe)",
+  "git_sha": "unknown",
+  "extended_at_utc": "2026-05-28T21:50:00.064884+00:00"
+}

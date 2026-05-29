@@ -1,0 +1,113 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny baseline. Each app component allows only the traffic it needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "georag.fullname" . }}-default-deny
+  labels:
+    {{- include "georag.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: [Ingress, Egress]
+---
+# laravel-octane: ingress from ingress-nginx; egress to fastapi + datastores.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "georag.fullname" . }}-laravel-octane
+  labels:
+    {{- include "georag.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: laravel-octane
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: {{ .Values.networkPolicy.ingressNamespace | default "ingress-nginx" }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.laravelOctane.service.port }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: fastapi
+      ports:
+        - protocol: TCP
+          port: {{ .Values.fastapi.service.port }}
+    # DNS — needed for resolving external services.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # External datastores: allow all egress on data-store ports.
+    # Tighten with explicit IPBlock once the cluster's data subnet is known.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432   # PG / pgbouncer
+        - protocol: TCP
+          port: 6379   # Redis
+        - protocol: TCP
+          port: 7687   # Neo4j Bolt
+        - protocol: TCP
+          port: 6333   # Qdrant HTTP
+        - protocol: TCP
+          port: 8333   # SeaweedFS S3
+---
+# fastapi: ingress from laravel-octane; egress to LLM + datastores.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "georag.fullname" . }}-fastapi
+  labels:
+    {{- include "georag.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: fastapi
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: laravel-octane
+      ports:
+        - protocol: TCP
+          port: {{ .Values.fastapi.service.port }}
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432   # PG
+        - protocol: TCP
+          port: 6379   # Redis
+        - protocol: TCP
+          port: 7687   # Neo4j
+        - protocol: TCP
+          port: 6333   # Qdrant
+        - protocol: TCP
+          port: 11434  # Ollama
+        - protocol: TCP
+          port: 8000   # vLLM
+        - protocol: TCP
+          port: 3000   # Martin
+{{- end }}

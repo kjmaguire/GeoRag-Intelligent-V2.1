@@ -1,0 +1,41 @@
+HoleID,From,To,LithCode,Description,GrainSize,Color,Hardness,RQD,Recovery,Weathering
+PLS-20-01,0.0,45.5,SST,Medium-grained quartz arenite sandstone,Medium,Light grey,Medium,82.0,96.0,Moderate
+PLS-20-01,45.5,110.0,CGL,Polymictic pebble conglomerate with quartz clasts,Coarse,Grey-brown,Hard,75.0,92.0,Slight
+PLS-20-01,110.0,270.0,PGN,Pelitic gneiss with biotite foliation,Fine,Dark grey,Hard,88.0,97.0,Fresh
+PLS-20-01,270.0,350.0,GPT,Graphitic pelite with sulphide dissemination,Fine,Black,Hard,91.0,99.0,Fresh
+PLS-20-02,0.0,38.0,SST,Fine-grained quartz arenite sandstone,Fine,White-grey,Medium,79.0,94.0,Moderate
+PLS-20-02,38.0,92.0,CGL,Coarse conglomerate with basement clasts,Coarse,Brown-grey,Hard,72.0,90.0,Slight
+PLS-20-02,92.0,210.0,PGN,Garnetiferous pelitic gneiss,Fine,Dark grey,Very Hard,90.0,98.0,Fresh
+PLS-20-02,210.0,275.0,GPT,Graphitic pelite breccia,Fine,Black,Hard,87.0,97.0,Fresh
+PLS-20-03,0.0,52.0,SST,Coarse-grained feldspathic arenite,Coarse,Cream,Soft,70.0,88.0,High
+PLS-20-03,52.0,125.0,CGL,Basement-clast conglomerate,Coarse,Grey,Hard,76.0,93.0,Slight
+PLS-20-03,125.0,325.0,PGN,Migmatitic pelitic gneiss,Fine,Grey-pink,Very Hard,92.0,99.0,Fresh
+PLS-20-03,325.0,420.0,GPT,Graphitic pelite with clay alteration,Fine,Black-grey,Medium,85.0,96.0,Fresh
+PLS-20-04,0.0,41.0,SST,Medium quartz arenite sandstone,Medium,Light grey,Medium,80.0,95.0,Moderate
+PLS-20-04,41.0,98.0,CGL,Quartz-pebble conglomerate,Coarse,Grey-brown,Hard,74.0,91.0,Slight
+PLS-20-04,98.0,245.0,PGN,Pelitic gneiss with amphibolite intercalations,Fine,Dark grey,Very Hard,89.0,98.0,Fresh
+PLS-20-04,245.0,310.0,GPT,Graphitic pelite with pyrite,Fine,Black,Hard,93.0,99.0,Fresh
+PLS-21-05,0.0,60.0,SST,Fine-grained quartz arenite,Fine,White,Soft,68.0,86.0,High
+PLS-21-05,60.0,142.0,CGL,Polymictic conglomerate,Coarse,Brown,Hard,77.0,93.0,Moderate
+PLS-21-05,142.0,370.0,PGN,Biotite-muscovite pelitic gneiss,Fine,Dark grey,Very Hard,94.0,99.0,Fresh
+PLS-21-05,370.0,480.0,GPT,Massive graphitic pelite,Fine,Black,Hard,90.0,98.0,Fresh
+PLS-21-06,0.0,35.5,SST,Very fine quartz arenite sandstone,Fine,Cream-grey,Soft,71.0,89.0,Moderate
+PLS-21-06,35.5,88.0,CGL,Pebble conglomerate,Coarse,Grey,Medium,73.0,91.0,Slight
+PLS-21-06,88.0,202.0,PGN,Pelitic gneiss with kyanite porphyroblasts,Fine,Dark grey,Very Hard,91.0,98.0,Fresh
+PLS-21-06,202.0,265.0,GPT,Graphitic pelite with dravite alteration,Fine,Black-brown,Hard,88.0,97.0,Fresh
+PLS-21-07,0.0,48.0,SST,Medium feldspathic sandstone,Medium,Light grey,Medium,81.0,95.0,Moderate
+PLS-21-07,48.0,115.0,CGL,Basement-clast conglomerate,Coarse,Grey-brown,Hard,75.0,92.0,Slight
+PLS-21-07,115.0,305.0,PGN,Garnet-bearing pelitic gneiss,Fine,Grey,Very Hard,93.0,99.0,Fresh
+PLS-21-07,305.0,395.0,GPT,Graphitic pelite with chlorite alteration,Fine,Black-green,Hard,89.0,98.0,Fresh
+PLS-22-08,0.0,55.0,SST,Coarse quartz arenite,Coarse,White-grey,Medium,78.0,93.0,Moderate
+PLS-22-08,55.0,132.0,CGL,Polymictic conglomerate,Very Coarse,Brown-grey,Hard,74.0,91.0,Slight
+PLS-22-08,132.0,398.0,PGN,Migmatitic pelitic gneiss with leucosome,Fine,Grey-white,Very Hard,95.0,100.0,Fresh
+PLS-22-08,398.0,510.0,GPT,Massive graphitic pelite with uraninite,Fine,Black,Hard,92.0,99.0,Fresh
+PLS-22-09,0.0,43.0,SST,Fine-grained quartz arenite,Fine,Cream,Soft,72.0,90.0,Moderate
+PLS-22-09,43.0,105.0,CGL,Quartz-pebble conglomerate,Coarse,Grey,Hard,76.0,92.0,Slight
+PLS-22-09,105.0,265.0,PGN,Pelitic gneiss with minor amphibolite,Fine,Dark grey,Very Hard,90.0,98.0,Fresh
+PLS-22-09,265.0,345.0,GPT,Graphitic pelite with illite alteration,Fine,Black-grey,Medium,86.0,97.0,Fresh
+PLS-22-10,0.0,39.0,SST,Medium quartz arenite sandstone,Medium,Grey,Medium,80.0,94.0,Moderate
+PLS-22-10,39.0,95.0,CGL,Basement-clast polymictic conglomerate,Coarse,Grey-brown,Hard,73.0,91.0,Slight
+PLS-22-10,95.0,222.0,PGN,Biotite pelitic gneiss,Fine,Dark grey,Hard,88.0,97.0,Fresh
+PLS-22-10,222.0,290.0,GPT,Graphitic pelite with uranium anomaly,Fine,Black,Hard,91.0,99.0,Fresh

@@ -1,0 +1,48 @@
+# Module 10 Chunk 10.4 — Neo4j alert rules.
+# Metrics: Neo4j Community 2026.03 exposes Prometheus on JMX port 2004.
+# Series: neo4j_database_*_check_point, neo4j_database_*_pool_size,
+# neo4j_dbms_pool_bolt_used_buffers, neo4j_database_*_query_execution_*.
+# (No /metrics endpoint in Community Edition; rely on JMX prometheus exporter.)
+
+groups:
+  - name: neo4j
+    interval: 30s
+    rules:
+      - alert: Neo4jLowAvailability
+        expr: up{job="neo4j"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: neo4j
+        annotations:
+          summary: "Neo4j is DOWN"
+          description: "Prometheus cannot scrape neo4j:2004. Knowledge graph traversals will fail."
+
+      - alert: Neo4jSlowQueryRate
+        expr: rate(neo4j_dbms_query_execution_failure_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: neo4j
+        annotations:
+          summary: "Neo4j query failure rate > 0.05/s"
+          description: "{{ $value }}/s query failures. Cypher syntax errors or DB unhealthy."
+
+      - alert: Neo4jLowPageCacheHitRatio
+        expr: |
+          (
+            rate(neo4j_database_neo4j_pool_pagecache_hits_total[5m])
+            /
+            (
+              rate(neo4j_database_neo4j_pool_pagecache_hits_total[5m])
+              +
+              rate(neo4j_database_neo4j_pool_pagecache_faults_total[5m])
+            )
+          ) < 0.85
+        for: 10m
+        labels:
+          severity: warning
+          service: neo4j
+        annotations:
+          summary: "Neo4j page cache hit ratio < 85%"
+          description: "Page cache hit ratio {{ $value | humanizePercentage }}. Increase dbms.memory.pagecache.size or warm-up via APOC."

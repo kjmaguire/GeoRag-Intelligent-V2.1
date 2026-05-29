@@ -1,0 +1,16 @@
+{
+    "data": {
+        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "slug": "talbot-lake-au-cu",
+        "name": "Talbot Lake Au-Cu",
+        "commodity": "Au-Cu",
+        "region": "BC, Canada",
+        "coordinate_system": "NAD83 / UTM Zone 10N",
+        "aoi_area_km2": 14.2,
+        "operator": "Northern Cordillera Holdings",
+        "last_ingestion_at": "2026-04-13T14:21:00Z",
+        "status": "active"
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

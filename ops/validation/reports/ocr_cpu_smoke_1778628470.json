@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-05-12T23:27:50Z",
+  "native_input": "/tmp/ocr_smoke_native.pdf",
+  "pages_sampled_per_path": 5,
+  "host": "8178f21fd57f",
+  "cpu_count": 6,
+  "imports": [
+    {
+      "label": "import:pikepdf",
+      "wall_ms": 54.31,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:pypdfium2",
+      "wall_ms": 13.23,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:pdfminer.high_level",
+      "wall_ms": 60.44,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:pdfplumber",
+      "wall_ms": 8.73,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:docling",
+      "wall_ms": 0.14,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:paddleocr",
+      "wall_ms": 3060.22,
+      "ok": true,
+      "value": "imported"
+    }
+  ],
+  "synth": [
+    {
+      "label": "synth:scanned_pdf",
+      "wall_ms": 135.76,
+      "ok": true,
+      "value": "885872 bytes"
+    },
+    {
+      "label": "synth:mixed_pdf",
+      "wall_ms": 48.71,
+      "ok": true,
+      "value": "476355 bytes"
+    }
+  ],
+  "parse_native": {
+    "label": "parse_native:first_5_pages",
+    "wall_ms": 299.53,
+    "ok": true,
+    "value": {
+      "chars_extracted": 11759,
+      "tables_per_page": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "parse_scanned": {
+    "cold": {
+      "label": "parse_scanned:first_5_pages_synthetic",
+      "wall_ms": 42396.87,
+      "ok": true,
+      "value": {
+        "pages_ocrd": 5,
+        "text_lines": 114,
+        "per_page_text_line_counts": [
+          10,
+          32,
+          10,
+          30,
+          32
+        ]
+      }
+    },
+    "warm": {
+      "label": "parse_scanned:first_5_pages_synthetic",
+      "wall_ms": 30311.79,
+      "ok": true,
+      "value": {
+        "pages_ocrd": 5,
+        "text_lines": 114,
+        "per_page_text_line_counts": [
+          10,
+          32,
+          10,
+          30,
+          32
+        ]
+      }
+    },
+    "per_page_cold_ms": 8479.37,
+    "per_page_warm_ms": 6062.36
+  },
+  "parse_mixed": {
+    "label": "parse_mixed:first_5_pages_synthetic",
+    "wall_ms": 59192.04,
+    "ok": true,
+    "value": {
+      "page_count": 5,
+      "text_chars": 10333
+    }
+  },
+  "gates": [
+    {
+      "label": "native",
+      "per_page_ms": 59.90599999999999,
+      "envelope_lo_ms": 1000.0,
+      "envelope_hi_ms": 5000.0,
+      "fail_threshold_ms": 25000.0,
+      "verdict": "pass",
+      "note": "faster_than_estimate"
+    },
+    {
+      "label": "scanned_warm",
+      "per_page_ms": 6062.36,
+      "envelope_lo_ms": 5000.0,
+      "envelope_hi_ms": 30000.0,
+      "fail_threshold_ms": 150000.0,
+      "verdict": "pass",
+      "note": "within_envelope"
+    },
+    {
+      "label": "mixed",
+      "per_page_ms": 11838.408,
+      "envelope_lo_ms": 5000.0,
+      "envelope_hi_ms": 30000.0,
+      "fail_threshold_ms": 150000.0,
+      "verdict": "pass",
+      "note": "within_envelope"
+    }
+  ],
+  "overall": "pass",
+  "finished_at": "2026-05-12T23:30:06Z"
+}

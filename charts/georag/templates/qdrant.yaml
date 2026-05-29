@@ -1,0 +1,75 @@
+{{- if .Values.qdrant.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-qdrant
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.qdrant.service.httpPort }}
+      targetPort: http
+      name: http
+    - port: {{ .Values.qdrant.service.grpcPort }}
+      targetPort: grpc
+      name: grpc
+  selector: {{- include "georag.selectorLabels" (dict "component" "qdrant" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-qdrant
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}-qdrant
+  replicas: 1
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "qdrant" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "qdrant" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: qdrant
+          image: {{ include "georag.image" (dict "repo" .Values.qdrant.image.repository "tag" .Values.qdrant.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+          env:
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: QDRANT_API_KEY
+          resources: {{- toYaml .Values.qdrant.resources | nindent 12 }}
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  {{- if .Values.qdrant.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- $sc := include "georag.storageClass" (dict "svcStorageClass" "" "global" .Values.global) }}
+        {{- if $sc }}
+        storageClassName: {{ $sc }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.qdrant.persistence.size }}
+  {{- end }}
+{{- end }}

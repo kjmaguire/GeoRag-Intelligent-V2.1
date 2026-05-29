@@ -1,0 +1,80 @@
+# =============================================================================
+# caddy/Caddyfile
+#
+# Phase 6 Step 2 (R-P4-2) — WebSocket-capable edge proxy in front of Kestra.
+# Phase 7 Step 3 (R-P6-3) — HTTPS variant at :8443 using Caddy's internal
+# CA, so dev clusters get TLS without external cert dependencies.
+#
+# Auth model (both listeners):
+#   1. Caddy receives a request on :8087 (HTTP) or :8443 (HTTPS).
+#   2. Caddy subrequests Laravel's `/internal/sanctum/check` via
+#      `forward_auth`, passing through Cookie + Authorization headers.
+#   3. Laravel's KestraSsoCheckController validates the session/PAT,
+#      runs the admin Gate, and (on 204) returns `X-Kestra-Auth: Basic
+#      <base64>` for Kestra's basic-auth login.
+#   4. Caddy copies `X-Kestra-Auth` onto the inbound request, then
+#      `reverse_proxy` rewrites it onto the upstream Authorization
+#      header so Kestra sees a credentialed call.
+#
+# This path supports WebSocket upgrades natively (Caddy auto-detects
+# the Upgrade header and proxies the connection).
+# =============================================================================
+
+{
+    # `disable_redirects` keeps cert issuance enabled (Caddy needs it
+    # for the :8443 internal-CA leaf) while suppressing the default
+    # HTTP→HTTPS redirect that would otherwise hijack :8087.
+    # `auto_https off` was too aggressive — it also blocked the leaf
+    # cert for `https://localhost:8443`, breaking the TLS handshake.
+    auto_https disable_redirects
+    admin off
+    # Phase 9 Step 3 (R-P8-2) — email associated with ACME
+    # account registration. Always emitted (the directive is global
+    # and harmless when ACME isn't the active issuer per Phase 8
+    # Step 3's CADDY_TLS_ISSUER env). When CADDY_TLS_ISSUER=acme,
+    # this email is what Let's Encrypt sees.
+    email {$CADDY_ACME_EMAIL:ops@example.invalid}
+    log {
+        output stdout
+        format console
+        level INFO
+    }
+}
+
+# Shared site config — single source of truth for the proxy behaviour.
+(kestra_proxy) {
+    handle /healthz {
+        respond "ok" 200
+    }
+
+    handle /* {
+        forward_auth laravel-octane:80 {
+            uri /internal/sanctum/check
+            copy_headers X-Kestra-Auth X-Sanctum-Identity
+        }
+        reverse_proxy kestra:8080 {
+            header_up Host kestra:8080
+            header_up Authorization {http.request.header.X-Kestra-Auth}
+            header_up -X-Kestra-Auth
+            header_up -X-Sanctum-Identity
+        }
+    }
+}
+
+# HTTP listener (Phase 6 Step 2 — kept for back-compat).
+:8087 {
+    import kestra_proxy
+}
+
+# HTTPS listener (Phase 7 Step 3 / Phase 8 Step 3) — issuer is
+# parametrized via {$CADDY_TLS_ISSUER:internal}. Default keeps the
+# dev experience (Caddy's internal CA, no external dependencies);
+# production swaps to `acme` via the `acme` directive (which expects
+# an `acme_email` global option) by setting the compose env var.
+# See docs/runbooks/caddy_tls.md for the swap procedure.
+https://localhost:8443 {
+    tls {
+        issuer {$CADDY_TLS_ISSUER:internal}
+    }
+    import kestra_proxy
+}

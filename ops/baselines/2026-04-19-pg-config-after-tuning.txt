@@ -1,0 +1,22 @@
+# PostgreSQL Config Snapshot — AFTER Tuning
+# Captured: 2026-04-19 (Module 2 Phase B)
+# Applied changes: shared_buffers 4GB→8GB, effective_cache_size 12GB→24GB,
+#                  maintenance_work_mem 512MB→1GB, io_method=io_uring REVERTED to worker
+#                  container memory limit 4G→12G, reservations 1G→6G
+
+         name         | setting | unit |  context   
+----------------------+---------+------+------------
+ effective_cache_size | 3145728 | 8kB  | user
+ io_method            | worker  |      | postmaster
+ maintenance_work_mem | 1048576 | kB   | user
+ shared_buffers       | 1048576 | 8kB  | postmaster
+ work_mem             | 131072  | kB   | user
+(5 rows)
+
+
+# Decoded values:
+#   shared_buffers:       1048576 * 8kB = 8192 MB = 8 GB  [TARGET MET]
+#   effective_cache_size: 3145728 * 8kB = 24576 MB = 24 GB  [TARGET MET]
+#   maintenance_work_mem: 1048576 kB = 1024 MB = 1 GB  [TARGET MET]
+#   work_mem:             131072 kB = 128 MB  [UNCHANGED]
+#   io_method:            worker  [io_uring REVERTED — Docker seccomp blocks io_uring syscalls]

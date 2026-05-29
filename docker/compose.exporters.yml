@@ -1,0 +1,77 @@
+# =============================================================================
+# Compose overlay: Prometheus exporter sidecars
+# =============================================================================
+# Authority: docker/prometheus/prometheus.yml scrape jobs, postgres-alerts.yml,
+# redis-alerts.yml.
+#
+# Apply alongside the canonical compose:
+#
+#   docker compose \
+#     -f compose.yml \
+#     -f docker/compose.exporters.yml \
+#     --profile dev-monitor \
+#     up -d
+#
+# What it does:
+#   * postgres_exporter (one — connects to the always-on `postgresql` service)
+#     Active under: dev-monitor, staging, prod
+#     Port 9187 (matches POSTGRES_EXPORTER_PORT in .env.example)
+#   * redis_exporter (one — connects to the always-on `redis` service for dev)
+#     Active under: dev-monitor ONLY
+#     Port 9121
+#     For staging/prod the 3-instance Redis topology has per-instance
+#     exporters in docker/compose.redis-staging.yml — do not double-deploy.
+#
+# Both exporters use Prometheus's standard exposition format and match the
+# scrape jobs already defined in docker/prometheus/prometheus.yml.
+# =============================================================================
+
+services:
+
+  postgres_exporter:
+    profiles:
+      - dev-monitor
+      - staging
+      - prod
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: georag-postgres-exporter
+    environment:
+      # Read-only access via the application user is sufficient for the
+      # default collectors (pg_stat_database, pg_stat_activity, pg_settings,
+      # pg_locks, pg_stat_archiver). For the higher-cardinality
+      # pg_stat_statements collector, grant SELECT on pg_stat_statements
+      # to the georag user (init-roles.sql can be extended).
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-georag}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgresql:5432/${POSTGRES_DB:-georag}?sslmode=disable"
+      # Enable the pg_stat_archiver collector — required for the
+      # PostgresArchiveCommandFailing + PostgresArchiveLagHigh alerts.
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "false"
+      PG_EXPORTER_INCLUDE_DATABASES: "${POSTGRES_DB:-georag}"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    networks:
+      georag: null
+    restart: unless-stopped
+    # Prometheus scrapes via DNS within the georag network on port 9187.
+    # Exposing the port to the host is optional and not done here — keeps
+    # the exporter inside the cluster boundary.
+
+  redis_exporter:
+    profiles:
+      - dev-monitor
+    image: oliver006/redis_exporter:v1.74.0-alpine
+    container_name: georag-redis-exporter
+    command:
+      - --redis.addr=redis://redis:6380
+      - --redis.password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      - --web.listen-address=:9121
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      georag: null
+    restart: unless-stopped
+    # NOTE: do NOT enable this overlay alongside compose.redis-staging.yml.
+    # That overlay ships its own per-instance exporters (cache/queue/sessions);
+    # the dev `redis` service is not active under staging/prod profiles
+    # anyway, so collision is avoided by profile gating.

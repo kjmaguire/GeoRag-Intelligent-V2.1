@@ -1,0 +1,178 @@
+{{- if .Values.laravelOctane.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-laravel-octane
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.laravelOctane.service.port }}
+      targetPort: http
+      name: http
+  selector: {{- include "georag.selectorLabels" (dict "component" "laravel-octane" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-laravel-octane
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.laravelOctane.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "laravel-octane" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "laravel-octane" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: laravel-octane
+          image: {{ include "georag.image" (dict "repo" .Values.laravelOctane.image.repository "tag" .Values.laravelOctane.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: APP_ENV
+              value: production
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: LARAVEL_APP_KEY
+            - name: DB_HOST
+              value: {{ .Release.Name }}-pgbouncer
+            - name: DB_PORT
+              value: "6432"
+            - name: DB_USERNAME
+              value: georag
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+            - name: REDIS_HOST
+              value: {{ .Release.Name }}-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: REDIS_PASSWORD
+            - name: FASTAPI_INTERNAL_URL
+              value: http://{{ .Release.Name }}-fastapi:{{ .Values.fastapi.service.port }}
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: FASTAPI_SERVICE_KEY
+          resources: {{- toYaml .Values.laravelOctane.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+{{- if .Values.laravelOctane.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-laravel-octane
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-laravel-octane
+  minReplicas: {{ .Values.laravelOctane.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.laravelOctane.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.laravelOctane.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
+{{- if .Values.laravelHorizon.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-laravel-horizon
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.laravelHorizon.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "laravel-horizon" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "laravel-horizon" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: horizon
+          image: {{ include "georag.image" (dict "repo" .Values.laravelOctane.image.repository "tag" .Values.laravelOctane.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["php", "artisan", "horizon"]
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          env:
+            - name: REDIS_HOST
+              value: {{ .Release.Name }}-redis
+            - name: DB_HOST
+              value: {{ .Release.Name }}-pgbouncer
+          resources: {{- toYaml .Values.laravelHorizon.resources | nindent 12 }}
+{{- end }}
+{{- if .Values.laravelReverb.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-laravel-reverb
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.laravelReverb.service.port }}
+      targetPort: ws
+      name: ws
+  selector: {{- include "georag.selectorLabels" (dict "component" "laravel-reverb" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-laravel-reverb
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.laravelReverb.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "laravel-reverb" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "laravel-reverb" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: reverb
+          image: {{ include "georag.image" (dict "repo" .Values.laravelOctane.image.repository "tag" .Values.laravelOctane.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
+          ports:
+            - containerPort: 8080
+              name: ws
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          resources: {{- toYaml .Values.laravelReverb.resources | nindent 12 }}
+{{- end }}

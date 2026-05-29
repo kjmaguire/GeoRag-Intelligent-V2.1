@@ -1,0 +1,28 @@
+{
+  "baseline_model": "BAAI/bge-reranker-base",
+  "candidate_checkpoint": "//tmp/reranker-train/adapter/adapter/model.safetensors",
+  "n_queries": 160,
+  "baseline": {
+    "ndcg_at_10": 0.9119156500846435,
+    "mrr": 0.8859523809523809,
+    "recall_at_1": 0.8625,
+    "recall_at_5": 0.91875,
+    "recall_at_10": 1.0,
+    "n_queries": 160
+  },
+  "candidate": {
+    "ndcg_at_10": 1.0,
+    "mrr": 1.0,
+    "recall_at_1": 1.0,
+    "recall_at_5": 1.0,
+    "recall_at_10": 1.0,
+    "n_queries": 160
+  },
+  "delta": {
+    "ndcg_at_10": 0.08808434991535652,
+    "mrr": 0.11404761904761906,
+    "recall_at_1": 0.13749999999999996,
+    "recall_at_5": 0.08125000000000004,
+    "recall_at_10": 0.0
+  }
+}

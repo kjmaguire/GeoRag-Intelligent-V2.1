@@ -1,0 +1,214 @@
+# GeoRAG Helm values — V1.5 skeleton.
+#
+# This file mirrors the env/config surface from docker-compose.yml.
+# Non-skeleton values (replicas, resources, ingress hosts) are placeholders.
+
+global:
+  imageRegistry: ghcr.io
+  imageRepoOwner: your-org           # change to GHCR org owning the georag-* images
+  imageTag: main                      # use SHA tags (cd.yml output) for prod
+  imagePullPolicy: IfNotPresent
+  # Set true to mount SOPS-decrypted secrets via helm-secrets.
+  useSops: false
+
+# ---------------------------------------------------------------------------
+# Application services (from docker-compose.yml georag/* services)
+# ---------------------------------------------------------------------------
+
+laravelOctane:
+  enabled: true
+  replicas: 2
+  image:
+    repository: georag-laravel
+    tag: ""                          # falls back to global.imageTag
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits:   { cpu: 2,    memory: 2Gi }
+  env:
+    APP_ENV: production
+    APP_DEBUG: "false"               # always false in prod (see arch §11)
+    OCTANE_SERVER: swoole
+    OCTANE_WORKERS: "4"
+  podAnnotations: {}
+
+horizon:
+  enabled: true
+  replicas: 1
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits:   { cpu: 1,    memory: 1Gi }
+
+reverb:
+  enabled: true
+  replicas: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+fastapi:
+  enabled: true
+  replicas: 2
+  image:
+    repository: georag-fastapi
+    tag: ""
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2,    memory: 4Gi }
+  env:
+    UVICORN_WORKERS: "2"
+    PYTHONUNBUFFERED: "1"
+  podAnnotations: {}
+
+dagster:
+  enabled: true
+  webserver:
+    replicas: 1
+    service:
+      type: ClusterIP
+      port: 3000
+  daemon:
+    replicas: 1
+    # Set true + add nvidia.com/gpu resource if you want GPU SPLADE.
+    gpu: false
+
+# ---------------------------------------------------------------------------
+# External datastores (NOT deployed by this chart — point at your services)
+# ---------------------------------------------------------------------------
+
+externalServices:
+  postgres:
+    host: postgresql.data.svc.cluster.local
+    port: 5432
+    database: georag
+    # Set via SOPS / sealed-secret in production.
+    existingSecret: georag-postgres
+    secretKeyUser: username
+    secretKeyPass: password
+
+  pgbouncer:
+    host: pgbouncer.data.svc.cluster.local
+    port: 6432
+
+  redis:
+    host: redis.data.svc.cluster.local
+    port: 6379
+    existingSecret: georag-redis
+    secretKeyPass: password
+
+  neo4j:
+    boltUri: bolt://neo4j.data.svc.cluster.local:7687
+    existingSecret: georag-neo4j
+    secretKeyUser: username
+    secretKeyPass: password
+
+  qdrant:
+    host: qdrant.data.svc.cluster.local
+    port: 6333
+
+  seaweedfs:
+    s3Endpoint: http://seaweedfs-s3.data.svc.cluster.local:8333
+    existingSecret: georag-seaweedfs
+    secretKeyAccessKey: access_key
+    secretKeySecretKey: secret_key
+
+  ollama:
+    host: ollama.llm.svc.cluster.local
+    port: 11434
+    primaryModel: qwen3:30b-a3b  # legacy Ollama path; retained for back-compat. vLLM is now canonical via Qwen/Qwen3-14B-AWQ — see vllm block below.
+
+  vllm:
+    enabled: false                   # x86_64-only; flip on if running on amd64 nodes
+    host: vllm.llm.svc.cluster.local
+    port: 8000
+
+  martin:
+    host: martin.tile.svc.cluster.local
+    port: 3000
+
+# ---------------------------------------------------------------------------
+# Secrets owned by this chart
+# ---------------------------------------------------------------------------
+
+secrets:
+  # When useSops=true these come from helm-secrets-decrypted values.
+  # Otherwise they're set directly here for dev only.
+  appKey: "base64:CHANGE_ME"
+  fastapiServiceKey: "CHANGE_ME"
+  fastapiServiceKeyKid: "primary"
+  fastapiServiceKeyPrevious: ""
+  fastapiServiceKeyPreviousKid: ""
+
+# ---------------------------------------------------------------------------
+# Ingress
+# ---------------------------------------------------------------------------
+
+ingress:
+  enabled: false
+  className: nginx
+  hosts:
+    - host: georag.example.com
+      paths:
+        - path: /
+          backendService: laravel-octane
+  tls:
+    enabled: false
+    secretName: georag-tls
+
+# ---------------------------------------------------------------------------
+# Pod-level
+# ---------------------------------------------------------------------------
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# Production-readiness toggles (off by default for skeleton; flip per env)
+# ---------------------------------------------------------------------------
+
+networkPolicy:
+  enabled: false
+  # Namespace where ingress-nginx (or your ingress controller) lives.
+  ingressNamespace: ingress-nginx
+
+autoscaling:
+  enabled: false
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Set ingress.enabled: true with cert-manager installed for TLS.
+# If using an ingress class other than nginx, override `ingress.className`.
+
+serviceMonitor:
+  # Requires Prometheus Operator (kube-prometheus-stack) CRDs.
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels:
+    # Most kube-prometheus-stack installs match release=prometheus.
+    release: prometheus

@@ -1,0 +1,232 @@
+name: georagintelligencev10
+services:
+  pgbouncer:
+    container_name: georag-pgbouncer
+    depends_on:
+      postgresql:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "268435456"
+        reservations:
+          memory: "67108864"
+    environment:
+      AUTH_TYPE: scram-sha-256
+      DB_HOST: postgresql
+      DB_NAME: georag
+      DB_PASSWORD: georag_dev_password
+      DB_PORT: "5432"
+      DB_USER: georag
+      DEFAULT_POOL_SIZE: "100"
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,jit,application_name
+      LISTEN_PORT: "6432"
+      MAX_CLIENT_CONN: "200"
+      MIN_POOL_SIZE: "5"
+      POOL_MODE: transaction
+      RESERVE_POOL_SIZE: "5"
+      SERVER_IDLE_TIMEOUT: "300"
+      SERVER_RESET_QUERY: DISCARD ALL
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -p 6432 -U georag
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 15s
+    image: edoburu/pgbouncer:v1.25.1-p0
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 6432
+        published: "6432"
+        protocol: tcp
+    restart: unless-stopped
+  postgresql:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
+      - -c
+      - work_mem=128MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_connections=200
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=64MB
+      - -c
+      - default_statistics_target=100
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - max_worker_processes=8
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - max_parallel_workers=8
+      - -c
+      - max_parallel_maintenance_workers=4
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_checkpoints=on
+      - -c
+      - log_connections=off
+      - -c
+      - log_disconnections=off
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=1s
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.track_utility=off
+      - -c
+      - track_io_timing=on
+      - -c
+      - jit=off
+      - -c
+      - jit_above_cost=-1
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      - -c
+      - lock_timeout=3000
+      - -c
+      - wal_compression=lz4
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - track_activity_query_size=4096
+    container_name: georag-postgresql
+    deploy:
+      resources:
+        limits:
+          cpus: 4
+          memory: "4294967296"
+        reservations:
+          memory: "1073741824"
+    environment:
+      POSTGRES_DB: georag
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_USER: georag
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U georag -d georag
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    image: postgis/postgis:18-3.6-alpine
+    networks:
+      georag: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/postgresql/init
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        bind: {}
+  redis:
+    command:
+      - redis-server
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - ""
+      - --databases
+      - "4"
+      - --tcp-backlog
+      - "511"
+      - --timeout
+      - "600"
+      - --tcp-keepalive
+      - "300"
+      - --slowlog-log-slower-than
+      - "1000"
+      - --slowlog-max-len
+      - "256"
+      - --lazyfree-lazy-eviction
+      - "yes"
+      - --lazyfree-lazy-expire
+      - "yes"
+      - --lazyfree-lazy-server-del
+      - "yes"
+      - --lazyfree-lazy-user-del
+      - "yes"
+      - --lazyfree-lazy-user-flush
+      - "yes"
+      - --loglevel
+      - notice
+      - --requirepass
+      - georag_redis_dev
+    container_name: georag-redis
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "1073741824"
+        reservations:
+          memory: "134217728"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a georag_redis_dev ping | grep PONG
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    image: redis:8.6.2-alpine
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 6379
+        published: "6379"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: redis_data
+        target: /data
+        volume: {}
+networks:
+  georag:
+    name: georag
+    driver: bridge
+volumes:
+  postgres_data:
+    name: georagintelligencev10_postgres_data
+    driver: local
+  redis_data:
+    name: georagintelligencev10_redis_data
+    driver: local

@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# =============================================================================
+# scripts/phase32_step1_verify.sh — Phase 32 Step 1
+# Narrow over-broad _REFUSAL_PHRASES entries (R-P32-REFUSAL-CONTEXT).
+#
+#   1. response_assembler.py carries R-P32-REFUSAL-CONTEXT marker
+#   2. _REFUSAL_PHRASES contains "insufficient data" (narrow form)
+#   3. _REFUSAL_PHRASES contains "unable to determine" (narrow form)
+#   4. _REFUSAL_PHRASES contains "data not available" (narrow form)
+#   5. Bare "insufficient" entry removed (no false-positive on caveats)
+#   6. Bare "unable to" entry removed
+#   7. Bare "not available" entry removed
+#   8. gq-017 passes on 3 consecutive cold runs (canary)
+#   9. Cold-run golden hits ≥30 on each of 3 consecutive runs
+# =============================================================================
+
+set -uo pipefail
+
+PASS=0
+TOTAL=9
+REPO="${REPO:-/home/georag/projects/georag}"
+RA="$REPO/src/fastapi/app/agent/response_assembler.py"
+
+check() {
+    if [ "$2" = ok ]; then
+        echo "  [PASS] $1"
+        PASS=$((PASS+1))
+    else
+        echo "  [FAIL] $1 — $3"
+    fi
+}
+
+cat <<'BANNER'
+
+============================================================
+PHASE 32 STEP 1 — narrow _REFUSAL_PHRASES (gq-017 stability)
+============================================================
+BANNER
+
+if grep -q 'R-P32-REFUSAL-CONTEXT' "$RA"; then
+    check "response_assembler.py carries R-P32-REFUSAL-CONTEXT marker" ok
+else
+    check "marker" fail "missing"
+fi
+
+if grep -q '"insufficient data"' "$RA"; then
+    check "_REFUSAL_PHRASES contains \"insufficient data\" (narrow)" ok
+else
+    check "insufficient data" fail "missing"
+fi
+
+if grep -q '"unable to determine"' "$RA"; then
+    check "_REFUSAL_PHRASES contains \"unable to determine\" (narrow)" ok
+else
+    check "unable to determine" fail "missing"
+fi
+
+if grep -q '"data not available"' "$RA"; then
+    check "_REFUSAL_PHRASES contains \"data not available\" (narrow)" ok
+else
+    check "data not available" fail "missing"
+fi
+
+# Bare entries should be REMOVED — the narrow forms supersede them.
+if ! grep -qE '^[[:space:]]+"insufficient",' "$RA"; then
+    check "Bare \"insufficient\" entry removed (no false-positive on caveats)" ok
+else
+    check "bare insufficient removed" fail "still present"
+fi
+
+if ! grep -qE '^[[:space:]]+"unable to",' "$RA"; then
+    check "Bare \"unable to\" entry removed" ok
+else
+    check "bare unable to removed" fail "still present"
+fi
+
+if ! grep -qE '^[[:space:]]+"not available",' "$RA"; then
+    check "Bare \"not available\" entry removed" ok
+else
+    check "bare not available removed" fail "still present"
+fi
+
+# Canary: gq-017 should pass consistently now. Flush cache + restart
+# fastapi between attempts to enforce true cold-run isolation.
+docker restart georag-fastapi >/dev/null 2>&1
+sleep 100
+g017_pass_count=0
+total_pass_counts=()
+for i in 1 2 3; do
+    full=$(docker exec georag-fastapi pytest --tb=no -q /app/tests/test_golden_queries.py 2>&1 | grep -oE '[0-9]+ passed' | head -1 | awk '{print $1}')
+    total_pass_counts+=("$full")
+    g17=$(docker exec georag-fastapi pytest --tb=no -q /app/tests/test_golden_queries.py -k gq-017 2>&1 | grep -oE '[0-9]+ passed' | head -1)
+    if echo "$g17" | grep -q '1 passed'; then
+        g017_pass_count=$((g017_pass_count + 1))
+    fi
+done
+
+if [ "$g017_pass_count" = "3" ]; then
+    check "gq-017 passes on 3 consecutive cold runs (canary confirms stability)" ok
+else
+    check "gq-017 stability" fail "passed $g017_pass_count of 3"
+fi
+
+# All 3 cold-run totals ≥ 30
+all_passed=1
+for c in "${total_pass_counts[@]}"; do
+    if [ "${c:-0}" -lt 30 ] 2>/dev/null; then
+        all_passed=0
+    fi
+done
+if [ "$all_passed" = "1" ]; then
+    check "Cold-run golden ≥30 on each of 3 runs (got: ${total_pass_counts[*]})" ok
+else
+    check "cold-run consistency" fail "got: ${total_pass_counts[*]}"
+fi
+
+echo
+echo "============================================================"
+echo "Result: $PASS / $TOTAL checks passed"
+echo "============================================================"
+
+exit $((PASS == TOTAL ? 0 : 1))

@@ -1,0 +1,84 @@
+name: Tenant Isolation Auditor (§11.5)
+
+# Doc-phase 104 — skeleton CI workflow that runs the Tenant Isolation
+# Auditor against the PR's database state. The auditor verifies that
+# RLS policies are wired correctly on all workspace-scoped tables:
+# no row leaks across workspace_id boundaries.
+#
+# Per master-plan §11.5 + §29.3 deliverable. Skeleton stage — the
+# actual auditor command lives in `tests/tenant_isolation/` (to be
+# created when the §11.5 implementation lands).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'database/migrations/**'
+      - 'src/fastapi/app/**'
+      - 'app/**'
+      - '.github/workflows/tenant-isolation-auditor.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: tenant-isolation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  tenant-isolation:
+    name: Tenant Isolation Auditor
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Skeleton — does not run real checks yet; logs and exits 0.
+    # Live behavior lands when the auditor command exists and the
+    # postgres-with-rls service container shape is locked.
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: georag
+          POSTGRES_DB: georag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Skeleton announcement
+        run: |
+          echo "Tenant Isolation Auditor — doc-phase 104 skeleton."
+          echo ""
+          echo "Real implementation will:"
+          echo " 1. Apply all migrations to a fresh postgres-with-rls service."
+          echo " 2. Seed 3 synthetic workspaces with cross-cutting data."
+          echo " 3. For each workspace-scoped table, set app.workspace_id="
+          echo "    'ws-A' and assert that SELECT only returns ws-A rows."
+          echo " 4. Repeat for ws-B and ws-C; assert no cross-row leakage."
+          echo " 5. Test UPDATE/DELETE with WITH CHECK guards block "
+          echo "    cross-workspace mutations."
+          echo ""
+          echo "Currently exits 0 to keep CI green until the auditor lands."
+          exit 0
+
+      # TODO (§11.5 graduation):
+      # - name: Apply migrations
+      #   run: php artisan migrate --force
+      # - name: Seed isolation fixtures
+      #   run: python tests/tenant_isolation/seed.py
+      # - name: Run isolation auditor
+      #   run: python tests/tenant_isolation/audit.py --strict

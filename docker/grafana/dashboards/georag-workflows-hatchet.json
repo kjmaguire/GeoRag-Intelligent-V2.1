@@ -1,0 +1,91 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.2 Workflow-tier dashboard 1/5 — Hatchet AI + Ingestion pool execution health. Reads from workflow.workflow_runs and the silver answer_runs telemetry the orchestrator emits.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Hatchet workflow runs/min by pool",
+      "description": "Throughput of the AI pool (LLM-driven agents) vs the Ingestion pool (Dagster-backed parser tasks). Source: workflow.workflow_runs.started_at.",
+      "targets": [{"expr": "sum by (workflow_kind) (rate(hatchet_workflow_runs_started_total[1m]))", "refId": "A", "legendFormat": "{{workflow_kind}}"}],
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Workflow failure rate by kind (%)",
+      "description": "Failures / total per workflow_kind. Status field on workflow.workflow_runs is one of: started / succeeded / failed / cancelled.",
+      "targets": [{"expr": "100 * sum by (workflow_kind) (rate(hatchet_workflow_runs_completed_total{status=\"failed\"}[5m])) / sum by (workflow_kind) (rate(hatchet_workflow_runs_completed_total[5m]))", "refId": "A", "legendFormat": "{{workflow_kind}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "Workflow duration p95 by kind (s)",
+      "description": "End-to-end Hatchet run duration. completed_at - started_at. p95 to surface tail-latency regressions.",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, workflow_kind) (rate(hatchet_workflow_duration_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{workflow_kind}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "Retry exhaustion / dead-letter rate (req/s)",
+      "description": "Workflows that exhausted the configured retries policy. Failure here is the strongest signal of upstream-service degradation: an answer_run or ingestion task hit retries=0 after the policy's max-attempts ran out.",
+      "targets": [{"expr": "sum by (workflow_kind) (rate(hatchet_workflow_retries_exhausted_total[5m]))", "refId": "A", "legendFormat": "{{workflow_kind}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Workflows registered (AI pool)",
+      "description": "Live worker registration check. Sum of workflows discovered + registered at worker startup. Drop below the expected count (typically 8-12 depending on doc-phase) means the worker is misconfigured or a new graduation hasn't restarted the worker.",
+      "targets": [{"expr": "sum(hatchet_workflows_registered{pool=\"ai\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Workflows registered (ingestion pool)",
+      "description": "Live worker registration check for the ingestion pool. Typically 6-10 workflows.",
+      "targets": [{"expr": "sum(hatchet_workflows_registered{pool=\"ingestion\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+      "id": 6
+    },
+    {
+      "type": "table",
+      "title": "Recent dead-letter rows (audit ledger)",
+      "description": "audit.audit_ledger rows where action_type='workflow.dead_letter'. Cross-reference workflow_run_id with workflow.workflow_runs.",
+      "targets": [{"expr": "sum by (workflow_kind, error_class) (rate(workflow_dead_letter_total[1h]))", "refId": "A", "format": "table"}],
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 7
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["georag", "workflows", "phase-7", "phase-h3", "section-16.2"],
+  "templating": {"list": []},
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Workflows (Hatchet)",
+  "uid": "georag-workflows-hatchet",
+  "version": 1
+}

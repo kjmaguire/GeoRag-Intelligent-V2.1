@@ -1,0 +1,319 @@
+# =============================================================================
+# Langfuse self-host overlay — agent observability backend
+# =============================================================================
+# Layer this on top of the canonical docker-compose.yml when you want a
+# self-hosted Langfuse v3 stack alongside GeoRAG. Off by default because:
+#   * It adds a ClickHouse container (~1.5 GB RAM) for OLAP traces
+#   * It adds 2 Langfuse processes (web + worker)
+#   * Existing dev workflows don't need it until LangGraph cycles ship
+#
+# Architectural rationale (per georag-architecture.html §07b orchestration
+# boundaries — to be formalised in ADR-0002):
+#   * Langfuse owns: agent-trace storage + UI for the LangGraph migration
+#   * GeoRAG-internal services (FastAPI, n8n) emit OTel-compatible traces
+#     to langfuse-web on POST /api/public/ingestion
+#   * Claude Code reads traces via the Langfuse MCP server registered in
+#     claude_desktop_config.json (image georag/langfuse-mcp:latest)
+#
+# Storage strategy — reuse what we already have:
+#   * Postgres (georag-postgresql, 16 GB RAM cap): app metadata + auth
+#   * Redis (georag-redis, 1 GB cap): event queue + rate limiting
+#   * SeaweedFS (georag-minio, 2 GB cap): S3-compatible blob store for
+#     payloads + media
+#   * NEW: ClickHouse for OLAP trace store (Langfuse v3 requirement;
+#     postgres can't pivot fast enough at trace-query scale)
+#
+# Bootstrap shape: langfuse-init creates the langfuse Postgres database
+# + role on first boot, idempotent thereafter (matches n8n-init pattern).
+#
+# Usage:
+#   # Generate secrets (one-time)
+#   openssl rand -base64 32   # LANGFUSE_NEXTAUTH_SECRET
+#   openssl rand -hex 32      # LANGFUSE_SALT (NEVER rotate — invalidates all encrypted creds)
+#   openssl rand -hex 32      # LANGFUSE_ENCRYPTION_KEY (NEVER rotate)
+#
+#   # Bring up the stack
+#   docker compose -f docker-compose.yml -f docker/compose.langfuse.yml up -d
+#
+# UI:        http://localhost:3001
+# API:       http://localhost:3001/api/public/*
+# OTLP:      http://langfuse-web:3000/api/public/otel/v1/traces (internal)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # ClickHouse — OLAP trace store (Langfuse v3 mandatory dependency)
+  # ---------------------------------------------------------------------------
+  # Pinned to a specific minor; Langfuse v3 requires CH >= 24.3. Bump
+  # deliberately on a feature branch.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.10-alpine
+    container_name: georag-clickhouse
+    restart: unless-stopped
+    networks:
+      - georag
+    environment:
+      CLICKHOUSE_DB: "default"
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER:-langfuse}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD must be set in .env}"
+      # Disable phone-home / telemetry for the air-gappable on-prem story
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    deploy:
+      resources:
+        limits:
+          # CH is the heaviest of the new containers. 4 GB is comfortable
+          # for dev-scale trace volume; bump to 8 GB on staging/prod.
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          memory: 1G
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # ClickHouse 24.10 only binds IPv4 in a default container (no IPv6
+      # stack), so use 127.0.0.1 explicitly — `localhost` resolves to ::1
+      # first on glibc and would fail even though the server is healthy.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # langfuse-init — one-shot database/role provisioning (matches n8n-init shape)
+  # ---------------------------------------------------------------------------
+  langfuse-init:
+    image: postgres:18-alpine
+    container_name: georag-langfuse-init
+    restart: "no"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    networks:
+      - georag
+    environment:
+      PGHOST: "postgresql"
+      PGPORT: "5432"
+      PGUSER: "${POSTGRES_USER:?POSTGRES_USER must be set}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+      PGDATABASE: "${POSTGRES_DB:?POSTGRES_DB must be set}"
+      LF_DB_NAME: "${LANGFUSE_DB_NAME:-langfuse}"
+      LF_DB_USER: "${LANGFUSE_DB_USER:-langfuse_user}"
+      LF_DB_PASSWORD: "${LANGFUSE_DB_PASSWORD:?LANGFUSE_DB_PASSWORD must be set}"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        echo "[langfuse-init] Provisioning langfuse database and role..."
+        # See compose.n8n.yml for the rationale — DO $$...$$ blocks are
+        # impractical from YAML-embedded shell heredocs because of
+        # dollar-sign collision with sh's PID expansion. Using the
+        # --gexec idiom + idempotent ALTER ROLE instead.
+        psql -v ON_ERROR_STOP=1 -tAc \
+          "SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', '$$LF_DB_USER', '$$LF_DB_PASSWORD') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$$LF_DB_USER');" \
+          | psql -v ON_ERROR_STOP=1
+        psql -v ON_ERROR_STOP=1 -c \
+          "ALTER ROLE \"$$LF_DB_USER\" LOGIN PASSWORD '$$LF_DB_PASSWORD';"
+        echo "[langfuse-init] Role $$LF_DB_USER ready."
+
+        if ! psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$LF_DB_NAME'" | grep -q 1; then
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$$LF_DB_NAME\" OWNER \"$$LF_DB_USER\" ENCODING 'UTF8'"
+          echo "[langfuse-init] Created database $$LF_DB_NAME"
+        else
+          psql -v ON_ERROR_STOP=1 -c "ALTER DATABASE \"$$LF_DB_NAME\" OWNER TO \"$$LF_DB_USER\""
+          echo "[langfuse-init] Database $$LF_DB_NAME already exists (owner reset)"
+        fi
+        echo "[langfuse-init] Done."
+
+  # ---------------------------------------------------------------------------
+  # langfuse-web — UI + ingestion API
+  # ---------------------------------------------------------------------------
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: georag-langfuse-web
+    restart: unless-stopped
+    depends_on:
+      langfuse-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # NOTE: minio is in the dev-data profile of the canonical compose,
+      # not the default profile, so it isn't visible from this overlay
+      # without `--profile dev-data` on the up command. Langfuse-web will
+      # retry the S3 connection until minio comes up; the SeaweedFS
+      # service in the running stack is already healthy at boot anyway.
+    networks:
+      - georag
+    ports:
+      - "${LANGFUSE_HOST_PORT:-3001}:3000"
+    environment:
+      # Database (Postgres app metadata)
+      DATABASE_URL: "postgresql://${LANGFUSE_DB_USER:-langfuse_user}:${LANGFUSE_DB_PASSWORD:?LANGFUSE_DB_PASSWORD must be set}@postgresql:5432/${LANGFUSE_DB_NAME:-langfuse}"
+
+      # Redis — reuse the existing instance; Langfuse uses DB 4 to keep
+      # away from Horizon (DB 0 default) and the existing app caches.
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+      REDIS_DB: "4"
+      REDIS_TLS_ENABLED: "false"
+
+      # ClickHouse — OLAP trace store
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER:-langfuse}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD must be set}"
+      CLICKHOUSE_MIGRATION_URL: "clickhouse://clickhouse:9000"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+      # S3-compatible blob store — reuse SeaweedFS via the existing service-name
+      # alias `minio`. Three buckets are required by Langfuse v3.
+      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "${LANGFUSE_S3_EVENT_BUCKET:-langfuse-events}"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: "auto"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:8333"
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID must be set}"
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY must be set}"
+
+      LANGFUSE_S3_MEDIA_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: "${LANGFUSE_S3_MEDIA_BUCKET:-langfuse-media}"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: "auto"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://minio:8333"
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+
+      # Auth + crypto. SALT and ENCRYPTION_KEY MUST NEVER ROTATE without
+      # a planned re-encryption migration; rotating them invalidates every
+      # stored API key and project credential.
+      NEXTAUTH_SECRET: "${LANGFUSE_NEXTAUTH_SECRET:?LANGFUSE_NEXTAUTH_SECRET must be set}"
+      NEXTAUTH_URL: "${LANGFUSE_NEXTAUTH_URL:-http://localhost:3001}"
+      SALT: "${LANGFUSE_SALT:?LANGFUSE_SALT must be set}"
+      ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY:?LANGFUSE_ENCRYPTION_KEY must be set}"
+
+      # Telemetry — disable phone-home for air-gapped deploys
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+
+      # Logging — JSON to stdout for Promtail / Loki ingestion
+      LOG_LEVEL: "info"
+
+      # Force Next.js to bind 0.0.0.0 (it defaults to the container
+      # hostname which is IPv6-only in the bridge network — internal
+      # healthcheck on 127.0.0.1 then fails). The host-port mapping
+      # works either way, but compose's depends_on:service_healthy
+      # gating breaks without this.
+      HOSTNAME: "0.0.0.0"
+
+      # Init the first user via env-driven bootstrap (optional — leave
+      # blank to use the UI sign-up flow instead).
+      LANGFUSE_INIT_ORG_ID: "${LANGFUSE_INIT_ORG_ID:-}"
+      LANGFUSE_INIT_ORG_NAME: "${LANGFUSE_INIT_ORG_NAME:-GeoRAG}"
+      LANGFUSE_INIT_PROJECT_ID: "${LANGFUSE_INIT_PROJECT_ID:-}"
+      LANGFUSE_INIT_PROJECT_NAME: "${LANGFUSE_INIT_PROJECT_NAME:-georag-dev}"
+      LANGFUSE_INIT_USER_EMAIL: "${LANGFUSE_INIT_USER_EMAIL:-}"
+      LANGFUSE_INIT_USER_NAME: "${LANGFUSE_INIT_USER_NAME:-}"
+      LANGFUSE_INIT_USER_PASSWORD: "${LANGFUSE_INIT_USER_PASSWORD:-}"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          memory: 256M
+    healthcheck:
+      # See HOSTNAME=0.0.0.0 above. Use 127.0.0.1 explicitly to bypass
+      # any glibc IPv6-first resolution still in effect on `localhost`.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # langfuse-worker — background trace ingestion + scoring + alerting
+  # ---------------------------------------------------------------------------
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: georag-langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      langfuse-web:
+        condition: service_healthy
+    networks:
+      - georag
+    environment:
+      # Same database / redis / clickhouse / s3 — worker reads from the
+      # ingestion queue Redis publishes to. Using YAML anchors for this
+      # would be cleaner; keeping flat for diff-readability per
+      # georag-architecture.html §07 conventions.
+      DATABASE_URL: "postgresql://${LANGFUSE_DB_USER:-langfuse_user}:${LANGFUSE_DB_PASSWORD}@postgresql:5432/${LANGFUSE_DB_NAME:-langfuse}"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "${REDIS_PASSWORD}"
+      REDIS_DB: "4"
+      REDIS_TLS_ENABLED: "false"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_USER: "${CLICKHOUSE_USER:-langfuse}"
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_PASSWORD}"
+      CLICKHOUSE_MIGRATION_URL: "clickhouse://clickhouse:9000"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "${LANGFUSE_S3_EVENT_BUCKET:-langfuse-events}"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: "auto"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:8333"
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: "${LANGFUSE_S3_MEDIA_BUCKET:-langfuse-media}"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: "auto"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://minio:8333"
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      SALT: "${LANGFUSE_SALT}"
+      ENCRYPTION_KEY: "${LANGFUSE_ENCRYPTION_KEY}"
+      TELEMETRY_ENABLED: "false"
+      LOG_LEVEL: "info"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          memory: 192M
+    healthcheck:
+      # The langfuse-worker (Node.js) binds to the resolved hostname IP,
+      # not 0.0.0.0, so 127.0.0.1 inside the container gets nothing.
+      # Use the container's own IP via $(hostname -i) which always
+      # resolves to the bound interface in a Docker bridge network.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://$(hostname -i):3030/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+# Volumes — kept separate from the main compose so the overlay can be
+# removed without disrupting the canonical volumes list.
+volumes:
+  clickhouse_data:
+    driver: local
+  clickhouse_logs:
+    driver: local
+
+networks:
+  georag:
+    external: true

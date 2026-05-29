@@ -1,0 +1,323 @@
+[project]
+name = "georag-fastapi"
+version = "0.1.0"
+description = "GeoRAG Intelligence — FastAPI domain service"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.136.0",
+    "uvicorn[standard]>=0.46.0",
+    "pydantic>=2.11",
+    # Phase H — bumped from >=1.0 to >=1.56 to close two GHSAs flagged by
+    # osv-scanner against the installed 1.38.0:
+    #   GHSA-2jrp-274c-jhv3 — SSRF in URL Download Handler (fix: 1.56.0)
+    #   GHSA-wjp5-868j-wqv7 — Stored XSS via Path Traversal in Web UI CDN URL
+    #                          (fix: 1.51.0)
+    "pydantic-ai>=1.56",
+    "pydantic-settings>=2.7",
+    "asyncpg>=0.30.0",
+    "redis>=7.0",
+    "qdrant-client>=1.17",
+    "neo4j>=6.0",
+    "sentence-transformers[onnx]>=5.0",
+    # SPLADE++ sparse encoder (Module 4 Chunk 2)
+    # torch: CPU-only build sufficient -- FastAPI container has no GPU passthrough.
+    # transformers: HuggingFace BERT-family models for SPLADE++ masked LM.
+    "torch>=2.3,<3.0",
+    # Phase H — note: GHSA-69w3-r845-3855 (RCE in transformers Trainer)
+    # is fixed in 5.0.0rc3. We DO NOT use the Trainer surface (SPLADE++
+    # inference-only path), so the GHSA is not exploitable from
+    # GeoRAG's call sites. Bumping to 5.x is a major-version jump with
+    # API-breaking changes in sentence-transformers compatibility —
+    # deferred until sentence-transformers ships its 5.x-compatible
+    # release. Tracked: `docs/phase_h_python_deps_audit.md`.
+    "transformers>=4.40,<5.0",
+    "httpx>=0.28",
+    "prometheus-fastapi-instrumentator>=7.0",
+    # Sentry observability — pairs with sentry/sentry-laravel on the Laravel
+    # side. The [fastapi] extra pulls in Starlette/asyncpg/redis/httpx
+    # integrations that auto-instrument when the SDK detects them.
+    "sentry-sdk[fastapi]>=2.20",
+    # Phase H — explicit pins for the LangChain / LangGraph stack used
+    # by the §7 Report Builder + §8 Target Recommendation pipelines.
+    # Previously pulled in transitively via langfuse / langchain-mcp-adapters
+    # — that path served 0.2.76 / 0.3.86, both flagged by osv-scanner:
+    #   langgraph              GHSA-g48c-2wqr-h844  unsafe msgpack         fix 1.0.10
+    #   langgraph-checkpoint   GHSA-mhr3-j7m5-c7c9  BaseCache deserialization RCE  fix 4.0.0
+    #   langgraph-checkpoint   GHSA-wwqv-p2pp-99h5  json-mode RCE          fix 3.0.0
+    #   langchain-core         GHSA-2g6r-c272-w58r  SSRF in image_url      fix 1.2.11
+    #   langchain-core         GHSA-qh6h-p6c9-ff54  Path Traversal         fix 1.2.22
+    # Pin to the GHSA-safe minor of each major. Major-version jumps
+    # (langgraph 0.x→1.x, langchain-core 0.x→1.x) may break the
+    # Report Builder pipeline at first re-import — run
+    # tests/test_report_builder_e2e.py after the image rebuild.
+    "langgraph>=1.0.10,<2.0",
+    "langgraph-checkpoint>=4.0.0,<5.0",
+    "langchain-core>=1.2.22,<2.0",
+    # Direct dep so the Anthropic-backed LLM path is first-class, not
+    # transitive through pydantic-ai. Needed for prompt caching breakpoints
+    # and the messages API shape (priority tier, 300k-batch beta, adaptive
+    # thinking) that the OpenAI-compatible proxy path cannot reach.
+    "anthropic>=0.100",
+    # Phase H4 (2026-05-15) — explicit pins forcing the resolver past the
+    # 6 GHSAs surfaced by osv-scanner against the prior transitive
+    # versions. All three are transitive (urllib3 via requests, authlib via
+    # langfuse, python-multipart via fastapi) but we name them directly so
+    # `uv lock` picks the patched versions:
+    #
+    #   urllib3            GHSA-mf9v-mfxr-j63j (8.9, HTTP smuggling)        fix 2.7.0
+    #                      GHSA-qccp-gfcp-xxvc (8.2, CRLF / redirect bypass) fix 2.7.0
+    #   python-multipart   GHSA-pp6c-gr5w-3c5g (7.5, DoS via boundary)       fix 0.0.27
+    #                      GHSA-mj87-hwqh-73pj (5.3, ResourceWarning leak)   fix 0.0.26
+    #   authlib            GHSA-r95x-qfjj-fjj2 (6.1, JWS header confusion)   fix 1.6.12
+    #                      GHSA-jj8c-mmj3-mmgv (5.4, weak audience check)    fix 1.6.11
+    "urllib3>=2.7.0,<3.0",
+    "python-multipart>=0.0.27",
+    "authlib>=1.6.12",
+    # §04p Phase 1.A — PDF Ingestion Subsystem
+    # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
+    #   affect GeoRAG's proprietary code per §04p license-posture note).
+    # pypdfium2: Apache 2.0 / BSD-3-Clause (bundles PDFium from Chromium).
+    # cachetools: MIT (LRU cache for render service; falls back to built-in
+    #   OrderedDict if not installed, but cachetools is more battle-tested).
+    # NOTE for operator: run `uv pip install 'pikepdf>=9.0' 'pypdfium2>=4.30'
+    #   'cachetools>=5.5'` (or rebuild the fastapi Docker image) before using
+    #   the /pdf/* endpoints.
+    "pikepdf>=9.0",
+    "pypdfium2>=4.30",
+    "cachetools>=5.5",
+    # §04p Phase 1.B — Text + layout extraction (Stage 3)
+    # pdfminer.six: MIT — lossless text extraction with bboxes + font metadata.
+    #   Primary text source per §04p; OCR is fallback only.
+    # pdfplumber: MIT — table extraction with cell-level bboxes.
+    #   Built on pdfminer.six; adds table detection and cell-bbox extraction.
+    # NOTE for operator: run `uv pip install 'pdfminer.six>=20240706' 'pdfplumber>=0.11'`
+    #   (or rebuild the fastapi Docker image) before using
+    #   the /pdf/extract_text and /pdf/find_tables endpoints.
+    "pdfminer.six>=20240706",
+    "pdfplumber>=0.11",
+    # polars: MIT — required by georag_dagster.parsers.__init__ which eagerly
+    #   imports xlsx_parser (uses polars). Worker startup fails without it,
+    #   which manifests as ingest_pdf:parse ModuleNotFoundError in the logs
+    #   even on PDF-only ingests. Hot-patched on 2026-05-21; making permanent.
+    "polars>=1.0",
+    # Phase 10 (2026-05-22) — unstructured removed.
+    # The legacy unstructured-first dispatch was supplanted by the
+    # Phase 2.1 fitz-first tree. _parse_with_unstructured() and its
+    # `unstructured[pdf]>=0.15` dep have been dropped — fitz +
+    # docling-OCR + tesseract-fallback + pdfplumber-last-resort
+    # provide the full coverage that unstructured did before.
+    # pytesseract: Apache 2.0 — Python wrapper around the tesseract OCR
+    #   binary used by _parse_with_fitz for per-page OCR fallback when
+    #   DOCLING_OCR_ENABLED=false. Phase 10 (2026-05-22): explicit pin
+    #   so a clean image rebuild ships with it baked in.
+    "pytesseract>=0.3",
+    # onnxruntime-gpu: MIT — required by docling's TableFormer + layout
+    #   models for GPU inference. CPU-only `onnxruntime` falls back to
+    #   docling on CPU (~5x slower). Phase 10: explicit pin so a clean
+    #   image rebuild ships with the GPU build.
+    "onnxruntime-gpu>=1.20; platform_system == 'Linux'",
+    # §04p Phase 1.C-i — Layout region detection (Stage 4)
+    # docling: MIT (IBM Research / LF AI & Data) — document conversion with
+    #   layout detection (text/figure/table/header/footer/formula regions).
+    #   Pulls in torch + transformers (already pinned above for SPLADE++) and
+    #   onnxruntime for the layout model inference.
+    # NOTE for operator: run `uv pip install 'docling>=2.13'`
+    #   (or rebuild the fastapi Docker image) before using the
+    #   /pdf/find_legends endpoint.  First install may take several minutes
+    #   — docling downloads ONNX layout model weights on first use.
+    "docling>=2.13",
+    # §04p Phase 1.C-ii — Region-targeted OCR (Stage 5)
+    # paddlepaddle: Apache 2.0 — PaddlePaddle deep-learning framework.
+    #   Phase 9 (2026-05-22) — GPU build preferred for the ingestion
+    #   worker (which has NVIDIA passthrough). pyproject.toml pins the
+    #   CPU build because PyPI doesn't host paddlepaddle-gpu directly;
+    #   the GPU wheel ships from the Paddle index at
+    #   https://www.paddlepaddle.org.cn/packages/stable/cu126/
+    #   The Dockerfile + worker command bootstrap install paddlepaddle-gpu
+    #   from that index when running on a GPU host. CPU pin here is the
+    #   safe fallback for environments without CUDA passthrough.
+    #   Wheel size: ~500 MB (CPU) to ~2 GB (GPU).  Install time is significant.
+    #   PaddleOCR depends on paddlepaddle but does not always pull it cleanly
+    #   via its own transitive deps, so we pin it explicitly here.
+    # paddleocr: Apache 2.0 — PP-OCRv5 text recognition engine.
+    #   Downloads model weights (~50–150 MB) on first use per lang code.
+    #   Default lang is 'en' (overridable via env PDF_OCR_LANG).
+    # NOTE for operator: DO NOT run `uv sync` after adding these deps — see
+    #   the §04p Phase 1.C-ii implementation report.  PaddlePaddle is heavy
+    #   (~500 MB CPU wheel, ~2 GB GPU wheel).  Either rebuild the fastapi
+    #   Docker image or run:
+    #     # CPU (laptops, CI):
+    #     uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'
+    #     # GPU (production workers with CUDA passthrough):
+    #     pip install 'paddlepaddle-gpu==3.3.1' \\
+    #         --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ \\
+    #         --extra-index-url https://pypi.org/simple/
+    "paddlepaddle>=3.1",
+    "paddleocr>=2.10",
+    # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
+    # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
+    # listed above) are sufficient to call the Ollama / vLLM backend via the
+    # OpenAI-compatible /v1/chat/completions endpoint with multipart-image content.
+    #
+    # OPERATOR ACTION REQUIRED (model pull — NOT pip install):
+    #   The Qwen2.5-VL model weights must be loaded into the LLM backend before
+    #   the /pdf/summarize_section endpoint returns anything other than 503.
+    #   Model weights are Apache 2.0 — fully permissive per §04p license posture.
+    #
+    #   Ollama (dev):
+    #     ollama pull qwen2.5-vl:7b      # ~5 GB on disk, 8 GB VRAM minimum
+    #     # or for higher quality (Milestone 2 benchmark candidate):
+    #     ollama pull qwen2.5-vl:72b     # ~42 GB on disk, 80 GB VRAM
+    #
+    #   vLLM (prod):
+    #     python -m vllm.entrypoints.openai.api_server \
+    #       --model Qwen/Qwen2.5-VL-7B-Instruct \
+    #       --max-model-len 32768
+    #
+    #   Configure via .env:
+    #     PDF_VL_MODEL_ID=qwen2.5-vl:7b
+    #     PDF_VL_BACKEND=ollama           # or "vllm" / "anthropic"
+    #     PDF_VL_BACKEND_URL=http://ollama:11434/v1
+    #     PDF_VL_TIMEOUT_S=120
+    #     PDF_VL_MAX_PAGES=4
+
+    # Doc-phase 122-fix — explicit deps that were missing from HEAD's
+    # pyproject but are required by app.hatchet_workflows / app.routers /
+    # app.ocr. The OLD image must have had these transitively or via a
+    # working-tree drift that wasn't in HEAD.
+    # hatchet-sdk → app.hatchet_workflows.* uses Hatchet client class
+    # aioboto3 → re_ocr_page + ingest_pdf S3 download helpers
+    # PDF stack (CC-1 audit 2026-05-27): pymupdf REMOVED — AGPL-3.0 is
+    # on the project's permanent-reject list (plan §"What is deliberately
+    # not in this plan"). Replaced with permissive alternatives:
+    #   pypdfium2 (Apache 2.0) — page rendering, image extraction
+    #   pypdf     (BSD-3)      — text / metadata / form fields
+    # NB: figure_extractor.py is currently a no-op stub awaiting a
+    # full pypdfium2 rewrite; see its module docstring + Kyle's
+    # OVERNIGHT_LOG follow-up list.
+    # pyjwt (imports as `jwt`) → app.services.flow_jwt
+    "hatchet-sdk>=1.33",
+    "aioboto3>=13.0",
+    "pypdfium2>=4.30",
+    "pypdf>=5.0",
+    # Phase 5 (2026-05-22) — used by the parse-subprocess memory guard
+    # in ingest_pdf.py. Pre-fork RAM check prevents OOM when running
+    # multiple concurrent PDF parses on the ingestion worker. Already
+    # transitively present via docling+dagster; this is the explicit pin.
+    "psutil>=7.0",
+    "pyjwt>=2.9",
+
+    # Master-plan §5 (doc-phase 71) — spatial pipeline + drillhole visuals.
+    # geopandas + rasterio bring GeoJSON/GeoTIFF read/write + CRS reprojection
+    # into the FastAPI ingestion path (already in src/dagster/pyproject.toml).
+    # mplstereonet renders stereonets for §5.8 structure visualizations.
+    "geopandas>=1.0",
+    "rasterio>=1.4",
+    "mplstereonet>=0.6",
+
+    # Master-plan §7 (doc-phase 122) — Reporting + report bundle generation.
+    # weasyprint → PDF rendering from HTML+CSS (§7.9 primary). Needs Pango /
+    # Cairo system libs (added in docker/fastapi.Dockerfile).
+    # python-docx → DOCX generator. Pure-Python.
+    # openpyxl → XLSX generator. Pure-Python.
+    # Phase H — bumped from >=63.0,<64.0 to >=68.0,<69.0 to close
+    # GHSA-983w-rhvv-gwmv (SSRF protection bypass via HTTP redirect,
+    # fix in 68.0). Stays inside a major-version range so the PDF
+    # renderer's HTML/CSS expectations don't shift.
+    "weasyprint>=68.0,<69.0",
+    "python-docx>=1.1,<2.0",
+    "openpyxl>=3.1,<4.0",
+
+    # Doc-phase 179 — LAS file parsing for §04b drillhole ingestion.
+    # `lasio` reads LAS 1.2 / 2.0 / 3.0 well-log files. Used by the
+    # Phase B Cameco e-log + WSGS historical archive ingest pipeline
+    # (uranium_logs_all.zip). Pure-Python, no system deps.
+    # Mirrors the dagster service's lasio>=0.31 pin so cross-service
+    # parsing is consistent.
+    "lasio>=0.31",
+
+    # Master-plan §12 (doc-phase 122) — XGBoost + source trust + advanced learning.
+    # All install via wheel on linux x86_64 — no system deps beyond libgomp1.
+    "xgboost>=2.1,<3.0",
+    "shap>=0.46,<1.0",
+    "scikit-learn>=1.5,<2.0",
+]
+
+[project.optional-dependencies]
+prod = [
+    "gunicorn>=23.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.11",
+    "mypy>=1.15",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# Cosmetic + opinionated rules ignored at first CI bootstrap. The safe + unsafe
+# auto-fixes have already landed. Each ignore below is a deliberate trade-off —
+# re-enable once a focused PR addresses each category.
+#
+# E501  — line too long (long URLs in comments; many false positives)
+# E701  — multi-statement line (compact test fixtures)
+# E731  — lambda assignment (used for Pydantic field defaults)
+# B008  — function call in default arg (FastAPI Depends() pattern is correct usage)
+# B904  — `raise ... from` (exception chain hygiene; cosmetic, ~14 sites)
+# B017  — pytest.raises(Exception) (pre-existing broad-catch test; intentional)
+# B023  — function uses loop variable (1 deliberate closure capture)
+# SIM102 — combine nested ifs (3 sites where the nested form reads better with
+#          its inline comment explaining the inner condition's purpose)
+# SIM103 — return condition directly (1 site; explicit return reads clearer
+#          alongside the SCREAMING_CASE_RE / SNAKE_CASE_RE pair)
+# SIM117 — combine `with` statements (1 site; readability tradeoff)
+ignore = ["E501", "E701", "E731", "B008", "B904", "B017", "B023", "SIM102", "SIM103", "SIM117"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: requires the live Docker Compose stack (fastapi, postgresql, ollama)",
+    "golden: golden query set — failure blocks milestone acceptance",
+    "hallucination: adversarial queries that must be refused",
+    # live: requires a live LLM (Ollama/vLLM). Superset of integration.
+    # Used to partition tests that would time-out on GitHub-hosted runners
+    # even with the full Docker stack running (15+ GB model download).
+    # Chunk 10.2 will wire a self-hosted runner or staging URL for these.
+    "live: requires Ollama/vLLM running with a loaded model — not run in CI",
+    # Module 10 Chunk 10.7 — chaos / resilience tests run on a weekly CI cron
+    # rather than per-PR (they intentionally inject failures and are slow).
+    "chaos: chaos / resilience tests — scheduled-only, NOT run on PRs",
+]
+# Integration tests are slow (LLM calls) AND data-dependent (need the
+# Cameco Shirley Basin corpus seeded + a healthy vLLM). Default to
+# skipping them so `pytest tests/` produces a clean green signal for
+# the unit-test surface. Run them explicitly:
+#
+#   pytest -m integration  tests/test_golden_queries.py
+#   pytest -m golden       tests/
+#   pytest -m hallucination tests/
+#   pytest -m chaos        tests/
+#   pytest -m live         tests/
+#
+# Phase H — moved this filter from "manual choice" to "defensive
+# default" because the historical 33-failure long tail of the full
+# `pytest tests/` invocation was almost entirely uncovered integration
+# tests that need fixtures the unit-test environment lacks. Filed
+# in docs/phase_h_test_triage.md.
+addopts = "-v -m 'not integration and not golden and not hallucination and not chaos and not live'"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true

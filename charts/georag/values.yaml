@@ -1,0 +1,374 @@
+# ─────────────────────────────────────────────────────────────────────
+# GeoRAG Helm values — defaults (§11.6 doc-phase 180)
+# ─────────────────────────────────────────────────────────────────────
+# These defaults assume a fresh K3s install with the bundled local-path
+# StorageClass + Traefik ingress controller. For vanilla Kubernetes or
+# air-gapped clusters use the matching values-*.yaml file:
+#
+#   helm install georag charts/georag/ -f values-k3s.yaml
+#   helm install georag charts/georag/ -f values-vanilla.yaml
+#   helm install georag charts/georag/ -f values-airgap.yaml
+#
+# Every section is heavily commented — search this file before consulting
+# external docs. Sizes are tuned for the "small" tier (single-tenant
+# pilot, ≤50 active users); see docs/deployment/k8s-reference.md for
+# the medium/large sizing tables.
+# ─────────────────────────────────────────────────────────────────────
+
+global:
+  # K8s namespace. The chart's namespace.yaml creates this unless
+  # `global.createNamespace=false`.
+  namespace: georag
+  createNamespace: true
+
+  # Registry override. Set this when air-gapped to point at a private
+  # registry. Empty string = use upstream public registries.
+  imageRegistry: ""
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+  # Per-tier resource preset — informational; individual service blocks
+  # below carry the actual requests/limits. Change there, not here.
+  tier: small  # small | medium | large
+
+  # Shared cluster assumptions. Override for vanilla / OpenShift / etc.
+  storageClass: local-path     # K3s default; vanilla often uses ""
+  ingressClass: traefik        # K3s default; vanilla often "nginx"
+
+# ─────────────────────────────────────────────────────────────────────
+# Secrets — provided either via --set / --set-file or via a separately
+# created Secret with the same name (chart uses `lookup` to skip
+# template-side rendering if the Secret already exists).
+# ─────────────────────────────────────────────────────────────────────
+secrets:
+  postgresPassword: ""           # CHANGEME
+  pgAppPassword: ""              # for the georag_app role (RLS user)
+  neo4jPassword: ""              # CHANGEME
+  redisPassword: ""              # CHANGEME
+  qdrantApiKey: ""               # optional; empty disables auth
+  fastapiServiceKey: ""          # 32+ char shared HMAC for /internal/*
+  laravelAppKey: ""              # `php artisan key:generate --show`
+  hatchetClientToken: ""         # output of `hatchet token create`
+
+# ─────────────────────────────────────────────────────────────────────
+# PostgreSQL 18.3 + PostGIS 3.6.3 — owned image (per ADR-0002).
+# StatefulSet with a single replica and a 50Gi PVC.
+# ─────────────────────────────────────────────────────────────────────
+postgresql:
+  enabled: true
+  image:
+    repository: ghcr.io/anthropics/georag/postgresql
+    tag: "18.3-postgis3.6-h3"
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 50Gi
+    accessMode: ReadWriteOnce
+  resources:
+    requests: { cpu: "1", memory: "2Gi" }
+    limits:   { cpu: "4", memory: "8Gi" }
+  # PG-specific config
+  maxConnections: 200
+  sharedBuffers: "1GB"
+  workMem: "16MB"
+
+pgbouncer:
+  enabled: true
+  image:
+    repository: edoburu/pgbouncer
+    tag: "1.25"
+  service:
+    port: 6432
+  replicas: 2
+  poolMode: transaction
+  defaultPoolSize: 25
+  maxClientConn: 200
+  resources:
+    requests: { cpu: "200m", memory: "128Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Neo4j Community Edition (per CLAUDE.md hard rule: NOT Enterprise).
+# StatefulSet with a single replica + 20Gi PVC.
+# ─────────────────────────────────────────────────────────────────────
+neo4j:
+  enabled: true
+  image:
+    repository: neo4j
+    tag: "2026.03-community"
+  service:
+    boltPort: 7687
+    httpPort: 7474
+  persistence:
+    enabled: true
+    size: 20Gi
+  heapInitialSize: 1G
+  heapMaxSize: 2G
+  pagecacheSize: 1G
+  resources:
+    requests: { cpu: "500m", memory: "2Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Qdrant v1.17 — vector store. StatefulSet, 30Gi PVC.
+# ─────────────────────────────────────────────────────────────────────
+qdrant:
+  enabled: true
+  image:
+    repository: qdrant/qdrant
+    tag: "v1.17.0"
+  service:
+    grpcPort: 6334
+    httpPort: 6333
+  persistence:
+    enabled: true
+    size: 30Gi
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Redis 8.6 — cache + Laravel session store + dedupe windows.
+# StatefulSet, 5Gi PVC, AOF persistence.
+# ─────────────────────────────────────────────────────────────────────
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "8.6-alpine"
+  service:
+    port: 6379
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Object store — SeaweedFS S3-compatible (per ADR-0001).
+# Falls back to MinIO if seaweedfs.enabled=false AND minio.enabled=true.
+# ─────────────────────────────────────────────────────────────────────
+seaweedfs:
+  enabled: true
+  image:
+    repository: chrislusf/seaweedfs
+    tag: "3.85"
+  service:
+    masterPort: 9333
+    s3Port: 8333
+    volumePort: 8080
+  persistence:
+    enabled: true
+    size: 100Gi
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# FastAPI domain service — Pydantic AI + asyncpg + 6-layer §04i.
+# Deployment with HPA (2-8 replicas).
+# ─────────────────────────────────────────────────────────────────────
+fastapi:
+  enabled: true
+  image:
+    repository: ghcr.io/anthropics/georag/fastapi
+    tag: "v1.0.0"
+  service:
+    port: 8000
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Laravel Octane (Swoole) — main webapp + Inertia + admin cockpit.
+# Deployment with HPA (2-6 replicas).
+# ─────────────────────────────────────────────────────────────────────
+laravelOctane:
+  enabled: true
+  image:
+    repository: ghcr.io/anthropics/georag/laravel
+    tag: "v1.0.0"
+  service:
+    port: 8000
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+
+# Laravel Horizon (queue worker pool)
+laravelHorizon:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+# Laravel Reverb (WebSocket server)
+laravelReverb:
+  enabled: true
+  replicas: 1
+  service:
+    port: 8080
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits:   { cpu: "500m", memory: "1Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Hatchet — workflow engine for AI + ingestion pools.
+# StatefulSet for the engine + Deployments for each worker pool.
+# ─────────────────────────────────────────────────────────────────────
+hatchet:
+  enabled: true
+  engine:
+    image:
+      repository: ghcr.io/hatchet-dev/hatchet/hatchet-lite
+      tag: "v0.50"
+    service:
+      grpcPort: 7077
+      apiPort: 8080
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits:   { cpu: "1",    memory: "1Gi" }
+  workers:
+    ai:
+      enabled: true
+      replicas: 1
+      resources:
+        requests: { cpu: "500m", memory: "1Gi" }
+        limits:   { cpu: "2",    memory: "4Gi" }
+    ingestion:
+      enabled: true
+      replicas: 2
+      resources:
+        requests: { cpu: "500m", memory: "1Gi" }
+        limits:   { cpu: "2",    memory: "4Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Martin — PostGIS → MVT tile server (read-only, stateless).
+# ─────────────────────────────────────────────────────────────────────
+martin:
+  enabled: true
+  image:
+    repository: ghcr.io/maplibre/martin
+    tag: "v0.18"
+  service:
+    port: 3000
+  replicas: 2
+  resources:
+    requests: { cpu: "200m", memory: "256Mi" }
+    limits:   { cpu: "1",    memory: "1Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Dagster — scheduled batch ingestion pipelines.
+# ─────────────────────────────────────────────────────────────────────
+dagster:
+  enabled: true
+  webserver:
+    image:
+      repository: ghcr.io/anthropics/georag/dagster
+      tag: "v1.0.0"
+    service:
+      port: 3000
+    replicas: 1
+    resources:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits:   { cpu: "1",    memory: "1Gi" }
+  daemon:
+    replicas: 1
+    resources:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits:   { cpu: "1",    memory: "1Gi" }
+  persistence:
+    enabled: true
+    size: 10Gi
+
+# ─────────────────────────────────────────────────────────────────────
+# vLLM — Qwen/Qwen3-14B-AWQ inference. REQUIRES GPU.
+# Deployment with nodeSelector + toleration for nvidia.com/gpu.
+# ─────────────────────────────────────────────────────────────────────
+vllm:
+  enabled: true
+  image:
+    repository: vllm/vllm-openai
+    tag: "v0.6.6"
+  service:
+    port: 8000
+  model:
+    name: "Qwen/Qwen3-14B-AWQ"
+    maxModelLen: 32768
+    # If true, the model weights ship as a separate PVC mounted at /models
+    # and `--model` is the local path. Use for air-gapped installs.
+    useLocalPvc: false
+    localPvcSize: 60Gi
+  replicas: 1
+  resources:
+    requests:
+      cpu: "4"
+      memory: "32Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "8"
+      memory: "64Gi"
+      nvidia.com/gpu: "1"
+  nodeSelector:
+    nvidia.com/gpu.product: ""    # set to e.g. "NVIDIA-A100-SXM4-40GB"
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+# ─────────────────────────────────────────────────────────────────────
+# Ingress — Traefik on K3s, nginx on vanilla. Defaults to TLS-disabled;
+# enable + plug in cert-manager Issuer in values-vanilla.yaml.
+# ─────────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: ""                 # falls back to global.ingressClass
+  host: georag.local
+  tls:
+    enabled: false
+    secretName: ""
+  annotations: {}
+
+# ─────────────────────────────────────────────────────────────────────
+# Cron-style jobs — pg-init runs the bundled SQL migrations on first
+# install; audit-chain-verify is a nightly CronJob.
+# ─────────────────────────────────────────────────────────────────────
+jobs:
+  pgInit:
+    enabled: true
+    image:
+      repository: ghcr.io/anthropics/georag/fastapi
+      tag: "v1.0.0"
+  auditChainVerify:
+    enabled: true
+    schedule: "0 3 * * *"
+
+# ─────────────────────────────────────────────────────────────────────
+# Deferred to §11.6-v3 (not yet templated):
+# ─────────────────────────────────────────────────────────────────────
+#  - observability stack: prometheus / grafana / loki / promtail /
+#    otel-collector / tempo / alertmanager
+#  - minio (legacy object store; SeaweedFS is the §11-v2 default)
+#  - kestra (workflow editor UI)
+#  - caddy (TLS termination — use ingress + cert-manager instead)
+#
+# These will land as optional subcharts. For now, run them via the
+# upstream charts (`kube-prometheus-stack`, `loki`, etc.) alongside
+# this one.

@@ -1,0 +1,76 @@
+{
+  "_doc": "Phase 12 Step 3 (R-P11-l6-config) — SME-editable Layer 6 constraints. Adjusting limits here is a config change, not a code change; reload requires restarting the fastapi container or hot-reloading the module. Each entry maps 1:1 onto the GeologicalConstraint dataclass in layer6_constraints.py. `keywords` and `negative_keywords` are Python regex patterns; remember to escape backslashes per JSON rules.",
+  "_version": "0.1.0",
+  "constraints": [
+    {
+      "name": "depth_max_m",
+      "keywords": ["\\bdepth\\b", "\\btotal\\s+depth\\b", "\\btd\\b"],
+      "min_value": 0.0,
+      "max_value": 5000.0,
+      "unit_hint": "metres (m)",
+      "context_chars": 200,
+      "negative_keywords": [
+        "\\beasting\\b",
+        "\\bnorthing\\b",
+        "\\bcoordinate\\b",
+        "\\butm\\b",
+        "\\blon\\b",
+        "\\blat\\b"
+      ]
+    },
+    {
+      "name": "grade_gold_max_ppm",
+      "keywords": ["\\bgold\\b", "\\bau\\b", "\\bppm\\b", "\\bg/t\\b", "\\bg/tonne\\b"],
+      "min_value": 0.0,
+      "max_value": 1000.0,
+      "unit_hint": "ppm Au",
+      "context_chars": 200,
+      "negative_keywords": []
+    },
+    {
+      "name": "grade_uranium_max_pct",
+      "keywords": ["\\buranium\\b", "\\bu3o8\\b", "\\bu\\s*3\\s*o\\s*8\\b", "\\beU3O8\\b"],
+      "min_value": 0.0,
+      "max_value": 50.0,
+      "unit_hint": "% U3O8",
+      "context_chars": 200,
+      "negative_keywords": []
+    },
+    {
+      "name": "recovery_max_pct",
+      "keywords": ["\\brecovery\\b", "\\bcore\\s+recovery\\b", "\\brqd\\b"],
+      "min_value": 0.0,
+      "max_value": 100.0,
+      "unit_hint": "%",
+      "context_chars": 200,
+      "negative_keywords": []
+    },
+    {
+      "name": "azimuth_range",
+      "keywords": ["\\bazimuth\\b", "\\bbearing\\b"],
+      "min_value": 0.0,
+      "max_value": 360.0,
+      "unit_hint": "degrees (0–360)",
+      "context_chars": 200,
+      "negative_keywords": []
+    },
+    {
+      "name": "dip_range",
+      "keywords": ["\\bdip\\b"],
+      "min_value": -90.0,
+      "max_value": 0.0,
+      "unit_hint": "degrees (-90 to 0, negative convention)",
+      "context_chars": 200,
+      "negative_keywords": []
+    },
+    {
+      "name": "rqd_range",
+      "keywords": ["\\brqd\\b", "\\brock\\s+quality\\b"],
+      "min_value": 0.0,
+      "max_value": 100.0,
+      "unit_hint": "% RQD (0–100)",
+      "context_chars": 200,
+      "negative_keywords": []
+    }
+  ]
+}

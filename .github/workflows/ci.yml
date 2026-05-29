@@ -1,0 +1,502 @@
+name: GeoRAG CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHP_VERSION: "8.4"
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  # ─── Laravel lint + test ──────────────────────────────────────────────
+  laravel:
+    name: Laravel (Pint + PHPUnit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        # H-A4-03 fix (Chunk 10.1): bumped from postgis/postgis:17-3.5 to
+        # postgis/postgis:18-3.6 to match the production PostgreSQL major version.
+        # Production uses the alpine variant (docker-compose.yml); CI uses the
+        # Debian variant because GitHub Actions runners use apt-get, not apk.
+        # Both variants carry PostgreSQL 18 + PostGIS 3.6 — the major version
+        # match is what closes H-A4-03.
+        # Digest pinned (Chunk 10.2): sha256 captured 2026-04-26 from
+        # docker pull postgis/postgis:18-3.6 on the Debian (non-alpine) variant.
+        # Re-pin when upgrading PostGIS minor version.
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Run Laravel Pint (lint)
+        run: vendor/bin/pint --test
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Run migrations
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Run PHPUnit
+        run: php artisan test --parallel
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+  # ─── Python lint ──────────────────────────────────────────────────────
+  python-lint:
+    name: Python (Ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Lint FastAPI
+        run: ruff check src/fastapi/
+
+      - name: Lint Dagster
+        run: ruff check src/dagster/
+
+      # Doc-phase 125 — incident-driven gate. Catches the doc-phase 122
+      # failure mode (app/main.py imports `sentry_sdk` but pyproject's
+      # `dependencies` had been edited to remove `sentry-sdk[fastapi]`).
+      # Pure-stdlib script; runs in <1 second.
+      - name: Pyproject covers app imports (FastAPI)
+        run: python3 scripts/check_pyproject_covers_imports.py
+
+      # Doc-phase 126 — same gate, Dagster side. Both targets share the
+      # one script + allow-list.
+      - name: Pyproject covers app imports (Dagster)
+        run: python3 scripts/check_pyproject_covers_imports.py src/dagster/pyproject.toml src/dagster/georag_dagster
+
+      # Phase 0 #16 — orchestration-boundary gate. Fails the build if
+      # LangGraph code starts doing work owned by Hatchet (durable
+      # workflow + retry) or Kestra (outbound webhooks). See
+      # master plan v2.4.2 §1 and scripts/ci/langgraph_boundary_check.sh.
+      - name: LangGraph boundary check (§1 stack discipline)
+        run: bash scripts/ci/langgraph_boundary_check.sh
+
+  # ─── Qwen / Ollama config-drift guard ────────────────────────────────
+  # Cheap stdlib-only check that the four cross-file Qwen settings stay
+  # consistent across .env.example, docker-compose.yml, and config.py.
+  # Cost-justified after the 2026-04-27 review found three live drifts
+  # (LLM_PRIMARY_MODEL, OLLAMA_NUM_CTX, MAX_CONTEXT_TOKENS).
+  qwen-config-drift:
+    name: Qwen config drift guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Run drift guard
+        run: python scripts/check_qwen_config_drift.py
+
+  # ─── Python tests ────────────────────────────────────────────────────
+  python-test:
+    name: Python (pytest)
+    runs-on: ubuntu-latest
+    needs: python-lint
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Run FastAPI tests
+        # C-A4-01 fix (Chunk 10.1): old command excluded golden+hallucination but kept
+        # them silently deselected — the quality gates never ran in CI.
+        # New strategy: the fast/mockable suite runs here (Bucket 1). Tests marked
+        # integration, golden, hallucination, or live require the full stack and are
+        # routed to release-rehearsal.yml (Bucket 3, dispatch/tag-push triggered).
+        # See .github/workflows/release-rehearsal.yml for the live-stack gate.
+        working-directory: src/fastapi
+        # Module 10 Chunk 10.7 — `chaos` excluded from the fast PR suite;
+        # the weekly `chaos.yml` workflow runs that subset on a cron.
+        run: uv run pytest tests/ -v --tb=short -m "not integration and not golden and not hallucination and not live and not chaos"
+
+      - name: Install Dagster dependencies
+        working-directory: src/dagster
+        run: uv sync --extra dev
+
+      - name: Run Dagster tests
+        working-directory: src/dagster
+        run: uv run pytest tests/ -v --tb=short -m "not integration"
+
+  # ─── Frontend lint + build ────────────────────────────────────────────
+  frontend:
+    name: Frontend (ESLint + Vite Build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Vitest
+        run: npm run test --if-present
+
+      - name: Vite build
+        run: npm run build
+
+  # ─── pgTAP MVT function tests ────────────────────────────────────────
+  pgtap:
+    name: pgTAP (MVT function assertions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Runs after Laravel job so that migrations are proven to apply cleanly
+    # before we assert on their resulting SQL functions.
+    needs: laravel
+
+    services:
+      postgres:
+        # H-A4-03 fix (Chunk 10.1): bumped from postgis/postgis:17-3.5 to
+        # postgis/postgis:18-3.6 to match the production PostgreSQL major version.
+        # Production (docker-compose.yml) uses the alpine variant; CI uses the
+        # Debian variant because GitHub Actions runners use apt-get for the
+        # pgTAP source build (make + postgresql-server-dev-18).
+        # Both variants carry PostgreSQL 18 + PostGIS 3.6 — the major version
+        # match is what closes H-A4-03.
+        # Digest pinned (Chunk 10.2): sha256 captured 2026-04-26.
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Run migrations
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Install pgTAP from source
+        # H-A4-03 fix (Chunk 10.1): updated for PG 18.
+        # pgTAP is not in the Debian apt repo for PG 18 either; we build from source.
+        # build-essential + postgresql-server-dev-XX are required for make install.
+        # PG_VERSION is read from the live server (returns "18" for PG 18.x).
+        # Fallback to postgresql-server-dev-all if the versioned package isn't
+        # available yet on the GitHub Actions runner's apt mirror.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libpq-dev perl
+          PG_VERSION=$(psql -U georag -h localhost -d georag_test -tAc "SHOW server_version_num;" 2>/dev/null | head -c2 || echo "18")
+          sudo apt-get install -y -qq "postgresql-server-dev-${PG_VERSION}" 2>/dev/null || \
+            sudo apt-get install -y -qq postgresql-server-dev-all
+          cd /tmp
+          curl -fsSL https://github.com/theory/pgtap/archive/refs/tags/v1.3.3.tar.gz | tar xz
+          cd pgtap-1.3.3
+          make
+          sudo make install
+        env:
+          PGPASSWORD: test_password
+
+      - name: Install pgTAP extension
+        run: |
+          psql -U georag -h localhost -d georag_test \
+            -c "CREATE EXTENSION IF NOT EXISTS pgtap; SELECT extname, extversion FROM pg_extension WHERE extname='pgtap';"
+        env:
+          PGPASSWORD: test_password
+
+      - name: Load golden snapshot seed fixture
+        # seed_golden_fixture.sql is idempotent (ON CONFLICT DO NOTHING).
+        # Must run before 10_golden_mvt_snapshots.sql or Block 1 seed-guard assertions fail.
+        run: |
+          psql -U georag -h localhost -d georag_test \
+            -f database/tests/pgtap/seed_golden_fixture.sql
+        env:
+          PGPASSWORD: test_password
+
+      - name: Run pgTAP assertions
+        run: |
+          # Run each numbered pgTAP file (NN_*.sql) directly via psql.
+          # seed_golden_fixture.sql is excluded — it has no pgTAP plan() call.
+          # Exit non-zero if any file reports failures.
+          FAILED=0
+          for f in database/tests/pgtap/[0-9][0-9]_*.sql; do
+            echo "==> $f"
+            OUTPUT=$(psql -t -U georag -h localhost -d georag_test -f "$f" 2>&1)
+            echo "$OUTPUT" | grep -E '^ (ok|not ok) [0-9]' || true
+            FINISH=$(echo "$OUTPUT" | grep 'Looks like you failed\|planned.*but ran' || true)
+            if [[ -n "$FINISH" ]]; then
+              echo "FAIL: $f — $FINISH"
+              FAILED=1
+            elif echo "$OUTPUT" | grep -q 'ERROR:'; then
+              echo "FAIL: $f — SQL error in transaction"
+              echo "$OUTPUT" | grep 'ERROR:' | head -5
+              FAILED=1
+            else
+              PLAN=$(echo "$OUTPUT" | grep -m1 '^ 1\.\.' | sed 's/^ 1\.\.//' | tr -d ' ')
+              echo "PASS: $f — ${PLAN} assertions"
+            fi
+          done
+          exit $FAILED
+        env:
+          PGPASSWORD: test_password
+
+  # ─── Hadolint — Dockerfile lint (warn-only, runs on PRs and pushes) ─────
+  # Closes: L-A4-09 (hadolint step). failure-threshold: warning means lint
+  # findings are surfaced in the annotation UI without blocking PR merge.
+  # Tighten to failure-threshold: error once the Dockerfiles are lint-clean.
+  hadolint:
+    name: Hadolint (Dockerfile lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint docker/fastapi.Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/fastapi.Dockerfile
+          failure-threshold: warning
+
+      - name: Lint docker/laravel.Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/laravel.Dockerfile
+          failure-threshold: warning
+
+      - name: Lint docker/dagster.Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/dagster.Dockerfile
+          failure-threshold: warning
+
+  # ─── Docker build + push (GHCR on main) + Trivy + SBOM ──────────────────
+  # Strategy:
+  #   PRs:   build only (no push) — fast cycle, no registry writes.
+  #   main:  build + push with SHA tag + rolling "main" tag.
+  #
+  # Images pushed to:
+  #   ghcr.io/<owner>/georag-fastapi:<short-sha>  (immutable, consumed by cd.yml)
+  #   ghcr.io/<owner>/georag-fastapi:main         (rolling latest on main)
+  #   (same pattern for laravel and dagster)
+  #
+  # Platforms: linux/amd64 + linux/arm64 (v1.5-13).
+  # Cache: GitHub Actions cache (type=gha) scoped per image name.
+  #
+  # Note on arm64 prod deployments: the three georag/* images this job
+  # builds are Python/PHP and are arm64-clean. The compose stack also
+  # includes vLLM (prod LLM tier), which is x86_64-only — arm64 hosts
+  # can run dev (Ollama) but cannot run the prod LLM tier directly.
+  # See ops/runbooks/llm-model-swap.md for the arm64 deployment caveat.
+  #
+  # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
+  docker-build:
+    name: Docker Build${{ github.ref == 'refs/heads/main' && ' + Push (GHCR)' || ' (PR smoke test)' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Matrix over the three images so each gets its own cache scope and SBOM.
+    # Failures in one image do not cancel the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: fastapi
+            dockerfile: docker/fastapi.Dockerfile
+            context: src/fastapi
+          - service: laravel
+            dockerfile: docker/laravel.Dockerfile
+            context: .
+          - service: dagster
+            dockerfile: docker/dagster.Dockerfile
+            context: src/dagster
+
+    # GITHUB_TOKEN must have packages:write to push to GHCR.
+    # id-token:write is required by anchore/sbom-action attestation.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login to GHCR only on main branch pushes (PRs build without pushing).
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Short SHA tag — immutable identifier used by cd.yml deploy jobs.
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Build and optionally push.
+      # On PRs: push=false, load=true (image available to Trivy via local daemon).
+      # On main: push=true, load=false (image in GHCR, Trivy pulls from there).
+      - name: Build${{ github.ref == 'refs/heads/main' && ' and push' || '' }} ${{ matrix.service }} image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          load: ${{ github.ref != 'refs/heads/main' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}
+            ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:main
+          cache-from: type=gha,scope=georag-${{ matrix.service }}
+          cache-to: type=gha,scope=georag-${{ matrix.service }},mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      # Trivy vulnerability scan.
+      # CRITICAL severity fails the build (exit-code: "1").
+      # HIGH is reported but does not block — tighten to CRITICAL,HIGH once
+      # base images are updated to non-EOL OS versions.
+      # ignore-unfixed: true skips CVEs with no upstream fix (noise reduction).
+      - name: Trivy scan — ${{ matrix.service }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+
+      # SBOM generation via Syft (anchore/sbom-action). SPDX JSON format.
+      # Artifact is uploaded and retained 90 days for supply-chain audits.
+      # Closes L-A4-08.
+      - name: Generate SBOM — ${{ matrix.service }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}.spdx.json
+          output-file: /tmp/sbom-${{ matrix.service }}.spdx.json
+
+      - name: Upload SBOM artifact — ${{ matrix.service }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}
+          path: /tmp/sbom-${{ matrix.service }}.spdx.json
+          retention-days: 90

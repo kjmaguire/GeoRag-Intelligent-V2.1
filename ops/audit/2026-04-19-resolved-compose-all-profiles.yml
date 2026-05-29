@@ -1,0 +1,1256 @@
+name: georagintelligencev10
+services:
+  dagster-daemon:
+    profiles:
+      - dev-ingest
+      - dev-full
+    build:
+      context: /home/Development/GeoRAG Intelligence V.1.0/src/dagster
+      dockerfile: ../../docker/dagster.Dockerfile
+    command:
+      - dagster-daemon
+      - run
+    container_name: georag-dagster-daemon
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "1073741824"
+        reservations:
+          memory: "134217728"
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_PG_DB: georag_dagster
+      DAGSTER_PG_HOST: postgresql
+      DAGSTER_PG_PASSWORD: georag_dev_password
+      DAGSTER_PG_PORT: "5432"
+      DAGSTER_PG_USER: georag
+      HOME: /opt/dagster/dagster_home
+      LOG_LEVEL: debug
+      MINIO_BUCKET_BRONZE: georag-bronze
+      MINIO_ENDPOINT: http://minio:8333
+      MINIO_ROOT_PASSWORD: georag_minio_dev
+      MINIO_ROOT_USER: georag-admin
+      NEO4J_AUTH: none
+      NEO4J_HOST: neo4j
+      NEO4J_PORT: "7687"
+      NEO4J_URI: bolt://neo4j:7687
+      POSTGRES_DB: georag
+      POSTGRES_HOST: pgbouncer
+      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_PORT: "6432"
+      POSTGRES_USER: georag
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - dagster-daemon liveness-check || exit 1
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 1m0s
+    image: georag/dagster:latest
+    networks:
+      georag: null
+    restart: unless-stopped
+    user: root
+    volumes:
+      - type: volume
+        source: dagster_home
+        target: /opt/dagster/dagster_home
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/dagster
+        target: /opt/dagster/app
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/dagster/dagster.yaml
+        target: /opt/dagster/dagster_home/dagster.yaml
+        read_only: true
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/dagster/workspace.yaml
+        target: /opt/dagster/dagster_home/workspace.yaml
+        read_only: true
+        bind: {}
+    working_dir: /opt/dagster/app
+  dagster-webserver:
+    profiles:
+      - dev-ingest
+      - dev-full
+    command:
+      - dagster-webserver
+      - --host
+      - 0.0.0.0
+      - --port
+      - "3001"
+    container_name: georag-dagster-webserver
+    depends_on:
+      dagster-daemon:
+        condition: service_started
+        required: true
+      pgbouncer:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "1073741824"
+        reservations:
+          memory: "134217728"
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_PG_DB: georag_dagster
+      DAGSTER_PG_HOST: postgresql
+      DAGSTER_PG_PASSWORD: georag_dev_password
+      DAGSTER_PG_PORT: "5432"
+      DAGSTER_PG_USER: georag
+      HOME: /opt/dagster/dagster_home
+      LOG_LEVEL: debug
+      NEO4J_URI: bolt://neo4j:7687
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:3001/health
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 1m0s
+    image: georag/dagster:latest
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 3001
+        published: "3001"
+        protocol: tcp
+    restart: unless-stopped
+    user: root
+    volumes:
+      - type: volume
+        source: dagster_home
+        target: /opt/dagster/dagster_home
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/dagster
+        target: /opt/dagster/app
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/dagster/dagster.yaml
+        target: /opt/dagster/dagster_home/dagster.yaml
+        read_only: true
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/dagster/workspace.yaml
+        target: /opt/dagster/dagster_home/workspace.yaml
+        read_only: true
+        bind: {}
+    working_dir: /opt/dagster/app
+  fastapi:
+    profiles:
+      - dev-light
+      - dev-full
+    build:
+      context: /home/Development/GeoRAG Intelligence V.1.0/src/fastapi
+      dockerfile: ../../docker/fastapi.Dockerfile
+    container_name: georag-fastapi
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 2
+          memory: "2147483648"
+        reservations:
+          memory: "268435456"
+    environment:
+      ANTHROPIC_API_KEY: ""
+      ANTHROPIC_ENABLE_PROMPT_CACHING: "true"
+      ANTHROPIC_MAX_OUTPUT_TOKENS: "4096"
+      ANTHROPIC_MODEL: claude-opus-4-7
+      ANTHROPIC_USE_PRIORITY_TIER: "false"
+      FASTAPI_HOST: fastapi
+      FASTAPI_PORT: "8000"
+      FASTAPI_SERVICE_KEY: -2INYozn_wT_cyjmed1Tt9hXgAZQ-0Kxwn6liLZ_RY_AVFJ7TVf1P90bk002Ac74
+      HF_HOME: /tmp/hf_cache
+      LLM_BACKEND: ollama
+      LLM_BACKEND_FALLBACK: downshift
+      LLM_FALLBACK_ENABLED: "false"
+      LLM_FALLBACK_URL: ""
+      LLM_PRIMARY_MODEL: qwen2.5:14b
+      LLM_PRIMARY_URL: http://ollama:11434/v1
+      LOG_LEVEL: debug
+      MODEL_TIER_DEEP: claude-opus-4-7
+      MODEL_TIER_FAST: claude-haiku-4-5
+      MODEL_TIER_STANDARD: claude-sonnet-4-5
+      NEO4J_AUTH: none
+      NEO4J_HOST: neo4j
+      NEO4J_PORT: "7687"
+      POSTGRES_DB: georag
+      POSTGRES_HOST: pgbouncer
+      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_PORT: "6432"
+      POSTGRES_USER: georag
+      QDRANT_API_KEY: ""
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      REDIS_HOST: redis
+      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PORT: "6379"
+      RETRIEVAL_QUALITY_THRESHOLD: "0.5"
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TIMEOUT_GATHER_S: "120"
+      TIMEOUT_NEO4J_S: "3"
+      TIMEOUT_POSTGIS_S: "5"
+      TIMEOUT_QDRANT_S: "2"
+      TIMEOUT_REDIS_MS: "500"
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      VLLM_MODEL: deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
+      VLLM_URL: http://vllm:8000/v1
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:8000/health
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    image: georag/fastapi:latest
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 8000
+        published: "8000"
+        protocol: tcp
+    restart: unless-stopped
+    user: root
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/src/fastapi
+        target: /app
+        bind: {}
+      - type: volume
+        source: fastapi_hf_cache
+        target: /tmp/hf_cache
+        volume: {}
+  grafana:
+    profiles:
+      - dev-monitor
+      - dev-full
+    container_name: georag-grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+        required: true
+    environment:
+      GF_DATASOURCE_NAME: Prometheus
+      GF_DATASOURCE_TYPE: prometheus
+      GF_DATASOURCE_URL: http://prometheus:9090
+      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-clock-panel
+      GF_SECURITY_ADMIN_PASSWORD: georag_grafana_dev
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SERVER_ROOT_URL: http://localhost:3000
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:3000/api/health
+      timeout: 5s
+      interval: 15s
+      retries: 3
+      start_period: 30s
+    image: grafana/grafana:11.6.1
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3000"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: grafana_data
+        target: /var/lib/grafana
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/grafana/dashboards
+        target: /var/lib/grafana/dashboards
+        read_only: true
+        bind: {}
+  laravel-horizon:
+    profiles:
+      - dev-light
+      - dev-full
+    command:
+      - php
+      - artisan
+      - horizon
+    container_name: georag-laravel-horizon
+    depends_on:
+      laravel-octane:
+        condition: service_started
+        required: true
+      pgbouncer:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 2
+          memory: "1073741824"
+        reservations:
+          memory: "134217728"
+    environment:
+      APP_DEBUG: "true"
+      APP_ENV: local
+      APP_KEY: base64:YqcpJvkW8MaNtfUv8mUAH8eh8CHo/OzPiypJrx0y6jM=
+      APP_NAME: GeoRAG Intelligence
+      APP_URL: http://localhost
+      AWS_ACCESS_KEY_ID: georag-admin
+      AWS_BUCKET: georag-bronze
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT: http://minio:8333
+      AWS_SECRET_ACCESS_KEY: georag_minio_dev
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+      DB_CONNECTION: pgsql
+      DB_DATABASE: georag
+      DB_HOST: pgbouncer
+      DB_PASSWORD: georag_dev_password
+      DB_PORT: "6432"
+      DB_USERNAME: georag
+      FASTAPI_HOST: fastapi
+      FASTAPI_PORT: "8000"
+      FASTAPI_SERVICE_KEY: -2INYozn_wT_cyjmed1Tt9hXgAZQ-0Kxwn6liLZ_RY_AVFJ7TVf1P90bk002Ac74
+      LOG_CHANNEL: stack
+      LOG_LEVEL: debug
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PORT: "6379"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - php artisan horizon:status | grep -E 'running|paused' || exit 1
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 1m0s
+    image: georag/laravel:latest
+    networks:
+      georag: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0
+        target: /app
+        bind: {}
+  laravel-octane:
+    profiles:
+      - dev-light
+      - dev-full
+    build:
+      context: /home/Development/GeoRAG Intelligence V.1.0
+      dockerfile: docker/laravel.Dockerfile
+    command:
+      - sh
+      - -c
+      - |-
+        rm -f /usr/local/etc/php/conf.d/opcache-dev.ini &&
+               echo 'opcache.validate_timestamps=1' > /usr/local/etc/php/conf.d/zz-opcache-override.ini &&
+               php artisan octane:start --host=0.0.0.0 --port=80 --server=swoole --workers=4 --task-workers=6 --max-requests=500
+    container_name: georag-laravel-octane
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 2
+          memory: "2147483648"
+        reservations:
+          memory: "268435456"
+    environment:
+      APP_DEBUG: "true"
+      APP_ENV: local
+      APP_KEY: base64:YqcpJvkW8MaNtfUv8mUAH8eh8CHo/OzPiypJrx0y6jM=
+      APP_NAME: GeoRAG Intelligence
+      APP_URL: http://localhost
+      AWS_ACCESS_KEY_ID: georag-admin
+      AWS_BUCKET: georag-bronze
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT: http://minio:8333
+      AWS_SECRET_ACCESS_KEY: georag_minio_dev
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+      CACHE_DRIVER: redis
+      DB_CONNECTION: pgsql
+      DB_DATABASE: georag
+      DB_HOST: pgbouncer
+      DB_PASSWORD: georag_dev_password
+      DB_PORT: "6432"
+      DB_USERNAME: georag
+      FASTAPI_HOST: fastapi
+      FASTAPI_PORT: "8000"
+      FASTAPI_SERVICE_KEY: -2INYozn_wT_cyjmed1Tt9hXgAZQ-0Kxwn6liLZ_RY_AVFJ7TVf1P90bk002Ac74
+      LOG_CHANNEL: stack
+      LOG_LEVEL: debug
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PORT: "6379"
+      REVERB_APP_ID: georag-app
+      REVERB_APP_KEY: georag-reverb-key
+      REVERB_APP_SECRET: georag-reverb-secret
+      REVERB_HOST: laravel-reverb
+      REVERB_PORT: "8080"
+      REVERB_SCHEME: http
+      SESSION_DRIVER: redis
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:80/up
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 1m0s
+    image: georag/laravel:latest
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 80
+        published: "8888"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0
+        target: /app
+        bind: {}
+  laravel-reverb:
+    profiles:
+      - dev-light
+      - dev-full
+    command:
+      - php
+      - artisan
+      - reverb:start
+      - --host=0.0.0.0
+      - --port=8080
+    container_name: georag-laravel-reverb
+    depends_on:
+      laravel-octane:
+        condition: service_started
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "536870912"
+        reservations:
+          memory: "67108864"
+    environment:
+      APP_DEBUG: "true"
+      APP_ENV: local
+      APP_KEY: base64:YqcpJvkW8MaNtfUv8mUAH8eh8CHo/OzPiypJrx0y6jM=
+      APP_NAME: GeoRAG Intelligence
+      APP_URL: http://localhost
+      DB_CONNECTION: pgsql
+      DB_DATABASE: georag
+      DB_HOST: pgbouncer
+      DB_PASSWORD: georag_dev_password
+      DB_PORT: "6432"
+      DB_USERNAME: georag
+      LOG_CHANNEL: stack
+      LOG_LEVEL: debug
+      REDIS_HOST: redis
+      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PORT: "6379"
+      REVERB_APP_ID: georag-app
+      REVERB_APP_KEY: georag-reverb-key
+      REVERB_APP_SECRET: georag-reverb-secret
+      REVERB_HOST: laravel-reverb
+      REVERB_PORT: "8080"
+      REVERB_SCHEME: http
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -sf -o /dev/null http://localhost:8080/ || test $$? -eq 22
+      timeout: 5s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    image: georag/laravel:latest
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8085"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0
+        target: /app
+        bind: {}
+  martin:
+    profiles:
+      - dev-light
+      - dev-full
+    command:
+      - --config
+      - /config/martin.yaml
+    container_name: georag-martin
+    depends_on:
+      postgresql:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "536870912"
+        reservations:
+          memory: "67108864"
+    environment:
+      DATABASE_URL: postgresql://georag:georag_dev_password@postgresql:5432/georag
+    # Martin 1.7+ exposes /_/health for liveness checks (replaced /health from
+    # 1.5.x). The image ships /usr/bin/wget so a CMD-SHELL probe works without
+    # adding a sidecar. Re-enabled 2026-05-07 — see ops/audit/2026-04-19-infra-
+    # phase-b-critical-fixes.md item HC-03 for original disable rationale.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget --spider -q http://127.0.0.1:3000/_/health
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 15s
+    image: ghcr.io/maplibre/martin:1.7.0
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3002"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/martin/martin.yaml
+        target: /config/martin.yaml
+        read_only: true
+        bind: {}
+  minio:
+    profiles:
+      - dev-data
+      - dev-full
+    container_name: georag-minio
+    deploy:
+      resources:
+        limits:
+          cpus: 2
+          memory: "2147483648"
+        reservations:
+          memory: "268435456"
+    entrypoint:
+      - sh
+      - /usr/local/bin/entrypoint.sh
+    environment:
+      MINIO_ROOT_PASSWORD: georag_minio_dev
+      MINIO_ROOT_USER: georag-admin
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:9333/cluster/status >/dev/null
+      timeout: 5s
+      interval: 15s
+      retries: 5
+      start_period: 30s
+    image: chrislusf/seaweedfs:4.20
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 8333
+        published: "9002"
+        protocol: tcp
+      - mode: ingress
+        target: 8888
+        published: "9003"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: minio_data
+        target: /data
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/seaweedfs/entrypoint.sh
+        target: /usr/local/bin/entrypoint.sh
+        read_only: true
+        bind: {}
+  minio-init:
+    profiles:
+      - dev-data
+      - dev-full
+    container_name: georag-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+        required: true
+    entrypoint:
+      - sh
+      - -c
+      - |
+
+          echo 'Waiting for SeaweedFS S3 endpoint...' &&
+          until mc alias set georag http://minio:8333 georag-admin georag_minio_dev > /dev/null 2>&1; do
+            echo 'SeaweedFS not ready, retrying in 2s...' && sleep 2;
+          done &&
+          echo 'SeaweedFS ready u2014 provisioning buckets...' &&
+          mc mb --ignore-existing georag/georag-bronze &&
+          mc mb --ignore-existing georag/georag-exports &&
+          echo 'Buckets provisioned.'
+    environment:
+      MINIO_ROOT_PASSWORD: georag_minio_dev
+    image: minio/mc:RELEASE.2025-04-08T15-39-49Z
+    networks:
+      georag: null
+    restart: "no"
+  neo4j:
+    profiles:
+      - dev-data
+      - dev-full
+    container_name: georag-neo4j
+    deploy:
+      resources:
+        limits:
+          cpus: 4
+          memory: "6442450944"
+        reservations:
+          memory: "2147483648"
+    environment:
+      NEO4J_AUTH: none
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_connector_bolt_thread__pool__max__size: "50"
+      NEO4J_dbms_connector_bolt_thread__pool__min__size: "5"
+      NEO4J_dbms_logs_query_enabled: INFO
+      NEO4J_dbms_logs_query_threshold: 1000ms
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_transaction_timeout: 60s
+      NEO4J_server_memory_heap_initial__size: 2G
+      NEO4J_server_memory_heap_max__size: 4G
+      NEO4J_server_memory_pagecache_size: 4G
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - cypher-shell -a bolt://localhost:7687 'RETURN 1' || exit 1
+      timeout: 10s
+      interval: 20s
+      retries: 10
+      start_period: 1m30s
+    image: neo4j:2026.02.3-community
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 7474
+        published: "7474"
+        protocol: tcp
+      - mode: ingress
+        target: 7687
+        published: "7687"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: neo4j_data
+        target: /data
+        volume: {}
+      - type: volume
+        source: neo4j_logs
+        target: /logs
+        volume: {}
+      - type: volume
+        source: neo4j_plugins
+        target: /plugins
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/neo4j/conf
+        target: /conf
+        read_only: true
+        bind: {}
+  neo4j-warmup:
+    profiles:
+      - dev-data
+      - dev-full
+    container_name: georag-neo4j-warmup
+    depends_on:
+      neo4j:
+        condition: service_healthy
+        required: true
+    entrypoint:
+      - sh
+      - -c
+      - |
+
+          echo 'Waiting for Neo4j to accept connections...' &&
+          until cypher-shell -a bolt://neo4j:7687 'RETURN 1' > /dev/null 2>&1; do
+            echo 'Neo4j not ready, retrying in 2s...' && sleep 2;
+          done &&
+          echo 'Neo4j is up — applying schema constraints and indices...' &&
+          cypher-shell -a bolt://neo4j:7687 -f /scripts/init-schema.cypher &&
+          echo 'Schema applied — running warmup queries...' &&
+          cypher-shell -a bolt://neo4j:7687 -f /scripts/warmup.cypher &&
+          echo 'Warmup complete.'
+    image: neo4j:2026.02.3-community
+    networks:
+      georag: null
+    restart: "no"
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/neo4j/warmup.cypher
+        target: /scripts/warmup.cypher
+        read_only: true
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/neo4j/init-schema.cypher
+        target: /scripts/init-schema.cypher
+        read_only: true
+        bind: {}
+  ollama:
+    profiles:
+      - dev-llm
+      - dev-full
+    container_name: georag-ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+                - gpu
+              driver: nvidia
+              count: 1
+    environment:
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_HOST: 0.0.0.0
+      OLLAMA_KEEP_ALIVE: 5m
+      OLLAMA_KV_CACHE_TYPE: q8_0
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: "32"
+      OLLAMA_NUM_CTX: "24576"
+      OLLAMA_NUM_PARALLEL: "1"
+    healthcheck:
+      test:
+        - CMD
+        - ollama
+        - list
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    image: ollama/ollama:0.21.0
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 11434
+        published: "11434"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: ollama_models
+        target: /root/.ollama
+        volume: {}
+  pgbouncer:
+    container_name: georag-pgbouncer
+    depends_on:
+      postgresql:
+        condition: service_healthy
+        required: true
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: "268435456"
+        reservations:
+          memory: "67108864"
+    environment:
+      AUTH_TYPE: scram-sha-256
+      DB_HOST: postgresql
+      DB_NAME: georag
+      DB_PASSWORD: georag_dev_password
+      DB_PORT: "5432"
+      DB_USER: georag
+      DEFAULT_POOL_SIZE: "100"
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,jit,application_name
+      LISTEN_PORT: "6432"
+      MAX_CLIENT_CONN: "200"
+      MIN_POOL_SIZE: "5"
+      POOL_MODE: transaction
+      RESERVE_POOL_SIZE: "5"
+      SERVER_IDLE_TIMEOUT: "300"
+      SERVER_RESET_QUERY: DISCARD ALL
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -p 6432 -U georag
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 15s
+    image: edoburu/pgbouncer:v1.25.1-p0
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 6432
+        published: "6432"
+        protocol: tcp
+    restart: unless-stopped
+  postgresql:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=12GB
+      - -c
+      - work_mem=128MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_connections=200
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=64MB
+      - -c
+      - default_statistics_target=100
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - max_worker_processes=8
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - max_parallel_workers=8
+      - -c
+      - max_parallel_maintenance_workers=4
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_checkpoints=on
+      - -c
+      - log_connections=off
+      - -c
+      - log_disconnections=off
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=1s
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.track_utility=off
+      - -c
+      - track_io_timing=on
+      - -c
+      - jit=off
+      - -c
+      - jit_above_cost=-1
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      - -c
+      - lock_timeout=3000
+      - -c
+      - wal_compression=lz4
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - track_activity_query_size=4096
+    container_name: georag-postgresql
+    deploy:
+      resources:
+        limits:
+          cpus: 4
+          memory: "4294967296"
+        reservations:
+          memory: "1073741824"
+    environment:
+      POSTGRES_DB: georag
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+      POSTGRES_PASSWORD: georag_dev_password
+      POSTGRES_USER: georag
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U georag -d georag
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    image: postgis/postgis:18-3.6-alpine
+    networks:
+      georag: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        volume: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/postgresql/init
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        bind: {}
+  prometheus:
+    profiles:
+      - dev-monitor
+      - dev-full
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.enable-lifecycle
+    container_name: georag-prometheus
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9090/-/healthy
+      timeout: 5s
+      interval: 15s
+      retries: 3
+      start_period: 15s
+    image: prom/prometheus:v3.3.1
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 9090
+        published: "9090"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/prometheus/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind: {}
+      - type: bind
+        source: /home/Development/GeoRAG Intelligence V.1.0/docker/prometheus/rules
+        target: /etc/prometheus/rules
+        read_only: true
+        bind: {}
+  qdrant:
+    profiles:
+      - dev-data
+      - dev-full
+    container_name: georag-qdrant
+    deploy:
+      resources:
+        limits:
+          cpus: 2
+          memory: "4294967296"
+        reservations:
+          memory: "536870912"
+    environment:
+      QDRANT__LOG_LEVEL: INFO
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__STORAGE__HNSW_INDEX__EF: "200"
+      QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT: "256"
+      QDRANT__STORAGE__HNSW_INDEX__M: "32"
+      QDRANT__STORAGE__HNSW_INDEX__MAX_INDEXING_THREADS: "4"
+      QDRANT__STORAGE__WAL__WAL_CAPACITY_MB: "256"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c 'echo > /dev/tcp/localhost/6333'
+      timeout: 5s
+      interval: 15s
+      retries: 5
+      start_period: 20s
+    image: qdrant/qdrant:v1.17
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 6333
+        published: "6333"
+        protocol: tcp
+      - mode: ingress
+        target: 6334
+        published: "6334"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: qdrant_data
+        target: /qdrant/storage
+        volume: {}
+  ragflow:
+    profiles:
+      - dev-ingest
+      - dev-full
+    container_name: georag-ragflow
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+        required: true
+      redis:
+        condition: service_healthy
+        required: true
+    environment:
+      DB_HOST: pgbouncer
+      DB_NAME: georag
+      DB_PASSWORD: georag_dev_password
+      DB_PORT: "6432"
+      DB_USER: georag
+      MINIO_ACCESS_KEY: georag-admin
+      MINIO_HOST: minio
+      MINIO_PORT: "8333"
+      MINIO_SECRET_KEY: georag_minio_dev
+      REDIS_HOST: redis
+      REDIS_PASSWORD: georag_redis_dev
+      REDIS_PORT: "6379"
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9380/health
+      timeout: 10s
+      interval: 30s
+      retries: 5
+      start_period: 1m30s
+    image: infiniflow/ragflow:v0.17.2
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 9380
+        published: "9380"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: ragflow_data
+        target: /ragflow/data
+        volume: {}
+  redis:
+    command:
+      - redis-server
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - ""
+      - --databases
+      - "4"
+      - --tcp-backlog
+      - "511"
+      - --timeout
+      - "600"
+      - --tcp-keepalive
+      - "300"
+      - --slowlog-log-slower-than
+      - "1000"
+      - --slowlog-max-len
+      - "256"
+      - --lazyfree-lazy-eviction
+      - "yes"
+      - --lazyfree-lazy-expire
+      - "yes"
+      - --lazyfree-lazy-server-del
+      - "yes"
+      - --lazyfree-lazy-user-del
+      - "yes"
+      - --lazyfree-lazy-user-flush
+      - "yes"
+      - --loglevel
+      - notice
+      - --requirepass
+      - georag_redis_dev
+    container_name: georag-redis
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "1073741824"
+        reservations:
+          memory: "134217728"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a georag_redis_dev ping | grep PONG
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    image: redis:8.6.2-alpine
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 6379
+        published: "6379"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: redis_data
+        target: /data
+        volume: {}
+  vllm:
+    profiles:
+      - gpu-llm-prod
+    command:
+      - --model
+      - deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
+      - --served-model-name
+      - deepseek-ai/DeepSeek-V3
+      - --port
+      - "8000"
+      - --host
+      - 0.0.0.0
+      - --max-model-len
+      - "32768"
+      - --gpu-memory-utilization
+      - "0.85"
+      - --enable-prefix-caching
+      - --tensor-parallel-size
+      - "1"
+    container_name: georag-vllm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+                - gpu
+              driver: nvidia
+              count: 1
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ""
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 10m0s
+    image: vllm/vllm-openai:v0.19.1
+    networks:
+      georag: null
+    ports:
+      - mode: ingress
+        target: 8000
+        published: "8001"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: vllm_hf_cache
+        target: /root/.cache/huggingface
+        volume: {}
+networks:
+  georag:
+    name: georag
+    driver: bridge
+volumes:
+  dagster_home:
+    name: georagintelligencev10_dagster_home
+    driver: local
+  fastapi_hf_cache:
+    name: georagintelligencev10_fastapi_hf_cache
+    driver: local
+  grafana_data:
+    name: georagintelligencev10_grafana_data
+    driver: local
+  minio_data:
+    name: georagintelligencev10_minio_data
+    driver: local
+  neo4j_data:
+    name: georagintelligencev10_neo4j_data
+    driver: local
+  neo4j_logs:
+    name: georagintelligencev10_neo4j_logs
+    driver: local
+  neo4j_plugins:
+    name: georagintelligencev10_neo4j_plugins
+    driver: local
+  ollama_models:
+    name: georagintelligencev10_ollama_models
+    driver: local
+  postgres_data:
+    name: georagintelligencev10_postgres_data
+    driver: local
+  qdrant_data:
+    name: georagintelligencev10_qdrant_data
+    driver: local
+  ragflow_data:
+    name: georagintelligencev10_ragflow_data
+    driver: local
+  redis_data:
+    name: georagintelligencev10_redis_data
+    driver: local
+  vllm_hf_cache:
+    name: georagintelligencev10_vllm_hf_cache
+    driver: local

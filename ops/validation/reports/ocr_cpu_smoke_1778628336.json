@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-05-12T23:25:36Z",
+  "native_input": "/tmp/ocr_smoke_native.pdf",
+  "pages_sampled_per_path": 5,
+  "host": "8178f21fd57f",
+  "cpu_count": 6,
+  "imports": [
+    {
+      "label": "import:pikepdf",
+      "wall_ms": 81.06,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:pypdfium2",
+      "wall_ms": 22.46,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:pdfminer.high_level",
+      "wall_ms": 113.57,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:pdfplumber",
+      "wall_ms": 14.63,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:docling",
+      "wall_ms": 0.53,
+      "ok": true,
+      "value": "imported"
+    },
+    {
+      "label": "import:paddleocr",
+      "wall_ms": 4062.87,
+      "ok": true,
+      "value": "imported"
+    }
+  ],
+  "synth": [
+    {
+      "label": "synth:scanned_pdf",
+      "wall_ms": 149.53,
+      "ok": true,
+      "value": "885872 bytes"
+    },
+    {
+      "label": "synth:mixed_pdf",
+      "wall_ms": 45.32,
+      "ok": true,
+      "value": "476355 bytes"
+    }
+  ],
+  "parse_native": {
+    "label": "parse_native:first_5_pages",
+    "wall_ms": 305.49,
+    "ok": true,
+    "value": {
+      "chars_extracted": 11759,
+      "tables_per_page": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "parse_scanned": {
+    "cold": {
+      "label": "parse_scanned:first_5_pages_synthetic",
+      "wall_ms": 486.23,
+      "ok": false,
+      "error": "ImportError: Failed importing fitz. This likely means that some paddle modules require additional dependencies that have to be manually installed (usually with `pip install fitz`). ",
+      "traceback": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.13/site-packages/paddle/utils/lazy_import.py\", line 39, in try_import\n    mod = importlib.import_module(module_name)\n  File \"/usr/local/lib/python3.13/importlib/__init__.py\", line 88, in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<frozen importlib._bootstrap>\", line 1395, in _gcd_import\n  File \"<frozen importlib._bootstrap>\", line 1360, in _find_and_load\nModuleNotFoundError: No module named 'fitz'\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/tmp/ocr_cpu_smoke.py\", line 51, in time_block\n    out = fn()\n  File \"/tmp/ocr_cpu_smoke.py\", line 187, in parse\n    result = ocr.ocr(str(out_path))\n  File \"/usr/local/lib/python3.13/site-packages/paddleocr/paddleocr.py\", line 744, in ocr\n    img, flag_gif, flag_pdf = check_img(img, alpha_color)\n                              ~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.13/site-packages/paddleocr/paddleocr.py\", line 594, in check_img\n    img, flag_gif, flag_pdf = check_and_read(image_file)\n                              ~~~~~~~~~~~~~~^^^^^^^^^^^^\nImportError: Failed importing fitz. This likely means that some paddle modules require additional dependencies that have to be manually installed (usually with `pip install fitz`). \n"
+    },
+    "warm": {
+      "label": "parse_scanned:first_5_pages_synthetic",
+      "wall_ms": 373.93,
+      "ok": false,
+      "error": "ImportError: Failed importing fitz. This likely means that some paddle modules require additional dependencies that have to be manually installed (usually with `pip install fitz`). ",
+      "traceback": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.13/site-packages/paddle/utils/lazy_import.py\", line 39, in try_import\n    mod = importlib.import_module(module_name)\n  File \"/usr/local/lib/python3.13/importlib/__init__.py\", line 88, in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<frozen importlib._bootstrap>\", line 1395, in _gcd_import\n  File \"<frozen importlib._bootstrap>\", line 1360, in _find_and_load\nModuleNotFoundError: No module named 'fitz'\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/tmp/ocr_cpu_smoke.py\", line 51, in time_block\n    out = fn()\n  File \"/tmp/ocr_cpu_smoke.py\", line 187, in parse\n    result = ocr.ocr(str(out_path))\n  File \"/usr/local/lib/python3.13/site-packages/paddleocr/paddleocr.py\", line 744, in ocr\n    img, flag_gif, flag_pdf = check_img(img, alpha_color)\n                              ~~~~~~~~~^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.13/site-packages/paddleocr/paddleocr.py\", line 594, in check_img\n    img, flag_gif, flag_pdf = check_and_read(image_file)\n                              ~~~~~~~~~~~~~~^^^^^^^^^^^^\nImportError: Failed importing fitz. This likely means that some paddle modules require additional dependencies that have to be manually installed (usually with `pip install fitz`). \n"
+    },
+    "per_page_cold_ms": null,
+    "per_page_warm_ms": null
+  },
+  "parse_mixed": {
+    "label": "parse_mixed:first_5_pages_synthetic",
+    "wall_ms": 56948.47,
+    "ok": true,
+    "value": {
+      "page_count": 5,
+      "text_chars": 10333
+    }
+  },
+  "gates": [
+    {
+      "label": "native",
+      "per_page_ms": 61.098,
+      "lo_ms": 200.0,
+      "hi_ms": 25000.0,
+      "verdict": "fail"
+    },
+    {
+      "label": "scanned_warm",
+      "verdict": "no_measurement"
+    }
+  ],
+  "overall": "investigate",
+  "finished_at": "2026-05-12T23:26:38Z"
+}

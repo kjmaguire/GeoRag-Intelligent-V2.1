@@ -1,0 +1,105 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.2 Workflow-tier dashboard 5/5 — Cost burn-down by model + user bucket. Reads metrics.py LLM_COST_USD which is incremented by every Anthropic + vLLM call with the pricing estimator from app.agent.pricing. The user_bucket label is a deterministic hash of the user_id threaded through from the Laravel-minted JWT.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Last 1h spend ($)",
+      "description": "Rolling 1h LLM cost across all models. Useful as the operator's primary heartbeat for unusual spike detection.",
+      "targets": [{"expr": "sum(increase(llm_cost_usd_total[1h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 25}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Last 24h spend ($)",
+      "description": "Rolling 24h burn. The right number to fold into the monthly budget tracker.",
+      "targets": [{"expr": "sum(increase(llm_cost_usd_total[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Last 7d spend ($)",
+      "description": "Rolling 7d burn — the weekly review number.",
+      "targets": [{"expr": "sum(increase(llm_cost_usd_total[7d]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Last 30d spend ($)",
+      "description": "Rolling 30d burn — the budget-vs-actual reconciliation number.",
+      "targets": [{"expr": "sum(increase(llm_cost_usd_total[30d]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4
+    },
+    {
+      "type": "timeseries",
+      "title": "Spend rate $/min by model",
+      "description": "Per-model dollar rate. claude-opus-4-7 should dominate visible spend on Anthropic-backed paths. vllm rows are 0 because vLLM is self-hosted (pricing module returns 0 for those models).",
+      "targets": [{"expr": "sum by (model) (rate(llm_cost_usd_total[5m])) * 60", "refId": "A", "legendFormat": "{{model}}"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4, "custom": {"stacking": {"mode": "normal"}}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 4},
+      "id": 5
+    },
+    {
+      "type": "timeseries",
+      "title": "Spend rate $/min by user_bucket",
+      "description": "Per-user-bucket spend. user_bucket is a 32-bit hash of user_id (deterministic, non-reversible) so heavy spenders surface without leaking PII. A single bucket sustained > 20% of total spend = candidate for per-user rate limit.",
+      "targets": [{"expr": "sum by (user_bucket) (rate(llm_cost_usd_total[5m])) * 60", "refId": "A", "legendFormat": "{{user_bucket}}"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 4},
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Input vs cache_read vs cache_write tokens/min (Anthropic)",
+      "description": "Breakdown of Anthropic input billing. cache_read = 0.1× input price; cache_write = 1.25× input price; input = 1.0×. A successful prompt-caching strategy pushes cache_read to be the dominant line.",
+      "targets": [
+        {"expr": "sum(rate(prompt_total_tokens_total{backend=\"anthropic\"}[1m])) - sum(rate(prompt_cache_tokens_total{backend=\"anthropic\"}[1m]))", "refId": "A", "legendFormat": "input"},
+        {"expr": "sum(rate(prompt_cache_tokens_total{backend=\"anthropic\"}[1m]))", "refId": "B", "legendFormat": "cache_read"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "Average $/query (last 5m, smoothed)",
+      "description": "Total cost / total queries. The single most-watched cost number — feeds the operator's per-pilot price-to-serve estimate. Target: < $0.05/query for the v1.5 mix.",
+      "targets": [{"expr": "sum(rate(llm_cost_usd_total[5m])) / sum(rate(queries_total[5m]))", "refId": "A", "legendFormat": "$/query"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.05}, {"color": "red", "value": 0.20}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "id": 8
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": ["georag", "workflows", "phase-7", "phase-h3", "section-16.2", "cost"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Workflows (cost burn)",
+  "uid": "georag-workflows-cost-burn",
+  "version": 1
+}

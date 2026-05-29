@@ -1,0 +1,10 @@
+{
+    "data": {
+        "ingestion": { "status": "green", "pipeline_version": "1.8.4", "sensor_summary": "all sensors green" },
+        "agents": { "status": "green", "framework_version": "0.2.14", "resolver_version": "2.1.0" },
+        "schema": { "status": "warn", "deployed_count": 9, "total_count": 9, "pending_count": 2 },
+        "inference": { "status": "green", "backend": "vllm", "healthy_replicas": 4, "total_replicas": 4 }
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 60
+}

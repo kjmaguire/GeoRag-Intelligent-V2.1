@@ -1,0 +1,28 @@
+# ADR-0010 §5e — keep the eval metrics + training manifest committed, ignore
+# the binary checkpoints. Each training cycle produces a 1.1GB merged
+# safetensors + per-epoch HF Trainer state (~1.1GB × 2 epoch dirs) that
+# would otherwise blow GitHub's per-file size cap and bloat clone times.
+#
+# What stays committed:
+#   - training_manifest.json   (hyperparams + dataset shape + git_sha)
+#   - eval_results.json         (baseline vs candidate metrics + delta)
+#
+# What is ignored:
+#   - adapter/                  (raw PEFT-format model.safetensors, ~1.1GB)
+#   - best/                     (intermediate sentence_transformers best dir)
+#   - checkpoints/              (per-epoch HF Trainer state, ~1.1GB each)
+#   - any *.safetensors / *.bin / *.pt files at any depth
+#
+# To rehydrate a committed run, re-run scripts/train_reranker_lora.py with
+# the same training_manifest.json hyperparams + dataset run_id.
+
+adapter/
+best/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+optimizer.pt
+scheduler.pt
+scaler.pt
+rng_state.pth

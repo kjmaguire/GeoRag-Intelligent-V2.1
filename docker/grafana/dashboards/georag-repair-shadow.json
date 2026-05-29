@@ -1,0 +1,212 @@
+{
+  "annotations": {"list": []},
+  "description": "Plan §4b/§4c Stage 1 — repair-loop shadow-mode telemetry. Reads gold.repair_shadow_daily (populated nightly by the repair_shadow_aggregate Hatchet workflow). Drives the rollout-decision data for Stage 2 (terminal enable) and Stage 3 (low-cost loop enable). See docs/architecture/repair_loop_spec.md §8.\n\nDATASOURCE REQUIREMENT: this dashboard expects a Grafana datasource named `PostgreSQL-GeoRAG` pointing at the `georag` database with a read-only role (e.g. georag_read). Bind it via Grafana provisioning or the UI; ALL panels target uid='PostgreSQL-GeoRAG'.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Daily query volume",
+      "description": "Total queries per day across all workspaces. Stage 1 baseline — pre-rollout query rate.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT for_date AS time, SUM(total_queries) AS total\n  FROM gold.repair_shadow_daily\n WHERE $__timeFilter(for_date)\n GROUP BY for_date\n ORDER BY for_date"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]}}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Guard-pass rate (24h)",
+      "description": "% of queries where every guard passed. The complement is queries with at least one fired guard code.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT \n    SUM(guard_pass_count)::FLOAT / NULLIF(SUM(total_queries), 0) AS pass_rate\n  FROM gold.repair_shadow_daily\n WHERE for_date = (CURRENT_DATE - INTERVAL '1 day')::date"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "yellow", "value": 0.7},
+            {"color": "green", "value": 0.9}
+          ]}
+        }
+      },
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Latency p95 (24h)",
+      "description": "p95 query latency from the previous full day. Tracks rollout impact on tail latency.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT MAX(p95_latency_ms) AS p95_ms\n  FROM gold.repair_shadow_daily\n WHERE for_date = (CURRENT_DATE - INTERVAL '1 day')::date"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 5000},
+            {"color": "red", "value": 10000}
+          ]}
+        }
+      },
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Workspaces active (24h)",
+      "description": "Number of workspaces that ran at least one query in the previous day.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COUNT(DISTINCT workspace_id) AS workspaces\n  FROM gold.repair_shadow_daily\n WHERE for_date = (CURRENT_DATE - INTERVAL '1 day')::date\n   AND total_queries > 0"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]}}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "id": 4
+    },
+    {
+      "type": "barchart",
+      "title": "Top guard codes (last 7 days)",
+      "description": "Cumulative count per GuardErrorCode. Drives the Stage 2 rollout decision — which terminal surfaces to enable first based on what's firing.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH expanded AS (\n  SELECT jsonb_each_text(top_guard_codes) AS kv\n    FROM gold.repair_shadow_daily\n   WHERE for_date >= (CURRENT_DATE - INTERVAL '7 days')::date\n)\nSELECT (kv).key AS code, SUM((kv).value::INTEGER) AS firings\n  FROM expanded\n GROUP BY (kv).key\n ORDER BY firings DESC\n LIMIT 16"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "options": {"orientation": "horizontal"},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 6},
+      "id": 5
+    },
+    {
+      "type": "barchart",
+      "title": "Top repair strategies (last 7 days)",
+      "description": "RepairStrategy.value frequencies — what the dispatcher WOULD have chosen if the loop were on. Drives Stage 3 rollout (low-cost-strategy enablement) cost sizing.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH expanded AS (\n  SELECT jsonb_each_text(top_repair_strategies) AS kv\n    FROM gold.repair_shadow_daily\n   WHERE for_date >= (CURRENT_DATE - INTERVAL '7 days')::date\n)\nSELECT (kv).key AS strategy, SUM((kv).value::INTEGER) AS firings\n  FROM expanded\n GROUP BY (kv).key\n ORDER BY firings DESC\n LIMIT 13"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "options": {"orientation": "horizontal"},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 6},
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Budget-pressure distribution (daily)",
+      "description": "Per-day stack of comfortable / tight / over budget queries. Spikes in 'over' = context-prep needs tuning OR the rollout amplified context consumption.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT for_date AS time,\n       SUM((budget_pressure_buckets->>'comfortable')::INTEGER) AS comfortable,\n       SUM((budget_pressure_buckets->>'tight')::INTEGER)       AS tight,\n       SUM((budget_pressure_buckets->>'over')::INTEGER)        AS over\n  FROM gold.repair_shadow_daily\n WHERE $__timeFilter(for_date)\n GROUP BY for_date\n ORDER BY for_date"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "custom": {"stacking": {"mode": "normal"}}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "comfortable"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+          {"matcher": {"id": "byName", "options": "tight"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}]},
+          {"matcher": {"id": "byName", "options": "over"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]}
+        ]
+      },
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 7
+    },
+    {
+      "type": "barchart",
+      "title": "Evidence-kind distribution (last 7 days)",
+      "description": "Sum of kind firings across all queries. Helps tune the per-intent QUOTA_BY_INTENT table — if 'graph' barely fires, lower its quota in factual_lookup to free context budget.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "WITH expanded AS (\n  SELECT jsonb_each_text(evidence_kind_counts) AS kv\n    FROM gold.repair_shadow_daily\n   WHERE for_date >= (CURRENT_DATE - INTERVAL '7 days')::date\n)\nSELECT (kv).key AS kind, SUM((kv).value::INTEGER) AS firings\n  FROM expanded\n GROUP BY (kv).key\n ORDER BY firings DESC"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "options": {"orientation": "horizontal"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 8
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency avg + p95 (daily)",
+      "description": "Both metrics on the same panel — gap widens when the long tail extends.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT for_date AS time,\n       AVG(avg_latency_ms)::INTEGER AS avg_ms,\n       MAX(p95_latency_ms)          AS p95_ms\n  FROM gold.repair_shadow_daily\n WHERE $__timeFilter(for_date)\n GROUP BY for_date\n ORDER BY for_date"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "id": 9
+    },
+    {
+      "type": "table",
+      "title": "Per-workspace summary (yesterday)",
+      "description": "Detail view — one row per workspace from the previous full day. Useful for catching workspaces that are firing a disproportionate share of guards.",
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT workspace_id,\n       total_queries,\n       guard_pass_count,\n       queries_with_failures,\n       avg_latency_ms,\n       p95_latency_ms\n  FROM gold.repair_shadow_daily\n WHERE for_date = (CURRENT_DATE - INTERVAL '1 day')::date\n ORDER BY total_queries DESC\n LIMIT 50"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "postgres", "uid": "PostgreSQL-GeoRAG"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "id": 10
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["georag", "repair-loop", "shadow", "rag"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Repair Loop Shadow Telemetry",
+  "uid": "georag-repair-shadow",
+  "version": 1,
+  "weekStart": ""
+}

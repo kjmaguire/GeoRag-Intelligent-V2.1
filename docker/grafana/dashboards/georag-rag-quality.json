@@ -1,0 +1,127 @@
+{
+  "annotations": {"list": []},
+  "description": "Module 10 Chunk 10.5 — Module 7 Phase C metrics + §05c query-class observability + §10p refusal taxonomy. Reads metrics emitted by src/fastapi/app/metrics.py and Module 9 Chunk 9.8 audit channel.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Query latency p95 by class (s)",
+      "description": "§05c — seven query classes from test_golden_queries.py query_class field. Panel reads query_duration_seconds histogram (FastAPI metrics.py QUERY_DURATION).",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, query_class) (rate(query_duration_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{query_class}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 5}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Query volume by class (req/s)",
+      "description": "§05c query-class throughput. queries_total counter by class.",
+      "targets": [{"expr": "sum by (query_class) (rate(queries_total[5m]))", "refId": "A", "legendFormat": "{{query_class}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"stacking": {"mode": "normal"}}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "Refusal rate by reason_code (req/s)",
+      "description": "§10p refusal taxonomy. out_of_scope_refusals_total — TODO: add reason_code label in metrics.py once Module 6 Chunk 4a refusal payload threads through to the counter.",
+      "targets": [{"expr": "sum by (reason_code) (rate(out_of_scope_refusals_total[5m]))", "refId": "A", "legendFormat": "{{reason_code}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "Failovers (req/s)",
+      "description": "Tool / LLM failover rate. metrics.py FAILOVERS counter.",
+      "targets": [{"expr": "sum by (from_backend, to_backend) (rate(failovers_total[5m]))", "refId": "A", "legendFormat": "{{from_backend}}→{{to_backend}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool latency p95 (s)",
+      "description": "Per-tool latency. metrics.py TOOL_DURATION histogram.",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, tool) (rate(tool_duration_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{tool}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 5
+    },
+    {
+      "type": "timeseries",
+      "title": "First-token latency (s)",
+      "description": "Time from request received to first SSE delta token. metrics.py FIRST_TOKEN_LATENCY.",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(first_token_latency_seconds_bucket[5m])))", "refId": "A", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(first_token_latency_seconds_bucket[5m])))", "refId": "B", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(first_token_latency_seconds_bucket[5m])))", "refId": "C", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "LLM cost rolling 24h ($)",
+      "description": "metrics.py LLM_COST_USD counter — rolling 24h spend.",
+      "targets": [{"expr": "sum(increase(llm_cost_usd_total[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 24},
+      "id": 7
+    },
+    {
+      "type": "stat",
+      "title": "Active SSE streams",
+      "description": "TODO: 10.4 follow-through — wire georag_sse_active_streams gauge.",
+      "targets": [{"expr": "georag_sse_active_streams or vector(0)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 24},
+      "id": 8
+    },
+    {
+      "type": "stat",
+      "title": "LLM calls per query p95",
+      "description": "metrics.py LLM_CALLS_PER_QUERY histogram. p95 multi-pass count — high values mean lots of escalation.",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(llm_calls_per_query_bucket[10m])))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 24},
+      "id": 9
+    },
+    {
+      "type": "stat",
+      "title": "Context truncations / 5m",
+      "description": "metrics.py CONTEXT_TRUNCATIONS — every truncation = potential answer-quality regression.",
+      "targets": [{"expr": "sum(increase(context_truncations_total[5m]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 5}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 24},
+      "id": 10
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["rag", "georag", "module-7", "module-10-chunk-10.5"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — RAG Quality",
+  "uid": "georag-rag-quality",
+  "version": 1,
+  "weekStart": ""
+}

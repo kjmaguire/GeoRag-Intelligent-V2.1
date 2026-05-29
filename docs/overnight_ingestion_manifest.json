@@ -1,0 +1,830 @@
+{
+  "strategy": "tier1-yield-ranked",
+  "rationale": "Source archive is 186GB but Tier 1 content (LAS + .log + PDF + XLSX, the ingestable formats) is concentrated in ~117 sections. The other 894 sections are pure TIFF (scanned paper logs) which require Tier 2 OCR \u2014 that pipeline ships separately. Ingesting only the Tier-1-bearing sections maximizes silver.* row production per GB extracted.",
+  "tier1_set_count": 117,
+  "tier1_set_gb": 51.32,
+  "tier1_set_files": 1322,
+  "holdback_count": 894,
+  "holdback_gb": 134.61,
+  "sections": [
+    {
+      "section": "033N089W28",
+      "path": "uranium-logs_TRS/033N089W28.zip",
+      "size": 226594428,
+      "tier1": 376,
+      "tiff": 573
+    },
+    {
+      "section": "028N079W36",
+      "path": "uranium-logs_TRS/028N079W36.zip",
+      "size": 4572934538,
+      "tier1": 218,
+      "tiff": 1230
+    },
+    {
+      "section": "036N073W36",
+      "path": "uranium-logs_TRS/036N073W36.zip",
+      "size": 99022376,
+      "tier1": 59,
+      "tiff": 15
+    },
+    {
+      "section": "027N079W02",
+      "path": "uranium-logs_TRS/027N079W02.zip",
+      "size": 2397300147,
+      "tier1": 55,
+      "tiff": 442
+    },
+    {
+      "section": "026N090W08",
+      "path": "uranium-logs_TRS/026N090W08.zip",
+      "size": 109356972,
+      "tier1": 51,
+      "tiff": 50
+    },
+    {
+      "section": "027N091W36",
+      "path": "uranium-logs_TRS/027N091W36.zip",
+      "size": 206041327,
+      "tier1": 50,
+      "tiff": 49
+    },
+    {
+      "section": "025N090W06",
+      "path": "uranium-logs_TRS/025N090W06.zip",
+      "size": 616391116,
+      "tier1": 44,
+      "tiff": 80
+    },
+    {
+      "section": "033N089W27",
+      "path": "uranium-logs_TRS/033N089W27.zip",
+      "size": 6648879,
+      "tier1": 30,
+      "tiff": 41
+    },
+    {
+      "section": "027N078W04",
+      "path": "uranium-logs_TRS/027N078W04.zip",
+      "size": 7342860099,
+      "tier1": 28,
+      "tiff": 958
+    },
+    {
+      "section": "027N078W10",
+      "path": "uranium-logs_TRS/027N078W10.zip",
+      "size": 4844821715,
+      "tier1": 26,
+      "tiff": 967
+    },
+    {
+      "section": "027N091W35",
+      "path": "uranium-logs_TRS/027N091W35.zip",
+      "size": 352680601,
+      "tier1": 24,
+      "tiff": 87
+    },
+    {
+      "section": "035N062W33",
+      "path": "uranium-logs_TRS/035N062W33.zip",
+      "size": 29730785,
+      "tier1": 22,
+      "tiff": 25
+    },
+    {
+      "section": "034N062W16",
+      "path": "uranium-logs_TRS/034N062W16.zip",
+      "size": 26475408,
+      "tier1": 19,
+      "tiff": 20
+    },
+    {
+      "section": "027N080W10",
+      "path": "uranium-logs_TRS/027N080W10.zip",
+      "size": 611606975,
+      "tier1": 18,
+      "tiff": 146
+    },
+    {
+      "section": "026N090W20",
+      "path": "uranium-logs_TRS/026N090W20.zip",
+      "size": 69003255,
+      "tier1": 17,
+      "tiff": 17
+    },
+    {
+      "section": "027N078W09",
+      "path": "uranium-logs_TRS/027N078W09.zip",
+      "size": 3533586199,
+      "tier1": 16,
+      "tiff": 1273
+    },
+    {
+      "section": "035N074W03",
+      "path": "uranium-logs_TRS/035N074W03.zip",
+      "size": 7286470,
+      "tier1": 14,
+      "tiff": 30
+    },
+    {
+      "section": "027N091W33",
+      "path": "uranium-logs_TRS/027N091W33.zip",
+      "size": 568301318,
+      "tier1": 13,
+      "tiff": 75
+    },
+    {
+      "section": "026N090W29",
+      "path": "uranium-logs_TRS/026N090W29.zip",
+      "size": 173519638,
+      "tier1": 10,
+      "tiff": 28
+    },
+    {
+      "section": "034N062W03",
+      "path": "uranium-logs_TRS/034N062W03.zip",
+      "size": 23078223,
+      "tier1": 10,
+      "tiff": 12
+    },
+    {
+      "section": "034N062W36",
+      "path": "uranium-logs_TRS/034N062W36.zip",
+      "size": 22745761,
+      "tier1": 10,
+      "tiff": 10
+    },
+    {
+      "section": "035N062W29",
+      "path": "uranium-logs_TRS/035N062W29.zip",
+      "size": 21939201,
+      "tier1": 10,
+      "tiff": 11
+    },
+    {
+      "section": "027N078W14",
+      "path": "uranium-logs_TRS/027N078W14.zip",
+      "size": 6025196090,
+      "tier1": 9,
+      "tiff": 1520
+    },
+    {
+      "section": "043N083WXX",
+      "path": "uranium-logs_TRS/043N083WXX.zip",
+      "size": 804015512,
+      "tier1": 9,
+      "tiff": 101
+    },
+    {
+      "section": "026N090W09",
+      "path": "uranium-logs_TRS/026N090W09.zip",
+      "size": 15074978,
+      "tier1": 9,
+      "tiff": 9
+    },
+    {
+      "section": "027N091W16",
+      "path": "uranium-logs_TRS/027N091W16.zip",
+      "size": 90494324,
+      "tier1": 7,
+      "tiff": 13
+    },
+    {
+      "section": "027N079W01",
+      "path": "uranium-logs_TRS/027N079W01.zip",
+      "size": 301677260,
+      "tier1": 6,
+      "tiff": 53
+    },
+    {
+      "section": "025N091W01",
+      "path": "uranium-logs_TRS/025N091W01.zip",
+      "size": 99085212,
+      "tier1": 6,
+      "tiff": 15
+    },
+    {
+      "section": "035N062W34",
+      "path": "uranium-logs_TRS/035N062W34.zip",
+      "size": 21730196,
+      "tier1": 6,
+      "tiff": 5
+    },
+    {
+      "section": "028N079W35",
+      "path": "uranium-logs_TRS/028N079W35.zip",
+      "size": 1241889002,
+      "tier1": 5,
+      "tiff": 222
+    },
+    {
+      "section": "026N091W04",
+      "path": "uranium-logs_TRS/026N091W04.zip",
+      "size": 493014310,
+      "tier1": 5,
+      "tiff": 60
+    },
+    {
+      "section": "026N090W05",
+      "path": "uranium-logs_TRS/026N090W05.zip",
+      "size": 148035210,
+      "tier1": 5,
+      "tiff": 24
+    },
+    {
+      "section": "027N091W23",
+      "path": "uranium-logs_TRS/027N091W23.zip",
+      "size": 56372777,
+      "tier1": 5,
+      "tiff": 12
+    },
+    {
+      "section": "027N093W14",
+      "path": "uranium-logs_TRS/027N093W14.zip",
+      "size": 399528794,
+      "tier1": 4,
+      "tiff": 326
+    },
+    {
+      "section": "027N091W24",
+      "path": "uranium-logs_TRS/027N091W24.zip",
+      "size": 37103147,
+      "tier1": 4,
+      "tiff": 5
+    },
+    {
+      "section": "037N074W36",
+      "path": "uranium-logs_TRS/037N074W36.zip",
+      "size": 2796079171,
+      "tier1": 3,
+      "tiff": 474
+    },
+    {
+      "section": "027N080W11",
+      "path": "uranium-logs_TRS/027N080W11.zip",
+      "size": 239027428,
+      "tier1": 3,
+      "tiff": 80
+    },
+    {
+      "section": "027N091W19",
+      "path": "uranium-logs_TRS/027N091W19.zip",
+      "size": 19876906,
+      "tier1": 3,
+      "tiff": 3
+    },
+    {
+      "section": "028N065W29",
+      "path": "uranium-logs_TRS/028N065W29.zip",
+      "size": 7877143,
+      "tier1": 3,
+      "tiff": 0
+    },
+    {
+      "section": "027N079W03",
+      "path": "uranium-logs_TRS/027N079W03.zip",
+      "size": 2681143355,
+      "tier1": 2,
+      "tiff": 541
+    },
+    {
+      "section": "027N078W13",
+      "path": "uranium-logs_TRS/027N078W13.zip",
+      "size": 603919890,
+      "tier1": 2,
+      "tiff": 139
+    },
+    {
+      "section": "027N079W14",
+      "path": "uranium-logs_TRS/027N079W14.zip",
+      "size": 538602079,
+      "tier1": 2,
+      "tiff": 133
+    },
+    {
+      "section": "027N079W11",
+      "path": "uranium-logs_TRS/027N079W11.zip",
+      "size": 295277565,
+      "tier1": 2,
+      "tiff": 66
+    },
+    {
+      "section": "025N091W13",
+      "path": "uranium-logs_TRS/025N091W13.zip",
+      "size": 199387874,
+      "tier1": 2,
+      "tiff": 32
+    },
+    {
+      "section": "024N091W11",
+      "path": "uranium-logs_TRS/024N091W11.zip",
+      "size": 153357620,
+      "tier1": 2,
+      "tiff": 0
+    },
+    {
+      "section": "027N077W19",
+      "path": "uranium-logs_TRS/027N077W19.zip",
+      "size": 121644289,
+      "tier1": 2,
+      "tiff": 28
+    },
+    {
+      "section": "025N090W05",
+      "path": "uranium-logs_TRS/025N090W05.zip",
+      "size": 88070411,
+      "tier1": 2,
+      "tiff": 16
+    },
+    {
+      "section": "027N093W15",
+      "path": "uranium-logs_TRS/027N093W15.zip",
+      "size": 47396536,
+      "tier1": 2,
+      "tiff": 26
+    },
+    {
+      "section": "027N093W03",
+      "path": "uranium-logs_TRS/027N093W03.zip",
+      "size": 31821880,
+      "tier1": 2,
+      "tiff": 8
+    },
+    {
+      "section": "025N091W02",
+      "path": "uranium-logs_TRS/025N091W02.zip",
+      "size": 29213565,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "027N091W25",
+      "path": "uranium-logs_TRS/027N091W25.zip",
+      "size": 22382243,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "018N110W36",
+      "path": "uranium-logs_TRS/018N110W36.zip",
+      "size": 10546163,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "032N092W36",
+      "path": "uranium-logs_TRS/032N092W36.zip",
+      "size": 1977695,
+      "tier1": 2,
+      "tiff": 18
+    },
+    {
+      "section": "032N092W16",
+      "path": "uranium-logs_TRS/032N092W16.zip",
+      "size": 1968458,
+      "tier1": 2,
+      "tiff": 14
+    },
+    {
+      "section": "032N093W36",
+      "path": "uranium-logs_TRS/032N093W36.zip",
+      "size": 1574129,
+      "tier1": 2,
+      "tiff": 13
+    },
+    {
+      "section": "031N092W16",
+      "path": "uranium-logs_TRS/031N092W16.zip",
+      "size": 1526846,
+      "tier1": 2,
+      "tiff": 13
+    },
+    {
+      "section": "031N092W36",
+      "path": "uranium-logs_TRS/031N092W36.zip",
+      "size": 1502708,
+      "tier1": 2,
+      "tiff": 13
+    },
+    {
+      "section": "033N092W36",
+      "path": "uranium-logs_TRS/033N092W36.zip",
+      "size": 1279845,
+      "tier1": 2,
+      "tiff": 16
+    },
+    {
+      "section": "032N092W07",
+      "path": "uranium-logs_TRS/032N092W07.zip",
+      "size": 1236755,
+      "tier1": 2,
+      "tiff": 10
+    },
+    {
+      "section": "031N092W12",
+      "path": "uranium-logs_TRS/031N092W12.zip",
+      "size": 1081874,
+      "tier1": 2,
+      "tiff": 11
+    },
+    {
+      "section": "032N093W35",
+      "path": "uranium-logs_TRS/032N093W35.zip",
+      "size": 1041319,
+      "tier1": 2,
+      "tiff": 8
+    },
+    {
+      "section": "033N093W36",
+      "path": "uranium-logs_TRS/033N093W36.zip",
+      "size": 1040468,
+      "tier1": 2,
+      "tiff": 12
+    },
+    {
+      "section": "033N092W16",
+      "path": "uranium-logs_TRS/033N092W16.zip",
+      "size": 929585,
+      "tier1": 2,
+      "tiff": 8
+    },
+    {
+      "section": "027N079W35",
+      "path": "uranium-logs_TRS/027N079W35.zip",
+      "size": 925439,
+      "tier1": 2,
+      "tiff": 0
+    },
+    {
+      "section": "031N092W01",
+      "path": "uranium-logs_TRS/031N092W01.zip",
+      "size": 888086,
+      "tier1": 2,
+      "tiff": 5
+    },
+    {
+      "section": "032N092W15",
+      "path": "uranium-logs_TRS/032N092W15.zip",
+      "size": 852959,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "031N093W01",
+      "path": "uranium-logs_TRS/031N093W01.zip",
+      "size": 796487,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "031N092W09",
+      "path": "uranium-logs_TRS/031N092W09.zip",
+      "size": 775873,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "033N092W33",
+      "path": "uranium-logs_TRS/033N092W33.zip",
+      "size": 741313,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "031N093W02",
+      "path": "uranium-logs_TRS/031N093W02.zip",
+      "size": 738281,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "032N092W01",
+      "path": "uranium-logs_TRS/032N092W01.zip",
+      "size": 704142,
+      "tier1": 2,
+      "tiff": 4
+    },
+    {
+      "section": "036N074W36",
+      "path": "uranium-logs_TRS/036N074W36.zip",
+      "size": 8262128651,
+      "tier1": 1,
+      "tiff": 1106
+    },
+    {
+      "section": "027N079W10",
+      "path": "uranium-logs_TRS/027N079W10.zip",
+      "size": 1365697299,
+      "tier1": 1,
+      "tiff": 329
+    },
+    {
+      "section": "027N079W09",
+      "path": "uranium-logs_TRS/027N079W09.zip",
+      "size": 1338683621,
+      "tier1": 1,
+      "tiff": 377
+    },
+    {
+      "section": "026N091W07",
+      "path": "uranium-logs_TRS/026N091W07.zip",
+      "size": 154361011,
+      "tier1": 1,
+      "tiff": 20
+    },
+    {
+      "section": "025N090W04",
+      "path": "uranium-logs_TRS/025N090W04.zip",
+      "size": 82952817,
+      "tier1": 1,
+      "tiff": 26
+    },
+    {
+      "section": "027N091W27",
+      "path": "uranium-logs_TRS/027N091W27.zip",
+      "size": 77973098,
+      "tier1": 1,
+      "tiff": 16
+    },
+    {
+      "section": "026N091W27",
+      "path": "uranium-logs_TRS/026N091W27.zip",
+      "size": 68962291,
+      "tier1": 1,
+      "tiff": 8
+    },
+    {
+      "section": "026N091W02",
+      "path": "uranium-logs_TRS/026N091W02.zip",
+      "size": 67082684,
+      "tier1": 1,
+      "tiff": 7
+    },
+    {
+      "section": "028N077W12",
+      "path": "uranium-logs_TRS/028N077W12.zip",
+      "size": 39683111,
+      "tier1": 1,
+      "tiff": 6
+    },
+    {
+      "section": "027N078W33",
+      "path": "uranium-logs_TRS/027N078W33.zip",
+      "size": 38278078,
+      "tier1": 1,
+      "tiff": 2
+    },
+    {
+      "section": "028N079W34",
+      "path": "uranium-logs_TRS/028N079W34.zip",
+      "size": 23129577,
+      "tier1": 1,
+      "tiff": 5
+    },
+    {
+      "section": "026N091W32",
+      "path": "uranium-logs_TRS/026N091W32.zip",
+      "size": 17306217,
+      "tier1": 1,
+      "tiff": 2
+    },
+    {
+      "section": "027N091W20",
+      "path": "uranium-logs_TRS/027N091W20.zip",
+      "size": 15834861,
+      "tier1": 1,
+      "tiff": 2
+    },
+    {
+      "section": "043N076W36",
+      "path": "uranium-logs_TRS/043N076W36.zip",
+      "size": 9712461,
+      "tier1": 1,
+      "tiff": 44
+    },
+    {
+      "section": "026N091W33",
+      "path": "uranium-logs_TRS/026N091W33.zip",
+      "size": 8826852,
+      "tier1": 1,
+      "tiff": 1
+    },
+    {
+      "section": "027N091W17",
+      "path": "uranium-logs_TRS/027N091W17.zip",
+      "size": 7633176,
+      "tier1": 1,
+      "tiff": 1
+    },
+    {
+      "section": "043N079W36",
+      "path": "uranium-logs_TRS/043N079W36.zip",
+      "size": 5344613,
+      "tier1": 1,
+      "tiff": 2
+    },
+    {
+      "section": "035N074W36",
+      "path": "uranium-logs_TRS/035N074W36.zip",
+      "size": 3054424,
+      "tier1": 1,
+      "tiff": 1
+    },
+    {
+      "section": "029N065W19",
+      "path": "uranium-logs_TRS/029N065W19.zip",
+      "size": 2392343,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N077W16",
+      "path": "uranium-logs_TRS/041N077W16.zip",
+      "size": 2308830,
+      "tier1": 1,
+      "tiff": 1
+    },
+    {
+      "section": "028N065W31",
+      "path": "uranium-logs_TRS/028N065W31.zip",
+      "size": 2132533,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "028N066W20",
+      "path": "uranium-logs_TRS/028N066W20.zip",
+      "size": 1317278,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "028N078W28",
+      "path": "uranium-logs_TRS/028N078W28.zip",
+      "size": 612076,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "044N075W36",
+      "path": "uranium-logs_TRS/044N075W36.zip",
+      "size": 289792,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "044N075W16",
+      "path": "uranium-logs_TRS/044N075W16.zip",
+      "size": 280475,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N076W08",
+      "path": "uranium-logs_TRS/041N076W08.zip",
+      "size": 278133,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "042N073W15",
+      "path": "uranium-logs_TRS/042N073W15.zip",
+      "size": 275785,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "044N079W16",
+      "path": "uranium-logs_TRS/044N079W16.zip",
+      "size": 274882,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N076W04",
+      "path": "uranium-logs_TRS/041N076W04.zip",
+      "size": 273729,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "042N076W32",
+      "path": "uranium-logs_TRS/042N076W32.zip",
+      "size": 266782,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N075W29",
+      "path": "uranium-logs_TRS/041N075W29.zip",
+      "size": 266434,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "040N075W17",
+      "path": "uranium-logs_TRS/040N075W17.zip",
+      "size": 266219,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N076W36",
+      "path": "uranium-logs_TRS/041N076W36.zip",
+      "size": 265482,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N075W31",
+      "path": "uranium-logs_TRS/041N075W31.zip",
+      "size": 265164,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "037N074W09",
+      "path": "uranium-logs_TRS/037N074W09.zip",
+      "size": 265070,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "040N075W08",
+      "path": "uranium-logs_TRS/040N075W08.zip",
+      "size": 263159,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "046N078W36",
+      "path": "uranium-logs_TRS/046N078W36.zip",
+      "size": 261718,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "041N075W32",
+      "path": "uranium-logs_TRS/041N075W32.zip",
+      "size": 261526,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "045N079W16",
+      "path": "uranium-logs_TRS/045N079W16.zip",
+      "size": 261179,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "040N075W16",
+      "path": "uranium-logs_TRS/040N075W16.zip",
+      "size": 260928,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "044N074W16",
+      "path": "uranium-logs_TRS/044N074W16.zip",
+      "size": 258761,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "043N076W18",
+      "path": "uranium-logs_TRS/043N076W18.zip",
+      "size": 258515,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "042N075W36",
+      "path": "uranium-logs_TRS/042N075W36.zip",
+      "size": 258145,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "045N075W16",
+      "path": "uranium-logs_TRS/045N075W16.zip",
+      "size": 256535,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "040N075W07",
+      "path": "uranium-logs_TRS/040N075W07.zip",
+      "size": 256409,
+      "tier1": 1,
+      "tiff": 0
+    },
+    {
+      "section": "028N078W36",
+      "path": "uranium-logs_TRS/028N078W36.zip",
+      "size": 112039,
+      "tier1": 1,
+      "tiff": 0
+    }
+  ]
+}

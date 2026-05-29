@@ -1,0 +1,29 @@
+{
+    "_meta": {
+        "vocab_name": "CGI Mineralisation Style",
+        "vocab_uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016",
+        "entity_type": "technical_term",
+        "source": "cgi_vocab",
+        "note": "Curated subset of CGI Mineral Occurrence Type 2016 — the deposit-style classifiers most commonly referenced in NI 43-101 reports and synthesis/analogue queries. Includes the major polymetallic + precious metal + uranium + base metal deposit families."
+    },
+    "entries": [
+        {"canonical": "porphyry copper deposit",            "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/porphyry-copper",            "aliases": ["porphyry Cu", "porphyry copper", "porphyry Cu-Au", "porphyry Cu-Mo", "Cu porphyry"]},
+        {"canonical": "porphyry molybdenum deposit",        "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/porphyry-molybdenum",        "aliases": ["porphyry Mo", "Mo porphyry", "porphyry molybdenum"]},
+        {"canonical": "volcanogenic massive sulfide deposit","uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/vms",                       "aliases": ["VMS", "VHMS", "volcanic-hosted massive sulfide", "Cyprus-type", "Kuroko-type", "massive sulfide"]},
+        {"canonical": "sedimentary exhalative deposit",     "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/sedex",                     "aliases": ["SEDEX", "sed-ex", "sedimentary-exhalative", "sediment-hosted Zn-Pb"]},
+        {"canonical": "Mississippi Valley-type deposit",    "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/mvt",                       "aliases": ["MVT", "Mississippi Valley type", "MVT Zn-Pb", "carbonate-hosted Zn-Pb"]},
+        {"canonical": "iron oxide copper-gold deposit",     "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/iocg",                      "aliases": ["IOCG", "iron oxide Cu-Au", "Olympic Dam-type", "iron-oxide copper-gold"]},
+        {"canonical": "orogenic gold deposit",              "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/orogenic-gold",             "aliases": ["orogenic Au", "lode gold", "shear-hosted gold", "mesothermal gold", "greenstone gold"]},
+        {"canonical": "epithermal high-sulfidation deposit","uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/epithermal-high-sulfidation","aliases": ["HS epithermal", "high-sulfidation", "acid-sulfate epithermal", "HS Au"]},
+        {"canonical": "epithermal low-sulfidation deposit", "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/epithermal-low-sulfidation", "aliases": ["LS epithermal", "low-sulfidation", "adularia-sericite epithermal", "LS Au-Ag"]},
+        {"canonical": "skarn deposit",                      "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/skarn",                     "aliases": ["skarn", "Cu skarn", "Fe skarn", "W skarn", "Au skarn", "Zn-Pb skarn"]},
+        {"canonical": "banded iron formation deposit",      "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/bif",                       "aliases": ["BIF", "banded iron formation", "iron formation", "Lake Superior-type"]},
+        {"canonical": "unconformity uranium deposit",       "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/unconformity-uranium",      "aliases": ["unconformity U", "unconformity uranium", "Athabasca-type", "Athabasca unconformity"]},
+        {"canonical": "sandstone uranium deposit",          "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/sandstone-uranium",         "aliases": ["sandstone U", "roll-front uranium", "tabular uranium", "Wyoming-type uranium"]},
+        {"canonical": "intrusion-related gold deposit",     "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/intrusion-related-gold",    "aliases": ["IRGS", "intrusion-related gold", "Tintina-type", "reduced intrusion-related"]},
+        {"canonical": "carbonatite deposit",                "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/carbonatite",               "aliases": ["carbonatite", "REE carbonatite", "Nb-Ta carbonatite"]},
+        {"canonical": "kimberlite deposit",                 "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/kimberlite",                "aliases": ["kimberlite", "kimberlite pipe", "diamondiferous kimberlite"]},
+        {"canonical": "nickel sulfide deposit",             "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/nickel-sulfide",            "aliases": ["Ni sulfide", "magmatic nickel", "Sudbury-type", "komatiitic Ni"]},
+        {"canonical": "lithium pegmatite deposit",          "uri": "http://resource.geosciml.org/classifier/cgi/mineraloccurrencetype/2016/lithium-pegmatite",         "aliases": ["Li pegmatite", "LCT pegmatite", "spodumene pegmatite", "rare-element pegmatite"]}
+    ]
+}

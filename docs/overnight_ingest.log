@@ -1,0 +1,834 @@
+================================================================
+OVERNIGHT URANIUM INGEST — Tier-1-yield-ranked
+================================================================
+  Manifest:    C:/Users/GeoRAG/Herd/georag/docs/overnight_ingestion_manifest.json
+  Progress:    /c/Users/GeoRAG/Herd/georag/docs/overnight_ingestion_progress.jsonl
+  Workspace:   a0000000-0000-0000-0000-000000000001
+  Started:     2026-05-18T06:39:00Z
+
+Loaded manifest: 117 sections, 51.32 GB
+[1/117] EXTRACT + INGEST: 033N089W28
+6d3df6544956f59bce6c6f91ecd8077ce65773568c4121db3d69eecc2cc5d57a
+stage_helper_033N089W28
+extracted 033N089W28
+  [PASS ingest] extract=84s ingest=17s curves=300 curves=600 curves=900 curves=1120 curves=1120 collars=94 
+  → done=1 fail=0 skip=0
+
+[2/117] EXTRACT + INGEST: 028N079W36
+5a0e802e02d9245face3860ae9c271d13913effc4e17c96d0b95159b2d0cbfd1
+stage_helper_028N079W36
+extracted 028N079W36
+  [PASS ingest] extract=307s ingest=12s curves=297 curves=597 curves=789 curves=789 collars=66 
+  → done=2 fail=0 skip=0
+
+[3/117] EXTRACT + INGEST: 036N073W36
+2070be073efe75c08b0f1dbde6015a139fbccd5fd11f02c459d4a1d71d16307d
+stage_helper_036N073W36
+extracted 036N073W36
+  [PASS ingest] extract=6s ingest=2s curves=0 curves=0 collars=0 
+  → done=3 fail=0 skip=0
+
+[4/117] EXTRACT + INGEST: 027N079W02
+094e66a2c877a3f0015a94264d8316a08004ee53988d88649d9ba3ccd3fb8414
+stage_helper_027N079W02
+extracted 027N079W02
+  [PASS ingest] extract=127s ingest=1s curves=0 curves=0 collars=0 
+  → done=4 fail=0 skip=0
+
+[5/117] EXTRACT + INGEST: 026N090W08
+04b894c23ff0ba8667d0ba3dbdaa3134825faedb7885eec4cde4a77f65fb290b
+stage_helper_026N090W08
+extracted 026N090W08
+  [PASS ingest] extract=8s ingest=1s curves=0 curves=0 collars=0 
+  → done=5 fail=0 skip=0
+
+[6/117] EXTRACT + INGEST: 027N091W36
+721a84f30c267d72bc6c6767e912739eb927708f2fdfd2c644843fe31167ac8c
+stage_helper_027N091W36
+extracted 027N091W36
+  [PASS ingest] extract=12s ingest=2s curves=0 curves=0 collars=0 
+  → done=6 fail=0 skip=0
+
+[7/117] EXTRACT + INGEST: 025N090W06
+1be92f471bb864bc8e675f1acd83b7b5f5f1faf674fdb20ff2dbd8bd8c3ac147
+stage_helper_025N090W06
+extracted 025N090W06
+  [PASS ingest] extract=33s ingest=1s curves=0 curves=0 collars=0 
+  → done=7 fail=0 skip=0
+
+[8/117] EXTRACT + INGEST: 033N089W27
+2fa14907829bb22e114dbfaf09d2cef526b0f2faf348e500679e6b7873e24654
+stage_helper_033N089W27
+extracted 033N089W27
+  [PASS ingest] extract=9s ingest=4s curves=84 curves=84 collars=7 
+  → done=8 fail=0 skip=0
+
+[9/117] EXTRACT + INGEST: 027N078W04
+f1d4a4182718f13f92a55aaeba53cc404f299edcfe28e62fda06fbfcec228d92
+extracted 027N078W04
+  [PASS ingest] extract=344s ingest=1s curves=0 curves=0 collars=0 
+  → done=9 fail=0 skip=0
+
+[10/117] EXTRACT + INGEST: 027N078W10
+6bc828c4aa5c65ec504498ff6cb253edc2b3e271287173d631d6822a17dbc66a
+stage_helper_027N078W10
+extracted 027N078W10
+  [PASS ingest] extract=237s ingest=2s curves=0 curves=0 collars=0 
+  → done=10 fail=0 skip=0
+
+[11/117] EXTRACT + INGEST: 027N091W35
+72cde74f7151e42b284e266d35b1eff9f0d78cae9aadedcab12fbdf5629d0de0
+stage_helper_027N091W35
+extracted 027N091W35
+  [PASS ingest] extract=20s ingest=1s curves=0 curves=0 collars=0 
+  → done=11 fail=0 skip=0
+
+[12/117] EXTRACT + INGEST: 035N062W33
+0621eea76a68fc51fc77c89faf6aa604711a7d0276e93309a169065e942f90a3
+stage_helper_035N062W33
+extracted 035N062W33
+  [PASS ingest] extract=13s ingest=4s curves=48 curves=48 collars=4 
+  → done=12 fail=0 skip=0
+
+[13/117] EXTRACT + INGEST: 034N062W16
+85d40c567289f93aae071366bc86f2fb793a0cf2427846bc94bccf3dc489ba75
+stage_helper_034N062W16
+extracted 034N062W16
+  [PASS ingest] extract=5s ingest=4s curves=48 curves=48 collars=4 
+  → done=13 fail=0 skip=0
+
+[14/117] EXTRACT + INGEST: 027N080W10
+4c5f73e70a65ab3bf59c6be81ea7bdbf8294bfacf437d3698b9c770253d18106
+stage_helper_027N080W10
+extracted 027N080W10
+  [PASS ingest] extract=32s ingest=1s curves=0 curves=0 collars=0 
+  → done=14 fail=0 skip=0
+
+[15/117] EXTRACT + INGEST: 026N090W20
+01a8a3274528085fefe318b4f7437650325e2b96881d17971ccae1b7579741a3
+stage_helper_026N090W20
+extracted 026N090W20
+  [PASS ingest] extract=5s ingest=1s curves=0 curves=0 collars=0 
+  → done=15 fail=0 skip=0
+
+[16/117] EXTRACT + INGEST: 027N078W09
+eafcf0e4b1bc0cc559b0158eec9dc5f51c612ee0bbb62b69b4a20d2d409b60a2
+stage_helper_027N078W09
+extracted 027N078W09
+  [PASS ingest] extract=174s ingest=2s curves=0 curves=0 collars=0 
+  → done=16 fail=0 skip=0
+
+[17/117] EXTRACT + INGEST: 035N074W03
+cb4062441878976ac122452d2fe453cad32b5cd4e438881b19465038c58fb864
+stage_helper_035N074W03
+extracted 035N074W03
+  [PASS ingest] extract=6s ingest=4s curves=72 curves=72 collars=6 
+  → done=17 fail=0 skip=0
+
+[18/117] EXTRACT + INGEST: 027N091W33
+c5edfc26536cbb8885f2ba5de12750126d363ba313744bc6411c6b0bc64c844f
+stage_helper_027N091W33
+extracted 027N091W33
+  [PASS ingest] extract=30s ingest=1s curves=0 curves=0 collars=0 
+  → done=18 fail=0 skip=0
+
+[19/117] EXTRACT + INGEST: 026N090W29
+53461d62782464745b56158f0e250983cfc9ddfa2c2e593396929ca7c2cd83a8
+stage_helper_026N090W29
+extracted 026N090W29
+  [PASS ingest] extract=11s ingest=1s curves=0 curves=0 collars=0 
+  → done=19 fail=0 skip=0
+
+[20/117] EXTRACT + INGEST: 034N062W03
+e45645ead34923b49606a2b62e02c3470b210b142a0e32dbee0b521786bcf9da
+stage_helper_034N062W03
+extracted 034N062W03
+  [PASS ingest] extract=3s ingest=4s curves=24 curves=24 collars=2 
+  → done=20 fail=0 skip=0
+
+[21/117] EXTRACT + INGEST: 034N062W36
+979fd9f4634992eb3bd6cce2f0753de964e2938822dd253092a1c0d1429672d6
+stage_helper_034N062W36
+extracted 034N062W36
+  [PASS ingest] extract=3s ingest=4s curves=24 curves=24 collars=2 
+  → done=21 fail=0 skip=0
+
+[22/117] EXTRACT + INGEST: 035N062W29
+8b45fc3296e4f27dfea7af8ff5d6e8ce0b817d8cb0d9fd10e96aa534d4da8f99
+stage_helper_035N062W29
+extracted 035N062W29
+  [PASS ingest] extract=3s ingest=3s curves=24 curves=24 collars=2 
+  → done=22 fail=0 skip=0
+
+[23/117] EXTRACT + INGEST: 027N078W14
+3d6c3c31ea6f5a12a48e353ab33b27095784e899c7ea9b73c57eeef340750fa0
+stage_helper_027N078W14
+extracted 027N078W14
+  [PASS ingest] extract=314s ingest=2s curves=0 curves=0 collars=0 
+  → done=23 fail=0 skip=0
+
+[24/117] EXTRACT + INGEST: 043N083WXX
+18820b836f7916939c8b7f67e002a5be109ef06abe12980b01e05831663a37d5
+stage_helper_043N083WXX
+extracted 043N083WXX
+  [PASS ingest] extract=44s ingest=2s curves=0 curves=0 collars=0 
+  → done=24 fail=0 skip=0
+
+[25/117] EXTRACT + INGEST: 026N090W09
+8879d52430b7ee0ec81b57f33d6dd8021e8ee1d7f7764e33363754ee34b295a0
+stage_helper_026N090W09
+extracted 026N090W09
+  [PASS ingest] extract=3s ingest=2s curves=0 curves=0 collars=0 
+  → done=25 fail=0 skip=0
+
+[26/117] EXTRACT + INGEST: 027N091W16
+b7806ef3925a040450a10b2436aea6053b03c89dbd0537b3cab3a1e0af0ff6ee
+stage_helper_027N091W16
+extracted 027N091W16
+  [PASS ingest] extract=6s ingest=1s curves=0 curves=0 collars=0 
+  → done=26 fail=0 skip=0
+
+[27/117] EXTRACT + INGEST: 027N079W01
+ae12a60858ea19d62c6519951530d0a947d01d531588508d83672cce774fc8f2
+stage_helper_027N079W01
+extracted 027N079W01
+  [PASS ingest] extract=17s ingest=2s curves=0 curves=0 collars=0 
+  → done=27 fail=0 skip=0
+
+[28/117] EXTRACT + INGEST: 025N091W01
+cca3cd29ea41fb6124896118d6568f400f16452a9859f57e096b64d5bd1f8996
+stage_helper_025N091W01
+extracted 025N091W01
+  [PASS ingest] extract=7s ingest=1s curves=0 curves=0 collars=0 
+  → done=28 fail=0 skip=0
+
+[29/117] EXTRACT + INGEST: 035N062W34
+e7b06ccac1a1dc0bc6a0227eb11e79d1cb1e83b30642b6de849652634b20c5d6
+stage_helper_035N062W34
+extracted 035N062W34
+  [PASS ingest] extract=3s ingest=4s curves=12 curves=12 collars=1 
+  → done=29 fail=0 skip=0
+
+[30/117] EXTRACT + INGEST: 028N079W35
+e8e2fbac128c6fad28d9f368c6161a52c673b763cad83b25199a3e3d828478ab
+stage_helper_028N079W35
+extracted 028N079W35
+  [PASS ingest] extract=69s ingest=2s curves=0 curves=0 collars=0 
+  → done=30 fail=0 skip=0
+
+[31/117] EXTRACT + INGEST: 026N091W04
+db481ce7dcec378b1f3c435e41566915a89afcba45b098163fe49979c7b073d2
+stage_helper_026N091W04
+extracted 026N091W04
+  [PASS ingest] extract=28s ingest=1s curves=0 curves=0 collars=0 
+  → done=31 fail=0 skip=0
+
+[32/117] EXTRACT + INGEST: 026N090W05
+98751ec05fa157be25c83090a6c2fbfe92f2bc84db32c9cd15cc6411214c797d
+stage_helper_026N090W05
+extracted 026N090W05
+  [PASS ingest] extract=31s ingest=1s curves=0 curves=0 collars=0 
+  → done=32 fail=0 skip=0
+
+[33/117] EXTRACT + INGEST: 027N091W23
+3142079ae870076a274caab9b5f715e2932da149afe5e0066813dbc523900bf7
+stage_helper_027N091W23
+extracted 027N091W23
+  [PASS ingest] extract=4s ingest=1s curves=0 curves=0 collars=0 
+  → done=33 fail=0 skip=0
+
+[34/117] EXTRACT + INGEST: 027N093W14
+c4f4a7327b873a4ac03c0128fb43f8977e92f8d5f0ec231cbfe0e997b4fe35e5
+stage_helper_027N093W14
+extracted 027N093W14
+  [PASS ingest] extract=23s ingest=1s curves=0 curves=0 collars=0 
+  → done=34 fail=0 skip=0
+
+[35/117] EXTRACT + INGEST: 027N091W24
+63080f9596b4550bc61649e77f4e00ea7b34c443eaa12b9dd027b2b106e21cdb
+stage_helper_027N091W24
+extracted 027N091W24
+  [PASS ingest] extract=4s ingest=2s curves=0 curves=0 collars=0 
+  → done=35 fail=0 skip=0
+
+[36/117] EXTRACT + INGEST: 037N074W36
+bd18e604a064e15448cb07888772040fe6f8d65b3337b57ba6135c6e77fb50e1
+stage_helper_037N074W36
+extracted 037N074W36
+  [PASS ingest] extract=150s ingest=3s curves=0 curves=0 collars=0 
+  → done=36 fail=0 skip=0
+
+[37/117] EXTRACT + INGEST: 027N080W11
+9614fed75f8c87bb9386017bb3ab62de2dcd920da72df3d490c20709a19cef10
+stage_helper_027N080W11
+extracted 027N080W11
+  [PASS ingest] extract=15s ingest=1s curves=0 curves=0 collars=0 
+  → done=37 fail=0 skip=0
+
+[38/117] EXTRACT + INGEST: 027N091W19
+1cb4a1c31f11e5e15cf6e76993971e191133ead20727347014657cc0537f957d
+stage_helper_027N091W19
+extracted 027N091W19
+  [PASS ingest] extract=3s ingest=1s curves=0 curves=0 collars=0 
+  → done=38 fail=0 skip=0
+
+[39/117] EXTRACT + INGEST: 028N065W29
+c8f1a1e33406b7ff1a715e633481bb018018d14488a65136d0005e3abc92ea98
+stage_helper_028N065W29
+extracted 028N065W29
+  [PASS ingest] extract=2s ingest=2s curves=0 curves=0 collars=0 
+  → done=39 fail=0 skip=0
+
+[40/117] EXTRACT + INGEST: 027N079W03
+e1105699c34fec386157c5f526e70a008616c6f23d4d07fbd90d62f8173fa3bb
+stage_helper_027N079W03
+extracted 027N079W03
+  [PASS ingest] extract=145s ingest=2s curves=0 curves=0 collars=0 
+  → done=40 fail=0 skip=0
+
+[41/117] EXTRACT + INGEST: 027N078W13
+ebda81e01e06f9adfef9d65ee28299d03b7fbdcd77058c3808419a676e45ad8c
+stage_helper_027N078W13
+extracted 027N078W13
+  [PASS ingest] extract=31s ingest=2s curves=0 curves=0 collars=0 
+  → done=41 fail=0 skip=0
+
+[42/117] EXTRACT + INGEST: 027N079W14
+848b8b29c7cd8d8ec171f2fc4bc548b6574806ccdc981fea96ce5b76f9e51c8f
+stage_helper_027N079W14
+extracted 027N079W14
+  [PASS ingest] extract=30s ingest=2s curves=0 curves=0 collars=0 
+  → done=42 fail=0 skip=0
+
+[43/117] EXTRACT + INGEST: 027N079W11
+03a022edaab7c9c9858490d8127fdfa3f8768a7453208db4f3f2a861957a7149
+stage_helper_027N079W11
+extracted 027N079W11
+  [PASS ingest] extract=16s ingest=1s curves=0 curves=0 collars=0 
+  → done=43 fail=0 skip=0
+
+[44/117] EXTRACT + INGEST: 025N091W13
+e9a1ecbb74bb9f9572ca915542a751d7b9e1e7fdd324de750bbdef31b8c584d7
+stage_helper_025N091W13
+extracted 025N091W13
+  [PASS ingest] extract=11s ingest=1s curves=0 curves=0 collars=0 
+  → done=44 fail=0 skip=0
+
+[45/117] EXTRACT + INGEST: 024N091W11
+641ac993c9655211f34a462cb291bb59c3826d1f189a4a69f3a69f3d8e020fdb
+stage_helper_024N091W11
+extracted 024N091W11
+  [PASS ingest] extract=17s ingest=1s curves=0 curves=0 collars=0 
+  → done=45 fail=0 skip=0
+
+[46/117] EXTRACT + INGEST: 027N077W19
+8388981d24406e6612cb6dafb27ec764069d517cf2797850f1cec87d16d261c7
+stage_helper_027N077W19
+extracted 027N077W19
+  [PASS ingest] extract=8s ingest=1s curves=0 curves=0 collars=0 
+  → done=46 fail=0 skip=0
+
+[47/117] EXTRACT + INGEST: 025N090W05
+23dcbdb34d7742422827108858e7a8f38ea04eee30f5cdb2eff9782a96b6d9eb
+stage_helper_025N090W05
+extracted 025N090W05
+  [PASS ingest] extract=6s ingest=2s curves=0 curves=0 collars=0 
+  → done=47 fail=0 skip=0
+
+[48/117] EXTRACT + INGEST: 027N093W15
+485ba3ff22f25c0f9936b5116ac2e71d400c1202f00b84a14642a9e6900391cd
+stage_helper_027N093W15
+extracted 027N093W15
+  [PASS ingest] extract=3s ingest=2s curves=0 curves=0 collars=0 
+  → done=48 fail=0 skip=0
+
+[49/117] EXTRACT + INGEST: 027N093W03
+e32ff4131890a94d7307ca9c4d4c416348bc84748fed8376ede3c755e7c016eb
+stage_helper_027N093W03
+extracted 027N093W03
+  [PASS ingest] extract=4s ingest=1s curves=0 curves=0 collars=0 
+  → done=49 fail=0 skip=0
+
+[50/117] EXTRACT + INGEST: 025N091W02
+5192aacf4131f03e6861039e91fab4a0c7618c5c2ba99623b9b77df799a46016
+stage_helper_025N091W02
+extracted 025N091W02
+  [PASS ingest] extract=3s ingest=2s curves=0 curves=0 collars=0 
+  → done=50 fail=0 skip=0
+
+[51/117] EXTRACT + INGEST: 027N091W25
+ea84ca00a12b0518776ba4aef59d253fe5a4a5449a8b96669151db34540301e5
+stage_helper_027N091W25
+extracted 027N091W25
+  [PASS ingest] extract=3s ingest=1s curves=0 curves=0 collars=0 
+  → done=51 fail=0 skip=0
+
+[52/117] EXTRACT + INGEST: 018N110W36
+45937ab9019511d7763e444cc348219d21eab0289b72a8ccad942a5b6212144a
+stage_helper_018N110W36
+extracted 018N110W36
+  [PASS ingest] extract=2s ingest=2s curves=0 curves=0 collars=0 
+  → done=52 fail=0 skip=0
+
+[53/117] EXTRACT + INGEST: 032N092W36
+98485a6391edd9cad51c0e75b3f2659bb347bcc71f1e264feb567ac979388047
+stage_helper_032N092W36
+extracted 032N092W36
+  [PASS ingest] extract=3s ingest=4s curves=0 curves=0 collars=0 
+  → done=53 fail=0 skip=0
+
+[54/117] EXTRACT + INGEST: 032N092W16
+9a7142a885f5c1bf476e87ea81740498612f192239e19abcfbf8956648cf34c5
+stage_helper_032N092W16
+extracted 032N092W16
+  [PASS ingest] extract=3s ingest=3s curves=0 curves=0 collars=0 
+  → done=54 fail=0 skip=0
+
+[55/117] EXTRACT + INGEST: 032N093W36
+07c2f46c8a0965938368bde7d2339f26c13ad36f42243f3f9823c29fa0ce0698
+stage_helper_032N093W36
+extracted 032N093W36
+  [PASS ingest] extract=3s ingest=3s curves=0 curves=0 collars=0 
+  → done=55 fail=0 skip=0
+
+[56/117] EXTRACT + INGEST: 031N092W16
+f42f216af4ac2305b441ca5f3031ae6bc1072369ec26a0668813c126859dc259
+stage_helper_031N092W16
+extracted 031N092W16
+  [PASS ingest] extract=2s ingest=4s curves=0 curves=0 collars=0 
+  → done=56 fail=0 skip=0
+
+[57/117] EXTRACT + INGEST: 031N092W36
+f354340083501367677a2205bbbf620d3a885931463b6905fbbbf210db619ef1
+stage_helper_031N092W36
+extracted 031N092W36
+  [PASS ingest] extract=3s ingest=3s curves=0 curves=0 collars=0 
+  → done=57 fail=0 skip=0
+
+[58/117] EXTRACT + INGEST: 033N092W36
+46016d814ec8d19eeb086adf876c023e4f057f73ec52a9f7800d889fe3e36d88
+stage_helper_033N092W36
+extracted 033N092W36
+  [PASS ingest] extract=2s ingest=4s curves=0 curves=0 collars=0 
+  → done=58 fail=0 skip=0
+
+[59/117] EXTRACT + INGEST: 032N092W07
+0a32c4c4d76bebc2dc2d2941f634ce9c6c067e135709ac9f2254178b34dfb0f6
+stage_helper_032N092W07
+extracted 032N092W07
+  [PASS ingest] extract=2s ingest=4s curves=0 curves=0 collars=0 
+  → done=59 fail=0 skip=0
+
+[60/117] EXTRACT + INGEST: 031N092W12
+c8a1ca5466bdff6575ae289a130f9af5e44d75f73a9c7bc8fad32b9b87b86ae0
+stage_helper_031N092W12
+extracted 031N092W12
+  [PASS ingest] extract=2s ingest=3s curves=0 curves=0 collars=0 
+  → done=60 fail=0 skip=0
+
+[61/117] EXTRACT + INGEST: 032N093W35
+96dc4baa4bc98dfcec04689145fa7f29d91b168f3cc178df52de5468ee658c6f
+stage_helper_032N093W35
+extracted 032N093W35
+  [PASS ingest] extract=3s ingest=3s curves=0 curves=0 collars=0 
+  → done=61 fail=0 skip=0
+
+[62/117] EXTRACT + INGEST: 033N093W36
+d65a039febd54d90738d205a5ca55ed07b091c4b2f5a34c9e390caffb5024604
+stage_helper_033N093W36
+extracted 033N093W36
+  [PASS ingest] extract=2s ingest=4s curves=0 curves=0 collars=0 
+  → done=62 fail=0 skip=0
+
+[63/117] EXTRACT + INGEST: 033N092W16
+15d713a1008469f63be916f2b8c916ff833bbd0f0f9f732c939f62ecfbbdc832
+stage_helper_033N092W16
+extracted 033N092W16
+  [PASS ingest] extract=2s ingest=3s curves=0 curves=0 collars=0 
+  → done=63 fail=0 skip=0
+
+[64/117] EXTRACT + INGEST: 027N079W35
+92832592af870cd4fa87313f70d15416b47084aa272907f8060ed90bfef92ef1
+stage_helper_027N079W35
+extracted 027N079W35
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=64 fail=0 skip=0
+
+[65/117] EXTRACT + INGEST: 031N092W01
+804417463a13b60910cb155da140b28b537f10e810161311454c177a6e478283
+stage_helper_031N092W01
+extracted 031N092W01
+  [PASS ingest] extract=2s ingest=3s curves=0 curves=0 collars=0 
+  → done=65 fail=0 skip=0
+
+[66/117] EXTRACT + INGEST: 032N092W15
+ce176a49ee5d5ce5072654f8806d625c1b261a324ec47827231d7bb98ae65365
+stage_helper_032N092W15
+extracted 032N092W15
+  [PASS ingest] extract=2s ingest=3s curves=0 curves=0 collars=0 
+  → done=66 fail=0 skip=0
+
+[67/117] EXTRACT + INGEST: 031N093W01
+413d394c5b174836035f485267616fc33df14b46e565c43d534543de79c24821
+stage_helper_031N093W01
+extracted 031N093W01
+  [PASS ingest] extract=2s ingest=4s curves=0 curves=0 collars=0 
+  → done=67 fail=0 skip=0
+
+[68/117] EXTRACT + INGEST: 031N092W09
+deeeff03e7aa39fbe0e1c2bf0986bc2644a608614ecb979a3129b5af310c5bbc
+stage_helper_031N092W09
+extracted 031N092W09
+  [PASS ingest] extract=2s ingest=3s curves=0 curves=0 collars=0 
+  → done=68 fail=0 skip=0
+
+[69/117] EXTRACT + INGEST: 033N092W33
+97485768a13cbcd42dee6e8a7aad71a92f9089c3f05b5229c5f56941d1b35d09
+stage_helper_033N092W33
+extracted 033N092W33
+  [PASS ingest] extract=2s ingest=4s curves=0 curves=0 collars=0 
+  → done=69 fail=0 skip=0
+
+[70/117] EXTRACT + INGEST: 031N093W02
+18f07754909c7cfcc13a18fa1f68282cbab5ca3135d92b70111ea9d275b3cf4c
+stage_helper_031N093W02
+extracted 031N093W02
+  [PASS ingest] extract=2s ingest=3s curves=0 curves=0 collars=0 
+  → done=70 fail=0 skip=0
+
+[71/117] EXTRACT + INGEST: 032N092W01
+d4bb8f194fd45407a2fbcf6abca60ed4befa0af27b35733984c9d47353cb48e2
+stage_helper_032N092W01
+extracted 032N092W01
+  [PASS ingest] extract=1s ingest=4s curves=0 curves=0 collars=0 
+  → done=71 fail=0 skip=0
+
+[72/117] EXTRACT + INGEST: 036N074W36
+a10e7954f5356bbb6d707711574c6904af8fab55031ce8c5b0ab36ebb7213278
+extracted 036N074W36
+  [PASS ingest] extract=440s ingest=2s curves=0 curves=0 collars=0 
+  → done=72 fail=0 skip=0
+
+[73/117] EXTRACT + INGEST: 027N079W10
+4c74242ba4a5df5840a4298b61efae97c884a610a1933b27d9aa53d28040978a
+stage_helper_027N079W10
+extracted 027N079W10
+  [PASS ingest] extract=74s ingest=1s curves=0 curves=0 collars=0 
+  → done=73 fail=0 skip=0
+
+[74/117] EXTRACT + INGEST: 027N079W09
+3c377e86b619c2a485ac7f2df803b6afccd70bc76176dfba46dc09072ddb10b5
+stage_helper_027N079W09
+extracted 027N079W09
+  [PASS ingest] extract=73s ingest=2s curves=0 curves=0 collars=0 
+  → done=74 fail=0 skip=0
+
+[75/117] EXTRACT + INGEST: 026N091W07
+3f7de81a8b98196b6df86534a0de737853519085bf5f59923d1e51dc71923677
+stage_helper_026N091W07
+extracted 026N091W07
+  [PASS ingest] extract=11s ingest=2s curves=0 curves=0 collars=0 
+  → done=75 fail=0 skip=0
+
+[76/117] EXTRACT + INGEST: 025N090W04
+39273a07fbbfad928bd9b8b42dc492b562606cc64d5f3bb9ebce8d6f0bf7f028
+stage_helper_025N090W04
+extracted 025N090W04
+  [PASS ingest] extract=6s ingest=1s curves=0 curves=0 collars=0 
+  → done=76 fail=0 skip=0
+
+[77/117] EXTRACT + INGEST: 027N091W27
+56f174bd6395bcb5b1a13139bbe1dc7b08f081350f54660433ff3999987365bb
+stage_helper_027N091W27
+extracted 027N091W27
+  [PASS ingest] extract=7s ingest=1s curves=0 curves=0 collars=0 
+  → done=77 fail=0 skip=0
+
+[78/117] EXTRACT + INGEST: 026N091W27
+4602b13105be34b30300c39adeb968e63c67a20541e49ffd9d2b84fca73b5408
+stage_helper_026N091W27
+extracted 026N091W27
+  [PASS ingest] extract=5s ingest=2s curves=0 curves=0 collars=0 
+  → done=78 fail=0 skip=0
+
+[79/117] EXTRACT + INGEST: 026N091W02
+41c429af0450bdc781b6ec8f436e83ec6831763f286043bcf064c41fc3f9ddd7
+stage_helper_026N091W02
+extracted 026N091W02
+  [PASS ingest] extract=5s ingest=1s curves=0 curves=0 collars=0 
+  → done=79 fail=0 skip=0
+
+[80/117] EXTRACT + INGEST: 028N077W12
+58ecbd1edc32cfd15f63f9169e27e4ab6ba0b65a789b9749a43c522cc820e7df
+stage_helper_028N077W12
+extracted 028N077W12
+  [PASS ingest] extract=4s ingest=2s curves=0 curves=0 collars=0 
+  → done=80 fail=0 skip=0
+
+[81/117] EXTRACT + INGEST: 027N078W33
+331c1922eb76e4d7f91d88b3e0b2b4f6b458db54bad016b99a9678edad6fc411
+stage_helper_027N078W33
+extracted 027N078W33
+  [PASS ingest] extract=4s ingest=1s curves=0 curves=0 collars=0 
+  → done=81 fail=0 skip=0
+
+[82/117] EXTRACT + INGEST: 028N079W34
+c152cc026759097791417d0297d83ad72e3f8034f62bb0257755a54c2c0d3dd4
+stage_helper_028N079W34
+extracted 028N079W34
+  [PASS ingest] extract=2s ingest=2s curves=0 curves=0 collars=0 
+  → done=82 fail=0 skip=0
+
+[83/117] EXTRACT + INGEST: 026N091W32
+2bc59758641f0554618c76c893ece2273b1ce80045a6a59d50a3ba02821ff3de
+stage_helper_026N091W32
+extracted 026N091W32
+  [PASS ingest] extract=2s ingest=2s curves=0 curves=0 collars=0 
+  → done=83 fail=0 skip=0
+
+[84/117] EXTRACT + INGEST: 027N091W20
+d8f814c52ab5bd3f7c4e9f7ff6507a935f0708918f9c299d2741901681ae0a95
+stage_helper_027N091W20
+extracted 027N091W20
+  [PASS ingest] extract=3s ingest=1s curves=0 curves=0 collars=0 
+  → done=84 fail=0 skip=0
+
+[85/117] EXTRACT + INGEST: 043N076W36
+c807f8e4537e8e858ce6f510891c5a1475f3f780273dd8a2b506801129bbdfef
+stage_helper_043N076W36
+extracted 043N076W36
+  [PASS ingest] extract=3s ingest=1s curves=0 curves=0 collars=0 
+  → done=85 fail=0 skip=0
+
+[86/117] EXTRACT + INGEST: 026N091W33
+95e179f69d0621b78a80dcec74a23e722f9c930378bc5d30d55f10f47145f3ea
+stage_helper_026N091W33
+extracted 026N091W33
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=86 fail=0 skip=0
+
+[87/117] EXTRACT + INGEST: 027N091W17
+0bb46f7b027726dcfd1107647551c2f8ad87573059e202f4351e4ac5b455650c
+stage_helper_027N091W17
+extracted 027N091W17
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=87 fail=0 skip=0
+
+[88/117] EXTRACT + INGEST: 043N079W36
+ea57aa6a02df3d2c04abba95d07d12951bb752ebf0fa1fee317b54ccecea5475
+stage_helper_043N079W36
+extracted 043N079W36
+  [PASS ingest] extract=3s ingest=1s curves=0 curves=0 collars=0 
+  → done=88 fail=0 skip=0
+
+[89/117] EXTRACT + INGEST: 035N074W36
+cd712296fe9d01e47bd9c4f63d136c5e8a8c1f3df8c9a08b0ac44e7369908f59
+stage_helper_035N074W36
+extracted 035N074W36
+  [PASS ingest] extract=3s ingest=1s curves=0 curves=0 collars=0 
+  → done=89 fail=0 skip=0
+
+[90/117] EXTRACT + INGEST: 029N065W19
+f6f8622e3872342133ec72c587d94280c39b8a6fd846d83535c66cc9657b2c1d
+stage_helper_029N065W19
+extracted 029N065W19
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=90 fail=0 skip=0
+
+[91/117] EXTRACT + INGEST: 041N077W16
+4f13762792a87dc8ead648d7431cf0fb73e0c1d9277f58c7e01f16de60fc016c
+stage_helper_041N077W16
+extracted 041N077W16
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=91 fail=0 skip=0
+
+[92/117] EXTRACT + INGEST: 028N065W31
+2bd8491e7573636a3dc82d177f2c19bdf81f8f7dfac5790f2997400c6eb0ba1a
+stage_helper_028N065W31
+extracted 028N065W31
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=92 fail=0 skip=0
+
+[93/117] EXTRACT + INGEST: 028N066W20
+3426584ab40f4749613a6eb7742fe3ab50a21d9a793eabcca19bbc9593f43a04
+stage_helper_028N066W20
+extracted 028N066W20
+  [PASS ingest] extract=2s ingest=2s curves=0 curves=0 collars=0 
+  → done=93 fail=0 skip=0
+
+[94/117] EXTRACT + INGEST: 028N078W28
+83bb0b6be21b7a8631910ffb9caf7ea75567e52d01b17b171b89be02aef325a1
+stage_helper_028N078W28
+extracted 028N078W28
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=94 fail=0 skip=0
+
+[95/117] EXTRACT + INGEST: 044N075W36
+d3cbdfb9508f298a5c57760d79c9f7d3c5c3bced914e97e88b9befe52de578b9
+stage_helper_044N075W36
+extracted 044N075W36
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=95 fail=0 skip=0
+
+[96/117] EXTRACT + INGEST: 044N075W16
+8bccdcb8b7ef42f779bc336be906262feb2a3a5abe22433c1a7d1e38fea2b34c
+stage_helper_044N075W16
+extracted 044N075W16
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=96 fail=0 skip=0
+
+[97/117] EXTRACT + INGEST: 041N076W08
+ae298c83ba7b7927737a26b3e36b3451e64126579d2e869badaba739065597c4
+stage_helper_041N076W08
+extracted 041N076W08
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=97 fail=0 skip=0
+
+[98/117] EXTRACT + INGEST: 042N073W15
+51d84d2ea0bba554e9d226a573cbe6a5d295bb01207a6e9460db17cf46fb5981
+stage_helper_042N073W15
+extracted 042N073W15
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=98 fail=0 skip=0
+
+[99/117] EXTRACT + INGEST: 044N079W16
+9ce4e8255a211732cd772d5137369f35b3aa5806b1037662fc3aca90e8fa493f
+stage_helper_044N079W16
+extracted 044N079W16
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=99 fail=0 skip=0
+
+[100/117] EXTRACT + INGEST: 041N076W04
+415df8521d9b096825ddd2a9117bce54b66f3884f29cded84d80d193d5598918
+stage_helper_041N076W04
+extracted 041N076W04
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=100 fail=0 skip=0
+
+[101/117] EXTRACT + INGEST: 042N076W32
+351871bb6fc855fc3d268076b68efa19dd9f45a6263f01b2a4c1c7ea6dfefb8e
+stage_helper_042N076W32
+extracted 042N076W32
+  [PASS ingest] extract=2s ingest=2s curves=0 curves=0 collars=0 
+  → done=101 fail=0 skip=0
+
+[102/117] EXTRACT + INGEST: 041N075W29
+59cc0118c50c8096aa4ec68c7d2427ef8314a8ab5f16cfb78a1e97930b8149be
+stage_helper_041N075W29
+extracted 041N075W29
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=102 fail=0 skip=0
+
+[103/117] EXTRACT + INGEST: 040N075W17
+7aec524dd59a0b522b92f58b043e46517b6134b1640cb5737992a1f33678480a
+stage_helper_040N075W17
+extracted 040N075W17
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=103 fail=0 skip=0
+
+[104/117] EXTRACT + INGEST: 041N076W36
+50b05a9b78ad33e40648ee25ef1a37fdd992582b6bdb3d8fffdd6ec2444750f7
+stage_helper_041N076W36
+extracted 041N076W36
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=104 fail=0 skip=0
+
+[105/117] EXTRACT + INGEST: 041N075W31
+e2838e9b7ca00fa28648387ea78865ab3e4797d1372e18c98edd373012d0ef9b
+stage_helper_041N075W31
+extracted 041N075W31
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=105 fail=0 skip=0
+
+[106/117] EXTRACT + INGEST: 037N074W09
+c2013abd1d226dc681feda544c108ccb1210dafc21223fd8c8abc6ed5cdd8365
+stage_helper_037N074W09
+extracted 037N074W09
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=106 fail=0 skip=0
+
+[107/117] EXTRACT + INGEST: 040N075W08
+0d66c341bd23114751aad277eca0e1a5fc533441466d9e8d8e9afc5004ba7b41
+stage_helper_040N075W08
+extracted 040N075W08
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=107 fail=0 skip=0
+
+[108/117] EXTRACT + INGEST: 046N078W36
+3ccc65e9af92e562ffa28e64101e27d001a0e9448d8f41aa8c011223a6bcbe77
+stage_helper_046N078W36
+extracted 046N078W36
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=108 fail=0 skip=0
+
+[109/117] EXTRACT + INGEST: 041N075W32
+01ed967e60e19b4313fb382a15b48c0aaf32d4155648e035a2ca3764477e7bd8
+stage_helper_041N075W32
+extracted 041N075W32
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=109 fail=0 skip=0
+
+[110/117] EXTRACT + INGEST: 045N079W16
+d757e646aa273e2b86c399ecfce79a5915cce2baed4f11c50e9a687c5980287c
+stage_helper_045N079W16
+extracted 045N079W16
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=110 fail=0 skip=0
+
+[111/117] EXTRACT + INGEST: 040N075W16
+70e905d714b5e41ec45f827470cdd2cde7e9e959dd8d846cc15a7789c7099e4b
+stage_helper_040N075W16
+extracted 040N075W16
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=111 fail=0 skip=0
+
+[112/117] EXTRACT + INGEST: 044N074W16
+c4d45bc3c300235275ce3bc0abd2be0f3a88af81330f0c67fbd08bd836496054
+stage_helper_044N074W16
+extracted 044N074W16
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=112 fail=0 skip=0
+
+[113/117] EXTRACT + INGEST: 043N076W18
+03455492fe6e815a61c6f55c4c03620e4c4d0c128c801a15c7213cf753704312
+stage_helper_043N076W18
+extracted 043N076W18
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=113 fail=0 skip=0
+
+[114/117] EXTRACT + INGEST: 042N075W36
+0af690b462336f68e922686eb7122f08d3f411b7bff0d8707ba962899edd751f
+stage_helper_042N075W36
+extracted 042N075W36
+  [PASS ingest] extract=1s ingest=2s curves=0 curves=0 collars=0 
+  → done=114 fail=0 skip=0
+
+[115/117] EXTRACT + INGEST: 045N075W16
+3691fcf784c2d6cddb9a8fe7a51bd19f2976cf7ab8c7f5f0a6b7ef0f1b56664d
+stage_helper_045N075W16
+extracted 045N075W16
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=115 fail=0 skip=0
+
+[116/117] EXTRACT + INGEST: 040N075W07
+b54df2d4a1f6750d105bbb1e124a12f5be63fe232668dcc0a74784d2244fd255
+stage_helper_040N075W07
+extracted 040N075W07
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=116 fail=0 skip=0
+
+[117/117] EXTRACT + INGEST: 028N078W36
+e2b12e834f52334f66630280764756a57b28252e2609061ff311d1f5544ef5d2
+stage_helper_028N078W36
+extracted 028N078W36
+  [PASS ingest] extract=2s ingest=1s curves=0 curves=0 collars=0 
+  → done=117 fail=0 skip=0
+
+================================================================
+OVERNIGHT URANIUM INGEST — COMPLETE
+  Total sections:     117
+  Successful ingest:  117
+  Failed:             0
+  Skipped (resume):   0
+  Finished:           2026-05-18T07:39:17Z
+================================================================

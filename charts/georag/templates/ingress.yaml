@@ -1,0 +1,51 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- $ic := default .Values.global.ingressClass .Values.ingress.className }}
+  {{- if $ic }}
+  ingressClassName: {{ $ic }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # Internal FastAPI routes — for ops / Hatchet / Dagster integrations.
+          # NOT exposed by default; the Laravel front door is what users hit.
+          - path: /internal
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-fastapi
+                port:
+                  number: {{ .Values.fastapi.service.port }}
+          # Map tiles
+          - path: /tiles
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-martin
+                port:
+                  number: {{ .Values.martin.service.port }}
+          # Default: Laravel webapp
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-laravel-octane
+                port:
+                  number: {{ .Values.laravelOctane.service.port }}
+{{- end }}

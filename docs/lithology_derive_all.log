@@ -1,0 +1,548 @@
+2026-05-19 00:26:31,398 INFO georag.ingest.derive derive.project start project_id=762b147e-af53-4593-b569-04ee46f31d97 collars=66
+2026-05-19 00:26:31,431 WARNING georag.ingest.derive derive.collar_failed hole=36-1042 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,443 WARNING georag.ingest.derive derive.collar_failed hole=36-1043 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,452 WARNING georag.ingest.derive derive.collar_failed hole=36-1044 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,461 WARNING georag.ingest.derive derive.collar_failed hole=36-1045 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,469 WARNING georag.ingest.derive derive.collar_failed hole=36-1046 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,477 WARNING georag.ingest.derive derive.collar_failed hole=36-1047 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,485 WARNING georag.ingest.derive derive.collar_failed hole=36-1048 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,495 WARNING georag.ingest.derive derive.collar_failed hole=36-1049 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,504 WARNING georag.ingest.derive derive.collar_failed hole=36-1050 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,512 WARNING georag.ingest.derive derive.collar_failed hole=36-1052 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,521 WARNING georag.ingest.derive derive.collar_failed hole=36-1053 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,530 WARNING georag.ingest.derive derive.collar_failed hole=36-1054 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,537 WARNING georag.ingest.derive derive.collar_failed hole=36-1055 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,548 WARNING georag.ingest.derive derive.collar_failed hole=36-1056 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,556 WARNING georag.ingest.derive derive.collar_failed hole=36-1057 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,565 WARNING georag.ingest.derive derive.collar_failed hole=36-1058 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,574 WARNING georag.ingest.derive derive.collar_failed hole=36-1059 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,584 WARNING georag.ingest.derive derive.collar_failed hole=36-1060 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,594 WARNING georag.ingest.derive derive.collar_failed hole=36-1061 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,603 WARNING georag.ingest.derive derive.collar_failed hole=36-1062 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,612 WARNING georag.ingest.derive derive.collar_failed hole=36-1063 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,622 WARNING georag.ingest.derive derive.collar_failed hole=36-1064 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,634 WARNING georag.ingest.derive derive.collar_failed hole=36-1065 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,645 WARNING georag.ingest.derive derive.collar_failed hole=36-1066 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,654 WARNING georag.ingest.derive derive.collar_failed hole=36-1067 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,662 WARNING georag.ingest.derive derive.collar_failed hole=36-1068 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,671 WARNING georag.ingest.derive derive.collar_failed hole=36-1069 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,679 WARNING georag.ingest.derive derive.collar_failed hole=36-1070 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,689 WARNING georag.ingest.derive derive.collar_failed hole=36-1071 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,698 WARNING georag.ingest.derive derive.collar_failed hole=36-1072 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,707 WARNING georag.ingest.derive derive.collar_failed hole=36-1073 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,715 WARNING georag.ingest.derive derive.collar_failed hole=36-1074 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,725 WARNING georag.ingest.derive derive.collar_failed hole=36-1075 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,733 WARNING georag.ingest.derive derive.collar_failed hole=36-1076 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,742 WARNING georag.ingest.derive derive.collar_failed hole=36-1077 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,749 WARNING georag.ingest.derive derive.collar_failed hole=36-1078 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,759 WARNING georag.ingest.derive derive.collar_failed hole=36-1080 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,767 WARNING georag.ingest.derive derive.collar_failed hole=36-1082 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,776 WARNING georag.ingest.derive derive.collar_failed hole=36-1083 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,786 WARNING georag.ingest.derive derive.collar_failed hole=36-1084 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,795 WARNING georag.ingest.derive derive.collar_failed hole=36-1085 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,803 WARNING georag.ingest.derive derive.collar_failed hole=36-1086 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,812 WARNING georag.ingest.derive derive.collar_failed hole=36-1087 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,821 WARNING georag.ingest.derive derive.collar_failed hole=36-1088 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,829 WARNING georag.ingest.derive derive.collar_failed hole=36-1090 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,839 WARNING georag.ingest.derive derive.collar_failed hole=36-1091 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,848 WARNING georag.ingest.derive derive.collar_failed hole=36-1092 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,856 WARNING georag.ingest.derive derive.collar_failed hole=36-1093 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,864 WARNING georag.ingest.derive derive.collar_failed hole=36-1094 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,872 WARNING georag.ingest.derive derive.collar_failed hole=36-1095 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,881 WARNING georag.ingest.derive derive.collar_failed hole=36-1096 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,889 WARNING georag.ingest.derive derive.collar_failed hole=36-1097 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,897 WARNING georag.ingest.derive derive.collar_failed hole=36-1098 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,905 WARNING georag.ingest.derive derive.collar_failed hole=36-1099 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,914 WARNING georag.ingest.derive derive.collar_failed hole=36-1100 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,924 WARNING georag.ingest.derive derive.collar_failed hole=36-1101 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,934 WARNING georag.ingest.derive derive.collar_failed hole=36-1102 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,943 WARNING georag.ingest.derive derive.collar_failed hole=36-1103 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,951 WARNING georag.ingest.derive derive.collar_failed hole=36-1104 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,958 WARNING georag.ingest.derive derive.collar_failed hole=36-1105 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,967 WARNING georag.ingest.derive derive.collar_failed hole=36-1106 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,976 WARNING georag.ingest.derive derive.collar_failed hole=36-1107 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,986 WARNING georag.ingest.derive derive.collar_failed hole=36-1108 err=permission denied for table lithology_logs
+2026-05-19 00:26:31,997 WARNING georag.ingest.derive derive.collar_failed hole=36-1109 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,007 WARNING georag.ingest.derive derive.collar_failed hole=36-1110 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,017 WARNING georag.ingest.derive derive.collar_failed hole=36-1111 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,017 INFO georag.ingest.derive derive.project done {'project_id': '762b147e-af53-4593-b569-04ee46f31d97', 'collars_total': 66, 'collars_emitted': 0, 'collars_skipped': 66, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:32,053 INFO georag.ingest.derive derive.project start project_id=cb067754-b191-4b62-a6a5-0f0712d29a8d collars=94
+2026-05-19 00:26:32,092 WARNING georag.ingest.derive derive.collar_failed hole=0070-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,104 WARNING georag.ingest.derive derive.collar_failed hole=0070-5250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,115 WARNING georag.ingest.derive derive.collar_failed hole=0070-5350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,126 WARNING georag.ingest.derive derive.collar_failed hole=0180-5000 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,138 WARNING georag.ingest.derive derive.collar_failed hole=0180-5150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,149 WARNING georag.ingest.derive derive.collar_failed hole=0270-4250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,159 WARNING georag.ingest.derive derive.collar_failed hole=0270-5050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,171 WARNING georag.ingest.derive derive.collar_failed hole=0270-5150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,181 WARNING georag.ingest.derive derive.collar_failed hole=0270-5250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,193 WARNING georag.ingest.derive derive.collar_failed hole=0270-5350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,203 WARNING georag.ingest.derive derive.collar_failed hole=0320-4400 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,213 WARNING georag.ingest.derive derive.collar_failed hole=0370-4950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,223 WARNING georag.ingest.derive derive.collar_failed hole=0370-5100 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,234 WARNING georag.ingest.derive derive.collar_failed hole=0410-4500 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,244 WARNING georag.ingest.derive derive.collar_failed hole=0470-4650 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,254 WARNING georag.ingest.derive derive.collar_failed hole=0670-4750 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,264 WARNING georag.ingest.derive derive.collar_failed hole=0670-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,274 WARNING georag.ingest.derive derive.collar_failed hole=0670-4950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,284 WARNING georag.ingest.derive derive.collar_failed hole=0770-4650 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,294 WARNING georag.ingest.derive derive.collar_failed hole=0770-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,303 WARNING georag.ingest.derive derive.collar_failed hole=0870-4560 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,313 WARNING georag.ingest.derive derive.collar_failed hole=0870-4650 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,323 WARNING georag.ingest.derive derive.collar_failed hole=0970-4560 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,333 WARNING georag.ingest.derive derive.collar_failed hole=1070-4170 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,343 WARNING georag.ingest.derive derive.collar_failed hole=1070-4260 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,352 WARNING georag.ingest.derive derive.collar_failed hole=1070-4560 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,363 WARNING georag.ingest.derive derive.collar_failed hole=1090-4430 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,374 WARNING georag.ingest.derive derive.collar_failed hole=1170-4160 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,385 WARNING georag.ingest.derive derive.collar_failed hole=1170-4460 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,394 WARNING georag.ingest.derive derive.collar_failed hole=1270-4460 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,403 WARNING georag.ingest.derive derive.collar_failed hole=1370-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,412 WARNING georag.ingest.derive derive.collar_failed hole=1370-4450 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,421 WARNING georag.ingest.derive derive.collar_failed hole=1470-3150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,432 WARNING georag.ingest.derive derive.collar_failed hole=1470-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,441 WARNING georag.ingest.derive derive.collar_failed hole=1470-3350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,450 WARNING georag.ingest.derive derive.collar_failed hole=1470-3450 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,460 WARNING georag.ingest.derive derive.collar_failed hole=1470-3550 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,468 WARNING georag.ingest.derive derive.collar_failed hole=1470-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,478 WARNING georag.ingest.derive derive.collar_failed hole=1470-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,487 WARNING georag.ingest.derive derive.collar_failed hole=1520-4600 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,497 WARNING georag.ingest.derive derive.collar_failed hole=1570-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,508 WARNING georag.ingest.derive derive.collar_failed hole=1570-3350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,517 WARNING georag.ingest.derive derive.collar_failed hole=1570-3650 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,525 WARNING georag.ingest.derive derive.collar_failed hole=1570-3750 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,533 WARNING georag.ingest.derive derive.collar_failed hole=1570-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,543 WARNING georag.ingest.derive derive.collar_failed hole=1670-3150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,554 WARNING georag.ingest.derive derive.collar_failed hole=1670-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,562 WARNING georag.ingest.derive derive.collar_failed hole=1670-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,571 WARNING georag.ingest.derive derive.collar_failed hole=1770-3150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,579 WARNING georag.ingest.derive derive.collar_failed hole=1770-3450 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,588 WARNING georag.ingest.derive derive.collar_failed hole=1770-3550 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,596 WARNING georag.ingest.derive derive.collar_failed hole=1770-4350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,605 WARNING georag.ingest.derive derive.collar_failed hole=1870-3070 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,613 WARNING georag.ingest.derive derive.collar_failed hole=1870-3160 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,621 WARNING georag.ingest.derive derive.collar_failed hole=1870-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,629 WARNING georag.ingest.derive derive.collar_failed hole=1870-4250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,651 WARNING georag.ingest.derive derive.collar_failed hole=1870-4350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,664 WARNING georag.ingest.derive derive.collar_failed hole=1870-4450 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,674 WARNING georag.ingest.derive derive.collar_failed hole=1970-3060 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,684 WARNING georag.ingest.derive derive.collar_failed hole=1970-3130 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,695 WARNING georag.ingest.derive derive.collar_failed hole=1970-3550 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,705 WARNING georag.ingest.derive derive.collar_failed hole=2020-3010 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,716 WARNING georag.ingest.derive derive.collar_failed hole=2060-3110 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,728 WARNING georag.ingest.derive derive.collar_failed hole=2060-3210 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,737 WARNING georag.ingest.derive derive.collar_failed hole=2070-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,745 WARNING georag.ingest.derive derive.collar_failed hole=2070-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,753 WARNING georag.ingest.derive derive.collar_failed hole=2070-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,764 WARNING georag.ingest.derive derive.collar_failed hole=2070-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,772 WARNING georag.ingest.derive derive.collar_failed hole=2070-4450 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,780 WARNING georag.ingest.derive derive.collar_failed hole=2110-3060 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,788 WARNING georag.ingest.derive derive.collar_failed hole=2170-3750 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,797 WARNING georag.ingest.derive derive.collar_failed hole=2170-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,806 WARNING georag.ingest.derive derive.collar_failed hole=2170-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,815 WARNING georag.ingest.derive derive.collar_failed hole=2170-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,823 WARNING georag.ingest.derive derive.collar_failed hole=2170-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,832 WARNING georag.ingest.derive derive.collar_failed hole=2170-4250 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,840 WARNING georag.ingest.derive derive.collar_failed hole=2170-4430 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,848 WARNING georag.ingest.derive derive.collar_failed hole=2270-3160 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,856 WARNING georag.ingest.derive derive.collar_failed hole=2270-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,864 WARNING georag.ingest.derive derive.collar_failed hole=2270-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,870 WARNING georag.ingest.derive derive.collar_failed hole=2320-3000 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,879 WARNING georag.ingest.derive derive.collar_failed hole=2350-4350 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,887 WARNING georag.ingest.derive derive.collar_failed hole=2370-3050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,895 WARNING georag.ingest.derive derive.collar_failed hole=2370-3940 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,903 WARNING georag.ingest.derive derive.collar_failed hole=2370-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,912 WARNING georag.ingest.derive derive.collar_failed hole=2370-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,919 WARNING georag.ingest.derive derive.collar_failed hole=2470-3050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,927 WARNING georag.ingest.derive derive.collar_failed hole=2470-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,934 WARNING georag.ingest.derive derive.collar_failed hole=2470-4200 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,942 WARNING georag.ingest.derive derive.collar_failed hole=2670-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,952 WARNING georag.ingest.derive derive.collar_failed hole=2670-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,964 WARNING georag.ingest.derive derive.collar_failed hole=270-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,974 WARNING georag.ingest.derive derive.collar_failed hole=270-4950 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,986 WARNING georag.ingest.derive derive.collar_failed hole=370-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:32,986 INFO georag.ingest.derive derive.project done {'project_id': 'cb067754-b191-4b62-a6a5-0f0712d29a8d', 'collars_total': 94, 'collars_emitted': 0, 'collars_skipped': 94, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,025 INFO georag.ingest.derive derive.project start project_id=019d74a1-fba8-7165-9ae6-a5bf93eef97d collars=20
+2026-05-19 00:26:33,051 INFO georag.ingest.derive derive.progress 10/20
+2026-05-19 00:26:33,058 INFO georag.ingest.derive derive.progress 20/20
+2026-05-19 00:26:33,058 INFO georag.ingest.derive derive.project done {'project_id': '019d74a1-fba8-7165-9ae6-a5bf93eef97d', 'collars_total': 20, 'collars_emitted': 0, 'collars_skipped': 20, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,095 INFO georag.ingest.derive derive.project start project_id=df4980b0-119e-413c-8f86-5a6117d3b3e5 collars=0
+2026-05-19 00:26:33,095 INFO georag.ingest.derive derive.project done {'project_id': 'df4980b0-119e-413c-8f86-5a6117d3b3e5', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,130 INFO georag.ingest.derive derive.project start project_id=d7626d4f-1d99-467f-8331-d1bedca7d9f4 collars=0
+2026-05-19 00:26:33,130 INFO georag.ingest.derive derive.project done {'project_id': 'd7626d4f-1d99-467f-8331-d1bedca7d9f4', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,164 INFO georag.ingest.derive derive.project start project_id=8ddbf229-9860-4db0-96eb-6c77dcf4e987 collars=0
+2026-05-19 00:26:33,165 INFO georag.ingest.derive derive.project done {'project_id': '8ddbf229-9860-4db0-96eb-6c77dcf4e987', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,202 INFO georag.ingest.derive derive.project start project_id=e9e2809c-25e4-4a6e-8e7c-b78f3d6f006d collars=0
+2026-05-19 00:26:33,202 INFO georag.ingest.derive derive.project done {'project_id': 'e9e2809c-25e4-4a6e-8e7c-b78f3d6f006d', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,237 INFO georag.ingest.derive derive.project start project_id=159faea4-d106-40a6-8c5f-7850fbf9b584 collars=0
+2026-05-19 00:26:33,237 INFO georag.ingest.derive derive.project done {'project_id': '159faea4-d106-40a6-8c5f-7850fbf9b584', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,271 INFO georag.ingest.derive derive.project start project_id=a62512c9-d449-4164-8c93-c09502c71090 collars=0
+2026-05-19 00:26:33,271 INFO georag.ingest.derive derive.project done {'project_id': 'a62512c9-d449-4164-8c93-c09502c71090', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,305 INFO georag.ingest.derive derive.project start project_id=a198a1f8-b75b-4922-8d43-67589b41ec5f collars=0
+2026-05-19 00:26:33,305 INFO georag.ingest.derive derive.project done {'project_id': 'a198a1f8-b75b-4922-8d43-67589b41ec5f', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+derive over 120 projects
+[10/120] wsgs-uranium-025n091w02: collars=0 intervals=0
+2026-05-19 00:26:33,342 INFO georag.ingest.derive derive.project start project_id=2c8b7f37-901f-4f8b-b4c2-ec1f78f6f80e collars=0
+2026-05-19 00:26:33,342 INFO georag.ingest.derive derive.project done {'project_id': '2c8b7f37-901f-4f8b-b4c2-ec1f78f6f80e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,388 INFO georag.ingest.derive derive.project start project_id=7225185a-dd84-45e7-89d3-eef5db6f9912 collars=0
+2026-05-19 00:26:33,388 INFO georag.ingest.derive derive.project done {'project_id': '7225185a-dd84-45e7-89d3-eef5db6f9912', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,425 INFO georag.ingest.derive derive.project start project_id=560cf796-1ef2-408d-9a55-efdd0ffe5754 collars=0
+2026-05-19 00:26:33,425 INFO georag.ingest.derive derive.project done {'project_id': '560cf796-1ef2-408d-9a55-efdd0ffe5754', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,459 INFO georag.ingest.derive derive.project start project_id=0f8fc0a4-78df-4c78-bc1a-0f890e1cbd8c collars=0
+2026-05-19 00:26:33,459 INFO georag.ingest.derive derive.project done {'project_id': '0f8fc0a4-78df-4c78-bc1a-0f890e1cbd8c', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,495 INFO georag.ingest.derive derive.project start project_id=ece5656c-e4ee-4978-8e50-f0b3f2cebabf collars=0
+2026-05-19 00:26:33,496 INFO georag.ingest.derive derive.project done {'project_id': 'ece5656c-e4ee-4978-8e50-f0b3f2cebabf', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,531 INFO georag.ingest.derive derive.project start project_id=b04c041c-440d-49f6-96f2-7874b3f2ecc8 collars=0
+2026-05-19 00:26:33,531 INFO georag.ingest.derive derive.project done {'project_id': 'b04c041c-440d-49f6-96f2-7874b3f2ecc8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,565 INFO georag.ingest.derive derive.project start project_id=51b48559-90ff-47fd-838d-5ed38587ca6a collars=0
+2026-05-19 00:26:33,565 INFO georag.ingest.derive derive.project done {'project_id': '51b48559-90ff-47fd-838d-5ed38587ca6a', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,601 INFO georag.ingest.derive derive.project start project_id=1c4860d2-00b7-4a5a-bf21-3c728c435185 collars=0
+2026-05-19 00:26:33,601 INFO georag.ingest.derive derive.project done {'project_id': '1c4860d2-00b7-4a5a-bf21-3c728c435185', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,636 INFO georag.ingest.derive derive.project start project_id=ce247f2b-88f1-4cbb-b3f3-825d5bf50e22 collars=0
+2026-05-19 00:26:33,636 INFO georag.ingest.derive derive.project done {'project_id': 'ce247f2b-88f1-4cbb-b3f3-825d5bf50e22', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,668 INFO georag.ingest.derive derive.project start project_id=45f2fc20-1679-4212-a064-884d6ca11dbd collars=0
+2026-05-19 00:26:33,668 INFO georag.ingest.derive derive.project done {'project_id': '45f2fc20-1679-4212-a064-884d6ca11dbd', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[20/120] wsgs-uranium-026n091w27: collars=0 intervals=0
+2026-05-19 00:26:33,702 INFO georag.ingest.derive derive.project start project_id=7d5ffe91-e79b-415c-b0fa-ec59b9f73ae8 collars=0
+2026-05-19 00:26:33,702 INFO georag.ingest.derive derive.project done {'project_id': '7d5ffe91-e79b-415c-b0fa-ec59b9f73ae8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,737 INFO georag.ingest.derive derive.project start project_id=c8373541-93cb-461f-a20f-0acf96617789 collars=0
+2026-05-19 00:26:33,737 INFO georag.ingest.derive derive.project done {'project_id': 'c8373541-93cb-461f-a20f-0acf96617789', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,771 INFO georag.ingest.derive derive.project start project_id=57631c22-f4df-44be-bd10-60f34acd0098 collars=0
+2026-05-19 00:26:33,771 INFO georag.ingest.derive derive.project done {'project_id': '57631c22-f4df-44be-bd10-60f34acd0098', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,806 INFO georag.ingest.derive derive.project start project_id=9812469c-605b-4098-b81d-af8e3a2033d3 collars=0
+2026-05-19 00:26:33,806 INFO georag.ingest.derive derive.project done {'project_id': '9812469c-605b-4098-b81d-af8e3a2033d3', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,842 INFO georag.ingest.derive derive.project start project_id=8d76b368-7cb2-4548-959b-a6903e8caa7e collars=0
+2026-05-19 00:26:33,842 INFO georag.ingest.derive derive.project done {'project_id': '8d76b368-7cb2-4548-959b-a6903e8caa7e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,876 INFO georag.ingest.derive derive.project start project_id=1160d799-427f-48ff-aa0e-a7258ddefaee collars=0
+2026-05-19 00:26:33,877 INFO georag.ingest.derive derive.project done {'project_id': '1160d799-427f-48ff-aa0e-a7258ddefaee', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,912 INFO georag.ingest.derive derive.project start project_id=d8b6652b-e5f1-4108-9b6d-296359897aaa collars=0
+2026-05-19 00:26:33,912 INFO georag.ingest.derive derive.project done {'project_id': 'd8b6652b-e5f1-4108-9b6d-296359897aaa', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,947 INFO georag.ingest.derive derive.project start project_id=3e713945-68e7-4a5a-9dcc-89a328d265d8 collars=0
+2026-05-19 00:26:33,947 INFO georag.ingest.derive derive.project done {'project_id': '3e713945-68e7-4a5a-9dcc-89a328d265d8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:33,981 INFO georag.ingest.derive derive.project start project_id=3be0fc66-14e9-4751-85d6-6a152563d4f0 collars=0
+2026-05-19 00:26:33,981 INFO georag.ingest.derive derive.project done {'project_id': '3be0fc66-14e9-4751-85d6-6a152563d4f0', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,016 INFO georag.ingest.derive derive.project start project_id=11a834c1-fdd0-47db-978d-9a90cacd7e69 collars=0
+2026-05-19 00:26:34,016 INFO georag.ingest.derive derive.project done {'project_id': '11a834c1-fdd0-47db-978d-9a90cacd7e69', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[30/120] wsgs-uranium-027n079w01: collars=0 intervals=0
+2026-05-19 00:26:34,050 INFO georag.ingest.derive derive.project start project_id=5f957bdd-cd68-4c53-acbb-5f075f25ad80 collars=0
+2026-05-19 00:26:34,050 INFO georag.ingest.derive derive.project done {'project_id': '5f957bdd-cd68-4c53-acbb-5f075f25ad80', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,087 INFO georag.ingest.derive derive.project start project_id=79209632-cb21-46b8-a768-ba6d975c9372 collars=0
+2026-05-19 00:26:34,087 INFO georag.ingest.derive derive.project done {'project_id': '79209632-cb21-46b8-a768-ba6d975c9372', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,128 INFO georag.ingest.derive derive.project start project_id=80ffc5e5-3138-43c0-b246-0dd584a98bc7 collars=0
+2026-05-19 00:26:34,129 INFO georag.ingest.derive derive.project done {'project_id': '80ffc5e5-3138-43c0-b246-0dd584a98bc7', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,166 INFO georag.ingest.derive derive.project start project_id=1a17f6d6-5b20-482e-9ca3-30e05f300018 collars=0
+2026-05-19 00:26:34,166 INFO georag.ingest.derive derive.project done {'project_id': '1a17f6d6-5b20-482e-9ca3-30e05f300018', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,201 INFO georag.ingest.derive derive.project start project_id=27a3505b-8f3b-4705-bfdb-cf483e59444d collars=0
+2026-05-19 00:26:34,201 INFO georag.ingest.derive derive.project done {'project_id': '27a3505b-8f3b-4705-bfdb-cf483e59444d', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,237 INFO georag.ingest.derive derive.project start project_id=cf5372a9-be0d-428e-9e5c-76a2b32494af collars=0
+2026-05-19 00:26:34,237 INFO georag.ingest.derive derive.project done {'project_id': 'cf5372a9-be0d-428e-9e5c-76a2b32494af', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,275 INFO georag.ingest.derive derive.project start project_id=d3a10baa-ab6b-48a1-88f0-8107b0de793e collars=0
+2026-05-19 00:26:34,275 INFO georag.ingest.derive derive.project done {'project_id': 'd3a10baa-ab6b-48a1-88f0-8107b0de793e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,312 INFO georag.ingest.derive derive.project start project_id=271e25c6-7652-4036-8e90-d2ec8345343e collars=0
+2026-05-19 00:26:34,312 INFO georag.ingest.derive derive.project done {'project_id': '271e25c6-7652-4036-8e90-d2ec8345343e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,349 INFO georag.ingest.derive derive.project start project_id=39f6a226-162b-42ac-91f1-8ae7a9c2ffa8 collars=0
+2026-05-19 00:26:34,349 INFO georag.ingest.derive derive.project done {'project_id': '39f6a226-162b-42ac-91f1-8ae7a9c2ffa8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,391 INFO georag.ingest.derive derive.project start project_id=0dce84f9-b21d-462f-bc0e-6c9c60f3b0ef collars=0
+2026-05-19 00:26:34,391 INFO georag.ingest.derive derive.project done {'project_id': '0dce84f9-b21d-462f-bc0e-6c9c60f3b0ef', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[40/120] wsgs-uranium-027n091w16: collars=0 intervals=0
+2026-05-19 00:26:34,427 INFO georag.ingest.derive derive.project start project_id=134cac8e-8dab-415f-bf26-ff57ad48cc90 collars=0
+2026-05-19 00:26:34,427 INFO georag.ingest.derive derive.project done {'project_id': '134cac8e-8dab-415f-bf26-ff57ad48cc90', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,462 INFO georag.ingest.derive derive.project start project_id=0c7b9b74-69a2-4ebe-9210-e42a331b02d0 collars=0
+2026-05-19 00:26:34,462 INFO georag.ingest.derive derive.project done {'project_id': '0c7b9b74-69a2-4ebe-9210-e42a331b02d0', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,499 INFO georag.ingest.derive derive.project start project_id=c5c3d1d0-faa5-449a-8c59-85ee55f1af40 collars=0
+2026-05-19 00:26:34,499 INFO georag.ingest.derive derive.project done {'project_id': 'c5c3d1d0-faa5-449a-8c59-85ee55f1af40', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,536 INFO georag.ingest.derive derive.project start project_id=f793a2a9-b60f-4e73-bb56-b9e085ebc3b0 collars=0
+2026-05-19 00:26:34,536 INFO georag.ingest.derive derive.project done {'project_id': 'f793a2a9-b60f-4e73-bb56-b9e085ebc3b0', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,571 INFO georag.ingest.derive derive.project start project_id=9b9ea02d-29fd-4874-bba2-567d1ddfc90b collars=0
+2026-05-19 00:26:34,571 INFO georag.ingest.derive derive.project done {'project_id': '9b9ea02d-29fd-4874-bba2-567d1ddfc90b', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,605 INFO georag.ingest.derive derive.project start project_id=4a0657ef-ec2f-4f27-95e0-5066fbd83a3e collars=0
+2026-05-19 00:26:34,606 INFO georag.ingest.derive derive.project done {'project_id': '4a0657ef-ec2f-4f27-95e0-5066fbd83a3e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,650 INFO georag.ingest.derive derive.project start project_id=d866a9cb-9375-45eb-88bf-8e81b58f94b4 collars=0
+2026-05-19 00:26:34,650 INFO georag.ingest.derive derive.project done {'project_id': 'd866a9cb-9375-45eb-88bf-8e81b58f94b4', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,685 INFO georag.ingest.derive derive.project start project_id=9a389632-6618-4f1b-9dd5-7da79d9071f1 collars=0
+2026-05-19 00:26:34,685 INFO georag.ingest.derive derive.project done {'project_id': '9a389632-6618-4f1b-9dd5-7da79d9071f1', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,721 INFO georag.ingest.derive derive.project start project_id=7830fe95-3172-4d4f-bf82-dd105e6f805a collars=0
+2026-05-19 00:26:34,721 INFO georag.ingest.derive derive.project done {'project_id': '7830fe95-3172-4d4f-bf82-dd105e6f805a', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,764 INFO georag.ingest.derive derive.project start project_id=26721431-3774-4fce-baf8-19311a0fe2bf collars=0
+2026-05-19 00:26:34,764 INFO georag.ingest.derive derive.project done {'project_id': '26721431-3774-4fce-baf8-19311a0fe2bf', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[50/120] wsgs-uranium-027n091w36: collars=0 intervals=0
+2026-05-19 00:26:34,799 INFO georag.ingest.derive derive.project start project_id=30c91acf-83eb-4891-858f-8a0049154d9e collars=0
+2026-05-19 00:26:34,799 INFO georag.ingest.derive derive.project done {'project_id': '30c91acf-83eb-4891-858f-8a0049154d9e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,834 INFO georag.ingest.derive derive.project start project_id=9a5d2bd5-4515-4ead-a9ea-27a6e74077ab collars=0
+2026-05-19 00:26:34,834 INFO georag.ingest.derive derive.project done {'project_id': '9a5d2bd5-4515-4ead-a9ea-27a6e74077ab', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,867 INFO georag.ingest.derive derive.project start project_id=ffc4f1d5-1cc8-43b3-9d16-f303da0b076c collars=0
+2026-05-19 00:26:34,868 INFO georag.ingest.derive derive.project done {'project_id': 'ffc4f1d5-1cc8-43b3-9d16-f303da0b076c', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,903 INFO georag.ingest.derive derive.project start project_id=4c88b271-20f7-479c-b296-936f07b84d36 collars=0
+2026-05-19 00:26:34,904 INFO georag.ingest.derive derive.project done {'project_id': '4c88b271-20f7-479c-b296-936f07b84d36', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,939 INFO georag.ingest.derive derive.project start project_id=f09babd6-a141-43bb-b6f0-035f6e72f8a8 collars=0
+2026-05-19 00:26:34,939 INFO georag.ingest.derive derive.project done {'project_id': 'f09babd6-a141-43bb-b6f0-035f6e72f8a8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:34,981 INFO georag.ingest.derive derive.project start project_id=9486548f-57f5-41c0-a9d9-e68bc6322876 collars=0
+2026-05-19 00:26:34,981 INFO georag.ingest.derive derive.project done {'project_id': '9486548f-57f5-41c0-a9d9-e68bc6322876', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,017 INFO georag.ingest.derive derive.project start project_id=413be833-7016-4f15-82ef-21797e3b715d collars=0
+2026-05-19 00:26:35,017 INFO georag.ingest.derive derive.project done {'project_id': '413be833-7016-4f15-82ef-21797e3b715d', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,053 INFO georag.ingest.derive derive.project start project_id=42f7be22-dcd3-44a6-9130-a85447ca25ac collars=0
+2026-05-19 00:26:35,053 INFO georag.ingest.derive derive.project done {'project_id': '42f7be22-dcd3-44a6-9130-a85447ca25ac', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,089 INFO georag.ingest.derive derive.project start project_id=720a2c60-66b8-4479-a219-2ee448def220 collars=0
+2026-05-19 00:26:35,089 INFO georag.ingest.derive derive.project done {'project_id': '720a2c60-66b8-4479-a219-2ee448def220', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,126 INFO georag.ingest.derive derive.project start project_id=f5e2be38-4086-4532-bed5-9d7f3482c8ff collars=0
+2026-05-19 00:26:35,126 INFO georag.ingest.derive derive.project done {'project_id': 'f5e2be38-4086-4532-bed5-9d7f3482c8ff', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[60/120] wsgs-uranium-028n079w34: collars=0 intervals=0
+2026-05-19 00:26:35,161 INFO georag.ingest.derive derive.project start project_id=b707a26b-d0cb-4e4b-ace2-9be0bfa3e9d2 collars=0
+2026-05-19 00:26:35,161 INFO georag.ingest.derive derive.project done {'project_id': 'b707a26b-d0cb-4e4b-ace2-9be0bfa3e9d2', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,197 INFO georag.ingest.derive derive.project start project_id=546588e8-36b1-4239-ba8f-3343d3251021 collars=0
+2026-05-19 00:26:35,197 INFO georag.ingest.derive derive.project done {'project_id': '546588e8-36b1-4239-ba8f-3343d3251021', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,233 INFO georag.ingest.derive derive.project start project_id=e7e9d82e-a112-4671-a3bd-fa5077306ba0 collars=0
+2026-05-19 00:26:35,233 INFO georag.ingest.derive derive.project done {'project_id': 'e7e9d82e-a112-4671-a3bd-fa5077306ba0', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,268 INFO georag.ingest.derive derive.project start project_id=1a57c66c-39ac-4b9f-b5fc-7466fba5ebd7 collars=0
+2026-05-19 00:26:35,268 INFO georag.ingest.derive derive.project done {'project_id': '1a57c66c-39ac-4b9f-b5fc-7466fba5ebd7', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,306 INFO georag.ingest.derive derive.project start project_id=46cbd386-eebc-4840-8e39-7cb8ea8d0b63 collars=0
+2026-05-19 00:26:35,306 INFO georag.ingest.derive derive.project done {'project_id': '46cbd386-eebc-4840-8e39-7cb8ea8d0b63', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,342 INFO georag.ingest.derive derive.project start project_id=63f629f8-a1ed-4016-86a1-43a6ff2cad62 collars=0
+2026-05-19 00:26:35,342 INFO georag.ingest.derive derive.project done {'project_id': '63f629f8-a1ed-4016-86a1-43a6ff2cad62', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,376 INFO georag.ingest.derive derive.project start project_id=779d592f-8c9d-4249-98e2-075f07b390a9 collars=0
+2026-05-19 00:26:35,376 INFO georag.ingest.derive derive.project done {'project_id': '779d592f-8c9d-4249-98e2-075f07b390a9', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,410 INFO georag.ingest.derive derive.project start project_id=613f1c61-a9df-450c-a408-a75fd1c8c6f0 collars=0
+2026-05-19 00:26:35,410 INFO georag.ingest.derive derive.project done {'project_id': '613f1c61-a9df-450c-a408-a75fd1c8c6f0', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,444 INFO georag.ingest.derive derive.project start project_id=75545754-f0ef-41c4-9639-c221a2e18dd8 collars=0
+2026-05-19 00:26:35,444 INFO georag.ingest.derive derive.project done {'project_id': '75545754-f0ef-41c4-9639-c221a2e18dd8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,480 INFO georag.ingest.derive derive.project start project_id=0fa53414-eb31-4bef-bca5-7ce58392ed1a collars=0
+2026-05-19 00:26:35,480 INFO georag.ingest.derive derive.project done {'project_id': '0fa53414-eb31-4bef-bca5-7ce58392ed1a', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[70/120] wsgs-uranium-032n092w01: collars=0 intervals=0
+2026-05-19 00:26:35,523 INFO georag.ingest.derive derive.project start project_id=d9fb89f7-275f-471a-ad11-1d06946ce285 collars=0
+2026-05-19 00:26:35,523 INFO georag.ingest.derive derive.project done {'project_id': 'd9fb89f7-275f-471a-ad11-1d06946ce285', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,559 INFO georag.ingest.derive derive.project start project_id=9cf08f26-7550-4a4d-a783-b41f612c9c99 collars=0
+2026-05-19 00:26:35,559 INFO georag.ingest.derive derive.project done {'project_id': '9cf08f26-7550-4a4d-a783-b41f612c9c99', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,599 INFO georag.ingest.derive derive.project start project_id=8b1e8cf4-e7e7-4317-9922-98e953084fc4 collars=0
+2026-05-19 00:26:35,599 INFO georag.ingest.derive derive.project done {'project_id': '8b1e8cf4-e7e7-4317-9922-98e953084fc4', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,636 INFO georag.ingest.derive derive.project start project_id=f78e9c7e-b29a-4f87-a9e9-fb7ef4844e67 collars=0
+2026-05-19 00:26:35,636 INFO georag.ingest.derive derive.project done {'project_id': 'f78e9c7e-b29a-4f87-a9e9-fb7ef4844e67', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,674 INFO georag.ingest.derive derive.project start project_id=f40b3a53-5d1d-4505-8157-8fc1e660ca13 collars=0
+2026-05-19 00:26:35,674 INFO georag.ingest.derive derive.project done {'project_id': 'f40b3a53-5d1d-4505-8157-8fc1e660ca13', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,710 INFO georag.ingest.derive derive.project start project_id=151c3afe-3698-49f1-bc04-455012dd7973 collars=0
+2026-05-19 00:26:35,711 INFO georag.ingest.derive derive.project done {'project_id': '151c3afe-3698-49f1-bc04-455012dd7973', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,748 INFO georag.ingest.derive derive.project start project_id=b51d19be-9f74-4b97-8ac1-0991651dbf01 collars=0
+2026-05-19 00:26:35,748 INFO georag.ingest.derive derive.project done {'project_id': 'b51d19be-9f74-4b97-8ac1-0991651dbf01', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,784 INFO georag.ingest.derive derive.project start project_id=c4cd584b-7828-488d-a35b-24429fdb219f collars=7
+2026-05-19 00:26:35,819 WARNING georag.ingest.derive derive.collar_failed hole=0930-0240 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,831 WARNING georag.ingest.derive derive.collar_failed hole=1030-0340 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,842 WARNING georag.ingest.derive derive.collar_failed hole=1030-0440 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,852 WARNING georag.ingest.derive derive.collar_failed hole=1030-0540 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,862 WARNING georag.ingest.derive derive.collar_failed hole=1130-0340 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,872 WARNING georag.ingest.derive derive.collar_failed hole=1130-0440 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,882 WARNING georag.ingest.derive derive.collar_failed hole=1130-0540 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,882 INFO georag.ingest.derive derive.project done {'project_id': 'c4cd584b-7828-488d-a35b-24429fdb219f', 'collars_total': 7, 'collars_emitted': 0, 'collars_skipped': 7, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:35,919 INFO georag.ingest.derive derive.project start project_id=f88e8f4b-8773-4997-81e7-4b95eddcacd0 collars=94
+2026-05-19 00:26:35,957 WARNING georag.ingest.derive derive.collar_failed hole=0070-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,971 WARNING georag.ingest.derive derive.collar_failed hole=0070-5250 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,982 WARNING georag.ingest.derive derive.collar_failed hole=0070-5350 err=permission denied for table lithology_logs
+2026-05-19 00:26:35,993 WARNING georag.ingest.derive derive.collar_failed hole=0180-5000 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,003 WARNING georag.ingest.derive derive.collar_failed hole=0180-5150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,014 WARNING georag.ingest.derive derive.collar_failed hole=0270-4250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,024 WARNING georag.ingest.derive derive.collar_failed hole=0270-5050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,035 WARNING georag.ingest.derive derive.collar_failed hole=0270-5150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,045 WARNING georag.ingest.derive derive.collar_failed hole=0270-5250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,056 WARNING georag.ingest.derive derive.collar_failed hole=0270-5350 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,066 WARNING georag.ingest.derive derive.collar_failed hole=0320-4400 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,077 WARNING georag.ingest.derive derive.collar_failed hole=0370-4950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,087 WARNING georag.ingest.derive derive.collar_failed hole=0370-5100 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,098 WARNING georag.ingest.derive derive.collar_failed hole=0410-4500 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,108 WARNING georag.ingest.derive derive.collar_failed hole=0470-4650 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,118 WARNING georag.ingest.derive derive.collar_failed hole=0670-4750 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,128 WARNING georag.ingest.derive derive.collar_failed hole=0670-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,139 WARNING georag.ingest.derive derive.collar_failed hole=0670-4950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,150 WARNING georag.ingest.derive derive.collar_failed hole=0770-4650 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,159 WARNING georag.ingest.derive derive.collar_failed hole=0770-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,170 WARNING georag.ingest.derive derive.collar_failed hole=0870-4560 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,181 WARNING georag.ingest.derive derive.collar_failed hole=0870-4650 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,194 WARNING georag.ingest.derive derive.collar_failed hole=0970-4560 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,205 WARNING georag.ingest.derive derive.collar_failed hole=1070-4170 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,216 WARNING georag.ingest.derive derive.collar_failed hole=1070-4260 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,228 WARNING georag.ingest.derive derive.collar_failed hole=1070-4560 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,238 WARNING georag.ingest.derive derive.collar_failed hole=1090-4430 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,248 WARNING georag.ingest.derive derive.collar_failed hole=1170-4160 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,259 WARNING georag.ingest.derive derive.collar_failed hole=1170-4460 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,270 WARNING georag.ingest.derive derive.collar_failed hole=1270-4460 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,281 WARNING georag.ingest.derive derive.collar_failed hole=1370-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,290 WARNING georag.ingest.derive derive.collar_failed hole=1370-4450 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,300 WARNING georag.ingest.derive derive.collar_failed hole=1470-3150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,311 WARNING georag.ingest.derive derive.collar_failed hole=1470-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,322 WARNING georag.ingest.derive derive.collar_failed hole=1470-3350 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,332 WARNING georag.ingest.derive derive.collar_failed hole=1470-3450 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,341 WARNING georag.ingest.derive derive.collar_failed hole=1470-3550 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,350 WARNING georag.ingest.derive derive.collar_failed hole=1470-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,360 WARNING georag.ingest.derive derive.collar_failed hole=1470-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,370 WARNING georag.ingest.derive derive.collar_failed hole=1520-4600 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,381 WARNING georag.ingest.derive derive.collar_failed hole=1570-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,391 WARNING georag.ingest.derive derive.collar_failed hole=1570-3350 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,400 WARNING georag.ingest.derive derive.collar_failed hole=1570-3650 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,408 WARNING georag.ingest.derive derive.collar_failed hole=1570-3750 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,416 WARNING georag.ingest.derive derive.collar_failed hole=1570-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,425 WARNING georag.ingest.derive derive.collar_failed hole=1670-3150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,434 WARNING georag.ingest.derive derive.collar_failed hole=1670-3250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,441 WARNING georag.ingest.derive derive.collar_failed hole=1670-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,450 WARNING georag.ingest.derive derive.collar_failed hole=1770-3150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,460 WARNING georag.ingest.derive derive.collar_failed hole=1770-3450 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,469 WARNING georag.ingest.derive derive.collar_failed hole=1770-3550 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,476 WARNING georag.ingest.derive derive.collar_failed hole=1770-4350 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,485 WARNING georag.ingest.derive derive.collar_failed hole=1870-3070 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,492 WARNING georag.ingest.derive derive.collar_failed hole=1870-3160 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,504 WARNING georag.ingest.derive derive.collar_failed hole=1870-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,512 WARNING georag.ingest.derive derive.collar_failed hole=1870-4250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,524 WARNING georag.ingest.derive derive.collar_failed hole=1870-4350 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,535 WARNING georag.ingest.derive derive.collar_failed hole=1870-4450 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,544 WARNING georag.ingest.derive derive.collar_failed hole=1970-3060 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,551 WARNING georag.ingest.derive derive.collar_failed hole=1970-3130 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,562 WARNING georag.ingest.derive derive.collar_failed hole=1970-3550 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,570 WARNING georag.ingest.derive derive.collar_failed hole=2020-3010 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,579 WARNING georag.ingest.derive derive.collar_failed hole=2060-3110 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,591 WARNING georag.ingest.derive derive.collar_failed hole=2060-3210 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,600 WARNING georag.ingest.derive derive.collar_failed hole=2070-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,609 WARNING georag.ingest.derive derive.collar_failed hole=2070-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,618 WARNING georag.ingest.derive derive.collar_failed hole=2070-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,630 WARNING georag.ingest.derive derive.collar_failed hole=2070-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,644 WARNING georag.ingest.derive derive.collar_failed hole=2070-4450 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,654 WARNING georag.ingest.derive derive.collar_failed hole=2110-3060 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,664 WARNING georag.ingest.derive derive.collar_failed hole=2170-3750 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,673 WARNING georag.ingest.derive derive.collar_failed hole=2170-3850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,682 WARNING georag.ingest.derive derive.collar_failed hole=2170-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,691 WARNING georag.ingest.derive derive.collar_failed hole=2170-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,702 WARNING georag.ingest.derive derive.collar_failed hole=2170-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,711 WARNING georag.ingest.derive derive.collar_failed hole=2170-4250 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,720 WARNING georag.ingest.derive derive.collar_failed hole=2170-4430 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,729 WARNING georag.ingest.derive derive.collar_failed hole=2270-3160 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,738 WARNING georag.ingest.derive derive.collar_failed hole=2270-3950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,747 WARNING georag.ingest.derive derive.collar_failed hole=2270-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,753 WARNING georag.ingest.derive derive.collar_failed hole=2320-3000 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,763 WARNING georag.ingest.derive derive.collar_failed hole=2350-4350 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,772 WARNING georag.ingest.derive derive.collar_failed hole=2370-3050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,781 WARNING georag.ingest.derive derive.collar_failed hole=2370-3940 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,790 WARNING georag.ingest.derive derive.collar_failed hole=2370-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,798 WARNING georag.ingest.derive derive.collar_failed hole=2370-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,806 WARNING georag.ingest.derive derive.collar_failed hole=2470-3050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,814 WARNING georag.ingest.derive derive.collar_failed hole=2470-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,823 WARNING georag.ingest.derive derive.collar_failed hole=2470-4200 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,830 WARNING georag.ingest.derive derive.collar_failed hole=2670-4050 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,841 WARNING georag.ingest.derive derive.collar_failed hole=2670-4150 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,850 WARNING georag.ingest.derive derive.collar_failed hole=270-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,860 WARNING georag.ingest.derive derive.collar_failed hole=270-4950 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,870 WARNING georag.ingest.derive derive.collar_failed hole=370-4850 err=permission denied for table lithology_logs
+2026-05-19 00:26:36,870 INFO georag.ingest.derive derive.project done {'project_id': 'f88e8f4b-8773-4997-81e7-4b95eddcacd0', 'collars_total': 94, 'collars_emitted': 0, 'collars_skipped': 94, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:36,907 INFO georag.ingest.derive derive.project start project_id=46d02e9b-557a-4572-bdb9-fd5f29211e54 collars=0
+2026-05-19 00:26:36,907 INFO georag.ingest.derive derive.project done {'project_id': '46d02e9b-557a-4572-bdb9-fd5f29211e54', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[80/120] wsgs-uranium-033n092w16: collars=0 intervals=0
+2026-05-19 00:26:36,941 INFO georag.ingest.derive derive.project start project_id=f5e6cb13-25db-43c9-9b18-a2ea09d723b8 collars=0
+2026-05-19 00:26:36,941 INFO georag.ingest.derive derive.project done {'project_id': 'f5e6cb13-25db-43c9-9b18-a2ea09d723b8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:36,975 INFO georag.ingest.derive derive.project start project_id=e485b879-4688-404a-ab6a-4188c1211d2d collars=0
+2026-05-19 00:26:36,975 INFO georag.ingest.derive derive.project done {'project_id': 'e485b879-4688-404a-ab6a-4188c1211d2d', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,008 INFO georag.ingest.derive derive.project start project_id=623e9405-c65b-43c6-b606-e06d73940a1d collars=0
+2026-05-19 00:26:37,008 INFO georag.ingest.derive derive.project done {'project_id': '623e9405-c65b-43c6-b606-e06d73940a1d', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,043 INFO georag.ingest.derive derive.project start project_id=3e4d4fe5-76ab-4880-9a71-8caca1b70c25 collars=2
+2026-05-19 00:26:37,084 WARNING georag.ingest.derive derive.collar_failed hole=IC-11 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,105 WARNING georag.ingest.derive derive.collar_failed hole=IC-9 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,105 INFO georag.ingest.derive derive.project done {'project_id': '3e4d4fe5-76ab-4880-9a71-8caca1b70c25', 'collars_total': 2, 'collars_emitted': 0, 'collars_skipped': 2, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,141 INFO georag.ingest.derive derive.project start project_id=a5b75668-5c80-4b43-83c9-df18f55bdc21 collars=4
+2026-05-19 00:26:37,183 WARNING georag.ingest.derive derive.collar_failed hole=IC-16 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,206 WARNING georag.ingest.derive derive.collar_failed hole=IC-17 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,226 WARNING georag.ingest.derive derive.collar_failed hole=IC-18 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,247 WARNING georag.ingest.derive derive.collar_failed hole=IC-19 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,247 INFO georag.ingest.derive derive.project done {'project_id': 'a5b75668-5c80-4b43-83c9-df18f55bdc21', 'collars_total': 4, 'collars_emitted': 0, 'collars_skipped': 4, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,285 INFO georag.ingest.derive derive.project start project_id=1e94d8fc-a262-4ef7-8ee8-a6245ce45693 collars=2
+2026-05-19 00:26:37,328 WARNING georag.ingest.derive derive.collar_failed hole=IC-23 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,348 WARNING georag.ingest.derive derive.collar_failed hole=IC-24 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,348 INFO georag.ingest.derive derive.project done {'project_id': '1e94d8fc-a262-4ef7-8ee8-a6245ce45693', 'collars_total': 2, 'collars_emitted': 0, 'collars_skipped': 2, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,387 INFO georag.ingest.derive derive.project start project_id=ce68968e-e29d-4218-b533-c02ecb475867 collars=2
+2026-05-19 00:26:37,418 WARNING georag.ingest.derive derive.collar_failed hole=IC-2 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,432 WARNING georag.ingest.derive derive.collar_failed hole=IC-3 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,432 INFO georag.ingest.derive derive.project done {'project_id': 'ce68968e-e29d-4218-b533-c02ecb475867', 'collars_total': 2, 'collars_emitted': 0, 'collars_skipped': 2, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,466 INFO georag.ingest.derive derive.project start project_id=92975c65-ce65-4cf6-bf62-d14c568f5268 collars=4
+2026-05-19 00:26:37,509 WARNING georag.ingest.derive derive.collar_failed hole=IC-4 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,533 WARNING georag.ingest.derive derive.collar_failed hole=IC-5 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,553 WARNING georag.ingest.derive derive.collar_failed hole=IC-6 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,571 WARNING georag.ingest.derive derive.collar_failed hole=IC-8 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,572 INFO georag.ingest.derive derive.project done {'project_id': '92975c65-ce65-4cf6-bf62-d14c568f5268', 'collars_total': 4, 'collars_emitted': 0, 'collars_skipped': 4, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,607 INFO georag.ingest.derive derive.project start project_id=5dcc71f3-9ac1-46d0-ba92-b3a2aab83e2e collars=1
+2026-05-19 00:26:37,651 WARNING georag.ingest.derive derive.collar_failed hole=IC-7 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,651 INFO georag.ingest.derive derive.project done {'project_id': '5dcc71f3-9ac1-46d0-ba92-b3a2aab83e2e', 'collars_total': 1, 'collars_emitted': 0, 'collars_skipped': 1, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,686 INFO georag.ingest.derive derive.project start project_id=f7b34c27-27ff-4a9f-91ec-144d7b146f5d collars=6
+2026-05-19 00:26:37,726 WARNING georag.ingest.derive derive.collar_failed hole=SRE09-12 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,742 WARNING georag.ingest.derive derive.collar_failed hole=SRE09-13 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,760 WARNING georag.ingest.derive derive.collar_failed hole=SRE09-3 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,777 WARNING georag.ingest.derive derive.collar_failed hole=SRE09-6 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,795 WARNING georag.ingest.derive derive.collar_failed hole=SRE09-7 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,814 WARNING georag.ingest.derive derive.collar_failed hole=SRE09-9 err=permission denied for table lithology_logs
+2026-05-19 00:26:37,814 INFO georag.ingest.derive derive.project done {'project_id': 'f7b34c27-27ff-4a9f-91ec-144d7b146f5d', 'collars_total': 6, 'collars_emitted': 0, 'collars_skipped': 6, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[90/120] wsgs-uranium-035n074w03: collars=6 intervals=0
+2026-05-19 00:26:37,851 INFO georag.ingest.derive derive.project start project_id=1cbba60c-6ac2-4f1b-8da8-a8e9d785cad8 collars=0
+2026-05-19 00:26:37,851 INFO georag.ingest.derive derive.project done {'project_id': '1cbba60c-6ac2-4f1b-8da8-a8e9d785cad8', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,885 INFO georag.ingest.derive derive.project start project_id=52a4cced-dc1b-4545-9c2b-c144cfc2c649 collars=0
+2026-05-19 00:26:37,885 INFO georag.ingest.derive derive.project done {'project_id': '52a4cced-dc1b-4545-9c2b-c144cfc2c649', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,920 INFO georag.ingest.derive derive.project start project_id=1ef99392-c70e-4898-9ef8-286163c4e6b0 collars=0
+2026-05-19 00:26:37,921 INFO georag.ingest.derive derive.project done {'project_id': '1ef99392-c70e-4898-9ef8-286163c4e6b0', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,956 INFO georag.ingest.derive derive.project start project_id=18cfe811-451e-4d5b-af98-401fb09629c9 collars=0
+2026-05-19 00:26:37,956 INFO georag.ingest.derive derive.project done {'project_id': '18cfe811-451e-4d5b-af98-401fb09629c9', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:37,992 INFO georag.ingest.derive derive.project start project_id=da277692-5862-4b94-87ad-0d2d53b0b286 collars=0
+2026-05-19 00:26:37,992 INFO georag.ingest.derive derive.project done {'project_id': 'da277692-5862-4b94-87ad-0d2d53b0b286', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,028 INFO georag.ingest.derive derive.project start project_id=2cc3f1cf-7477-4538-a6c8-371862fb3ddc collars=0
+2026-05-19 00:26:38,028 INFO georag.ingest.derive derive.project done {'project_id': '2cc3f1cf-7477-4538-a6c8-371862fb3ddc', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,062 INFO georag.ingest.derive derive.project start project_id=1ca24329-6f49-4ee2-b3eb-91c003b58074 collars=0
+2026-05-19 00:26:38,062 INFO georag.ingest.derive derive.project done {'project_id': '1ca24329-6f49-4ee2-b3eb-91c003b58074', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,095 INFO georag.ingest.derive derive.project start project_id=3a348c5a-19df-479f-ae7c-76353d926e11 collars=0
+2026-05-19 00:26:38,095 INFO georag.ingest.derive derive.project done {'project_id': '3a348c5a-19df-479f-ae7c-76353d926e11', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,130 INFO georag.ingest.derive derive.project start project_id=f5c4aa0c-a78a-4bf7-9d5e-55cf9d63cf90 collars=0
+2026-05-19 00:26:38,131 INFO georag.ingest.derive derive.project done {'project_id': 'f5c4aa0c-a78a-4bf7-9d5e-55cf9d63cf90', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,165 INFO georag.ingest.derive derive.project start project_id=73f149c3-8faa-4ddc-9979-0f0e0cffd8ee collars=0
+2026-05-19 00:26:38,165 INFO georag.ingest.derive derive.project done {'project_id': '73f149c3-8faa-4ddc-9979-0f0e0cffd8ee', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[100/120] wsgs-uranium-041n075w29: collars=0 intervals=0
+2026-05-19 00:26:38,201 INFO georag.ingest.derive derive.project start project_id=b948f4ec-1f87-4fd8-8395-ad4a1199d66f collars=0
+2026-05-19 00:26:38,201 INFO georag.ingest.derive derive.project done {'project_id': 'b948f4ec-1f87-4fd8-8395-ad4a1199d66f', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,235 INFO georag.ingest.derive derive.project start project_id=68a9ce37-d6a5-4917-861b-d710978a1e43 collars=0
+2026-05-19 00:26:38,235 INFO georag.ingest.derive derive.project done {'project_id': '68a9ce37-d6a5-4917-861b-d710978a1e43', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,270 INFO georag.ingest.derive derive.project start project_id=7cceb201-2f4d-4b9c-b586-3652c55ef21b collars=0
+2026-05-19 00:26:38,270 INFO georag.ingest.derive derive.project done {'project_id': '7cceb201-2f4d-4b9c-b586-3652c55ef21b', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,313 INFO georag.ingest.derive derive.project start project_id=0a5ef9fa-c900-4336-90cd-83660e689d45 collars=0
+2026-05-19 00:26:38,313 INFO georag.ingest.derive derive.project done {'project_id': '0a5ef9fa-c900-4336-90cd-83660e689d45', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,347 INFO georag.ingest.derive derive.project start project_id=58738339-58b2-47ae-a090-ad1aed67ce5e collars=0
+2026-05-19 00:26:38,348 INFO georag.ingest.derive derive.project done {'project_id': '58738339-58b2-47ae-a090-ad1aed67ce5e', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,383 INFO georag.ingest.derive derive.project start project_id=804da33a-dd80-433d-912f-635492fe6fd5 collars=0
+2026-05-19 00:26:38,383 INFO georag.ingest.derive derive.project done {'project_id': '804da33a-dd80-433d-912f-635492fe6fd5', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,418 INFO georag.ingest.derive derive.project start project_id=45aa1317-5130-468c-864f-247c07d06c09 collars=0
+2026-05-19 00:26:38,418 INFO georag.ingest.derive derive.project done {'project_id': '45aa1317-5130-468c-864f-247c07d06c09', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,451 INFO georag.ingest.derive derive.project start project_id=7083bc22-81da-4fb5-9342-c080294af6f4 collars=0
+2026-05-19 00:26:38,451 INFO georag.ingest.derive derive.project done {'project_id': '7083bc22-81da-4fb5-9342-c080294af6f4', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,485 INFO georag.ingest.derive derive.project start project_id=37a5410f-c13f-45a4-8552-cf0583731127 collars=0
+2026-05-19 00:26:38,485 INFO georag.ingest.derive derive.project done {'project_id': '37a5410f-c13f-45a4-8552-cf0583731127', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,520 INFO georag.ingest.derive derive.project start project_id=32777e62-2a16-4dbf-81bc-b6bfaedb94d1 collars=0
+2026-05-19 00:26:38,520 INFO georag.ingest.derive derive.project done {'project_id': '32777e62-2a16-4dbf-81bc-b6bfaedb94d1', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[110/120] wsgs-uranium-043n076w18: collars=0 intervals=0
+2026-05-19 00:26:38,555 INFO georag.ingest.derive derive.project start project_id=8395a18e-72d9-43e1-94c0-8588dce2158b collars=0
+2026-05-19 00:26:38,555 INFO georag.ingest.derive derive.project done {'project_id': '8395a18e-72d9-43e1-94c0-8588dce2158b', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,590 INFO georag.ingest.derive derive.project start project_id=61101e81-718f-4e45-ad70-a5b7e5c11171 collars=0
+2026-05-19 00:26:38,590 INFO georag.ingest.derive derive.project done {'project_id': '61101e81-718f-4e45-ad70-a5b7e5c11171', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,629 INFO georag.ingest.derive derive.project start project_id=c96eda52-1629-4bcb-b963-9f5b3e6c6d2d collars=0
+2026-05-19 00:26:38,629 INFO georag.ingest.derive derive.project done {'project_id': 'c96eda52-1629-4bcb-b963-9f5b3e6c6d2d', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,671 INFO georag.ingest.derive derive.project start project_id=3ec7d6c2-b0aa-4ca0-8f53-47b7081c56a7 collars=0
+2026-05-19 00:26:38,671 INFO georag.ingest.derive derive.project done {'project_id': '3ec7d6c2-b0aa-4ca0-8f53-47b7081c56a7', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,707 INFO georag.ingest.derive derive.project start project_id=2472fa96-da9e-47c6-a5ab-65c772ebd62c collars=0
+2026-05-19 00:26:38,707 INFO georag.ingest.derive derive.project done {'project_id': '2472fa96-da9e-47c6-a5ab-65c772ebd62c', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,743 INFO georag.ingest.derive derive.project start project_id=264479c4-dbfb-4164-8fa2-916a853041da collars=0
+2026-05-19 00:26:38,743 INFO georag.ingest.derive derive.project done {'project_id': '264479c4-dbfb-4164-8fa2-916a853041da', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,777 INFO georag.ingest.derive derive.project start project_id=ec743e7a-839c-439f-b6d1-5c300865617a collars=0
+2026-05-19 00:26:38,777 INFO georag.ingest.derive derive.project done {'project_id': 'ec743e7a-839c-439f-b6d1-5c300865617a', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,812 INFO georag.ingest.derive derive.project start project_id=d0d8c500-2c10-4da9-b512-013d8251b7f9 collars=0
+2026-05-19 00:26:38,812 INFO georag.ingest.derive derive.project done {'project_id': 'd0d8c500-2c10-4da9-b512-013d8251b7f9', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,846 INFO georag.ingest.derive derive.project start project_id=edea0ef5-b146-40f8-b58f-94f8bca5075b collars=0
+2026-05-19 00:26:38,847 INFO georag.ingest.derive derive.project done {'project_id': 'edea0ef5-b146-40f8-b58f-94f8bca5075b', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+2026-05-19 00:26:38,880 INFO georag.ingest.derive derive.project start project_id=9ceb4e57-f825-4e06-a285-3e1dd441bfeb collars=0
+2026-05-19 00:26:38,880 INFO georag.ingest.derive derive.project done {'project_id': '9ceb4e57-f825-4e06-a285-3e1dd441bfeb', 'collars_total': 0, 'collars_emitted': 0, 'collars_skipped': 0, 'intervals_total': 0, 'samples_total': 0, 'ore_bands_total': 0}
+[120/120] wsgs-uranium-046n078w36: collars=0 intervals=0
+---
+{
+  "intervals": 0,
+  "samples": 0,
+  "ore_bands": 0,
+  "collars": 302,
+  "emitted": 0,
+  "skipped": 302,
+  "ok_projects": 120,
+  "fail_projects": 0
+}

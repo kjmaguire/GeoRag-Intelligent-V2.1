@@ -1,0 +1,28 @@
+apiVersion: 1
+
+# Phase 2 Step 7 — Postgres datasource pointing at the `hatchet` logical
+# DB. Used by the GeoRAG / Integrations Grafana dashboard to query
+# v1_runs_olap for Activepieces-driven workflow runs (public_geoscience_pull,
+# external_notification, phase2_smoke).
+#
+# Read-only via the dedicated grafana_hatchet_readonly role
+# (database/raw/phase2/30-grafana-hatchet-readonly.sql).
+
+datasources:
+  - name: PostgreSQL-Hatchet
+    type: postgres
+    access: proxy
+    url: postgresql:5432
+    user: ${GRAFANA_HATCHET_READONLY_USER:-grafana_hatchet_readonly}
+    secureJsonData:
+      password: ${GRAFANA_HATCHET_READONLY_PASSWORD}
+    jsonData:
+      database: hatchet
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1800
+      timescaledb: false
+    isDefault: false
+    editable: false

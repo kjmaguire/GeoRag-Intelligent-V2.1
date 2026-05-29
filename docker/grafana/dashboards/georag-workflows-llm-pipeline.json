@@ -1,0 +1,109 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.2 Workflow-tier dashboard 4/5 — End-to-end LLM pipeline health. Aggregates the orchestrator's per-call metrics (FastAPI metrics.py) into a single executive view of the RAG pipeline's runtime characteristics.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "LLM calls/min by backend",
+      "description": "Per-backend call rate. vllm = local Qwen3, anthropic = failover path. Sustained anthropic > 5% of total = vllm is unstable or LLM_BACKEND_FALLBACK is overactive.",
+      "targets": [{"expr": "sum by (backend) (rate(prompt_total_tokens_total[1m])) > 0", "refId": "A", "legendFormat": "{{backend}}"}],
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit rate by backend (%)",
+      "description": "prompt_cache_tokens_total / prompt_total_tokens_total. Healthy vLLM with --enable-prefix-caching: 60-90%. Anthropic with cache_control: 30-80% (lower because the system prompt isn't always cached across project switches).",
+      "targets": [{"expr": "100 * sum by (backend) (rate(prompt_cache_tokens_total[5m])) / sum by (backend) (rate(prompt_total_tokens_total[5m]))", "refId": "A", "legendFormat": "{{backend}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 30}, {"color": "green", "value": 60}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM calls per query (histogram)",
+      "description": "metrics.py LLM_CALLS_PER_QUERY. One query budget = MAX_LLM_CALLS_PER_QUERY (default 8). p50 should be 1-2 (primary + classifier); p95 covers retries; p99 catches the validation-fail-then-failover path.",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(llm_calls_per_query_bucket[5m])))", "refId": "A", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(llm_calls_per_query_bucket[5m])))", "refId": "B", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(llm_calls_per_query_bucket[5m])))", "refId": "C", "legendFormat": "p99"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "Failovers (req/s, by tier+exception)",
+      "description": "metrics.py FAILOVERS — broken out by from_tier/to_tier/exception_class. 429s + 529s are upstream rate-limit / overload. Persistent timeouts = the OpenAI-compat endpoint is slow.",
+      "targets": [{"expr": "sum by (from_tier, to, exception_class) (rate(failovers_total[5m]))", "refId": "A", "legendFormat": "{{from_tier}}→{{to}} ({{exception_class}})"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "timeseries",
+      "title": "Partial tool-failure rate by tool (req/s)",
+      "description": "metrics.py PARTIAL_TOOL_FAILURES — the parallel_branches block's per-store timeout / error escape hatch. Any single store > 0 sustained means it's degraded.",
+      "targets": [{"expr": "sum by (tool, exception_class) (rate(partial_tool_failures_total[5m]))", "refId": "A", "legendFormat": "{{tool}} ({{exception_class}})"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 5
+    },
+    {
+      "type": "timeseries",
+      "title": "Chunks returned per query (histogram)",
+      "description": "metrics.py CHUNKS_RETURNED — Qdrant document chunks surviving the relevance threshold + reranker. p50 typically 3-6; p95 8-12. Sustained p50 near 0 = the document corpus is sparse or RETRIEVAL_QUALITY_THRESHOLD is too tight.",
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le) (rate(chunks_returned_bucket[5m])))", "refId": "A", "legendFormat": "p50"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(chunks_returned_bucket[5m])))", "refId": "B", "legendFormat": "p95"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "LLM call budget exhaustions (24h)",
+      "description": "metrics.py LLM_CALL_BUDGET_EXCEEDED — queries that hit MAX_LLM_CALLS_PER_QUERY and were aborted. Should be 0. Sustained > 0 means an upstream loop is firing (typically a validation-fail retry storm).",
+      "targets": [{"expr": "sum(increase(llm_call_budget_exceeded_total[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 10}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 24},
+      "id": 7
+    },
+    {
+      "type": "stat",
+      "title": "Output tokens/min",
+      "description": "metrics.py LLM_TOKENS_OUTPUT — sustained output token rate across all models. Useful for capacity planning vs. GPU saturation.",
+      "targets": [{"expr": "sum(rate(llm_tokens_output_total[1m]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 24},
+      "id": 8
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["georag", "workflows", "phase-7", "phase-h3", "section-16.2", "llm-pipeline"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Workflows (LLM pipeline)",
+  "uid": "georag-workflows-llm-pipeline",
+  "version": 1
+}

@@ -1,0 +1,15 @@
+{
+    "//": "Project-scoped MCP servers for GeoRAG. Only servers that need to travel with the codebase belong here.",
+    "//layout": "Most MCP wiring lives in user-scope (~/.claude.json) because Claude Code's CLI agent reads from there. Servers needing PHP / Node / WSL paths use wsl.exe or docker wrappers.",
+    "//see": "ops/runbooks/claude-code-mcp-migration.md for the full architecture (Desktop GUI vs CLI agent, DXT extensions, etc.).",
+    "mcpServers": {
+        "laravel-boost": {
+            "//": "Project's Laravel artisan boost:mcp server. Runs PHP directly; no Node/npx needed.",
+            "command": "php",
+            "args": [
+                "artisan",
+                "boost:mcp"
+            ]
+        }
+    }
+}

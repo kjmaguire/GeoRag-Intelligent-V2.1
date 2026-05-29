@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 3 PDF corpus label",
+  "description": "Ground-truth label for a single PDF in the master-plan §3 acceptance corpus. Every PDF in tests/fixtures/phase3_pdf_corpus/<profile>/ must have a sibling <filename>.label.json matching this schema.",
+  "type": "object",
+  "required": [
+    "filename",
+    "profile",
+    "expected_page_count",
+    "expected_recommended_action",
+    "expected_silver_review_page_count",
+    "notes_for_grader",
+    "labeled_by",
+    "labeled_at"
+  ],
+  "properties": {
+    "filename": {
+      "type": "string",
+      "description": "Bare filename (no path); must match the actual PDF in the same directory."
+    },
+    "profile": {
+      "type": "string",
+      "enum": ["native", "scanned", "mixed", "table_heavy", "map_heavy"],
+      "description": "The ground-truth profile classification. Acceptance test verifies the profiler agrees."
+    },
+    "expected_page_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of pages in the PDF as opened by Adobe Reader / pypdfium2."
+    },
+    "expected_recommended_action": {
+      "type": "string",
+      "enum": ["accept", "accept_with_review", "review_all_pages", "reject"],
+      "description": "What silver.document_ingestion_quality.recommended_action should resolve to after ingest."
+    },
+    "expected_silver_review_page_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many rows the ingest should create in silver.low_confidence_page_reviews for this pdf_id."
+    },
+    "review_page_reasons": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "ocr_confidence_below_threshold",
+          "layout_confidence_below_threshold",
+          "table_confidence_below_threshold",
+          "rotation_undetectable",
+          "deskew_failed_image_quality",
+          "page_blank_or_corrupted",
+          "map_heavy_v1_deferral",
+          "handwriting_unparseable",
+          "non_english_unsupported_language",
+          "encrypted_section",
+          "other"
+        ]
+      },
+      "description": "Map of page-number-as-string → review reason. Used by acceptance test to verify per-page reasons match. Optional but required when expected_silver_review_page_count > 0."
+    },
+    "reject_reason": {
+      "type": "string",
+      "enum": [
+        "corrupted_pdf",
+        "password_protected",
+        "unsupported_encoding",
+        "zero_pages_after_preflight"
+      ],
+      "description": "Required when expected_recommended_action == 'reject'."
+    },
+    "expected_native_page_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "For mixed-profile PDFs: how many pages should be classified native by the page-level profiler."
+    },
+    "expected_scanned_page_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "For mixed-profile PDFs: how many pages should be classified scanned by the page-level profiler."
+    },
+    "expected_table_page_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "For table-heavy PDFs: how many pages should be flagged as table-bearing in silver.table_extraction_quality."
+    },
+    "notes_for_grader": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Free-text notes from the SME labeler explaining what makes this PDF interesting for the corpus. Helps the §9.8 classifier corpus later."
+    },
+    "labeled_by": {
+      "type": "string",
+      "description": "Name of the SME who labeled the PDF."
+    },
+    "labeled_at": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO-8601 date the label was finalized."
+    },
+    "source": {
+      "type": "object",
+      "description": "Optional provenance for the source PDF.",
+      "properties": {
+        "system": {
+          "type": "string",
+          "enum": ["sedar_plus", "sk_smdi", "sk_smad", "sk_claims", "bc_minfile", "nrcan", "geoca", "manual_upload", "internal_archive"]
+        },
+        "url": {"type": "string"},
+        "license": {
+          "type": "string",
+          "enum": ["public_domain", "crown_copyright", "cc_by", "internal", "proprietary"]
+        }
+      }
+    },
+    "skip_reason": {
+      "type": "string",
+      "description": "If a labeled PDF must be excluded from acceptance (e.g. license complaint, content sensitivity), set this. Acceptance test skips the file with this reason logged."
+    }
+  }
+}

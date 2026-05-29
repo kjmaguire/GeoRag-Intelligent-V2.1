@@ -1,0 +1,78 @@
+# Master-plan §3 Step 7c §04p dual-write alerts (doc-phase 65).
+#
+# Exposed by src/fastapi/app/metrics.py:
+#   - georag_p04p_dual_write_success_total
+#   - georag_p04p_dual_write_failures_total{error_kind="..."}
+#
+# Why this rule exists: during the doc-phase 59 minio CRLF outage,
+# every PDF ingest's §04p dual-write silently failed. The Hatchet
+# try/except logged warnings but no metric/alert. Operators only
+# noticed when the Silver Review queue showed no new rows for
+# multiple days. This rule closes that gap.
+
+groups:
+  - name: p04p_dual_write
+    interval: 30s
+    rules:
+      - alert: P04PDualWriteFailureRateHigh
+        expr: |
+          (
+            sum(rate(georag_p04p_dual_write_failures_total[5m]))
+            /
+            clamp_min(
+              sum(rate(georag_p04p_dual_write_failures_total[5m]))
+              + sum(rate(georag_p04p_dual_write_success_total[5m])),
+              0.001
+            )
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: fastapi
+          subsystem: p04p_ingest
+        annotations:
+          summary: "§04p dual-write failure rate > 10% (5m)"
+          description: "More than 10% of PDF ingests are failing the §04p dual-write step over the last 5 minutes. Likely causes: minio/SeaweedFS down, FastAPI OCR container restart, parser_run_artifacts FK constraint violation, or PaddleOCR model cache directory permissions. Inspect georag-fastapi logs for the p04p warning lines + silver.parser_run_artifacts.errors for failed run_ids."
+
+      - alert: P04PDualWriteFailureRateCritical
+        expr: |
+          (
+            sum(rate(georag_p04p_dual_write_failures_total[5m]))
+            /
+            clamp_min(
+              sum(rate(georag_p04p_dual_write_failures_total[5m]))
+              + sum(rate(georag_p04p_dual_write_success_total[5m])),
+              0.001
+            )
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+          service: fastapi
+          subsystem: p04p_ingest
+        annotations:
+          summary: "§04p dual-write failure rate > 50% (2m)"
+          description: "Over half of PDF ingests are failing the §04p dual-write step. The Silver Review queue is degrading or completely empty for new uploads. Check minio container status, postgres connectivity, and FastAPI container health."
+
+      - alert: P04PDualWriteAllFailingByKind
+        # Fires when ALL failures in 10m are of a single kind — usually
+        # indicates a systemic issue (e.g. all "preflight_invalid"
+        # → corrupted upload chain; all "persist_failed" → DB schema
+        # drift) rather than transient noise.
+        expr: |
+          count by (error_kind) (
+            increase(georag_p04p_dual_write_failures_total[10m]) > 0
+          ) == 1
+          and on()
+          (
+            sum(increase(georag_p04p_dual_write_failures_total[10m]))
+            >= 5
+          )
+        for: 10m
+        labels:
+          severity: warning
+          service: fastapi
+          subsystem: p04p_ingest
+        annotations:
+          summary: "§04p dual-write failures all of one error_kind (10m)"
+          description: "All §04p dual-write failures in the last 10 minutes share a single error_kind label. Systemic problem rather than transient — inspect georag-fastapi logs for the corresponding warning lines."

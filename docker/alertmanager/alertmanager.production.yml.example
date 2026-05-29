@@ -1,0 +1,94 @@
+# Alertmanager — production receivers template.
+#
+# Copy to docker/alertmanager/alertmanager.production.yml on the prod host
+# and replace ${...} placeholders. Mount over alertmanager.yml in the prod
+# compose override.
+#
+# Receivers wired:
+#   - Slack incoming-webhook (warnings + critical)
+#   - PagerDuty Events API v2 (critical only — page on-call)
+#   - dev-null (info — drop)
+#
+# Pick one or both. To use only Slack, delete the pagerduty block and point
+# the critical-webhook route at slack-critical instead.
+
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'  # Slack incoming webhook URL
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+route:
+  receiver: slack-warn
+  group_by: ['alertname', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity = "critical"
+      receiver: pagerduty-critical
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true                     # also notify Slack
+    - matchers:
+        - severity = "critical"
+      receiver: slack-critical
+    - matchers:
+        - severity = "warning"
+      receiver: slack-warn
+    - matchers:
+        - severity = "info"
+      receiver: dev-null
+
+# ---------------------------------------------------------------------------
+# Receivers
+# ---------------------------------------------------------------------------
+receivers:
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - routing_key: '${PAGERDUTY_ROUTING_KEY}'  # Events API v2 integration key
+        severity: 'critical'
+        send_resolved: true
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          alertname: '{{ .CommonLabels.alertname }}'
+          service: '{{ .CommonLabels.service }}'
+          description: '{{ .CommonAnnotations.description }}'
+          runbook: '{{ .CommonAnnotations.runbook_url }}'
+
+  - name: slack-critical
+    slack_configs:
+      - channel: '${SLACK_CRITICAL_CHANNEL}'   # e.g. '#georag-alerts-critical'
+        send_resolved: true
+        title: '[CRITICAL] {{ .CommonLabels.alertname }} — {{ .CommonLabels.service }}'
+        text: |
+          *{{ .CommonAnnotations.summary }}*
+          {{ .CommonAnnotations.description }}
+          {{ if .CommonAnnotations.runbook_url }}
+          Runbook: {{ .CommonAnnotations.runbook_url }}
+          {{ end }}
+
+  - name: slack-warn
+    slack_configs:
+      - channel: '${SLACK_WARN_CHANNEL}'       # e.g. '#georag-alerts'
+        send_resolved: true
+        title: '[WARN] {{ .CommonLabels.alertname }} — {{ .CommonLabels.service }}'
+        text: |
+          {{ .CommonAnnotations.summary }}
+          {{ .CommonAnnotations.description }}
+
+  - name: dev-null
+    webhook_configs: []
+
+# ---------------------------------------------------------------------------
+# Inhibition — suppress warnings when a critical for the same service fires
+# ---------------------------------------------------------------------------
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['alertname', 'service']

@@ -1,0 +1,86 @@
+# Module 10 Chunk 10.7 — weekly chaos / resilience CI gate.
+#
+# Runs `pytest -m chaos` against the project's chaos suite
+# (src/fastapi/tests/test_chaos_resilience.py — 21 tests). These tests
+# intentionally inject backend failures and exercise the orchestrator's
+# fail-open contracts; they're slow and noisy, so we keep them OFF the
+# per-PR fast suite and run weekly instead.
+#
+# Triggers
+# --------
+# - Cron: every Monday 06:00 UTC.
+# - workflow_dispatch: on-demand for debugging a flake.
+#
+# Failure handling
+# ----------------
+# A failure does NOT block a PR. It opens a GitHub issue tagged
+# `chaos-regression` so the on-call rotation triages within the week.
+
+name: Chaos / Resilience
+
+on:
+  schedule:
+    # Monday 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  chaos:
+    name: Chaos pytest suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Run chaos tests
+        working-directory: src/fastapi
+        run: uv run pytest tests/ -v --tb=short -m chaos --junit-xml=chaos-results.xml
+
+      - name: Upload chaos test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-results
+          path: src/fastapi/chaos-results.xml
+          retention-days: 90
+
+      - name: Open GitHub issue on regression
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `chaos-regression: weekly chaos run failed (${context.sha.substring(0,7)})`;
+            const body = [
+              '### Chaos suite regression',
+              '',
+              `Weekly chaos run failed at ${new Date().toISOString()}.`,
+              '',
+              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `**Commit:** ${context.sha}`,
+              '',
+              'Triage steps in `ops/runbooks/refusal-rate-spike.md` and',
+              '`ops/runbooks/service-outage.md`. Re-run on dispatch once fix lands.',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['chaos-regression', 'priority:p2'],
+            });

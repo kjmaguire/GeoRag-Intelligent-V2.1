@@ -1,0 +1,104 @@
+{{- if .Values.vllm.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-vllm
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.vllm.service.port }}
+      targetPort: http
+      name: http
+  selector: {{- include "georag.selectorLabels" (dict "component" "vllm" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-vllm
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.vllm.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "vllm" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "vllm" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.vllm.nodeSelector }}
+      nodeSelector:
+        {{- range $k, $v := . }}
+        {{- if $v }}
+        {{ $k }}: {{ $v | quote }}
+        {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.vllm.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vllm
+          image: {{ include "georag.image" (dict "repo" .Values.vllm.image.repository "tag" .Values.vllm.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 8000
+              name: http
+          args:
+            - --model
+            {{- if .Values.vllm.model.useLocalPvc }}
+            - /models/{{ .Values.vllm.model.name }}
+            {{- else }}
+            - {{ .Values.vllm.model.name | quote }}
+            {{- end }}
+            - --max-model-len
+            - {{ .Values.vllm.model.maxModelLen | quote }}
+            - --port
+            - "8000"
+          resources: {{- toYaml .Values.vllm.resources | nindent 12 }}
+          volumeMounts:
+            - name: cache
+              mountPath: /root/.cache/huggingface
+            {{- if .Values.vllm.model.useLocalPvc }}
+            - name: models
+              mountPath: /models
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60  # vLLM cold-start can be slow
+            periodSeconds: 15
+            failureThreshold: 30  # tolerate ~7m model load on first boot
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: 50Gi
+        {{- if .Values.vllm.model.useLocalPvc }}
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-vllm-models
+        {{- end }}
+{{- if .Values.vllm.model.useLocalPvc }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-vllm-models
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- $sc := include "georag.storageClass" (dict "svcStorageClass" "" "global" .Values.global) }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.vllm.model.localPvcSize }}
+{{- end }}
+{{- end }}

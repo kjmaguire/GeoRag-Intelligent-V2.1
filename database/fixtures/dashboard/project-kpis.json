@@ -1,0 +1,18 @@
+{
+    "data": {
+        "documents": 5412,
+        "kg_entities": 28471,
+        "queries_7d": 2108,
+        "citation_resolution_rate": 0.961,
+        "avg_query_latency_ms": 2400,
+        "p95_query_latency_ms": 4100,
+        "trends": {
+            "documents_today_delta": 142,
+            "kg_entities_7d_delta": 312,
+            "queries_7d_delta_pct": 22,
+            "citation_resolution_7d_delta_pp": 0.8
+        }
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

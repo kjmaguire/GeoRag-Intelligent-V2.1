@@ -1,0 +1,64 @@
+# =============================================================================
+# Compose overlay: Activate PostgreSQL WAL archiving for PITR
+# =============================================================================
+# Authority: ops/runbooks/backup-restore.md, docker/postgresql/wal-upload.sh
+#
+# Apply alongside the canonical compose:
+#
+#   docker compose \
+#     -f compose.yml \
+#     -f docker/compose.wal-archiving.yml \
+#     up -d postgresql
+#
+# What it does:
+#   1. Declares a `pg_wal_archive` named volume shared between the postgresql
+#      container (writer, via archive_command) and georag-backup-agent
+#      (reader, via Ofelia-scheduled wal-upload.sh).
+#   2. Mounts that volume at /pg_wal_archive in postgresql.
+#   3. Bind-mounts the init/Z_activate_wal_archiving.sql into the entrypoint's
+#      init directory so a fresh-init cluster activates archiving on first
+#      boot. (For an existing volume see backup-restore.md §"Activate WAL
+#      archiving on existing cluster".)
+#
+# What it does NOT do:
+#   * Add the `pg_wal_archive` mount to georag-backup-agent — that's a one-
+#     line addition the team applies in their canonical compose alongside
+#     the existing /backup-scripts mount. The wal-upload.sh script reads
+#     WAL_ARCHIVE_DIR (default /pg_wal_archive) and S3_ENDPOINT_URL.
+#   * Configure Ofelia to run wal-upload.sh every 5 minutes — that's the
+#     existing Ofelia config that already references this script (per
+#     ops/runbooks/backup-restore.md §"PostgreSQL WAL upload").
+#
+# Activation effect:
+#   archive_mode requires a postmaster restart, so on fresh-init volumes
+#   the container's standard restart sequence picks it up automatically.
+#   On existing volumes, see backup-restore.md.
+# =============================================================================
+
+services:
+
+  postgresql:
+    volumes:
+      # Shared WAL archive — written by archive_command (this container),
+      # drained by wal-upload.sh in georag-backup-agent.
+      - type: volume
+        source: pg_wal_archive
+        target: /pg_wal_archive
+      # Activation SQL — runs only on fresh-init clusters (postgres
+      # entrypoint skips initdb scripts when PG_VERSION already exists in
+      # PGDATA). Existing volumes activate via the runbook procedure.
+      - type: bind
+        source: ./docker/postgresql/init/Z_activate_wal_archiving.sql
+        target: /docker-entrypoint-initdb.d/Z_activate_wal_archiving.sql
+        read_only: true
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  pg_wal_archive:
+    name: georagintelligencev10_pg_wal_archive
+    driver: local
+    # Sized to ~1 hour of peak ingest WAL at 16 MiB/segment + headroom.
+    # Ofelia drains every 5 minutes so this is a sliding buffer, not a
+    # long-term store. Hard ceiling enforced by the host filesystem.

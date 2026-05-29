@@ -1,0 +1,1291 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$ip_address\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$llm_model\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sources_used\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/DumpAuditPii.php
+
+		-
+			message: '#^Method App\\Console\\Commands\\GoldenSetReport\:\:formatReport\(\) has parameter \$samples with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Console/Commands/GoldenSetReport.php
+
+		-
+			message: '#^Method App\\Console\\Commands\\GoldenSetReport\:\:formatReport\(\) has parameter \$scored with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Console/Commands/GoldenSetReport.php
+
+		-
+			message: '#^Method App\\Console\\Commands\\GoldenSetReport\:\:suggestAction\(\) has parameter \$row with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Console/Commands/GoldenSetReport.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>query_text" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Console/Commands/GoldenSetReport.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\|Illuminate\\Database\\Eloquent\\Collection\<int, App\\Models\\QueryAuditLog\>\:\:\$query_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/RestoreAuditPii.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\|Illuminate\\Database\\Eloquent\\Collection\<int, App\\Models\\QueryAuditLog\>\:\:\$response_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Console/Commands/RestoreAuditPii.php
+
+		-
+			message: '#^Dead catch \- Illuminate\\Contracts\\Encryption\\DecryptException is never thrown in the try block\.$#'
+			identifier: catch.neverThrown
+			count: 1
+			path: app/Console/Commands/RestoreAuditPii.php
+
+		-
+			message: '#^Method App\\Events\\Dashboard\\ActivityEventBroadcast\:\:__construct\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/Dashboard/ActivityEventBroadcast.php
+
+		-
+			message: '#^Method App\\Events\\Dashboard\\ActivityEventBroadcast\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/Dashboard/ActivityEventBroadcast.php
+
+		-
+			message: '#^Method App\\Events\\Dashboard\\DocumentStageChanged\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/Dashboard/DocumentStageChanged.php
+
+		-
+			message: '#^Method App\\Events\\QueryStreamEvent\:\:__construct\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/QueryStreamEvent.php
+
+		-
+			message: '#^Method App\\Events\\QueryStreamEvent\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/QueryStreamEvent.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$pivot\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/AuthController.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/AuthController.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$project_name\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/AuthController.php
+
+		-
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: app/Http/Controllers/Api/V1/AuthController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Api/V1/AuthController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\ChatConversation\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\ChatConversation\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 4
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\ChatConversation\:\:\$title\.$#'
+			identifier: property.notFound
+			count: 3
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\ChatConversation\:\:\$updated_at\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\ChatConversation\:\:\$user_id\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$content\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$message_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$role\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\ChatConversation\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\ChatConversation\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Api/V1/ChatConversationController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\Collar\:\:\$latitude\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/HoleAnalysisController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\Collar\:\:\$longitude\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/HoleAnalysisController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\EntityReferencesController\:\:decodeSignals\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/EntityReferencesController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\EntityReferencesController\:\:fetchEntityNames\(\) has parameter \$entityIds with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/EntityReferencesController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\EntityReferencesController\:\:fetchEntityNames\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/EntityReferencesController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\HealthController\:\:check\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/HealthController.php
+
+		-
+			message: '#^Unable to resolve the template type TKey in call to function collect$#'
+			identifier: argument.templateType
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/HealthController.php
+
+		-
+			message: '#^Unable to resolve the template type TValue in call to function collect$#'
+			identifier: argument.templateType
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/HealthController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\JurisdictionController\:\:build\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/JurisdictionController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/QueryController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/QueryController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Api/V1/QueryController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$day\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Dashboard\\PortfolioController\:\:loadFixture\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\QueryAuditLog\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\QueryAuditLog\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>value" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/Dashboard/PortfolioController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$c\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectAnalyticsController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectAnalyticsController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sample_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectAnalyticsController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\Project\:\:\$slug\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$avg_ms\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$p95_ms\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\QueryAuditLog\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\QueryAuditLog\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>avg_ms" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>p95_ms" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>value" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/Dashboard/ProjectDashboardController.php
+
+		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 1
+			path: app/Http/Controllers/Internal/MetricsController.php
+
+		-
+			message: '#^Constant App\\Http\\Controllers\\PublicGeoscience\\TileProxyController\:\:ALLOWED_SOURCES is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: app/Http/Controllers/PublicGeoscience/TileProxyController.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>epoch_s" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Http/Controllers/PublicGeoscience/TileProxyController.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\StoreCollarRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/StoreCollarRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\StoreColumnMappingRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/StoreColumnMappingRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\StoreExportRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/StoreExportRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\StoreProjectRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/StoreProjectRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\StoreQueryRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/StoreQueryRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\StoreVendorProfileRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/StoreVendorProfileRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\UpdateColumnMappingRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/UpdateColumnMappingRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\UpdateProjectRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/UpdateProjectRequest.php
+
+		-
+			message: '#^Method App\\Http\\Requests\\UpdateVendorProfileRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Requests/UpdateVendorProfileRequest.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$alterations\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$azimuth\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$collar_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$dip\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$drill_date\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$easting\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$elevation\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$geochemistry\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$hole_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$hole_type\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$lithologyLogs\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$northing\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$samples\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$status\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$structures\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$surveys\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$total_depth\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$updated_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Method App\\Http\\Resources\\CollarResource\:\:toArray\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$commodity\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$company\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$created_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$crs_datum\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$magnetic_declination\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$orientation_reference\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$project_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$project_name\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$region\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$updated_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Method App\\Http\\Resources\\ProjectResource\:\:toArray\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$country_code\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$default_source_crs\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$display_name\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$jurisdiction_code\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$last_refreshed_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$level\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$license_summary\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$license_url\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$primary_authority\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$refresh_cadence\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$sort_order\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$sources\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$status\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$teaser\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Method App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:toArray\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$llm_model\.$#'
+			identifier: property.notFound
+			count: 2
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
+			identifier: property.notFound
+			count: 5
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
+			identifier: property.notFound
+			count: 4
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sources_used\.$#'
+			identifier: property.notFound
+			count: 3
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Method App\\Jobs\\StreamQueryFromFastApi\:\:formatFailureMarker\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Method App\\Jobs\\StreamQueryFromFastApi\:\:readLine\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Property App\\Jobs\\StreamQueryFromFastApi\:\:\$completedPayload type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Property App\\Jobs\\StreamQueryFromFastApi\:\:\$failedPayload type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Property App\\Jobs\\StreamQueryFromFastApi\:\:\$routingPayload type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>user_id" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Variable \$http_response_header on left side of \?\? is never defined\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Jobs/StreamQueryFromFastApi.php
+
+		-
+			message: '#^Method App\\Models\\Alteration\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Alteration.php
+
+		-
+			message: '#^Method App\\Models\\ChatConversation\:\:messages\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/ChatConversation.php
+
+		-
+			message: '#^Method App\\Models\\ChatConversation\:\:user\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/ChatConversation.php
+
+		-
+			message: '#^Method App\\Models\\ChatMessage\:\:conversation\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/ChatMessage.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:alterations\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:geochemistry\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:lithologyLogs\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:project\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:samples\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:structures\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:surveys\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\Collar\:\:wellLogCurves\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Collar.php
+
+		-
+			message: '#^Method App\\Models\\ColumnMapping\:\:vendorProfile\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/ColumnMapping.php
+
+		-
+			message: '#^Method App\\Models\\Export\:\:project\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Export.php
+
+		-
+			message: '#^Method App\\Models\\Geochemistry\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Geochemistry.php
+
+		-
+			message: '#^Method App\\Models\\LithologyLog\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/LithologyLog.php
+
+		-
+			message: '#^Method App\\Models\\Project\:\:collars\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Project.php
+
+		-
+			message: '#^Method App\\Models\\Project\:\:reports\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Project.php
+
+		-
+			message: '#^Method App\\Models\\PublicGeoscience\\Jurisdiction\:\:sources\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/PublicGeoscience/Jurisdiction.php
+
+		-
+			message: '#^Method App\\Models\\PublicGeoscience\\PublicGeoSource\:\:jurisdiction\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/PublicGeoscience/PublicGeoSource.php
+
+		-
+			message: '#^Method App\\Models\\QueryAuditLog\:\:user\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/QueryAuditLog.php
+
+		-
+			message: '#^Method App\\Models\\Sample\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Sample.php
+
+		-
+			message: '#^Method App\\Models\\Structure\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Structure.php
+
+		-
+			message: '#^Class App\\Models\\Survey uses generic trait Illuminate\\Database\\Eloquent\\Factories\\HasFactory but does not specify its types\: TFactory$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Survey.php
+
+		-
+			message: '#^Method App\\Models\\Survey\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/Survey.php
+
+		-
+			message: '#^Method App\\Models\\User\:\:projects\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsToMany does not specify its types\: TRelatedModel, TDeclaringModel, TPivotModel, TAccessor \(2\-4 required\)$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/User.php
+
+		-
+			message: '#^Method App\\Models\\VendorProfile\:\:columnMappings\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/VendorProfile.php
+
+		-
+			message: '#^Method App\\Models\\VendorProfile\:\:createdBy\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/VendorProfile.php
+
+		-
+			message: '#^Method App\\Models\\WellLogCurve\:\:collar\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Models/WellLogCurve.php
+
+		-
+			message: '#^Using nullsafe property access "\?\-\>id" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 2
+			path: app/Providers/AppServiceProvider.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:fetchAssays\(\) has parameter \$collarIds with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:fetchAssays\(\) return type with generic class Illuminate\\Support\\Collection does not specify its types\: TKey, TValue$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:fetchCollars\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:fetchCollars\(\) return type with generic class Illuminate\\Support\\Collection does not specify its types\: TKey, TValue$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:fetchSurveys\(\) has parameter \$collarIds with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:fetchSurveys\(\) return type with generic class Illuminate\\Support\\Collection does not specify its types\: TKey, TValue$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Services/Exports/CsaBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsvCollarExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/CsvCollarExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsvCollarExporter\:\:fetchCollars\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/CsvCollarExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\CsvCollarExporter\:\:fetchCollars\(\) return type with generic class Illuminate\\Support\\Collection does not specify its types\: TKey, TValue$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Services/Exports/CsvCollarExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\GeoPackageExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/GeoPackageExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\GeoPackageExporter\:\:export\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/GeoPackageExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\LasBundleExporter\:\:buildLas2\(\) has parameter \$curves with generic class Illuminate\\Support\\Collection but does not specify its types\: TKey, TValue$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Services/Exports/LasBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\LasBundleExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/LasBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\LasBundleExporter\:\:fetchCollars\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/LasBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\LasBundleExporter\:\:fetchCollars\(\) return type with generic class Illuminate\\Support\\Collection does not specify its types\: TKey, TValue$#'
+			identifier: missingType.generics
+			count: 1
+			path: app/Services/Exports/LasBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\LasBundleExporter\:\:parsePostgresArray\(\) has parameter \$value with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/LasBundleExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\ShapefileExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/ShapefileExporter.php
+
+		-
+			message: '#^Method App\\Services\\Exports\\ShapefileExporter\:\:export\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Services/Exports/ShapefileExporter.php
+
+		-
+			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:orientationBand\(\) has parameter \$rng with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: database/seeders/DemoHoleAnalysisSeeder.php
+
+		-
+			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:orientationBand\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: database/seeders/DemoHoleAnalysisSeeder.php
+
+		-
+			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:rngBool\(\) has parameter \$rng with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: database/seeders/DemoHoleAnalysisSeeder.php
+
+		-
+			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:rngFloat\(\) has parameter \$rng with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: database/seeders/DemoHoleAnalysisSeeder.php
+
+		-
+			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:rngFromHoleId\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: database/seeders/DemoHoleAnalysisSeeder.php
+
+		-
+			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:rngInt\(\) has parameter \$rng with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: database/seeders/DemoHoleAnalysisSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: database/seeders/PublicGeoscience/CanadaJurisdictionsSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: database/seeders/PublicGeoscience/CommodityAliasesSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: database/seeders/PublicGeoscience/StatusAliasesSeeder.php

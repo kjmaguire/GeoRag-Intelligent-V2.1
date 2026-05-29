@@ -1,0 +1,70 @@
+# Module 10 Chunk 10.4 — Laravel alert rules.
+# Metrics emitted by app/Http/Controllers/Internal/MetricsController:
+# horizon_queue_depth, octane_workers_busy, octane_workers_total,
+# pulse_exception_total, slow_queries_total, cache_hit_ratio,
+# laravel_authz_deny_total.
+
+groups:
+  - name: laravel
+    interval: 30s
+    rules:
+      - alert: LaravelLowAvailability
+        expr: up{job="laravel-octane"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: laravel
+        annotations:
+          summary: "Laravel Octane is DOWN"
+          description: "Prometheus cannot scrape /metrics on laravel-octane:80. Check container, Pulse pivot table, and DB connection."
+
+      - alert: LaravelQueueDepthHigh
+        expr: horizon_queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: laravel
+        annotations:
+          summary: "Horizon queue depth > 1000 on {{ $labels.queue }}"
+          description: "Backlog of {{ $value }} pending jobs on the {{ $labels.queue }} queue. Add workers or investigate slow consumers."
+
+      - alert: LaravelQueueDepthCritical
+        expr: horizon_queue_depth > 10000
+        for: 5m
+        labels:
+          severity: critical
+          service: laravel
+        annotations:
+          summary: "Horizon queue depth > 10k on {{ $labels.queue }}"
+          description: "Severe backlog ({{ $value }}). User-facing async work (chat dispatch, broadcast) is stalled."
+
+      - alert: LaravelExceptionRateHigh
+        expr: rate(pulse_exception_total[5m]) > 0.16
+        for: 5m
+        labels:
+          severity: critical
+          service: laravel
+        annotations:
+          summary: "Laravel exception rate > 10/min sustained"
+          description: "Exception class={{ $labels.class }} firing at {{ $value }}/s. Check application logs."
+
+      - alert: LaravelOctaneSaturation
+        expr: |
+          (octane_workers_busy / octane_workers_total) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          service: laravel
+        annotations:
+          summary: "Octane worker saturation > 85%"
+          description: "{{ $value | humanizePercentage }} of Octane workers busy. Risk of request queueing latency."
+
+      - alert: LaravelAuthzDenyBurst
+        expr: rate(laravel_authz_deny_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: laravel
+        annotations:
+          summary: "authz.deny rate > 1/s — possible probing"
+          description: "Sustained {{ $value }}/s authz denials with reason={{ $labels.reason }}. Investigate via the authz_audit log channel and Loki."

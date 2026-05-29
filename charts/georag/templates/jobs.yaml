@@ -1,0 +1,89 @@
+{{- if .Values.jobs.pgInit.enabled }}
+---
+# One-shot Job that runs the bundled Phase 0 SQL migrations on first install.
+# Subsequent helm upgrades re-run it (idempotent — every migration uses
+# CREATE * IF NOT EXISTS / DO NOTHING ON CONFLICT).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-pg-init
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "pg-init" "root" .) | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: pg-init
+          image: {{ include "georag.image" (dict "repo" .Values.jobs.pgInit.image.repository "tag" .Values.jobs.pgInit.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -e
+              echo "Waiting for postgres to be ready..."
+              until pg_isready -h $PGHOST -U $PGUSER; do sleep 2; done
+              echo "Applying migrations..."
+              for f in /app/database/raw/phase0/*.sql; do
+                echo "→ $f"
+                PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f "$f" -v ON_ERROR_STOP=1
+              done
+              echo "pg-init complete."
+          env:
+            - name: PGHOST
+              value: {{ .Release.Name }}-postgresql
+            - name: PGUSER
+              value: georag
+            - name: PGDATABASE
+              value: georag
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+{{- end }}
+{{- if .Values.jobs.auditChainVerify.enabled }}
+---
+# Nightly hash-chain verifier. Reports via audit row; fails the Job
+# (and surfaces as a K8s event) if the chain is broken.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-audit-chain-verify
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.jobs.auditChainVerify.schedule | quote }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels: {{- include "georag.selectorLabels" (dict "component" "audit-chain-verify" "root" .) | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          {{- include "georag.imagePullSecrets" . | nindent 10 }}
+          containers:
+            - name: verify
+              image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
+              imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+              command: ["python", "-m", "app.audit.chain_verify"]
+              env:
+                - name: POSTGRES_HOST
+                  value: {{ .Release.Name }}-postgresql
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Release.Name }}-secrets
+                      key: POSTGRES_PASSWORD
+{{- end }}

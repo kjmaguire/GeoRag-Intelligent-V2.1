@@ -1,0 +1,1750 @@
+---
+# Source: georag/templates/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+
+---
+# Source: georag/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: georag-secrets
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "CHANGEME"
+  PG_APP_PASSWORD: "CHANGEME"
+  NEO4J_PASSWORD: "neo4j/CHANGEME"
+  REDIS_PASSWORD: "CHANGEME"
+  QDRANT_API_KEY: ""
+  FASTAPI_SERVICE_KEY: "CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
+  LARAVEL_APP_KEY: "base64:CHANGEME"
+  HATCHET_CLIENT_TOKEN: ""
+
+---
+# Source: georag/templates/dagster.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: georag-dagster
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Source: georag/templates/vllm.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: georag-vllm-models
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 60Gi
+
+---
+# Source: georag/templates/dagster.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-dagster-webserver
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: dagster-webserver
+---
+# Source: georag/templates/fastapi.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-fastapi
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: fastapi
+---
+# Source: georag/templates/hatchet.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-hatchet
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7077
+      targetPort: grpc
+      name: grpc
+    - port: 8080
+      targetPort: api
+      name: api
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: hatchet-engine
+---
+# Source: georag/templates/laravel.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-laravel-octane
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: laravel-octane
+---
+# Source: georag/templates/laravel.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-laravel-reverb
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: ws
+      name: ws
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: laravel-reverb
+---
+# Source: georag/templates/martin.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-martin
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: martin
+---
+# Source: georag/templates/neo4j.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-neo4j
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7687
+      targetPort: bolt
+      name: bolt
+    - port: 7474
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: neo4j
+---
+# Source: georag/templates/pgbouncer.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-pgbouncer
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6432
+      targetPort: pgbouncer
+      name: pgbouncer
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: pgbouncer
+---
+# Source: georag/templates/postgresql.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-postgresql
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: postgresql
+---
+# Source: georag/templates/qdrant.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-qdrant
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6333
+      targetPort: http
+      name: http
+    - port: 6334
+      targetPort: grpc
+      name: grpc
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: qdrant
+---
+# Source: georag/templates/redis.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-redis
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: redis
+      name: redis
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: redis
+---
+# Source: georag/templates/seaweedfs.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-seaweedfs
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9333
+      targetPort: master
+      name: master
+    - port: 8333
+      targetPort: s3
+      name: s3
+    - port: 8080
+      targetPort: volume
+      name: volume
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: seaweedfs
+---
+# Source: georag/templates/vllm.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-vllm
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: vllm
+---
+# Source: georag/templates/dagster.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-dagster-webserver
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: dagster-webserver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: dagster-webserver
+    spec:
+      
+      containers:
+        - name: webserver
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/dagster:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: DAGSTER_PG_HOST
+              value: georag-postgresql
+            - name: DAGSTER_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /opt/dagster/dagster_home
+      volumes:
+        - name: dagster-home
+          persistentVolumeClaim:
+            claimName: georag-dagster
+---
+# Source: georag/templates/dagster.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-dagster-daemon
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: dagster-daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: dagster-daemon
+    spec:
+      
+      containers:
+        - name: daemon
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/dagster:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-daemon", "run"]
+          env:
+            - name: DAGSTER_PG_HOST
+              value: georag-postgresql
+            - name: DAGSTER_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /opt/dagster/dagster_home
+      volumes:
+        - name: dagster-home
+          persistentVolumeClaim:
+            claimName: georag-dagster
+---
+# Source: georag/templates/fastapi.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-fastapi
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: fastapi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: fastapi
+    spec:
+      
+      containers:
+        - name: fastapi
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: POSTGRES_HOST
+              value: georag-pgbouncer
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: POSTGRES_DIRECT_HOST
+              value: georag-postgresql
+            - name: POSTGRES_DIRECT_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: georag_app
+            - name: POSTGRES_DB
+              value: georag
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: PG_APP_PASSWORD
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
+            - name: QDRANT_HOST
+              value: georag-qdrant
+            - name: QDRANT_PORT
+              value: "6333"
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: QDRANT_API_KEY
+            - name: NEO4J_HOST
+              value: georag-neo4j
+            - name: NEO4J_PORT
+              value: "7687"
+            - name: NEO4J_USERNAME
+              value: neo4j
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: NEO4J_PASSWORD
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+            - name: VLLM_BASE_URL
+              value: http://georag-vllm:8000/v1
+            - name: HATCHET_CLIENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: HATCHET_CLIENT_TOKEN
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+---
+# Source: georag/templates/hatchet.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-hatchet-worker-ai
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: hatchet-worker-ai
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: hatchet-worker-ai
+    spec:
+      
+      containers:
+        - name: worker
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ai"]
+          envFrom:
+            - secretRef:
+                name: georag-secrets
+          env:
+            - name: HATCHET_CLIENT_HOST
+              value: "georag-hatchet:7077"
+            - name: POSTGRES_HOST
+              value: georag-pgbouncer
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: POSTGRES_DIRECT_HOST
+              value: georag-postgresql
+            - name: POSTGRES_DIRECT_PORT
+              value: "5432"
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: QDRANT_HOST
+              value: georag-qdrant
+            - name: NEO4J_HOST
+              value: georag-neo4j
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+---
+# Source: georag/templates/hatchet.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-hatchet-worker-ingestion
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: hatchet-worker-ingestion
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: hatchet-worker-ingestion
+    spec:
+      
+      containers:
+        - name: worker
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ingestion"]
+          envFrom:
+            - secretRef:
+                name: georag-secrets
+          env:
+            - name: HATCHET_CLIENT_HOST
+              value: "georag-hatchet:7077"
+            - name: POSTGRES_HOST
+              value: georag-pgbouncer
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: REDIS_HOST
+              value: georag-redis
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+
+---
+# Source: georag/templates/laravel.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-laravel-octane
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: laravel-octane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: laravel-octane
+    spec:
+      
+      containers:
+        - name: laravel-octane
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/laravel:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: APP_ENV
+              value: production
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: LARAVEL_APP_KEY
+            - name: DB_HOST
+              value: georag-pgbouncer
+            - name: DB_PORT
+              value: "6432"
+            - name: DB_USERNAME
+              value: georag
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
+            - name: FASTAPI_INTERNAL_URL
+              value: http://georag-fastapi:8000
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+---
+# Source: georag/templates/laravel.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-laravel-horizon
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: laravel-horizon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: laravel-horizon
+    spec:
+      
+      containers:
+        - name: horizon
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/laravel:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["php", "artisan", "horizon"]
+          envFrom:
+            - secretRef:
+                name: georag-secrets
+          env:
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: DB_HOST
+              value: georag-pgbouncer
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+---
+# Source: georag/templates/laravel.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-laravel-reverb
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: laravel-reverb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: laravel-reverb
+    spec:
+      
+      containers:
+        - name: reverb
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/laravel:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080"]
+          ports:
+            - containerPort: 8080
+              name: ws
+          envFrom:
+            - secretRef:
+                name: georag-secrets
+          resources:
+            limits:
+              cpu: 500m
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+
+---
+# Source: georag/templates/martin.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-martin
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: martin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: martin
+    spec:
+      
+      containers:
+        - name: martin
+          image: registry.internal.local/georag/ghcr.io/maplibre/martin:v0.18
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://georag:$(DB_PW)@georag-postgresql:5432/georag"
+            - name: DB_PW
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 200m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+# Source: georag/templates/pgbouncer.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-pgbouncer
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: pgbouncer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: pgbouncer
+    spec:
+      
+      containers:
+        - name: pgbouncer
+          image: registry.internal.local/georag/edoburu/pgbouncer:1.25
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: pgbouncer
+          env:
+            - name: DB_HOST
+              value: georag-postgresql
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              value: georag
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+            - name: POOL_MODE
+              value: transaction
+            - name: DEFAULT_POOL_SIZE
+              value: "25"
+            - name: MAX_CLIENT_CONN
+              value: "200"
+            - name: AUTH_TYPE
+              value: scram-sha-256
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+# Source: georag/templates/vllm.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-vllm
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: vllm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: vllm
+    spec:
+      
+      nodeSelector:
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      containers:
+        - name: vllm
+          image: registry.internal.local/georag/vllm/vllm-openai:v0.6.6
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          args:
+            - --model
+            - /models/Qwen/Qwen3-14B-AWQ
+            - --max-model-len
+            - "32768"
+            - --port
+            - "8000"
+          resources:
+            limits:
+              cpu: "8"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+            requests:
+              cpu: "4"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: cache
+              mountPath: /root/.cache/huggingface
+            - name: models
+              mountPath: /models
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60  # vLLM cold-start can be slow
+            periodSeconds: 15
+            failureThreshold: 30  # tolerate ~7m model load on first boot
+      volumes:
+        - name: cache
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: models
+          persistentVolumeClaim:
+            claimName: georag-vllm-models
+---
+# Source: georag/templates/fastapi.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: georag-fastapi
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: georag-fastapi
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# Source: georag/templates/laravel.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: georag-laravel-octane
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: georag-laravel-octane
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: georag/templates/hatchet.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: georag-hatchet
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: georag-hatchet
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: hatchet-engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: hatchet-engine
+    spec:
+      
+      containers:
+        - name: hatchet
+          image: registry.internal.local/georag/ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.50
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7077
+              name: grpc
+            - containerPort: 8080
+              name: api
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /hatchet/config
+  volumeClaimTemplates:
+    - metadata:
+        name: config
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Source: georag/templates/neo4j.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: georag-neo4j
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: georag-neo4j
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: neo4j
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: neo4j
+    spec:
+      
+      containers:
+        - name: neo4j
+          image: registry.internal.local/georag/neo4j:2026.03-community
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7687
+              name: bolt
+            - containerPort: 7474
+              name: http
+          env:
+            - name: NEO4J_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: NEO4J_PASSWORD
+            - name: NEO4J_server_memory_heap_initial__size
+              value: 1G
+            - name: NEO4J_server_memory_heap_max__size
+              value: 2G
+            - name: NEO4J_server_memory_pagecache_size
+              value: 1G
+            - name: NEO4J_PLUGINS
+              value: "[\"apoc\"]"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["cypher-shell", "-u", "neo4j", "-p", "$(NEO4J_AUTH#neo4j/)", "RETURN 1"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# Source: georag/templates/postgresql.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: georag-postgresql
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: georag-postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: postgresql
+    spec:
+      
+      containers:
+        - name: postgresql
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/postgresql:18.3-postgis3.6-h3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_USER
+              value: georag
+            - name: POSTGRES_DB
+              value: georag
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PG_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: PG_APP_PASSWORD
+          args:
+            - postgres
+            - -c
+            - max_connections=200
+            - -c
+            - shared_buffers=1GB
+            - -c
+            - work_mem=16MB
+          resources:
+            limits:
+              cpu: "4"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "georag"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "georag"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 50Gi
+
+---
+# Source: georag/templates/qdrant.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: georag-qdrant
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: georag-qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: qdrant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: qdrant
+    spec:
+      
+      containers:
+        - name: qdrant
+          image: registry.internal.local/georag/qdrant/qdrant:v1.17.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+          env:
+            - name: QDRANT__SERVICE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: QDRANT_API_KEY
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 30Gi
+
+---
+# Source: georag/templates/redis.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: georag-redis
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: georag-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: redis
+    spec:
+      
+      containers:
+        - name: redis
+          image: registry.internal.local/georag/redis:8.6-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+              name: redis
+          command: ["sh", "-c"]
+          args:
+            - |
+              redis-server \
+                --requirepass "$REDIS_PASSWORD" \
+                --appendonly yes \
+                --dir /data
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" PING"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+# Source: georag/templates/seaweedfs.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: georag-seaweedfs
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: georag-seaweedfs
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: seaweedfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: seaweedfs
+    spec:
+      
+      containers:
+        - name: seaweedfs
+          image: registry.internal.local/georag/chrislusf/seaweedfs:3.85
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/bin/weed"]
+          args:
+            - server
+            - -dir=/data
+            - -master.port=9333
+            - -volume.port=8080
+            - -s3
+            - -s3.port=8333
+            - -s3.allowEmptyFolder=true
+          ports:
+            - containerPort: 9333
+              name: master
+            - containerPort: 8333
+              name: s3
+            - containerPort: 8080
+              name: volume
+          resources:
+            limits:
+              cpu: "1"
+              memory: 2Gi
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: master
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 100Gi
+
+---
+# Source: georag/templates/jobs.yaml
+# Nightly hash-chain verifier. Reports via audit row; fails the Job
+# (and surfaces as a K8s event) if the chain is broken.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: georag-audit-chain-verify
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  schedule: "0 3 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: georag
+            app.kubernetes.io/instance: georag
+            app.kubernetes.io/component: audit-chain-verify
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+            - name: verify
+              image: registry.internal.local/georag/ghcr.io/anthropics/georag/fastapi:v1.0.0
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-m", "app.audit.chain_verify"]
+              env:
+                - name: POSTGRES_HOST
+                  value: georag-postgresql
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: georag-secrets
+                      key: POSTGRES_PASSWORD
+
+---
+# Source: georag/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: georag-ingress
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: "georag.local"
+      http:
+        paths:
+          # Internal FastAPI routes — for ops / Hatchet / Dagster integrations.
+          # NOT exposed by default; the Laravel front door is what users hit.
+          - path: /internal
+            pathType: Prefix
+            backend:
+              service:
+                name: georag-fastapi
+                port:
+                  number: 8000
+          # Map tiles
+          - path: /tiles
+            pathType: Prefix
+            backend:
+              service:
+                name: georag-martin
+                port:
+                  number: 3000
+          # Default: Laravel webapp
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: georag-laravel-octane
+                port:
+                  number: 8000
+---
+# Source: georag/templates/jobs.yaml
+# One-shot Job that runs the bundled Phase 0 SQL migrations on first install.
+# Subsequent helm upgrades re-run it (idempotent — every migration uses
+# CREATE * IF NOT EXISTS / DO NOTHING ON CONFLICT).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: georag-pg-init
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.1.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: pg-init
+    spec:
+      restartPolicy: OnFailure
+      
+      containers:
+        - name: pg-init
+          image: registry.internal.local/georag/ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-lc"]
+          args:
+            - |
+              set -e
+              echo "Waiting for postgres to be ready..."
+              until pg_isready -h $PGHOST -U $PGUSER; do sleep 2; done
+              echo "Applying migrations..."
+              for f in /app/database/raw/phase0/*.sql; do
+                echo "→ $f"
+                PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f "$f" -v ON_ERROR_STOP=1
+              done
+              echo "pg-init complete."
+          env:
+            - name: PGHOST
+              value: georag-postgresql
+            - name: PGUSER
+              value: georag
+            - name: PGDATABASE
+              value: georag
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD

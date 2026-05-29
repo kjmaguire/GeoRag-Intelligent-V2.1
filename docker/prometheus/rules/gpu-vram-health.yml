@@ -1,0 +1,87 @@
+# =============================================================================
+# Phase 0 agent #8 — GPU/VRAM Health (implemented as Prometheus alerting rules).
+#
+# Per kickoff §Step 7 Finding 3 — this "agent" is pure metric thresholding,
+# not cognitive. Prometheus rules are the right shape; the registry's "agent"
+# framing is misleading. Rules deployed here keep the kickoff Step 6 done
+# definition satisfiable while declaring the kill-test outcome explicitly.
+#
+# vLLM self-reports the underlying metrics on the vllm: namespace (see Step
+# 1 Prometheus scrape job). Thresholds tuned for the A4500 dev workstation;
+# production will tighten via env-driven overlay.
+# =============================================================================
+
+groups:
+  - name: gpu_vram_health
+    interval: 30s
+    rules:
+      # GPU memory utilisation high — soft warning, not page-worthy on its own.
+      - alert: VllmGpuMemoryHigh
+        expr: |
+          vllm:gpu_cache_usage_perc > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          phase: "0"
+          source: gpu_vram_health
+        annotations:
+          summary: "vLLM GPU cache utilisation > 90% for 5m"
+          description: |
+            vllm:gpu_cache_usage_perc has exceeded 0.90 for 5 minutes on
+            {{ $labels.instance }}. Sustained >90% can indicate either
+            workload growth or a leaking KV cache; review queue depth and
+            recent batch sizes.
+
+      # Request queue deep — usually indicates we're saturating throughput.
+      - alert: VllmRequestQueueDeep
+        expr: |
+          vllm:num_requests_waiting > 100
+        for: 2m
+        labels:
+          severity: warning
+          phase: "0"
+          source: gpu_vram_health
+        annotations:
+          summary: "vLLM request queue > 100 for 2m"
+          description: |
+            num_requests_waiting={{ $value }} on {{ $labels.instance }} for
+            > 2 minutes. Either increase concurrency / instances, lower
+            max-model-len, or shed load.
+
+      # Critical — failure rate spike.
+      - alert: VllmRequestFailureSpike
+        expr: |
+          increase(vllm:request_failure_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: critical
+          phase: "0"
+          source: gpu_vram_health
+        annotations:
+          summary: "vLLM request failures > 10 in 5m on {{ $labels.instance }}"
+          description: |
+            request_failure_total grew by > 10 over the last 5 minutes.
+            Check vllm container logs for OOM, model load failure, or
+            kernel issues.
+
+      # Critical — request success rate sliding below 90% over 10 minutes.
+      - alert: VllmRequestSuccessRateLow
+        expr: |
+          (
+            sum(rate(vllm:request_success_total[10m])) by (instance)
+            /
+            (
+              sum(rate(vllm:request_success_total[10m])) by (instance)
+              + sum(rate(vllm:request_failure_total[10m])) by (instance)
+            )
+          ) < 0.90
+        for: 5m
+        labels:
+          severity: critical
+          phase: "0"
+          source: gpu_vram_health
+        annotations:
+          summary: "vLLM success rate < 90% for 5m on {{ $labels.instance }}"
+          description: |
+            Sustained low success rate. Probable causes: model corruption,
+            CUDA OOM, or upstream infra issue. Page the on-call.

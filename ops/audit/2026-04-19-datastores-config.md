@@ -1,0 +1,520 @@
+# GeoRAG Data Stores — Frozen Config Baseline
+<!-- Module 2 / Phase A (A7) -->
+<!-- Authority: live container state 2026-04-19/20 -->
+<!-- Produced by: devops-engineer agent (Claude Sonnet 4.6) -->
+<!-- Measurement time: 2026-04-20 ~06:00 UTC -->
+<!-- Stack state: dev-data + dev-light + dev-ingest + core profiles active -->
+<!-- Hard constraint: read-only — no configs modified to produce this file -->
+
+This document is the A7 frozen baseline per 02-data-stores-hardening.md Phase A done criteria.
+One subsection per store. Raw output alongside normalized analysis.
+
+---
+
+## 1. PostgreSQL 18.3 / PostGIS 3.6.3
+
+**Image:** `postgis/postgis:18-3.6-alpine@sha256:369b23d36107b84282dd2dfe29e431e8fce80976200aa2037a8eee5d88d850b6`
+**Container:** `georag-postgresql`
+
+### Installed Extensions (raw)
+
+```
+        name        | default_version | installed_version
+--------------------+-----------------+-------------------
+ pg_stat_statements | 1.12            | 1.12
+ pg_trgm            | 1.6             | 1.6
+ plpgsql            | 1.0             | 1.0
+ postgis            | 3.6.3           | 3.6.3
+ postgis_topology   | 3.6.3           | 3.6.3
+ uuid-ossp          | 1.1             | 1.1
+```
+
+**postgis_raster available but NOT installed** (present in pg_available_extensions, absent from installed).
+
+### spatial_ref_sys
+
+```
+Row count: 8500
+SRID 4326: PRESENT (EPSG, auth_srid=4326)
+SRID 3857: PRESENT (EPSG, auth_srid=3857)
+SRID 32613: PRESENT (EPSG, auth_srid=32613)
+```
+
+### Role Inventory
+
+```
+           rolname           | rolsuper | rolcreatedb | rolreplication | rolcanlogin
+-----------------------------+----------+-------------+----------------+-------------
+ georag                      | t        | t           | t              | t
+ georag_audit                | f        | f           | f              | f
+ georag_read                 | f        | f           | f              | f
+ georag_write                | f        | f           | f              | f
+ pg_* (system roles)         | f        | f           | f              | f
+```
+
+### Key Settings (SHOW output)
+
+```
+shared_buffers             = 4GB
+work_mem                   = 128MB
+maintenance_work_mem       = 512MB
+effective_cache_size       = 12GB
+max_connections            = 200
+random_page_cost           = 1.1
+max_wal_size               = 4GB
+checkpoint_timeout         = 5min
+max_worker_processes       = 8
+max_parallel_workers_per_gather = 4
+archive_mode               = on
+archive_command            = test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f
+archive_timeout            = 5min
+autovacuum                 = on
+autovacuum_vacuum_scale_factor  = 0.2
+autovacuum_analyze_scale_factor = 0.1
+autovacuum_vacuum_cost_delay    = 2ms
+autovacuum_max_workers          = 3
+```
+
+### Settings applied via compose command (not in postgresql.conf)
+
+```
+checkpoint_completion_target = 0.9
+wal_buffers                  = 64MB
+default_statistics_target    = 100
+effective_io_concurrency     = 200
+max_parallel_workers         = 8
+max_parallel_maintenance_workers = 4
+log_min_duration_statement   = 1000
+log_checkpoints              = on
+log_lock_waits               = on
+deadlock_timeout             = 1s
+shared_preload_libraries     = pg_stat_statements
+pg_stat_statements.max       = 10000
+pg_stat_statements.track     = all
+pg_stat_statements.track_utility = off
+track_io_timing              = on
+jit                          = off
+jit_above_cost               = -1
+idle_in_transaction_session_timeout = 60000
+lock_timeout                 = 3000
+wal_compression              = lz4
+track_activity_query_size    = 4096
+```
+
+### WSL2 Kernel
+
+```
+6.6.87.2-microsoft-standard-WSL2
+io_uring: supported (kernel >= 5.1)
+```
+
+### Top 5 pg_stat_statements by total_exec_time
+
+| calls | total_ms | mean_ms | query (truncated to 80 chars) |
+|---|---|---|---|
+| 47,735 | 157,523 | 3.30 | SELECT pg_catalog.pg_class.relname FROM pg_catalog.pg_class JOIN ... |
+| 16,312 | 15,371 | 0.94 | SELECT pg_catalog.pg_attribute.attname AS name... |
+| 16,312 | 12,240 | 0.75 | SELECT pg_catalog.pg_type.typname AS name... |
+| 15,145 | 7,024 | 0.46 | INSERT INTO daemon_heartbeats (daemon_type, ...) VALUES ... ON CONFLICT |
+| 5 | 3,478 | 695.64 | WITH real_bounds AS (SELECT ST_SetSRID(ST_Extent("geom"::geometry)...) |
+
+All top queries are Dagster internal operations. No geological application queries recorded.
+
+### Idle Resource Footprint
+
+From `ops/baselines/2026-04-19-docker-stats-idle.csv`:
+
+- CPU: 0.00–0.73% (idle baseline); peak during pg_basebackup ~10%
+- Memory: 340–470 MiB used / 4 GiB limit (~8–11%)
+- Disk: PGDATA volume = ~175 MiB (basebackup artifact); WAL archive volume growing
+
+---
+
+## 2. PgBouncer 1.25.1 (edoburu)
+
+**Image:** `edoburu/pgbouncer:v1.25.1-p0@sha256:c7bfcaa24de830e29588bb9ad1eb39cebaf07c27149e1974445899b695634bb4`
+**Container:** `georag-pgbouncer`
+
+### Effective pgbouncer.ini (auto-generated by edoburu entrypoint)
+
+```ini
+################## Auto generated ##################
+[databases]
+georag = host=postgresql port=5432 auth_user=georag
+
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = 6432
+unix_socket_dir =
+user = postgres
+auth_file = /etc/pgbouncer/userlist.txt
+auth_type = scram-sha-256
+pool_mode = transaction
+max_client_conn = 200
+default_pool_size = 100
+min_pool_size = 5
+reserve_pool_size = 5
+ignore_startup_parameters = extra_float_digits,jit,application_name
+
+admin_users = georag
+
+server_reset_query = DISCARD ALL
+server_idle_timeout = 300
+################## end file ##################
+```
+
+### Effective settings (from SHOW CONFIG — defaults for omitted settings)
+
+```
+server_lifetime         = 3600   (PgBouncer default)
+query_wait_timeout      = 120    (PgBouncer default)
+server_connect_timeout  = 15     (PgBouncer default)
+```
+
+### SHOW POOLS (at time of audit — idle)
+
+```
+database  | user    | pool_mode   | cl_active | cl_waiting | sv_active | sv_idle | maxwait
+georag    | georag  | transaction |         0 |          0 |         0 |       0 |       0
+pgbouncer | pgbouncer | statement |         1 |          0 |         0 |       0 |       0
+```
+
+### SHOW STATS (cumulative since start)
+
+```
+database  | total_server_assignment_count | total_xact_count | total_query_count
+georag    | 8                             | 14               | 34
+pgbouncer | 0                             | 2760             | 2760
+```
+
+### Idle Resource Footprint
+
+- CPU: 0.01–3.56% (healthcheck polling artifact)
+- Memory: 1.7–8.6 MiB / 256 MiB limit (~0.7–3.4%)
+
+---
+
+## 3. Neo4j 2026.03.1 Community Edition
+
+**Image:** `neo4j:2026-community@sha256:a5feb81d916c82d09186807ee8f8a523eb430d578fa6015f37ae72a07f976537`
+**Container:** `georag-neo4j`
+**Note:** Image tag `neo4j:2026.02.3-community` never existed in Docker Hub. Effective version is 2026.03.1.
+
+### Live Environment Variables
+
+```
+NEO4J_AUTH=none                              # !! NO AUTHENTICATION !!
+NEO4J_EDITION=community
+NEO4J_PLUGINS=["apoc"]
+NEO4J_server_memory_pagecache_size=4G
+NEO4J_server_memory_heap_initial__size=2G
+NEO4J_server_memory_heap_max__size=4G
+NEO4J_dbms_connector_bolt_thread__pool__max__size=50
+NEO4J_dbms_connector_bolt_thread__pool__min__size=5
+NEO4J_dbms_transaction_timeout=60s
+NEO4J_dbms_logs_query_enabled=INFO
+NEO4J_dbms_logs_query_threshold=1000ms
+NEO4J_dbms_security_procedures_allowlist=apoc.*
+NEO4J_dbms_security_procedures_unrestricted=apoc.*
+```
+
+### Data Directory Size
+
+```
+333M	/data
+```
+
+### Node Count by Label
+
+```
+label                 | cnt
+Drillhole             | 33,510
+MineralOccurrence     | 22,230
+Mine                  | 140
+ResourcePotentialZone | 82
+Commodity             | 44
+PublicGeoSource       | 14
+Formation             | 7
+Jurisdiction          | 2
+Project               | 1
+Report                | 1
+QualifiedPerson       | 1
+Deposit               | 1
+Document              | 1
+TOTAL                 | 56,034
+```
+
+Note: `DrillHole` (capital H) label also has indexes/constraints but 0 live nodes.
+
+### Online Backup Probe
+
+```bash
+docker exec georag-neo4j neo4j-admin database backup --help
+# Exit: subcommand "backup" NOT FOUND in neo4j-admin database subcommand list
+# Available: check, dump, import, info, load, migrate, upload
+# CONCLUSION: Online backup is Community-edition-only if not listed; dump (offline) only
+```
+
+### Index Summary
+
+34 total indexes: 18 UNIQUENESS constraints, 14 RANGE indexes, 2 LOOKUP indexes. All ONLINE.
+Key labels indexed: Commodity, Deposit, Document, DrillHole, Drillhole, Formation, GeophysicalSurvey, Jurisdiction, Mine, MineralOccurrence, Project, PublicGeoSource, Publication, QualifiedPerson, Report, ResourcePotentialZone.
+
+No `workspace_id` index exists on any label.
+
+### Idle Resource Footprint
+
+- CPU: 0.46–0.63%
+- Memory: 1.1–1.75 GiB / 9 GiB limit (12–19%)
+- Disk: 333 MiB
+
+---
+
+## 4. Qdrant 1.17
+
+**Image:** `qdrant/qdrant:v1.17.0@sha256:<pinned>`
+**Container:** `georag-qdrant`
+
+### Cluster Status
+
+```json
+{"result":{"status":"disabled"},"status":"ok"}
+```
+
+Single-node. No clustering.
+
+### Collections Summary
+
+| Collection | Points | Dense Size | Sparse | workspace_id index | Quantization | on_disk_payload | Snapshots |
+|---|---|---|---|---|---|---|---|
+| pg_drillhole_collar | 33,490 | 384, Cosine | **ABSENT** | **ABSENT** | null | true | 1 |
+| pg_mineral_occurrence | 22,229 | 384, Cosine | **ABSENT** | **ABSENT** | null | true | 1 |
+| pg_mine | 140 | 384, Cosine | **ABSENT** | **ABSENT** | null | true | 1 |
+| pg_resource_potential_zone | 82 | 384, Cosine | **ABSENT** | **ABSENT** | null | true | 1 |
+| georag_reports | 18 | 384, Cosine | **ABSENT** | **ABSENT** | null | **false** | 1 |
+
+### HNSW Config (all collections identical)
+
+```json
+{
+  "m": 16,
+  "ef_construct": 200,
+  "full_scan_threshold": 10000,
+  "max_indexing_threads": 0,
+  "on_disk": false
+}
+```
+
+### Payload Schema — pg_drillhole_collar (representative)
+
+```json
+{
+  "commodity_grouping": "keyword",
+  "status": "keyword",
+  "canonical_type": "keyword",
+  "jurisdiction_code": "keyword",
+  "source_id": "keyword",
+  "commodities": "keyword"
+}
+```
+
+No `workspace_id` field in any collection's payload schema.
+
+### Snapshot List (all collections)
+
+All snapshots created 2026-04-20 03:00 UTC by Ofelia nightly backup job.
+
+| Collection | Snapshot Name | Size | Checksum present |
+|---|---|---|---|
+| pg_drillhole_collar | pg_drillhole_collar-2146751740141300-2026-04-20-03-00-00.snapshot | 122 MiB | yes |
+| pg_mineral_occurrence | pg_mineral_occurrence-2146751740141300-2026-04-20-03-00-13.snapshot | 120 MiB | yes |
+| pg_mine | pg_mine-2146751740141300-2026-04-20-03-00-23.snapshot | 1.8 MiB | yes |
+| pg_resource_potential_zone | pg_resource_potential_zone-2146751740141300-2026-04-20-03-00-25.snapshot | 954 KiB | yes |
+| georag_reports | georag_reports-2146751740141300-2026-04-20-03-00-27.snapshot | 314 KiB | yes |
+
+### Dense Search Latency Baseline (idle, dummy vector)
+
+- Collection: pg_drillhole_collar (33,490 indexed vectors)
+- Query type: dense search, limit=5
+- Reported time: **8.4ms**
+- Note: dummy vector not near any real embedding; 0 results returned. Semantic results will vary.
+
+### Idle Resource Footprint
+
+- CPU: 0.01–0.39%
+- Memory: 32–42 MiB / 4 GiB limit (~0.8–1.0%)
+- Disk: qdrant_data volume; dense index for 5 collections ~300 MiB total (from snapshot sizes)
+
+---
+
+## 5. Redis 8.6.2
+
+**Image:** `redis:8.6.2-alpine@sha256:c5e375abb885e6b2021c0377879e4890bf76f9065b8922ffc113f2b226b9fc17`
+**Container:** `georag-redis`
+**Instance count:** 1 (dev — single instance handles cache + queue + sessions)
+
+### Effective Config (from redis-server command + INFO)
+
+```
+maxmemory              = 512mb (536,870,912 bytes)
+maxmemory-policy       = allkeys-lru
+appendonly             = yes
+appendfsync            = everysec
+save                   = "" (disabled)
+databases              = 4
+timeout                = 600
+tcp-keepalive          = 300
+slowlog-log-slower-than = 1000 (microseconds)
+slowlog-max-len        = 256
+lazyfree-lazy-eviction = yes
+lazyfree-lazy-expire   = yes
+lazyfree-lazy-server-del = yes
+lazyfree-lazy-user-del = yes
+lazyfree-lazy-user-flush = yes
+loglevel               = notice
+requirepass            = <set from env>
+```
+
+### INFO Memory
+
+```
+used_memory_human:      1.66M
+used_memory_peak_human: 1.76M
+maxmemory:              512.00M
+maxmemory_policy:       allkeys-lru
+```
+
+### INFO Persistence
+
+```
+aof_enabled:         1
+aof_rewrites:        1
+aof_current_size:    40,919,699 bytes (~39 MiB)
+rdb_bgsave_in_progress: 0
+rdb_saves:           0
+```
+
+### INFO Keyspace
+
+```
+db0: keys=6, expires=4, avg_ttl=21330
+```
+
+### INFO Stats
+
+```
+keyspace_hits:   3,134
+keyspace_misses: 226,989
+evicted_keys:    0
+```
+
+### phpredis Version (in laravel-octane)
+
+```
+6.3.0
+```
+
+Compatible with Redis 8.6.2 per §12 requirement.
+
+### Horizon Failed Jobs
+
+```
+No failed jobs found.
+```
+
+### Latency Sample (brief ~5s)
+
+```
+min=0ms  max=1ms  avg=0.11ms
+```
+
+### Idle Resource Footprint
+
+- CPU: 0.24–0.40%
+- Memory: 5.5–6.2 MiB / 1 GiB limit (~0.5–0.6%)
+- Disk: redis_data volume (AOF file ~40 MiB)
+
+---
+
+## 6. SeaweedFS 4.20 (S3 abstraction — service name `minio`)
+
+**Image:** `chrislusf/seaweedfs:4.20` (digest pinned in compose)
+**Container:** `georag-minio`
+**S3 port:** 8333 (per ADR-0001)
+**Master port:** 9333
+
+### Cluster Status
+
+```json
+{"IsLeader":true,"Leader":"172.19.0.3:9333.19333","MaxVolumeId":22}
+```
+
+- Single-node (no replication)
+- Volume slots used: 22 of 32 (`-volume.max=32` applied)
+- Free slots: 10
+
+### Bucket List (as of audit)
+
+```
+2026-04-19  georag-backups    (Module 1 Phase B — backup destination)
+2026-04-19  georag-bronze     (Bronze layer — raw file archive)
+2026-04-19  georag-exports    (Export artifacts)
+```
+
+Missing per addendum §02b: `bronze`, `bronze-raster` (name mismatch with current scheme).
+
+### S3 Conformance
+
+`aws s3 ls --endpoint-url http://minio:8333` → exits 0, bucket list returned. **S3 API functional.**
+
+### ADR-0001 Gotchas (from Module 1 A6 — not re-verified)
+
+```
+G1 (-volume flag): CLOSED
+G2 (IPv4 healthcheck): CLOSED
+G3 (Windows exec bit): CLOSED
+```
+
+### Entrypoint Summary
+
+```sh
+exec weed server \
+    -dir=/data \
+    -master.volumeSizeLimitMB=1024 \
+    -volume \
+    -volume.max=32 \
+    -filer \
+    -s3 \
+    -s3.port=8333 \
+    -s3.config="${CONFIG_DIR}/s3.json"
+```
+
+### Vendor-Purity Sweep
+
+- `git grep -n -i 'minio\.filer\|seaweedfs' app/` → **0 results**
+- S3Client in Laravel env: `AWS_ENDPOINT=${MINIO_ENDPOINT:-http://minio:8333}` → env-driven. **CLEAN.**
+
+### Idle Resource Footprint
+
+- CPU: 0.17–0.37%
+- Memory: 111–157 MiB / 2 GiB limit (~5–8%)
+- Disk: minio_data volume (single volume server, no replication)
+
+---
+
+## Cross-Store Summary: workspace_id Status
+
+The concept of `workspace_id` as a tenant-isolation field is architecturally required but not yet implemented at any data layer:
+
+| Store | workspace_id status |
+|---|---|
+| PostgreSQL (migrations) | **ABSENT** — zero occurrences in any migration file |
+| Neo4j (node properties) | **ABSENT** — no node has workspace_id property |
+| Qdrant (payload schema) | **ABSENT** — no collection has workspace_id in payload_schema |
+| Redis | N/A — key-prefixing strategy is application-layer concern |
+
+This cross-cutting absence means workspace-scoped multi-tenant isolation is entirely deferred. Module 9 (RBAC) and Module 3 (ingestion) must address this jointly before any multi-tenant workload is possible.
+
+---
+
+*Baseline frozen at: 2026-04-20 ~06:00 UTC. No configs were modified to produce this file.*

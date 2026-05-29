@@ -1,0 +1,992 @@
+
+=== Testing qwen2.5:14b ===
+  • Andes ... Exception in thread Thread-1 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.67 tok/s=7.2 vram=0MB think=-
+  • Passive Margin ... Exception in thread Thread-2 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.33 tok/s=29.6 vram=0MB think=-
+  • Faults ... Exception in thread Thread-3 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.67 tok/s=46.5 vram=0MB think=-
+  • Geochem ... Exception in thread Thread-4 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.67 tok/s=47.2 vram=0MB think=-
+  • Drilling ... Exception in thread Thread-5 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.43 tok/s=47.0 vram=0MB think=-
+
+=== Testing qwen3:14b ===
+  • Andes ... Exception in thread Thread-6 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.67 tok/s=33.5 vram=0MB think=-
+  • Passive Margin ... Exception in thread Thread-7 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.67 tok/s=46.8 vram=0MB think=-
+  • Faults ... Exception in thread Thread-8 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=46.7 vram=0MB think=-
+  • Geochem ... Exception in thread Thread-9 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=46.6 vram=0MB think=-
+  • Drilling ... Exception in thread Thread-10 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.57 tok/s=46.0 vram=0MB think=-
+
+=== Testing qwen3:30b-a3b ===
+  • Andes ... Exception in thread Thread-11 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=11.2 vram=0MB think=-
+  • Passive Margin ... Exception in thread Thread-12 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=11.9 vram=0MB think=-
+  • Faults ... Exception in thread Thread-13 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=1.00 tok/s=17.1 vram=0MB think=-
+  • Geochem ... Exception in thread Thread-14 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=1.00 tok/s=16.1 vram=0MB think=-
+  • Drilling ... Exception in thread Thread-15 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.43 tok/s=16.5 vram=0MB think=-
+
+=== Testing qwen3.6:35b-a3b ===
+  • Andes ... Exception in thread Thread-16 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=3.3 vram=0MB think=-
+  • Passive Margin ... Exception in thread Thread-17 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=3.4 vram=0MB think=-
+  • Faults ... Exception in thread Thread-18 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.83 tok/s=7.7 vram=0MB think=-
+  • Geochem ... Exception in thread Thread-19 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=1.00 tok/s=7.5 vram=0MB think=-
+  • Drilling ... Exception in thread Thread-20 (_poll):
+Traceback (most recent call last):
+  File "/tmp/qwen_moe_validator.py", line 182, in _poll
+    self._poll_pynvml()
+    ~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 150, in _poll_pynvml
+    import pynvml
+ModuleNotFoundError: No module named 'pynvml'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "/usr/local/lib/python3.13/threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/qwen_moe_validator.py", line 184, in _poll
+    self._poll_nvidia_smi()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/tmp/qwen_moe_validator.py", line 165, in _poll_nvidia_smi
+    out = subprocess.check_output(
+        [
+    ...<5 lines>...
+        timeout=2.0,
+    )
+  File "/usr/local/lib/python3.13/subprocess.py", line 472, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+               **kwargs).stdout
+               ^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'nvidia-smi'
+score=0.71 tok/s=7.0 vram=0MB think=-
+
+Report → /tmp/validation_reports/qwen_moe_validation_1776814376.json
+Selected → qwen3.6:35b-a3b
+Reason    → Passed both gates: score ≥ 0.497 and tok/s ≥ 5.0. MoE preferred among passing.

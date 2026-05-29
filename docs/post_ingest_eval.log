@@ -1,0 +1,292 @@
+/usr/local/lib/python3.13/site-packages/transformers/utils/hub.py:110: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+/app/app/services/eval/real_rag_evaluator.py:156: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  embedding_model.get_sentence_embedding_dimension(),
+The Transformer `cache_dir` argument is deprecated. Please pass `cache_dir` via `model_kwargs`, `processor_kwargs`, and/or `config_kwargs` instead.
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'County' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'County' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'County' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: search_documents branch failed (rescuing peers): TimeoutError: 
+run_deterministic_rag: evidence truncated — dropped 1/2 tool-result entries to fit token budget (backend=vllm budget=12000)
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'confidence summaries indicate 479 assay samples were collected'
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'idence summaries confirm that 479 assay samples were collected'
+post_assembly_validation: 4 warning(s) (critical=2, high=2, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 4: Formation/entity name 'Total' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'rade measurements. A total of 479 assay samples were collected'
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'tal assay samples in project: 479" [HIGH-CONFIDENCE SUMMARIES].'
+hybrid_delayed_attachment: fallback also failed for all 2 unresolved markers — will refusal via insufficient_evidence
+layer_completeness: 2 uncited declarative sentence(s) found
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: evidence truncated — dropped 1/2 tool-result entries to fit token budget (backend=vllm budget=12000)
+span_resolver: marker [NI43:1] not in bound_set (answer_run_id=55ec1cbf-fabe-48c9-a002-4efad889721a) — unresolved; skipping INSERT
+hybrid_delayed_attachment: fallback also failed for all 3 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: evidence truncated — dropped 1/2 tool-result entries to fit token budget (backend=vllm budget=12000)
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+span_resolver: marker [NI43:1] not in bound_set (answer_run_id=bfa09437-9ab8-443d-bd4b-d4e9b211a8ba) — unresolved; skipping INSERT
+hybrid_delayed_attachment: fallback also failed for all 3 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: cache hit but rehydration produced no tool_results — synthesizing on empty context (refusal expected). key=georag:rag_cache:v6:4517743f8b51c620
+layer2_typed_output: 1 issue(s) found and repaired:
+  Citation [DATA-1] has placeholder source_chunk_id='no-tool-call'
+span_resolver: marker [DATA:1] not in bound_set (answer_run_id=43e727a6-d75e-4896-b469-f4c1ac25b2a7) — unresolved; skipping INSERT
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: search_documents branch failed (rescuing peers): TimeoutError: 
+run_deterministic_rag: evidence truncated — dropped 1/2 tool-result entries to fit token budget (backend=vllm budget=12000)
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'ples in the project amount to 479 [HIGH-CONFIDENCE SUMMARIES],'
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 's. The project has a total of 479 assay samples recorded [HIGH-'
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: Layer 3 + Layer 6 colocate on values [-101.0, 3.0] — fabricated impossible value detected. Triggering retry with critical severity.
+post_assembly_validation: 5 warning(s) (critical=2, high=2, advisory=1, L3_escalated_high=False, L3_escalated_critical=True):
+  Layer 3: Ungrounded number -101.0 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Commodity 'U3O8' mentioned but not found in any tool result — verify this appears in cited evidence
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 479.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 's. The project has a total of 479 assay samples recorded [HIGH-'
+  Layer 6: Value -101.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'resource estimation and NI 43-101 compliance [NI43:1].  [DATA-1'
+span_resolver: marker [NI43:1] not in bound_set (answer_run_id=cbee376b-eeb7-461f-8773-048151a2c1bf) — unresolved; skipping INSERT
+hybrid_delayed_attachment: fallback also failed for all 3 unresolved markers — will refusal via insufficient_evidence
+layer_completeness: 2 uncited declarative sentence(s) found
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+hybrid_delayed_attachment: fallback also failed for all 2 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 66.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'ley Basin Uranium project has 66 drill holes in the ingested d'
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 66.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'ley Basin Uranium project has 66 drill holes in the ingested d'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: evidence truncated — dropped 1/1 tool-result entries to fit token budget (backend=vllm budget=12000)
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'County' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'County' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'County' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: evidence truncated — dropped 1/2 tool-result entries to fit token budget (backend=vllm budget=12000)
+span_resolver: marker [NI43:1] not in bound_set (answer_run_id=f23f7d10-fdee-46ef-a4bf-9aad37bb576c) — unresolved; skipping INSERT
+hybrid_delayed_attachment: fallback also failed for all 3 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: evidence truncated — dropped 1/1 tool-result entries to fit token budget (backend=vllm budget=12000)
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 3 warning(s) (critical=2, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 4: Formation/entity name 'All' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 66.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'n [PRE-COMPUTED SUMMARY]. All 66 holes in the program are clas'
+post_assembly_validation: 3 warning(s) (critical=2, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'All' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 4: Formation/entity name 'Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 66.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'All 66 drill holes in the Cameco Shi'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=0, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 6: Value -1042.0 violates constraint 'depth_max_m' (metres (m)) — context: 'e total depth of drill hole 36-1042 is 339.9 metres [DATA:1].  [D'
+post_assembly_validation: 1 warning(s) (critical=0, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 6: Value -1042.0 violates constraint 'depth_max_m' (metres (m)) — context: 'e total depth of drill hole 36-1042 is 339.9 metres [DATA:1].  [D'
+post_assembly_validation: 1 warning(s) (critical=0, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 6: Value -1042.0 violates constraint 'depth_max_m' (metres (m)) — context: 'e total depth of drill hole 36-1042 is 339.9 metres [DATA:1].  [D'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=0, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 6: Value -1042.0 violates constraint 'depth_max_m' (metres (m)) — context: 'e total depth of drill hole 36-1042 is 339.9 metres [DATA:1].  [D'
+post_assembly_validation: 1 warning(s) (critical=0, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 6: Value -1042.0 violates constraint 'depth_max_m' (metres (m)) — context: 'e total depth of drill hole 36-1042 is 339.9 metres [DATA:1].  [D'
+post_assembly_validation: 1 warning(s) (critical=0, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 6: Value -1042.0 violates constraint 'depth_max_m' (metres (m)) — context: 'e total depth of drill hole 36-1042 is 339.9 metres [DATA:1].  [D'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: search_documents branch failed (rescuing peers): TimeoutError: 
+layer2_typed_output: 1 issue(s) found and repaired:
+  Citation [DATA-1] has placeholder source_chunk_id='no-tool-call'
+span_resolver: marker [DATA:1] not in bound_set (answer_run_id=68c2bfa5-d589-4bfd-ba6a-c89fae76a5d9) — unresolved; skipping INSERT
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value -1047.0 violates constraint 'depth_max_m' (metres (m)) — context: 'co Shirley Basin dataset is 36-1047 at 319.4 metres total depth ['
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value -1047.0 violates constraint 'depth_max_m' (metres (m)) — context: 'co Shirley Basin dataset is 36-1047 at 319.4 metres total depth ['
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value -1047.0 violates constraint 'depth_max_m' (metres (m)) — context: 'co Shirley Basin dataset is 36-1047 at 319.4 metres total depth ['
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: build_viz_payload failed
+Traceback (most recent call last):
+  File "/app/app/agent/orchestrator/__init__.py", line 2704, in run_deterministic_rag
+    viz_payload = build_viz_payload(
+        query, spatial_result, document_result, assay_result_viz, graph_result_viz,
+    )
+  File "/app/app/agent/viz_builder.py", line 425, in build_viz_payload
+    bottom = c.elevation - c.total_depth
+             ~~~~~~~~~~~~^~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'
+hybrid_delayed_attachment: fallback also failed for all 2 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'Yes' could not be resolved in the Neo4j knowledge graph for this project
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: evidence truncated — dropped 1/1 tool-result entries to fit token budget (backend=vllm budget=12000)
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: Layer 3 + Layer 6 colocate on values [3.0, 500.0] — fabricated impossible value detected. Triggering retry with critical severity.
+post_assembly_validation: 7 warning(s) (critical=2, high=4, advisory=1, L3_escalated_high=False, L3_escalated_critical=True):
+  Layer 3: Ungrounded number 500.0 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Drill-hole ID 'PLS-22-08' not found in silver.collars for this project
+  Layer 4: Formation/entity name 'Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 500.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'an have a uranium grade above 500 percent — that's not a possib'
+  Layer 6: Value 52.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'column; the highest assay is 52,000 ppm (5.2 percent) [DATA:1'
+  Layer 6: Value -22.0 violates constraint 'grade_gold_max_ppm' (ppm Au) — context: '50,000 ppm, the answer is PLS-22-08 [DATA-1].'
+  Layer 6: Value -8.0 violates constraint 'grade_gold_max_ppm' (ppm Au) — context: ',000 ppm, the answer is PLS-22-08 [DATA-1].'
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: Layer 3 + Layer 6 colocate on values [3.0, 500.0] — fabricated impossible value detected. Triggering retry with critical severity.
+post_assembly_validation: 7 warning(s) (critical=2, high=4, advisory=1, L3_escalated_high=False, L3_escalated_critical=True):
+  Layer 3: Ungrounded number 500.0 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Drill-hole ID 'PLS-22-08' not found in silver.collars for this project
+  Layer 4: Formation/entity name 'Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 500.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'an have a uranium grade above 500 percent — that's not a possib'
+  Layer 6: Value 52.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'column; the highest assay is 52,000 ppm (5.2 percent) [DATA:1'
+  Layer 6: Value -22.0 violates constraint 'grade_gold_max_ppm' (ppm Au) — context: '50,000 ppm, the answer is PLS-22-08 [DATA-1].'
+  Layer 6: Value -8.0 violates constraint 'grade_gold_max_ppm' (ppm Au) — context: ',000 ppm, the answer is PLS-22-08 [DATA-1].'
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: Layer 3 + Layer 6 colocate on values [3.0, 500.0] — fabricated impossible value detected. Triggering retry with critical severity.
+post_assembly_validation: 7 warning(s) (critical=2, high=4, advisory=1, L3_escalated_high=False, L3_escalated_critical=True):
+  Layer 3: Ungrounded number 500.0 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Drill-hole ID 'PLS-22-08' not found in silver.collars for this project
+  Layer 4: Formation/entity name 'Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 500.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'an have a uranium grade above 500 percent — that's not a possib'
+  Layer 6: Value 52.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'column; the highest assay is 52,000 ppm (5.2 percent) [DATA:1'
+  Layer 6: Value -22.0 violates constraint 'grade_gold_max_ppm' (ppm Au) — context: '50,000 ppm, the answer is PLS-22-08 [DATA-1].'
+  Layer 6: Value -8.0 violates constraint 'grade_gold_max_ppm' (ppm Au) — context: ',000 ppm, the answer is PLS-22-08 [DATA-1].'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+layer_completeness: 1 uncited declarative sentence(s) found
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+post_assembly_validation: 1 warning(s) (critical=1, high=0, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 66.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'ley Basin Uranium project has 66 drill holes in the ingested d'
+post_assembly_validation: 2 warning(s) (critical=1, high=1, advisory=0, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 4: Formation/entity name 'The Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 66.0 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'ley Basin Uranium project has 66 drill holes in the ingested d'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+run_deterministic_rag: build_viz_payload failed
+Traceback (most recent call last):
+  File "/app/app/agent/orchestrator/__init__.py", line 2704, in run_deterministic_rag
+    viz_payload = build_viz_payload(
+        query, spatial_result, document_result, assay_result_viz, graph_result_viz,
+    )
+  File "/app/app/agent/viz_builder.py", line 425, in build_viz_payload
+    bottom = c.elevation - c.total_depth
+             ~~~~~~~~~~~~^~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for -: 'NoneType' and 'float'
+hybrid_delayed_attachment: fallback also failed for all 2 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: 2 warning(s) (critical=1, high=0, advisory=1, L3_escalated_high=False, L3_escalated_critical=False):
+  Layer 3: Ungrounded number 375.3 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Formation/entity name 'Cameco Shirley Basin' could not be resolved in the Neo4j knowledge graph for this project
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: Layer 3 + Layer 6 colocate on values [3.0, 375.3] — fabricated impossible value detected. Triggering retry with critical severity.
+post_assembly_validation: 3 warning(s) (critical=1, high=1, advisory=1, L3_escalated_high=False, L3_escalated_critical=True):
+  Layer 3: Ungrounded number 375.3 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Formation/entity name 'Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 375.3 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'rley Basin Uranium project is 375.3 metres [PRE-COMPUTED SUMMARY]'
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+post_assembly_validation: Layer 3 + Layer 6 colocate on values [3.0, 375.3] — fabricated impossible value detected. Triggering retry with critical severity.
+post_assembly_validation: 3 warning(s) (critical=1, high=1, advisory=1, L3_escalated_high=False, L3_escalated_critical=True):
+  Layer 3: Ungrounded number 375.3 in response — not found in any tool result (direct or via unit conversion)
+  Layer 4: Formation/entity name 'Cameco Shirley Basin Uranium' could not be resolved in the Neo4j knowledge graph for this project
+  Layer 6: Value 375.3 violates constraint 'grade_uranium_max_pct' (% U3O8) — context: 'rley Basin Uranium project is 375.3 metres [PRE-COMPUTED SUMMARY]'
+hybrid_delayed_attachment: fallback also failed for all 1 unresolved markers — will refusal via insufficient_evidence
+orchestrator_validators: 1 ungrounded number(s) detected (threshold removed per Module 6 Chunk 3 tightening)
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+hybrid_delayed_attachment: fallback also failed for all 2 unresolved markers — will refusal via insufficient_evidence
+fetch_data_versions: workspace_id=None not found; degrading to version=0
+hybrid_delayed_attachment: fallback also failed for all 2 unresolved markers — will refusal via insufficient_evidence
+{
+  "run_id": "899c2621-e966-4e18-98db-8922c6f7cdc1",
+  "question_count": 32,
+  "pass_count": 29,
+  "fail_count": 3,
+  "regression_count": 0,
+  "promotion_blocked": false,
+  "failure_summary": null
+}

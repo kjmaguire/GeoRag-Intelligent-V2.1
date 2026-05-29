@@ -1,0 +1,112 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.2 Workflow-tier dashboard 5/5 (final) — Outbox + Activepieces dispatch lag. Reads from the Phase 0 outbox layer (database/raw/phase0/40-layer-d-outbox.sql) plus the Activepieces queue depth. Source of the §16.5 unified `workflow.workflow_runs` view.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Outbox rows pending by topic",
+      "description": "Phase 0 outbox.events. unsent_at IS NULL = pending. Sustained > 0 on any topic means the downstream consumer (Activepieces flow, audit ledger ingester) is offline or slow.",
+      "targets": [{"expr": "sum by (topic) (outbox_pending_rows)", "refId": "A", "legendFormat": "{{topic}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 1000}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox dispatch latency p95 (s)",
+      "description": "outbox.events.sent_at - inserted_at. Healthy: < 5s. > 30s sustained = consumer is overloaded.",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, topic) (rate(outbox_dispatch_latency_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{topic}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 30}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "Activepieces flow execution rate (req/s)",
+      "description": "Per-flow run rate. The notification + audit-attach + Slack-notify flows dominate today.",
+      "targets": [{"expr": "sum by (flow_id) (rate(activepieces_flow_executions_total[5m]))", "refId": "A", "legendFormat": "{{flow_id}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "Activepieces flow error rate (%)",
+      "description": "Per-flow failure rate. Sustained > 5% on any single flow is alert-worthy.",
+      "targets": [{"expr": "100 * sum by (flow_id) (rate(activepieces_flow_executions_total{status=\"error\"}[5m])) / sum by (flow_id) (rate(activepieces_flow_executions_total[5m]))", "refId": "A", "legendFormat": "{{flow_id}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit ledger anchor rate (events/min)",
+      "description": "audit.audit_ledger row insert rate broken down by action_type. Confirms the §10.6 nightly eval cron, §10.9 support agents, §G.2 restore_workspace and §G.1 targeting all writing their audit anchors. Sustained 0 = an upstream emit path is broken.",
+      "targets": [{"expr": "sum by (action_type) (rate(audit_ledger_inserts_total[1m])) * 60", "refId": "A", "legendFormat": "{{action_type}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Audit hash-chain integrity",
+      "description": "audit.audit_ledger hash-chain trigger validates each row's prev_hash matches the previous row's hash. 1 = chain intact, 0 = tamper detected (PagerDuty incident).",
+      "targets": [{"expr": "audit_hash_chain_intact", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 16},
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "Eval regression alarms last 24h",
+      "description": "Phase 175 — `eval.regression_detected` rows in audit.audit_ledger. Should be 0 unless a real promotion-gate regression hit. Each one needs cockpit triage.",
+      "targets": [{"expr": "sum(increase(audit_ledger_inserts_total{action_type=\"eval.regression_detected\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 16},
+      "id": 7
+    },
+    {
+      "type": "stat",
+      "title": "Activepieces backlog (queued executions)",
+      "description": "Current queued executions across all Activepieces flows. Sustained growth = worker can't keep up; scale activepieces-worker.",
+      "targets": [{"expr": "sum(activepieces_queue_depth)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 500}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 20},
+      "id": 8
+    },
+    {
+      "type": "stat",
+      "title": "Pulse queue depth (Laravel)",
+      "description": "Laravel Horizon queue + Pulse counters. Sustained > 0 = Horizon worker is offline or the queue is being overrun.",
+      "targets": [{"expr": "sum(laravel_horizon_queue_depth)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 500}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 20},
+      "id": 9
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["georag", "workflows", "phase-7", "phase-h3", "section-16.2", "outbox"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Workflows (Outbox + Activepieces)",
+  "uid": "georag-workflows-outbox",
+  "version": 1
+}

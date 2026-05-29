@@ -1,0 +1,27 @@
+{
+    "cloud": false,
+    "guidelines": true,
+    "mcp": true,
+    "nightwatch": false,
+    "sail": false,
+    "skills": [
+        "ai-sdk-development",
+        "laravel-best-practices",
+        "configuring-horizon",
+        "pulse-development",
+        "inertia-react-development",
+        "tailwindcss-development",
+        "georag-octane-bridge",
+        "georag-rag-citations",
+        "georag-schema-contracts",
+        "laravel-11-12-app-guidelines",
+        "laravel-mcp",
+        "laravel-patterns",
+        "laravel-security",
+        "laravel-specialist",
+        "laravel-tdd",
+        "laravel-verification",
+        "php-best-practices",
+        "php-pro"
+    ]
+}

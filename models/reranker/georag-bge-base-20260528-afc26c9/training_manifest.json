@@ -1,0 +1,35 @@
+{
+  "base_model": "BAAI/bge-reranker-base",
+  "lora": {
+    "r": 16,
+    "alpha": 32,
+    "dropout": 0.05
+  },
+  "training": {
+    "epochs": 3,
+    "batch_size": 16,
+    "learning_rate": 2e-05,
+    "warmup_ratio": 0.1,
+    "max_seq_length": 512,
+    "trainable_params": 1181185,
+    "total_params": 279225602,
+    "warmup_steps": 88,
+    "steps_per_epoch": 294,
+    "device": "cuda",
+    "completed_at_utc": "2026-05-28T19:43:19.134402+00:00"
+  },
+  "dataset": {
+    "prefix": "//tmp/reranker-train",
+    "train_rows": 781,
+    "val_rows": 22,
+    "test_rows": 160,
+    "multi_hop_groups": 0
+  },
+  "git_sha": "nogit",
+  "trained_at_utc": "2026-05-28T19:41:04.399704+00:00",
+  "dry_run": false,
+  "artifacts": {
+    "adapter": "//tmp/reranker-train/adapter/adapter",
+    "checkpoints": "//tmp/reranker-train/adapter/checkpoints"
+  }
+}

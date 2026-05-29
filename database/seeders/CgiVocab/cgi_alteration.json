@@ -1,0 +1,26 @@
+{
+    "_meta": {
+        "vocab_name": "CGI Mineral Alteration",
+        "vocab_uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016",
+        "entity_type": "technical_term",
+        "source": "cgi_vocab",
+        "note": "Curated subset of CGI Alteration Type 2016 covering hydrothermal alteration styles most commonly referenced in NI 43-101 reports + exploration assay/discovery queries. Aliases include both spelling variants and informal short forms (e.g. 'silicified' for silicification)."
+    },
+    "entries": [
+        {"canonical": "propylitic alteration",         "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/propylitic-alteration",         "aliases": ["propylitic", "propylitized", "propylitisation", "propylitization", "chlorite-epidote", "epidote-chlorite"]},
+        {"canonical": "phyllic alteration",            "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/phyllic-alteration",            "aliases": ["phyllic", "sericitic alteration", "sericite", "quartz-sericite-pyrite", "QSP"]},
+        {"canonical": "potassic alteration",           "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/potassic-alteration",           "aliases": ["potassic", "K-feldspar-biotite", "biotite alteration", "K-silicate"]},
+        {"canonical": "argillic alteration",           "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/argillic-alteration",           "aliases": ["argillic", "intermediate argillic", "clay alteration", "argillised", "argillized"]},
+        {"canonical": "advanced argillic alteration",  "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/advanced-argillic-alteration",  "aliases": ["advanced argillic", "AAA", "alunite-kaolinite", "alunite alteration", "high-sulfidation alteration"]},
+        {"canonical": "silicification",                "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/silicification",                "aliases": ["silicified", "silica alteration", "silicic", "vuggy silica", "quartz alteration"]},
+        {"canonical": "sericitisation",                "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/sericitisation",                "aliases": ["sericitization", "sericitic", "sericite alteration"]},
+        {"canonical": "carbonatisation",               "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/carbonatisation",               "aliases": ["carbonatization", "carbonate alteration", "carbonatized", "ankerite alteration"]},
+        {"canonical": "chloritisation",                "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/chloritisation",                "aliases": ["chloritization", "chlorite alteration", "chloritized"]},
+        {"canonical": "hematitisation",                "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/hematitisation",                "aliases": ["hematitization", "hematite alteration", "hematized", "red alteration"]},
+        {"canonical": "kaolinisation",                 "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/kaolinisation",                 "aliases": ["kaolinization", "kaolinite alteration", "kaolinitised"]},
+        {"canonical": "albitisation",                  "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/albitisation",                  "aliases": ["albitization", "albite alteration", "sodic alteration", "Na-metasomatism"]},
+        {"canonical": "epidotisation",                 "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/epidotisation",                 "aliases": ["epidotization", "epidote alteration"]},
+        {"canonical": "skarn alteration",              "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/skarn-alteration",              "aliases": ["skarnification", "calc-silicate alteration", "garnet-pyroxene alteration"]},
+        {"canonical": "greisen alteration",            "uri": "http://resource.geosciml.org/classifier/cgi/alterationtype/2016/greisen-alteration",            "aliases": ["greisenisation", "greisenization", "topaz-muscovite-quartz"]}
+    ]
+}

@@ -1,0 +1,367 @@
+# Plan §5a — Golden question set scaffold
+#
+# 20 categories × 2-3 placeholder questions = 40-60 seed questions.
+#
+# The eval.golden_questions table (migration 2026_05_13_140000) is the
+# storage. This YAML is the source-of-truth seed. The plan §5a category
+# label is stored in context_setup.plan_category since the table's
+# existing question_set CHECK constraint only allows 8 values (the
+# pre-plan-§5a categories). See OVERNIGHT_LOG.md decision #5.
+#
+# Status: SKELETON. Questions are placeholders shaped right for SME
+# expansion. Each question has:
+#   - id            : stable identifier (kebab-case category + index)
+#   - category      : plan §5a category 1-20
+#   - question      : the natural-language question
+#   - question_set  : maps to the existing question_set CHECK values
+#   - expected_intent_class : maps to the 6-intent classifier labels
+#   - expected_citations    : []  — SME fills with real cited URIs
+#   - expected_entities     : []  — SME fills
+#   - expected_numeric_values : []  — SME fills (for grounding tests)
+#   - expected_refusal      : bool — true for refusal-correctness category
+#   - difficulty            : easy | medium | hard
+#   - notes                 : free-text for SME context
+#
+# Loader: there is NO loader yet — Kyle decides whether to (a) write a
+# Laravel seeder that reads this YAML, (b) use the existing Dagster
+# eval pipeline, or (c) hand-populate via the eval admin UI.
+
+categories:
+  # ---------------------------------------------------------------------
+  # 1. Exact drillhole lookup
+  # ---------------------------------------------------------------------
+  - id: exact-drillhole-lookup-01
+    category: "Exact drillhole lookup (hole_id, assay values)"
+    question: "What were the assay results for hole ECK-22-001?"
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    expected_citations: []
+    expected_entities: ["hole_id:ECK-22-001"]
+    expected_numeric_values: []
+    expected_refusal: false
+    difficulty: easy
+    notes: "Hole ID extraction must succeed; per-interval grades expected."
+
+  - id: exact-drillhole-lookup-02
+    category: "Exact drillhole lookup (hole_id, assay values)"
+    question: "Give me the Au, Ag, and Cu values for RLG-001 between 50 m and 100 m."
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    expected_entities: ["hole_id:RLG-001", "commodity:Au", "commodity:Ag", "commodity:Cu"]
+    expected_numeric_values: []
+    expected_refusal: false
+    difficulty: medium
+
+  - id: exact-drillhole-lookup-03
+    category: "Exact drillhole lookup (hole_id, assay values)"
+    question: "What is the deepest sample depth on hole PLS-22-08?"
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    expected_entities: ["hole_id:PLS-22-08"]
+    expected_refusal: false
+    difficulty: easy
+
+  # ---------------------------------------------------------------------
+  # 2. Best assay intercepts (top N by grade × width)
+  # ---------------------------------------------------------------------
+  - id: best-intercepts-01
+    category: "Best assay intercepts (top N by grade × width)"
+    question: "What were the top 5 Au intercepts at the Rowan property by grade × width?"
+    question_set: numeric_grounding
+    expected_intent_class: synthesis
+    expected_entities: ["property:Rowan", "commodity:Au"]
+    difficulty: medium
+
+  - id: best-intercepts-02
+    category: "Best assay intercepts (top N by grade × width)"
+    question: "Best Cu intercept across the project."
+    question_set: numeric_grounding
+    expected_intent_class: synthesis
+    expected_entities: ["commodity:Cu"]
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 3. Commodity-specific assays (Au, Ag, Cu, Zn, Mo)
+  # ---------------------------------------------------------------------
+  - id: commodity-assays-01
+    category: "Commodity-specific assays (Au, Ag, Cu, Zn, Mo)"
+    question: "Where are the highest Mo grades on the property?"
+    question_set: numeric_grounding
+    expected_intent_class: synthesis
+    expected_entities: ["commodity:Mo"]
+    difficulty: easy
+
+  - id: commodity-assays-02
+    category: "Commodity-specific assays (Au, Ag, Cu, Zn, Mo)"
+    question: "Average Zn grade across all 2023 holes."
+    question_set: numeric_grounding
+    expected_intent_class: synthesis
+    expected_entities: ["commodity:Zn"]
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 4. Depth-bounded assays
+  # ---------------------------------------------------------------------
+  - id: depth-bounded-01
+    category: "Depth-bounded assays (intervals between X and Y metres)"
+    question: "Assays between 200 m and 300 m on hole ECK-22-001."
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    expected_entities: ["hole_id:ECK-22-001"]
+    difficulty: easy
+
+  - id: depth-bounded-02
+    category: "Depth-bounded assays (intervals between X and Y metres)"
+    question: "Below 500 m, what's the highest gold grade we've drilled?"
+    question_set: numeric_grounding
+    expected_intent_class: synthesis
+    expected_entities: ["commodity:Au"]
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 5. Formation-bounded assays
+  # ---------------------------------------------------------------------
+  - id: formation-bounded-01
+    category: "Formation-bounded assays (collars within formation boundary)"
+    question: "Which holes intersected mineralisation inside the Athabasca formation?"
+    question_set: schema_mapping
+    expected_intent_class: synthesis
+    expected_entities: ["formation:Athabasca"]
+    difficulty: hard
+    notes: "Needs spatial join — depends on plan §2g spatial query node."
+
+  # ---------------------------------------------------------------------
+  # 6. Lithology descriptions
+  # ---------------------------------------------------------------------
+  - id: lithology-01
+    category: "Lithology descriptions (what rock type at what depth)"
+    question: "What lithology was logged from 145 m to 160 m in PLS-22-08?"
+    question_set: schema_mapping
+    expected_intent_class: factual_lookup
+    expected_entities: ["hole_id:PLS-22-08"]
+    difficulty: easy
+
+  - id: lithology-02
+    category: "Lithology descriptions (what rock type at what depth)"
+    question: "Where do we see argillite in the basement?"
+    question_set: schema_mapping
+    expected_intent_class: synthesis
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 7. Alteration descriptions
+  # ---------------------------------------------------------------------
+  - id: alteration-01
+    category: "Alteration descriptions (alteration type and intensity)"
+    question: "Where is strong argillic alteration developed on the property?"
+    question_set: schema_mapping
+    expected_intent_class: synthesis
+    difficulty: medium
+
+  - id: alteration-02
+    category: "Alteration descriptions (alteration type and intensity)"
+    question: "Intensity of sericite alteration in the porphyry zone."
+    question_set: schema_mapping
+    expected_intent_class: synthesis
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 8. Structural geology relationships
+  # ---------------------------------------------------------------------
+  - id: structural-01
+    category: "Structural geology relationships (fault orientation, zone geometry)"
+    question: "What is the orientation of the main controlling fault for the Rowan deposit?"
+    question_set: report_section
+    expected_intent_class: synthesis
+    expected_entities: ["property:Rowan"]
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 9. Spatial intersection questions
+  # ---------------------------------------------------------------------
+  - id: spatial-01
+    category: "Spatial intersection questions (within distance, inside boundary)"
+    question: "Which drillholes are within 500 m of the IP anomaly?"
+    question_set: schema_mapping
+    expected_intent_class: synthesis
+    difficulty: hard
+    notes: "Plan §2g spatial query — currently a gap; this case is the primary regression for §2g."
+
+  - id: spatial-02
+    category: "Spatial intersection questions (within distance, inside boundary)"
+    question: "Distance between hole ECK-22-001 and the nearest fault."
+    question_set: schema_mapping
+    expected_intent_class: factual_lookup
+    expected_entities: ["hole_id:ECK-22-001"]
+    difficulty: hard
+
+  # ---------------------------------------------------------------------
+  # 10. Claim/tenure questions
+  # ---------------------------------------------------------------------
+  - id: tenure-01
+    category: "Claim/tenure questions (active claims, expiry dates, area)"
+    question: "How many active claims do we hold on the Rowan property?"
+    question_set: core_chat
+    expected_intent_class: factual_lookup
+    expected_entities: ["property:Rowan"]
+    difficulty: easy
+
+  - id: tenure-02
+    category: "Claim/tenure questions (active claims, expiry dates, area)"
+    question: "When does claim 12345 expire?"
+    question_set: core_chat
+    expected_intent_class: factual_lookup
+    difficulty: easy
+
+  # ---------------------------------------------------------------------
+  # 11. Report section summaries
+  # ---------------------------------------------------------------------
+  - id: report-summary-01
+    category: "Report section summaries (exploration history, conclusions)"
+    question: "Summarise the exploration history section of the 2024 Eckville NI 43-101."
+    question_set: report_section
+    expected_intent_class: synthesis
+    difficulty: medium
+
+  - id: report-summary-02
+    category: "Report section summaries (exploration history, conclusions)"
+    question: "What are the conclusions of the most recent technical report?"
+    question_set: report_section
+    expected_intent_class: synthesis
+    difficulty: medium
+    notes: "Depends on plan §1h supersession to pick the 'most recent' correctly."
+
+  # ---------------------------------------------------------------------
+  # 12. NI 43-101 resource estimate summaries
+  # ---------------------------------------------------------------------
+  - id: resource-estimate-01
+    category: "NI 43-101 resource estimate summaries"
+    question: "What is the current Inferred Mineral Resource at the Eckville Main Zone?"
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    difficulty: medium
+    notes: "Cite NI 43-101 + effective date."
+
+  - id: resource-estimate-02
+    category: "NI 43-101 resource estimate summaries"
+    question: "What cut-off grade was applied to the most recent resource estimate?"
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 13. Environmental / permitting questions
+  # ---------------------------------------------------------------------
+  - id: env-perm-01
+    category: "Environmental / permitting questions"
+    question: "What environmental baseline studies have been completed on the property?"
+    question_set: report_section
+    expected_intent_class: synthesis
+    difficulty: medium
+
+  # ---------------------------------------------------------------------
+  # 14. Geophysical survey questions
+  # ---------------------------------------------------------------------
+  - id: geophysics-01
+    category: "Geophysical survey questions (IP anomaly interpretation)"
+    question: "What does the IP anomaly at 600 m depth on line 4500N indicate?"
+    question_set: report_section
+    expected_intent_class: hypothesis_generation
+    difficulty: hard
+
+  # ---------------------------------------------------------------------
+  # 15. Geochemical sample questions
+  # ---------------------------------------------------------------------
+  - id: geochem-01
+    category: "Geochemical sample questions (surface samples, rock chips)"
+    question: "Highest Au value in the 2023 rock chip sampling program."
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    difficulty: easy
+
+  # ---------------------------------------------------------------------
+  # 16. Ambiguous entity questions
+  # ---------------------------------------------------------------------
+  - id: ambiguous-entity-01
+    category: "Ambiguous entity questions (entity exists in aliases but not canonical)"
+    question: "Tell me about hole 36-1085."
+    question_set: schema_mapping
+    expected_intent_class: factual_lookup
+    difficulty: medium
+    notes: "Cameco-style numeric hole ID. Memory project_hole_id_extraction_2026_05_21 — extract_hole_ids now handles numeric IDs with context word; this regression-tests that fix."
+
+  - id: ambiguous-entity-02
+    category: "Ambiguous entity questions (entity exists in aliases but not canonical)"
+    question: "Best assay at Rowan."
+    question_set: core_chat
+    expected_intent_class: synthesis
+    expected_entities: ["property:Rowan"]
+    difficulty: medium
+    notes: "Rowan alias should resolve to canonical property; tests entity_aliases (plan §2c)."
+
+  # ---------------------------------------------------------------------
+  # 17. Unsupported questions (refusal-correctness)
+  # ---------------------------------------------------------------------
+  - id: refusal-01
+    category: "Unsupported questions (out-of-scope, should trigger refusal)"
+    question: "What's the weather forecast for the property tomorrow?"
+    question_set: refusal_correctness
+    expected_intent_class: factual_lookup
+    expected_refusal: true
+    expected_refusal_reason: "out_of_scope"
+    difficulty: easy
+
+  - id: refusal-02
+    category: "Unsupported questions (out-of-scope, should trigger refusal)"
+    question: "Should I invest in this company's stock?"
+    question_set: refusal_correctness
+    expected_intent_class: decision_support
+    expected_refusal: true
+    expected_refusal_reason: "investment_advice"
+    difficulty: easy
+
+  # ---------------------------------------------------------------------
+  # 18. Conflicting evidence questions
+  # ---------------------------------------------------------------------
+  - id: conflict-01
+    category: "Conflicting evidence questions (two documents disagree)"
+    question: "How much gold is at Rowan? The fact sheet and the NI 43-101 disagree."
+    question_set: public_private_boundary
+    expected_intent_class: synthesis
+    expected_entities: ["property:Rowan", "commodity:Au"]
+    difficulty: hard
+    notes: "Must surface conflict; must not silently pick one."
+
+  # ---------------------------------------------------------------------
+  # 19. Citation stress-test (multiple claims requiring multiple citations)
+  # ---------------------------------------------------------------------
+  - id: citation-stress-01
+    category: "Citation stress-test questions (multiple claims requiring multiple citations)"
+    question: "Summarise the Eckville property: location, resource estimate, best intercept, and main lithology."
+    question_set: numeric_grounding
+    expected_intent_class: synthesis
+    difficulty: hard
+    notes: "≥4 distinct citations expected."
+
+  # ---------------------------------------------------------------------
+  # 20. Numeric grounding stress-test
+  # ---------------------------------------------------------------------
+  - id: numeric-stress-01
+    category: "Numeric grounding stress-test questions (exact values, units, significant figures)"
+    question: "Exact tonnage, grade, and ounces for the Inferred Mineral Resource at the Eckville Main Zone, with units."
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    difficulty: hard
+    notes: "Tests exact value reproduction with units and sig figs."
+
+  - id: numeric-stress-02
+    category: "Numeric grounding stress-test questions (exact values, units, significant figures)"
+    question: "Capex, opex, IRR, NPV from the most recent feasibility study."
+    question_set: numeric_grounding
+    expected_intent_class: factual_lookup
+    difficulty: hard
+
+# End — 33 questions total across 20 categories. Plan §5a calls for
+# 40-60; SMEs add 7-27 more to hit the count and to deepen coverage on
+# categories currently at only 1 question (5, 8, 13, 14, 15, 16-no add,
+# 18-no add, 19).

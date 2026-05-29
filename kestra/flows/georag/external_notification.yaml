@@ -1,0 +1,63 @@
+# =============================================================================
+# Phase 3 Step 5 — Kestra flow: external_notification
+#
+# Replaces the Phase 2 Activepieces webhook flow of the same name.
+# Exposes a webhook URL; external senders POST a JSON envelope
+# (already HMAC-signed); Kestra forwards the signed payload through
+# to FastAPI's /internal/v1/integrations/external_notification/trigger
+# with the per-flow JWT in the Authorization header.
+#
+# The Hatchet `external_notification` workflow on the receiving side
+# verifies the HMAC against the canonical-JSON form of the payload
+# fields (R-P2-4). Tampered or unsigned payloads short-circuit there
+# with `skipped=true, reason='hmac_verification_failed:...'`.
+#
+# Prerequisites (one-time, per environment):
+#   - Per-flow JWT minted + written to Kestra KV as `flow_jwt_external_notification`
+#         scripts/phase3_jwt_rotate.sh write external_notification
+#   - EXTERNAL_NOTIFICATION_HMAC_SECRET set on the AI worker env
+#   - Senders given the webhook URL + the SAME HMAC secret. Senders
+#     compute HMAC-SHA256 hex over the canonical JSON of
+#     {notification_id, source, kind, payload, received_at} (sorted
+#     keys, no whitespace, UTF-8) and pass it as `signature` in their
+#     POST body.
+#   - Feature flag `flows.external_notification.enabled` = true
+# =============================================================================
+
+id: external_notification
+namespace: georag
+
+description: |
+  Phase 3 Step 5 — Activepieces → Kestra migration of the
+  `external_notification` inbound-webhook flow with HMAC sender auth.
+
+labels:
+  georag.phase: phase3
+  georag.flow_kind: inbound-webhook
+
+variables:
+  fastapi_url: "{{ globals.georag.fastapi_internal_url }}"
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Forward the signed envelope to FastAPI. The webhook trigger's body
+  # is available at {{ trigger.body }}; we pass it through unchanged so
+  # the canonical-JSON the sender signed survives intact.
+  # ---------------------------------------------------------------------------
+  - id: forward_to_fastapi
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.fastapi_url }}/internal/v1/integrations/external_notification/trigger"
+    method: POST
+    contentType: application/json
+    headers:
+      Authorization: "Bearer {{ kv('flow_jwt_external_notification') }}"
+    body: "{{ trigger.body | json }}"
+
+triggers:
+  - id: webhook_inbound
+    type: io.kestra.plugin.core.trigger.Webhook
+    # Kestra generates a stable URL based on the namespace + flow id +
+    # this `key` — operator copies the resolved URL after first deploy
+    # and shares with senders. Rotate the key when rotating the
+    # webhook URL itself.
+    key: "{{ secret('EXTERNAL_NOTIFICATION_WEBHOOK_KEY') }}"

@@ -1,0 +1,23 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- range $component := list "laravelOctane" "fastapi" }}
+{{- $values := index $.Values $component }}
+{{- if $values.enabled }}
+{{- $compName := ternary "laravel-octane" "fastapi" (eq $component "laravelOctane") }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "georag.fullname" $ }}-{{ $compName }}
+  labels:
+    {{- include "georag.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $compName }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $.Chart.Name }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $compName }}
+{{- end }}
+{{- end }}
+{{- end }}

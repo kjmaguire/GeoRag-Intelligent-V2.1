@@ -1,0 +1,102 @@
+# =============================================================================
+# OpenTelemetry Collector — Phase 0 Step 3
+#
+# Single collector receiving OTLP from every GeoRAG service, fanning out to:
+#   - Tempo  (traces)
+#   - Prometheus (metrics scrape — exposed on :8895/metrics, no host port)
+#
+# Phase 0 wires: Laravel, FastAPI, Hatchet, vLLM. Phase 2+ adds Activepieces,
+# Phase 4+ adds LangGraph. The collector is the single hop so apps don't have
+# to know whether traces go to Tempo, Honeycomb, or anywhere else.
+#
+# Sampling: 100% in dev (always_on). Production override via env-var driven
+# tail_sampling processor — wired in Phase 11 hardening.
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Self-observability: collector reports its own metrics to Prometheus.
+  prometheus/internal:
+    config:
+      scrape_configs:
+        - job_name: otel-collector
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['127.0.0.1:8888']
+
+processors:
+  # Drop spans / metrics if the collector is approaching memory pressure.
+  # check_interval should be small; spike_limit ≤ limit_percentage.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Batch before export to reduce egress chatter.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Add resource attributes that every span/metric should carry.
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+
+exporters:
+  # Traces → Tempo (gRPC OTLP)
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus scrape endpoint exposed by the collector itself.
+  # Prometheus's job for this collector lives in docker/prometheus/jobs/otel.yml.
+  prometheus:
+    endpoint: 0.0.0.0:8895
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Loud failures — write to logs so operators see drops/parse errors.
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  telemetry:
+    # OTel collector 0.150+ deprecated `metrics.address` in favour of the
+    # readers-based config; for Phase 0 we keep self-telemetry off the
+    # external scrape path and let the default internal endpoint suffice.
+    metrics:
+      level: detailed
+    logs:
+      level: info
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp, prometheus/internal]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]

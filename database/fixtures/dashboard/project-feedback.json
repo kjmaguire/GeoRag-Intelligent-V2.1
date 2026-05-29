@@ -1,0 +1,12 @@
+{
+    "data": {
+        "total": 260,
+        "helpful": 218,
+        "citation_issue": 28,
+        "wrong_irrelevant": 14,
+        "positive_rate": 0.84,
+        "top_issue": "Wrong year cited"
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 900
+}

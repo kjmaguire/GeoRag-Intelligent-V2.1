@@ -1,0 +1,134 @@
+{{- if .Values.fastapi.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-fastapi
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.fastapi.service.port }}
+      targetPort: http
+      name: http
+  selector: {{- include "georag.selectorLabels" (dict "component" "fastapi" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-fastapi
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.fastapi.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "fastapi" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "fastapi" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: fastapi
+          image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: POSTGRES_HOST
+              value: {{ .Release.Name }}-pgbouncer
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: POSTGRES_DIRECT_HOST
+              value: {{ .Release.Name }}-postgresql
+            - name: POSTGRES_DIRECT_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: georag_app
+            - name: POSTGRES_DB
+              value: georag
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: PG_APP_PASSWORD
+            - name: REDIS_HOST
+              value: {{ .Release.Name }}-redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: REDIS_PASSWORD
+            - name: QDRANT_HOST
+              value: {{ .Release.Name }}-qdrant
+            - name: QDRANT_PORT
+              value: "6333"
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: QDRANT_API_KEY
+            - name: NEO4J_HOST
+              value: {{ .Release.Name }}-neo4j
+            - name: NEO4J_PORT
+              value: "7687"
+            - name: NEO4J_USERNAME
+              value: neo4j
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: NEO4J_PASSWORD
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: FASTAPI_SERVICE_KEY
+            - name: VLLM_BASE_URL
+              value: http://{{ .Release.Name }}-vllm:{{ .Values.vllm.service.port }}/v1
+            - name: HATCHET_CLIENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: HATCHET_CLIENT_TOKEN
+          resources: {{- toYaml .Values.fastapi.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+{{- if .Values.fastapi.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-fastapi
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-fastapi
+  minReplicas: {{ .Values.fastapi.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.fastapi.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.fastapi.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

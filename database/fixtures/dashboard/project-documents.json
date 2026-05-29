@@ -1,0 +1,73 @@
+{
+    "data": [
+        {
+            "id": "doc-001",
+            "filename": "NI43-101_TalbotLake_2024Q4.pdf",
+            "doc_type": "Tech report",
+            "source": "Internal",
+            "stage": "index",
+            "chunk_count": 142,
+            "crs_detected": "EPSG:26910",
+            "crs_status": "resolved",
+            "ingested_at": "2026-04-13T14:21:00Z"
+        },
+        {
+            "id": "doc-002",
+            "filename": "DDH-2024-018_logsheet.xlsx",
+            "doc_type": "Drill log",
+            "source": "Field upload",
+            "stage": "index",
+            "chunk_count": 38,
+            "crs_detected": "EPSG:26910",
+            "crs_status": "resolved",
+            "ingested_at": "2026-04-13T13:58:00Z"
+        },
+        {
+            "id": "doc-003",
+            "filename": "IP_survey_2019_eastext.pdf",
+            "doc_type": "Geophysics",
+            "source": "Legacy archive",
+            "stage": "silver",
+            "chunk_count": null,
+            "crs_detected": null,
+            "crs_status": "unresolved",
+            "ingested_at": "2026-04-13T13:42:00Z"
+        },
+        {
+            "id": "doc-004",
+            "filename": "Assay_certs_ALS_batch_2401.csv",
+            "doc_type": "Assay",
+            "source": "Lab",
+            "stage": "index",
+            "chunk_count": 412,
+            "crs_detected": null,
+            "crs_status": "resolved",
+            "ingested_at": "2026-04-13T11:14:00Z"
+        },
+        {
+            "id": "doc-005",
+            "filename": "2022_geotech_memo_pad_siting.docx",
+            "doc_type": "Memo",
+            "source": "Internal",
+            "stage": "index",
+            "chunk_count": 14,
+            "crs_detected": "EPSG:26910",
+            "crs_status": "resolved",
+            "ingested_at": "2026-04-13T10:02:00Z"
+        },
+        {
+            "id": "doc-006",
+            "filename": "historical_assays_pre1995_scan.pdf",
+            "doc_type": "Historical",
+            "source": "Legacy archive",
+            "stage": "failed",
+            "chunk_count": null,
+            "crs_detected": null,
+            "crs_status": "failed",
+            "crs_failure_reason": "OCR error",
+            "ingested_at": "2026-04-13T09:28:00Z"
+        }
+    ],
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

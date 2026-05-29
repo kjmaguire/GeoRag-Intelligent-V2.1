@@ -1,0 +1,281 @@
+# =============================================================================
+# docker/prometheus/prometheus.yml
+#
+# Prometheus scrape configuration for GeoRAG Intelligence.
+#
+# Prometheus is part of the [dev-monitor] profile — it does not start unless
+# explicitly requested, since it adds memory overhead on the dev workstation.
+#
+# Instrumentation sources:
+#   FastAPI   → prometheus-fastapi-instrumentator (auto-instrument on startup)
+#   Laravel   → Laravel Pulse metrics export (custom /metrics endpoint)
+#   Neo4j     → built-in Prometheus endpoint on port 2004
+#   Qdrant    → built-in Prometheus endpoint on port 6333/metrics
+#
+# Architecture reference: Section 07 (Deployment Services — Monitoring)
+# Dev workstation budget: Section 11
+# =============================================================================
+
+global:
+  # Default scrape interval — tight enough for interactive debugging without
+  # hammering the dev workstation CPU. Increase to 30s for production.
+  scrape_interval: 15s
+
+  # How long to wait for a scrape before marking it as failed.
+  scrape_timeout: 10s
+
+  # How frequently to evaluate alerting rules.
+  evaluation_interval: 15s
+
+  # Labels attached to every time series scraped by this Prometheus instance.
+  external_labels:
+    environment: "dev"
+    project: "georag"
+
+# =============================================================================
+# Alerting rules (loaded from separate files — add alert/*.yml here as needed)
+# =============================================================================
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+# =============================================================================
+# Alertmanager integration (Module 10 Chunk 10.4)
+# =============================================================================
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+# =============================================================================
+# Scrape configurations
+# =============================================================================
+scrape_configs:
+
+  # ---------------------------------------------------------------------------
+  # FastAPI domain service
+  #
+  # prometheus-fastapi-instrumentator auto-exposes /metrics on the FastAPI app.
+  # Metrics include: http_request_duration_seconds, http_requests_total,
+  # plus any custom gauges registered in app/metrics.py.
+  #
+  # Key metrics to dashboard:
+  #   - http_request_duration_seconds (p50, p95, p99)
+  #   - RAG pipeline latency (custom histogram)
+  #   - LLM token throughput (custom counter)
+  # ---------------------------------------------------------------------------
+  - job_name: "fastapi"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["fastapi:8000"]
+        labels:
+          service: "fastapi"
+    metrics_path: /metrics
+    # FastAPI review #3 — /metrics is intentionally PUBLIC at the
+    # application layer; gating happens at the network layer (port 8000
+    # is not exposed externally; only the internal docker network can
+    # reach this scrape target). For prod deployments behind a reverse
+    # proxy, gate via nginx allow/deny — see `app/main.py::metrics`
+    # docstring for the recipe.
+
+  # ---------------------------------------------------------------------------
+  # Laravel Octane (via Laravel Pulse metrics export)
+  #
+  # Laravel Pulse records application-level metrics (queue depth, cache hits,
+  # slow queries, exception rates). The /metrics endpoint must be added as a
+  # route in routes/web.php that exports Pulse data in Prometheus text format.
+  #
+  # Key metrics to dashboard:
+  #   - laravel_queue_depth (alert on sustained growth)
+  #   - laravel_cache_hit_ratio (alert if < 0.80)
+  #   - laravel_slow_query_count
+  #   - laravel_exception_rate
+  # ---------------------------------------------------------------------------
+  - job_name: "laravel-octane"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["laravel-octane:80"]
+        labels:
+          service: "laravel-octane"
+    metrics_path: /metrics
+
+  # ---------------------------------------------------------------------------
+  # Neo4j Community Edition
+  #
+  # Neo4j exposes Prometheus metrics on port 2004 (separate from bolt on 7687
+  # and HTTP on 7474). Enable in neo4j.conf:
+  #   metrics.prometheus.enabled=true
+  #   metrics.prometheus.endpoint=0.0.0.0:2004
+  #
+  # Scrape interval is 30s — Neo4j metrics don't change sub-second, and the
+  # JVM GC overhead of metric collection is non-trivial on a dev workstation.
+  #
+  # Key metrics to dashboard:
+  #   - neo4j_page_cache_hit_ratio  (alert if < 0.95 after warmup)
+  #   - neo4j_transaction_active
+  #   - neo4j_store_size_total_bytes
+  #   - neo4j_bolt_connections_opened_total
+  # ---------------------------------------------------------------------------
+  # V1.5-07 — Neo4j 2026 Community Edition can't expose Prometheus directly
+  # (server.metrics.prometheus.* is Enterprise-only). The neo4j_exporter
+  # sidecar polls JMX over Bolt every 30s and serves the bridge endpoint.
+  - job_name: "neo4j"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["neo4j_exporter:9105"]
+        labels:
+          service: "neo4j"
+    metrics_path: /metrics
+
+  # ---------------------------------------------------------------------------
+  # Qdrant vector store
+  #
+  # Qdrant exposes Prometheus metrics at GET /metrics on its REST port (6333).
+  # Enable in qdrant config:
+  #   service:
+  #     enable_metrics: true
+  #
+  # Key metrics to dashboard:
+  #   - qdrant_search_duration_seconds (p50, p95)
+  #   - qdrant_collections_total
+  #   - qdrant_vectors_count
+  #   - qdrant_pending_operations_total
+  # ---------------------------------------------------------------------------
+  - job_name: "qdrant"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["qdrant:6333"]
+        labels:
+          service: "qdrant"
+    metrics_path: /metrics
+
+  # ---------------------------------------------------------------------------
+  # Martin MVT tile server
+  #
+  # Martin exposes Prometheus metrics at GET /metrics on its listen port (3000).
+  # Metrics include request duration, cache hit/miss, tile generation time.
+  #
+  # Key metrics to dashboard:
+  #   - martin_request_duration_seconds (p50, p95, p99)
+  #   - martin_tile_cache_hit_total / martin_tile_cache_miss_total
+  #   - martin_request_total (by function_name, status_code)
+  #
+  # Architecture reference: §04d-tile, §07c-tile
+  # ---------------------------------------------------------------------------
+  - job_name: "martin"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["martin:3000"]
+        labels:
+          service: "martin"
+    # V1.5-06 — Martin 1.7.0 exposes Prometheus at /_/metrics (not /metrics).
+    # Released 2026-04-25 with martin_http_requests_*, martin_tile_cache_requests_total,
+    # martin_cache_requests_total + standard process_* metrics.
+    metrics_path: /_/metrics
+
+  # ---------------------------------------------------------------------------
+  # Redis (via redis_exporter — add when needed)
+  #
+  # redis_exporter is not included in the default stack to save workstation
+  # resources. Uncomment and add the redis-exporter service to compose under
+  # the [dev-monitor] profile when Redis memory profiling is needed.
+  #
+  # Key metrics:
+  #   - redis_memory_used_bytes (alert if > 80% of maxmemory)
+  #   - redis_keyspace_hits_total / redis_keyspace_misses_total (hit ratio)
+  #   - redis_connected_clients
+  # ---------------------------------------------------------------------------
+  # Module 10 Chunk 10.4 — activated; service name matches compose.
+  - job_name: "redis"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["redis_exporter:9121"]
+        labels:
+          service: "redis"
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL (via postgres_exporter — add when needed)
+  #
+  # Uncomment and add postgres-exporter to compose under [dev-monitor].
+  # Connect it to pgbouncer (6432) or directly to postgres (5432) — the
+  # exporter needs a superuser or pg_monitor role grant.
+  #
+  # Key metrics:
+  #   - pg_stat_bgwriter_buffers_clean_total (shared_buffers effectiveness)
+  #   - pg_stat_database_blks_hit / blks_read (buffer cache hit ratio)
+  #   - pg_locks_count (lock contention)
+  #   - pg_stat_activity_count (connection count via PgBouncer)
+  # ---------------------------------------------------------------------------
+  # Module 10 Chunk 10.4 — activated; service name matches compose.
+  - job_name: "postgresql"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["postgres_exporter:9187"]
+        labels:
+          service: "postgresql"
+
+  # ---------------------------------------------------------------------------
+  # V1.5-08 (2026-04-22) — Reverb + Dagster scrape jobs removed.
+  # Reverb exposes only the Pusher-protocol admin API which requires HMAC
+  # auth; not worth the sidecar complexity. Dagster webserver returns HTML,
+  # not Prometheus exposition. Both surfaces now flow through the Laravel
+  # /metrics endpoint instead:
+  #   reverb_broadcasts_total            — Pulse-derived broadcast count
+  #   dagster_runs_total{status="..."}   — direct PG query against `runs`
+  # See app/Http/Controllers/Internal/MetricsController.php for the writers.
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager self-scrape (Module 10 Chunk 10.4).
+  # ---------------------------------------------------------------------------
+  - job_name: "alertmanager"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          service: "alertmanager"
+
+  # ---------------------------------------------------------------------------
+  # Node exporter (host machine metrics — CPU, RAM, disk, NVMe I/O)
+  #
+  # Run node_exporter as a host process (not in Docker) to get accurate
+  # hardware metrics including NVMe latency and GPU utilisation via DCGM.
+  # Uncomment when the host service is running.
+  # ---------------------------------------------------------------------------
+  # - job_name: "node"
+  #   scrape_interval: 15s
+  #   static_configs:
+  #     - targets: ["host.docker.internal:9100"]
+  #       labels:
+  #         service: "node-exporter"
+
+  # ---------------------------------------------------------------------------
+  # Prometheus self-scrape
+  # Always on — used to monitor Prometheus's own health and scrape durations.
+  # ---------------------------------------------------------------------------
+  - job_name: "prometheus"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "prometheus"
+
+  # ---------------------------------------------------------------------------
+  # vLLM (Phase 0 step 3 — wired into canonical config 2026-05-09).
+  # vLLM exposes Prometheus-format metrics on the same port as the OpenAI API
+  # (8000 internal). Metric names use the vllm: namespace.
+  # ---------------------------------------------------------------------------
+  - job_name: "vllm"
+    static_configs:
+      - targets: ["vllm:8000"]
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry collector (Phase 0 step 3).
+  # The collector exposes its OTLP-derived metrics on port 8895 and its own
+  # self-telemetry on port 8888 (default; we don't expose externally).
+  # ---------------------------------------------------------------------------
+  - job_name: "otel-collector"
+    static_configs:
+      - targets: ["otel-collector:8895"]
+    metrics_path: /metrics
+    scrape_interval: 15s

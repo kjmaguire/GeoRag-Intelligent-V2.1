@@ -1,0 +1,113 @@
+# Phase 6 of the ingestion reliability spec — Prometheus alert rules.
+#
+# Source metrics: src/fastapi/app/metrics.py — search for the Phase 6
+# section. Updaters:
+#   - silver.ingest_progress terminal writes → INGESTION_RUN_DURATION + INGESTION_RUNS_TOTAL
+#   - stale_run_detector cron (*/15) → INGESTION_STALE_RUNS_DETECTED, INGESTION_STALE_RUNS_TOTAL
+#   - embed_pending_passages cron (*/10) → EMBED_PENDING_PASSAGES
+#   - mv_refresh service (per-completion + nightly) → MV_REFRESH_DURATION, MV_REFRESH_FAILURES_TOTAL
+#   - reliability_metrics_publisher cron (* * * * *) → MV_REFRESH_LAG_SECONDS, OUTBOX_LAG_SECONDS
+#   - nightly_ingestion_integrity tier 2 → QDRANT_SPOTCHECK_MISS_RATE
+#   - DebounceWorkspaceMvRefresh job (PHP) → WORKSPACE_DATA_UPDATED_EMISSION_LATENCY (via /internal/v1/metrics/ingestion-event)
+#   - /v1/viz/readiness endpoint → READINESS_PROBE_DURATION
+
+groups:
+  - name: ingestion_reliability
+    interval: 30s
+    rules:
+      # ----- Stuck / dead runs -----------------------------------------
+      - alert: IngestionRunStuckStarted
+        # Stale-run sweep publishes the active 'started' count every 15
+        # min. Sustained non-zero means the sweep is firing but failing
+        # to transition rows — the spec's "silent stall" failure mode.
+        expr: georag_ingestion_active_started_count > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: ingestion
+        annotations:
+          summary: "{{ $value }} ingestion run(s) stuck in 'started' for >30m"
+          description: "stale_run_detector cron has been reporting {{ $value }} 'started' rows for over 30 minutes. Check georag-hatchet-worker-ingestion logs for crashed parses or hung subprocesses."
+
+      - alert: IngestionRunsTimedOutRecent
+        expr: increase(georag_ingestion_runs_total{status="timed_out"}[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: ingestion
+        annotations:
+          summary: "Ingestion runs marked timed_out in the last hour"
+          description: "{{ $value }} run(s) transitioned to status='timed_out' via the stale-heartbeat sweep. Investigate worker stability."
+
+      # ----- Embed pending -----------------------------------------------
+      - alert: EmbedPendingPassagesStuck
+        # Any workspace with non-zero unembedded passages for 20+ min
+        # means the orphan-sweep + embed cron isn't catching up.
+        expr: max by (workspace_id) (georag_embed_pending_passages) > 0
+        for: 20m
+        labels:
+          severity: warning
+          service: ingestion
+        annotations:
+          summary: "Workspace {{ $labels.workspace_id }} has un-embedded passages for >20m"
+          description: "embed_pending_passages cron should be picking these up every 10 min; investigate the AI worker (georag-hatchet-worker-ai) and Qdrant connectivity."
+
+      # ----- MV refresh --------------------------------------------------
+      - alert: MvRefreshLagHigh
+        expr: max by (view_name) (georag_mv_refresh_lag_seconds) > 7200
+        for: 10m
+        labels:
+          severity: warning
+          service: ingestion
+        annotations:
+          summary: "MV {{ $labels.view_name }} hasn't refreshed in >2h"
+          description: "Per-completion debounce + 03:00 nightly cron should keep this under 24h. >2h indicates both paths are failing."
+
+      - alert: MvRefreshFailures
+        expr: increase(georag_mv_refresh_failures_total[24h]) > 2
+        for: 5m
+        labels:
+          severity: critical
+          service: ingestion
+        annotations:
+          summary: "MV {{ $labels.view_name }} refresh failed >2 times in last 24h"
+          description: "Check gold.mv_refresh_log for error JSONB; the per-completion path + nightly cron are colliding with PG-level errors."
+
+      # ----- Qdrant integrity --------------------------------------------
+      - alert: QdrantMissRateHigh
+        expr: max by (workspace_id) (georag_qdrant_spotcheck_miss_rate) > 0.05
+        for: 1m
+        labels:
+          severity: critical
+          service: ingestion
+        annotations:
+          summary: "Workspace {{ $labels.workspace_id }} Qdrant miss rate >5%"
+          description: "Sampled embedding_ids returning 404 from Qdrant. Run nightly_integrity full re-embed; check Qdrant volume integrity."
+
+      # ----- Outbox lag --------------------------------------------------
+      - alert: OutboxLagHigh
+        expr: max by (target_store) (georag_outbox_lag_seconds) > 900
+        for: 5m
+        labels:
+          severity: warning
+          service: ingestion
+        annotations:
+          summary: "Outbox propagation lag for {{ $labels.target_store }} >15m"
+          description: "outbox_dispatcher isn't keeping up. Check georag-hatchet-worker-ingestion logs."
+
+      # ----- workspace.data_updated emission latency ---------------------
+      - alert: WorkspaceDataUpdatedEmissionSlow
+        # p95 emission latency from completion to broadcast > 5 min.
+        # The debounce window is 30s, so anything past that is the job
+        # queue + MV refresh path getting wedged.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(georag_workspace_data_updated_emission_latency_seconds_bucket[10m]))
+          ) > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: ingestion
+        annotations:
+          summary: "workspace.data_updated p95 emission latency >5m"
+          description: "DebounceWorkspaceMvRefresh job is slow to fire. Check Horizon queue depth + FastAPI mv-refresh endpoint latency."

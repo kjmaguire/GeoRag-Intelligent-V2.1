@@ -1,0 +1,6 @@
+case_id,query,cosine_threshold,reranker_threshold,returned_count,recall,top_relevance,match_term
+ret-001,What is the mineral resource estimate?,0.50,+2.00,1,1,0.9994,Section 13
+ret-002,Who is the qualified person on the NI 43-101 technical report?,0.50,+2.00,5,1,0.9998,Sarah Thompson
+ret-003,What is the deposit type?,0.50,+2.00,1,1,0.9610,Section 8
+ret-004,Describe the exploration history of the Patterson Lake South property,0.50,+2.00,5,1,0.9989,Section 6
+ret-005,What exploration programs does the NI 43-101 report recommend?,0.50,+2.00,5,1,0.9999,Section 17

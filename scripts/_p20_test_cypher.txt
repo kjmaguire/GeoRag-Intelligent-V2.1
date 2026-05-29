@@ -1,0 +1,24 @@
+CALL {
+  MATCH (start) WHERE start.project_id = '019d74a1-fba8-7165-9ae6-a5bf93eef97d'
+    AND toLower(start.name) = toLower('triple r')
+  MATCH (start)-[r]-(related)
+  RETURN start AS source, related AS node, r AS rel, false AS is_self
+  UNION
+  MATCH (start) WHERE start.project_id = '019d74a1-fba8-7165-9ae6-a5bf93eef97d'
+    AND toLower(start.name) CONTAINS toLower('triple r')
+  MATCH (start)-[r]-(related)
+  RETURN start AS source, related AS node, r AS rel, false AS is_self
+  UNION
+  MATCH (start) WHERE start.project_id = '019d74a1-fba8-7165-9ae6-a5bf93eef97d'
+    AND toLower(start.name) CONTAINS toLower('triple r')
+  RETURN start AS source, start AS node, NULL AS rel, true AS is_self
+}
+RETURN DISTINCT
+  labels(node)[0] AS entity_type,
+  node.name AS name,
+  properties(node) AS props,
+  CASE WHEN is_self THEN '' ELSE type(rel) END AS rel_type,
+  CASE WHEN is_self THEN 'SELF'
+       WHEN startNode(rel) = source THEN 'OUTBOUND'
+       ELSE 'INBOUND' END AS direction
+LIMIT 50;

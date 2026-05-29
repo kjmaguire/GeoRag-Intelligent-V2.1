@@ -1,0 +1,101 @@
+# Module 10 Chunk 10.7 — nightly performance baseline.
+#
+# Runs `src/fastapi/scripts/load_test.py` against a staging FASTAPI_URL,
+# captures p50/p95/p99 per query class, and FAILS the build on >20%
+# regression vs the committed baseline at `ops/baselines/2026-04-22-api-latency.md`.
+#
+# The threshold is intentionally generous (20%) for V1 — too tight and
+# CPU contention on the runner causes false alarms; too loose and we
+# silently absorb regression. Tighten to 10% once a self-hosted runner
+# with predictable CPU is in place (Module 11).
+#
+# Triggers
+# --------
+# - Cron: every night 02:00 UTC.
+# - workflow_dispatch: on-demand for ad-hoc latency check.
+#
+# Prerequisites (operator setup, not gate-blocking until configured):
+# - secrets.STAGING_URL  — base URL of the staging FastAPI (e.g. https://staging.georag.example.com)
+# - secrets.STAGING_PROJECT_ID — UUID of a representative project in staging
+# - secrets.FASTAPI_SERVICE_KEY — same value the staging FastAPI runs with
+#
+# When secrets are missing the workflow runs and reports "skipped" rather
+# than fabricating green CI.
+
+name: Perf — Baseline
+
+on:
+  schedule:
+    # Nightly 02:00 UTC.
+    - cron: '0 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.13'
+  REGRESSION_THRESHOLD_PCT: '20'
+
+jobs:
+  load_test:
+    name: load_test.py p50/p95/p99
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        id: secrets
+        run: |
+          if [ -z "${{ secrets.STAGING_URL }}" ] || [ -z "${{ secrets.FASTAPI_SERVICE_KEY }}" ]; then
+            echo "missing=true" >> $GITHUB_OUTPUT
+            echo "::warning::STAGING_URL or FASTAPI_SERVICE_KEY not set — skipping perf baseline."
+          fi
+
+      - name: Setup uv
+        if: steps.secrets.outputs.missing != 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install httpx + measurement deps
+        if: steps.secrets.outputs.missing != 'true'
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Run load_test.py against staging
+        if: steps.secrets.outputs.missing != 'true'
+        working-directory: src/fastapi
+        env:
+          FASTAPI_URL: ${{ secrets.STAGING_URL }}
+          FASTAPI_SERVICE_KEY: ${{ secrets.FASTAPI_SERVICE_KEY }}
+          STAGING_PROJECT_ID: ${{ secrets.STAGING_PROJECT_ID }}
+        run: |
+          uv run python scripts/load_test.py \
+              --concurrency 10 \
+              --total 30 \
+              --project "${STAGING_PROJECT_ID:-019d74a1-fba8-7165-9ae6-a5bf93eef97d}" \
+              --json > load-test-results.json
+          cat load-test-results.json
+
+      - name: Compare vs committed baseline
+        if: steps.secrets.outputs.missing != 'true'
+        run: |
+          # Tiny inline regression check — fails the job when any class p95
+          # exceeds the committed baseline by more than REGRESSION_THRESHOLD_PCT.
+          # The baseline file is committed at ops/baselines/2026-04-22-api-latency.md.
+          # The check parses the JSON output of load_test.py and the YAML
+          # frontmatter of the baseline doc.
+          python3 .github/scripts/compare_perf_baseline.py \
+              --results src/fastapi/load-test-results.json \
+              --baseline ops/baselines/2026-04-22-api-latency.md \
+              --threshold "${REGRESSION_THRESHOLD_PCT}"
+
+      - name: Upload load test artifact
+        if: always() && steps.secrets.outputs.missing != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline-${{ github.run_number }}
+          path: src/fastapi/load-test-results.json
+          retention-days: 90

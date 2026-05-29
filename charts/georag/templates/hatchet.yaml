@@ -1,0 +1,143 @@
+{{- if .Values.hatchet.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-hatchet
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.hatchet.engine.service.grpcPort }}
+      targetPort: grpc
+      name: grpc
+    - port: {{ .Values.hatchet.engine.service.apiPort }}
+      targetPort: api
+      name: api
+  selector: {{- include "georag.selectorLabels" (dict "component" "hatchet-engine" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-hatchet
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}-hatchet
+  replicas: 1
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "hatchet-engine" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "hatchet-engine" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: hatchet
+          image: {{ include "georag.image" (dict "repo" .Values.hatchet.engine.image.repository "tag" .Values.hatchet.engine.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 7077
+              name: grpc
+            - containerPort: 8080
+              name: api
+          resources: {{- toYaml .Values.hatchet.engine.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /hatchet/config
+  {{- if .Values.hatchet.engine.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: config
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- $sc := include "georag.storageClass" (dict "svcStorageClass" "" "global" .Values.global) }}
+        {{- if $sc }}
+        storageClassName: {{ $sc }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.hatchet.engine.persistence.size }}
+  {{- end }}
+{{- if .Values.hatchet.workers.ai.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-hatchet-worker-ai
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.hatchet.workers.ai.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ai" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ai" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: worker
+          image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ai"]
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          env:
+            - name: HATCHET_CLIENT_HOST
+              value: "{{ .Release.Name }}-hatchet:7077"
+            - name: POSTGRES_HOST
+              value: {{ .Release.Name }}-pgbouncer
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: POSTGRES_DIRECT_HOST
+              value: {{ .Release.Name }}-postgresql
+            - name: POSTGRES_DIRECT_PORT
+              value: "5432"
+            - name: REDIS_HOST
+              value: {{ .Release.Name }}-redis
+            - name: QDRANT_HOST
+              value: {{ .Release.Name }}-qdrant
+            - name: NEO4J_HOST
+              value: {{ .Release.Name }}-neo4j
+          resources: {{- toYaml .Values.hatchet.workers.ai.resources | nindent 12 }}
+{{- end }}
+{{- if .Values.hatchet.workers.ingestion.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-hatchet-worker-ingestion
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.hatchet.workers.ingestion.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ingestion" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "hatchet-worker-ingestion" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: worker
+          image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["python", "-m", "app.hatchet_workflows.worker", "--pool", "ingestion"]
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          env:
+            - name: HATCHET_CLIENT_HOST
+              value: "{{ .Release.Name }}-hatchet:7077"
+            - name: POSTGRES_HOST
+              value: {{ .Release.Name }}-pgbouncer
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: REDIS_HOST
+              value: {{ .Release.Name }}-redis
+          resources: {{- toYaml .Values.hatchet.workers.ingestion.resources | nindent 12 }}
+{{- end }}
+{{- end }}

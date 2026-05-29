@@ -1,0 +1,31 @@
+{
+    "_meta": {
+        "vocab_name": "CGI Commodity",
+        "vocab_uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016",
+        "entity_type": "commodity",
+        "source": "cgi_vocab",
+        "note": "Curated subset of CGI Commodity Code 2016 covering the commodities most queried against the GeoRAG corpus. Element symbols included as aliases so 'Au' resolves to gold, etc. Compound commodities (e.g. U3O8 for uranium) added because they're the units assays are reported in."
+    },
+    "entries": [
+        {"canonical": "gold",        "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/gold",        "aliases": ["Au", "Au metal", "gold metal", "fine gold"]},
+        {"canonical": "silver",      "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/silver",      "aliases": ["Ag", "Ag metal", "silver metal", "fine silver"]},
+        {"canonical": "copper",      "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/copper",      "aliases": ["Cu", "Cu metal", "copper metal", "Cu mineralization"]},
+        {"canonical": "zinc",        "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/zinc",        "aliases": ["Zn", "Zn metal", "zinc metal"]},
+        {"canonical": "lead",        "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/lead",        "aliases": ["Pb", "Pb metal", "lead metal"]},
+        {"canonical": "nickel",      "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/nickel",      "aliases": ["Ni", "Ni metal", "nickel metal"]},
+        {"canonical": "uranium",     "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/uranium",     "aliases": ["U", "U metal", "U3O8", "U₃O₈", "triuranium octoxide", "yellowcake", "uranium oxide"]},
+        {"canonical": "molybdenum",  "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/molybdenum",  "aliases": ["Mo", "Mo metal", "moly", "molybdenum metal", "MoS2", "molybdenite"]},
+        {"canonical": "iron",        "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/iron",        "aliases": ["Fe", "Fe2O3", "Fe3O4", "iron ore", "magnetite", "hematite"]},
+        {"canonical": "aluminum",    "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/aluminum",    "aliases": ["Al", "aluminium", "Al2O3", "alumina", "bauxite"]},
+        {"canonical": "tungsten",    "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/tungsten",    "aliases": ["W", "W metal", "WO3", "tungsten metal", "wolfram"]},
+        {"canonical": "tin",         "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/tin",         "aliases": ["Sn", "Sn metal", "tin metal", "SnO2", "cassiterite"]},
+        {"canonical": "platinum",    "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/platinum",    "aliases": ["Pt", "Pt metal", "PGM", "platinum group metal"]},
+        {"canonical": "palladium",   "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/palladium",   "aliases": ["Pd", "Pd metal"]},
+        {"canonical": "cobalt",      "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/cobalt",      "aliases": ["Co", "Co metal", "cobalt metal"]},
+        {"canonical": "lithium",     "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/lithium",     "aliases": ["Li", "Li2O", "Li2CO3", "lithium carbonate", "lithium oxide", "spodumene"]},
+        {"canonical": "rare earth elements", "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/rare-earth-elements", "aliases": ["REE", "REEs", "TREO", "rare earths", "rare earth oxide", "REO", "light rare earth", "LREE", "heavy rare earth", "HREE"]},
+        {"canonical": "niobium",     "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/niobium",     "aliases": ["Nb", "Nb2O5", "columbium"]},
+        {"canonical": "tantalum",    "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/tantalum",    "aliases": ["Ta", "Ta2O5"]},
+        {"canonical": "diamond",     "uri": "http://resource.geosciml.org/classifier/cgi/commodity-code/2016/diamond",     "aliases": ["diamonds", "kimberlitic diamond", "carat", "carats"]}
+    ]
+}

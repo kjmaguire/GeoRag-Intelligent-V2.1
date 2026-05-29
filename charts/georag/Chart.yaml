@@ -1,0 +1,33 @@
+apiVersion: v2
+name: georag
+description: |
+  GeoRAG — geological intelligence platform. Single-chart deploy for the
+  whole stack (PostgreSQL+PostGIS, Neo4j Community, Qdrant, Redis,
+  SeaweedFS/MinIO, FastAPI, Laravel Octane, Hatchet, Martin, Dagster,
+  vLLM). K3s-tuned by default; works on vanilla Kubernetes via
+  values-vanilla.yaml.
+
+type: application
+version: 0.1.0
+appVersion: "v1.0.0"
+kubeVersion: ">=1.27.0"
+
+home: https://georag.local
+sources:
+  - https://github.com/anthropics/georag
+
+keywords:
+  - geology
+  - mining
+  - rag
+  - llm
+  - postgis
+  - neo4j
+  - qdrant
+
+maintainers:
+  - name: GeoRAG Platform Team
+
+annotations:
+  category: AI
+  licenses: Apache-2.0

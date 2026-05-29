@@ -1,0 +1,16 @@
+{
+    "data": {
+        "projects": { "active": 4, "archived": 2 },
+        "documents_indexed": 14328,
+        "queries_24h": 847,
+        "citation_resolution_rate": 0.942,
+        "feedback_signal": 0.78,
+        "trends": {
+            "documents_indexed_7d_delta": 412,
+            "queries_24h_vs_avg_pct": 18,
+            "citation_resolution_wow_delta": -1.4
+        }
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

@@ -1,0 +1,71 @@
+{
+  "annotations": {"list": []},
+  "description": "Module 10 Chunk 10.5 — visualize Module 9 Chunk 9.8 structured authz.deny events. Reads laravel_authz_deny_total counter (incremented by AppServiceProvider listener on every authz.deny log event). When Module 10.6 wires Loki, panels can switch to log-derived queries: count_over_time({channel='authz_audit'} |= 'authz.deny' [5m]).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "authz.deny rate by reason (req/s)",
+      "description": "All structured 403 events. Spikes on a specific reason (cross_workspace, no_pivot_row) indicate probing or a misconfigured client.",
+      "targets": [{"expr": "sum by (reason) (rate(laravel_authz_deny_total[5m]))", "refId": "A", "legendFormat": "{{reason}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Total denies last 24h",
+      "description": "Cumulative authz.deny events over the last 24 hours.",
+      "targets": [{"expr": "sum(increase(laravel_authz_deny_total[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 1000}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "barchart",
+      "title": "Denies by reason — last 1h",
+      "description": "Distribution of denial reasons in the last hour. Heavy `no_pivot_row` = legitimate users hitting projects they don't own. Heavy `cross_workspace` = potential attack.",
+      "targets": [{"expr": "sum by (reason) (increase(laravel_authz_deny_total[1h]))", "refId": "A", "legendFormat": "{{reason}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "cross_workspace mismatches (req/s)",
+      "description": "JWT-vs-header workspace mismatch — Module 9 Chunk 9.4 multi-tenant enforcement. Non-zero rate = potential JWT spoofing or client misconfig.",
+      "targets": [{"expr": "rate(laravel_authz_deny_total{reason=\"cross_workspace\"}[5m])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.05}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "text",
+      "title": "Loki transition path",
+      "description": "Once Module 10.6 wires Loki + Promtail, this dashboard's panels switch to LogQL: count_over_time({channel='authz_audit'} |= 'authz.deny' [5m]) [by (reason)] — same shape, log-derived. The Prometheus counter remains as a fast in-memory fallback.",
+      "options": {"mode": "markdown", "content": "### Module 10 Chunk 10.6 follow-through\n\nWhen Loki + Promtail land, replace each panel's PromQL with LogQL like:\n\n```\nsum by (reason) (\n  rate({channel=\"authz_audit\"}\n    | json\n    | event=\"authz.deny\" [5m])\n)\n```\n\nThe `actor_user_id`, `target_workspace_id`, `target_resource` fields will then be queryable as labels — letting us drill into individual events from the chart."},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 16},
+      "id": 5
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["security", "authz", "module-9", "module-10-chunk-10.5"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Authorization (authz.deny)",
+  "uid": "georag-authz",
+  "version": 1,
+  "weekStart": ""
+}

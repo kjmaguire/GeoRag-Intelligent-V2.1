@@ -1,0 +1,12 @@
+{
+  "name": "Saskatchewan_Resource_Map",
+  "editingInfo": {
+    "lastEditDate": 1712534400000
+  },
+  "layers": [
+    {"id": 0, "name": "Mine Locations"},
+    {"id": 1, "name": "SMDI Mineral Occurrences"},
+    {"id": 2, "name": "Drillhole Compilation"}
+  ],
+  "tables": []
+}

@@ -1,0 +1,63 @@
+# =============================================================================
+# Kestra runtime configuration — Phase 3 Step 2.
+#
+# Single-node Postgres-backed deployment. No Kafka, no Elasticsearch.
+# Mounted into the kestra container at /app/confs/application.yaml and
+# referenced via the KESTRA_CONFIGURATION_PATH env var (or as the
+# canonical extras file Kestra picks up from its conf dir).
+#
+# Secrets (DB password, basic-auth password) come from environment
+# variables resolved at container start; this file is committed to
+# the repo and contains no secrets.
+# =============================================================================
+
+datasources:
+  postgres:
+    url: jdbc:postgresql://${KESTRA_PG_HOST:postgresql}:${KESTRA_PG_PORT:5432}/${KESTRA_PG_DATABASE:kestra}
+    driverClassName: org.postgresql.Driver
+    username: ${KESTRA_PG_USER:kestra}
+    password: ${KESTRA_PG_PASSWORD}
+
+kestra:
+  server:
+    basic-auth:
+      enabled: true
+      username: ${KESTRA_BASIC_AUTH_USER:admin@georag.local}
+      password: ${KESTRA_BASIC_AUTH_PASSWORD}
+
+  url: ${KESTRA_URL:http://localhost:8086/}
+
+  queue:
+    type: postgres
+
+  repository:
+    type: postgres
+
+  storage:
+    type: local
+    local:
+      base-path: /app/storage
+
+  tasks:
+    tmp-dir:
+      path: /tmp/kestra-wd/tmp
+
+  # Auto-load YAML flows committed to the repo. Phase 3 Steps 4 + 5
+  # populate this directory.
+  ee:
+    flow-source-loader:
+      enabled: false   # community-edition flag; flows are managed via API/UI
+
+  # Phase 3 invariant: flows are repo-canonical. Operators reload via
+  # `kestra flows update --namespace georag kestra/flows/georag/*.yaml`
+  # in CI; this YAML doesn't auto-import on its own (community edition).
+  variables:
+    env-vars-prefix: KESTRA_
+    globals:
+      georag:
+        # Surfaced into all flows under {{ globals.georag.fastapi_internal_url }}.
+        fastapi_internal_url: ${KESTRA_FASTAPI_INTERNAL_URL:http://fastapi:8000}
+
+micronaut:
+  server:
+    port: 8080

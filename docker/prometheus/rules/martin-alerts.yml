@@ -1,0 +1,94 @@
+# =============================================================================
+# Martin tile server alerting rules
+# Architecture reference: §04d-tile, §07c-tile
+# V1.5-06 (2026-04-22): Martin upgraded 1.5.0 → 1.7.0. /_/metrics now active.
+# Metric names below match Martin's real exposition; the alerts now FIRE.
+# =============================================================================
+groups:
+  - name: martin_tile_server
+    rules:
+      # -----------------------------------------------------------------------
+      # Latency: p95 tile response time sustained above 500ms for 5 minutes
+      # Likely cause: missing GIST index, unoptimised SQL function, or PG load
+      # Metric: martin_http_requests_duration_seconds (histogram, labels:
+      #         endpoint, method, status)
+      # -----------------------------------------------------------------------
+      - alert: MartinHighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(martin_http_requests_duration_seconds_bucket{endpoint!~"/health|/_/metrics"}[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: martin
+        annotations:
+          summary: "Martin p95 tile latency > 500ms for 5 minutes"
+          description: "p95 latency is {{ $value | humanizeDuration }}. Check PostGIS query plans, GIST index health, and PostgreSQL load."
+
+      # -----------------------------------------------------------------------
+      # Cache hit rate. Calibrated for cache_size_mb=512 (→ ~256 MB tile cache
+      # per gotcha 4 in feedback_martin_tile_gotchas.md).
+      #
+      # Metrics (Martin 1.7.0):
+      #   martin_tile_cache_requests_total{cache, result, zoom}
+      #   martin_cache_requests_total{cache, result}     # font/sprite, no zoom
+      #
+      # Sum across zoom labels to get the aggregate hit ratio.
+      # -----------------------------------------------------------------------
+      - alert: MartinLowCacheHitRateWarn
+        expr: |
+          sum(rate(martin_tile_cache_requests_total{cache="tile",result="hit"}[15m]))
+          /
+          sum(rate(martin_tile_cache_requests_total{cache="tile"}[15m]))
+          < 0.60
+        for: 15m
+        labels:
+          severity: warning
+          service: martin
+        annotations:
+          summary: "Martin tile cache hit rate < 60% for 15 minutes"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}. cache_size_mb=512 (→ ~256 MB tile budget per Module 8 8.3). Investigate zoom-level scatter or consider increasing cache_size_mb. Cold-start drop below threshold is expected for first ~5 min."
+
+      - alert: MartinLowCacheHitRateCritical
+        expr: |
+          sum(rate(martin_tile_cache_requests_total{cache="tile",result="hit"}[15m]))
+          /
+          sum(rate(martin_tile_cache_requests_total{cache="tile"}[15m]))
+          < 0.30
+        for: 10m
+        labels:
+          severity: critical
+          service: martin
+        annotations:
+          summary: "Martin tile cache hit rate < 30% for 10 minutes"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}. Cache is effectively bypassed. Check cache_size_mb (currently 512), tile access patterns, and whether low-zoom scatter is dominating."
+
+      # -----------------------------------------------------------------------
+      # Availability: Martin returning 5xx on > 5% of requests for 5 minutes
+      # Likely cause: PostgreSQL connection failure, function source error
+      # Metric: martin_http_requests_duration_seconds_count (sum over status)
+      # -----------------------------------------------------------------------
+      - alert: MartinHighErrorRate
+        expr: |
+          sum(rate(martin_http_requests_duration_seconds_count{status=~"5.."}[5m]))
+          /
+          sum(rate(martin_http_requests_duration_seconds_count[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: martin
+        annotations:
+          summary: "Martin error rate > 5% for 5 minutes"
+          description: "{{ $value | humanizePercentage }} of tile requests returning 5xx. Check Martin logs and PostgreSQL connectivity."
+
+      - alert: MartinLowAvailability
+        expr: up{job="martin"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: martin
+        annotations:
+          summary: "Martin is DOWN"
+          description: "Prometheus cannot scrape /_/metrics on martin:3000. Map UI tile loads will 5xx."

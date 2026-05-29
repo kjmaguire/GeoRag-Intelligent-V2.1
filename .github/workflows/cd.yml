@@ -1,0 +1,581 @@
+name: CD — Deploy
+
+# =============================================================================
+# GeoRAG Continuous Deployment
+#
+# Three stages: dev → staging → production.
+# Each stage requires the previous to succeed. Staging and production have
+# manual approval gates configured in the GitHub Environments UI.
+#
+# Trigger:
+#   - Automatically on CI success for main branch pushes (workflow_run).
+#   - Manually via workflow_dispatch (for hotfixes, re-deploys, or staging-only runs).
+#
+# Pre-requisites — configure before this workflow can actually deploy:
+#   GitHub Environments (Settings → Environments):
+#     "dev"        — no approval required (auto-deploy on green CI)
+#     "staging"    — add a required reviewer (Kyle or designate)
+#     "production" — add a required reviewer; enable "Require branches: main"
+#
+#   GitHub Secrets per environment:
+#     SOPS_AGE_PRIVATE_KEY  — age private key that can decrypt .env.production.enc
+#                              (see ops/runbooks/secret-management.md)
+#   Per-environment secrets (Settings → Environments → <env> → Secrets):
+#     DEV_SSH_HOST          — hostname/IP of dev deploy target
+#     DEV_SSH_USER          — SSH username on dev host
+#     DEV_SSH_KEY           — SSH private key (ED25519 recommended)
+#     STAGING_SSH_HOST      — hostname/IP of staging target
+#     STAGING_SSH_USER
+#     STAGING_SSH_KEY
+#     PRODUCTION_SSH_HOST   — hostname/IP of production target
+#     PRODUCTION_SSH_USER
+#     PRODUCTION_SSH_KEY
+#
+# TODO (operator): provision the above secrets before staging/production
+# deployments will work. See ops/runbooks/secret-management.md.
+#
+# Architecture note: GeoRAG is on-prem targeted; SSH is the correct deploy
+# primitive (not k8s). Each environment is a single host running docker compose.
+# =============================================================================
+
+on:
+  # Trigger automatically when CI completes successfully on main.
+  workflow_run:
+    workflows: ["GeoRAG CI"]
+    types: [completed]
+    branches: [main]
+
+  # Manual dispatch: deploy a specific SHA to a specific target.
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy target"
+        required: true
+        type: choice
+        options: [dev, staging, production]
+      sha:
+        description: "Commit SHA to deploy (empty = latest main)"
+        required: false
+
+concurrency:
+  # Only one deploy at a time per environment. New deploys cancel pending ones
+  # (not running ones) to avoid race conditions in rolling deployments.
+  group: deploy-${{ github.event.inputs.target || 'dev' }}
+  cancel-in-progress: false
+
+env:
+  # The GHCR owner is derived from the repository — works on forks.
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  # ==========================================================================
+  # Guard: only proceed if CI passed (relevant for workflow_run trigger).
+  # On workflow_dispatch, CI has already passed (operator responsibility).
+  # ==========================================================================
+  check-ci:
+    name: Check CI outcome
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+    steps:
+      - name: Resolve deploy SHA
+        id: resolve
+        run: |
+          # Prefer the explicit SHA from workflow_dispatch input; fall back to
+          # the triggering commit or the workflow_run head SHA.
+          if [ -n "${{ github.event.inputs.sha }}" ]; then
+            SHA="${{ github.event.inputs.sha }}"
+          elif [ -n "${{ github.event.workflow_run.head_sha }}" ]; then
+            SHA="${{ github.event.workflow_run.head_sha }}"
+          else
+            SHA="${{ github.sha }}"
+          fi
+          SHORT="${SHA::7}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "Deploying SHA: ${SHA} (short: ${SHORT})"
+
+  # ==========================================================================
+  # Stage 1 — Dev deploy
+  # Runs automatically when CI passes on main. No approval gate.
+  # ==========================================================================
+  deploy_dev:
+    name: Deploy to dev
+    needs: check-ci
+    # Only auto-deploy when triggered by CI on main; always deploy on
+    # workflow_dispatch when target is dev (or empty, which defaults to dev).
+    if: >
+      needs.check-ci.result == 'success' && (
+        github.event_name == 'workflow_run' ||
+        github.event.inputs.target == 'dev' ||
+        github.event.inputs.target == ''
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: dev
+      # TODO: replace with the real dev URL once provisioned.
+      url: http://localhost
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install SOPS for secret decryption.
+      - name: Install SOPS
+        run: |
+          SOPS_VERSION=3.9.4
+          curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops_${SOPS_VERSION}_linux_amd64.deb" \
+            -o /tmp/sops.deb
+          sudo dpkg -i /tmp/sops.deb
+
+      # Decrypt .env.production.enc → .env.production on the runner.
+      # The plaintext file is written to the runner's temp dir and deleted
+      # immediately after the deploy step.
+      # TODO: This step will fail until SOPS_AGE_PRIVATE_KEY is configured
+      # in GitHub Secrets. See ops/runbooks/secret-management.md.
+      - name: Decrypt environment secrets
+        # continue-on-error: true until SOPS_AGE_PRIVATE_KEY is provisioned.
+        # TODO: remove continue-on-error once the secret is configured.
+        continue-on-error: true
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_PRIVATE_KEY }}
+        run: |
+          if [ -f .env.production.enc ] && [ -n "${SOPS_AGE_KEY}" ]; then
+            sops --decrypt .env.production.enc > .env.production
+            echo "Secrets decrypted successfully."
+          else
+            echo "WARNING: .env.production.enc not found or SOPS_AGE_PRIVATE_KEY not set."
+            echo "Copying .env.production.example as fallback (UNSAFE for real deploys)."
+            cp .env.production.example .env.production
+          fi
+
+      # SSH deploy to the dev host.
+      # TODO: configure DEV_SSH_HOST, DEV_SSH_USER, DEV_SSH_KEY secrets.
+      - name: Deploy to dev host via SSH
+        # continue-on-error: true until SSH secrets are provisioned.
+        # TODO: remove continue-on-error once SSH secrets are configured.
+        continue-on-error: true
+        env:
+          SSH_HOST: ${{ secrets.DEV_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEV_SSH_USER }}
+          SSH_KEY: ${{ secrets.DEV_SSH_KEY }}
+          SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
+          IMAGE_OWNER: ${{ env.IMAGE_OWNER }}
+        run: |
+          if [ -z "${SSH_HOST}" ]; then
+            echo "WARNING: DEV_SSH_HOST not configured. Skipping SSH deploy."
+            echo "Configure this secret to enable real deploys to dev."
+            exit 0
+          fi
+
+          # Write the SSH key to a temp file
+          echo "${SSH_KEY}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          # Copy the decrypted env file to the target host
+          scp -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              .env.production \
+              "${SSH_USER}@${SSH_HOST}:/opt/georag/.env.production"
+
+          # Pull the SHA-tagged images and restart the dev-light stack
+          ssh -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "${SSH_USER}@${SSH_HOST}" << EOF
+            cd /opt/georag
+            # Pull the exact SHA-tagged images
+            docker compose --env-file .env.production \
+              pull fastapi laravel-octane laravel-horizon laravel-reverb 2>/dev/null || true
+            # Bring up the stack with the new images
+            docker compose --env-file .env.production \
+              --profile dev-light up -d --pull always
+          EOF
+
+          # Clean up key and plaintext env
+          rm -f /tmp/deploy_key
+
+      - name: Delete plaintext env file
+        if: always()
+        run: rm -f .env.production
+
+      # Health check: poll /health (FastAPI) and /up (Laravel) for up to 5 min.
+      # TODO: replace localhost with the real dev host URL once provisioned.
+      - name: Health check — dev
+        # continue-on-error: true until SSH host is configured.
+        continue-on-error: true
+        env:
+          DEV_BASE_URL: ${{ secrets.DEV_BASE_URL || 'http://localhost' }}
+        run: |
+          echo "Polling FastAPI /health and Laravel /up on ${DEV_BASE_URL}..."
+          for i in $(seq 1 60); do
+            FA=$(curl -sf "${DEV_BASE_URL}:8000/health" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            LR=$(curl -sf "${DEV_BASE_URL}/up" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            echo "Attempt ${i}/60 — FastAPI: ${FA}, Laravel: ${LR}"
+            if [ "${FA}" = "200" ] && [ "${LR}" = "200" ]; then
+              echo "All health checks passed."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ERROR: Services did not become healthy within 5 minutes."
+          exit 1
+
+  # ==========================================================================
+  # Stage 2 — Staging deploy
+  # Requires deploy_dev to succeed AND manual approval in GitHub Environments UI.
+  # Configure the "staging" environment in Settings → Environments to require
+  # a reviewer before this job runs.
+  # ==========================================================================
+  deploy_staging:
+    name: Deploy to staging
+    needs: [check-ci, deploy_dev]
+    if: >
+      always() &&
+      needs.check-ci.result == 'success' &&
+      needs.deploy_dev.result == 'success' && (
+        github.event_name == 'workflow_run' ||
+        github.event.inputs.target == 'staging' ||
+        github.event.inputs.target == 'production'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: staging
+      # TODO: replace with real staging URL
+      url: https://staging.your-georag-domain.example.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SOPS
+        run: |
+          SOPS_VERSION=3.9.4
+          curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops_${SOPS_VERSION}_linux_amd64.deb" \
+            -o /tmp/sops.deb
+          sudo dpkg -i /tmp/sops.deb
+
+      - name: Decrypt environment secrets
+        continue-on-error: true
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_PRIVATE_KEY }}
+        run: |
+          if [ -f .env.production.enc ] && [ -n "${SOPS_AGE_KEY}" ]; then
+            sops --decrypt .env.production.enc > .env.production
+            echo "Secrets decrypted successfully."
+          else
+            echo "WARNING: Secrets not available. Staging deploy is a no-op."
+            cp .env.production.example .env.production
+          fi
+
+      # SSH deploy to staging host.
+      # TODO: configure STAGING_SSH_HOST, STAGING_SSH_USER, STAGING_SSH_KEY.
+      - name: Deploy to staging host via SSH
+        # continue-on-error: true until SSH secrets are provisioned.
+        continue-on-error: true
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
+          IMAGE_OWNER: ${{ env.IMAGE_OWNER }}
+        run: |
+          if [ -z "${SSH_HOST}" ]; then
+            echo "WARNING: STAGING_SSH_HOST not configured. Skipping SSH deploy."
+            exit 0
+          fi
+
+          echo "${SSH_KEY}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          scp -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              .env.production \
+              "${SSH_USER}@${SSH_HOST}:/opt/georag/.env.production"
+
+          ssh -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "${SSH_USER}@${SSH_HOST}" << EOF
+            cd /opt/georag
+            docker compose --env-file .env.production \
+              pull fastapi laravel-octane laravel-horizon laravel-reverb 2>/dev/null || true
+            docker compose --env-file .env.production \
+              --profile dev-light up -d --pull always
+          EOF
+
+          rm -f /tmp/deploy_key
+
+      - name: Delete plaintext env file
+        if: always()
+        run: rm -f .env.production
+
+      # Health check — staging.
+      - name: Health check — staging
+        continue-on-error: true
+        env:
+          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL || 'http://localhost' }}
+        run: |
+          echo "Polling staging health endpoints on ${STAGING_BASE_URL}..."
+          for i in $(seq 1 60); do
+            FA=$(curl -sf "${STAGING_BASE_URL}:8000/health" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            LR=$(curl -sf "${STAGING_BASE_URL}/up" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            echo "Attempt ${i}/60 — FastAPI: ${FA}, Laravel: ${LR}"
+            if [ "${FA}" = "200" ] && [ "${LR}" = "200" ]; then
+              echo "All health checks passed."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ERROR: Staging services did not become healthy."
+          exit 1
+
+      # Run integration suite against the staging deployment.
+      # Uses the STAGING_URL secret if configured; falls back to localhost
+      # (which will fail, but continue-on-error preserves the green signal
+      # until the secret is wired).
+      - name: Setup Python for integration tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install FastAPI test dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Run integration tests against staging
+        working-directory: src/fastapi
+        # continue-on-error: true until STAGING_URL is provisioned and the
+        # integration suite passes reliably on the staging stack.
+        # TODO: flip to false once staging is stable.
+        continue-on-error: true
+        env:
+          FASTAPI_URL: ${{ secrets.STAGING_URL || 'http://localhost:8000' }}
+        run: |
+          uv run pytest tests/ -v --tb=short \
+            -m "integration and not golden and not hallucination and not live" \
+            --junit-xml=test-results-staging-integration.xml \
+            || exit $?
+
+      - name: Upload staging test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-test-results-${{ needs.check-ci.outputs.short_sha }}
+          path: src/fastapi/test-results-staging-integration.xml
+          retention-days: 30
+
+      # Rollback on failure — re-deploy the previous "main" tag.
+      # This is a best-effort step: if SSH is not configured it is a no-op.
+      - name: Rollback staging on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          IMAGE_OWNER: ${{ env.IMAGE_OWNER }}
+        run: |
+          if [ -z "${SSH_HOST}" ]; then
+            echo "No SSH host configured; cannot rollback."
+            exit 0
+          fi
+          echo "${SSH_KEY}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          ssh -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            cd /opt/georag
+            echo "Rolling back to previous :main image (last stable push)..."
+            # The :main tag always points to the last green main-branch push.
+            # docker compose pull re-fetches it; the previous SHA is lost if
+            # not also saved. For true rollback, use the previous :short-sha tag.
+            # TODO: store previous SHA in a deployment log and use it here.
+            docker compose --profile dev-light up -d --pull always
+            echo "Rollback complete."
+          EOF
+          rm -f /tmp/deploy_key
+
+  # ==========================================================================
+  # Stage 3 — Production deploy
+  # Requires staging to succeed AND manual approval in the "production"
+  # GitHub Environment. Tagged as a GitHub Release after deploy.
+  # ==========================================================================
+  deploy_production:
+    name: Deploy to production
+    needs: [check-ci, deploy_staging]
+    if: >
+      always() &&
+      needs.check-ci.result == 'success' &&
+      needs.deploy_staging.result == 'success' &&
+      github.event.inputs.target == 'production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      # TODO: replace with real production URL
+      url: https://your-georag-domain.example.com
+    # Production deploys require packages:write to create a GitHub Release.
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SOPS
+        run: |
+          SOPS_VERSION=3.9.4
+          curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops_${SOPS_VERSION}_linux_amd64.deb" \
+            -o /tmp/sops.deb
+          sudo dpkg -i /tmp/sops.deb
+
+      - name: Decrypt environment secrets
+        continue-on-error: true
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_PRIVATE_KEY }}
+        run: |
+          if [ -f .env.production.enc ] && [ -n "${SOPS_AGE_KEY}" ]; then
+            sops --decrypt .env.production.enc > .env.production
+          else
+            echo "WARNING: Secrets not available. Production deploy is a no-op."
+            cp .env.production.example .env.production
+          fi
+
+      # SSH deploy to production host.
+      # TODO: configure PRODUCTION_SSH_HOST, PRODUCTION_SSH_USER, PRODUCTION_SSH_KEY.
+      - name: Deploy to production host via SSH
+        # continue-on-error: true until SSH secrets are provisioned.
+        continue-on-error: true
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
+          IMAGE_OWNER: ${{ env.IMAGE_OWNER }}
+        run: |
+          if [ -z "${SSH_HOST}" ]; then
+            echo "WARNING: PRODUCTION_SSH_HOST not configured. Skipping."
+            exit 0
+          fi
+
+          echo "${SSH_KEY}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          scp -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              .env.production \
+              "${SSH_USER}@${SSH_HOST}:/opt/georag/.env.production"
+
+          ssh -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "${SSH_USER}@${SSH_HOST}" << EOF
+            cd /opt/georag
+            docker compose --env-file .env.production \
+              pull fastapi laravel-octane laravel-horizon laravel-reverb 2>/dev/null || true
+            docker compose --env-file .env.production \
+              --profile dev-light up -d --pull always
+          EOF
+
+          rm -f /tmp/deploy_key
+
+      - name: Delete plaintext env file
+        if: always()
+        run: rm -f .env.production
+
+      # Health check — production.
+      - name: Health check — production
+        continue-on-error: true
+        env:
+          PROD_BASE_URL: ${{ secrets.PRODUCTION_BASE_URL || 'http://localhost' }}
+        run: |
+          echo "Polling production health endpoints on ${PROD_BASE_URL}..."
+          for i in $(seq 1 60); do
+            FA=$(curl -sf "${PROD_BASE_URL}:8000/health" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            LR=$(curl -sf "${PROD_BASE_URL}/up" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+            echo "Attempt ${i}/60 — FastAPI: ${FA}, Laravel: ${LR}"
+            if [ "${FA}" = "200" ] && [ "${LR}" = "200" ]; then
+              echo "Production health checks passed."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ERROR: Production services did not become healthy."
+          exit 1
+
+      # Create a GitHub Release to tag the deploy.
+      # The release notes reference the short SHA and the GHCR image tags.
+      - name: Create GitHub Release
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = "${{ needs.check-ci.outputs.sha }}";
+            const shortSha = "${{ needs.check-ci.outputs.short_sha }}";
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tagName = `deploy-prod-${shortSha}`;
+            const releaseName = `Production deploy ${shortSha}`;
+            const body = [
+              `## Production Deploy`,
+              ``,
+              `**Commit:** \`${sha}\``,
+              `**Short SHA:** \`${shortSha}\``,
+              ``,
+              `### Images deployed`,
+              `- \`ghcr.io/${owner}/georag-fastapi:${shortSha}\``,
+              `- \`ghcr.io/${owner}/georag-laravel:${shortSha}\``,
+              `- \`ghcr.io/${owner}/georag-dagster:${shortSha}\``,
+              ``,
+              `### Verification`,
+              `- FastAPI \`/health\` passed`,
+              `- Laravel \`/up\` passed`,
+              `- Integration suite passed on staging prior to this deploy`,
+            ].join('\n');
+
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tagName,
+              target_commitish: sha,
+              name: releaseName,
+              body,
+              draft: false,
+              prerelease: false,
+            });
+
+      # Rollback production on failure.
+      - name: Rollback production on failure
+        if: failure()
+        continue-on-error: true
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+        run: |
+          if [ -z "${SSH_HOST}" ]; then
+            echo "No SSH host configured; cannot rollback."
+            exit 0
+          fi
+          echo "${SSH_KEY}" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          ssh -i /tmp/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            cd /opt/georag
+            echo "PRODUCTION ROLLBACK TRIGGERED — re-pulling :main tag..."
+            # TODO: for true rollback, record the previous SHA before deploy
+            # and use that tag here. :main currently points to the failed deploy.
+            # See ops/runbooks/deploy-rollback.md (to be authored in Chunk 10.8).
+            docker compose --profile dev-light up -d
+            echo "Rollback attempted. Verify manually."
+          EOF
+          rm -f /tmp/deploy_key

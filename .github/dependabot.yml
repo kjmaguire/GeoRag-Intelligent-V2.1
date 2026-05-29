@@ -1,0 +1,82 @@
+# GeoRAG — Dependabot configuration.
+#
+# Without this file Dependabot only surfaces security advisories; with it
+# we also get scheduled version updates (and the advisories get
+# auto-resolved when a fix lands upstream).
+#
+# Strategy:
+#   - Weekly cadence to keep PR noise tractable.
+#   - Group patch updates per ecosystem so we cut one PR for housekeeping.
+#   - Security PRs always fire immediately (Dependabot honours this even
+#     when schedule.interval is weekly).
+#   - Composer and npm + uv (Python) all opted in.
+#   - Reviewers/assignees left unset — repo CODEOWNERS handles routing.
+version: 2
+updates:
+  - package-ecosystem: "composer"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      patch-updates:
+        applies-to: version-updates
+        update-types: ["patch"]
+      laravel:
+        patterns: ["laravel/*", "inertiajs/*"]
+    commit-message:
+      prefix: "chore(composer)"
+      include: "scope"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      patch-updates:
+        applies-to: version-updates
+        update-types: ["patch"]
+      types:
+        patterns: ["@types/*"]
+      react:
+        patterns: ["react", "react-*", "@inertiajs/react"]
+    commit-message:
+      prefix: "chore(npm)"
+      include: "scope"
+
+  - package-ecosystem: "pip"
+    directory: "/src/fastapi"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      patch-updates:
+        applies-to: version-updates
+        update-types: ["patch"]
+      langchain:
+        patterns: ["langchain*", "langgraph*", "langsmith*"]
+    commit-message:
+      prefix: "chore(pip)"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(docker)"
+      include: "scope"

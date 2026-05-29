@@ -1,0 +1,205 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+@source '../**/*.blade.php';
+@source '../**/*.js';
+@source '../**/*.ts';
+@source '../**/*.tsx';
+
+@theme {
+    --font-sans: 'Inter Tight', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+    /* Foundry palette as Tailwind 4 color tokens (oklch) — Wave 0 rev 7. */
+    --color-foundry-bg-0: oklch(0.14 0.012 240);
+    --color-foundry-bg-1: oklch(0.17 0.014 240);
+    --color-foundry-bg-2: oklch(0.205 0.016 240);
+    --color-foundry-bg-3: oklch(0.245 0.018 240);
+    --color-foundry-bg-hover: oklch(0.27 0.02 240);
+    --color-foundry-fg-0: oklch(0.96 0.005 240);
+    --color-foundry-fg-1: oklch(0.84 0.008 240);
+    --color-foundry-fg-2: oklch(0.64 0.01 240);
+    --color-foundry-fg-3: oklch(0.48 0.012 240);
+    --color-foundry-fg-4: oklch(0.36 0.014 240);
+    --color-foundry-line-1: oklch(0.28 0.016 240);
+    --color-foundry-line-2: oklch(0.34 0.018 240);
+    --color-foundry-accent: oklch(0.82 0.15 160);
+    --color-foundry-accent-dim: oklch(0.62 0.12 160);
+    --color-foundry-warn: oklch(0.82 0.15 75);
+    --color-foundry-danger: oklch(0.72 0.18 25);
+    --color-foundry-info: oklch(0.78 0.14 230);
+
+    /* Amber-token aliases — when an existing component uses `text-amber-400`
+       or similar, it now resolves to the foundry tactical accent so the
+       whole app reads as one palette. This is a global Tailwind 4
+       override; gray-* and dark theme utilities remain untouched. */
+    --color-amber-50: oklch(0.985 0.04 160);
+    --color-amber-100: oklch(0.93 0.06 160);
+    --color-amber-200: oklch(0.88 0.08 160);
+    --color-amber-300: oklch(0.84 0.12 160);
+    --color-amber-400: oklch(0.82 0.15 160);
+    --color-amber-500: oklch(0.74 0.16 160);
+    --color-amber-600: oklch(0.62 0.14 160);
+    --color-amber-700: oklch(0.48 0.13 160);
+    --color-amber-800: oklch(0.36 0.11 160);
+    --color-amber-900: oklch(0.24 0.09 160);
+    --color-amber-950: oklch(0.16 0.07 160);
+
+    /* Gray-token aliases — global repaint of legacy Tailwind gray utilities
+       to the foundry tactical palette. Wave 7 of the foundry UI migration:
+       any page still using `bg-gray-950`, `text-gray-300`, `border-gray-800`
+       (etc.) reads as foundry without per-file edits. */
+    --color-gray-50: oklch(0.96 0.005 240);
+    --color-gray-100: oklch(0.93 0.006 240);
+    --color-gray-200: oklch(0.86 0.007 240);
+    --color-gray-300: oklch(0.78 0.008 240);
+    --color-gray-400: oklch(0.64 0.01 240);
+    --color-gray-500: oklch(0.5 0.012 240);
+    --color-gray-600: oklch(0.36 0.014 240);
+    --color-gray-700: oklch(0.28 0.016 240);
+    --color-gray-800: oklch(0.205 0.016 240);
+    --color-gray-900: oklch(0.17 0.014 240);
+    --color-gray-950: oklch(0.14 0.012 240);
+}
+
+/* shadcn/ui CSS design tokens — dark theme (zinc base) */
+:root {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 14.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14.9%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 0 0% 14.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
+    --ring: 0 0% 83.1%;
+    --radius: 0.5rem;
+}
+
+/* MapLibre GL overrides — dark map controls */
+.maplibregl-ctrl-group {
+    background: rgb(17 24 39) !important;
+    border: 1px solid rgb(55 65 81) !important;
+}
+
+.maplibregl-ctrl-group button {
+    color: rgb(209 213 219) !important;
+}
+
+.maplibregl-ctrl-group button:hover {
+    background: rgb(31 41 55) !important;
+}
+
+/* ── Dashboard-scoped design tokens ──────────────────────────────────── */
+.dashboard {
+    --dashboard-bg: #0d0f12;
+    --dashboard-bg-elev: #14171c;
+    --dashboard-bg-elev-2: #1a1e25;
+    --dashboard-line: #232830;
+    --dashboard-line-soft: #1c2027;
+    --dashboard-text: #e6e3dc;
+    --dashboard-text-dim: #8a8e96;
+    --dashboard-text-mute: #5a5e66;
+    --dashboard-copper: #c87b3a;
+    --dashboard-copper-dim: #8a5528;
+    --dashboard-teal: #4a9b8e;
+    --dashboard-rust: #b04a3a;
+    --dashboard-gold: #c9a96a;
+    --dashboard-serif: 'Fraunces', Georgia, serif;
+    --dashboard-sans: 'Geist', -apple-system, sans-serif;
+    --dashboard-mono: 'JetBrains Mono', monospace;
+}
+
+.dashboard::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+        radial-gradient(circle at 20% 0%, rgba(200, 123, 58, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 80% 100%, rgba(74, 155, 142, 0.03) 0%, transparent 40%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dashboard .view-transition {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
+/* ============================================================
+   FOUNDRY — tactical, dense, mono-accented (Wave 0 rev 7)
+   Wired from the Claude Design handoff `tokens.css`.
+   ============================================================ */
+.foundry {
+    --bg-0: oklch(0.14 0.012 240);
+    --bg-1: oklch(0.17 0.014 240);
+    --bg-2: oklch(0.205 0.016 240);
+    --bg-3: oklch(0.245 0.018 240);
+    --bg-hover: oklch(0.27 0.02 240);
+
+    --fg-0: oklch(0.96 0.005 240);
+    --fg-1: oklch(0.84 0.008 240);
+    --fg-2: oklch(0.64 0.01 240);
+    --fg-3: oklch(0.48 0.012 240);
+    --fg-4: oklch(0.36 0.014 240);
+
+    --line-1: oklch(0.28 0.016 240);
+    --line-2: oklch(0.34 0.018 240);
+
+    --accent: oklch(0.82 0.15 160);
+    --accent-dim: oklch(0.62 0.12 160);
+    --accent-bg: oklch(0.28 0.08 160 / 0.25);
+
+    --warn: oklch(0.82 0.15 75);
+    --danger: oklch(0.72 0.18 25);
+    --info: oklch(0.78 0.14 230);
+
+    --font-sans: 'Inter Tight', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --font-display: 'Inter Tight', system-ui, sans-serif;
+
+    background: var(--bg-0);
+    color: var(--fg-1);
+    font-family: var(--font-sans);
+    letter-spacing: -0.005em;
+}
+
+.foundry.light {
+    --bg-0: oklch(0.985 0.003 240);
+    --bg-1: oklch(0.965 0.004 240);
+    --bg-2: oklch(0.945 0.005 240);
+    --bg-3: oklch(0.915 0.006 240);
+    --bg-hover: oklch(0.9 0.008 240);
+
+    --fg-0: oklch(0.18 0.01 240);
+    --fg-1: oklch(0.28 0.012 240);
+    --fg-2: oklch(0.45 0.014 240);
+    --fg-3: oklch(0.58 0.012 240);
+    --fg-4: oklch(0.72 0.01 240);
+
+    --line-1: oklch(0.88 0.008 240);
+    --line-2: oklch(0.82 0.01 240);
+
+    --accent: oklch(0.48 0.15 160);
+    --accent-dim: oklch(0.62 0.12 160);
+    --accent-bg: oklch(0.82 0.1 160 / 0.3);
+}
+
+.foundry ::-webkit-scrollbar { width: 8px; height: 8px; }
+.foundry ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 4px; }
+.foundry ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.14); }
+.foundry.light ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.12); }

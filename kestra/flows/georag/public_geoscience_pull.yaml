@@ -1,0 +1,106 @@
+# =============================================================================
+# Phase 3 Step 4 — Kestra flow: public_geoscience_pull
+#
+# Replaces the Phase 2 Activepieces flow of the same name. Pulls a
+# public ArcGIS / WFS feature service on a cron, drops the response in
+# the bronze S3 bucket under a versioned key, and triggers the
+# corresponding Hatchet workflow via FastAPI's per-flow JWT-gated
+# /internal/v1/integrations/public_geoscience_pull/trigger route.
+#
+# Prerequisites (one-time, per environment):
+#   - Per-flow JWT minted + written into Kestra's KV store as
+#     `flow_jwt_public_geoscience_pull`. Operator helper:
+#         scripts/phase3_jwt_rotate.sh write public_geoscience_pull
+#   - SeaweedFS S3 endpoint reachable from kestra container at
+#     {{ vars.s3_endpoint }} (default http://minio:8333).
+#   - Hatchet `public_geoscience_pull` workflow registered + AI worker
+#     advertising it (Phase 2 Step 4 — unchanged).
+#   - Feature flag `flows.public_geoscience_pull.enabled` = true. While
+#     false the flow still runs but the Hatchet side short-circuits
+#     with skipped=true.
+#
+# Activation: enable the schedule in the Kestra UI after the first
+# manual execution (UI → Trigger → Execute) succeeds end-to-end.
+# =============================================================================
+
+id: public_geoscience_pull
+namespace: georag
+
+description: |
+  Phase 3 Step 4 — Activepieces → Kestra migration of the
+  `public_geoscience_pull` outbound scheduled-import flow.
+
+labels:
+  georag.phase: phase3
+  georag.flow_kind: scheduled-import
+
+variables:
+  # Default upstream — pick the smallest realistic stable layer per
+  # docs/phase3_implementation_kickoff.md §4 Step 4. Override in the
+  # Kestra UI's "execute with inputs" panel for ad-hoc runs.
+  upstream_url: "https://example.test/MapServer/0/query?where=1=1&outFields=*&f=geojson"
+  source_id: "phase3-default"
+  s3_bucket: "bronze"
+  s3_endpoint: "http://minio:8333"
+  fastapi_url: "{{ globals.georag.fastapi_internal_url }}"
+
+inputs:
+  - id: upstream_url
+    type: STRING
+    defaults: "{{ vars.upstream_url }}"
+  - id: source_id
+    type: STRING
+    defaults: "{{ vars.source_id }}"
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # 1. Fetch upstream feature service.
+  # ---------------------------------------------------------------------------
+  - id: fetch_upstream
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ inputs.upstream_url }}"
+    method: GET
+    options:
+      timeout: PT2M
+      allowFailed: false
+    headers:
+      Accept: application/geo+json, application/json
+      User-Agent: "georag-kestra/1.0 (public_geoscience_pull)"
+
+  # ---------------------------------------------------------------------------
+  # 2. Upload to bronze S3 under a versioned key.
+  # ---------------------------------------------------------------------------
+  - id: upload_to_bronze
+    type: io.kestra.plugin.aws.s3.Upload
+    bucket: "{{ vars.s3_bucket }}"
+    key: "public_geoscience/{{ inputs.source_id }}/{{ now() | date('yyyyMMdd-HHmmss') }}.geojson"
+    from: "{{ outputs.fetch_upstream.uri }}"
+    endpointOverride: "{{ vars.s3_endpoint }}"
+    accessKeyId: "{{ secret('AWS_ACCESS_KEY_ID') }}"
+    secretKeyId: "{{ secret('AWS_SECRET_ACCESS_KEY') }}"
+    region: us-east-1
+
+  # ---------------------------------------------------------------------------
+  # 3. Trigger the Hatchet workflow via FastAPI. Per-flow JWT comes
+  # from Kestra KV (rotation: scripts/phase3_jwt_rotate.sh).
+  # ---------------------------------------------------------------------------
+  - id: trigger_hatchet
+    type: io.kestra.plugin.core.http.Request
+    uri: "{{ vars.fastapi_url }}/internal/v1/integrations/public_geoscience_pull/trigger"
+    method: POST
+    contentType: application/json
+    headers:
+      Authorization: "Bearer {{ kv('flow_jwt_public_geoscience_pull') }}"
+    body: |
+      {
+        "minio_key": "{{ outputs.upload_to_bronze.key }}",
+        "source_id": "{{ inputs.source_id }}",
+        "source_url": "{{ inputs.upstream_url }}",
+        "fetched_at": "{{ now() | date('iso_local_date_time') }}"
+      }
+
+triggers:
+  - id: every_6_hours
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 */6 * * *"
+    disabled: true   # operator enables in UI after first manual execution succeeds

@@ -1,0 +1,64 @@
+# Module 10 Chunk 10.4 — FastAPI alert rules.
+# Exposed metrics: src/fastapi/app/metrics.py (QUERY_DURATION, QUERIES_TOTAL,
+# FAILOVERS, FIRST_TOKEN_LATENCY, LLM_CALLS_PER_QUERY, OUT_OF_SCOPE_REFUSALS,
+# TOOL_DURATION, etc.). Histograms expose `_bucket` series for quantile math.
+
+groups:
+  - name: fastapi
+    interval: 30s
+    rules:
+      - alert: FastAPIHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(query_duration_seconds_bucket[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: fastapi
+        annotations:
+          summary: "FastAPI p95 query latency > 2s"
+          description: "FastAPI p95 query duration is {{ $value | humanizeDuration }} over the last 5 minutes. Investigate slow tools or LLM degradation."
+
+      - alert: FastAPIHighLatencyP95Critical
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(query_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 5m
+        labels:
+          severity: critical
+          service: fastapi
+        annotations:
+          summary: "FastAPI p95 query latency > 5s — degrading"
+          description: "FastAPI p95 query duration {{ $value | humanizeDuration }}. Users seeing painful latency. Check Ollama, Qdrant, PG saturation."
+
+      - alert: FastAPIHighFailoverRate
+        expr: rate(failovers_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: fastapi
+        annotations:
+          summary: "FastAPI failover rate > 0.1/s"
+          description: "Tool/LLM failover rate is {{ $value }} per second. Primary backend may be unhealthy."
+
+      - alert: FastAPILowAvailability
+        expr: up{job="fastapi"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: fastapi
+        annotations:
+          summary: "FastAPI is DOWN"
+          description: "Prometheus cannot scrape /metrics on fastapi:8000. Check container, healthcheck, and DB pool init."
+
+      - alert: FastAPIHighRefusalRate
+        expr: rate(out_of_scope_refusals_total[10m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: fastapi
+        annotations:
+          summary: "FastAPI refusal rate > 0.5/s sustained"
+          description: "Refusal rate {{ $value }}/s. Either users hitting corpus boundaries (expected after data refresh) or quality gate triggering false-positive refusals."

@@ -1,0 +1,310 @@
+# =============================================================================
+# Compose overlay: Redis 3-instance staging/prod topology
+# =============================================================================
+# Authority: ops/runbooks/redis-3-instance-rollout.md
+# Companion: ops/runbooks/redis-topology.md (design rationale)
+#
+# This file is an OVERLAY, not a standalone compose. Apply alongside the
+# canonical compose:
+#
+#   docker compose \
+#     -f compose.yml \
+#     -f docker/compose.redis-staging.yml \
+#     --profile staging \
+#     --env-file .env.staging \
+#     up -d
+#
+# All services here have `profiles: [staging, prod]` so they are inert under
+# any dev-* profile. The dev `redis` service in the canonical compose is
+# untouched and remains the always-on instance for `dev-*` profiles.
+#
+# Cutover plan, smoke tests, and rollback live in the rollout runbook. Do
+# not partially apply.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # redis-cache — application cache
+  # ---------------------------------------------------------------------------
+  # Eviction:    allkeys-lru (cache may evict any key under memory pressure)
+  # Persistence: NONE — AOF off, RDB off. Cache loss on restart is by design.
+  # Backs:       Laravel `Cache::`, FastAPI agent cache, Reverb scaling pub/sub.
+  # ---------------------------------------------------------------------------
+  redis-cache:
+    profiles:
+      - staging
+      - prod
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_CACHE_PASSWORD:?REDIS_CACHE_PASSWORD must be set}
+      - --maxmemory
+      - 2gb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+      - --databases
+      - "2"
+      - --tcp-backlog
+      - "511"
+      - --timeout
+      - "600"
+      - --tcp-keepalive
+      - "300"
+      - --slowlog-log-slower-than
+      - "1000"
+      - --slowlog-max-len
+      - "256"
+      - --lazyfree-lazy-eviction
+      - "yes"
+      - --lazyfree-lazy-expire
+      - "yes"
+      - --lazyfree-lazy-server-del
+      - "yes"
+      - --lazyfree-lazy-user-del
+      - "yes"
+      - --lazyfree-lazy-user-flush
+      - "yes"
+      - --loglevel
+      - notice
+    container_name: georag-redis-cache
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "2684354560"  # 2560 MiB — 2 GiB maxmemory + 512 MiB headroom
+        reservations:
+          memory: "268435456"   # 256 MiB
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$$REDIS_CACHE_PASSWORD" ping | grep PONG
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    image: redis:8.6.2-alpine
+    networks:
+      georag: null
+    restart: unless-stopped
+    # No volume — ephemeral cache.
+
+  # ---------------------------------------------------------------------------
+  # redis-queue — Laravel Horizon job queues
+  # ---------------------------------------------------------------------------
+  # Eviction:    NONE (`noeviction` — Horizon jobs MUST NOT be silently dropped)
+  # Persistence: AOF every 1s. Aggressive rewrite (50% / 32 MiB min) to avoid
+  #              the AOF-bloat issue documented in redis-topology.md (RDS-01).
+  # Backs:       Horizon dispatch, scheduled jobs, failed-job table.
+  # ---------------------------------------------------------------------------
+  redis-queue:
+    profiles:
+      - staging
+      - prod
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_QUEUE_PASSWORD:?REDIS_QUEUE_PASSWORD must be set}
+      - --maxmemory
+      - 1gb
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --auto-aof-rewrite-percentage
+      - "50"
+      - --auto-aof-rewrite-min-size
+      - 32mb
+      - --save
+      - ""
+      - --databases
+      - "2"
+      - --tcp-backlog
+      - "511"
+      - --timeout
+      - "0"
+      - --tcp-keepalive
+      - "300"
+      - --slowlog-log-slower-than
+      - "1000"
+      - --slowlog-max-len
+      - "256"
+      - --lazyfree-lazy-eviction
+      - "no"
+      - --lazyfree-lazy-expire
+      - "no"
+      - --loglevel
+      - notice
+    container_name: georag-redis-queue
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "1342177280"  # 1280 MiB — 1 GiB maxmemory + 256 MiB headroom
+        reservations:
+          memory: "268435456"   # 256 MiB
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$$REDIS_QUEUE_PASSWORD" ping | grep PONG
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    image: redis:8.6.2-alpine
+    networks:
+      georag: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: redis_queue_data
+        target: /data
+        volume: {}
+
+  # ---------------------------------------------------------------------------
+  # redis-sessions — Sanctum session storage
+  # ---------------------------------------------------------------------------
+  # Eviction:    volatile-lru (only evicts keys WITH a TTL — sessions have one)
+  # Persistence: AOF every 1s. Session loss = forced re-login (bad UX).
+  # Timeout:     1800s idle — aligns with typical session lifetime.
+  # ---------------------------------------------------------------------------
+  redis-sessions:
+    profiles:
+      - staging
+      - prod
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_SESSION_PASSWORD:?REDIS_SESSION_PASSWORD must be set}
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - volatile-lru
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - ""
+      - --databases
+      - "2"
+      - --tcp-backlog
+      - "511"
+      - --timeout
+      - "1800"
+      - --tcp-keepalive
+      - "300"
+      - --slowlog-log-slower-than
+      - "1000"
+      - --slowlog-max-len
+      - "256"
+      - --loglevel
+      - notice
+    container_name: georag-redis-sessions
+    deploy:
+      resources:
+        limits:
+          cpus: 1
+          memory: "671088640"  # 640 MiB — 512 MiB maxmemory + 128 MiB headroom
+        reservations:
+          memory: "134217728"  # 128 MiB
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$$REDIS_SESSION_PASSWORD" ping | grep PONG
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    image: redis:8.6.2-alpine
+    networks:
+      georag: null
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: redis_sessions_data
+        target: /data
+        volume: {}
+
+  # ---------------------------------------------------------------------------
+  # Per-instance Prometheus exporters (one per Redis so role labels are clean)
+  # Ports 9121 / 9122 / 9123 — match docker/prometheus/prometheus.yml jobs
+  # ---------------------------------------------------------------------------
+  redis_exporter_cache:
+    profiles:
+      - staging
+      - prod
+    image: oliver006/redis_exporter:v1.74.0-alpine
+    container_name: georag-redis-exporter-cache
+    command:
+      - --redis.addr=redis://redis-cache:6379
+      - --redis.password=${REDIS_CACHE_PASSWORD}
+      - --web.listen-address=:9121
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+    networks:
+      georag: null
+    restart: unless-stopped
+
+  redis_exporter_queue:
+    profiles:
+      - staging
+      - prod
+    image: oliver006/redis_exporter:v1.74.0-alpine
+    container_name: georag-redis-exporter-queue
+    command:
+      - --redis.addr=redis://redis-queue:6379
+      - --redis.password=${REDIS_QUEUE_PASSWORD}
+      - --web.listen-address=:9122
+    depends_on:
+      redis-queue:
+        condition: service_healthy
+    networks:
+      georag: null
+    restart: unless-stopped
+
+  redis_exporter_sessions:
+    profiles:
+      - staging
+      - prod
+    image: oliver006/redis_exporter:v1.74.0-alpine
+    container_name: georag-redis-exporter-sessions
+    command:
+      - --redis.addr=redis://redis-sessions:6379
+      - --redis.password=${REDIS_SESSION_PASSWORD}
+      - --web.listen-address=:9123
+    depends_on:
+      redis-sessions:
+        condition: service_healthy
+    networks:
+      georag: null
+    restart: unless-stopped
+
+# =============================================================================
+# Volumes
+# =============================================================================
+# redis-cache is intentionally volume-less (ephemeral). The dev `redis_data`
+# volume in the canonical compose is unaffected by this overlay.
+volumes:
+  redis_queue_data:
+    name: georagintelligencev10_redis_queue_data
+    driver: local
+  redis_sessions_data:
+    name: georagintelligencev10_redis_sessions_data
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+# Reuse the canonical `georag` bridge network. `external: true` tells compose
+# the network is defined elsewhere — do not redeclare it here.
+networks:
+  georag:
+    external: true

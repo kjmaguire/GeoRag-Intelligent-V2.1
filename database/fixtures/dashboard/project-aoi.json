@@ -1,0 +1,57 @@
+{
+    "data": {
+        "display_crs": "EPSG:3857",
+        "source_crs": "EPSG:26910",
+        "aoi": {
+            "type": "Feature",
+            "properties": { "name": "Talbot Lake AOI" },
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-125.62, 56.48],
+                    [-125.52, 56.48],
+                    [-125.52, 56.55],
+                    [-125.62, 56.55],
+                    [-125.62, 56.48]
+                ]]
+            }
+        },
+        "features": {
+            "drill_collars": {
+                "type": "FeatureCollection",
+                "features": [
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-001", "total_depth": 245.0 }, "geometry": { "type": "Point", "coordinates": [-125.585, 56.505] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-002", "total_depth": 312.0 }, "geometry": { "type": "Point", "coordinates": [-125.575, 56.510] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-003", "total_depth": 198.5 }, "geometry": { "type": "Point", "coordinates": [-125.560, 56.515] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-005", "total_depth": 287.0 }, "geometry": { "type": "Point", "coordinates": [-125.590, 56.520] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-007", "total_depth": 156.0 }, "geometry": { "type": "Point", "coordinates": [-125.570, 56.498] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-009", "total_depth": 334.0 }, "geometry": { "type": "Point", "coordinates": [-125.555, 56.525] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-010", "total_depth": 220.0 }, "geometry": { "type": "Point", "coordinates": [-125.580, 56.530] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-011", "total_depth": 267.0 }, "geometry": { "type": "Point", "coordinates": [-125.568, 56.502] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-012", "total_depth": 189.0 }, "geometry": { "type": "Point", "coordinates": [-125.595, 56.512] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-013", "total_depth": 301.0 }, "geometry": { "type": "Point", "coordinates": [-125.548, 56.518] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-014", "total_depth": 278.0 }, "geometry": { "type": "Point", "coordinates": [-125.582, 56.540] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2024-015", "total_depth": 234.0 }, "geometry": { "type": "Point", "coordinates": [-125.558, 56.495] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2023-041", "total_depth": 412.0 }, "geometry": { "type": "Point", "coordinates": [-125.572, 56.535] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2023-042", "total_depth": 356.0 }, "geometry": { "type": "Point", "coordinates": [-125.563, 56.508] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2023-043", "total_depth": 289.0 }, "geometry": { "type": "Point", "coordinates": [-125.550, 56.522] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2023-044", "total_depth": 198.0 }, "geometry": { "type": "Point", "coordinates": [-125.588, 56.545] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2023-045", "total_depth": 267.0 }, "geometry": { "type": "Point", "coordinates": [-125.545, 56.500] } },
+                    { "type": "Feature", "properties": { "hole_id": "DDH-2023-046", "total_depth": 321.0 }, "geometry": { "type": "Point", "coordinates": [-125.577, 56.492] } }
+                ]
+            },
+            "mineralized_zones": {
+                "type": "FeatureCollection",
+                "features": [
+                    { "type": "Feature", "properties": { "zone_name": "Main Zone", "type": "Au-Cu porphyry" }, "geometry": { "type": "Point", "coordinates": [-125.570, 56.515] } },
+                    { "type": "Feature", "properties": { "zone_name": "South Stockwork", "type": "stockwork veining" }, "geometry": { "type": "Point", "coordinates": [-125.565, 56.500] } },
+                    { "type": "Feature", "properties": { "zone_name": "East Extension", "type": "disseminated" }, "geometry": { "type": "Point", "coordinates": [-125.545, 56.520] } },
+                    { "type": "Feature", "properties": { "zone_name": "North Skarn", "type": "skarn" }, "geometry": { "type": "Point", "coordinates": [-125.575, 56.540] } }
+                ]
+            }
+        },
+        "bounds": [-125.62, 56.48, -125.52, 56.55]
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

@@ -1,0 +1,49 @@
+{
+    "data": [
+        {
+            "id": "act-001",
+            "occurred_at": "2026-04-13T14:21:00Z",
+            "project_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "project_name": "Talbot Lake Au-Cu",
+            "kind": "ingest",
+            "summary": "Ingestion completed for NI 43-101 Technical Report (2024-Q4).pdf — 142 chunks → Index",
+            "detail_ref": "doc-ni43101-2024q4"
+        },
+        {
+            "id": "act-002",
+            "occurred_at": "2026-04-13T14:18:00Z",
+            "project_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+            "project_name": "Eastmain Greenstone",
+            "kind": "query",
+            "summary": "Query resolved with 3 citations — \"What is the average grade of the southern stockwork zone?\"",
+            "detail_ref": "qry-eastmain-0413-1418"
+        },
+        {
+            "id": "act-003",
+            "occurred_at": "2026-04-13T14:11:00Z",
+            "project_id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+            "project_name": "Tintina Gold Belt",
+            "kind": "failure",
+            "summary": "Citation resolution failure on assay table extraction — routed to manual review queue"
+        },
+        {
+            "id": "act-004",
+            "occurred_at": "2026-04-13T13:54:00Z",
+            "project_id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+            "project_name": "Coppermine River",
+            "kind": "crs",
+            "summary": "Coordinate system detected — NAD83 / UTM Zone 12N — confidence 0.94",
+            "detail_ref": "doc-coppermine-crs-detect"
+        },
+        {
+            "id": "act-005",
+            "occurred_at": "2026-04-13T13:42:00Z",
+            "project_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "project_name": "Talbot Lake Au-Cu",
+            "kind": "graph",
+            "summary": "KG nodes added — 8 Lithology, 3 Structural, 1 Mineralization Event"
+        }
+    ],
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

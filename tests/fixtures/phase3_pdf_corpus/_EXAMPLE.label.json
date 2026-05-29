@@ -1,0 +1,17 @@
+{
+  "_comment": "EXAMPLE LABEL ONLY — not part of the acceptance corpus. Copy this shape when labeling real PDFs. Place real labels next to their .pdf file as <pdfname>.label.json.",
+  "filename": "example_native_ni43-101.pdf",
+  "profile": "native",
+  "expected_page_count": 142,
+  "expected_recommended_action": "accept",
+  "expected_silver_review_page_count": 0,
+  "expected_table_page_count": 14,
+  "notes_for_grader": "Clean modern NI 43-101 from a 2023 SEDAR+ filing. 17-section TOC structure intact. Section 14 (resource estimate) spans pp. 89-104 with 12 grade-tonnage tables. Figures pp. 110-130 are rasterized but have selectable text captions. Expected to pass through native pdfminer.six + pdfplumber path with no OCR invoked.",
+  "labeled_by": "Kyle Maguire",
+  "labeled_at": "2026-MM-DD",
+  "source": {
+    "system": "sedar_plus",
+    "url": "https://www.sedarplus.ca/csa-party/records/document.html?id=...",
+    "license": "internal"
+  }
+}

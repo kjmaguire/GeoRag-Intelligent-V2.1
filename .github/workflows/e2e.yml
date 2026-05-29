@@ -1,0 +1,116 @@
+# v1.5-01 — Playwright e2e CI job.
+#
+# Runs the real-browser e2e specs under tests/e2e/*.spec.ts against a
+# running Laravel + Inertia + Martin + PostGIS stack. The specs cover
+# UI invariants that jsdom-based Vitest can't catch (stacking contexts,
+# real layout, MapLibre tile pipeline, real SSE streams).
+#
+# Triggers
+# --------
+# - pull_request — block PRs that break the e2e flows.
+# - workflow_dispatch — on-demand re-run.
+# - cron — weekly safety net (Mon 03:00 UTC) so green CI doesn't
+#   silently mask infra drift.
+#
+# Runner requirement
+# ------------------
+# GitHub-hosted ubuntu-latest can run Playwright + Chromium in a single
+# container, but it CANNOT reliably bring up the full Docker Compose
+# stack (Postgres + PostGIS + Martin + Laravel Octane + FastAPI + Ollama)
+# within the 6-hour wall budget on shared infra.
+#
+# This workflow targets a self-hosted runner labelled `georag-e2e`.
+# Until that runner is provisioned, the workflow is gated to skip
+# (no failures, no false greens).
+#
+# To bring this online:
+#   1. Provision a self-hosted runner with Docker available.
+#   2. Add the label `georag-e2e` in the runner config.
+#   3. Add repo secret CI_DEMO_PASSWORD (matches seeded demo user).
+#   4. Remove the `runner-check` skip-gate below.
+
+name: E2E — Playwright
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'resources/js/**'
+      - 'tests/e2e/**'
+      - 'playwright.config.ts'
+      - 'app/**'
+      - 'docker-compose.yml'
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 3 * * 1'  # Mon 03:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  runner-check:
+    name: Self-hosted runner availability
+    runs-on: ubuntu-latest
+    outputs:
+      runner_available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        run: |
+          # Until the self-hosted runner is provisioned, skip cleanly.
+          # Replace this body with `echo "available=true" >> $GITHUB_OUTPUT`
+          # once the `georag-e2e` runner is online.
+          echo "available=false" >> $GITHUB_OUTPUT
+          echo "::warning::Self-hosted runner 'georag-e2e' not yet provisioned — e2e suite skipped."
+
+  e2e:
+    name: Playwright suite
+    needs: runner-check
+    if: needs.runner-check.outputs.runner_available == 'true'
+    runs-on: [self-hosted, georag-e2e]
+    timeout-minutes: 45
+
+    env:
+      E2E_BASE_URL: http://localhost:8888
+      E2E_USER_EMAIL: demo@georag.dev
+      E2E_USER_PASSWORD: ${{ secrets.CI_DEMO_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Boot Docker stack
+        run: |
+          docker compose -f docker-compose.yml up -d \
+            postgresql pgbouncer redis qdrant neo4j \
+            laravel-octane martin fastapi
+          # Wait for Octane health.
+          for _ in $(seq 1 60); do
+            curl -fs "${E2E_BASE_URL}/up" >/dev/null && break
+            sleep 5
+          done
+
+      - name: Migrate + seed demo project
+        run: |
+          docker compose exec -T laravel-octane php artisan migrate --force
+          docker compose exec -T laravel-octane php artisan db:seed --class=DemoProjectSeeder --force
+
+      - name: Install npm deps + Playwright Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright suite
+        run: npx playwright test --reporter=github
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_number }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose down -v --remove-orphans

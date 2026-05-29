@@ -1,0 +1,36 @@
+apiVersion: v2
+name: georag
+description: GeoRAG Intelligence — geological RAG platform (V1.5 skeleton)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+# v1.5-14 — Helm chart skeleton.
+#
+# This is a STARTING POINT, not a production-ready chart. It mirrors the
+# georag/* application services from docker-compose.yml. Datastores
+# (PostgreSQL+PostGIS, Redis, Neo4j, Qdrant, SeaweedFS, Ollama/vLLM,
+# Martin) are deliberately NOT bundled here — operators should pull
+# them from their preferred community charts (bitnami, etc.) and pass
+# connection details via values.yaml.
+#
+# Maturity gates before this chart can replace docker-compose.yml for
+# prod:
+#   - Network policies for tenant isolation (Module 9 RBAC pairs to
+#     pod-to-pod auth, not just app-layer).
+#   - HPA / PDB for laravel-octane and fastapi.
+#   - PVC strategy for SeaweedFS (S3 bucket lifecycle).
+#   - Ingress + TLS via cert-manager.
+#   - Loki / Promtail / Prometheus / Alertmanager subcharts wired to
+#     match docker/grafana/dashboards/*.
+#   - SOPS-encrypted secrets (helm-secrets plugin) for the keys
+#     enumerated in .env.production.example.
+#
+# Until the gates above land, this chart is for client demos and
+# evaluation — NOT production deployment.
+
+dependencies: []
+
+annotations:
+  category: AI
+  licenses: MIT

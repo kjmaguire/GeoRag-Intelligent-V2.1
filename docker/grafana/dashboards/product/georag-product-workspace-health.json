@@ -1,0 +1,80 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.1 product-tier — per-workspace health: ingestion rate, query volume, citation pass-rate, refresh recency.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "title": "Documents Ingested (24h)",
+      "type": "stat",
+      "targets": [
+        {"expr": "sum by (workspace_id) (increase(georag_ingestion_docs_total{workspace_id=~\"$workspace\"}[24h]))"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "title": "Queries Answered (24h)",
+      "type": "stat",
+      "targets": [
+        {"expr": "sum by (workspace_id) (increase(georag_rag_queries_total{workspace_id=~\"$workspace\"}[24h]))"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "title": "Citation Pass-Rate (24h)",
+      "type": "gauge",
+      "targets": [
+        {"expr": "sum by (workspace_id) (rate(georag_citation_validated_total{workspace_id=~\"$workspace\"}[24h])) / sum by (workspace_id) (rate(georag_citation_total{workspace_id=~\"$workspace\"}[24h]))"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "id": 4,
+      "title": "Hours Since Last Refresh",
+      "type": "stat",
+      "targets": [
+        {"expr": "min by (workspace_id) (time() - georag_workspace_data_version_timestamp{workspace_id=~\"$workspace\"})"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "id": 5,
+      "title": "RAG p95 Latency (ms)",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, workspace_id) (rate(georag_rag_latency_ms_bucket{workspace_id=~\"$workspace\"}[5m])))"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["georag", "product", "workspace"],
+  "templating": {
+    "list": [
+      {"name": "workspace", "type": "query", "datasource": "Prometheus",
+       "query": "label_values(georag_rag_queries_total, workspace_id)",
+       "includeAll": true, "multi": true}
+    ]
+  },
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "title": "GeoRAG / Product / Workspace Health",
+  "uid": "georag-product-workspace-health",
+  "version": 1
+}

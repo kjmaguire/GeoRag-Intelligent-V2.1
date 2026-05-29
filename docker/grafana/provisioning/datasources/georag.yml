@@ -1,0 +1,37 @@
+apiVersion: 1
+
+# Plan §4b Stage 1 / repair_shadow dashboard datasource — Postgres
+# pointing at the GeoRAG application DB. Used by
+# docker/grafana/dashboards/georag-repair-shadow.json to query
+# gold.repair_shadow_daily and the underlying silver.query_traces.
+#
+# Read-only — connects with the georag_read role (created by
+# docker/postgresql/init-roles.sql). The role has SELECT on
+# silver.* and gold.* schemas + the workspace_id GUC required by RLS
+# isolation policies.
+#
+# Workspace tenancy: Grafana queries this datasource with a static
+# user, so RLS sees no GUC set → row visibility falls through to
+# whatever the schema's default policy allows. For the repair-shadow
+# dashboard that's intentional — operators see ALL workspaces. For
+# any per-workspace dashboard a follow-up should set
+# `connectionsMaxConnectionsByUser` + per-user JWT-passing instead.
+
+datasources:
+  - name: PostgreSQL-GeoRAG
+    type: postgres
+    access: proxy
+    url: postgresql:5432
+    user: ${GRAFANA_GEORAG_READONLY_USER:-georag_read}
+    secureJsonData:
+      password: ${GRAFANA_GEORAG_READONLY_PASSWORD}
+    jsonData:
+      database: georag
+      sslmode: disable
+      maxOpenConns: 10
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1800
+      timescaledb: false
+    isDefault: false
+    editable: false

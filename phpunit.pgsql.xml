@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  phpunit.pgsql.xml — PostgreSQL-backed test run.
+
+  Purpose: exercise Feature tests that cannot run under SQLite because they
+  inspect PostGIS types, pg_catalog, information_schema, CHECK constraint
+  definitions, MVT views, or use PostGIS functions (ST_X, ST_Transform, etc.)
+  in controller queries. The default `phpunit.xml` forces SQLite with
+  `force="true"` and these tests self-skip via `TestCase::skipIfSqlite()`.
+
+  Target: the dedicated `georag_test` database on the `postgresql` service.
+  Note that this config bypasses PgBouncer and connects to PG directly at
+  postgresql:5432. PgBouncer is pinned to a single database (`georag`) and
+  in transaction pooling mode, which can't handle RefreshDatabase's
+  migrate:fresh workflow. Martin does the same (see docker-compose.yml).
+
+  The `georag_test` DB is provisioned by docker/postgresql/init/init-test-db.sh
+  on first boot (or manually — see that script's header for the CLI recipe).
+
+  Usage (from the host):
+    docker exec georag-laravel-octane php artisan test -c phpunit.pgsql.xml
+
+  Filter to one class (add `filter=CollarCrudTest` or similar).
+
+  ⚠️  Safe to run freely: the `georag_test` DB is dedicated and contains no
+  real data. RefreshDatabase tests re-create the schema on every run.
+
+  See docs/RUNBOOK.md → "Test environment gotchas" for the full story on
+  why `phpunit.xml`'s SQLite override beats the container's DB_CONNECTION.
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/bootstrap.php"
+         colors="true"
+>
+    <testsuites>
+        <!--
+          ORDER MATTERS: RefreshDatabase tests run first so their
+          migrate:fresh populates georag_test before the read-only
+          migration tests try to inspect information_schema / catalogs
+          for tables and views they expect to exist.
+
+          Without this ordering, the very first run against a freshly
+          provisioned georag_test DB would see the read-only tests fail
+          (schema empty) before RefreshDatabase had a chance to populate
+          it.
+        -->
+        <testsuite name="Postgres (RefreshDatabase)">
+            <!--
+              RefreshDatabase tests that require real PostGIS (ST_X,
+              ST_Transform, geometry columns). These run ONLY against
+              georag_test — RefreshDatabase's migrate:fresh would drop
+              every table.
+            -->
+            <file>tests/Feature/Api/V1/CollarControllerTest.php</file>
+            <file>tests/Feature/Api/V1/CollarCrudTest.php</file>
+            <!-- Module 8 Chunk 8.4 — Tile proxy ETag + 304 + cache-control tests -->
+            <file>tests/Feature/TileProxyTest.php</file>
+            <!-- Doc-phase 157 — Inertia route-smoke for the 4 Track-3 admin
+                 surfaces. Uses RefreshDatabase so georag_test has a clean
+                 users table for the factory; controllers themselves are
+                 read-only against silver/ops/audit/eval schemas. -->
+            <file>tests/Feature/Admin/Track3DashboardsTest.php</file>
+            <!-- Phase 3 / Step 3.2 — context envelope validation tests.
+                 Uses RefreshDatabase + Project::factory(), so it runs
+                 against PG (the silver.* migrations don't work on SQLite). -->
+            <file>tests/Feature/Api/V1/QueryControllerContextEnvelopeTest.php</file>
+            <!-- Reliability spec Phase 4 — per-run polling endpoint.
+                 Locks T11 cross-workspace 404 contract. -->
+            <file>tests/Feature/Api/V1/IngestProgressControllerTest.php</file>
+            <!-- Reliability spec Phase 2 — broadcast controller side-effects:
+                 data_version bump + refresh dispatch only on completed. -->
+            <file>tests/Feature/Internal/IngestionProgressBroadcastControllerTest.php</file>
+        </testsuite>
+        <testsuite name="Postgres (read-only)">
+            <!--
+              Strictly read-only tests that inspect schema/catalog only.
+              Safe against any PG DB (including shared dev) because they
+              never mutate application tables.
+            -->
+            <file>tests/Feature/Api/V1/PublicGeoscience/BedrockGeologyMigrationTest.php</file>
+            <file>tests/Feature/Api/V1/PublicGeoscience/MvtViewNullNumericRegressionTest.php</file>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing" force="true"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file" force="true"/>
+        <env name="BCRYPT_ROUNDS" value="4" force="true"/>
+        <env name="BROADCAST_CONNECTION" value="null" force="true"/>
+        <env name="CACHE_STORE" value="array" force="true"/>
+
+        <!--
+          PostgreSQL connection — direct to the `postgresql` service,
+          bypassing PgBouncer (which only knows about the `georag` DB and
+          uses transaction pooling incompatible with migrate:fresh).
+          Credentials match the committed dev defaults in .env.example.
+        -->
+        <env name="DB_CONNECTION" value="pgsql" force="true"/>
+        <env name="DB_URL" value="" force="true"/>
+        <env name="DB_HOST" value="postgresql" force="true"/>
+        <env name="DB_PORT" value="5432" force="true"/>
+        <env name="DB_DATABASE" value="georag_test" force="true"/>
+        <env name="DB_USERNAME" value="georag" force="true"/>
+        <!-- Doc-phase 157 — sync to the live POSTGRES_PASSWORD on the
+             postgresql service. Was stale `georag_dev_password` from an
+             early dev cut. Read via `docker exec georag-postgresql env`. -->
+        <env name="DB_PASSWORD" value="OMljaORhiA7RGQN3ilfemNWpezF9waU" force="true"/>
+
+        <!--
+          Expand search_path so RefreshDatabase's migrate:fresh can find
+          and drop tables across all application schemas (dropAllTables
+          scans every schema in the list). Without this override it falls
+          back to `public` only and leaves silver.*, public_geoscience.*,
+          etc. behind, and the re-migrate fails with "relation already
+          exists".
+
+          ORDER MATTERS: `public` must be first so unqualified CREATE
+          TABLE (used by the base Laravel migrations) lands in public,
+          matching the dev DB layout. Migrations that want silver/etc.
+          already qualify explicitly (e.g., `silver.projects`).
+        -->
+        <env name="DB_SEARCH_PATH" value="public,silver,bronze,gold,index,public_geo,audit,ops,eval,targeting,interpretation,outbox" force="true"/>
+
+        <env name="MAIL_MAILER" value="array" force="true"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <env name="SESSION_DRIVER" value="array" force="true"/>
+        <env name="PULSE_ENABLED" value="false" force="true"/>
+        <env name="TELESCOPE_ENABLED" value="false" force="true"/>
+        <env name="NIGHTWATCH_ENABLED" value="false" force="true"/>
+    </php>
+</phpunit>

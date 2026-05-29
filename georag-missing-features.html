@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>GeoRAG Missing Features v1</title>
+<style>
+:root{--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--accent:#0369a1;--border:#e7e5e4;--label:#1c1917;--note:#fef3c7;--noteb:#f59e0b}
+body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:1100px;margin:40px auto;padding:0 32px;line-height:1.55}
+h1{font-size:28px;margin:0 0 4px}.sub{color:var(--muted);margin-bottom:32px}
+.section{margin:32px 0;border:1px solid var(--border);border-radius:8px;padding:20px;background:#fff}
+.section-label{font-family:ui-monospace,monospace;font-size:13px;font-weight:600;color:var(--label);margin-bottom:14px;letter-spacing:.3px}
+.flow-table{width:100%;border-collapse:collapse;font-size:14px}.flow-table th,.flow-table td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.flow-table th{font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+.responsibilities{color:var(--fg)}.tech-tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;margin:1px 2px}
+.tag-blue{background:#dbeafe;color:#1e40af}.tag-green{background:#dcfce7;color:#166534}.tag-amber{background:#fef3c7;color:#92400e}.tag-grey{background:#e5e5e5;color:#404040}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;margin-left:6px;white-space:nowrap}
+.b-p0{background:#fee2e2;color:#991b1b}.b-p1{background:#fed7aa;color:#9a3412}.b-p2{background:#fef3c7;color:#854d0e}.b-p3{background:#e0e7ff;color:#3730a3}.b-done{background:#dcfce7;color:#166534}.b-partial{background:#e9d5ff;color:#6b21a8}
+.key-note{background:var(--note);border-left:3px solid var(--noteb);padding:10px 14px;font-size:13px;border-radius:0 4px 4px 0}
+pre{background:#f5f5f4;border:1px solid var(--border);border-radius:6px;padding:14px 16px;font-size:12px;overflow-x:auto;line-height:1.5}
+code{font-family:ui-monospace,monospace;font-size:12px}
+footer{margin:48px 0 24px;padding-top:16px;border-top:1px solid var(--border);font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)}
+</style></head><body>
+<h1>GeoRAG — Missing Features &amp; Gap Analysis</h1><div class="sub">Companion to <code>georag-architecture.html</code> · Production-readiness gap inventory · v1 · 2026-05-07</div>
+
+<div style="margin:24px 0 32px;padding:18px 22px;background:#eff6ff;border:2px solid #2563eb;border-radius:8px">
+<div style="font-family:ui-monospace,monospace;font-size:12px;font-weight:700;color:#1e40af;letter-spacing:.5px;margin-bottom:8px">📋 HOW TO READ THIS DOC</div>
+<div style="font-size:14px;color:#1c1917;line-height:1.6">
+This document inventories features and capabilities <strong>not yet present</strong> in the GeoRAG codebase as of 2026-05-07. The companion <code>georag-architecture.html</code> describes what the system <em>is</em>; this doc describes what's <em>missing</em>.
+
+<p style="margin:10px 0 6px"><strong>Severity ladder:</strong></p>
+<ul style="margin:0 0 10px 18px;padding:0">
+<li><span class="badge b-p0">P0</span> Blocks pilot. Must land before the first paying customer touches the system.</li>
+<li><span class="badge b-p1">P1</span> Blocks GA. Acceptable for a friendly pilot but mandatory for a public launch.</li>
+<li><span class="badge b-p2">P2</span> Blocks scale. Needed for the second / third tenant or once usage crosses tier-2 jurisdictions.</li>
+<li><span class="badge b-p3">P3</span> Polish. Quality-of-life / contributor-experience / nice-to-have. Defer until the above is done.</li>
+<li><span class="badge b-partial">PARTIAL</span> Scaffolded but not finished — config exists, no implementation; or implemented for one path, missing on others.</li>
+<li><span class="badge b-done">DONE</span> Closed during the 2026-05-07 production-readiness session.</li>
+</ul>
+
+<p style="margin:10px 0 6px"><strong>Scope:</strong> covers the entire stack — frontend, application layer, FastAPI, datastores, ops, observability, customer-facing, compliance, docs. Items already done in the 2026-05-07 session are listed for completeness with the <span class="badge b-done">DONE</span> badge.</p>
+
+<p style="margin:10px 0 0"><strong>Reading order:</strong> §00 is the one-glance dashboard. §15 is the prioritised roadmap. Sections in between are deep dives by domain — read the ones you own.</p>
+</div>
+</div>
+
+<div class="section"><div class="section-label">00 — Top-of-funnel — gaps by severity</div>
+<table class="flow-table"><thead><tr><th style="width:80px">Severity</th><th style="width:100px">Count</th><th>Category snapshot</th></tr></thead><tbody>
+<tr><td><span class="badge b-p0">P0</span></td><td>11</td><td class="responsibilities">Canonical compose missing, git not initialised, WAL not yet activated, secrets not in a manager, no production env file, audit log retention policy undefined, multi-tenant RBAC off-by-default, no SSO, no email transactional system, no customer onboarding flow, no billing.</td></tr>
+<tr><td><span class="badge b-p1">P1</span></td><td>~30</td><td class="responsibilities">Grafana dashboards (alerts only), Helm chart fleshed past skeleton, /v1/retrieve + /v1/viz/compute endpoints, 17 reserved Tier 2/3 PGEO layers, performance benchmarks (TBD per arch), load testing, PITR drill, customer-facing API docs, status page, accessibility audit, GDPR procedures.</td></tr>
+<tr><td><span class="badge b-p2">P2</span></td><td>~25</td><td class="responsibilities">Per-jurisdiction RBAC for restrictive-license tier-3, 2FA, IP allowlisting, SOC 2 controls mapping, cost-per-workspace monitoring, LLM token usage attribution, FastAPI agent reorg, ONNX-export for prod image, PHPStan baseline burn-down.</td></tr>
+<tr><td><span class="badge b-p3">P3</span></td><td>~20</td><td class="responsibilities">PWA / offline mode, dark mode, i18n, white-label, contributor-experience polish (CONTRIBUTING.md, PR templates), mutation testing, visual regression.</td></tr>
+<tr><td><span class="badge b-partial">PARTIAL</span></td><td>~15</td><td class="responsibilities">RATE_LIMIT_ENABLED scaffolded; rate limiter wired but disabled-by-default; MULTI_TENANT_ENFORCEMENT_ENABLED off; §05c retrieval cache key composition partial; Tier 2/3 layer registry declared but Martin sources commented out; etc.</td></tr>
+<tr><td><span class="badge b-done">DONE</span></td><td>~25</td><td class="responsibilities">Items closed in the 2026-05-07 session — see §16 for the cumulative list.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">The codebase's <em>engineering quality</em> (architecture, type safety, async discipline, hallucination guards, schema contracts, observability instrumentation) is at A-/A across every subsystem. The gaps below are almost entirely <em>product surface</em> and <em>operational completeness</em>, not architecture rework.</div>
+</div>
+
+<div class="section"><div class="section-label">01 — Cross-cutting blockers</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Canonical <code>docker-compose.yml</code> at repo root</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">CI workflows (cd / ci / e2e / release-rehearsal) reference <code>docker-compose.yml</code> at the project root. The current snapshot has only <code>ops/audit/2026-04-19-resolved-compose-all-profiles.yml</code> (a resolved snapshot, not a source). Pull from the team git remote OR copy the audit file as a starting point. <strong>Until this lands, every subsequent ops item is blocked.</strong></td></tr>
+<tr><td>Git initialisation</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">The current working copy isn't under version control (<code>git status</code> reports "not a git repository"). All session work is filesystem-only. Run <code>git init</code> + connect to the canonical remote before merging this session's commits.</td></tr>
+<tr><td>Production <code>.env.production</code> template</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">Only <code>.env.example</code> exists (dev-shaped). Need a production template with real secret slots and the staging-specific Redis/PG/Sanctum cookie / FASTAPI_SERVICE_KEY values. Should NOT be checked in with values; checked in with <code>__CHANGEME__</code> placeholders.</td></tr>
+<tr><td>Secret manager integration</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">Currently every secret lives in <code>.env</code> and ops/runbooks reference plain env vars. No Vault / AWS Secrets Manager / Kubernetes secrets integration documented. Mandatory before multi-customer deployment.</td></tr>
+<tr><td>Helm chart beyond skeleton</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Per arch doc footer: skeleton at <code>ops/charts/georag/</code> with 5 prod-maturity gates templated (NetworkPolicy, HPA, PDB, Ingress, ServiceMonitor). Datastores + Loki/Promtail + helm-secrets are deliberately externalised. <strong>Production deploy needs the full chart, not the skeleton.</strong></td></tr>
+<tr><td>Audit log retention policy</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">NI 43-101 compliance work needs a defined retention period for <code>audit.query_audit_log</code>. Currently no policy. Must define before pilot signs a customer agreement.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">02 — Customer-facing product surface</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Onboarding flow / first-run experience</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">No new-user wizard, no sample project loader, no in-app tour. A customer logging in for the first time arrives at an empty workspace with no guidance.</td></tr>
+<tr><td>User invitation system</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">No invite-by-email flow. Workspace admins cannot add team members through the UI today.</td></tr>
+<tr><td>Email transactional system</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities"><code>config/services.php</code> has Postmark / Resend / SES slots but no mailables, no templates. Password reset, invite, payment receipt, alert digests all need email.</td></tr>
+<tr><td>In-app notification surface</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">No notification inbox; no unread badge. Reverb broadcasts query lifecycle events but there's no persistent notification store for offline catch-up.</td></tr>
+<tr><td>Workspace management UI</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">No UI for switching workspaces, managing members, setting per-workspace defaults. Multi-tenant features cannot ship without this.</td></tr>
+<tr><td>Billing / subscription</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">Entirely absent. No Stripe / Paddle integration; no plan tiers; no usage caps; no invoices. Required before paying customers.</td></tr>
+<tr><td>Usage analytics dashboard (customer-visible)</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Per-customer "you used N queries / M GB ingested this month". Drives both customer self-service and usage-based pricing once it exists.</td></tr>
+<tr><td>Customer-facing API documentation</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">FastAPI auto-generates an OpenAPI spec internally; Laravel does not. Customers need a stable, public API doc surface (Stoplight, Redocly, or hand-curated).</td></tr>
+<tr><td>Status page</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Customer-visible incident communication. <code>statuspage.io</code> / <code>betterstack</code> / self-hosted Cachet. Required for enterprise contracts.</td></tr>
+<tr><td>Help / support integration</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Intercom / Zendesk / Plain inline widget. Or a clear "email support@" link with rotation. Currently neither.</td></tr>
+<tr><td>Trial / demo workspace</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Sales-led demo path needs a pre-loaded read-only workspace with sample geological data. <code>DemoProjectSeeder</code> exists per the e2e workflow — needs a customer-facing entry point.</td></tr>
+<tr><td>Customer release notes / changelog</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">No public changelog. Once paying customers exist, releases need user-facing notes (separate from engineering CHANGELOG).</td></tr>
+<tr><td>Data import wizard (customer self-serve)</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Today ingestion is operator-driven via Dagster. Customer self-serve upload (drag-and-drop drill log files, AGS, LAS) needs UI + validation feedback loop + status visibility.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">03 — Auth, identity, multi-tenancy</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>SSO (SAML 2.0 / OIDC)</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Enterprise customers will require SSO before signing. Sanctum sessions cover dev/pilot. Add Socialite or a SAML library (<code>aacotroneo/laravel-saml2</code>) before first enterprise contract.</td></tr>
+<tr><td>SCIM provisioning</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Auto-deprovisioning when an employee leaves the customer's IdP. Mandatory for SOC 2 + most enterprise procurement.</td></tr>
+<tr><td>2FA / MFA (TOTP)</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">No second factor on Sanctum login. Add <code>laravel/fortify</code> 2FA features or pragmarx/google2fa.</td></tr>
+<tr><td>Password complexity / rotation policy</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Default Laravel password rules. No max-age / cannot-reuse-N-previous / breach-list check. Enterprise contracts will specify.</td></tr>
+<tr><td>IP allowlisting per workspace</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Customer admin defines a CIDR allowlist; logins from outside fail. Common enterprise feature.</td></tr>
+<tr><td>Account lockout / login rate limiting</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Default Laravel throttle on login. Should add per-account lockout after N failed attempts + audit-log entry.</td></tr>
+<tr><td>Per-jurisdiction RBAC for PGEO</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Per <code>TileProxyController</code> docstring: today PGEO has no per-jurisdiction RBAC; safe because all active jurisdictions ship under permissive licenses. Mandatory before tier-3 (restrictive-license) jurisdictions go live.</td></tr>
+<tr><td>Per-layer RBAC on Martin tile proxy</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Some workspaces opt into specific layer subsets (drill_traces yes, structure no). Today the workspace-vs-project check is binary.</td></tr>
+<tr><td>Workspace-level data residency</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">EU-based customers may require data-stays-in-EU. Single-region V1 doesn't address this; flag for V2.</td></tr>
+<tr><td>Encryption-at-rest verification</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">PostgreSQL volume encryption / SeaweedFS encryption need to be deliberately confirmed and documented for compliance posture.</td></tr>
+<tr><td>mTLS between internal services</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Service-to-service traffic on the Docker bridge today is plaintext (auth via JWT + service key). For a hostile shared cluster or k8s with NetworkPolicy bypass risk, mTLS is the next layer.</td></tr>
+<tr><td>Vulnerability scanning in CI</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Trivy / Snyk for image scanning, <code>composer audit</code> + <code>pip-audit</code> + <code>npm audit</code> in CI. <code>composer audit</code> is in the laravel-verification skill but not confirmed wired.</td></tr>
+<tr><td>SBOM generation</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">CycloneDX / SPDX bill-of-materials per release. Enterprise procurement asks; SOC 2 nice-to-have.</td></tr>
+<tr><td>CSP / strict security headers</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities"><code>SecurityHeadersMiddleware.php</code> exists — verify CSP is strict, X-Frame-Options=DENY, HSTS preload, Referrer-Policy. Audit before pilot.</td></tr>
+<tr><td>Suspicious-pattern alerting</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Audit log captures events; nothing currently alerts on patterns (10+ failed logins, cross-tenant query attempts, unusual export volume).</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">04 — Backend / API surface</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>POST /v1/retrieve</code> endpoint per §07d</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Arch doc §07d specifies this; FastAPI side has <code>/internal/queries</code> but no separate retrieve endpoint visible. Needed for clients that want raw retrieval (no LLM synthesis) for power-user inspection.</td></tr>
+<tr><td><code>POST /v1/viz/compute</code> endpoint per §07d</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Arch doc §07d specifies viz computation as a separate endpoint. Frontend visualisation components currently rely on Laravel-side data fetch + client-side rendering; the dedicated FastAPI endpoint is missing.</td></tr>
+<tr><td>Laravel-side rate limiting</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">FastAPI has slowapi keyed on (workspace, user) <span class="badge b-done">DONE 2026-05-07</span>. Laravel-side per-user rate limit on inbound API + login + UI mutation endpoints not visible. Use Laravel's built-in <code>throttle:</code> middleware.</td></tr>
+<tr><td>Idempotency keys for mutating endpoints</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Stripe-style <code>Idempotency-Key</code> header on POST endpoints to handle retries. Especially important for export-job dispatch and ingestion-trigger endpoints.</td></tr>
+<tr><td>Webhook system</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Outbound notification to customer systems on events (ingestion complete, query refused, citation flagged). Sensible after a few customers ask.</td></tr>
+<tr><td>Bulk ingestion API</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Multi-file upload + batch-ingestion endpoint. Today Dagster handles ingestion via internal triggers; customer self-serve uploads need an API surface.</td></tr>
+<tr><td>API versioning strategy beyond v1</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">No documented breaking-change procedure or v2 forward-compat plan. Defer until a real v2 motivation arises.</td></tr>
+<tr><td>Pagination convention</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Some endpoints use offset, some cursor, some return all. Document a project-wide convention and align over time.</td></tr>
+<tr><td>OpenAPI spec for Laravel side</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">FastAPI auto-generates one. Laravel side has no spec — add <code>spatie/laravel-route-attributes</code> + <code>scribe</code> or hand-curated YAML. Customer-facing API docs depend on this.</td></tr>
+<tr><td>Request ID propagation tested end-to-end</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities"><code>InjectTraceparent</code> middleware exists; <code>test_traceparent.py</code> exists. Verify request_id flows React → Laravel → FastAPI → PG / Neo4j / Redis with one ID for the full lifecycle.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">05 — Frontend feature gaps</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Tier 2/3 PGEO map layers (17 reserved)</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">Per <code>publicGeoscienceLayers.ts</code> + warmup.cypher: bedrock_geology, surficial_geology, geological_faults, geological_dykes, petroleum_wells, petroleum_well_trajectories, petroleum_pools, geophysics_control_points, geophysics_survey_coverage, geological_domains, regional_compilation_points, regional_compilation_polygons, geoscience_publications, geochronology_samples, geochemistry_samples, geological_feature_points, geological_feature_lines. All declared in TS union, gated by both <code>LAYER_SPECS</code> and Martin yaml whitelist. Activate as silver tables / MVT functions land.</td></tr>
+<tr><td>Accessibility audit</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">No <code>axe-core</code> in Playwright suite, no keyboard-only navigation verification, no screen-reader announcements on map/citation interactions. Required before public launch in jurisdictions with accessibility law (US ADA, EU EN 301 549).</td></tr>
+<tr><td>Internationalisation (i18n)</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">English-only. <code>react-intl</code> or <code>react-i18next</code> not configured. Several Canadian provincial customers will require French.</td></tr>
+<tr><td>Dark mode</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">No theme toggle; everything is light. Tailwind v4 supports dark variants — wire <code>useTheme</code> + persistent preference.</td></tr>
+<tr><td>Print / export view styles</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">No <code>@media print</code> CSS. PDF exports go through server-side render but in-browser print of a chat / dashboard is unstyled.</td></tr>
+<tr><td>PWA manifest + offline mode</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">Not currently a PWA. Field geologists with patchy connectivity might want offline-cached views; defer until a customer asks.</td></tr>
+<tr><td>Service worker for tile caching</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">MVT tiles already have <code>Cache-Control: public, max-age=86400</code> so the browser caches. A service worker would let the app work offline against cached tiles — defer.</td></tr>
+<tr><td>Visual regression testing</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Percy / Chromatic / loki — none configured. Map + citation viewer + dashboard layouts are visually load-bearing; visual regression catches CSS drift.</td></tr>
+<tr><td>Mobile responsive QA</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Tailwind breakpoints exist; not deliberately tested on tablet / phone sizes. Mining geologists in the field use tablets — relevant.</td></tr>
+<tr><td>Browser compatibility matrix</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Playwright tests Chromium only (per e2e.yml). Define + test against the supported browser matrix (Chrome, Firefox, Safari, Edge — last 2 versions of each).</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">06 — Data quality &amp; ingestion</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Data quality framework</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Great Expectations / Soda / dbt-tests not visible. pgTAP covers schema invariants but not data values (range checks, completeness rates, statistical drift). Bronze→Silver transformation should run a quality gate before promotion.</td></tr>
+<tr><td>Anomaly detection on ingest</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">No automatic flag for out-of-range assays (negative grades, depth &lt; 0, dip &gt; 90), schema-violating dates, broken FK references. Currently caught downstream when a user sees nonsense.</td></tr>
+<tr><td>Duplicate detection</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">No de-dup on ingest beyond unique-key constraints. A customer re-uploading the same drill log with a slightly different filename would create duplicate hole IDs across runs.</td></tr>
+<tr><td>Coordinate system auto-detection accuracy</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Per arch §04b: "98.6% CRS detection" cited as a placeholder, not measured. Build the validation corpus, measure, document the actual rate.</td></tr>
+<tr><td>Reprocessing-from-Bronze tested</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Medallion architecture promises Bronze is replayable. Has the team actually replayed a project from Bronze end-to-end? Add to the disaster-recovery drill checklist.</td></tr>
+<tr><td>Data classification / PII tagging</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Audit log encrypts <code>query_text</code> + <code>response_text</code> (good). Other tables have no PII classification. Required for GDPR Article 30 (records of processing).</td></tr>
+<tr><td>Data retention policies per workspace</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Customer's contractual data lifetime varies. Need per-workspace retention windows + automated purge. Today there is no purge job.</td></tr>
+<tr><td>Reprocessing on schema change</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">If §04e gains a column, existing Bronze data needs to roll forward. No documented procedure for "re-derive Silver after adding column X".</td></tr>
+<tr><td>Format-specific validation gates</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">LAS / SEG-Y / AGS / KMZ format-validation tests exist as fixtures (per <code>tests/fixtures/</code>) but the Bronze ingestion path's accept/reject behaviour on malformed input isn't a documented contract.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">07 — Operational completeness</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>WAL archiving activated in cluster</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">Wired up in <code>compose.wal-archiving.yml</code> + activation SQL + runbook section <span class="badge b-done">DONE 2026-05-07</span>. Not yet executed against a live cluster — first activation closes ~6-min RPO target.</td></tr>
+<tr><td>Redis 3-instance staging cutover</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">Designed + overlay shipped + runbook ready <span class="badge b-done">DONE 2026-05-07</span>. Not yet executed — closes the §06 spec gap on cache vs queue eviction policy.</td></tr>
+<tr><td>D2 migration re-run for legacy <code>:Drillhole</code> cleanup</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">8-line code fix landed across two ingestion files <span class="badge b-done">DONE 2026-05-07</span>. Migration script + CI guard test ready. Re-run the D2 migration in next maintenance window to canonicalise any legacy nodes the bug created since 2026-04-27.</td></tr>
+<tr><td>First PITR drill against throwaway cluster</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Procedure stub in <code>backup-restore.md</code>. Restoring to a specific timestamp + verifying audit-log + geological-domain consistency at that point is a real exercise that has not yet been performed. Schedule before pilot.</td></tr>
+<tr><td>Cross-store consistency restore</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">A timestamped restore needs PG + Neo4j + Qdrant + SeaweedFS to land at consistent points. Per-store backups exist; cross-store consistency hasn't been drilled.</td></tr>
+<tr><td>Backup integrity validation</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">No automated "restore the most recent backup into a sandbox and verify row counts + checksums" job. Schedule weekly.</td></tr>
+<tr><td>Off-site / second-region backup</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">SeaweedFS holds backups today. Single point of failure if the SeaweedFS volume is lost. Replicate to a separate S3-compatible store (AWS S3 cross-region, Backblaze, etc.).</td></tr>
+<tr><td>Tabletop incident exercise</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Run a "PostgreSQL is down at 3am" exercise with the on-call team. Surfaces gaps in runbooks before the real incident does.</td></tr>
+<tr><td>Feature flag system</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">No GrowthBook / LaunchDarkly / Unleash. <code>RATE_LIMIT_ENABLED</code>, <code>MULTI_TENANT_ENFORCEMENT_ENABLED</code> are env-flag-gated which works for boolean global toggles; per-workspace feature gating needs a real flag system.</td></tr>
+<tr><td>Database migration approval workflow</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Today migrations run on deploy. For destructive migrations (column drops, table moves), a manual approval gate or pre-deploy sanity script reduces blast radius.</td></tr>
+<tr><td>Blue/green or canary deployment</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Today the cd.yml pipeline implies single-host docker-compose. As the user base grows, blue/green or canary cuts incident severity.</td></tr>
+<tr><td>Auto-scaling rules tuned</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Helm chart skeleton has HPA templated; CPU/memory/queue-depth thresholds not measured + tuned. Run a load test, then tune.</td></tr>
+<tr><td>Production env file template</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">Repeated from §01 — see there.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">08 — Observability &amp; SRE</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Grafana dashboards (per service)</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">5 alert files exist (postgres / redis / neo4j / martin / fastapi / qdrant / laravel). Zero dashboards. Operators today see alerts but can't drill in. Build per-service dashboard JSON + commit to <code>docker/grafana/provisioning/dashboards/</code>.</td></tr>
+<tr><td>Log aggregation pipeline tested end-to-end</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">Loki + Promtail + JSON formatters configured in Laravel + FastAPI. Verify a real query produces a complete trace ledger from React click → Reverb event → Laravel job → FastAPI agent → PG/Neo4j/Qdrant.</td></tr>
+<tr><td>Distributed tracing UI</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">Logfire / OTLP instrumentation in FastAPI <code>main.py</code>; <code>InjectTraceparent</code> middleware in Laravel; <code>test_traceparent.py</code> exists. Need the consumer side: Tempo / Jaeger / Logfire-hosted UI for span exploration.</td></tr>
+<tr><td>SLO / SLI definitions</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Arch doc §07e: "p95 query latency budgets per query class — TBD during pilot, not yet defined. No numeric commitments in V1 spec." Define before pilot ends.</td></tr>
+<tr><td>Error budget tracking</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Once SLOs exist, error budgets + burn-rate alerts complete the loop. <code>sloth</code> generates Prometheus rules from SLO definitions.</td></tr>
+<tr><td>Alert routing rules</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Alertmanager dev config at <code>docker/alertmanager/alertmanager.yml</code>; prod template at <code>alertmanager.production.yml.example</code> with Slack + PagerDuty receivers <em>pre-wired</em> per arch footer. Activation + on-call rotation not visible.</td></tr>
+<tr><td>On-call rotation + paging</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">PagerDuty / OpsGenie integration. Defined ack window, escalation policy. Required before pilot.</td></tr>
+<tr><td>Status page (operator + customer-facing)</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">See §02 — required for enterprise contracts.</td></tr>
+<tr><td>Incident response runbook (cross-component)</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Per-component runbooks exist for backup/restore, neo4j-backup, qdrant-snapshot, redis-topology, secret-rotation. No "user reports the chat is broken — start here" runbook that walks the operator through Reverb → Laravel job → FastAPI → datastore triage.</td></tr>
+<tr><td>Postmortem template</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">After the first real incident, the team needs a no-blame postmortem template and a publication cadence. Add now while it's calm.</td></tr>
+<tr><td>Synthetic monitoring</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Outside-the-cluster smoke probes (Pingdom / Checkly / k6 cloud) on the customer-facing endpoints. Catches DNS / cert / load-balancer issues that internal Prometheus misses.</td></tr>
+<tr><td>RUM (real user monitoring)</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Sentry / Datadog RUM / privacy-respectful Plausible + custom timing. Surfaces frontend perf issues + JS errors per browser/region.</td></tr>
+<tr><td>Performance regression detection in CI</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities"><code>perf-baseline.yml</code> workflow exists. Verify it actually compares + fails on regression. Pair with §04i golden + hallucination test gates.</td></tr>
+<tr><td>postgres_exporter sidecar deployed</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities"><code>compose.exporters.yml</code> overlay shipped <span class="badge b-done">DONE 2026-05-07</span>. Activate under <code>dev-monitor</code> + staging/prod profiles to populate the existing Prometheus alert rules.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">09 — Testing &amp; quality</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Performance benchmarks</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Per arch §07e: latency budgets TBD. p95 / p99 targets per query class need real numbers from a representative load test.</td></tr>
+<tr><td>Load testing infrastructure</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">k6 / Locust / artillery — none visible. <code>perf-baseline.yml</code> CI workflow exists but the load profile / scenario library is unclear. Build before pilot capacity planning.</td></tr>
+<tr><td>Chaos testing executed</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities"><code>chaos.yml</code> workflow + chaos pytest mark exist. Verify the chaos suite actually injects failures (kill PG mid-query, drop Redis connections, overload Qdrant) and the system degrades + recovers correctly.</td></tr>
+<tr><td>Mutation testing</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities"><code>infection</code> for PHP, <code>mutmut</code> for Python. Surfaces tests that pass without exercising the code under test. Defer until basics are solid.</td></tr>
+<tr><td>Migration rollback drill</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Every Laravel migration has a <code>down()</code> method (good). Has the team actually run <code>migrate:rollback</code> against a production-shaped DB? Schedule one drill.</td></tr>
+<tr><td>Data corruption recovery drill</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">"Pretend a DELETE was issued without a WHERE clause on <code>silver.collars</code>. Restore the last hour of WAL + verify." Exercises the PITR path in anger.</td></tr>
+<tr><td>Test data anonymisation for staging</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Pre-pilot, staging may be loaded with real customer data. Need a documented + automated anonymisation step (PII fields fuzzed) before non-prod environments hold customer data.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">10 — Compliance &amp; audit</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>NI 43-101 traceability procedure</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities"><code>audit.query_audit_log</code> captures every query + response + citations <span class="badge b-done">DONE 2026-05-07</span> (schema isolation + encrypted PII). Need the documented procedure: how does a QP, given a contested public statement, retrieve the exact RAG response that informed it, with full provenance? End-to-end trace + export procedure.</td></tr>
+<tr><td>GDPR — data subject access</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">If an EU customer's user requests their data, the team needs an automated export (zip of every workspace's records that contain that user_id). No procedure today.</td></tr>
+<tr><td>GDPR — right to erasure</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Account deletion needs to cascade through PG + Neo4j + Qdrant + SeaweedFS + audit log retention rules. Today not implemented.</td></tr>
+<tr><td>Cookie consent banner</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Required in EU / UK / California. None visible.</td></tr>
+<tr><td>Privacy policy / TOS surfaces</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">Required pages before any paying customer. Live URLs accessible from the footer.</td></tr>
+<tr><td>SOC 2 readiness assessment</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Enterprise customers will ask. Map the project's controls (audit logging, encryption, access control, change management) to the SOC 2 trust services criteria.</td></tr>
+<tr><td>Compliance reporting</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Some jurisdictions require periodic reporting on data accessed / modified. Build once a customer's contract demands it.</td></tr>
+<tr><td>Audit alerts</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Audit log captures events; nothing alerts on suspicious patterns (rapid cross-tenant query attempts, unusual export volume, mass-delete events). Add as a Loki query → Alertmanager rule.</td></tr>
+<tr><td>Right to portability — workspace export</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Customer admin clicks "export everything"; system produces a complete archive (PG dumps, Qdrant vectors, Neo4j subgraph, SeaweedFS objects, audit log). No procedure today.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">11 — Cost management &amp; billing</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>Per-workspace cost monitoring</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Track LLM tokens, storage GB, query count per workspace. Required before usage-based pricing.</td></tr>
+<tr><td>LLM token usage attribution</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Every <code>query_audit_log</code> entry should record input + output tokens + model + cost-at-issue. Today only model name is recorded.</td></tr>
+<tr><td>Budget alerts per tenant</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Customer admin gets an email at 80%/100% of their allocated budget. Required for usage-based plans.</td></tr>
+<tr><td>Tier-based feature gating</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Plan-tier-specific features (e.g. premium-tier only: anthropic backend, reranker, golden snapshots). Needs a feature-flag system (see §07).</td></tr>
+<tr><td>Usage caps / soft limits</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Enforce monthly query / GB limits per plan. Return 429 with clear error when exceeded. Today nothing stops a runaway customer.</td></tr>
+<tr><td>Stripe / Paddle integration</td><td><span class="badge b-p0">P0</span></td><td class="responsibilities">Billing system. Subscription lifecycle, invoice generation, dunning, refunds. Mandatory for paying customers.</td></tr>
+<tr><td>Tax calculation</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Stripe Tax or similar. EU VAT / Canadian GST/HST / US state tax — comply before invoicing internationally.</td></tr>
+<tr><td>Currency handling</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">USD only for now. Most plans support that. Once a Canadian/EU customer asks for native currency invoicing, the catalogue + invoice generator need to handle it.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">12 — Performance &amp; scale</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>p95 / p99 latency baselines per query class</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Arch §07e: TBD. Establish during pilot.</td></tr>
+<tr><td>CDN strategy for tile serving</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Today every tile request hits the Laravel proxy then Martin then PG. Browser cache helps; a CDN (Cloudflare / Fastly / Bunny) in front of <code>/tiles/*</code> would offload by 95% at scale.</td></tr>
+<tr><td>Edge caching strategy</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Beyond tiles — static assets (JS bundles, fonts, basemap style.json) all benefit from edge caching once a CDN is in place.</td></tr>
+<tr><td>Retrieval cache hit-rate monitoring</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Per §05c the retrieval result cache is key-versioned (query_hash + workspace + data_version + retrieval_strategy_version + routing_categories_hash + filters_hash + RBAC_scope_hash). Verify all 7 components are wired and emit hit/miss metrics.</td></tr>
+<tr><td>Embedding cache size tuning</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">Per arch §05c: chunk-hash-keyed embedding cache. Tune size based on observed dataset.</td></tr>
+<tr><td>LLM cold-start strategy</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Ollama unloads after <code>OLLAMA_KEEP_ALIVE=30m</code>. First query after idle pays a load-time cost. Worth a "warm" probe before customer-facing windows.</td></tr>
+<tr><td>Capacity planning baseline</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">Document: how many concurrent users does one FastAPI worker handle? At what number do we add a worker / scale? Arch doc footer mentions HPA — ground the trigger thresholds in real measurements.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">13 — Documentation</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>CONTRIBUTING.md</code></td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">No contributor guide. New developer setup, branch strategy, PR review expectations. Important once team grows beyond founders.</td></tr>
+<tr><td>PR / issue templates</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities"><code>.github/PULL_REQUEST_TEMPLATE.md</code> and issue templates standardise the surface.</td></tr>
+<tr><td>Code review checklist</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">Octane safety, hard-rule compliance, citation surface, schema-contract checks — checklist that mirrors the skill index.</td></tr>
+<tr><td>New-developer setup guide</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">"Day 1" doc: install Herd, clone, <code>composer install</code>, <code>npm install</code>, <code>docker compose up</code>, run tests. Today knowledge is tribal.</td></tr>
+<tr><td>ADR system completion</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities"><code>ops/decisions/</code> exists with one ADR (SeaweedFS replaces MinIO) + Neo4j 2026.03.1 pin. Adopt the cadence: every architectural decision gets an ADR.</td></tr>
+<tr><td>Customer-facing API reference</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">See §04. Public docs site (docs.georag.com) with searchable API + tutorials + examples.</td></tr>
+<tr><td>User-facing help docs</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">"How to interpret a citation card", "How to upload a drill log file", etc. Help center surface.</td></tr>
+<tr><td>Operations runbook completion</td><td><span class="badge b-partial">PARTIAL</span></td><td class="responsibilities">Many runbooks exist (backup-restore, redis-topology, secret-rotation, neo4j-backup, qdrant-snapshot, drillhole-label-rename, cold-start). Some sections are TBD (PITR detailed walkthrough, cross-store consistency restore). Fill in once first drills are completed.</td></tr>
+<tr><td>Disaster recovery runbook</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Cross-component "all-stop" recovery procedure. Per-store runbooks exist; the orchestration layer is missing.</td></tr>
+<tr><td>Capacity planning doc</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">"At customer N, you need X cores / Y GB / Z TB" rule of thumb. Build once load test baselines exist.</td></tr>
+<tr><td>Glossary (geological &amp; engineering)</td><td><span class="badge b-p3">P3</span></td><td class="responsibilities">Drilling vocab for engineers; engineering vocab for geologists. Reduces friction in code review across discipline lines.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">14 — Disaster recovery</div>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Severity</th><th>Notes</th></tr></thead><tbody>
+<tr><td>RTO / RPO defined per service</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">PG with WAL archiving targets ~6-min RPO; Neo4j weekly dump targets 7-day RPO; Qdrant snapshots ~daily; SeaweedFS replication TBD. Document the per-service targets + the cross-store worst case.</td></tr>
+<tr><td>PITR drill executed end-to-end</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Procedure stub exists. Execute against a throwaway cluster to flush out unknown unknowns before the real incident.</td></tr>
+<tr><td>Cross-store consistency recovery</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">Restore PG to T-1h, Neo4j to T-1h, Qdrant to T-1h, SeaweedFS to T-1h. Verify a query at that point produces consistent answers across stores.</td></tr>
+<tr><td>Off-site backup replication</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">SeaweedFS is the backup target. If the SeaweedFS volume is lost, all backups go with it. Replicate to AWS S3 / Backblaze cross-region.</td></tr>
+<tr><td>Backup encryption verified</td><td><span class="badge b-p1">P1</span></td><td class="responsibilities">PG basebackups + WAL archives + Neo4j dumps + Qdrant snapshots — confirm at-rest encryption posture.</td></tr>
+<tr><td>Tabletop exercise per quarter</td><td><span class="badge b-p2">P2</span></td><td class="responsibilities">"PG primary host is dead" — walk through the runbook in a meeting, time-box the answers, identify gaps.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">15 — Roadmap &amp; sequencing</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Optimal order through the gap set. Each phase ends at a usable milestone — pause between phases to gather evidence before committing the next.</p>
+<table class="flow-table"><thead><tr><th style="width:50px">#</th><th style="width:160px">Phase</th><th>Deliverables / exit criteria</th></tr></thead><tbody>
+<tr><td>1</td><td>Foundation unblock</td><td class="responsibilities">Pull canonical <code>docker-compose.yml</code>; <code>git init</code> + commit this session's work; populate <code>.env.staging</code> + <code>.env.production</code> templates with placeholder secrets; integrate secret manager. <strong>Exit:</strong> the stack boots green from the canonical compose on a staging host.</td></tr>
+<tr><td>2</td><td>Operational hardening</td><td class="responsibilities">Activate WAL archiving in staging; run Redis 3-instance cutover; run D2 migration; first PITR drill; deploy postgres_exporter + redis_exporter; tabletop exercise. <strong>Exit:</strong> all alerts fire correctly on synthetic faults; PITR confirmed.</td></tr>
+<tr><td>3</td><td>Compliance &amp; auth foundations</td><td class="responsibilities">Privacy policy / TOS pages; cookie banner; audit log retention policy; password complexity / lockout; CSP audit; vulnerability scanning in CI; encryption-at-rest verification + documentation; Stripe wired up with test mode. <strong>Exit:</strong> a customer-facing legal review passes.</td></tr>
+<tr><td>4</td><td>Customer-facing surface</td><td class="responsibilities">Onboarding flow; user invitation system; email transactional system; workspace management UI; trial / demo workspace; customer-facing API docs. <strong>Exit:</strong> first friendly pilot customer can self-serve from invitation through their first query.</td></tr>
+<tr><td>5</td><td>Observability completeness</td><td class="responsibilities">Grafana dashboards per service; SLO / SLI definitions; on-call rotation + paging; status page; synthetic monitoring; incident response cross-component runbook; postmortem template. <strong>Exit:</strong> on-call can answer "is the system healthy" in &lt; 30 seconds.</td></tr>
+<tr><td>6</td><td>Pilot capacity</td><td class="responsibilities">Performance benchmarks measured; load testing baseline; auto-scaling tuned; capacity planning doc; chaos suite verified injects + recovers. <strong>Exit:</strong> documented capacity envelope per tenant.</td></tr>
+<tr><td>7</td><td>Multi-tenant readiness</td><td><span class="responsibilities">SSO (SAML/OIDC); 2FA; per-jurisdiction RBAC for restrictive-license PGEO; suspicious-pattern alerting; per-workspace cost monitoring + caps; data subject access / right-to-erasure procedures. <strong>Exit:</strong> first enterprise contract clears procurement.</span></td></tr>
+<tr><td>8</td><td>GA polish</td><td class="responsibilities">Accessibility audit; mobile responsive QA; visual regression in CI; CDN for tiles; Tier 2/3 PGEO layer activation as silver tables land; FastAPI agent reorg; PHPStan baseline burn-down. <strong>Exit:</strong> public launch.</td></tr>
+<tr><td>9</td><td>Scale &amp; differentiation</td><td class="responsibilities">SCIM provisioning; IP allowlisting; SOC 2 readiness; webhook system; idempotency keys; mutation testing; i18n; dark mode; PWA. <strong>Exit:</strong> growth team has the surface they need.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px"><strong>Time-budget rule of thumb:</strong> Phases 1-2 are 1-2 weeks of operator + engineering work each. Phase 3 is ~2-4 weeks of legal + dev coordination. Phase 4 is ~1-2 months of product + design + dev. Phase 5+ depends entirely on team size + contractual deadlines. Don't pre-commit to phase 5+ before phase 4 has feedback from a real customer.</div>
+</div>
+
+<div class="section"><div class="section-label">16 — What was closed in the 2026-05-07 production-readiness session</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Listed for completeness so future readers don't re-investigate items already done. Full session breakdown lives in <code>docs/2026-05-07-production-readiness-session-summary.md</code>.</p>
+<table class="flow-table"><thead><tr><th style="width:280px">Item</th><th style="width:80px">Status</th><th>Where</th></tr></thead><tbody>
+<tr><td>Laravel AI dev stack: Boost, AI SDK, MCP, 18 skills</td><td><span class="badge b-done">DONE</span></td><td><code>composer.json</code>, <code>boost.json</code>, <code>.mcp.json</code>, <code>.claude/skills/</code></td></tr>
+<tr><td>3 GeoRAG-specific skills (citations, octane-bridge, schema-contracts)</td><td><span class="badge b-done">DONE</span></td><td><code>.claude/skills/georag-*/SKILL.md</code></td></tr>
+<tr><td>PHP code quality: Larastan strict + strict_types on 92 files + Pint config</td><td><span class="badge b-done">DONE</span></td><td><code>phpstan.neon</code>, <code>pint.json</code>, every file in <code>app/</code></td></tr>
+<tr><td>8 latent <code>env()</code>-outside-config bugs fixed</td><td><span class="badge b-done">DONE</span></td><td><code>config/services.php</code> + 3 source files</td></tr>
+<tr><td>8-line <code>:Drillhole</code> regression across 2 Dagster ingestion files + permanent CI guard</td><td><span class="badge b-done">DONE</span></td><td><code>gold_public_geoscience.py</code>, <code>gold_cross_corpus_linker.py</code>, <code>test_no_legacy_drillhole_label.py</code></td></tr>
+<tr><td>§04f-pg Public Geoscience addendum merged into HTML arch doc</td><td><span class="badge b-done">DONE</span></td><td><code>georag-architecture.html</code> §04f-pg</td></tr>
+<tr><td>Redis 3-instance topology designed + overlay shipped + runbook</td><td><span class="badge b-done">DONE</span></td><td><code>docker/compose.redis-staging.yml</code>, <code>ops/runbooks/redis-3-instance-rollout.md</code></td></tr>
+<tr><td><code>config/database.php</code> redis: queue + sessions connections (env-overridable)</td><td><span class="badge b-done">DONE</span></td><td><code>config/database.php</code></td></tr>
+<tr><td>WAL archiving wired up (compose overlay + activation SQL + runbook)</td><td><span class="badge b-done">DONE</span></td><td><code>docker/compose.wal-archiving.yml</code>, <code>init/Z_activate_wal_archiving.sql</code></td></tr>
+<tr><td>2 new Postgres alerts: <code>PostgresArchiveCommandFailing</code>, <code>PostgresArchiveLagHigh</code></td><td><span class="badge b-done">DONE</span></td><td><code>docker/prometheus/rules/postgres-alerts.yml</code></td></tr>
+<tr><td>1 new Redis alert: <code>RedisQueueEvictionAttempt</code> (drift detector for noeviction)</td><td><span class="badge b-done">DONE</span></td><td><code>docker/prometheus/rules/redis-alerts.yml</code></td></tr>
+<tr><td>Audit schema migration: <code>public.query_audit_log</code> → <code>audit.query_audit_log</code></td><td><span class="badge b-done">DONE</span></td><td>migration <code>2026_05_07_120000_*</code> + init scripts updated</td></tr>
+<tr><td>Martin healthcheck enabled + 1.7.0 image bump</td><td><span class="badge b-done">DONE</span></td><td><code>ops/audit/2026-04-19-resolved-compose-all-profiles.yml</code></td></tr>
+<tr><td>Configurable basemap URLs (4 components refactored)</td><td><span class="badge b-done">DONE</span></td><td><code>resources/js/lib/basemap.ts</code> + 4 map components</td></tr>
+<tr><td>FastAPI slowapi rate limiter (workspace_user keying)</td><td><span class="badge b-done">DONE</span></td><td><code>src/fastapi/app/services/rate_limit.py</code></td></tr>
+<tr><td>FastAPI <code>pydantic-ai</code> pin tightened to <code>&gt;=0.2,&lt;0.3</code></td><td><span class="badge b-done">DONE</span></td><td><code>src/fastapi/pyproject.toml</code></td></tr>
+<tr><td>CitationController refactor (831 → 91 lines + 16 strategy classes)</td><td><span class="badge b-done">DONE</span></td><td><code>app/Services/Citations/</code> + service provider</td></tr>
+<tr><td>§04e enums: HoleType, CollarStatus, SurveyMethod (3 of 5 closed-vocab columns)</td><td><span class="badge b-done">DONE</span></td><td><code>app/Enums/</code></td></tr>
+<tr><td>Closed factory↔validation drift bug on hole_type (<code>'Auger'</code>)</td><td><span class="badge b-done">DONE</span></td><td><code>StoreCollarRequest.php</code> + <code>HoleType</code> enum</td></tr>
+<tr><td>postgres_exporter + redis_exporter overlay (dev-monitor + staging + prod)</td><td><span class="badge b-done">DONE</span></td><td><code>docker/compose.exporters.yml</code></td></tr>
+<tr><td>Redis health ping in Laravel HealthController</td><td><span class="badge b-done">DONE</span></td><td><code>HealthController.php</code></td></tr>
+<tr><td>Stale <code>.claude/agents/CLAUDE.md</code> drift removed</td><td><span class="badge b-done">DONE</span></td><td><code>.claude/agents/README.md</code> rewritten</td></tr>
+<tr><td>Production-readiness session summary doc</td><td><span class="badge b-done">DONE</span></td><td><code>docs/2026-05-07-production-readiness-session-summary.md</code></td></tr>
+</tbody></table>
+</div>
+
+<footer>v1 — 2026-05-07 · Companion to <code>georag-architecture.html</code> · Author: production-readiness session output · Inputs: 7 subsystem reviews + 5 work rounds + cross-stack gap analysis · Cross-references: <code>docs/2026-05-07-production-readiness-session-summary.md</code>.</footer>
+</body></html>

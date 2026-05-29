@@ -1,0 +1,2941 @@
+# =============================================================================
+# GeoRAG Intelligence V1.0 — Docker Compose
+# =============================================================================
+#
+# RESOURCE LIMITS NOTE (Task 2 — image pinning + cpu/mem limits)
+# All deploy.resources limits in this file are dev-workstation starting points
+# (AMD Ryzen 8-core, 64GB RAM, RTX 4080 16GB). Revisit before production:
+#   - PostgreSQL/Neo4j limits assume no other RAM-hungry services are co-running.
+#   - vLLM intentionally has NO CPU/mem limits — adding them can
+#     bottleneck GPU throughput as the CUDA runtime makes large allocations.
+#   - Prod recommendation: raise Qdrant to 4 CPU/8GiB, FastAPI to 4 CPU/4GiB.
+#
+# IMAGE PINNING NOTE (Task 1)
+# All third-party images are pinned to specific release tags.
+# Custom georag/* images are built locally from docker/*.Dockerfile and tagged
+# georag/<service>:latest — "latest" here means "last local build", not a
+# registry pull. To adopt a SHA-based convention run:
+#   docker compose build && docker images --format '{{.Repository}}:{{.Digest}}'
+# and record the digests in a .image-digests lockfile.
+#
+# Infrastructure (always starts, no profile needed):
+#   PostgreSQL 17 + PostGIS 3.6, PgBouncer, Redis 8
+#
+# Profile guide (use these to avoid melting the workstation):
+#
+#   dev-light    Laravel (octane/horizon/reverb) + FastAPI
+#                The always-on application layer for development.
+#
+#   dev-data     Neo4j + warmup init, Qdrant, MinIO
+#                Start when working on graph, vector, or object storage features.
+#
+#   dev-ingest   Dagster daemon + webserver
+#                Start only during ingestion pipeline development.
+#
+#   dev-monitor  Prometheus + Grafana
+#                Skipped by default — start when you need metrics dashboards.
+#
+#   dev-full     Everything. Use only for end-to-end integration testing.
+#
+# Usage examples:
+#   docker compose --profile dev-light up -d
+#   docker compose --profile dev-light --profile dev-data up -d
+#   docker compose --profile dev-full up -d
+#
+# All environment variables are sourced from .env (copy from .env.example).
+#
+# RESTART POLICY CONVENTION (B4 — 2026-04-19)
+#   restart: unless-stopped   — all long-running infrastructure and application
+#                               services. Docker restarts on crash/stop; operator
+#                               can stop intentionally (e.g., maintenance window).
+#   restart: "no"             — one-shot init containers (neo4j-warmup, minio-init).
+#                               These run once per `docker compose up` and must NOT
+#                               restart on completion — they exit 0 by design.
+#   restart: on-failure:3     — not used in this stack (all helpers are "no").
+#
+# HEALTHCHECK FIDELITY (B1 — 2026-04-19)
+#   All healthchecks now reflect service readiness, not just port-open liveness.
+#   TCP-only probes replaced with HTTP endpoint or native CLI checks per B1 spec.
+#   Martin (wget /health) and Qdrant (bash /dev/tcp HTTP GET to /readyz) were the
+#   primary changes. See ops/audit/2026-04-19-infra-phase-b-critical-fixes.md.
+#
+# IMAGE PINNING (B8 — 2026-04-19)
+#   All third-party images now carry @sha256:<digest> pins. georag/* local builds
+#   retain :latest per §12 convention. Digests captured 2026-04-19.
+# =============================================================================
+
+name: "GeoRag Intelligence V1.0"
+
+# =============================================================================
+# Named volumes — all persistent data lives here, never in bind mounts
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  # Neo4j review #8 — APOC plugin lives here so it persists across
+  # container recreations. NEO4J_PLUGINS auto-downloads on first start.
+  neo4j_plugins:
+    driver: local
+  qdrant_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+  # Uranium ingest staging — pre-existing named volume that holds the
+  # extracted PLSS-section directories produced by scripts/overnight_uranium_ingest.sh.
+  # Declared `external: true` so docker compose doesn't try to manage its
+  # lifecycle — the volume is populated by the orchestrator outside the
+  # compose graph and lives across stack restarts.
+  georag-phase-b-extract:
+    external: true
+  # ollama_models volume removed 2026-05-17 along with the ollama service.
+  # vLLM model download cache (HuggingFace). Named volume so container
+  # restarts don't re-download tens of GB of weights.
+  vllm_hf_cache:
+    driver: local
+  fastapi_hf_cache:
+    driver: local
+  grafana_data:
+    driver: local
+  # Module 10 Chunk 10.4 — Alertmanager state directory (silences, retries).
+  alertmanager_data:
+    driver: local
+  # Module 10 Chunk 10.6 — Loki ingester chunk storage + index.
+  loki_data:
+    driver: local
+  # Module 10 Chunk 10.6 — Promtail tail-position cursor (resume after restart).
+  promtail_positions:
+    driver: local
+  dagster_home:
+    driver: local
+  # Backup staging volume — writable scratch space for backup artifacts in transit.
+  # Scripts write here, upload to SeaweedFS, then delete the local copy.
+  # Mounted on: postgresql, neo4j, qdrant (via backup script containers).
+  # Also mounted on: ofelia (for any pre-upload staging it needs to inspect).
+  backup_staging:
+    driver: local
+  # WAL archive volume — PostgreSQL writes WAL segments here via archive_command.
+  # backup-agent reads this volume (read-only) and uploads to SeaweedFS every 5m.
+  # Max data-loss window: ~10 min (5m archive_timeout + 5m upload interval).
+  # Module 1 Phase C prep — WAL archiving (BK-03), 2026-04-19.
+  pg_wal_archive:
+    driver: local
+  # Hatchet engine config (TLS certs, server config) persisted across restarts.
+  hatchet_config:
+    driver: local
+  # Phase 3 Step 7 — activepieces_cache volume removed (sunset).
+  # Kestra storage volume — flow execution data + internal storage. Phase 3 Step 2.
+  kestra_data:
+    driver: local
+  # Kestra working directory (subprocess tasks, scratch).
+  kestra_workdir:
+    driver: local
+  # Phase 2.0 (2026-05-22) — rapidocr ONNX model cache. Docling's OCR
+  # backend (rapidocr) downloads ~150 MB of per-language ONNX models on
+  # first use. Default cache path is inside site-packages which is read-
+  # only for www-data, so we redirect to /tmp/rapidocr_models via env
+  # and mount this named volume so the models survive container
+  # restarts (one download per host, not per container start).
+  # Mounted on: hatchet-worker-ingestion, hatchet-worker-ai.
+  #
+  # ⚠️ ONE-TIME SETUP: Docker creates new named volumes as root:root.
+  # Chown to www-data once after the volume is created, then the
+  # ownership persists across container restarts:
+  #     docker exec -u 0 georag-hatchet-worker-ingestion \
+  #         chown -R 33:33 /tmp/rapidocr_models
+  # If the volume is ever destroyed (`docker volume rm
+  # georagintelligencev10_rapidocr_models`), repeat this chown step
+  # before re-enabling DOCLING_OCR_ENABLED.
+  rapidocr_models:
+    driver: local
+  # Tempo trace blocks + WAL (Phase 0 step 3).
+  tempo_data:
+    driver: local
+  # Caddy /data — holds the internal CA + issued certs (Phase 7 Step 3).
+  # Persisting this keeps the dev cert stable across container restarts,
+  # so clients that trust it once don't have to re-import every reboot.
+  caddy_data:
+    driver: local
+
+# =============================================================================
+# Network — single bridge, all services communicate by container name
+# =============================================================================
+networks:
+  georag:
+    driver: bridge
+    name: georag
+
+# =============================================================================
+# Services
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # POSTGRESQL 17 + PostGIS 3.6
+  # Applications must connect through PgBouncer on port 6432, NOT directly.
+  # Port 5432 is not exposed to the host — only PgBouncer can reach it.
+  # Tuning targets: 64GB workstation, NVMe storage (random_page_cost=1.1).
+  # ---------------------------------------------------------------------------
+  postgresql:
+    # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
+    # DB review (High — PostGIS upgrade). 17-3.6-alpine bundles
+    # GEOS 3.13.1 (OverlayNG → 2-5x faster ST_Intersects/ST_Union/ST_Difference
+    # on complex geometries) and PROJ 9.5 (much faster grid-based CRS
+    # transforms — every ST_Transform(geom, 4326) in the agent tools
+    # benefits). Alpine variant is the only 17-3.6 currently published; the
+    # data dir format is OS-portable so the swap from the prior Debian
+    # 17-3.5 image is non-destructive (no dump/restore required), but the
+    # PostGIS extension catalog must be upgraded with
+    # `ALTER EXTENSION postgis UPDATE;` after the first start on the new
+    # image. See docs/RUNBOOK.md if you hit a "function does not exist"
+    # error from the planner after the bump.
+    # Built locally (Phase 0 step 1) — adds h3, hypopg, pg_stat_kcache,
+    # pg_partman, pg_repack, pg_ivm on top of the postgis/postgis:18-3.6-alpine
+    # base. Kept tagged so observability + ofelia exec patterns keep working.
+    image: georag/postgres:18-ext
+    build:
+      context: .
+      dockerfile: docker/postgresql/Dockerfile
+    container_name: georag-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-georag}
+      POSTGRES_USER: ${POSTGRES_USER:-georag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # PostGIS extension init
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Tuning applied via command-line arguments so they override postgresql.conf defaults.
+    # NVMe: random_page_cost=1.1 (default 4.0 is for spinning disks — critical to override).
+    # Dev workstation (MODERATE path — Kyle-approved 2026-04-19 Module 2 Phase B):
+    #   shared_buffers=8GB  (~12.5% of 64GB, raised from 4GB to improve buffer hit ratio)
+    #   effective_cache_size=24GB (~37.5% of 64GB, raised from 12GB for better planner estimates)
+    #   maintenance_work_mem=1GB (raised from 512MB for bulk ingest/VACUUM efficiency)
+    #   work_mem=128MB per sort/hash (unchanged)
+    #   io_method: io_uring was tested 2026-04-19 and REJECTED — WSL2 Docker container
+    #     returned "could not setup io_uring queue: Operation not permitted" even though
+    #     WSL2 kernel 6.6.87 has io_uring compiled in. The Docker default seccomp profile
+    #     blocks io_uring syscalls (io_uring_setup/io_uring_enter/io_uring_register are
+    #     not in the default allowlist). Reverted to io_method=worker (the PG default).
+    #     To enable in future: add --security-opt seccomp=unconfined OR a custom seccomp
+    #     profile that permits io_uring_* syscalls. Track in Module 10 doc sweep.
+    command: >
+      postgres
+        -c shared_buffers=${POSTGRES_SHARED_BUFFERS:-8GB}
+        -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-24GB}
+        -c work_mem=${POSTGRES_WORK_MEM:-128MB}
+        -c maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-1GB}
+        -c io_method=worker
+        -c random_page_cost=1.1
+        -c max_connections=200
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=64MB
+        -c default_statistics_target=100
+        -c effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
+        -c max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-8}
+        -c max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-4}
+        -c max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-8}
+        -c max_parallel_maintenance_workers=${POSTGRES_MAX_PARALLEL_MAINTENANCE_WORKERS:-4}
+        -c log_min_duration_statement=1000
+        -c log_checkpoints=on
+        -c log_connections=off
+        -c log_disconnections=off
+        -c log_lock_waits=on
+        -c deadlock_timeout=1s
+        -c shared_preload_libraries='pg_stat_statements,auto_explain,pg_stat_kcache'
+        -c auto_explain.log_min_duration=2000
+        -c auto_explain.log_analyze=off
+        -c auto_explain.log_buffers=on
+        -c auto_explain.log_timing=off
+        -c auto_explain.log_format=json
+        -c auto_explain.log_nested_statements=on
+        -c pg_stat_kcache.track=all
+        -c pg_stat_statements.max=10000
+        -c pg_stat_statements.track=all
+        -c pg_stat_statements.track_utility=off
+        -c track_io_timing=on
+        -c jit=off
+        -c jit_above_cost=-1
+        -c idle_in_transaction_session_timeout=60000
+        -c lock_timeout=3000
+        -c wal_compression=lz4
+        -c max_wal_size=4GB
+        -c track_activity_query_size=4096
+        -c hba_file=/etc/postgresql/pg_hba.conf
+        -c archive_mode=on
+        -c archive_timeout=300
+        -c "archive_command=test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f"
+    # WAL archive directory permission fix — named volumes are created root-owned.
+    # The entrypoint wrapper chowns /var/lib/postgresql/wal_archive to the postgres
+    # user before handing off to the PG entrypoint, so archive_command can write.
+    # Module 1 Phase C prep — BK-03, 2026-04-19.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        chown postgres:postgres /var/lib/postgresql/wal_archive
+        chmod 700 /var/lib/postgresql/wal_archive
+        exec /usr/local/bin/docker-entrypoint.sh "$$@"
+      - --
+    # huge_pages stays at the default `try` (set lower in the file via the
+    # PostgreSQL container default). On Linux prod hosts, reserve hugepages
+    # so Postgres can actually use them — `try` silently falls back to mmap
+    # when none are reserved.
+    #
+    #   Linux:    sudo sysctl -w vm.nr_hugepages=4200   # for 8GB shared_buffers (8192/2 + slack)
+    #             echo 'vm.nr_hugepages=4200' | sudo tee /etc/sysctl.d/30-postgres-hugepages.conf
+    #
+    #   WSL2:     not recommended for dev — requires both .wslconfig kernel
+    #             params AND in-distro sysctl, fragile across WSL upgrades.
+    #             Confirm with: cat /proc/meminfo | grep ^Huge
+    # Memory limit raised from 4G to 12G (Kyle-approved 2026-04-19, Module 2 Phase B moderate path).
+    # shared_buffers=8GB requires the container limit to exceed 8GB; 12G provides 4GB headroom
+    # for PG working memory, WAL buffers, and OS page cache within the container.
+    deploy:
+      resources:
+        limits:
+          cpus: "6.0"
+          memory: 16G
+        reservations:
+          memory: 10G
+    shm_size: 1gb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgresql/init:/docker-entrypoint-initdb.d:ro
+      # Backup script (executed by Ofelia job-exec) + staging volume
+      - ./docker/postgresql/backup.sh:/backup-scripts/postgresql/backup.sh:ro
+      - backup_staging:/backup/staging
+      # pg_hba.conf bind mount — Module 1 Phase C prep, 2026-04-19.
+      # Overrides whatever pg_hba.conf is in PGDATA; survives volume wipes.
+      # Activated via: -c hba_file=/etc/postgresql/pg_hba.conf (in command above).
+      - ./docker/postgresql/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      # WAL archive volume — PostgreSQL writes WAL segments here via archive_command.
+      # backup-agent reads this volume (read-only) to upload to SeaweedFS every 5m.
+      - pg_wal_archive:/var/lib/postgresql/wal_archive
+    # Internal only — applications connect through PgBouncer
+    expose:
+      - "5432"
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-georag} -d ${POSTGRES_DB:-georag}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # SG-01 fix: allow PostgreSQL to flush dirty pages and drain connections
+    stop_grace_period: 30s
+    # No profiles — PostgreSQL is core infrastructure, always starts
+
+  # ---------------------------------------------------------------------------
+  # PGBOUNCER — connection pooler in front of PostgreSQL
+  # All application services connect here on port 6432.
+  # Transaction pooling mode: essential for asyncpg compatibility.
+  # ---------------------------------------------------------------------------
+  pgbouncer:
+    # Reverted from bitnami/pgbouncer:1.23.1 — Bitnami pulled the image from
+    # Docker Hub (moved to bitnamilegacy registry; new images require subscription).
+    # edoburu/pgbouncer is the long-running community image, actively maintained.
+    # edoburu uses DB_* vars for backend creds and bare POOL_MODE/AUTH_TYPE/etc
+    # for pool config — different naming convention from bitnami's PGBOUNCER_* vars.
+    # B8 — digest pinned 2026-04-19
+    image: edoburu/pgbouncer:v1.25.1-p0@sha256:c7bfcaa24de830e29588bb9ad1eb39cebaf07c27149e1974445899b695634bb4
+    container_name: georag-pgbouncer
+    restart: unless-stopped
+    environment:
+      # edoburu backend connection vars
+      DB_HOST: postgresql
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-georag}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      DB_NAME: ${POSTGRES_DB:-georag}
+      # Pool configuration (edoburu uses bare names, no PGBOUNCER_ prefix)
+      POOL_MODE: transaction
+      # B3 — pool sizing recalculated from real worker counts (2026-04-19):
+      #   FastAPI:         4 uvicorn workers, asyncpg pool max_size=25 (hard cap in main.py)
+      #   Laravel Octane:  4 Swoole workers, ~1-2 PG conns each peak = ~8
+      #   Laravel Horizon: ~3 queue workers (dev: supervisor-1=1 + supervisor-llm=2) = ~3
+      #   Dagster daemon:  1 process = ~2
+      #   Dagster webserver: 1 process = ~1
+      #   Backup-agent:    short-lived, not permanent
+      #   Peak concurrent backend connections = ~39-40
+      # DEFAULT_POOL_SIZE=50: covers peak demand (40) with 25% headroom.
+      # PG max_connections=200: 50 per-pool leaves 150 for direct admin/Dagster access.
+      # max_client_conn=1000: raised to prod spec target; front-side accepts up to 1000
+      #   application-side connections (not a PG resource — PgBouncer multiplexes to 50).
+      # server_lifetime and server_idle_timeout made explicit per PGB-02/PGB-03.
+      # query_wait_timeout explicit per PGB-02.
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "50"
+      MIN_POOL_SIZE: "5"
+      RESERVE_POOL_SIZE: "5"
+      AUTH_TYPE: scram-sha-256
+      SERVER_IDLE_TIMEOUT: "600"
+      SERVER_LIFETIME: "3600"
+      QUERY_WAIT_TIMEOUT: "120"
+      SERVER_RESET_QUERY: "DISCARD ALL"
+      LISTEN_PORT: "6432"
+      # DB review #1/#3 — asyncpg's server_settings={"jit": "off", ...}
+      # sends these as Postgres startup parameters. PgBouncer rejects any
+      # startup parameter not on this whitelist.
+      IGNORE_STARTUP_PARAMETERS: "extra_float_digits,jit,application_name"
+      # B1 — HC-02 fix: expose georag as admin_users so SHOW POOLS healthcheck
+      # can connect to the pgbouncer virtual admin DB without a separate postgres user.
+      # edoburu entrypoint generates admin_users from this var (default: postgres).
+      ADMIN_USERS: ${POSTGRES_USER:-georag}
+    ports:
+      - "${PGBOUNCER_PORT:-6432}:6432"
+    networks:
+      - georag
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    healthcheck:
+      # B1 — HC-02 fix: SHOW POOLS verifies PgBouncer can serve admin queries,
+      # not just that the port is open. Requires ADMIN_USERS=georag (set above)
+      # so georag can connect to the pgbouncer virtual admin DB.
+      # Note: SHOW POOLS only shows a georag row after a client has connected;
+      # the check relies on psql exit code 0 (success) rather than output parsing.
+      test:
+        - "CMD-SHELL"
+        - "PGPASSWORD=${POSTGRES_PASSWORD} psql -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-georag} -d pgbouncer -c 'SHOW POOLS' -t 2>/dev/null"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # SG-01 fix: allow PgBouncer to drain active connections cleanly
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 64M
+    # No profiles — PgBouncer is core infrastructure, always starts
+
+  # ---------------------------------------------------------------------------
+  # REDIS 8 — cache + Horizon queue backend
+  # maxmemory 512MB with allkeys-lru eviction for the dev workstation budget.
+  # AOF persistence is OFF (cache-only mode). If you need durable queues,
+  # provision a second Redis instance with AOF on.
+  # ---------------------------------------------------------------------------
+  redis:
+    # B8 — digest pinned 2026-04-19
+    image: redis:8.6.3-alpine@sha256:b9646e7cdf8165d985b88bb3e61b3f2f7625db7f6c98af79def91997d04f26b9
+    container_name: georag-redis
+    restart: unless-stopped
+    # Redis review — full config notes:
+    # AOF (review #1): The same Redis instance holds Horizon supervisor
+    # state, Laravel queue jobs, Laravel sessions, AND Laravel cache.
+    # Running with `save "" appendonly no` means every restart wipes
+    # queue jobs in flight + logs everyone out. `appendonly yes` +
+    # `appendfsync everysec` gives durability within 1 s for ~5 % perf
+    # cost. Cache-only deployments can flip this back off via .env.
+    # `appendonly-truncate-to-timestamp` handles unclean shutdown.
+    #
+    # Lazy-free (review #6): enabling the async paths offloads eviction
+    # + expiration work to a background thread. At < 10 MB dataset
+    # today it doesn't matter, but it's the correct default for scale.
+    #
+    # Slowlog (review #5): default 10 ms threshold is too coarse for
+    # Redis (commands typically complete in < 1 ms). 1 ms catches
+    # actionable slow paths without spamming.
+    #
+    # Databases (review #8): capped 16 → 4 so the operator sees the
+    # intended schema at a glance: db0=queue/horizon/sessions,
+    # db1=cache, db2=spare, db3=spare.
+    #
+    # Timeout (review #8): close idle clients after 10 min. Defence
+    # against leaky clients; `tcp-keepalive=300` handles dead sockets.
+    command: >
+      redis-server
+        --maxmemory ${REDIS_MAXMEMORY:-512mb}
+        --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+        --appendonly ${REDIS_APPENDONLY:-yes}
+        --appendfsync ${REDIS_APPENDFSYNC:-everysec}
+        --save ""
+        --databases 4
+        --tcp-backlog 511
+        --timeout 600
+        --tcp-keepalive 300
+        --slowlog-log-slower-than 1000
+        --slowlog-max-len 256
+        --lazyfree-lazy-eviction yes
+        --lazyfree-lazy-expire yes
+        --lazyfree-lazy-server-del yes
+        --lazyfree-lazy-user-del yes
+        --lazyfree-lazy-user-flush yes
+        --loglevel notice
+        --requirepass ${REDIS_PASSWORD:-}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # SG-01 fix: allow Redis to complete AOF fsync before shutdown
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 128M
+    # No profiles — Redis is core infrastructure, always starts
+
+  # ---------------------------------------------------------------------------
+  # LARAVEL OCTANE — main application server
+  # Swoole keeps the application in memory for high-throughput request handling.
+  # This is NOT php-fpm. The app boots once, stays warm.
+  # ---------------------------------------------------------------------------
+  laravel-octane:
+    build:
+      context: .
+      dockerfile: docker/laravel.Dockerfile
+    image: georag/laravel:latest
+    container_name: georag-laravel-octane
+    restart: unless-stopped
+    # C5-01 fix 2026-04-19: shell wrapper changed to `exec` into php so Swoole
+    # becomes PID 1 and receives SIGTERM directly from Docker, enabling graceful
+    # worker drain within the 30s stop_grace_period.  Without exec, `sh` holds
+    # PID 1, swallows SIGTERM, and Docker SIGKILLs the container at 30s (exit 137).
+    command: >
+      sh -c "rm -f /usr/local/etc/php/conf.d/opcache-dev.ini &&
+             echo 'opcache.validate_timestamps=1' > /usr/local/etc/php/conf.d/zz-opcache-override.ini &&
+             { echo \"upload_max_filesize=${PHP_UPLOAD_MAX_FILESIZE:-2G}\"; echo \"post_max_size=${PHP_POST_MAX_SIZE:-2G}\"; } > /usr/local/etc/php/conf.d/zz-upload-override.ini &&
+             exec php artisan octane:start --host=0.0.0.0 --port=80 --server=swoole --workers=${OCTANE_WORKERS:-4} --task-workers=${OCTANE_TASK_WORKERS:-6} --max-requests=${OCTANE_MAX_REQUESTS:-500}"
+    ports:
+      - "${APP_PORT:-80}:80"
+    environment:
+      APP_NAME: ${APP_NAME:-GeoRAG}
+      APP_ENV: ${APP_ENV:-local}
+      APP_KEY: ${APP_KEY:?APP_KEY must be set in .env}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_URL: ${APP_URL:-http://localhost}
+      # Sanctum SPA stateful domains — without this, EnsureFrontendRequestsAreStateful
+      # treats inbound traffic as token-only and skips StartSession, so spaLogin
+      # 500s with "Session store not set on request" (2026-05-22 regression).
+      SANCTUM_STATEFUL_DOMAINS: ${SANCTUM_STATEFUL_DOMAINS:-localhost,localhost:8888,127.0.0.1,127.0.0.1:8888,host.docker.internal,host.docker.internal:8888}
+      # Database — always route through PgBouncer
+      DB_CONNECTION: pgsql
+      DB_HOST: pgbouncer
+      DB_PORT: 6432
+      DB_DATABASE: ${POSTGRES_DB:-georag}
+      DB_USERNAME: ${GEORAG_APP_USER:-georag_app}
+      DB_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
+      # Dedicated migration connection (config/database.php → pgsql_migrations).
+      # Bypasses pgbouncer (DDL needs session state) and uses the phase0 owner
+      # role so ALTER on phase0-owned tables + CREATE SCHEMA succeed without
+      # `GRANT georag TO georag_app` (which would make the runtime app a
+      # Postgres superuser). Runtime DB_USERNAME above stays unchanged.
+      MIGRATE_DB_CONNECTION: pgsql_migrations
+      MIGRATE_DB_HOST: postgresql
+      MIGRATE_DB_PORT: 5432
+      MIGRATE_DB_USERNAME: ${POSTGRES_USER:-georag}
+      MIGRATE_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Phase 1 Step 7 — read-only secondary connection onto the Hatchet
+      # engine's own database (separate logical DB, separate role on the
+      # same Postgres server). Used by HatchetWorkersController to render
+      # the Hatchet Worker Dashboard.
+      HATCHET_PG_HOST: postgresql
+      HATCHET_PG_PORT: 5432
+      HATCHET_PG_DB: hatchet
+      HATCHET_PG_USER: hatchet
+      HATCHET_PG_PASSWORD: ${HATCHET_DB_PASSWORD:-hatchet}
+      # Phase 3 Step 7 — Activepieces sunset. ACTIVEPIECES_PG_* removed.
+      # Phase 3 Step 6 — read-only secondary connection onto Kestra's
+      # own database (mirrors pgsql_hatchet pattern).
+      KESTRA_PG_HOST_LARAVEL: postgresql
+      KESTRA_PG_PORT_LARAVEL: 5432
+      KESTRA_PG_DATABASE_LARAVEL: kestra
+      KESTRA_PG_USER_LARAVEL: kestra
+      KESTRA_PG_PASSWORD: ${KESTRA_PG_PASSWORD:?KESTRA_PG_PASSWORD must be set in .env}
+      # Phase 4 Step 2 — Kestra basic auth, consumed by KestraSsoController
+      # which reverse-proxies /admin/integrations/kestra/* to Kestra with
+      # `Authorization: Basic …` injected on behalf of the Sanctum operator.
+      KESTRA_BASIC_AUTH_USER: ${KESTRA_BASIC_AUTH_USER:-admin@georag.local}
+      KESTRA_BASIC_AUTH_PASSWORD: ${KESTRA_BASIC_AUTH_PASSWORD:?KESTRA_BASIC_AUTH_PASSWORD must be set in .env}
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      CACHE_DRIVER: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      # FastAPI service
+      FASTAPI_HOST: fastapi
+      FASTAPI_PORT: 8000
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # Reverb WebSocket. NOTE: REVERB_HOST/PORT here are the PUBLISHER
+      # targets (where Laravel POSTs broadcast events from inside the
+      # Docker network), not what the browser sees. Hard-coded to the
+      # Docker DNS hostname + the Reverb container's internal port.
+      # Browser side reads VITE_REVERB_* from .env (localhost:8085).
+      REVERB_APP_ID: ${REVERB_APP_ID:-georag-app}
+      REVERB_APP_KEY: ${REVERB_APP_KEY:?REVERB_APP_KEY must be set in .env}
+      REVERB_APP_SECRET: ${REVERB_APP_SECRET:?REVERB_APP_SECRET must be set in .env}
+      REVERB_HOST: laravel-reverb
+      REVERB_PORT: 8080
+      REVERB_SCHEME: http
+      # MinIO / S3
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_BUCKET: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
+      AWS_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+      # Logging
+      LOG_CHANNEL: stack
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # Langfuse observability — same self-hosted instance as the langfuse-mcp.
+      # Empty keys disable the SDK at boot. Host uses in-network service name.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      # Browser-facing URL (used by SupportCockpit for trace deep-links).
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3001}
+    volumes:
+      - .:/app:cached
+    networks:
+      - georag
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/up"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # SG-02 fix: allow Swoole workers to finish in-flight requests before shutdown
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 256M
+    profiles: ["dev-light", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # LARAVEL HORIZON — queue worker
+  # Same image as laravel-octane, different entrypoint command.
+  # Processes jobs from Redis queues: default, embeddings, notifications, exports.
+  # ---------------------------------------------------------------------------
+  laravel-horizon:
+    image: georag/laravel:latest
+    container_name: georag-laravel-horizon
+    restart: unless-stopped
+    command: php artisan horizon
+    environment:
+      APP_NAME: ${APP_NAME:-GeoRAG}
+      APP_ENV: ${APP_ENV:-local}
+      APP_KEY: ${APP_KEY:?APP_KEY must be set in .env}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_URL: ${APP_URL:-http://localhost}
+      DB_CONNECTION: pgsql
+      DB_HOST: pgbouncer
+      DB_PORT: 6432
+      DB_DATABASE: ${POSTGRES_DB:-georag}
+      DB_USERNAME: ${GEORAG_APP_USER:-georag_app}
+      DB_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      QUEUE_CONNECTION: redis
+      LOG_CHANNEL: stack
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # Langfuse observability — same self-hosted instance as the langfuse-mcp.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      # Browser-facing URL (used by Laravel SupportCockpit for trace deep-links).
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3001}
+      FASTAPI_HOST: fastapi
+      FASTAPI_PORT: 8000
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # Reverb broadcaster — Horizon POSTs events into the Docker
+      # network, so target the laravel-reverb service hostname on
+      # Reverb's INTERNAL port (8080), not the browser-facing 8085
+      # mapping. The shared .env REVERB_HOST=0.0.0.0 fails from inside
+      # a container because 0.0.0.0:8085 resolves to localhost-on-Horizon.
+      REVERB_APP_ID: ${REVERB_APP_ID:-georag-app}
+      REVERB_APP_KEY: ${REVERB_APP_KEY:?REVERB_APP_KEY must be set in .env}
+      REVERB_APP_SECRET: ${REVERB_APP_SECRET:?REVERB_APP_SECRET must be set in .env}
+      REVERB_HOST: laravel-reverb
+      REVERB_PORT: 8080
+      REVERB_SCHEME: http
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_BUCKET: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
+      AWS_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+    volumes:
+      - .:/app:cached
+    networks:
+      - georag
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      laravel-octane:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "php artisan horizon:status | grep -E 'running|paused' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # SG-03 fix: allow Horizon to finish in-flight jobs (embedding, export) before shutdown
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          memory: 128M
+    profiles: ["dev-light", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # LARAVEL REVERB — WebSocket server
+  # Handles real-time streaming of LLM token deltas and citation events to React.
+  # Same image as laravel-octane, different entrypoint command.
+  # ---------------------------------------------------------------------------
+  laravel-reverb:
+    image: georag/laravel:latest
+    container_name: georag-laravel-reverb
+    restart: unless-stopped
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    ports:
+      - "${REVERB_HOST_PORT:-8085}:8080"
+    environment:
+      APP_NAME: ${APP_NAME:-GeoRAG}
+      APP_ENV: ${APP_ENV:-local}
+      APP_KEY: ${APP_KEY:?APP_KEY must be set in .env}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      APP_URL: ${APP_URL:-http://localhost}
+      DB_CONNECTION: pgsql
+      DB_HOST: pgbouncer
+      DB_PORT: 6432
+      DB_DATABASE: ${POSTGRES_DB:-georag}
+      DB_USERNAME: ${GEORAG_APP_USER:-georag_app}
+      DB_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REVERB_APP_ID: ${REVERB_APP_ID:-georag-app}
+      REVERB_APP_KEY: ${REVERB_APP_KEY:?REVERB_APP_KEY must be set in .env}
+      REVERB_APP_SECRET: ${REVERB_APP_SECRET:?REVERB_APP_SECRET must be set in .env}
+      REVERB_HOST: ${REVERB_HOST:-0.0.0.0}
+      REVERB_PORT: ${REVERB_PORT:-8080}
+      REVERB_SCHEME: ${REVERB_SCHEME:-http}
+      LOG_CHANNEL: stack
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # Langfuse observability — same self-hosted instance as the langfuse-mcp.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      # Browser-facing URL (used by Laravel SupportCockpit for trace deep-links).
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3001}
+    volumes:
+      - .:/app:cached
+    networks:
+      - georag
+    depends_on:
+      redis:
+        condition: service_healthy
+      laravel-octane:
+        condition: service_started
+    healthcheck:
+      # B1 — HC-04 fix: Reverb 1.x exposes /up returning {"health":"OK"} with HTTP 200.
+      # Replaces the prior weak check (exit 22 = any HTTP error counted as healthy).
+      test: ["CMD", "curl", "-f", "http://localhost:8080/up"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # SG-04 fix: allow Reverb to close WebSocket connections cleanly before shutdown
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          memory: 64M
+    profiles: ["dev-light", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # MARTIN — PostGIS-to-MVT tile server
+  # Serves geological vector layers (collars, drill traces, boundaries,
+  # formations, historic workings) as Mapbox Vector Tiles directly from
+  # PostGIS SQL function sources. See §04d-tile in georag-architecture.html.
+  # Connects directly to PostgreSQL (NOT PgBouncer) — Martin uses persistent
+  # connections incompatible with transaction-mode pooling.
+  # Config: docker/martin/martin.yaml
+  # ---------------------------------------------------------------------------
+  martin:
+    # Pinned to Martin 1.x stable. Config (martin.yaml) already on the 1.x
+    # schema (`functions:` / `tables:` instead of *_sources). Latest as of
+    # 2026-04: 1.5.0. Note: 1.x dropped the `v` prefix from image tags.
+    # B8 — digest pinned 2026-04-19
+    # V1.5-06 — bumped 1.5.0 → 1.7.0 for native /metrics endpoint
+    # (martin_tile_cache_requests_total, martin_cache_requests_total + standard
+    # process_*, http_requests_total). Unlocks the 4 alert rules in
+    # docker/prometheus/rules/martin-alerts.yml previously DORMANT per
+    # feedback_martin_tile_gotchas.md gotcha 3.
+    image: ghcr.io/maplibre/martin:1.7.0@sha256:077329dbde8d791f030b9eab63f4681772480be2f6ceebab0108cb79cebb4aa3
+    container_name: georag-martin
+    restart: unless-stopped
+    command: --config /config/martin.yaml
+    ports:
+      - "${MARTIN_PORT:-3002}:3000"
+    environment:
+      DATABASE_URL: "postgresql://${GEORAG_APP_USER:-georag_app}:${GEORAG_APP_PASSWORD}@postgresql:5432/${POSTGRES_DB:-georag}"
+    volumes:
+      - ./docker/martin/martin.yaml:/config/martin.yaml:ro
+    networks:
+      - georag
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    # B1 — HC-03 fix: Martin has wget at /usr/bin/wget (verified 2026-04-19).
+    # wget --spider issues a HEAD request; exits 0 on HTTP 200, non-zero otherwise.
+    # /health is Martin's built-in readiness endpoint (responds when tile sources are loaded).
+    # start_period raised to 60s as Martin reads and validates all PostGIS sources on boot.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    # SG-01 fix: explicit grace period for discoverability (Martin processes tile requests)
+    stop_grace_period: 10s
+    # ── Network performance tuning ────────────────────────────────────────
+    # Commented out — net.ipv4.tcp_nodelay is not an overridable sysctl in
+    # WSL2's Docker runtime (fails with "unsafe procfs detected" on create).
+    # It's already the kernel default, and net.core.somaxconn=128 is fine
+    # for dev. Tune at the host level in production if needed.
+    # sysctls:
+    #   net.core.somaxconn: 1024
+    #   net.ipv4.tcp_nodelay: 1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          memory: 64M
+    profiles: ["dev-light", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # FASTAPI — Python domain service
+  # Owns: RAG pipeline, Pydantic AI agent, embeddings, all async DB operations,
+  # hallucination prevention layers, SSE streaming to Laravel.
+  # Service-to-service auth: X-Service-Key header checked against FASTAPI_SERVICE_KEY.
+  # ---------------------------------------------------------------------------
+  fastapi:
+    build:
+      context: ./src/fastapi
+      dockerfile: ../../docker/fastapi.Dockerfile
+    image: georag/fastapi:latest
+    container_name: georag-fastapi
+    restart: unless-stopped
+    # 2026-05-22: explicit command — `docker commit` from the worker
+    # container baked the worker CMD into georag/fastapi:latest, so this
+    # service was accidentally running the Hatchet worker instead of
+    # uvicorn. Pinning the command here so future image changes can't
+    # silently swap the chat service to a background worker again.
+    command: >
+      uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --workers ${UVICORN_WORKERS:-6}
+        --no-access-log
+        --proxy-headers
+        --forwarded-allow-ips *
+        --timeout-graceful-shutdown 30
+        --header server:GeoRAG
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"
+    environment:
+      # Phase F.5 — pin the import root to the bind-mounted source tree so
+      # live edits in src/fastapi/app/ take effect immediately. Without this
+      # PYTHONPATH, uvicorn finds the baked site-packages copy first (see
+      # the Dockerfile's `uv pip install --system --no-deps . || true` step)
+      # and bind-mount edits silently no-op until the next image rebuild.
+      PYTHONPATH: /app
+      FASTAPI_HOST: ${FASTAPI_HOST:-0.0.0.0}
+      FASTAPI_PORT: ${FASTAPI_PORT:-8000}
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # Reverb broadcast bridge — laravel_bridge.post_ingestion_progress /
+      # post_workspace_data_updated POST here. Internal Docker DNS hostname;
+      # default of http://laravel.test (from the Python source) does NOT
+      # resolve from inside the container network.
+      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
+      # Latency-fix follow-up — bge-reranker-base runs on CPU. Explicit
+      # thread count so the CrossEncoder's intra-op parallelism is bounded
+      # (default would oversubscribe the 32 hardware threads and contend
+      # with vLLM's CPU work). TOKENIZERS_PARALLELISM=false avoids the
+      # HuggingFace deadlock warning when fork() happens inside executors.
+      OMP_NUM_THREADS: "10"
+      TOKENIZERS_PARALLELISM: "false"
+      # ADR-0010 §5e — optional local LoRA candidate path. Empty/unset
+      # falls back to the pinned BAAI/bge-reranker-base HF identity.
+      # When set, app/services/reranker.py loads via CrossEncoder(<path>)
+      # instead. Used for A/B benches comparing fine-tuned candidates
+      # against the stock baseline without rebuilding the image.
+      RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # Phase 3 Step 3 — per-flow JWT signing secret for Kestra → FastAPI
+      # integrations bridge (Authorization: Bearer <jwt>). Distinct from
+      # FASTAPI_SERVICE_KEY so rotation of one doesn't disturb the other.
+      KESTRA_FLOW_JWT_SECRET: ${KESTRA_FLOW_JWT_SECRET:?KESTRA_FLOW_JWT_SECRET must be set in .env}
+      # Phase 5 Step 2 — per-flow JWT signing keys live encrypted in
+      # workflow.flow_registry. flow_jwt._load_per_flow_key_sync() needs
+      # the pgcrypto key to decrypt; same value as the hatchet-worker-ai
+      # block so both can decrypt the shared registries.
+      AUDIT_ENCRYPTION_KEY: ${AUDIT_ENCRYPTION_KEY:?AUDIT_ENCRYPTION_KEY must be set in .env}
+      # Direct Postgres bypassing pgbouncer — the per-flow key loader
+      # needs a stable session for transaction-local set_config().
+      POSTGRES_DIRECT_HOST: postgresql
+      POSTGRES_DIRECT_PORT: "5432"
+      # Hatchet client — for /internal/v1/shadow/ingest_pdf/trigger
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:?HATCHET_CLIENT_TOKEN must be set in .env}
+      HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
+      HATCHET_CLIENT_TLS_STRATEGY: ${HATCHET_CLIENT_TLS_STRATEGY:-none}
+      # PostgreSQL via PgBouncer
+      POSTGRES_HOST: pgbouncer
+      POSTGRES_PORT: 6432
+      POSTGRES_DB: ${POSTGRES_DB:-georag}
+      POSTGRES_USER: ${GEORAG_APP_USER:-georag_app}
+      POSTGRES_PASSWORD: ${GEORAG_APP_PASSWORD:?GEORAG_APP_PASSWORD must be set in .env}
+      # Redis (async)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # Neo4j — N4J-01 fix (2026-04-19 Module 2 Phase B): pass driver credentials.
+      # FastAPI config.py reads NEO4J_USER + NEO4J_PASSWORD (Settings class).
+      # NEO4J_AUTH is kept for informational env parity but not used by FastAPI.
+      NEO4J_HOST: ${NEO4J_HOST:-neo4j}
+      NEO4J_PORT: ${NEO4J_PORT:-7687}
+      NEO4J_USER: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      # Qdrant
+      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
+      QDRANT_PORT: ${QDRANT_PORT:-6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      # SeaweedFS S3 (per ADR-0001). Canonical env names are S3_*; the
+      # MINIO_* aliases are kept one release for backward-compat with
+      # Python code that still reads `os.environ['MINIO_ROOT_USER']`.
+      # FastAPI agents (Storage Tiering, Support Packet) hit ${S3_ENDPOINT}
+      # via aioboto3 with these creds.
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      S3_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      S3_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
+      # Back-compat aliases — drop in the next release once all consumer
+      # code reads S3_*.
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      MINIO_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      # LLM — backend selection + primary OpenAI-compat target.
+      # vLLM is the single inference runtime per master-plan §12.
+      LLM_BACKEND: ${LLM_BACKEND:-vllm}
+      LLM_BACKEND_FALLBACK: ${LLM_BACKEND_FALLBACK:-downshift}
+      LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-http://vllm:8000/v1}
+      LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
+      LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
+      LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
+      # vLLM (primary when LLM_BACKEND=vllm — the cutover-target default
+      # post-2026-05-08; also the failover target when
+      # LLM_BACKEND_FALLBACK=local_llm). Defaults align with the vllm
+      # service's own command flags so FastAPI's view of the served model
+      # matches what vLLM is actually serving.
+      VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
+      VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEM_UTIL:-0.92}
+      # Anthropic — set ANTHROPIC_API_KEY in .env + flip LLM_BACKEND
+      # to "anthropic" to activate. See docs/RUNBOOK.md "LLM backend
+      # selection" for the full flip procedure.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-7}
+      ANTHROPIC_MAX_OUTPUT_TOKENS: ${ANTHROPIC_MAX_OUTPUT_TOKENS:-4096}
+      ANTHROPIC_ENABLE_PROMPT_CACHING: ${ANTHROPIC_ENABLE_PROMPT_CACHING:-true}
+      ANTHROPIC_USE_PRIORITY_TIER: ${ANTHROPIC_USE_PRIORITY_TIER:-false}
+      MODEL_TIER_FAST: ${MODEL_TIER_FAST:-claude-haiku-4-5}
+      MODEL_TIER_STANDARD: ${MODEL_TIER_STANDARD:-claude-sonnet-4-5}
+      MODEL_TIER_DEEP: ${MODEL_TIER_DEEP:-claude-opus-4-7}
+      # Cross-database timeouts (Section 06e)
+      TIMEOUT_POSTGIS_S: ${TIMEOUT_POSTGIS_S:-5}
+      TIMEOUT_NEO4J_S: ${TIMEOUT_NEO4J_S:-3}
+      TIMEOUT_QDRANT_S: ${TIMEOUT_QDRANT_S:-2}
+      TIMEOUT_REDIS_MS: ${TIMEOUT_REDIS_MS:-500}
+      TIMEOUT_GATHER_S: ${TIMEOUT_GATHER_S:-180}
+      RETRIEVAL_QUALITY_THRESHOLD: ${RETRIEVAL_QUALITY_THRESHOLD:-0.6}
+      # ADR-0010 — silver.document_passages canonical chunked corpus.
+      # When True, search_documents reads from the georag_chunks Qdrant
+      # collection (fed by index_document_passages) instead of the
+      # legacy georag_reports collection (fed by index_reports).
+      # Hard flag flip per ADR-0010 §execute Session C.
+      RETRIEVAL_USE_DOCUMENT_PASSAGES: ${RETRIEVAL_USE_DOCUMENT_PASSAGES:-false}
+      # Module 6 Phase B Chunk 2+3 — Citation span resolver + guards
+      CITATION_SPAN_RESOLVER_ENABLED: ${CITATION_SPAN_RESOLVER_ENABLED:-false}
+      # ADR-0007 — agentic retrieval v2 path (intent classifier + LangGraph
+      # routing → query_project_summary / query_coverage_gap and the legacy
+      # six intents). Flag default is False in config.py; .env override flips
+      # it on for the dev stack so chat actually exercises the new intents.
+      AGENTIC_RETRIEVAL_V2_ENABLED: ${AGENTIC_RETRIEVAL_V2_ENABLED:-false}
+      # Plan §4b/§4c Stage 1 — repair-loop shadow telemetry. Default off;
+      # dev flips on per ADR-0009 Stage 1.
+      REPAIR_LOOP_SHADOW_ENABLED: ${REPAIR_LOOP_SHADOW_ENABLED:-false}
+      # Plan §3 context-prep pipeline. Default off; changes LLM input
+      # shape, gated behind ADR-0009 Stage C2 (live LLM eval).
+      CONTEXT_PREP_ENABLED: ${CONTEXT_PREP_ENABLED:-false}
+      # Plan §3e multi-turn resolver. Default off; needs Laravel-side
+      # history loader before the wire is useful end-to-end.
+      MULTI_TURN_RESOLUTION_ENABLED: ${MULTI_TURN_RESOLUTION_ENABLED:-false}
+      # Plan §1b parent-child chunker. Default off; flipping it makes
+      # new PDF ingests emit parent + child passages with FK linkage,
+      # enabling the §3d expander on greenfield documents.
+      PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
+      PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # HuggingFace model cache — www-data can't write to /var/www default
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      # Additional caches needed once unstructured[pdf] is in the image.
+      # numba JIT cache + matplotlib config + fontconfig — all default to
+      # $HOME (/var/www) which is read-only for www-data. Without these,
+      # `from unstructured.partition.pdf import partition_pdf` raises
+      # RuntimeError at import time (numba can't write its cache).
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      # Sentry observability — same project as Laravel side. Blank DSN
+      # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
+      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_ENABLE_LOGS: ${SENTRY_ENABLE_LOGS:-true}
+      # Langfuse observability — same self-hosted instance as the langfuse-mcp.
+      # Empty PUBLIC/SECRET key disables the SDK at app boot. Host uses the
+      # in-network service name (langfuse-web:3000), not the host-port 3001.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      # Browser-facing URL — FastAPI doesn't currently use it, but kept consistent
+      # with the Laravel containers in case future trace-link generation moves here.
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-http://localhost:3001}
+      # §04p PDF subsystem — bronze store local path. The default in code
+      # is `/var/lib/georag/bronze` which the www-data container user
+      # cannot create. Point it at /tmp/georag/bronze (always writable)
+      # for the dev profile; production should point at SeaweedFS via the
+      # forthcoming SeaweedFsBronzeStore implementation (see
+      # `services/bronze_store.py` module docstring).
+      BRONZE_LOCAL_DIR: ${BRONZE_LOCAL_DIR:-/tmp/georag/bronze}
+    # Module 9 Chunk 9.7 (A8-02) — runs as the Dockerfile-declared www-data
+    # (UID 33). The previous `user: root` override was redundant; the
+    # Dockerfile already chowns /app to www-data. Existing dev environments
+    # may need to recreate the fastapi_hf_cache named volume once after this
+    # change so first-mount ownership matches.
+    # See ops/runbooks/container-hardening.md for migration steps.
+    user: "33:33"
+    volumes:
+      - ./src/fastapi:/app:cached
+      - fastapi_hf_cache:/tmp/hf_cache
+      # Phase B uranium ingest staging — extracted PLSS-section directories
+      # land here under /data/<section>/; cluster_runner.ingest_cluster
+      # walks the section dir for LAS + .log + PDF + XLSX files.
+      - georag-phase-b-extract:/data
+    networks:
+      - georag
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # B2 — FastAPI depends on all four backend stores being ready before serving requests.
+      # Without these, startup-time asyncpg pool creation and Qdrant collection checks fail.
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # SG-05 fix: allow FastAPI to complete in-flight asyncio gather calls (TIMEOUT_GATHER_S=8s)
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "5.0"
+          # RES-01 fix (2026-04-19 infra audit): raised from 2g — embedding + HF model cache
+          # sits at ~1.85 GiB idle (92.9% of old limit). Under real load (warm embedding model,
+          # concurrent RAG requests) the old limit caused OOM kills.
+          # 2026-04-21 Module 4 Chunk 2: bumped from 4G to host SPLADE++ encoder alongside
+          # existing dense embedding cache (~2.4 GiB idle baseline per Module 2 C4).
+          # 4 uvicorn workers × ~500 MB SPLADE = ~2 GiB SPLADE + ~2.4 GiB dense baseline = ~4.4 GiB.
+          # 6G provides ~1.6 GiB headroom for concurrent RAG request spikes.
+          memory: 10g
+        reservations:
+          memory: 5g
+          # 2026-05-19: GPU passthrough added for in-process LoRA fine-tuning
+          # of the reranker (src/fastapi/scripts/train_reranker_lora.py).
+          # Shared with vllm — fastapi only uses GPU during training windows;
+          # for normal RAG operations the embedding model + reranker run on CPU.
+          # NB: when both containers compete, vllm's 0.92 mem util leaves
+          # ~1.6 GB free; trigger a vllm stop before running training.
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["dev-data", "dev-full"]
+
+  # ===========================================================================
+  # PROFILE: dev-data
+  # Neo4j, Qdrant, MinIO — start when working on graph/vector/object storage
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # NEO4J COMMUNITY 2026 — knowledge graph
+  # Community Edition: no clustering, no Enterprise warmup, no database RBAC.
+  # Page cache 4G + heap 4G. Authenticated (NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}) — Module 2 Phase B N4J-01.
+  # Manual warmup is performed by the neo4j-warmup init container below.
+  # ---------------------------------------------------------------------------
+  neo4j:
+    # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
+    # IMG-01 fix (2026-04-19 infra audit): the tag neo4j:2026.02.3-community does not
+    # exist in the registry — Docker silently pulled the floating neo4j:2026-community
+    # tag which resolved to 2026.03.1 Community. Pinned by digest to lock that exact
+    # image. Resolved version: 2026.03.1 Community (neo4j --version output).
+    # NOTE: version 2026.03.1 is NOT the 2026.02.3 target in the architecture doc.
+    # Surface to Kyle before bumping the architecture doc version reference.
+    # Digest resolved: 2026-04-19 from docker hub neo4j:2026-community.
+    image: neo4j:2026-community@sha256:a5feb81d916c82d09186807ee8f8a523eb430d578fa6015f37ae72a07f976537
+    container_name: georag-neo4j
+    restart: unless-stopped
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+      # Neo4j review #7 — Prometheus metrics port not exposed.
+      # Neo4j 2026 Community Edition does not ship the Prometheus
+      # exporter; see `docker/neo4j/conf/neo4j.conf` for the
+      # workaround (cypher-shell + textfile collector).
+    environment:
+      # Auth — N4J-01 fix (2026-04-19 Module 2 Phase B).
+      # NEO4J_AUTH is handled specially by the neo4j Docker entrypoint — it is NOT
+      # mapped to neo4j.conf as a setting. It sets the initial admin password on
+      # first-init of the data volume. Format: "neo4j/<password>".
+      # IMPORTANT: if the volume was previously initialised with NEO4J_AUTH=none,
+      # the new NEO4J_AUTH value will NOT take effect automatically. Run the
+      # one-shot password-set recovery documented in docs/RUNBOOK.md § "Neo4j
+      # auth migration from NEO4J_AUTH=none" before recreating this container.
+      # NOTE: do NOT pass NEO4J_USERNAME or NEO4J_PASSWORD here — the neo4j image
+      # maps all NEO4J_<SETTING_NAME> env vars to neo4j.conf settings, so those
+      # would produce "Unrecognized setting: username / password" startup errors.
+      # The healthcheck below reads GRAPH_USER / GRAPH_PASSWORD instead (no prefix).
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      GRAPH_USER: ${NEO4J_USERNAME:-neo4j}
+      GRAPH_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      # Memory tuning — Community Edition values
+      # Do NOT use db.memory.pagecache.warmup.enable — that is Enterprise-only
+      # B4/N4J-02: heap.initial_size matches heap.max_size (both 4G) to prevent
+      # JVM heap expansion under load which causes GC pressure. Setting initial=max
+      # allocates the full heap at startup — acceptable given 9G container limit.
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-4G}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL_SIZE:-4G}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX_SIZE:-4G}
+      # Connection pool — server side accepts up to 50 concurrent bolt
+      # workers. The FastAPI driver pool is sized 25 (matches asyncpg
+      # ceiling) so the bolt pool has 100% headroom over peak demand.
+      NEO4J_dbms_connector_bolt_thread__pool__min__size: 5
+      NEO4J_dbms_connector_bolt_thread__pool__max__size: 50
+      # Neo4j review #5 — Cluster-wide tx timeout raised from 3 s to 60 s.
+      # The 3 s ceiling broke Dagster ingestion that legitimately runs
+      # large MERGE batches. Chat queries are cancelled client-side at
+      # the FastAPI per-tool 3 s `asyncio.wait_for` boundary, so this
+      # 60 s value is purely a server-side backstop for runaway queries
+      # (bad plan, missing index) — Dagster ingestion finishes well
+      # within it under normal load. Switch to per-query
+      # `session.execute_read(work, timeout=...)` later if you want
+      # true per-query enforcement; the current hybrid is good enough.
+      NEO4J_dbms_transaction_timeout: 60s
+      # Logging — query log shipped to Loki via the docker logs driver.
+      NEO4J_dbms_logs_query_enabled: "INFO"
+      NEO4J_dbms_logs_query_threshold: 1000ms
+      # Neo4j review #8 — APOC plugin auto-installed at startup.
+      # APOC ships periodic.iterate (chunked ingestion), text utilities,
+      # path expansion, and merge.node — the standard graph toolkit.
+      # Restricted to apoc.* so we don't enable APOC Extended (CSV/JSON
+      # loaders that talk to the public internet) by accident.
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+      - ./docker/neo4j/conf:/conf:ro
+      # Backup script (executed by Ofelia job-exec) + staging volume
+      - ./docker/neo4j/backup.sh:/backup-scripts/neo4j/backup.sh:ro
+      - backup_staging:/backup/staging
+    networks:
+      - georag
+    healthcheck:
+      # B1 / N4J-01 fix: -u/-p exercise auth so a wrong password surfaces here.
+      # GRAPH_USER / GRAPH_PASSWORD are non-NEO4J_-prefixed so the neo4j image
+      # does not attempt to map them to neo4j.conf settings.
+      # $$GRAPH_PASSWORD: double-$ prevents docker compose from substituting the
+      # value at config-render time; the shell inside the container expands it
+      # at runtime instead, picking up the actual env var value.
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u neo4j -p \"$$GRAPH_PASSWORD\" 'RETURN 1' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    # SG-01 fix: allow Neo4j to flush checkpoint and close bolt connections before shutdown
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          # 2026-04-19 Phase B: raised from 6G to accommodate pagecache=4G + heap_max=4G + headroom (Section 06 tuning)
+          memory: 9G
+        reservations:
+          memory: 4G
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # NEO4J WARMUP — init container
+  # Runs warmup.cypher after Neo4j is healthy to pre-populate the page cache.
+  # This replaces Enterprise-only db.memory.pagecache.warmup.enable.
+  # restart: "no" ensures this runs once per docker compose up.
+  # The warmup.cypher file is owned by the graph-engineer agent.
+  # ---------------------------------------------------------------------------
+  neo4j-warmup:
+    # Same pinned digest as the neo4j service — must stay in sync.
+    image: neo4j:2026-community@sha256:a5feb81d916c82d09186807ee8f8a523eb430d578fa6015f37ae72a07f976537
+    container_name: georag-neo4j-warmup
+    # N4J-01 fix (2026-04-19 Module 2 Phase B): all cypher-shell calls now pass
+    # -u / -p so the warmup init container authenticates once Neo4j auth is enabled.
+    entrypoint: >
+      sh -c "
+        echo 'Waiting for Neo4j to accept connections...' &&
+        until cypher-shell -a bolt://neo4j:7687 -u \"$$NEO4J_USERNAME\" -p \"$$NEO4J_PASSWORD\" 'RETURN 1' > /dev/null 2>&1; do
+          echo 'Neo4j not ready, retrying in 2s...' && sleep 2;
+        done &&
+        echo 'Neo4j is up — applying schema constraints and indices...' &&
+        cypher-shell -a bolt://neo4j:7687 -u \"$$NEO4J_USERNAME\" -p \"$$NEO4J_PASSWORD\" -f /scripts/init-schema.cypher &&
+        echo 'Schema applied — running warmup queries...' &&
+        cypher-shell -a bolt://neo4j:7687 -u \"$$NEO4J_USERNAME\" -p \"$$NEO4J_PASSWORD\" -f /scripts/warmup.cypher &&
+        echo 'Warmup complete.'
+      "
+    environment:
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+    volumes:
+      - ./docker/neo4j/warmup.cypher:/scripts/warmup.cypher:ro
+      - ./docker/neo4j/init-schema.cypher:/scripts/init-schema.cypher:ro
+    networks:
+      - georag
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # QDRANT v1.17 — vector database
+  # HNSW m=16, ef_construct=200 tuned for geological embedding retrieval.
+  # Payload indices on filter fields (project_id, document_type, etc.) are
+  # configured at collection creation time by the FastAPI service on startup.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
+    # B8 — digest pinned 2026-04-19 (v1.17 is a floating minor tag)
+    image: qdrant/qdrant:v1.17@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+    container_name: georag-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      # Qdrant review #4 — bumped cluster-level HNSW `m` 16 → 32 to match
+      # the per-collection overrides in index_public_geoscience.py /
+      # index_reports.py. Applied when a collection is created without
+      # an explicit hnsw_config block.
+      QDRANT__STORAGE__HNSW_INDEX__M: 32
+      QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT: 256
+      QDRANT__STORAGE__HNSW_INDEX__EF: 200
+      # Qdrant review #6 — cap indexing threads so HNSW builds during
+      # Dagster bulk ingestion don't starve FastAPI request handlers.
+      # Half of the 8-core dev box; bump on larger prod hardware.
+      QDRANT__STORAGE__HNSW_INDEX__MAX_INDEXING_THREADS: 4
+      # Qdrant review #3 — the cluster-level scalar quantization defaults
+      # that were here previously were DEAD config: collections created
+      # via `client.create_collection(...)` without an explicit
+      # quantization_config param do NOT pick them up. Quantization is
+      # now specified at collection-creation time in
+      # `index_public_geoscience.py::_ensure_collection` and
+      # `index_reports.py::_ensure_collection`. The cluster-level
+      # env-vars have been removed to prevent future confusion.
+      #
+      # Qdrant review #10 — WAL bump from 32 MB → 256 MB for high-
+      # throughput Dagster ingestion windows. WAL is per-collection so
+      # this is the ceiling, not aggregate; 256 MB is about 2M point
+      # upserts at 384-dim float32 before a flush.
+      QDRANT__STORAGE__WAL__WAL_CAPACITY_MB: 256
+      # Qdrant review #9 — API key is NOT configured here because empty
+      # string (`QDRANT__SERVICE__API_KEY=""`) ENABLES auth with an
+      # empty-key expectation, breaking every client that doesn't send
+      # an explicit `api-key:` header. To turn auth on, add this line
+      # in an override file or uncomment + set a real value:
+      #
+      #   QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY must be set}
+      #
+      # The `:?` form fails compose startup when .env hasn't set the
+      # value — safer than silently running with empty-string auth.
+      # Dev leaves this unset (network isolation handles the threat
+      # model). See docs/RUNBOOK.md "Qdrant access control".
+      QDRANT__LOG_LEVEL: INFO
+    volumes:
+      - qdrant_data:/qdrant/storage
+      # Backup script (executed by Ofelia job-exec) + staging volume
+      - ./docker/qdrant/backup.sh:/backup-scripts/qdrant/backup.sh:ro
+      - backup_staging:/backup/staging
+    networks:
+      - georag
+    healthcheck:
+      # B1 — HC-01 fix: /readyz reflects actual readiness (storage accessible, indices loaded).
+      # Qdrant has bash but no curl/wget. Docker's CMD-SHELL uses /bin/sh which does not support
+      # /dev/tcp — must invoke bash explicitly. bash /dev/tcp issues a raw HTTP GET to /readyz
+      # and checks the response header for "200 OK".
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/localhost/6333 && printf 'GET /readyz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # SG-01 fix: allow Qdrant to flush WAL and complete in-progress indexing before shutdown
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          memory: 512M
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # SEAWEEDFS — S3-compatible object storage
+  # Replaced MinIO in 2026-04 (see docs/adr/0001-seaweedfs-replaces-minio.md).
+  # Bronze layer: immutable raw file archive (drill logs, PDFs, geophysics).
+  # Buckets: bronze (raw ingest), exports (generated outputs), bronze-raster (raster archive).
+  # S3 API: port 8333  |  Filer (admin/HTTP): port 8888  |  Master: port 9333
+  #
+  # Backwards-compat note: env vars keep the MINIO_* prefix because they're
+  # referenced from Laravel (config/filesystems.php), Dagster
+  # (resources.py:MinIOResource), .env.example, and several places in this
+  # compose file. Renaming them costs more than it gains. They're S3-compatible
+  # credentials for whatever object store is wired in.
+  #
+  # Backwards-compat note 2: docker-compose.yml-internal hostname stays "minio"
+  # via the network alias so dependent services (laravel, fastapi, dagster) keep
+  # resolving the same DNS name. The S3 *port* moves from 9000 \u2192 8333; either
+  # update MINIO_ENDPOINT in env to http://minio:8333 or leave the alias on
+  # 9000 by adding -s3.port=9000 to the entrypoint. We chose to move ports for
+  # honesty and to avoid masking any code that hardcoded 9000.
+  # ---------------------------------------------------------------------------
+  minio:
+    # Pinned to current SeaweedFS stable. Apache 2.0 license fits the
+    # free-licensing rule (MinIO went AGPL v3 in 2024, then archived its repo
+    # Feb 2026 \u2014 see ADR for full reasoning).
+    # B8 — digest pinned 2026-04-19
+    image: chrislusf/seaweedfs:4.20@sha256:cea8339d21dad1b200adce581dd7434d254b8f5975f142c3b4c930ba78647eef
+    container_name: georag-minio
+    restart: unless-stopped
+    # `sh script` instead of direct exec so a missing executable bit on the
+    # bind-mounted script (common on Windows hosts) doesn't break startup.
+    entrypoint: ["sh", "/usr/local/bin/entrypoint.sh"]
+    ports:
+      # S3 API \u2014 was 9000 under MinIO, now 8333 under SeaweedFS.
+      - "${S3_API_PORT:-${MINIO_API_PORT:-8333}}:8333"
+      # Filer HTTP UI / admin (no separate console like MinIO had).
+      - "${S3_CONSOLE_PORT:-${MINIO_CONSOLE_PORT:-8888}}:8888"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+    volumes:
+      - minio_data:/data
+      - ./docker/seaweedfs/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+    networks:
+      - georag
+    healthcheck:
+      # SeaweedFS S3 API responds 200 to a HEAD on the service root once
+      # auth-enabled. Use the unauthenticated /status endpoint on the volume
+      # server side instead.
+      # 127.0.0.1 explicitly: SeaweedFS binds master to IPv4 only, but
+      # `localhost` resolves to ::1 inside this image and refuses connection.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/status >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # SG-01 fix: allow SeaweedFS to flush volume data before shutdown
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 256M
+    profiles: ["dev-data", "dev-full"]
+
+  # Bucket provisioning init container \u2014 creates bronze, exports, and
+  # bronze-raster buckets idempotently against the SeaweedFS S3 endpoint.
+  # SeaweedFS auto-creates buckets on first PUT, so this is belt-and-suspenders
+  # for fresh stacks where Laravel/Dagster might not have written anything yet.
+  minio-init:
+    # Re-using minio/mc as the S3 admin client \u2014 it speaks generic S3 and
+    # works fine against SeaweedFS's S3 endpoint.
+    # B8 — digest pinned 2026-04-19
+    image: minio/mc:RELEASE.2025-04-08T15-39-49Z@sha256:7e3efb09c22c0882fbf341b9d99f61f94ae6c4c20a06f2f1a2b20ea8993d8952
+    container_name: georag-minio-init
+    entrypoint: >
+      sh -c "
+        echo 'Waiting for SeaweedFS S3 endpoint...' &&
+        until mc alias set georag http://minio:8333 ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}} ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}} > /dev/null 2>&1; do
+          echo 'SeaweedFS not ready, retrying in 2s...' && sleep 2;
+        done &&
+        echo 'SeaweedFS ready \u2014 provisioning buckets...' &&
+        mc mb --ignore-existing georag/${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}} &&
+        mc mb --ignore-existing georag/${MINIO_BUCKET_EXPORTS:-exports} &&
+        mc mb --ignore-existing georag/${MINIO_BUCKET_BRONZE_RASTER:-bronze-raster} &&
+        mc mb --ignore-existing georag/${MINIO_BUCKET_BACKUPS:-georag-backups} &&
+        mc mb --ignore-existing georag/tier-hot &&
+        mc mb --ignore-existing georag/tier-warm &&
+        mc mb --ignore-existing georag/tier-cold &&
+        echo 'Buckets provisioned (incl. Phase 0 tier-hot/warm/cold).'
+      "
+    environment:
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+    networks:
+      - georag
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # OLLAMA — REMOVED 2026-05-17 (Phase 0 pre-work). vLLM is the single
+  # inference runtime per master-plan §12. Legacy service block + env vars
+  # archived in git history. Modelfiles preserved under docker/_deprecated/
+  # ollama/ for the documented rollback procedure.
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # vLLM — LLM inference server (PROD primary OR cross-backend failover target)
+  # ---------------------------------------------------------------------------
+  # Hosts an OpenAI-compatible /v1/chat/completions endpoint. Used by the
+  # FastAPI orchestrator either:
+  #   (a) as PRIMARY when LLM_BACKEND=vllm + LLM_PRIMARY_URL=http://vllm:8000/v1
+  #   (b) as FAILOVER target when LLM_BACKEND=anthropic +
+  #       LLM_BACKEND_FALLBACK=vllm. The cross-backend failover routes
+  #       Anthropic-429s through `_call_openai_compatible_llm` against
+  #       VLLM_URL/VLLM_MODEL — see app/agent/orchestrator.py.
+  #
+  # Canonical V1 prod model is `Qwen/Qwen3-14B-AWQ` — a 30B-param
+  # MoE model with ~3B active params/token:
+  #   - FP16:           ~60 GB VRAM   (1 × H100 80GB or 2 × A6000)
+  #   - INT8:           ~32 GB VRAM   (1 × A6000 or 2 × A5000)
+  #   - 4-bit quant:    ~16 GB VRAM   (RTX 4090 / 4080 16GB OK)
+  # The 16-GB-Q4 path makes Qwen 3 14B viable on dev workstations
+  # while the same model scales to prod GPUs.
+  #
+  # Workstation-friendly fits on a single GPU:
+  #   VLLM_MODEL=Qwen/Qwen3-14B-AWQ                  # 30B MoE / ~16 GB Q4 (CANONICAL V1)
+  #   VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct                  # 7B VL  / ~16 GB FP16 (§04p Stage-6)
+  #   VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct             # 8B     / ~16 GB FP16 (alternative)
+  #
+  # Bring vLLM up explicitly when prod-shaped testing is needed:
+  #   docker compose --profile gpu-llm-prod up -d vllm
+  # ---------------------------------------------------------------------------
+  vllm:
+    # Pinned to current stable release. Check https://hub.docker.com/r/vllm/vllm-openai/tags
+    # vLLM releases frequently; pin to the version validated against your CUDA toolkit.
+    #
+    # SMOKE TEST REQUIREMENT (Hard Rule #5 — hallucination prevention):
+    # When this pin is bumped, the prod deployer MUST re-run the golden query
+    # set against the new image before flipping production traffic. The dev
+    # workstation (RTX A4500 / 20 GB VRAM, Ampere SM 8.6) hosts
+    # Qwen3-14B-AWQ at INT4 (~17 GB weights). KV cache at FP8 (E4M3
+    # storage, FP16 compute) ≈48 KiB/token — supported on Ampere via
+    # emulation (storage-only; compute stays FP16). FP8 *weights/compute*
+    # is NOT viable on Ampere (Ada SM 8.9+ required); BF16 30B does not fit.
+    # Larger GPUs (L40S 48 GB, A100 80 GB) unlock BF16 and longer context.
+    # 2026-05-18 — bumped v0.19.1 → v0.21.0 for MoE scheduler + speculative
+    # decoding improvements. Digest pinned post-pull-and-validate.
+    image: vllm/vllm-openai:v0.21.0@sha256:a230095847e93bd4df9888b33dab956fa9504537b828a23657d2b26fed57b5c9
+    container_name: georag-vllm
+    restart: unless-stopped
+    ports:
+      - "${VLLM_PORT:-8001}:8000"
+    environment:
+      # HF_TOKEN required for gated models (Llama 3.x; not needed for Qwen 3
+      # family which is openly licensed). Set anyway for forward-compat with
+      # model swaps to gated repos.
+      HF_TOKEN: ${HF_TOKEN:-}
+      # Cache HF model downloads in a named volume so container restarts
+      # don't re-download tens of GB.
+      HF_HOME: /root/.cache/huggingface
+      # Quiet the noisy first-time tokenizer parallelism warning.
+      TOKENIZERS_PARALLELISM: "false"
+      # v0.21 introduced a CUDA-graph memory profiler that pre-reserves
+      # VRAM for each captured graph size, shrinking the KV pool by ~10
+      # GiB at default capture range. Disable here: graphs are still
+      # captured and used at runtime; only the *accounting* changes so
+      # the KV pool can claim memory the profiler was over-reserving.
+      # Risk: if true graph memory exceeds KV's leftover, runtime OOM —
+      # but on this rig the profiler over-estimates substantially.
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+    # NOTE: list-form (not folded scalar `>`) — folded form is split by
+    # docker compose like shell argv, which silently strips `"` characters.
+    # Speculative-config JSON needs `"` preserved, so each argv element
+    # gets its own YAML string. Single-quoted YAML strings are literal.
+    command:
+      - '--model'
+      - '${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}'
+      - '--served-model-name'
+      - '${VLLM_SERVED_MODEL_NAME:-Qwen/Qwen3-14B-AWQ}'
+      - '--quantization'
+      - '${VLLM_QUANTIZATION:-awq_marlin}'
+      - '--port'
+      - '8000'
+      - '--host'
+      - '0.0.0.0'
+      - '--max-model-len'
+      - '${VLLM_MAX_MODEL_LEN:-16384}'
+      - '--gpu-memory-utilization'
+      - '${VLLM_GPU_MEM_UTIL:-0.93}'
+      - '--kv-cache-dtype'
+      - '${VLLM_KV_CACHE_DTYPE:-fp8}'
+      - '--max-num-batched-tokens'
+      - '${VLLM_MAX_NUM_BATCHED_TOKENS:-8192}'
+      # Concurrency cap. vLLM defaults to ~256 which is sized for H100/A100;
+      # on the A4500 (20 GB VRAM, ADR-0001) every concurrent sequence
+      # claims KV-pool slots and pushes the engine into swap or OOM (exit
+      # 137). Floor matches the burst target (2 sustained / 4-6 burst).
+      - '--max-num-seqs'
+      - '${VLLM_MAX_NUM_SEQS:-12}'
+      - '--enable-prefix-caching'
+      - '--enable-chunked-prefill'
+      # NOTE: v0.21 made xgrammar the default guided-decoding backend
+      # and dropped the launch-time --guided-decoding-backend flag.
+      # Per-request override via extra_body.guided_decoding_backend.
+      - '--speculative-config'
+      # 2026-05-19 — dropped 4 → 2 to recover KV budget after capping
+      # --max-num-seqs at 8 (Phase 5 quality-eval fix). At spec_tokens=4,
+      # vLLM reported `Available KV cache memory: -0.58 GiB` at 8K context
+      # on the A4500. Position 1-2 carry the bulk of the speedup anyway
+      # (~0.94/0.88 accept on RAG quotes); positions 3-4 (~0.85/0.78)
+      # contributed less per slot of KV they required. Original tuning
+      # comment kept below for reference:
+      #   num_speculative_tokens=4: positions 1-2 hit ~0.94/0.88 accept on
+      #   RAG quotes, 3-4 sit at ~0.85/0.78. Re-tested at 4 after the
+      #   cudagraph cap freed enough KV (16.8K → 27.6K) that the c=128
+      #   cliff no longer needs spec-tokens reduction to recover.
+      - '{"method":"ngram","num_speculative_tokens":2,"prompt_lookup_max":4,"prompt_lookup_min":2}'
+      # With VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 (above) the
+      # profiler no longer charges KV pool for cudagraph reservations,
+      # so we can leave the default capture range (full kernel coverage
+      # = best single-stream throughput) AND get the larger KV pool the
+      # cap tested above would have given us.
+      #
+      # 2026-05-19 — Cap captured graph sizes to match the live
+      # --max-num-seqs floor. vLLM v0.21 defaults the capture set to
+      # [1,2,4,8,16,24,32,40,48]; on the A4500 with max-num-seqs ≤ 8
+      # the graphs for batch ≥ 16 are buffer reservations we can never
+      # use. Trimming the set frees the unused graph buffers (estimate
+      # ~1-3 GiB) and clears the "Available KV cache memory: -0.6 GiB"
+      # startup error reported by the engine core under the post-Phase-5
+      # config. If you raise --max-num-seqs back above 8, raise this too.
+      - '--compilation-config'
+      - '{"max_cudagraph_capture_size":12,"cudagraph_capture_sizes":[1,2,4,8,12]}'
+      - '--tensor-parallel-size'
+      - '${VLLM_TENSOR_PARALLEL:-1}'
+    # Larger SHM than docker's 64 MiB default — vLLM uses SHM for inter-
+    # worker tensor staging (when tensor-parallel > 1) and for prefix-cache
+    # shards. Generous on the dev box; raise on multi-GPU prod.
+    shm_size: "4gb"
+    # Use the host IPC namespace so tokenizer worker subprocesses can share
+    # memory with the main vLLM process without hitting the default
+    # container IPC limit. vLLM's startup log warns when this is missing.
+    ipc: host
+    volumes:
+      - vllm_hf_cache:/root/.cache/huggingface
+    networks:
+      - georag
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # Bump to match VLLM_TENSOR_PARALLEL when sharding across
+              # multiple GPUs.
+              count: ${VLLM_GPU_COUNT:-1}
+              capabilities: [gpu]
+    healthcheck:
+      # vllm-openai images dropped the `python` symlink at v0.19.1 — only
+      # `python3` is on PATH. `curl` is shipped, more portable, and gives
+      # a non-zero exit on any non-2xx response, which is exactly what
+      # docker healthchecks want.
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health -o /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Cold weight-load takes ~60-90s on the A4500 first run, ~10s warm
+      # (cached via the named volume). 600s start_period leaves headroom
+      # for cold first-pull on a fresh host (~17 GB AWQ download from HF).
+      start_period: 600s
+    # SG-01 fix: allow vLLM to drain in-flight generation requests before shutdown
+    stop_grace_period: 30s
+    # Profile renamed gpu-llm-prod → gpu-llm during the cutover (vLLM is
+    # now the dev + prod default, not a prod-only profile). The old name
+    # is preserved as an alias below for back-compat with deploy scripts.
+    profiles: ["gpu-llm", "gpu-llm-prod"]
+
+  # ---------------------------------------------------------------------------
+  # vllm-warmup — one-shot sidecar.
+  # ---------------------------------------------------------------------------
+  # The first request after a vLLM container start pays a 3-5× FlashInfer
+  # kernel JIT compilation tax (measured: 28 tok/s cold vs 154 tok/s warm
+  # on single-stream RAG, A4500 + Qwen3-14B-AWQ-AWQ). This sidecar fires
+  # 5 throwaway completions as soon as vllm reports healthy, so the first
+  # real user never sees the cold path. Exits 0 when done; `restart: "no"`
+  # prevents looping. Profile-gated to track the vllm service.
+  vllm-warmup:
+    image: curlimages/curl:8.10.1
+    container_name: georag-vllm-warmup
+    profiles: ["gpu-llm", "gpu-llm-prod"]
+    depends_on:
+      vllm:
+        condition: service_healthy
+    networks:
+      - georag
+    restart: "no"
+    environment:
+      VLLM_SERVED_MODEL_NAME: ${VLLM_SERVED_MODEL_NAME:-Qwen/Qwen3-14B-AWQ}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "vllm-warmup: priming FlashInfer kernels..."
+        for i in 1 2 3 4 5; do
+          curl -sf -X POST http://vllm:8000/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"${VLLM_SERVED_MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with a single word.\"}],\"max_tokens\":16,\"temperature\":0.1}" \
+            -o /dev/null && echo "  warmup $$i/5 done" || echo "  warmup $$i/5 failed"
+        done
+        echo "vllm-warmup: complete."
+
+  # ===========================================================================
+  # PROFILE: dev-ingest
+  # Dagster daemon + webserver
+  # Start only during ingestion pipeline development — heavy memory footprint.
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # DAGSTER DAEMON — scheduler and sensor background process
+  # Handles scheduled pipeline runs and event-driven sensors (file drop triggers,
+  # PostGIS change detection, etc.).
+  # Both dagster-daemon AND dagster-webserver are required to run Dagster.
+  # ---------------------------------------------------------------------------
+  dagster-daemon:
+    build:
+      context: ./src/dagster
+      dockerfile: ../../docker/dagster.Dockerfile
+    image: georag/dagster:latest
+    container_name: georag-dagster-daemon
+    restart: unless-stopped
+    command: dagster-daemon run
+    # Module 9 Chunk 9.7 (A8-02) — runs as Dockerfile-declared `nobody`
+    # (UID 65534). DAGSTER_HOME is pre-chowned in the image; the dagster_home
+    # named volume inherits the perms on first creation. Existing dev
+    # environments may need to recreate the volume after this change.
+    # See ops/runbooks/container-hardening.md.
+    user: "65534:65534"
+    working_dir: /opt/dagster/app
+    environment:
+      DAGSTER_HOME: ${DAGSTER_HOME:-/opt/dagster/dagster_home}
+      HOME: /opt/dagster/dagster_home
+      # Dagster uses its own PostgreSQL schema for run history and event log
+      DAGSTER_PG_HOST: postgresql
+      DAGSTER_PG_PORT: 5432
+      DAGSTER_PG_DB: ${DAGSTER_PG_DB:-georag_dagster}
+      DAGSTER_PG_USER: ${DAGSTER_PG_USER:-georag}
+      DAGSTER_PG_PASSWORD: ${DAGSTER_PG_PASSWORD:?DAGSTER_PG_PASSWORD must be set in .env}
+      # Application databases for pipeline steps
+      POSTGRES_HOST: pgbouncer
+      POSTGRES_PORT: 6432
+      POSTGRES_DB: ${POSTGRES_DB:-georag}
+      POSTGRES_USER: ${POSTGRES_USER:-georag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      NEO4J_HOST: ${NEO4J_HOST:-neo4j}
+      NEO4J_PORT: ${NEO4J_PORT:-7687}
+      # N4J-01 fix (2026-04-19 Module 2 Phase B): pass credentials so the
+      # Dagster Neo4jResource can authenticate. NEO4J_URI is used by the resource;
+      # NEO4J_USERNAME / NEO4J_PASSWORD are read by definitions.py via EnvVar().
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
+      QDRANT_PORT: ${QDRANT_PORT:-6333}
+      MINIO_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      MINIO_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
+      # Chunk 3a (2026-04-20): S3Resource (boto3) reads S3_ENDPOINT_URL for endpoint_url param.
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:8333}
+      # Reverb broadcast bridge — commit_ingestion_run POSTs to Laravel's
+      # /api/internal/v1/ingest-progress/broadcast with status='completed' so
+      # the IngestionRuns / DrillReview / IngestQuality WorkspaceDataUpdated
+      # cascade fires after drill-data uploads. Both vars must be present:
+      # FASTAPI_SERVICE_KEY is the shared secret the Laravel side validates,
+      # LARAVEL_INTERNAL_URL is the in-network base URL.
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
+      # Phase 7 Step 1 (R-P6-1) — OTel export for the silver_reports
+      # asset's parse_pdf_report call. definitions.py:install_tracer_provider()
+      # picks up the endpoint at module load; spans land under
+      # service.name=georag-dagster-daemon in Tempo.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      OTEL_SERVICE_NAME: georag-dagster-daemon
+      # vLLM endpoint for the reranker_labels asset group. Defaults to the
+      # in-cluster vllm service; can be redirected for staging runs.
+      VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./src/dagster:/opt/dagster/app:cached
+      - ./src/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./src/dagster/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    networks:
+      - georag
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "dagster-daemon liveness-check || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # SG-01 fix (CRITICAL): Dagster run workers can be mid-pipeline for up to 120s.
+    # Without this, docker stop SIGKILLs after 10s and in-progress ingestion runs
+    # are lost with no checkpoint.
+    stop_grace_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          # 2026-04-21 Module 4 Chunk 2 cleanup: SPLADE (~440MB) + dense encoder (~100MB)
+          # + daemon base needs >1G. C3-01 from module-4-intake.md.
+          memory: 3G
+        reservations:
+          memory: 1G
+    profiles: ["dev-ingest", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # DAGSTER WEBSERVER — pipeline UI
+  # Access at http://localhost:3001 to view runs, assets, schedules, and sensors.
+  # Same image as dagster-daemon, different command.
+  # ---------------------------------------------------------------------------
+  dagster-webserver:
+    image: georag/dagster:latest
+    container_name: georag-dagster-webserver
+    restart: unless-stopped
+    command: dagster-webserver --host 0.0.0.0 --port 3001
+    # Module 9 Chunk 9.7 (A8-02) — runs as Dockerfile-declared `nobody`
+    # (UID 65534), matching dagster-daemon. See ops/runbooks/container-hardening.md.
+    user: "65534:65534"
+    working_dir: /opt/dagster/app
+    ports:
+      - "${DAGSTER_WEBSERVER_PORT:-3001}:3001"
+    environment:
+      DAGSTER_HOME: ${DAGSTER_HOME:-/opt/dagster/dagster_home}
+      HOME: /opt/dagster/dagster_home
+      DAGSTER_PG_HOST: postgresql
+      DAGSTER_PG_PORT: 5432
+      DAGSTER_PG_DB: ${DAGSTER_PG_DB:-georag_dagster}
+      DAGSTER_PG_USER: ${DAGSTER_PG_USER:-georag}
+      DAGSTER_PG_PASSWORD: ${DAGSTER_PG_PASSWORD:?DAGSTER_PG_PASSWORD must be set in .env}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      # Reverb broadcast bridge — parity with dagster-daemon. Launchpad-
+      # initiated runs ("dagster job execute" from the webserver) also
+      # land in commit_ingestion_run and need the same broadcast plumbing.
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
+      # Phase 7 Step 1 (R-P6-1) — OTel export. Webserver itself doesn't
+      # call parse_pdf_report, but importing definitions.py installs
+      # the TracerProvider so the launchpad's `dagster job execute`
+      # also emits spans.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      OTEL_SERVICE_NAME: georag-dagster-webserver
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./src/dagster:/opt/dagster/app:cached
+      - ./src/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+      - ./src/dagster/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    networks:
+      - georag
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      # B2 — upgraded from service_started to service_healthy so the webserver only starts
+      # once the daemon's liveness check passes (scheduler + sensors running).
+      dagster-daemon:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # SG-01 fix: allow Dagster webserver to close open connections before shutdown
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          # 2026-04-21 Module 4 Chunk 2 cleanup: bumped from 1G to 2G (shares
+          # same image as dagster-daemon; 1G was insufficient under load).
+          memory: 2G
+        reservations:
+          memory: 256M
+    profiles: ["dev-ingest", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # RAGFlow removed in §04p Phase 3 — replaced by the in-process PDF Ingestion
+  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Docling, PaddleOCR,
+  # Qwen-VL on vLLM) that lives entirely inside the FastAPI deployment unit.
+  # See georag-architecture.html §04p (v1.43+) for the locked stack.
+  # ---------------------------------------------------------------------------
+
+  # ===========================================================================
+  # PROFILE: dev-monitor
+  # Prometheus + Grafana — skip by default, start when you need dashboards.
+  # Dashboards: cache hit ratios, Redis memory, Qdrant query latency,
+  #             Neo4j page cache hits, LLM token throughput, queue depth.
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # HATCHET — durable workflow orchestrator (master plan §6, Phase 0 step 1).
+  # Hatchet Lite is the single-image deployment (engine + admin + dashboard +
+  # migration in one container). Postgres-backed message queue
+  # (SERVER_MSGQUEUE_KIND=postgres), so no RabbitMQ. The dedicated `hatchet`
+  # database lives inside our existing postgresql service — see
+  # docker/postgresql/init/20-hatchet-database.sql for the role + DB setup.
+  #
+  # Phase 0 only registers the synthetic acceptance-test workflow; v1.49 →
+  # Hatchet workflow migration starts in Phase 1.
+  #
+  # Ports: 8889 (host) → 8888 (web UI + REST API);
+  #        7077 → 7077 gRPC (workers connect here).
+  # ---------------------------------------------------------------------------
+  hatchet-lite:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest
+    container_name: georag-hatchet
+    restart: unless-stopped
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    ports:
+      - "${HATCHET_API_PORT:-8889}:8888"
+      - "${HATCHET_GRPC_PORT:-7077}:7077"
+    environment:
+      DATABASE_URL: "postgres://hatchet:${HATCHET_DB_PASSWORD:-hatchet}@postgresql:5432/hatchet?sslmode=disable"
+      SERVER_MSGQUEUE_KIND: postgres
+      SERVER_DEFAULT_ENGINE_VERSION: V1
+      SERVER_AUTH_COOKIE_DOMAIN: localhost
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: "localhost:${HATCHET_GRPC_PORT:-7077}"
+      SERVER_GRPC_PORT: "7077"
+      SERVER_URL: "http://localhost:${HATCHET_API_PORT:-8889}"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: "hatchet-lite:7077"
+    volumes:
+      - hatchet_config:/config
+    healthcheck:
+      # /api/ready is Hatchet's readiness endpoint; /api/live is liveness.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8888/api/ready >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 90s
+    networks:
+      - georag
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # HATCHET WORKER — Phase 0 step 4 workflows (master plan §23.7 + §6).
+  #
+  # Long-running Python process that registers two workflows with the Hatchet
+  # engine and runs them on the schedule baked into each:
+  #
+  #   audit_ledger_verify  — cron 0 2 * * * UTC.  Calls audit.run_verification()
+  #                          for the previous 24 h window and writes one row to
+  #                          audit.audit_ledger_verification_runs.
+  #   outbox_dispatcher    — cron * * * * *.       Polls outbox.pending_propagations
+  #                          (FOR UPDATE SKIP LOCKED) and dispatches to Qdrant /
+  #                          Neo4j / SeaweedFS.  Records every attempt to
+  #                          outbox.propagation_attempts and dead-letters after
+  #                          3 transient failures.
+  #
+  # Reuses the georag/fastapi:latest image — same Python, same dependencies, same
+  # /app source tree.  The command override flips it from a Uvicorn ASGI server
+  # into a Hatchet worker entrypoint.  Mounts ./src/fastapi:/app:cached so code
+  # changes are picked up on `docker compose restart georag-hatchet-worker`.
+  #
+  # Auth bootstrap (one-time, per-environment):
+  #   docker exec georag-hatchet /hatchet-admin --config /config token create \\
+  #       --name georag-worker --tenant-id <default-tenant-uuid>
+  # The default tenant id (slug=default) lives in the hatchet Postgres DB:
+  #   psql -U hatchet -d hatchet -c "SELECT id FROM \"Tenant\" WHERE slug='default';"
+  # Paste the resulting JWT into HATCHET_CLIENT_TOKEN in .env (already done).
+  # ---------------------------------------------------------------------------
+  hatchet-worker-ingestion:
+    image: georag/fastapi:latest
+    container_name: georag-hatchet-worker-ingestion
+    restart: unless-stopped
+    # 2026-05-22: pip install the libs that weren't in pyproject.toml when
+    # the image was last built (polars, pytesseract).
+    # Adds ~30s to first start after a fresh recreate, no-op when the
+    # libs are already present. Once the Dockerfile is rebuilt with the
+    # updated pyproject.toml this can drop back to a bare command list.
+    #
+    # Phase 9 (2026-05-22): if paddlepaddle-gpu is not installed yet AND
+    # the host has CUDA passthrough (env PADDLEOCR_USE_GPU=true), pull
+    # the cu126 wheel from the Paddle index and uninstall the CPU build
+    # first. ~4 min one-time download; no-op on subsequent restarts.
+    #
+    # Phase 10 (2026-05-22): unstructured[pdf] dropped from the
+    # bootstrap. The fitz-first dispatch in pdf_report.py never calls
+    # it; Phase 2.1 made that path unreachable.
+    command: >
+      sh -c "(pip show polars >/dev/null 2>&1 || pip install --no-cache-dir polars) &&
+             (pip show pytesseract >/dev/null 2>&1 || pip install --no-cache-dir pytesseract) &&
+             (if [ \"$$PADDLEOCR_USE_GPU\" = \"true\" ] && ! python -c 'import paddle; assert paddle.device.is_compiled_with_cuda()' 2>/dev/null; then
+                pip uninstall -y paddlepaddle 2>/dev/null || true;
+                pip install --no-cache-dir 'paddlepaddle-gpu==3.3.1' --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ --extra-index-url https://pypi.org/simple/;
+                # paddle-gpu pins nccl 2.25.1 which breaks torch's nccl 2.30 ABI.
+                # Re-pin afterward so torch.cuda still works.
+                pip install --no-cache-dir 'nvidia-nccl-cu12>=2.30' || true;
+              fi) &&
+             exec python3 -m app.hatchet_workflows.worker"
+    depends_on:
+      hatchet-lite:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # Phase F.5 — same bind-mount-vs-site-packages drift fix as fastapi.
+      PYTHONPATH: /app
+      WORKER_POOL: ingestion
+      # Hatchet client connection — token + in-cluster gRPC target.
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:?HATCHET_CLIENT_TOKEN must be set in .env (run hatchet-admin token create)}
+      HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
+      HATCHET_CLIENT_TLS_STRATEGY: ${HATCHET_CLIENT_TLS_STRATEGY:-none}
+      HATCHET_WORKER_SLOTS: ${HATCHET_WORKER_SLOTS:-20}
+      # Direct Postgres — bypass pgbouncer so transactions + RLS settings work
+      # cleanly. The smoke test uses the same direct path.
+      POSTGRES_DIRECT_HOST: postgresql
+      POSTGRES_DIRECT_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-georag}
+      POSTGRES_USER: ${POSTGRES_USER:-georag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Target stores for outbox_dispatcher.
+      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
+      QDRANT_PORT: ${QDRANT_PORT:-6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      NEO4J_HOST: ${NEO4J_HOST:-neo4j}
+      NEO4J_PORT: ${NEO4J_PORT:-7687}
+      NEO4J_USER: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      # SeaweedFS S3 endpoint — currently the minio service serves the S3 API
+      # at port 8333 per ADR-0001's transitional dual-run.
+      SEAWEEDFS_S3_ENDPOINT: ${SEAWEEDFS_S3_ENDPOINT:-http://minio:9000}
+      SEAWEEDFS_ACCESS_KEY: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      SEAWEEDFS_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      # AWS_* aliases for boto3-style clients (Storage Tiering Agent, Support
+      # Packet Agent, ingest_pdf workflow). SeaweedFS uses these.
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      MINIO_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      MINIO_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
+      # Phase 6 Step 1 (R-P5-1) — OTel export for per-stage parse spans
+      # bootstrapped at worker.py:main(). service.name picks up the
+      # pool-suffixed worker name via the bootstrap's default_service_name.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      OTEL_SERVICE_NAME: georag-hatchet-worker-ingestion
+      # Plan §1b parent-child chunker — must be passed through to the
+      # ingestion worker because that's where pdf_ingester._chunk_pages
+      # actually runs. Default off; the .env override is the rollout switch.
+      PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
+      PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
+      # User cache directories — www-data's $HOME (/var/www) is read-only,
+      # so every library that defaults to ~/.cache will crash. Required by
+      # sentence-transformers / unstructured / numba / matplotlib at
+      # import time. Without these, `unstructured.partition.pdf` raises
+      # RuntimeError and pdf_report.py silently falls back to pdfplumber.
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      # Required by app.config.Settings; the embedder workflow imports it
+      # transitively. Missing here means embed_pending_passages raises a
+      # pydantic ValidationError before it can write a single vector.
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # Reverb broadcast bridge — ingest_pdf.embed_verify / on_failure_task
+      # POST through laravel_bridge.post_ingestion_progress. See fastapi
+      # block for why the http://laravel.test default isn't usable here.
+      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
+      # §04p dual-write toggle. Read by the p04p_dual_write Hatchet task
+      # (own execution_timeout, doesn't starve persist anymore).
+      P04P_DUAL_WRITE_ENABLED: ${P04P_DUAL_WRITE_ENABLED:-false}
+      # Phase 2.1 (2026-05-22) — docling now wired as the OCR engine for
+      # image pages within the fitz-first dispatch. When true:
+      #   - fitz runs first (fast for native-text pages)
+      #   - any pages where fitz returned < PER_PAGE_MIN_CHARS get sent
+      #     to docling with rapidocr OCR for GPU-accelerated recognition
+      #   - tesseract is the fallback if docling unavailable/fails
+      # Default true after Phase 2.1 smoke. Set to false to revert to
+      # the legacy tesseract-only OCR path.
+      PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
+      # Phase 2.0 + 2.1 (2026-05-22) — controls whether docling's
+      # rapidocr backend handles OCR on image pages. Default true after
+      # Phase 2.1 smoke confirmed rapidocr fires on cuda:0 with the
+      # writable model cache. Flip to false to keep docling for tables
+      # + figures only and let tesseract handle OCR.
+      DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
+      RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}
+      # Phase 2.1 (2026-05-22) — kickoff requirement: tesseract is the
+      # fallback-of-last-resort for image pages when docling is
+      # unavailable or fails. Default true so no-data-loss is preserved.
+      PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
+      # Page-level parallelism inside a single parse. Default 4 so two
+      # parses can run on 8 cores without fighting; bump up on headless
+      # boxes with more cores. Set to 1 to disable for debugging.
+      PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}
+      # Phase 5 (2026-05-22) — subprocess pool size + memory guard.
+      # PARSE_SUBPROCESS_MAX_WORKERS: parallel parses per worker.
+      # Empty default → ingest_pdf computes min(os.cpu_count(), 4).
+      # Override to 1 to revert to the pre-Phase-5 single-parse behavior;
+      # set higher than 4 on boxes with > 6 GB free RAM per parse.
+      PARSE_SUBPROCESS_MAX_WORKERS: ${PARSE_SUBPROCESS_MAX_WORKERS:-}
+      # Pre-fork memory threshold + max wait. The parse task awaits
+      # psutil.virtual_memory().available ≥ MIN_FREE_RAM_MB before
+      # submitting to the pool; waits up to MEMORY_WAIT_MAX_S then raises
+      # MemoryError so Hatchet retries on a freer worker.
+      # 2026-05-23 — defaults raised from (1500, 30) to (4500, 120) after
+      # the TIFF smoke proved a single docling+PaddleOCR+RapidOCR parse
+      # needs ~3-4 GB resident. See [[tiff-smoke-2026-05-23]].
+      PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
+      PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
+      # Phase 9 (2026-05-22) — PaddleOCR GPU selection. Empty → auto-
+      # detect (true when paddle is compiled with CUDA and free VRAM
+      # clears the threshold). true → force GPU (warn + fall back if
+      # paddle is CPU-build). false → force CPU.
+      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-}
+      # Minimum free VRAM (MB) required before grabbing GPU. Prevents
+      # OOM when vLLM is already at its 0.80 mem_util cap. Default 1024.
+      PADDLEOCR_MIN_FREE_VRAM_MB: ${PADDLEOCR_MIN_FREE_VRAM_MB:-1024}
+      # Phase 6 (2026-05-22) — OCR Quality Agent. Default false during
+      # the staged rollout; flip to true after smoke. Reads passages
+      # post-persist, flags low-confidence ones, dispatches re_ocr_page
+      # for the worst pages, optionally writes a review-queue row.
+      OCR_QUALITY_AGENT_ENABLED: ${OCR_QUALITY_AGENT_ENABLED:-false}
+      OCR_QUALITY_THRESHOLD: ${OCR_QUALITY_THRESHOLD:-0.75}
+      OCR_REOCR_THRESHOLD: ${OCR_REOCR_THRESHOLD:-0.60}
+      OCR_MAX_REOCR_PAGES_PER_DOC: ${OCR_MAX_REOCR_PAGES_PER_DOC:-20}
+      # PaddleOCR downloads its model weights to ~/.paddleocr on first
+      # use. www-data's home (/var/www) is read-only so we redirect
+      # HOME to /tmp; PaddleOCR's default cache resolves to
+      # /tmp/.paddleocr which is writable.
+      HOME: /tmp
+      # Suppress paddle logging dir clutter — same /tmp redirect.
+      FLAGS_logging_dir: /tmp
+      # S3 bucket for figure storage (used by the figure-extraction
+      # path inside ingest_pdf.persist). Same bronze bucket as
+      # uploads, but under figures/{report_id}/ prefix.
+      S3_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-bronze}
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ./src/fastapi:/app:cached
+      - ./src/dagster/georag_dagster:/app/georag_dagster:cached
+      # Phase E.1 — staged TIFFs from the Phase B extractor land here.
+      # The tiff_ocr_cluster Hatchet workflow reads from this mount.
+      # Same `external: true` volume that georag-fastapi mounts at /data.
+      - georag-phase-b-extract:/extract
+      # Phase 2.0 (2026-05-22) — rapidocr ONNX model cache (~150 MB
+      # downloaded once on first OCR call). Lives outside site-packages
+      # so www-data can write here.
+      - rapidocr_models:/tmp/rapidocr_models
+    user: "33:33"
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q app.hatchet_workflows.worker /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - georag
+    profiles: ["dev-data", "dev-full"]
+    # 2026-05-22 — GPU passthrough so docling's TableFormer + layout
+    # ONNX models can run on CUDA. Without this onnxruntime falls back
+    # to CPU and docling parses take 17-40 min per big PDF. The
+    # ingestion worker shares the GPU with vLLM + AI worker; lower
+    # VLLM_GPU_MEM_UTIL further if VRAM contention shows up.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # ---------------------------------------------------------------------------
+  # OPENTELEMETRY COLLECTOR — Phase 0 step 3 (master plan §35.1).
+  # Single ingest hop for spans + metrics + logs from Laravel, FastAPI,
+  # Hatchet, vLLM. Forwards traces to Tempo and exposes metrics for
+  # Prometheus to scrape on internal :8895/metrics.
+  # ---------------------------------------------------------------------------
+  hatchet-worker-ai:
+    image: georag/fastapi:latest
+    container_name: georag-hatchet-worker-ai
+    restart: unless-stopped
+    # Same startup-install bootstrap as the ingestion worker so the AI
+    # pool worker (which runs embed_pending_passages_wf) survives a
+    # force-recreate without losing polars/pytesseract.
+    command: >
+      sh -c "(pip show polars >/dev/null 2>&1 || pip install --no-cache-dir polars) &&
+             (pip show pytesseract >/dev/null 2>&1 || pip install --no-cache-dir pytesseract) &&
+             exec python3 -m app.hatchet_workflows.worker"
+    depends_on:
+      hatchet-lite:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # Phase F.5 — same bind-mount-vs-site-packages drift fix as fastapi.
+      PYTHONPATH: /app
+      WORKER_POOL: ai
+      # Hatchet client connection — token + in-cluster gRPC target.
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:?HATCHET_CLIENT_TOKEN must be set in .env (run hatchet-admin token create)}
+      HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
+      HATCHET_CLIENT_TLS_STRATEGY: ${HATCHET_CLIENT_TLS_STRATEGY:-none}
+      HATCHET_WORKER_SLOTS: ${HATCHET_WORKER_SLOTS:-20}
+      # Phase 3 Step 5 (R-P2-4) — HMAC sender authentication for the
+      # external_notification workflow. Senders sign with HMAC-SHA256 over
+      # canonical JSON of the payload fields; this secret is the SAME on
+      # the sender side. Per-sender rotation lives in Phase 4+.
+      EXTERNAL_NOTIFICATION_HMAC_SECRET: ${EXTERNAL_NOTIFICATION_HMAC_SECRET:?EXTERNAL_NOTIFICATION_HMAC_SECRET must be set in .env}
+      # Phase 4 Step 1 — pgcrypto key for the per-sender HMAC registry.
+      # Used by `usage.lookup_external_notification_sender_secrets()` and
+      # `usage.register_external_notification_sender()`. 32-byte minimum.
+      AUDIT_ENCRYPTION_KEY: ${AUDIT_ENCRYPTION_KEY:?AUDIT_ENCRYPTION_KEY must be set in .env}
+      # Direct Postgres — bypass pgbouncer so transactions + RLS settings work
+      # cleanly. The smoke test uses the same direct path.
+      POSTGRES_DIRECT_HOST: postgresql
+      POSTGRES_DIRECT_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-georag}
+      POSTGRES_USER: ${POSTGRES_USER:-georag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Target stores for outbox_dispatcher.
+      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
+      QDRANT_PORT: ${QDRANT_PORT:-6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      NEO4J_HOST: ${NEO4J_HOST:-neo4j}
+      NEO4J_PORT: ${NEO4J_PORT:-7687}
+      NEO4J_USER: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      # SeaweedFS S3 endpoint — currently the minio service serves the S3 API
+      # at port 8333 per ADR-0001's transitional dual-run.
+      SEAWEEDFS_S3_ENDPOINT: ${SEAWEEDFS_S3_ENDPOINT:-http://minio:9000}
+      SEAWEEDFS_ACCESS_KEY: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      SEAWEEDFS_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      # AWS_* aliases for boto3-style clients (Storage Tiering Agent, Support
+      # Packet Agent, ingest_pdf workflow). SeaweedFS uses these.
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      MINIO_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      MINIO_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
+      # Phase 5 Step 1 — Redis for the per-sender rate-limit token bucket.
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # Phase 6 Step 1 (R-P5-1) — OTel export for parse spans.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+      OTEL_SERVICE_NAME: georag-hatchet-worker-ai
+      # 2026-05-22: same www-data cache redirects + service key as the
+      # ingestion worker. AI pool runs embed_pending_passages_wf which
+      # imports app.config.Settings (requires FASTAPI_SERVICE_KEY) and
+      # sentence-transformers/transformers (need writable HF cache dir).
+      # Without these the embed workflow silently never executes.
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      # Phase 2.0 + 2.1 (2026-05-22) — same docling + rapidocr envs as
+      # the ingestion worker. The AI pool worker doesn't currently
+      # parse PDFs end-to-end, but it can import the parser transitively
+      # (re_ocr_page workflow lives here in Phase 6) so wire the envs
+      # in lockstep with the ingestion worker.
+      PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
+      DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
+      RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}
+      PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # Reverb broadcast bridge — score_targets.execute calls
+      # laravel_bridge.post_workspace_data_updated on success so Foundry/Targets
+      # re-fetches recommendations. See fastapi block for default-URL rationale.
+      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
+      # Phase 6 Step 1 (R-P5-4 fold-in) — flow_jwt._load_per_flow_key_sync
+      # is unused on the AI worker today, but the import surface exists.
+      # KESTRA_FLOW_JWT_SECRET enables verify; pgcrypto key enables future
+      # per-flow loader on this worker if the contract ever moves here.
+      KESTRA_FLOW_JWT_SECRET: ${KESTRA_FLOW_JWT_SECRET:?KESTRA_FLOW_JWT_SECRET must be set in .env}
+      # Langfuse observability — Phase 5 follow-up, 2026-05-19. Until now
+      # the AI worker had no Langfuse env, so agent-path LLM calls
+      # (llm_incident_diagnosis, support_packet, etc.) emitted no traces.
+      # LANGFUSE_BASE_URL is set to the in-network hostname directly here
+      # (rather than the .env default of localhost:3001) because the
+      # Langfuse Python SDK uses BASE_URL for OTel transport and
+      # localhost is unreachable from inside this container — the
+      # FastAPI side works around this with an in-process env override
+      # in main.py lifespan; the Hatchet worker doesn't have a lifespan
+      # hook so we set the right URL at the compose layer instead.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      LANGFUSE_BASE_URL: ${LANGFUSE_HOST:-http://langfuse-web:3000}
+      # Worker is headless — no browser deep-link generation here, so
+      # the SDK-transport BASE_URL is safe to point in-network.
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ./src/fastapi:/app:cached
+      - ./src/dagster/georag_dagster:/app/georag_dagster:cached
+      # Phase 2.0 (2026-05-22) — shared rapidocr model cache. Same
+      # named volume the ingestion worker uses so a model downloaded
+      # by either worker is visible to the other.
+      - rapidocr_models:/tmp/rapidocr_models
+    user: "33:33"
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q app.hatchet_workflows.worker /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - georag
+    # 2026-05-22 — GPU acceleration for the embed/rerank/sparse stack.
+    # Without this, bge-small/bge-reranker/SPLADE++ ran on CPU at ~3
+    # chunks/sec. With the A4500 the same models do thousands/sec, so
+    # large ingests (V3 = 2,496 chunks, was ~20 min on CPU) finish in
+    # seconds. Requires VLLM_GPU_MEM_UTIL ≤ 0.80 to leave headroom.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # ACTIVEPIECES — sunset at Phase 3 Step 7. The service block was here in
+  # Phase 2 but has been removed; Kestra (next block) is the integration edge.
+  # The activepieces logical DB + role were dropped via
+  # database/raw/phase3/90-activepieces-sunset.sql. Historical runbooks
+  # archived under docs/_archived/phase2_activepieces_*.md.
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # KESTRA — Phase 3 integration edge (replaces Activepieces; sunset in Step 7).
+  # Postgres-backed, YAML-flows-as-code. Owns external feeds, scheduled
+  # imports, third-party connectors. See docs/phase3_implementation_kickoff.md.
+  #
+  # Storage: separate `kestra` logical DB on the existing postgresql server
+  # (Phase 3 Step 1 migration). No Redis dependency (Postgres handles queue
+  # + repository).
+  #
+  # Auth: basic auth (D3 reaffirmed); SSO is Phase 4+. First-run admin is
+  # set via env vars on first boot.
+  #
+  # Flows: committed under kestra/flows/*.yaml (D7). Operators load them
+  # into the Kestra service via API or `kestra flow update` CLI; the
+  # YAML files are the source of truth.
+  # ---------------------------------------------------------------------------
+  kestra:
+    image: kestra/kestra:v1.2.18
+    container_name: georag-kestra
+    restart: unless-stopped
+    # Kestra base image runs without root, but standalone mode needs root
+    # to manage subprocess workers + bind to /tmp/kestra-wd. This matches
+    # Kestra's official docker-compose example.
+    user: "root"
+    command: ["server", "standalone"]
+    ports:
+      - "${KESTRA_PORT:-8086}:8080"
+    environment:
+      KESTRA_CONFIGURATION: |
+        datasources:
+          postgres:
+            url: jdbc:postgresql://postgresql:5432/kestra
+            driverClassName: org.postgresql.Driver
+            username: kestra
+            password: ${KESTRA_PG_PASSWORD}
+        kestra:
+          server:
+            basic-auth:
+              enabled: true
+              username: ${KESTRA_BASIC_AUTH_USER:-admin@georag.local}
+              password: ${KESTRA_BASIC_AUTH_PASSWORD}
+          url: ${KESTRA_URL:-http://localhost:8086/}
+          repository:
+            type: postgres
+          storage:
+            type: local
+            local:
+              base-path: /app/storage
+          queue:
+            type: postgres
+          tasks:
+            tmp-dir:
+              path: /tmp/kestra-wd/tmp
+          # Phase 3 Step 6 — disable the bundled "Getting Started"
+          # blueprint flows; they pollute the /admin/integrations
+          # listing and aren't useful in our deployment.
+          tutorialFlows:
+            enabled: false
+          variables:
+            globals:
+              georag:
+                fastapi_internal_url: ${KESTRA_FASTAPI_INTERNAL_URL:-http://fastapi:8000}
+    volumes:
+      - kestra_data:/app/storage
+      - kestra_workdir:/tmp/kestra-wd
+      - ./kestra/flows:/app/flows:ro
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    healthcheck:
+      # Kestra splits its main server (8080) and management server (8081);
+      # /health lives on the management server. Hit it via the in-container
+      # localhost.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - georag
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # CADDY — Phase 6 Step 2 (R-P4-2). WebSocket-capable edge proxy in front
+  # of Kestra. Validates Sanctum session/PAT via forward_auth to Laravel,
+  # then proxies (HTTP + WS) to kestra:8080 with basic auth injected from
+  # the auth-check response. Coexists with the Phase 4 Step 2 Laravel
+  # passthrough at /admin/integrations/kestra/{path?} — browser cookie
+  # users keep that path; PAT + WS operators use this edge.
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: georag-caddy
+    restart: unless-stopped
+    ports:
+      - "${CADDY_KESTRA_PORT:-8087}:8087"
+      # Phase 7 Step 3 (R-P6-3) — HTTPS listener using Caddy's
+      # internal CA. Operators with WS streaming + TLS needs hit :8443.
+      - "${CADDY_KESTRA_TLS_PORT:-8443}:8443"
+    environment:
+      # Phase 8 Step 3 (R-P7-3) — issuer for the :8443 cert.
+      #   internal  → Caddy's embedded CA (dev / on-prem-self-signed)
+      #   acme      → external ACME (Let's Encrypt etc)
+      CADDY_TLS_ISSUER: ${CADDY_TLS_ISSUER:-internal}
+      # Phase 9 Step 3 (R-P8-2) — email for the ACME account.
+      # Only consulted when CADDY_TLS_ISSUER=acme. Default is a
+      # placeholder; production swap is in docs/runbooks/caddy_tls.md.
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:-ops@example.invalid}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persist Caddy's internal CA so the cert doesn't churn on
+      # every restart (would invalidate previously-trusted clients).
+      - caddy_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8087/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      kestra:
+        condition: service_healthy
+      laravel-octane:
+        condition: service_healthy
+    networks:
+      - georag
+    # Caddy depends on services in both dev-light (laravel-octane) and
+    # dev-data (kestra) profiles, so it joins both — and dev-full which
+    # is the union profile.
+    profiles: ["dev-light", "dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # OPENTELEMETRY COLLECTOR — Phase 0 step 3 (master plan §35.1).
+  # Single ingest hop for spans + metrics + logs from Laravel, FastAPI,
+  # Hatchet, vLLM. Forwards traces to Tempo and exposes metrics for
+  # Prometheus to scrape on internal :8895/metrics.
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.151.0
+    container_name: georag-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-dev}"
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"   # OTLP gRPC
+      - "${OTEL_HTTP_PORT:-4318}:4318"   # OTLP HTTP
+      - "${OTEL_HEALTH_PORT:-13133}:13133"  # health_check
+    volumes:
+      - ./docker/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    # Phase F.5 (#3): the otel/opentelemetry-collector-contrib image is
+    # distroless — no /bin/sh, no wget, no curl. The previous CMD-SHELL
+    # healthcheck always failed even when the service was healthy, marking
+    # the container "unhealthy" indefinitely. Two correct alternatives are
+    # (a) bind-mount a static busybox binary and call it directly, or
+    # (b) rely on Prometheus scraping otel-collector's own /metrics (port
+    # 8888 by default) plus an alert rule on absence-of-metrics.
+    # We use (b) — drop the healthcheck and let the scrape + alerts catch
+    # an actual outage. See docs/SERVICE_INVENTORY.md for the rationale.
+    depends_on:
+      tempo:
+        condition: service_started
+    networks:
+      - georag
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # TEMPO — distributed tracing storage (Phase 0 step 3).
+  # Single-process deployment with local-disk block storage. Workflow Run
+  # Dashboard (Phase 0 step 3 deferred — separate session) links via
+  # workflow_runs.trace_id to http://${TEMPO_HOST_PORT}:3200/api/traces/<id>.
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: georag-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    user: "0"   # tempo image runs as nobody by default; mounts need root for /var/tempo writes
+    ports:
+      - "${TEMPO_HTTP_PORT:-3200}:3200"  # HTTP API + UI
+    volumes:
+      - ./docker/tempo/tempo-config.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3200/ready >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    networks:
+      - georag
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # PROMETHEUS — metrics collection
+  # Scrapes: FastAPI /metrics, Laravel Pulse export, PostgreSQL exporter,
+  #          Redis exporter, Neo4j exporter, Qdrant native /metrics, vLLM.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    # Task 1: pinned to current stable minor release.
+    # B8 — digest pinned 2026-04-19
+    image: prom/prometheus:v3.11.3@sha256:e4254400b85610324913f0dc4acf92603d9984e7519414c5a12811aa6146acc3
+    container_name: georag-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
+    networks:
+      - georag
+    healthcheck:
+      # Phase F.5 (#3 fix): the prom/prometheus image is built on busybox
+      # and does not include curl, so the prior `curl -f` healthcheck
+      # always failed even when /-/healthy returned 200. Switching to
+      # `wget -q -O -` (busybox-available) lets the healthcheck actually
+      # report the service's real state.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:9090/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # SG-01 fix: explicit grace period for discoverability
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # ALERTMANAGER — alert routing for Prometheus
+  # Module 10 Chunk 10.4 — receives alerts from Prometheus rules and routes
+  # them to a webhook receiver (operator wires Slack/PagerDuty/email per env).
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.32.1@sha256:51a825c2a40acc3e338fdd00d622e01ec090f72be2b3ea46be0839cd47a4d286
+    container_name: georag-alertmanager
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./docker/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # REDIS_EXPORTER — Prometheus exporter for Redis (oliver006/redis_exporter, MIT).
+  # Module 10 Chunk 10.4 — exposes redis_up, redis_commands_processed_total,
+  # redis_memory_used_bytes, slowlog depth on :9121/metrics.
+  # ---------------------------------------------------------------------------
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.74.0-alpine
+    container_name: georag-redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_EXPORTER_LOG_FORMAT: txt
+    ports:
+      - "${REDIS_EXPORTER_PORT:-9121}:9121"
+    networks:
+      - georag
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9121/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # POSTGRES_EXPORTER — Prometheus exporter for PostgreSQL (Apache-2.0).
+  # Module 10 Chunk 10.4 — exposes pg_up, pg_stat_database_*, pg_locks_count,
+  # pg_settings_max_connections on :9187/metrics. Connects directly to
+  # PostgreSQL (NOT through PgBouncer) so per-DB stats resolve cleanly.
+  # ---------------------------------------------------------------------------
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    container_name: georag-postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-georag}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgresql:5432/${POSTGRES_DB:-georag}?sslmode=disable"
+      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
+    ports:
+      - "${POSTGRES_EXPORTER_PORT:-9187}:9187"
+    networks:
+      - georag
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    healthcheck:
+      # postgres-exporter v0.17.1 does not expose `/health`; hitting it
+      # returns HTTP 404 and the container reports unhealthy even when
+      # scrapes succeed. Use `/metrics` instead — the Prometheus scrape
+      # endpoint always serves 200 when the exporter is up.
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:9187/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # NEO4J EXPORTER — JMX → Prometheus bridge (V1.5-07).
+  # Neo4j 2026 Community Edition rejects `server.metrics.prometheus.*` at
+  # startup (Enterprise-only); this sidecar polls the JMX surface over Bolt
+  # every 30s and serves Prometheus exposition on :9105/metrics.
+  # See feedback_martin_tile_gotchas.md style notes for the parallel Martin
+  # case — not the same issue but the same "sidecar instead of native
+  # /metrics" pattern.
+  # ---------------------------------------------------------------------------
+  # NB: depends_on neo4j is conditional — neo4j is in `dev-data` profile
+  # and won't be created when only `dev-monitor` is active. Compose's
+  # `required: false` lets neo4j_exporter come up regardless; it will then
+  # poll-fail with `neo4j_up=0` until neo4j is also running, which is the
+  # correct surface for the dashboard.
+  neo4j_exporter:
+    build:
+      context: ./docker/neo4j-exporter
+      dockerfile: Dockerfile
+    image: georag/neo4j-exporter:latest
+    container_name: georag-neo4j-exporter
+    restart: unless-stopped
+    environment:
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
+      NEO4J_EXPORTER_POLL_INTERVAL_S: "30"
+      NEO4J_EXPORTER_PORT: "9105"
+    ports:
+      - "${NEO4J_EXPORTER_PORT:-9105}:9105"
+    networks:
+      - georag
+    depends_on:
+      neo4j:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      # The exporter image is python:3.13-slim — has neither curl nor wget.
+      # Use Python's http.client to probe ourselves.
+      test: ["CMD", "python", "-c", "import http.client; c=http.client.HTTPConnection('localhost',9105,timeout=2); c.request('GET','/metrics'); r=c.getresponse(); exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 5s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # LOKI — log aggregation (Module 10 Chunk 10.6).
+  # Promtail tails Laravel + FastAPI log files and ships JSON to Loki;
+  # Grafana queries via LogQL. Dedicated channel labels let the authz dashboard
+  # transition from PromQL counter to LogQL count_over_time per the panel TODO.
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: georag-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # PROMTAIL — log shipping agent (Module 10 Chunk 10.6).
+  # Tails container stdout/stderr via Docker discovery + the Laravel
+  # storage/logs/authz_audit-*.log files (mounted read-only) and forwards
+  # to Loki with channel/service labels.
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:3.4.2
+    container_name: georag-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./docker/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./storage/logs:/laravel-logs:ro
+      - promtail_positions:/var/lib/promtail
+    networks:
+      - georag
+    depends_on:
+      loki:
+        condition: service_healthy
+    # Promtail's official image is distroless; no wget. Use a shell-out
+    # via /usr/bin/promtail's own status by checking it's still PID 1.
+    healthcheck:
+      test: ["CMD", "/usr/bin/promtail", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # GRAFANA — dashboards and alerting
+  # Pre-provisioned dashboards for: DB cache ratios, Redis memory, queue depth,
+  # Qdrant latency, Neo4j page cache, LLM throughput.
+  # Login: admin / ${GRAFANA_ADMIN_PASSWORD}
+  # ---------------------------------------------------------------------------
+  grafana:
+    # Task 1: pinned to current stable release.
+    # B8 — digest pinned 2026-04-19
+    image: grafana/grafana:11.6.1@sha256:52c3e20686b860c6dc1f623811565773cf51eefa378817a4896dfc863c3c82c8
+    container_name: georag-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-clock-panel
+      # Prometheus datasource via env provisioning
+      GF_DATASOURCE_NAME: Prometheus
+      GF_DATASOURCE_TYPE: prometheus
+      GF_DATASOURCE_URL: http://prometheus:9090
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - georag
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # SG-01 fix: explicit grace period for discoverability
+    stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # OFELIA — cron scheduler for backup jobs
+  # MIT license — compliant with the free-licensing rule.
+  # Uses labels-based job definitions on the target containers (postgresql,
+  # neo4j, qdrant). Reads labels from running containers via docker socket.
+  #
+  # Backup schedule (UTC, staggered to avoid IO contention):
+  #   02:30 — PostgreSQL  (pg_basebackup → s3://georag-backups/postgres/)
+  #   02:45 — Neo4j       (neo4j-admin dump → s3://georag-backups/neo4j/)
+  #   03:00 — Qdrant      (snapshot API → s3://georag-backups/qdrant/)
+  #
+  # Digest pinned 2026-04-19 from mcuadros/ofelia:latest.
+  # ---------------------------------------------------------------------------
+  ofelia:
+    image: mcuadros/ofelia:latest@sha256:efcbe2c5cf658a25de6443c1462d653f9cc03791d642e01fc6c638a00f97e492
+    container_name: georag-ofelia
+    restart: unless-stopped
+    command: daemon --docker
+    environment:
+      # Backup S3 credentials injected into job-exec env (ofelia passes host env to exec)
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      # Docker socket — required for job-exec (Ofelia runs commands inside target containers)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - georag
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    # Ofelia is stateless (job state tracked in memory); 10s is sufficient
+    stop_grace_period: 10s
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # BACKUP AGENT SIDECAR — Module 1 Phase B (2026-04-19)
+  # Dedicated Alpine sidecar that owns all backup jobs. Ofelia job-exec
+  # targets THIS container instead of the stateful service containers, so
+  # backup tools (aws-cli, pg_basebackup, docker-cli, curl/jq) are not
+  # required in the application images.
+  #
+  # Backup schedule (UTC, on georag-backup-agent):
+  #   02:30 — PostgreSQL  (pg_basebackup → s3://georag-backups/postgres/)
+  #   03:00 — Qdrant      (snapshot API  → s3://georag-backups/qdrant/)
+  #   03:00 Sundays — Neo4j (offline dump → s3://georag-backups/neo4j/)
+  #
+  # Neo4j note: offline dump requires stopping the neo4j container briefly
+  # (~75-120s). Approved maintenance window: Sundays 03:00 UTC.
+  # First live run approved for 2026-04-26.
+  # ---------------------------------------------------------------------------
+  backup-agent:
+    build:
+      context: ./docker/backup-agent
+      dockerfile: Dockerfile
+    image: georag/backup-agent:latest
+    container_name: georag-backup-agent
+    restart: unless-stopped
+    # Ofelia job-exec labels — all three backup jobs run inside this container
+    labels:
+      ofelia.enabled: "true"
+      # PostgreSQL physical base backup — daily 02:30 UTC
+      ofelia.job-exec.pg-backup.schedule: "0 30 2 * * *"
+      ofelia.job-exec.pg-backup.command: "/backup-scripts/postgresql/backup.sh"
+      # Qdrant snapshot backup — daily 03:00 UTC
+      ofelia.job-exec.qdrant-backup.schedule: "0 0 3 * * *"
+      ofelia.job-exec.qdrant-backup.command: "/backup-scripts/qdrant/backup.sh"
+      # Neo4j offline dump — Sundays 03:00 UTC only (approved maintenance window)
+      # First live run: 2026-04-26 03:00 UTC
+      # Neo4j is stopped ~75-120s for the dump. ALLOW_WEEKLY_DUMP=1 is required as safety gate.
+      ofelia.job-exec.neo4j-backup.schedule: "0 0 3 * * 0"
+      ofelia.job-exec.neo4j-backup.command: "bash -c 'ALLOW_WEEKLY_DUMP=1 /backup-scripts/neo4j/backup.sh'"
+      # WAL segment upload — every 5 minutes.
+      # Syncs /pg_wal_archive/ → s3://georag-backups/pg-wal/ then cleans local segments.
+      # Combined with archive_timeout=300 on PG, max data-loss window is ~10 min.
+      # Module 1 Phase C prep — BK-03, 2026-04-19.
+      ofelia.job-exec.pg-wal-upload.schedule: "@every 5m"
+      ofelia.job-exec.pg-wal-upload.command: "/backup-scripts/postgresql/wal-upload.sh"
+    environment:
+      # S3 / SeaweedFS credentials
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID must be set in .env}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY must be set in .env}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:8333}
+      # PostgreSQL connection (connects directly to postgresql service, not PgBouncer,
+      # because pg_basebackup requires a replication connection — PgBouncer blocks those)
+      PGHOST: postgresql
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-georag}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      PGDATABASE: ${POSTGRES_DB:-georag}
+      # Neo4j offline dump control
+      NEO4J_BACKUP_CONTAINER: ${NEO4J_BACKUP_CONTAINER:-georag-neo4j}
+      NEO4J_IMAGE: ${NEO4J_IMAGE:-neo4j:2026-community@sha256:a5feb81d916c82d09186807ee8f8a523eb430d578fa6015f37ae72a07f976537}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+      # Qdrant HTTP API endpoint (no API key in dev — auth disabled)
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      # Retention
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+    volumes:
+      # Backup staging scratch space (writable, shared with no other service now)
+      - backup_staging:/backup/staging
+      # Backup scripts — bind-mounted read-only
+      - ./docker/postgresql/backup.sh:/backup-scripts/postgresql/backup.sh:ro
+      - ./docker/postgresql/wal-upload.sh:/backup-scripts/postgresql/wal-upload.sh:ro
+      - ./docker/neo4j/backup.sh:/backup-scripts/neo4j/backup.sh:ro
+      - ./docker/qdrant/backup.sh:/backup-scripts/qdrant/backup.sh:ro
+      # Docker socket — for Neo4j offline dump (stop container, run neo4j-admin, restart)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # WAL archive volume — read-write; backup-agent uploads WAL segments to S3
+      # every 5m, then deletes local copies that are confirmed in S3 to prevent
+      # the volume growing unbounded. PG is the only writer; backup-agent only
+      # deletes after S3 confirmation.
+      # Module 1 Phase C prep — WAL archiving (BK-03), 2026-04-19.
+      - pg_wal_archive:/pg_wal_archive
+    networks:
+      - georag
+    depends_on:
+      minio:
+        condition: service_healthy
+    # Allow in-flight backup to complete before SIGKILL
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 64M
+    profiles: ["dev-data", "dev-full"]

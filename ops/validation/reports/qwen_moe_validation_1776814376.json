@@ -1,0 +1,311 @@
+{
+  "started_at": "2026-04-21T22:02:46",
+  "baseline_model": "qwen2.5:14b",
+  "test_models": [
+    "qwen3:14b",
+    "qwen3:30b-a3b",
+    "qwen3.6:35b-a3b"
+  ],
+  "gen_params": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "max_tokens": 4096,
+    "seed": 42
+  },
+  "prompts": [
+    "Andes",
+    "Passive Margin",
+    "Faults",
+    "Geochem",
+    "Drilling"
+  ],
+  "per_model": {
+    "qwen2.5:14b": [
+      {
+        "prompt_key": "Andes",
+        "score": 0.6666666666666666,
+        "latency_s": 108.24,
+        "completion_tokens": 781,
+        "tok_per_sec": 7.22,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The Andes Mountains, one of the world's longest and highest mountain ranges, have been shaped primarily by the subduction of the Nazca Plate beneath the South American Plate over millions of years. Th"
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.3333333333333333,
+        "latency_s": 28.57,
+        "completion_tokens": 845,
+        "tok_per_sec": 29.57,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "In a passive margin basin, sedimentary sequences typically develop over millions to hundreds of millions of years as a result of tectonic activity along continental margins, often following rifting an"
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 0.6666666666666666,
+        "latency_s": 12.69,
+        "completion_tokens": 590,
+        "tok_per_sec": 46.49,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Thrust faults and normal faults are two types of geological structures that form under different tectonic conditions. The mechanical processes responsible for their formation can be differentiated bas"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 0.6666666666666666,
+        "latency_s": 16.29,
+        "completion_tokens": 769,
+        "tok_per_sec": 47.21,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "A gold-arsenic (Au-As) geochemical anomaly within a greenstone belt can be indicative of significant mineralization processes, particularly those associated with epigenetic gold deposits. Greenstone b"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.42857142857142855,
+        "latency_s": 15.78,
+        "completion_tokens": 741,
+        "tok_per_sec": 46.97,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Designing a phase-one diamond drilling program for an Iron-Oxide Copper-Gold (IOCG) prospect involves several critical steps, considering the area's limited exploration history but significant magneti"
+      }
+    ],
+    "qwen3:14b": [
+      {
+        "prompt_key": "Andes",
+        "score": 0.6666666666666666,
+        "latency_s": 80.5,
+        "completion_tokens": 2698,
+        "tok_per_sec": 33.51,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The tectonic evolution of the Andes, as revealed by structural cross-sections, is a complex interplay of subduction, crustal deformation, magmatic activity, and sedimentary processes. Here's a structu"
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.6666666666666666,
+        "latency_s": 45.96,
+        "completion_tokens": 2149,
+        "tok_per_sec": 46.76,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The stratigraphic sequence of a passive margin basin can be systematically ordered based on tectonic evolution and depositional environments. Here's the sequence, justified by the geological context:\n"
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 0.8333333333333334,
+        "latency_s": 44.69,
+        "completion_tokens": 2086,
+        "tok_per_sec": 46.68,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "**Differentiation Between Thrust Faults and Normal Faults in Compressional vs. Extensional Regimes**\n\n1. **Stress Regime:**\n   - **Normal Faults (Extensional):** Occur in **extensional regimes** where"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 0.8333333333333334,
+        "latency_s": 47.48,
+        "completion_tokens": 2212,
+        "tok_per_sec": 46.59,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "A gold-arsenic (Au-As) geochemical anomaly in a greenstone belt is typically interpreted as an indicator of orogenic gold mineralization, which is commonly hosted within these ancient volcanic-sedimen"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.5714285714285714,
+        "latency_s": 57.24,
+        "completion_tokens": 2633,
+        "tok_per_sec": 46.0,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "**Phase-1 Diamond Drilling Program for an IOCG Prospect**  \n**Objective:** Test the most promising magnetic anomaly, confirm mineralization, and gather data to define the geological structure, alterat"
+      }
+    ],
+    "qwen3:30b-a3b": [
+      {
+        "prompt_key": "Andes",
+        "score": 0.8333333333333334,
+        "latency_s": 323.87,
+        "completion_tokens": 3610,
+        "tok_per_sec": 11.15,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a structured explanation of the **tectonic evolution of the Andes** with **structural cross-section reasoning**. The Andes are a classic example of a **convergent margin orogeny driven by sub"
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.8333333333333334,
+        "latency_s": 293.07,
+        "completion_tokens": 3491,
+        "tok_per_sec": 11.91,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a **sequence of stratigraphic layers** for a **passive margin basin**, listed from **oldest to youngest** (i.e., deepest to shallowest in the stratigraphic column). Passive margin basins form"
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 1.0,
+        "latency_s": 144.36,
+        "completion_tokens": 2476,
+        "tok_per_sec": 17.15,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a clear, concise differentiation of **thrust faults** versus **normal faults** in terms of their mechanics within **compressional** (shortening) versus **extensional** (stretching) tectonic r"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 1.0,
+        "latency_s": 183.64,
+        "completion_tokens": 2949,
+        "tok_per_sec": 16.06,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Interpreting a **gold-arsenic (Au-As) geochemical anomaly in a greenstone belt** requires understanding the geological context of greenstone belts (ancient, deformed volcanic-sedimentary sequences, ty"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.42857142857142855,
+        "latency_s": 188.77,
+        "completion_tokens": 3119,
+        "tok_per_sec": 16.52,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a **realistic, step-by-step Phase-1 diamond drilling program** for an IOCG (Iron Oxide Copper Gold) prospect, designed with your constraints: **200m of magnetic survey coverage** (a critical "
+      }
+    ],
+    "qwen3.6:35b-a3b": [
+      {
+        "prompt_key": "Andes",
+        "score": 0.8333333333333334,
+        "latency_s": 1175.78,
+        "completion_tokens": 3904,
+        "tok_per_sec": 3.32,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The tectonic evolution of the Andes is a textbook example of **subduction-driven orogenesis**, where the interplay of plate convergence, slab dynamics, and crustal rheology controls deformation, uplif"
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.8333333333333334,
+        "latency_s": 1196.04,
+        "completion_tokens": 4096,
+        "tok_per_sec": 3.42,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "The stratigraphic architecture of a passive margin basin reflects the interplay between **thermal subsidence**, **eustatic sea-level changes**, **sediment supply**, and **basin geometry** over million"
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 0.8333333333333334,
+        "latency_s": 346.36,
+        "completion_tokens": 2659,
+        "tok_per_sec": 7.68,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Here is a precise, mechanics-focused comparison of thrust and normal faults in compressional versus extensional regimes:\n\n### \ud83d\udd39 Core Mechanical Principle\nBoth fault types obey the **Mohr-Coulomb failu"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 1.0,
+        "latency_s": 540.55,
+        "completion_tokens": 4068,
+        "tok_per_sec": 7.53,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "A gold-arsenic (Au-As) geochemical anomaly in a greenstone belt is a classic indicator of a hydrothermal system, most commonly associated with **orogenic gold deposits**. Below is a structured interpr"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.7142857142857143,
+        "latency_s": 559.84,
+        "completion_tokens": 3935,
+        "tok_per_sec": 7.03,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Here is a comprehensive design for a Phase-1 diamond drilling program tailored to an IOCG (Iron Oxide Copper-Gold) prospect with the specific constraints of **200m of magnetic survey coverage** and **"
+      }
+    ]
+  },
+  "aggregate": {
+    "qwen2.5:14b": {
+      "avg_score": 0.552,
+      "avg_tok_per_sec": 35.49,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    },
+    "qwen3:14b": {
+      "avg_score": 0.714,
+      "avg_tok_per_sec": 43.91,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    },
+    "qwen3:30b-a3b": {
+      "avg_score": 0.819,
+      "avg_tok_per_sec": 14.56,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    },
+    "qwen3.6:35b-a3b": {
+      "avg_score": 0.843,
+      "avg_tok_per_sec": 5.8,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    }
+  },
+  "recommendation": {
+    "required_score": 0.497,
+    "min_tokens_per_sec": 5.0,
+    "baseline_avg_score": 0.552,
+    "winners": [
+      {
+        "model": "qwen3.6:35b-a3b",
+        "score": 0.843,
+        "tok_s": 5.8
+      },
+      {
+        "model": "qwen3:30b-a3b",
+        "score": 0.819,
+        "tok_s": 14.56
+      },
+      {
+        "model": "qwen3:14b",
+        "score": 0.714,
+        "tok_s": 43.91
+      }
+    ],
+    "selected": "qwen3.6:35b-a3b",
+    "reason": "Passed both gates: score \u2265 0.497 and tok/s \u2265 5.0. MoE preferred among passing."
+  },
+  "finished_at": "2026-04-21T23:32:56"
+}

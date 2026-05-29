@@ -1,0 +1,54 @@
+{{- if .Values.martin.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-martin
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.martin.service.port }}
+      targetPort: http
+      name: http
+  selector: {{- include "georag.selectorLabels" (dict "component" "martin" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-martin
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.martin.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "martin" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "martin" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: martin
+          image: {{ include "georag.image" (dict "repo" .Values.martin.image.repository "tag" .Values.martin.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://georag:$(DB_PW)@{{ .Release.Name }}-postgresql:5432/georag"
+            - name: DB_PW
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+          resources: {{- toYaml .Values.martin.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+{{- end }}

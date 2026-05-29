@@ -1,0 +1,61 @@
+{
+    "data": [
+        {
+            "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "slug": "talbot-lake-au-cu",
+            "name": "Talbot Lake Au-Cu",
+            "status": "active",
+            "region": "BC, CA",
+            "doc_count": 5412,
+            "queries_7d": 2108,
+            "last_activity_at": "2026-04-13T14:21:00Z",
+            "last_activity_kind": "ingest"
+        },
+        {
+            "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+            "slug": "eastmain-greenstone",
+            "name": "Eastmain Greenstone",
+            "status": "active",
+            "region": "QC, CA",
+            "doc_count": 3887,
+            "queries_7d": 1442,
+            "last_activity_at": "2026-04-13T14:08:00Z",
+            "last_activity_kind": "query"
+        },
+        {
+            "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+            "slug": "coppermine-river",
+            "name": "Coppermine River",
+            "status": "indexing",
+            "region": "NU, CA",
+            "doc_count": 2104,
+            "queries_7d": 387,
+            "last_activity_at": "2026-04-13T13:22:00Z",
+            "last_activity_kind": "crs"
+        },
+        {
+            "id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+            "slug": "tintina-gold-belt",
+            "name": "Tintina Gold Belt",
+            "status": "degraded",
+            "region": "YT, CA",
+            "doc_count": 2925,
+            "queries_7d": 621,
+            "last_activity_at": "2026-04-13T11:22:00Z",
+            "last_activity_kind": "failure"
+        },
+        {
+            "id": "e5f6a7b8-c9d0-1234-efab-345678901234",
+            "slug": "athabasca-basin",
+            "name": "Athabasca Basin (legacy)",
+            "status": "archived",
+            "region": "SK, CA",
+            "doc_count": 1108,
+            "queries_7d": 0,
+            "last_activity_at": "2026-03-15T09:00:00Z",
+            "last_activity_kind": null
+        }
+    ],
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

@@ -1,0 +1,137 @@
+# vLLM — OpenAI-compatible LLM serving overlay
+# ===============================================================
+# NOTE 2026-05-09: the canonical `docker-compose.yml` (in WSL at
+# `/home/georag/projects/georag/docker-compose.yml`) now contains a
+# vllm service with the same settings as this overlay. For the
+# running stack you do NOT need to layer this overlay — the canonical
+# compose has the same vllm service definition baked in. This file
+# is kept as:
+#   1. A self-contained reference for non-canonical deployments.
+#   2. Drop-in starter config for environments that haven't pulled
+#      the canonical compose yet.
+# ===============================================================
+#
+# Layer this on top of a docker-compose source to start vLLM serving
+# Qwen/Qwen3-14B-AWQ on the dev workstation A4500. (Earlier Qwen3-30B-A3B
+# MoE was reverted in 2026-05 — see CLAUDE.md "LLM" entry and .env comment
+# above LLM_PRIMARY_MODEL for the rationale.)
+# Replaces the Ollama service in Phase 2 of the cutover (see
+# docs/model_migration.md → "Serving migration: Ollama → vLLM").
+#
+# Profile: gpu-llm — start when LLM serving is needed. Mutually
+# exclusive with the dev-llm Ollama profile during the cutover
+# window.
+#
+# Usage:
+#   docker compose -f <canonical>.yml -f docker/compose.vllm.yml \
+#     --profile gpu-llm up -d vllm
+#
+# Once flipped, the FastAPI /metrics scrape job in
+# docker/prometheus/jobs/ should add vllm:8000/metrics — vLLM ships
+# a Prometheus-format /metrics endpoint by default with prefix-cache
+# hit rate, KV-cache utilization, queue depth, and per-stage latency
+# histograms. None of these were available from the Ollama path.
+#
+# Image tag note: pin to a digest in production. The :latest tag is
+# fine for the dev workstation but will drift; production overlays
+# should `image: vllm/vllm-openai@sha256:<digest>` so deploys are
+# reproducible.
+
+services:
+  vllm:
+    profiles:
+      - gpu-llm
+    image: vllm/vllm-openai:latest
+    container_name: georag-vllm
+    restart: unless-stopped
+    networks:
+      - georag
+    ports:
+      # Exposed for the smoke test + direct curl checks. Internal
+      # service-to-service traffic goes via the docker network on
+      # the container-internal port 8000 (FastAPI uses VLLM_URL =
+      # http://vllm:8000/v1).
+      - "${VLLM_PORT:-8001}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-1}
+              capabilities:
+                - gpu
+    # Larger shared memory than docker's 64 MiB default — vLLM uses
+    # SHM for inter-worker tensor staging when tensor-parallel > 1
+    # and for prefix-cache shards. 4 GiB is generous on the dev box;
+    # raise on tensor-parallel multi-GPU prod hardware.
+    shm_size: "4gb"
+    # Use the IPC namespace of the host so tokenizer worker subprocesses
+    # can share memory with the main vLLM process without hitting the
+    # default container IPC limit. vLLM's startup log warns when this
+    # is missing.
+    ipc: host
+    environment:
+      # Required for gated HF repos (some Llama, Mistral tiers). Qwen3
+      # AWQ is currently public; set anyway for forward-compat.
+      HF_TOKEN: "${HF_TOKEN:-}"
+      # vLLM honours HUGGINGFACE_HUB_CACHE; mount a named volume so
+      # the ~17 GiB AWQ checkpoint isn't re-downloaded on every
+      # container recreation.
+      HUGGINGFACE_HUB_CACHE: /root/.cache/huggingface
+      # Quiet the noisy first-time tokenizer parallelism warning.
+      TOKENIZERS_PARALLELISM: "false"
+    volumes:
+      - vllm_hf_cache:/root/.cache/huggingface
+    command:
+      # Model + quantization picked from .env. AWQ Qwen3-14B is the
+      # dev default (reverted from Qwen3-30B-A3B in 2026-05 to leave
+      # VRAM for hatchet-worker-ai's embed/rerank/sparse models on the
+      # shared A4500). Phase 3 (production-readiness doc scope) will
+      # define the prod model + quant per hardware tier.
+      - --model=${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
+      - --served-model-name=${VLLM_SERVED_MODEL_NAME:-Qwen/Qwen3-14B-AWQ}
+      - --quantization=${VLLM_QUANTIZATION:-awq_marlin}
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-8192}
+      # Plan §2b — lowered default 0.92 → 0.85 to free ~1.4 GB of KV cache
+      # headroom for the A4500 co-tenancy with hatchet-worker-ai (bge-small
+      # + bge-reranker-base + SPLADE++). Override via VLLM_GPU_MEM_UTIL in
+      # .env if a future deployment moves to a dedicated vLLM GPU.
+      - --gpu-memory-utilization=${VLLM_GPU_MEM_UTIL:-0.85}
+      - --tensor-parallel-size=${VLLM_TENSOR_PARALLEL:-1}
+      # Required for the system-prompt prefix cache to engage. The
+      # orchestrator's _call_openai_compatible_llm already keeps the
+      # system block byte-stable (R15) so this gives real wins.
+      - --enable-prefix-caching
+      # OpenAI-compat host. 0.0.0.0 inside the container; the host
+      # binding is controlled by the ports: stanza above.
+      - --host=0.0.0.0
+      - --port=8000
+      # Tighten the chat-template trust boundary. vLLM defaults to
+      # trusting the model's bundled chat template; we want explicit
+      # error if Qwen3 ever ships an updated template that we
+      # haven't reviewed.
+      - --trust-remote-code=false
+    healthcheck:
+      # /health returns 200 once the model is loaded and the engine
+      # is accepting requests. start_period is generous because the
+      # cold weight-load on the A4500 takes ~60-90 s on first run
+      # (cached afterwards via the volume).
+      #
+      # `curl -sf` is used rather than a python urllib probe because
+      # the vllm-openai image dropped the `python` symlink at v0.19.1
+      # — only `python3` is on PATH. curl is shipped in the image,
+      # gives non-zero exit on any non-2xx response, and stays
+      # portable across vLLM upstream image revisions.
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health -o /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 240s
+
+volumes:
+  vllm_hf_cache:
+    name: georag_vllm_hf_cache
+
+networks:
+  georag:
+    external: true

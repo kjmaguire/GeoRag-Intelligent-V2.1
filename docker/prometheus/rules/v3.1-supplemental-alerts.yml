@@ -1,0 +1,138 @@
+# v3.1 Phase 5 follow-up — supplemental alert rules
+#
+# Adds the 5 alerts the v3.1 evaluation rubric expects but the existing
+# rule files don't cover. Together with the in-place alerts (vllm-alerts.yml,
+# gpu-vram-health.yml, audit-ledger-alerts.yml, etc.) these complete the
+# v3.1 required-alert set.
+#
+# Authored 2026-05-20 by the overnight evaluation run.
+
+groups:
+  - name: v3.1-supplemental
+    rules:
+      # ----------------------------------------------------------------
+      # VLLMContextNearCeiling
+      # Fires when p95 prompt_tokens reaches 87.5% of VLLM_MAX_MODEL_LEN.
+      # At max_model_len=8192 this is ~7000 tokens. Indicates that the
+      # context-truncation step is regularly compressing — likely losing
+      # evidence — and that the operator should consider raising the
+      # model_len ceiling (or reducing per-class retrieval budgets).
+      # ----------------------------------------------------------------
+      - alert: VLLMContextNearCeiling
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(vllm:prompt_tokens_count_bucket[10m]))
+          ) > 7000
+        for: 15m
+        labels:
+          severity: warning
+          subsystem: vllm
+        annotations:
+          summary: "vLLM p95 prompt_tokens near the model_len ceiling"
+          description: |
+            p95 prompt_tokens over the last 10m has exceeded 7000 (87.5% of
+            the 8192 max_model_len). Context truncation is silently
+            compressing evidence on a substantial fraction of queries.
+            Consider raising VLLM_MAX_MODEL_LEN to 16384 (Qwen3-14B-AWQ has
+            VRAM headroom on the A4500 for it), OR lower per-class retrieval
+            budgets in app/config.py MAX_CONTEXT_TOKENS_PER_CLASS.
+          runbook_url: "https://docs.georag.internal/runbooks/context-budget"
+
+      # ----------------------------------------------------------------
+      # RerankerTimeoutHigh
+      # Fires when the bge-reranker-base p95 latency exceeds 1.8s
+      # (close to the 2s asyncio timeout). At 2s vLLM's RRF fallback
+      # kicks in but answer quality degrades.
+      # ----------------------------------------------------------------
+      - alert: RerankerTimeoutHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(georag_reranker_duration_seconds_bucket[5m]))
+          ) > 1.8
+        for: 10m
+        labels:
+          severity: warning
+          subsystem: retrieval
+        annotations:
+          summary: "Reranker p95 latency above 1.8s — RRF fallback imminent"
+          description: |
+            bge-reranker-base p95 duration over the last 5m has exceeded
+            1.8s. The 2s asyncio.wait_for cap will fire RRF fallback,
+            degrading answer quality. Check CPU pressure on the FastAPI
+            container (Threadripper has 32 threads; reranker pool uses 8-12).
+
+      # ----------------------------------------------------------------
+      # HallucinationGuardBypassed
+      # Fires when an answer reaches citation_lifecycle_state='committed'
+      # WITHOUT a hallucination_guard_results JSONB entry. The presence
+      # of this row signals the §04i guard chain was bypassed. Any rate
+      # > 0 is a P1 — the trust contract is broken.
+      # ----------------------------------------------------------------
+      - alert: HallucinationGuardBypassed
+        expr: |
+          (
+            sum(rate(georag_answer_runs_committed_total{guard_results="absent"}[5m]))
+              /
+            sum(rate(georag_answer_runs_committed_total[5m]))
+          ) > 0
+        for: 2m
+        labels:
+          severity: critical
+          subsystem: hallucination
+        annotations:
+          summary: "Answers committed without guard results — TRUST CONTRACT BROKEN"
+          description: |
+            One or more answer_runs reached citation_lifecycle_state='committed'
+            with no hallucination_guard_results entry. The §04i guard chain
+            was bypassed somewhere — investigate the orchestrator's
+            generated → validated → committed transitions in
+            src/fastapi/app/agent/orchestrator/__init__.py.
+
+      # ----------------------------------------------------------------
+      # OrphanSpanRateHigh
+      # Fires when orphan-span rate over 5m exceeds 5%. Orphans are
+      # claims in the answer text that don't map to a bound source_chunk_id.
+      # ----------------------------------------------------------------
+      - alert: OrphanSpanRateHigh
+        expr: |
+          (
+            sum(rate(georag_answer_runs_with_orphan_total[5m]))
+              /
+            sum(rate(georag_answer_runs_total[5m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          subsystem: hallucination
+        annotations:
+          summary: "Orphan-span rate > 5% — retrieval quality regression"
+          description: |
+            More than 5% of answer_runs over the last 5m have orphan_span_count
+            > 0. Either retrieval is missing relevant evidence (re-tune
+            reranker), or the prompt is allowing the model to fabricate
+            uncited claims (check system prompt density). Review recent
+            answer_runs rows with orphan_span_count > 0 for patterns.
+
+      # ----------------------------------------------------------------
+      # KestraFlowJWTExpiring
+      # Fires when any per-flow JWT in the flow_jwt_keys registry is
+      # within 7 days of expiry. flow_jwt_key_reaper rotates on a schedule;
+      # if rotation falls behind, integrations start failing silently.
+      # ----------------------------------------------------------------
+      - alert: KestraFlowJWTExpiring
+        expr: |
+          (georag_flow_jwt_valid_until_seconds - time()) < (7 * 86400)
+        for: 1h
+        labels:
+          severity: warning
+          subsystem: kestra
+        annotations:
+          summary: "Per-flow JWT {{ $labels.flow_name }} expires within 7 days"
+          description: |
+            The per-flow JWT for {{ $labels.flow_name }} has less than 7 days
+            until valid_until. flow_jwt_key_reaper should rotate
+            automatically; if rotation has failed, integrations will start
+            returning 401 from FastAPI's integrations_trigger.py. Check the
+            Hatchet workflow flow_jwt_key_reaper for recent failures.

@@ -1,0 +1,27 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+    # Pre-existing errors captured 2026-05-07. New code must be clean — fix
+    # baselined errors incrementally and remove from the file as you go.
+    # The 8 `larastan.noEnvCallsOutsideOfConfig` errors were *deliberately
+    # excluded* from the baseline so they stay visible as a real-bug TODO:
+    #   - app/Http/Controllers/Api/V1/PublicGeoscience/HealthController.php (×2)
+    #   - app/Http/Controllers/Internal/MetricsController.php (×5)
+    #   - app/Providers/HorizonServiceProvider.php (×1)
+    # These break under `php artisan config:cache` in production. Move env
+    # reads into config files and call config() at the use sites.
+    - phpstan-baseline.neon
+
+parameters:
+    paths:
+        - app
+        - database/factories
+        - database/seeders
+        - routes
+    level: 6
+    excludePaths:
+        - bootstrap/cache
+    # checkMissingIterableValueType was removed in newer PHPStan — at level 6
+    # it's part of the level itself. To suppress noise from missing iterable
+    # value types, drop to level 5, or capture them in phpstan-baseline.neon
+    # at level 6 and tighten incrementally.
+    treatPhpDocTypesAsCertain: false

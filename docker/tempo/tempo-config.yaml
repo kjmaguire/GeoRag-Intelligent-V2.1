@@ -1,0 +1,66 @@
+# =============================================================================
+# Grafana Tempo — Phase 0 Step 3
+#
+# Single-process deployment (compactor + ingester + querier all in one binary).
+# Local-disk block storage with 7-day retention — fine for dev. Production
+# would use S3-compatible (SeaweedFS) backend; that's a Phase 11 hardening.
+#
+# Listens for OTLP from the collector on 4317 (gRPC) and 4318 (HTTP).
+# Querier exposes the API on 3200 — used by the Workflow Run Dashboard
+# (Phase 0 link via workflow_runs.trace_id) and by Grafana data-source.
+# =============================================================================
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+  flush_check_period: 30s
+
+compactor:
+  compaction:
+    compaction_window: 1h
+    max_block_bytes: 100_000_000
+    block_retention: 168h    # 7 days
+    compacted_block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+    pool:
+      max_workers: 10
+      queue_depth: 1000
+
+# Allow up to 1MB of trace data per request. Default 4MB is generous; the
+# collector batches well under this.
+overrides:
+  defaults:
+    ingestion:
+      rate_limit_bytes: 1_500_000
+      burst_size_bytes: 5_000_000
+
+# metrics_generator deferred to Phase 11 hardening — requires Prometheus
+# `--web.enable-remote-write-receiver` flag and span-metrics processor wiring
+# in OTel collector. Phase 0 keeps trace ingest simple.
+
+# Querier configuration — defaults are fine for Phase 0.
+querier:
+  search:
+    external_endpoints: []

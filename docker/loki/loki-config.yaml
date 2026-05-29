@@ -1,0 +1,63 @@
+# Module 10 Chunk 10.6 — Loki configuration.
+# Single-binary mode (filesystem chunks + BoltDB shipper for the index)
+# is right for V1 single-host deployments. Multi-tenant clusters can
+# graduate to S3 chunk storage when scaling demands it.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+# Allow ingesting older log lines (auto-recovered after a long Loki outage)
+# without rejecting them on freshness grounds.
+limits_config:
+  reject_old_samples: false
+  retention_period: 720h  # 30 days — matches authz_audit channel retention.
+  max_query_length: 721h
+  max_query_series: 5000
+
+# Schema v13 with TSDB index — current Loki recommendation.
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: loki_index_
+        period: 24h
+
+# Compaction every 10m keeps disk pressure manageable on the dev host.
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 50
+  delete_request_store: filesystem
+
+ingester:
+  chunk_idle_period: 5m
+  chunk_target_size: 1048576
+  max_chunk_age: 1h
+
+ruler:
+  alertmanager_url: http://alertmanager:9093
+
+# No analytics pings to Grafana Labs (on-prem clients).
+analytics:
+  reporting_enabled: false

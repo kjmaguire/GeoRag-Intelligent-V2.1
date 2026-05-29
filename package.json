@@ -1,0 +1,53 @@
+{
+    "$schema": "https://www.schemastore.org/package.json",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "bash scripts/guard-build-perms.sh && vite build",
+        "build:ssr": "bash scripts/guard-build-perms.sh && vite build --ssr",
+        "build:fix-perms": "bash scripts/guard-build-perms.sh --fix",
+        "dev": "vite",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@fontsource/inter-tight": "^5.2.7",
+        "@fontsource/jetbrains-mono": "^5.2.8",
+        "@inertiajs/react": "^2.0.0",
+        "@xyflow/react": "^12.10.2",
+        "class-variance-authority": "^0.7.1",
+        "clsx": "^2.1.1",
+        "jszip": "^3.10.1",
+        "laravel-echo": "^2.3.4",
+        "lucide-react": "^1.8.0",
+        "maplibre-gl": "^5.23.0",
+        "plotly.js-dist-min": "^3.5.0",
+        "proj4": "^2.20.8",
+        "pusher-js": "^8.5.0",
+        "radix-ui": "^1.4.3",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "react-map-gl": "^8.1.0",
+        "react-markdown": "^10.1.0",
+        "react-plotly.js": "^2.6.0",
+        "tailwind-merge": "^3.5.0"
+    },
+    "devDependencies": {
+        "@tailwindcss/vite": "^4.3.0",
+        "@testing-library/jest-dom": "^6.9.1",
+        "@testing-library/react": "^16.3.2",
+        "@testing-library/user-event": "^14.6.1",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "@vitejs/plugin-react": "^6.0.0",
+        "axios": ">=1.16.1 <2.0.0",
+        "concurrently": "^9.0.1",
+        "jsdom": "^29.0.2",
+        "laravel-vite-plugin": "^3.0.0",
+        "tailwindcss": "^4.3.0",
+        "typescript": "^6.0.2",
+        "vite": "^8.0.0",
+        "vitest": "^4.1.4"
+    }
+}

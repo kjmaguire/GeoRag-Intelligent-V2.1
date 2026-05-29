@@ -1,0 +1,46 @@
+# Module 10 Chunk 10.4 — Qdrant alert rules.
+# Qdrant exposes Prometheus on its native :6333/metrics endpoint.
+# Series: qdrant_app_status, rest_responses_*_total, grpc_responses_*_total,
+# collection_size, qdrant_collections_total.
+
+groups:
+  - name: qdrant
+    interval: 30s
+    rules:
+      - alert: QdrantLowAvailability
+        expr: up{job="qdrant"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: qdrant
+        annotations:
+          summary: "Qdrant is DOWN"
+          description: "Prometheus cannot scrape qdrant:6333/metrics. Vector retrieval is broken."
+
+      - alert: QdrantSlowSearchP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(rest_responses_total_duration_seconds_bucket{endpoint=~".*search.*"}[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: qdrant
+        annotations:
+          summary: "Qdrant search p95 > 1s"
+          description: "p95 search latency {{ $value | humanizeDuration }}. Check HNSW index health or shard saturation."
+
+      - alert: QdrantHighErrorRate
+        expr: |
+          (
+            sum(rate(rest_responses_total{status_code=~"5.."}[5m]))
+            /
+            sum(rate(rest_responses_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: qdrant
+        annotations:
+          summary: "Qdrant 5xx error rate > 5%"
+          description: "{{ $value | humanizePercentage }} of requests failing. Possible disk full or collection corrupt."

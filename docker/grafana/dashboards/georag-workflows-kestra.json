@@ -1,0 +1,82 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.2 Workflow-tier dashboard 3/5 — Kestra SSO-integrated user-facing flow execution. Reads from workflow.workflow_runs entries where source='kestra' plus the support_packet/escalation_routing dispatcher envelopes.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Kestra flow executions/min by namespace",
+      "description": "Throughput across all configured Kestra flows. The georag.support namespace dominates today (support_packet, escalation_routing). Per-namespace breakdown surfaces noisy-neighbour patterns.",
+      "targets": [{"expr": "sum by (namespace) (rate(kestra_flow_executions_total[1m]))", "refId": "A", "legendFormat": "{{namespace}}"}],
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Flow execution state distribution",
+      "description": "Live distribution of CREATED / RUNNING / SUCCESS / FAILED / KILLED states. FAILED + KILLED rate climbing means an upstream system is unreliable.",
+      "targets": [{"expr": "sum by (state) (kestra_flow_executions_current)", "refId": "A", "legendFormat": "{{state}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"stacking": {"mode": "normal"}}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "FastAPI → Kestra dispatch latency p95 (s)",
+      "description": "Per-request POST /api/v1/executions/{ns}/{flow} latency from the support_packet dispatcher. Phase G.5 set KESTRA_HTTP_TIMEOUT_S=5; sustained p95 > 2s suggests Kestra worker saturation.",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, flow_id) (rate(kestra_dispatch_latency_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{flow_id}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 4}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "Dispatch failure reasons (req/s)",
+      "description": "Phase G.5 dispatcher result envelope. reason ∈ {kestra_disabled, kestra_http_error, kestra_network_error}. kestra_disabled = config-driven no-op; kestra_http_error / kestra_network_error = real failures.",
+      "targets": [{"expr": "sum by (reason) (rate(kestra_dispatch_failures_total[5m]))", "refId": "A", "legendFormat": "{{reason}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Kestra worker availability (%)",
+      "description": "Rolling 1h availability — fraction of dispatch attempts that succeeded. < 99% sustained = the Hikari pool / postgres connectivity issue Kyle hit yesterday is recurring.",
+      "targets": [{"expr": "100 * sum(rate(kestra_dispatch_attempts_total{outcome=\"success\"}[1h])) / sum(rate(kestra_dispatch_attempts_total[1h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 99}, {"color": "green", "value": 99.9}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Pending executions (queue depth)",
+      "description": "Kestra-side queue depth — executions in CREATED or RUNNING state. Sustained growth = worker can't keep up with dispatch rate; consider scaling kestra-worker.",
+      "targets": [{"expr": "sum(kestra_flow_executions_current{state=~\"CREATED|RUNNING\"})", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 200}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+      "id": 6
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["georag", "workflows", "phase-7", "phase-h3", "section-16.2", "kestra"],
+  "templating": {"list": []},
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Workflows (Kestra)",
+  "uid": "georag-workflows-kestra",
+  "version": 1
+}

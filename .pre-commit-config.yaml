@@ -1,0 +1,102 @@
+# GeoRAG pre-commit configuration
+# Module 5 Phase B PV-01 — prompt version discipline hook
+#
+# Install (requires Kyle sign-off on pre-commit adoption):
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run manually without installing:
+#   bash scripts/check_prompt_version_bump.sh
+#   # or against all files:
+#   pre-commit run --all-files
+
+repos:
+  - repo: local
+    hooks:
+      - id: no-legacy-ollama
+        name: Block reintroduction of Ollama as a live LLM provider
+        entry: scripts/check_no_legacy_ollama.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+        description: >
+          Ollama→vLLM cutover (2026-05-10): Ollama is no longer a supported
+          live LLM provider. The dead provider entry was deleted from
+          config/ai.php on 2026-05-18 and the runtime dispatch was narrowed
+          to ("vllm", "anthropic"). This hook blocks reintroduction via:
+          the 'ollama' => [ PHP provider block, env('OLLAMA_URL') reads,
+          os.environ['OLLAMA_*'] reads, or new case 'ollama' dispatch
+          branches. Historical compat (Literal["ollama", ...] type, comments,
+          docs) is unaffected.
+
+      - id: no-legacy-dashboard
+        name: Block reintroduction of pre-Foundry UI (resources/js/Pages/Dashboard/*)
+        entry: scripts/check_no_legacy_dashboard.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]
+        description: >
+          Foundry cutover (2026-05-18): the legacy pre-Foundry pages and
+          components under resources/js/Pages/Dashboard/ and
+          resources/js/Components/Dashboard/ were deleted in favour of
+          resources/js/Pages/Foundry/. This hook fails any commit that
+          reintroduces those paths or references them via Inertia::render
+          or the @/Components/Dashboard alias. Pages/Dashboards/ (plural,
+          the Customer Dashboards feature) is unaffected.
+
+      - id: system-prompt-version-bump
+        name: Enforce _SYSTEM_PROMPT_VERSION bump on prompt edits
+        entry: scripts/check_prompt_version_bump.sh
+        language: script
+        pass_filenames: false
+        files: ^(src/fastapi/app/agent/(orchestrator\.py|prompts/.*)|src/fastapi/app/prompts/.*)$
+        stages: [pre-commit]
+        description: >
+          Fails the commit if any prompt-path file is staged AND
+          _SYSTEM_PROMPT_VERSION in orchestrator.py is NOT also staged with a
+          changed value. Prevents silent prompt drift that bypasses Anthropic
+          cache invalidation and RETRIEVAL_STRATEGY_VERSION bookkeeping.
+
+      - id: fastapi-pydantic-freshness
+        name: Catch fastapi container running stale Pydantic models
+        entry: scripts/check_fastapi_pydantic_freshness.sh --quiet
+        language: script
+        pass_filenames: false
+        files: ^src/fastapi/app/(hatchet_workflows|services|routers)/.*\.py$
+        stages: [pre-commit]
+        description: >
+          Phase 5 Step 3 (R-P4-3). Blocks a commit that stages a fastapi
+          file whose mtime is newer than the running georag-fastapi
+          container — the in-process Pydantic models would be stale, so
+          smoke + flow JWT verifies fail silently. Fix:
+          `docker compose restart fastapi` (or recreate).
+
+      - id: pyproject-covers-imports
+        name: Verify every app/ import is declared in pyproject (or allow-listed)
+        entry: python3 scripts/check_pyproject_covers_imports.py
+        language: system
+        pass_filenames: false
+        files: ^(src/fastapi/pyproject\.toml|src/fastapi/app/.*\.py)$
+        stages: [pre-commit]
+        description: >
+          Doc-phase 125 — incident-driven gate. The doc-phase 122 rebuild
+          crashed because sentry-sdk had been removed from pyproject while
+          app/main.py still imports sentry_sdk. This hook catches that
+          drift at commit time: scans all top-level imports under app/,
+          maps to PyPI distribution names, and fails if any aren't
+          declared in pyproject's main dependencies (or on the
+          ALLOWED_NON_PYPROJECT allow-list).
+
+      - id: pyproject-covers-imports-dagster
+        name: Verify every src/dagster/georag_dagster/ import is declared in pyproject
+        entry: python3 scripts/check_pyproject_covers_imports.py src/dagster/pyproject.toml src/dagster/georag_dagster
+        language: system
+        pass_filenames: false
+        files: ^(src/dagster/pyproject\.toml|src/dagster/georag_dagster/.*\.py)$
+        stages: [pre-commit]
+        description: >
+          Doc-phase 126 — Dagster-side variant of the doc-phase 125 gate.
+          Same import-vs-pyproject drift class would fail Dagster builds
+          if it ever hits. At inception this hook caught `rapidfuzz`
+          undeclared (hard-imported by parsers/_hole_id.py without a
+          pyproject entry); doc-phase 126 also added it.

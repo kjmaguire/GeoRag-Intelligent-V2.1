@@ -1,0 +1,135 @@
+{
+  "annotations": {"list": []},
+  "description": "Module 10 Chunk 10.5 — per-service availability + throughput tile-of-tiles. Each service row: up gauge, request rate, p95 latency. Reads from postgres_exporter, redis_exporter, native /metrics.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "PostgreSQL",
+      "description": "pg_up + transaction throughput.",
+      "targets": [
+        {"expr": "pg_up", "refId": "A", "legendFormat": "up"},
+        {"expr": "sum(rate(pg_stat_database_xact_commit[5m]))", "refId": "B", "legendFormat": "tx/s"}
+      ],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Redis",
+      "description": "redis_up + commands/s.",
+      "targets": [
+        {"expr": "redis_up", "refId": "A", "legendFormat": "up"},
+        {"expr": "sum(rate(redis_commands_processed_total[5m]))", "refId": "B", "legendFormat": "cmd/s"}
+      ],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Qdrant",
+      "description": "Vector store availability.",
+      "targets": [{"expr": "up{job=\"qdrant\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Neo4j",
+      "description": "Graph store availability. NB: Community Edition needs JMX prometheus enabled in neo4j.conf — currently DOWN until config update (M10/V1.5 task).",
+      "targets": [{"expr": "up{job=\"neo4j\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "id": 4
+    },
+    {
+      "type": "timeseries",
+      "title": "PostgreSQL connections vs max",
+      "description": "pg_stat_activity_count / pg_settings_max_connections.",
+      "targets": [
+        {"expr": "sum(pg_stat_activity_count)", "refId": "A", "legendFormat": "active"},
+        {"expr": "max(pg_settings_max_connections)", "refId": "B", "legendFormat": "max"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "id": 5
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis memory used vs max (bytes)",
+      "description": "redis_memory_used_bytes vs redis_memory_max_bytes.",
+      "targets": [
+        {"expr": "redis_memory_used_bytes", "refId": "A", "legendFormat": "used"},
+        {"expr": "redis_memory_max_bytes", "refId": "B", "legendFormat": "max"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "Martin",
+      "description": "Tile server availability. NB: Martin 1.5.0 has no /metrics endpoint (memory'd gotcha 3); panel will report up/down only via TCP probe. Real metrics land in Martin upgrade (V1.5).",
+      "targets": [{"expr": "up{job=\"martin\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 14},
+      "id": 7
+    },
+    {
+      "type": "stat",
+      "title": "Reverb",
+      "description": "Laravel WebSocket server. Currently DOWN — no native exporter (V1.5 task).",
+      "targets": [{"expr": "up{job=\"reverb\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 14},
+      "id": 8
+    },
+    {
+      "type": "stat",
+      "title": "Dagster",
+      "description": "Pipeline orchestrator. Currently DOWN — no native exporter (V1.5 task).",
+      "targets": [{"expr": "up{job=\"dagster\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 14},
+      "id": 9
+    },
+    {
+      "type": "stat",
+      "title": "Alertmanager",
+      "description": "Module 10 Chunk 10.4 alert routing.",
+      "targets": [{"expr": "up{job=\"alertmanager\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 14},
+      "id": 10
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["services", "infra", "module-10-chunk-10.5"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Service Health",
+  "uid": "georag-services",
+  "version": 1,
+  "weekStart": ""
+}

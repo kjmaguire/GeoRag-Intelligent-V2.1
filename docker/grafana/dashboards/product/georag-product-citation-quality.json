@@ -1,0 +1,67 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.1 product-tier — citation quality per workspace: chunk-provenance pass/fail by §04i layer, hallucination drops by layer.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "title": "§04i Hallucination Layer Drops (24h)",
+      "type": "barchart",
+      "targets": [
+        {"expr": "sum by (layer) (increase(georag_hallucination_drop_total{workspace_id=~\"$workspace\"}[24h]))"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "title": "Citation Coverage by Section Kind",
+      "type": "bargauge",
+      "targets": [
+        {"expr": "sum by (section_kind) (rate(georag_citation_validated_total{workspace_id=~\"$workspace\"}[24h])) / sum by (section_kind) (rate(georag_citation_total{workspace_id=~\"$workspace\"}[24h]))"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "id": 3,
+      "title": "Conflict Resolver — Conflicts Disclosed per Hour",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "sum by (kind) (rate(georag_conflicts_disclosed_total{workspace_id=~\"$workspace\"}[1h]))"}
+      ]
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16},
+      "id": 4,
+      "title": "Export Compliance G01–G10 Gate Pass-Rate (24h)",
+      "type": "barchart",
+      "targets": [
+        {"expr": "sum by (gate) (rate(georag_export_gate_pass_total{workspace_id=~\"$workspace\"}[24h])) / sum by (gate) (rate(georag_export_gate_eval_total{workspace_id=~\"$workspace\"}[24h]))"}
+      ]
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["georag", "product", "citation", "quality"],
+  "templating": {
+    "list": [
+      {"name": "workspace", "type": "query", "datasource": "Prometheus",
+       "query": "label_values(georag_citation_total, workspace_id)",
+       "includeAll": true, "multi": true}
+    ]
+  },
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "title": "GeoRAG / Product / Citation Quality",
+  "uid": "georag-product-citation-quality",
+  "version": 1
+}

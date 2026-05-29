@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>GeoRAG Architecture</title>
+<style>
+:root{--bg:#fafaf9;--fg:#1c1917;--muted:#57534e;--accent:#0369a1;--border:#e7e5e4;--label:#1c1917;--note:#fef3c7;--noteb:#f59e0b}
+body{font-family:-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:1100px;margin:40px auto;padding:0 32px;line-height:1.55}
+h1{font-size:28px;margin:0 0 4px}.sub{color:var(--muted);margin-bottom:32px}
+.section{margin:32px 0;border:1px solid var(--border);border-radius:8px;padding:20px;background:#fff}
+.section-label{font-family:ui-monospace,monospace;font-size:13px;font-weight:600;color:var(--label);margin-bottom:14px;letter-spacing:.3px}
+.flow-table{width:100%;border-collapse:collapse;font-size:14px}.flow-table th,.flow-table td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+.flow-table th{font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+.responsibilities{color:var(--fg)}.tech-tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;margin:1px 2px}
+.tag-blue{background:#dbeafe;color:#1e40af}.tag-green{background:#dcfce7;color:#166534}.tag-amber{background:#fef3c7;color:#92400e}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;margin-left:6px}
+.b-mand{background:#fee2e2;color:#991b1b}.b-high{background:#fed7aa;color:#9a3412}.b-mh{background:#fef3c7;color:#854d0e}.b-med{background:#e0e7ff;color:#3730a3}
+.key-note{background:var(--note);border-left:3px solid var(--noteb);padding:10px 14px;font-size:13px;border-radius:0 4px 4px 0}
+pre{background:#f5f5f4;border:1px solid var(--border);border-radius:6px;padding:14px 16px;font-size:12px;overflow-x:auto;line-height:1.5}
+code{font-family:ui-monospace,monospace;font-size:12px}
+footer{margin:48px 0 24px;padding-top:16px;border-top:1px solid var(--border);font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)}
+</style></head><body>
+<h1>GeoRAG &mdash; Architecture Reference</h1><div class="sub">Geological intelligence RAG platform &middot; Junior mining &amp; exploration</div>
+
+<div class="section"><div class="section-label">00 &mdash; How to read this document</div>
+<p style="font-size:14px;margin:0 0 10px">This is the single source of truth for GeoRAG's architecture. When code and this document disagree, the document is correct and the code needs fixing (or this document needs an explicit, deliberate update with a reason).</p>
+<p style="font-size:14px;margin:0 0 10px"><strong>Reading order for new contributors:</strong> &sect;01 (layers) &rarr; &sect;02 (stores) &rarr; &sect;04 (ingestion) &rarr; &sect;04h-i-j (RAG &amp; hallucination guards) &rarr; &sect;05 (query flow) &rarr; &sect;07 (services + boundaries) &rarr; &sect;10p-u (feedback &amp; UX surfaces) &rarr; &sect;11b (V1 scope) &rarr; &sect;13 (ADR index).</p>
+<p style="font-size:14px;margin:0"><strong>Hard rules</strong> (mirrored in <code>CLAUDE.md</code>): no Streamlit, async-native drivers only in FastAPI, Octane-safe Laravel, citations mandatory on every RAG response, six-layer hallucination prevention applies to any code touching the pipeline, &sect;04e schemas are contracts, no orchestration overlap, MapLibre GL only, Neo4j Community Edition only.</p>
+</div>
+
+<div class="section"><div class="section-label">01 &mdash; Core Architecture Layers</div>
+<table class="flow-table"><thead><tr><th style="width:140px">Layer</th><th>Responsibility</th><th style="width:260px">Tech</th></tr></thead><tbody>
+<tr><td>Presentation</td><td class="responsibilities">React 19 SPA via Inertia.js v3. Citation-first chat UI, map views, schema-aware visualizations, admin + Foundry workspace surfaces.</td><td><span class="tech-tag tag-blue">React 19</span><span class="tech-tag tag-blue">Inertia v3</span><span class="tech-tag tag-blue">shadcn/ui</span><span class="tech-tag tag-blue">Tailwind v4</span><span class="tech-tag tag-blue">MapLibre GL</span></td></tr>
+<tr><td>Application</td><td class="responsibilities">Laravel 13 monolith on Octane (Swoole). Auth, RBAC, workspace mgmt, query orchestration, streaming transport (Reverb), tile + FastAPI proxying, citation resolvers.</td><td><span class="tech-tag tag-green">Laravel 13 + Octane</span><span class="tech-tag tag-green">Horizon</span><span class="tech-tag tag-green">Reverb</span><span class="tech-tag tag-green">Sanctum</span><span class="tech-tag tag-green">Pulse</span></td></tr>
+<tr><td>Intelligence</td><td class="responsibilities">FastAPI domain service. Pydantic AI agents, LangGraph agentic retrieval, RAG pipeline, hallucination guards, viz computation. Async-native (asyncpg, redis.asyncio, async Qdrant, async Neo4j).</td><td><span class="tech-tag tag-amber">FastAPI 0.136</span><span class="tech-tag tag-amber">Pydantic AI</span><span class="tech-tag tag-amber">LangGraph</span><span class="tech-tag tag-amber">vLLM</span></td></tr>
+<tr><td>Workflow</td><td class="responsibilities">Hatchet for user-triggered &amp; long-running cross-service workflows (PDF ingestion, embedding, OCR retries, backups, learning loops, public-geo pulls). Dagster for scheduled / asset-lineage bulk pipelines. Laravel queues remain for short Laravel-internal jobs.</td><td><span class="tech-tag tag-amber">Hatchet</span><span class="tech-tag tag-amber">Dagster</span></td></tr>
+<tr><td>Data</td><td class="responsibilities">PostgreSQL 18 + PostGIS (geological schemas + audit + app), Neo4j Community (KG), Qdrant (dense + sparse vectors), SeaweedFS (S3-compatible Bronze archive), Redis (cache / queues / pub-sub), Martin (PostGIS&rarr;MVT tiles).</td><td><span class="tech-tag tag-blue">PostGIS</span><span class="tech-tag tag-blue">Neo4j</span><span class="tech-tag tag-blue">Qdrant</span><span class="tech-tag tag-blue">SeaweedFS</span><span class="tech-tag tag-blue">Redis</span><span class="tech-tag tag-blue">Martin</span></td></tr>
+</tbody></table></div>
+
+<div class="section"><div class="section-label">02 &mdash; Data Store Breakdown</div>
+<table class="flow-table"><thead><tr><th style="width:120px">Store</th><th>Purpose</th><th style="width:200px">Notes</th></tr></thead><tbody>
+<tr><td>SeaweedFS</td><td class="responsibilities">Bronze layer. Immutable raw file archive. Source of truth for reprocessing.</td><td>S3-compatible (port 8333). On-prem friendly, Apache 2.0. Compose service name kept as <code>minio</code> for env/DNS compatibility.</td></tr>
+<tr><td>PostgreSQL 18 + PostGIS</td><td class="responsibilities">Silver / Gold geological domain schemas, app schema (workspaces, users, RBAC), audit schema (query audit log, hallucination traces). Spatial indices via GIST.</td><td>Primary query store. PgBouncer transaction-mode pooling fronts the cluster for asyncpg.</td></tr>
+<tr><td>Neo4j Community</td><td class="responsibilities">Knowledge graph. Core entity model (&sect;04f) + Public-Geoscience extension (&sect;04f-pg). Powers entity-aware retrieval, cross-corpus joins, citation traversal.</td><td>Community-only features. Manual page-cache warmup. Pinned at 2026-community.</td></tr>
+<tr><td>Qdrant</td><td class="responsibilities">Dense (bge-small-en-v1.5) + sparse (SPLADE++) vectors. Per-passage payload indices include <code>workspace_id</code> for tenant filtering.</td><td>HNSW <code>m=16</code>, <code>ef_construct=200</code>.</td></tr>
+<tr><td>Redis</td><td class="responsibilities">Queue backend (Horizon), retrieval cache, Reverb pub/sub, sessions. Per-role <code>maxmemory-policy</code> (allkeys-lru for cache, noeviction for queue, volatile-lru for sessions).</td><td>Single instance in dev; 3-instance split in staging/prod via overlay.</td></tr>
+<tr><td>Martin</td><td class="responsibilities">PostGIS&rarr;MVT tile server. Geological vector layers served as Mapbox Vector Tiles directly from SQL function sources.</td><td>Direct PG conn (own pool), bypasses PgBouncer. Stateless &mdash; owns no data.</td></tr>
+<tr><td>Hatchet engine DB</td><td class="responsibilities">Workflow state, retries, durable timer. Hatchet-lite ships its own embedded Postgres + RabbitMQ in dev; pluggable backends in staging/prod.</td><td>Internal to Hatchet; never queried by app code.</td></tr>
+</tbody></table></div>
+
+<div class="section"><div class="section-label">03 &mdash; Laravel Ecosystem &amp; First-Party Packages</div>
+<table class="flow-table"><thead><tr><th style="width:160px">Package</th><th>Role in GeoRAG</th><th style="width:120px">Priority</th></tr></thead><tbody>
+<tr><td>Queues + Redis</td><td class="responsibilities">Foundation for short, Laravel-internal async work. Cross-service workflows belong to Hatchet, not Laravel queues (see &sect;07b).</td><td><span class="badge b-mand">Mandatory</span></td></tr>
+<tr><td>Octane (Swoole)</td><td class="responsibilities">Long-lived HTTP workers. Replaces php-fpm. Code must be Octane-safe (no static request state, no container-injected singletons holding request data).</td><td><span class="badge b-mand">Mandatory</span></td></tr>
+<tr><td>Horizon</td><td class="responsibilities">Queue dashboard + worker supervision. Separate process from Octane.</td><td><span class="badge b-high">High</span></td></tr>
+<tr><td>Reverb</td><td class="responsibilities">WebSocket server. Streams LLM tokens, citation events, and ingestion progress to React UI. Separate process. Pub/sub via Redis.</td><td><span class="badge b-high">High</span></td></tr>
+<tr><td>Sanctum</td><td class="responsibilities">SPA cookie auth (session-based, <code>credentials: 'same-origin'</code>). RBAC enforced server-side. No bearer tokens in <code>localStorage</code>.</td><td><span class="badge b-mand">Mandatory</span></td></tr>
+<tr><td>Pulse</td><td class="responsibilities">Performance &amp; observability dashboard. Exporter feeds Prometheus.</td><td><span class="badge b-mh">Med-High</span></td></tr>
+<tr><td>Inertia v3 (React adapter)</td><td class="responsibilities">SSR-capable React pages. Server-side routing via <code>Inertia::render()</code>. Shared props expose tile-server URL, basemap, and user context.</td><td><span class="badge b-mand">Mandatory</span></td></tr>
+<tr><td>Pail</td><td class="responsibilities">Tail log driver for dev console.</td><td><span class="badge b-med">Medium</span></td></tr>
+<tr><td>Boost (laravel/boost)</td><td class="responsibilities">MCP server exposing artisan, route inspection, doc search, and tinker to Claude Code.</td><td><span class="badge b-med">Medium</span></td></tr>
+</tbody></table></div>
+
+<div class="section"><div class="section-label">04 &mdash; Ingestion Pipeline (Medallion Architecture)</div>
+<table class="flow-table"><thead><tr><th style="width:90px">Stage</th><th>Process</th><th style="width:220px">Tech</th></tr></thead><tbody>
+<tr><td>Bronze</td><td class="responsibilities">Immutable raw file landing. Every uploaded file archived to SeaweedFS with SHA256 + metadata. Source of truth &mdash; reprocessing always replays from here.</td><td><span class="tech-tag tag-blue">SeaweedFS</span></td></tr>
+<tr><td>Silver</td><td class="responsibilities">Parsed + validated. Format-specific parsers emit Pydantic intermediate representations. Schema conformance enforced against &sect;04e before insertion. Quality metrics + per-row reject counts persisted; no silent drops.</td><td><span class="tech-tag tag-amber">&sect;04p PDF stack</span><span class="tech-tag tag-amber">Format parsers</span></td></tr>
+<tr><td>Gold</td><td class="responsibilities">Feature-engineered, query-optimized. SME-configured rules (grade thresholds, net pay, anomaly criteria) applied. Materialized views refreshed at end of run.</td><td><span class="tech-tag tag-blue">PostGIS</span></td></tr>
+<tr><td>Index</td><td class="responsibilities">Embeddings written to Qdrant (dense + sparse), entities + relationships to Neo4j (canonical labels per &sect;04f), GIST spatial indices on geometry columns.</td><td><span class="tech-tag tag-blue">Qdrant</span><span class="tech-tag tag-blue">Neo4j</span></td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">Reprocessing always starts from Bronze. Never from Silver/Gold. Parser improvements replay from Bronze.</div></div>
+
+<div class="section"><div class="section-label">04b &mdash; Coordinate System Detection</div>
+<table class="flow-table"><thead><tr><th style="width:44px">Step</th><th>Process</th><th>Detail</th></tr></thead><tbody>
+<tr><td>1</td><td>Parse metadata</td><td class="responsibilities">Extract EPSG codes, projection strings, datum references from file headers (GeoTIFF tags, shapefile <code>.prj</code>, GeoPackage <code>gpkg_spatial_ref_sys</code>, LAS header).</td></tr>
+<tr><td>2</td><td>Heuristic fallback</td><td class="responsibilities">If no metadata: analyze coordinate ranges (e.g., 6-digit easting + 7-digit northing &rarr; UTM).</td></tr>
+<tr><td>3</td><td>Bounding box validation</td><td class="responsibilities">Validate detected CRS against project bounding box. Reject data outside the region.</td></tr>
+<tr><td>4</td><td>Transform + audit</td><td class="responsibilities">Transform to project CRS (per <code>projects.crs_epsg</code>, default EPSG:32613 WGS 84/UTM 13N). Store original CRS alongside transformed coordinates for audit.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">Accuracy is reported per release against a validation corpus; no quality figures are claimed without a measured baseline. Per-workspace configurable project CRS.</div></div>
+
+<div class="section"><div class="section-label">04c &mdash; Format-Specific Parsers</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Each format parser accepts a path/stream, returns a standardized Pydantic intermediate, logs parse-quality metrics, and never silently drops data &mdash; failed rows are logged + counted.</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Format</th><th>Approach</th></tr></thead><tbody>
+<tr><td>NI 43-101 PDFs</td><td class="responsibilities">&sect;04p in-process stack. Multi-parser dispatch tree with OCR fallback. See &sect;04p for the dispatch order and quality tables.</td></tr>
+<tr><td>CSV</td><td class="responsibilities">Delimiter auto-detect (comma / semicolon / tab / pipe), decimal-comma transform for EU locales, schema-type classifier, sheet-type alias normalisation. Dispatched via Dagster's <code>csv_silver_ingest</code> concurrency pool.</td></tr>
+<tr><td>XLSX</td><td class="responsibilities">Multi-sheet workbook walker; per-sheet type classification reuses CSV aliases. Silver write runs in the same pool as CSV to avoid concurrency collisions.</td></tr>
+<tr><td>LAS (well logs)</td><td class="responsibilities">Header + curve parsing via <code>lasio</code>. Unit normalization to project canonical units.</td></tr>
+<tr><td>Shapefile / GeoPackage / Esri FGDB</td><td class="responsibilities">Read via GDAL / pyogrio (<code>OpenFileGDB</code> for Esri <code>.gdb</code>). Per-layer ingestion; CRS detection per &sect;04b. Generic features land in <code>silver.vector_features</code>; drill-specific layers route to their typed silver tables.</td></tr>
+<tr><td>QField GPKG sync</td><td class="responsibilities">Field-collected GeoPackage uploads. Spatial layers ingested per the Shapefile/GeoPackage path; non-spatial sidecar layers filtered out at the loader.</td></tr>
+<tr><td>GeoTIFF</td><td class="responsibilities">Raster surfaces, scanned figures, satellite imagery. Metadata + bounds land in <code>silver.raster_layers</code>; pixel bytes remain in SeaweedFS. Scanned-document TIFFs are normalised to PDF and routed through the &sect;04p stack (see ADR-0005).</td></tr>
+<tr><td>DOCX</td><td class="responsibilities">Internal reports, technical memos. Body + tables extracted; figures retained.</td></tr>
+</tbody></table></div>
+
+<div class="section"><div class="section-label">04d &mdash; Format Inventory</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 8px">Supported ingestion formats. V1 status is authoritative in &sect;11b; this list inventories every format the architecture covers. New formats require main-session approval.</p>
+<p style="font-size:13px"><strong>Tabular (V1):</strong> CSV, XLSX, LAS &middot; <strong>Spatial (V1):</strong> Shapefile, GeoPackage, GeoTIFF, Esri File Geodatabase (.gdb via pyogrio OpenFileGDB), QField GPKG sync &middot; <strong>Documents (V1):</strong> PDF (NI 43-101 reports &mdash; &sect;04p stack), DOCX &middot; <strong>Geophysical (Roadmap):</strong> SEG-Y, Geosoft GDB (binary channels &mdash; distinct from Esri .gdb), Geosoft grids &middot; <strong>Drillhole (Roadmap):</strong> acQuire exports, Maxwell, Leapfrog CSV exports, IOgas (blocked on a fixture)</p>
+<p style="font-size:12px;color:var(--muted);margin:8px 0 0"><strong>Format-name disambiguation:</strong> "Esri File Geodatabase" and "Geosoft GDB" share the <code>.gdb</code> extension but are unrelated formats. Esri's is a vector GIS container (read via GDAL/pyogrio's <code>OpenFileGDB</code> driver &mdash; in V1). Geosoft's is a binary geophysics channel store (proprietary SDK &mdash; Roadmap per &sect;11b). Disambiguate at ingest by inspecting directory structure: Esri <code>.gdb</code> is a directory with <code>gdb</code>/<code>a</code> files; Geosoft <code>.gdb</code> is a single binary file.</p></div>
+
+<div class="section"><div class="section-label">04d-tile &mdash; Tile-Serving Layer (Martin)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Martin serves geological vector layers as Mapbox Vector Tiles directly from PostGIS SQL function sources. Martin is infrastructure &mdash; it owns no state and reads PostGIS via a dedicated read-only role.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Connection &amp; role</p>
+<p style="font-size:13px;margin:0 0 12px">Martin connects <strong>directly to PostgreSQL</strong> on port 5432 (internal Docker network), <strong>not through PgBouncer</strong>. Martin uses persistent connections and server-side features incompatible with PgBouncer transaction-mode pooling. Martin manages its own connection pool (<code>pool_size: 20</code>).</p>
+
+<pre>-- Dedicated read-only role for Martin
+CREATE ROLE martin_ro LOGIN PASSWORD '${MARTIN_PG_PASSWORD}';
+GRANT USAGE ON SCHEMA silver TO martin_ro;
+GRANT SELECT ON silver.collars, silver.spatial_features, silver.drill_traces TO martin_ro;
+GRANT EXECUTE ON FUNCTION silver.collars_by_project, silver.traces_by_project,
+  silver.boundaries_by_project, silver.formations_by_project, silver.historic_workings_by_project
+  TO martin_ro;</pre>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">V1 SQL function sources &mdash; exactly 5 functions</p>
+<table class="flow-table"><thead><tr><th style="width:280px">Function</th><th>Source table</th><th style="width:200px">SRID handling</th></tr></thead><tbody>
+<tr><td><code>collars_by_project(z, x, y, query_params)</code></td><td class="responsibilities"><code>silver.collars</code> (POINT).</td><td><code>ST_Transform(geom, 3857)</code> from SRID:32613</td></tr>
+<tr><td><code>traces_by_project(z, x, y, query_params)</code></td><td class="responsibilities"><code>silver.drill_traces</code> (LINESTRING Z). Populated by the minimum-curvature desurvey pipeline.</td><td><code>ST_Transform(geom, 3857)</code> from SRID:4326</td></tr>
+<tr><td><code>boundaries_by_project(z, x, y, query_params)</code></td><td class="responsibilities"><code>silver.spatial_features</code> WHERE <code>feature_type='boundary'</code>.</td><td><code>ST_Transform(geom, 3857)</code> from SRID:4326</td></tr>
+<tr><td><code>formations_by_project(z, x, y, query_params)</code></td><td class="responsibilities"><code>silver.spatial_features</code> WHERE <code>feature_type='formation'</code>.</td><td><code>ST_Transform(geom, 3857)</code> from SRID:4326</td></tr>
+<tr><td><code>historic_workings_by_project(z, x, y, query_params)</code></td><td class="responsibilities"><code>silver.spatial_features</code> WHERE <code>feature_type='historic_working'</code>.</td><td><code>ST_Transform(geom, 3857)</code> from SRID:4326</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Query parameters</p>
+<p style="font-size:13px;margin:0 0 12px">All functions accept <code>project_id</code> (required UUID). <code>collars_by_project</code> and <code>traces_by_project</code> also accept an optional <code>campaign_id</code> UUID to filter by drilling campaign when present.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Zoom-dependent simplification (polygon and line functions)</p>
+<table class="flow-table"><thead><tr><th style="width:120px">Zoom range</th><th style="width:160px">ST_Simplify tolerance (m, SRID:3857)</th><th>Effect</th></tr></thead><tbody>
+<tr><td>z 0&ndash;6</td><td>500</td><td class="responsibilities">Coarse outlines only. Reduces polygon vertex count by ~95%.</td></tr>
+<tr><td>z 7&ndash;10</td><td>100</td><td class="responsibilities">Regional detail. Suitable for project-level views.</td></tr>
+<tr><td>z 11&ndash;13</td><td>10</td><td class="responsibilities">Property-level detail.</td></tr>
+<tr><td>z 14+</td><td>0 (none)</td><td class="responsibilities">Full resolution. Drill-site level.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Desurvey &mdash; <code>silver.drill_traces</code> generation</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Property</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Algorithm</td><td class="responsibilities"><strong>Minimum curvature</strong> (industry standard). Reference: <code>wellpathpy.minimum_curvature</code>. Ratio factor <code>RF = 2/DL &times; tan(DL/2)</code>.</td></tr>
+<tr><td>Input</td><td class="responsibilities"><code>silver.surveys</code> joined with <code>silver.collars</code>. Surveys sorted by depth ascending per collar.</td></tr>
+<tr><td>Output</td><td class="responsibilities"><code>silver.drill_traces</code> &mdash; trace_id (UUID PK), collar_id (FK), project_id, geom (LINESTRING Z, SRID:4326), max_depth, survey_count, algorithm, computed_at.</td></tr>
+<tr><td>Pipeline</td><td class="responsibilities">Dagster asset <code>silver_drill_traces</code>, depends on <code>silver_collars</code> + <code>silver_surveys</code>. Incremental: only recompute traces for collars whose survey data changed (compare survey record hashes).</td></tr>
+<tr><td>Edge cases</td><td class="responsibilities">0-survey collar &rarr; no trace (renders as point only). 1-survey collar &rarr; vertical LINESTRING + quality warning. Duplicate depths &rarr; keep latest <code>updated_at</code>. Azimuth outside 0&ndash;360 or dip outside &minus;90..+90 &rarr; reject record. Dogleg &gt; 15&deg;/30 m &rarr; log warning, still compute.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Observability</p>
+<p style="font-size:13px;margin:0 0 8px">Martin exposes Prometheus metrics at <code>GET /_/metrics</code> (note the leading underscore prefix in 1.x). Scrape job in <code>docker/prometheus/prometheus.yml</code>. Alerts: <code>MartinHighLatency</code> (p95 &gt; 500ms / 5min), <code>MartinLowCacheHitRate</code> (&lt; 40% / 15min), <code>MartinHighErrorRate</code> (5xx &gt; 5% / 5min). Tile proxy audit logs (&sect;07c-tile) complement Prometheus with per-request detail.</p>
+
+<div class="key-note" style="margin-top:12px">These five functions are the complete V1 tile set. Additions require architecture review. Three of the five (<code>boundaries</code>, <code>formations</code>, <code>historic_workings</code>) filter <code>silver.spatial_features</code> by <code>feature_type</code> &mdash; they return empty tiles until data of those types is ingested.</div>
+</div>
+
+<div class="section"><div class="section-label">04e &mdash; Core Data Schemas (PostgreSQL + PostGIS)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Geological domain schemas. Pydantic models mirror these for runtime validation. JSONB used for variable-key payloads. PostgreSQL roles: <code>georag</code> (owner, migrations only via the <code>pgsql_migrations</code> connection), <code>georag_app</code> (runtime), <code>georag_read</code> / <code>georag_write</code> / <code>georag_audit</code> (scoped roles). Defense-in-depth &mdash; no <code>GRANT georag TO georag_app</code>.</p>
+
+<p style="font-size:13px;font-weight:600;margin:8px 0 6px">Silver schema (representative tables)</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Table</th><th>Key fields</th></tr></thead><tbody>
+<tr><td><code>silver.projects</code></td><td class="responsibilities">project_id (PK), name, operator, commodity[], bbox (geometry), crs_epsg, created_at</td></tr>
+<tr><td><code>silver.collars</code></td><td class="responsibilities">collar_id (PK), project_id (FK), hole_id, easting, northing, elevation, geom (POINT), total_depth, azimuth, dip, drill_date, hole_type, status</td></tr>
+<tr><td><code>silver.surveys</code></td><td class="responsibilities">collar_id (FK), depth_m, azimuth, dip, survey_method &middot; composite PK (collar_id, depth_m)</td></tr>
+<tr><td><code>silver.drill_traces</code></td><td class="responsibilities">Pre-computed minimum-curvature LINESTRING Z per collar (see &sect;04d-tile desurvey).</td></tr>
+<tr><td><code>silver.lithology</code></td><td class="responsibilities">collar_id (FK), from_m, to_m, lith_code, lith_desc, alteration_intensity, structure_notes &middot; interval PK</td></tr>
+<tr><td><code>silver.alteration</code></td><td class="responsibilities">collar_id (FK), from_m, to_m, alt_type, intensity (1&ndash;5), mineralogy[]</td></tr>
+<tr><td><code>silver.structure</code></td><td class="responsibilities">collar_id (FK), depth_m, structure_type, alpha, beta, dip_dir, dip, confidence</td></tr>
+<tr><td><code>silver.assays_v2</code></td><td class="responsibilities">sample_id (PK), collar_id (FK), from_m, to_m, sample_type, results JSONB (e.g. <code>{"U3O8_ppm":1250,"Au_ppb":45}</code>), plus 13 QA/QC columns (LOD, dup, std, blank, dilution, hold, lab, certificate, batch, prep, method, reanalysis, qaqc_flag).</td></tr>
+<tr><td><code>silver.geochemistry</code></td><td class="responsibilities">sample_id (FK), major_oxides JSONB, trace_elements JSONB, computed: Mg#, CIA, Eu/Eu*</td></tr>
+<tr><td><code>silver.geophysics_surveys</code></td><td class="responsibilities">survey_id (PK), project_id (FK), method (mag/EM/IP/grav/radiometric), acquisition_date, coverage_geom, station_count, line_spacing_m, contractor, processing_notes JSONB.</td></tr>
+<tr><td><code>silver.reports</code></td><td class="responsibilities">doc_id (PK), project_id (FK), title, author, qp_name, effective_date, resource_estimate JSONB, source_pdf_uri (SeaweedFS), page_count, parser, parser_version, ingested_at, indexed_at.</td></tr>
+<tr><td><code>silver.document_passages</code></td><td class="responsibilities">passage_id (PK), document_id (FK), document_revision_id, workspace_id, page_first, page_last, section_heading, paragraph_index, char_offset_start, char_offset_end, text, text_hash (sha256), token_count, embedding_id, ocr_confidence, ocr_status, parser, created_at. Stable across re-ingest while <code>text_hash</code> matches (see &sect;10p-i).</td></tr>
+<tr><td><code>silver.review_queue</code></td><td class="responsibilities">queue_id (PK), document_id, page_number, evidence JSONB, parser_confidence, decision (pending/approve/reject), reviewer_id, decided_at. Drives the per-page Silver Review UI.</td></tr>
+<tr><td><code>silver.ingest_progress</code></td><td class="responsibilities">run_id (PK), document_id, stage (preflight/parse/persist/embed/dual_write), status, started_at, completed_at, error JSONB. Powers the Ingestion Runs UI (&sect;10w).</td></tr>
+<tr><td><code>silver.spatial_features</code></td><td class="responsibilities">feature_id (PK), project_id (FK), feature_type (12-value CHECK incl. boundary, formation, historic_working, fault, contact, zone, mineralised_zone, alteration_halo, &hellip;), geom, feature_name, source, source_file_sha256, source_layer, source_feature_id, interpretation_pdf_id, feature_role, confidence, crs_epsg_native.</td></tr>
+<tr><td><code>silver.vector_features</code></td><td class="responsibilities">Polymorphic landing for generic geological vector features (faults / contacts / zones) from Shapefile / GeoPackage ingest when attributes do not match a typed silver table.</td></tr>
+<tr><td><code>silver.raster_layers</code></td><td class="responsibilities">raster_id (PK), project_id (FK), name, bounds, crs_epsg, byte_uri (SeaweedFS), metadata JSONB.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Gold schema</p>
+<p style="font-size:13px;margin:0 0 12px">Query-optimised materialised views and decision-support tables: <code>gold.drillhole_intervals_visual</code>, <code>gold.cross_section_panels</code>, <code>gold.structure_measurements_visual</code>, grade-tonnage rollups, anomaly subgraph inputs.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Audit + app schemas</p>
+<p style="font-size:13px;margin:0 0 12px"><code>audit.query_audit_log</code> persists every query / response trace separately from the geological domain &mdash; operational + geology data must not be muddled. <code>ALTER DEFAULT PRIVILEGES</code> grants future audit tables to the audit role. The <code>app</code> schema holds workspaces, users, RBAC mappings, citation resolver registry state.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Closed-vocabulary backed enums</p>
+<p style="font-size:13px;margin:0 0 12px">Structural closed vocabularies are backed PHP 8.5 enums in <code>App\Enums</code>: <code>HoleType</code>, <code>CollarStatus</code>, <code>SurveyMethod</code>. Wired as model casts and as <code>Rule::enum()</code> validators in form requests. <strong>SME-managed open vocabularies</strong> (commodity, alt_type, lith_code, mineralogy) remain plain strings backed by <code>SmeConfig</code>.</p>
+</div>
+
+<div class="section"><div class="section-label">04f &mdash; Knowledge Graph Entity Model (Neo4j)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">7 core node types, typed relationships. Powers entity-aware retrieval and citation traversal alongside vector search. The Public Geoscience extension (&sect;04f-pg) adds 9 more node types and 9 more relationships sourced from third-party authorities.</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Node type</th><th>Key properties</th></tr></thead><tbody>
+<tr><td><strong>Project</strong></td><td class="responsibilities">project_id, name, operator, commodity, bbox_wkt, country, region</td></tr>
+<tr><td><strong>DrillHole</strong></td><td class="responsibilities">hole_id, project_id, collar_geom, total_depth, drill_date &middot; <strong>canonical camelCase label</strong> (CI guard rejects the lowercase <code>:Drillhole</code> form).</td></tr>
+<tr><td><strong>Formation</strong></td><td class="responsibilities">formation_id, name, age, lithology_class, host_rock</td></tr>
+<tr><td><strong>Report</strong></td><td class="responsibilities">doc_id, title, qp_name, effective_date, report_type (NI 43-101 / technical / press)</td></tr>
+<tr><td><strong>MineralOccurrence</strong></td><td class="responsibilities">occurrence_id, commodity, grade, tonnage, classification (inferred/indicated/measured)</td></tr>
+<tr><td><strong>GeophysicalSurvey</strong></td><td class="responsibilities">survey_id, method (mag/EM/IP/grav), acquisition_date, coverage_geom</td></tr>
+<tr><td><strong>Publication</strong></td><td class="responsibilities">pub_id, doi, authors, year, journal, abstract</td></tr>
+</tbody></table>
+<table class="flow-table" style="margin-top:14px"><thead><tr><th style="width:240px">Relationship</th><th>Direction</th></tr></thead><tbody>
+<tr><td><code>HAS_HOLE</code></td><td class="responsibilities">Project &rarr; DrillHole</td></tr>
+<tr><td><code>INTERSECTS</code></td><td class="responsibilities">DrillHole &rarr; Formation</td></tr>
+<tr><td><code>HOSTS_MINERALIZATION</code></td><td class="responsibilities">Formation &rarr; MineralOccurrence</td></tr>
+<tr><td><code>OVERLIES / UNDERLIES</code></td><td class="responsibilities">Formation &harr; Formation (stratigraphy)</td></tr>
+<tr><td><code>COVERS_PROJECT</code></td><td class="responsibilities">GeophysicalSurvey &rarr; Project</td></tr>
+<tr><td><code>DESCRIBED_IN</code></td><td class="responsibilities">DrillHole / MineralOccurrence &rarr; Report</td></tr>
+<tr><td><code>CITES_DRILLHOLE</code></td><td class="responsibilities">Report &rarr; DrillHole (citation provenance)</td></tr>
+<tr><td><code>REFERENCES</code></td><td class="responsibilities">Report &rarr; Publication</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">KG traversal feeds the citation-first response layer. Every chat answer must trace back to source nodes via these relationships.</div></div>
+
+<div class="section"><div class="section-label">04f-pg &mdash; Knowledge Graph: Public Geoscience Extension</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">9 additional node types and 9 additional relationships sourced from third-party authorities (e.g., CA-SK SMDI, NRCan, BC MINFILE). Joins the &sect;04f core corpus through a single cross-corpus <code>REFERENCES</code> edge. Public-Geoscience entities carry an umbrella <code>:PublicGeo</code> secondary label so cross-corpus queries can filter cheaply.</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Node type</th><th>Key properties</th></tr></thead><tbody>
+<tr><td><strong>Jurisdiction</strong></td><td class="responsibilities">code (PK), country_code, name, level, primary_authority, license_summary, license_url</td></tr>
+<tr><td><strong>PublicGeoSource</strong></td><td class="responsibilities">source_id (PK), name, canonical_type, service_url, license_summary, license_url</td></tr>
+<tr><td><strong>Commodity</strong></td><td class="responsibilities">code (PK), name, grouping</td></tr>
+<tr><td><strong>Mine</strong> <code>+:PublicGeo</code></td><td class="responsibilities">pg_id (PK), jurisdiction_code, source_id, plus jurisdictional + spatial properties</td></tr>
+<tr><td><strong>MineralOccurrence</strong> <code>+:PublicGeo</code></td><td class="responsibilities">pg_id (PK), external_id, jurisdiction_code; PG variant of the &sect;04f primary type</td></tr>
+<tr><td><strong>DrillHole</strong> <code>+:PublicGeo</code></td><td class="responsibilities">pg_id (PK), drillhole_id, jurisdiction_code</td></tr>
+<tr><td><strong>ResourcePotentialZone</strong> <code>+:PublicGeo</code></td><td class="responsibilities">pg_id (PK), jurisdiction_code, source_id, commodity, commodity_grouping, potential_rank, methodology_ref, bbox</td></tr>
+<tr><td><strong>RockSample</strong> <code>+:PublicGeo</code></td><td class="responsibilities">pg_id (PK), jurisdiction_code, nts_250k</td></tr>
+<tr><td><strong>AssessmentSurvey</strong> <code>+:PublicGeo</code></td><td class="responsibilities">pg_id (PK), jurisdiction_code, survey_type</td></tr>
+</tbody></table>
+<table class="flow-table" style="margin-top:14px"><thead><tr><th style="width:240px">Relationship</th><th>Direction</th></tr></thead><tbody>
+<tr><td><code>PUBLISHED_BY</code></td><td class="responsibilities">PublicGeoSource &rarr; Jurisdiction</td></tr>
+<tr><td><code>SOURCED_FROM</code></td><td class="responsibilities">PublicGeo entity &rarr; PublicGeoSource</td></tr>
+<tr><td><code>HAS_PRIMARY_COMMODITY</code></td><td class="responsibilities">MineralOccurrence &rarr; Commodity</td></tr>
+<tr><td><code>HAS_ASSOCIATED_COMMODITY</code></td><td class="responsibilities">MineralOccurrence &rarr; Commodity (subsidiary commodities)</td></tr>
+<tr><td><code>HAS_COMMODITY</code></td><td class="responsibilities">Mine &rarr; Commodity</td></tr>
+<tr><td><code>COVERS_AREA_FOR</code></td><td class="responsibilities">ResourcePotentialZone &rarr; Commodity</td></tr>
+<tr><td><code>LOCATED_IN</code></td><td class="responsibilities">PublicGeo entity &rarr; Jurisdiction</td></tr>
+<tr><td><code>REFERENCES</code></td><td class="responsibilities">Document &rarr; PublicGeo (cross-corpus join, set by <code>gold_cross_corpus_linker</code>)</td></tr>
+<tr><td><code>PAYLOAD_TEXT_SNIPPET</code></td><td class="responsibilities">Document &rarr; PublicGeo (carries source-text snippet for &sect;04i layer-5 chunk-provenance verification)</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px"><code>:PublicGeo</code> is a secondary label. PG entities carry their primary geological type (<code>:Mine</code>, <code>:MineralOccurrence</code>, <code>:DrillHole</code>, &hellip;) plus the umbrella label. <code>MATCH (n:PublicGeo)</code> isolates the PG corpus cheaply; <code>MATCH (m:MineralOccurrence)</code> returns occurrences from both corpora.</div>
+</div>
+
+<div class="section"><div class="section-label">04g &mdash; Visualization Specifications</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Python computes data, React renders interactive UI. Matplotlib handles server-side renders for export/PDF. All visualizations support image + data export.</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Visualization</th><th>Purpose</th><th style="width:160px">Tech</th></tr></thead><tbody>
+<tr><td>Drillhole strip log</td><td class="responsibilities">Lithology, alteration, structure, assay traces along hole axis. Sticky collar header + anchored sections (&sect;10v).</td><td><span class="tech-tag tag-amber">Plotly</span></td></tr>
+<tr><td>Cross-section panels</td><td class="responsibilities">Multi-hole cross-sections from <code>gold.cross_section_panels</code>.</td><td><span class="tech-tag tag-amber">Plotly</span></td></tr>
+<tr><td>Stereonet</td><td class="responsibilities">Structure orientation data (alpha/beta, dip/dip-dir).</td><td><span class="tech-tag tag-amber">mplstereonet</span></td></tr>
+<tr><td>Geochem plots</td><td class="responsibilities">Harker, spider, REE-normalised, ternary diagrams.</td><td><span class="tech-tag tag-amber">Plotly</span></td></tr>
+<tr><td>Map view</td><td class="responsibilities">Collars, drill traces, project boundaries, formations, historic workings. Layer toggling, CRS-aware. Martin MVT tile sources.</td><td><span class="tech-tag tag-blue">MapLibre GL</span><span class="tech-tag tag-blue">Martin MVT</span></td></tr>
+<tr><td>Entity / source graph</td><td class="responsibilities">Citation provenance, KG entity neighbourhoods (Foundry SourceGraph).</td><td><span class="tech-tag tag-blue">React Flow</span></td></tr>
+<tr><td>Resource summary</td><td class="responsibilities">Tables + grade-tonnage curves from NI 43-101 extracted estimates.</td><td><span class="tech-tag tag-amber">Plotly</span></td></tr>
+<tr><td>Technique timeline <span style="font-size:11px;color:var(--muted)">(ADR-0007 PR-1)</span></td><td class="responsibilities">Horizontal swimlanes of data-collection techniques by year &mdash; backed by <code>query_project_summary</code> aggregating <code>silver.campaigns</code> + <code>silver.collars</code> + <code>silver.geophysics_surveys</code> + <code>silver.reports</code>. Chat-card payload: <code>VizPayload(chart_type='technique_timeline')</code> with <code>plotly_layout.meta.swimlanes</code> + <code>breakdown_table</code>. <code>extraction_pending_fields</code> names columns the extractor hasn't filled (PR-3 closes).</td><td><span class="tech-tag tag-amber">Plotly</span></td></tr>
+<tr><td>Coverage gap table <span style="font-size:11px;color:var(--muted)">(ADR-0007 PR-1)</span></td><td class="responsibilities">Per-attribute coverage rollup + bronze&rarr;silver ingest gap. Backed by <code>query_coverage_gap</code>. Chat-card payload: <code>VizPayload(chart_type='coverage_table')</code> with <code>plotly_layout.meta.rows</code> + <code>ingest_gap</code> + <code>findings</code>. Optional <code>map_payload</code> surfaces spatial holes (PR-2 fills the GeoJSON).</td><td><span class="tech-tag tag-amber">React table</span></td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">MapLibre consumes tiles via <code>/tiles/{project_id}/{function}/{z}/{x}/{y}.pbf</code> through the Laravel tile proxy (&sect;07c-tile). Chat-embedded inline maps continue to use GeoJSON emitted by FastAPI (<code>map_payload</code> on <code>query.complete</code>) &mdash; small, self-contained per-answer feature sets do not warrant a tile request.</div>
+</div>
+
+<div class="section"><div class="section-label">04h &mdash; RAG System Architecture</div>
+<table class="flow-table"><thead><tr><th style="width:160px">Stage</th><th>Process</th></tr></thead><tbody>
+<tr><td>Query parse</td><td class="responsibilities">Intent classifier (LangGraph node, see &sect;04j) routes into one of eight intents (factual_lookup / synthesis / hypothesis_generation / anomaly_detection / uncertainty_quantification / decision_support / project_summary / coverage_gap &mdash; ADR-0006 + ADR-0007). Decision-support classifier separately tags whether the question is a target-recommendation / hypothesis-evaluation / anomaly-explanation flow.</td></tr>
+<tr><td>Multi-store retrieval</td><td class="responsibilities">Qdrant hybrid (dense bge-small + sparse SPLADE++) + Neo4j entity traversal + PostGIS structured filter. Fused with reciprocal rank fusion. Per-query-class top-k is tuned in <code>services/reranker.py</code>.</td></tr>
+<tr><td>Reranking</td><td class="responsibilities">Fused candidates passed to a cross-encoder reranker (<code>BAAI/bge-reranker-base</code>, CPU singleton, 8 s timeout, RRF fallback). Per-query-class top-k after rerank advances. <code>reranker_version</code> persisted to <code>answer_runs</code>; per-candidate scores recorded in <code>answer_retrieval_items</code> with <code>stage=reranked</code>.</td></tr>
+<tr><td>Evidence binding (pre-gen)</td><td class="responsibilities">Source metadata (URI, page_first/page_last, node IDs, document revision, passage text) attached to context objects supplied to the model. Constrains generation but does <em>not</em> attach citations to output text yet.</td></tr>
+<tr><td>LLM synthesis (OIUR)</td><td class="responsibilities">vLLM serves Qwen3-14B AWQ (<code>Qwen/Qwen3-14B-AWQ</code>). Prompt enforces the <strong>OIUR</strong> answer template (Observation &middot; Interpretation &middot; Uncertainty &middot; Recommendation) for non-trivial intents. Body text streams first.</td></tr>
+<tr><td>Span resolution (post-gen)</td><td class="responsibilities">After generation completes, claim spans in the final answer are resolved against bound evidence and attached as UI citations (&sect;10r). Streamed via <code>query.citation_attached</code> events (&sect;07c).</td></tr>
+<tr><td>Post-validation</td><td class="responsibilities">&sect;04i guards run against resolved spans &mdash; verifies every numeric claim + entity reference is supported by attached citations. Reject + retry on miss; partial-failure path per &sect;10r.</td></tr>
+</tbody></table></div>
+
+<div class="section"><div class="section-label">04i &mdash; Hallucination Prevention (six layers)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Citation-first is a first-class architectural concern, not a feature. Every claim traces to a source or it does not ship.</p>
+<table class="flow-table"><thead><tr><th style="width:220px">Layer</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>1 &mdash; Retrieval quality gate</td><td class="responsibilities">Minimum reranker top-1 score per query class. Below threshold &rarr; refusal path before the LLM is called.</td></tr>
+<tr><td>2 &mdash; Typed output validation</td><td class="responsibilities">Pydantic AI typed schema. Claim list must include <code>source_chunk_id</code> per claim or the response is rejected pre-emit.</td></tr>
+<tr><td>3 &mdash; Numerical claim verification</td><td class="responsibilities">Every number in resolved-span output (grade, depth, tonnage, coordinates) must match a value in attached citation context within tolerance. Mismatches &rarr; reject + retry.</td></tr>
+<tr><td>4 &mdash; Entity resolution</td><td class="responsibilities">Every named entity (project, hole, formation, QP, operator) must resolve to a Neo4j node ID present in the bound evidence set.</td></tr>
+<tr><td>5 &mdash; Chunk provenance</td><td class="responsibilities">Each citation snippet is verified against the source passage text via <code>PAYLOAD_TEXT_SNIPPET</code> for PG entities and against <code>silver.document_passages.text_hash</code> for documents.</td></tr>
+<tr><td>6 &mdash; Geological constraint rules</td><td class="responsibilities">SME-configured invariants (e.g. assay grade in the right unit, structural orientation in valid range, JORC/NI 43-101 classification ordering) checked before commit.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">The refusal path is the product. A confident wrong answer is worse than an honest "I couldn't find this" &mdash; junior mining decisions ride on these outputs.</div>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Workspace tenant isolation</p>
+<p style="font-size:13px;margin:0 0 0"><code>workspace_id</code> is enforced on every store query. PostgreSQL via row-level filters in the silver/gold views; Qdrant via payload index; Neo4j via label filter; SeaweedFS via bucket prefix. FastAPI never trusts the caller &mdash; the JWT-derived workspace scope is the authority.</p>
+</div>
+
+<div class="section"><div class="section-label">04j &mdash; Agentic Retrieval LangGraph (ADR-0006, extended by ADR-0007)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px"><strong>One</strong> compiled <code>StateGraph</code> at <code>src/fastapi/app/agent/agentic_retrieval/graph.py</code>, not six subgraphs. <strong>Eight</strong> intents from <code>intent_classifier.py</code> (factual_lookup / synthesis / hypothesis_generation / anomaly_detection / uncertainty_quantification / decision_support / <strong>project_summary</strong> / <strong>coverage_gap</strong>) are routed <em>inside</em> <code>execute_node</code> &mdash; one graph keeps tracing, persistence, and the validate/demote/persist tail uniform across intents. ADR-0007 added the last two without changing the graph shape.</p>
+
+<p style="font-size:13px;font-weight:600;margin:10px 0 6px">Intent &rarr; retrieval shape &rarr; answer shape</p>
+<table class="flow-table"><thead><tr><th style="width:170px">Intent</th><th>Retrieval shape</th><th>Answer shape</th></tr></thead><tbody>
+<tr><td><code>project_summary</code> <span style="font-size:11px;color:var(--muted)">(ADR-0007 PR-1)</span></td><td class="responsibilities">SQL aggregate over <code>silver.campaigns</code> + <code>silver.collars</code> + <code>silver.geophysics_surveys</code> + <code>silver.reports</code>, scoped via <code>silver.projects.workspace_id</code>. Optional vector secondary (<code>search_documents</code>) for narrative context.</td><td class="responsibilities">OIUR template with <code>breakdown_table</code> emphasis + <code>VizPayload(chart_type='technique_timeline')</code> chat card. Surfaces <code>extraction_pending_fields</code> verbatim so the geologist sees honest gaps (contractor/geologist/lab_name backfill is PR-3).</td></tr>
+<tr><td><code>coverage_gap</code> <span style="font-size:11px;color:var(--muted)">(ADR-0007 PR-1)</span></td><td class="responsibilities"><code>bronze.ingest_manifest</code> &harr; <code>silver.reports</code> ratio for ingest-stage gaps; per-dimension coverage queries against <code>silver.assays_v2</code> / <code>silver.lithology_logs</code> / <code>silver.structure</code> / <code>silver.alteration</code> / <code>silver.samples</code> for extraction-stage gaps. Surfaces <code>silver.completeness_findings</code> as-is. Vector secondary for narrative.</td><td class="responsibilities">OIUR template with <code>coverage_table</code> emphasis + <code>VizPayload(chart_type='coverage_table')</code> chat card. Optional <code>MapPayload</code> for spatial holes (placeholder in PR-1, populated in PR-2).</td></tr>
+</tbody></table>
+
+
+<table class="flow-table"><thead><tr><th style="width:160px">Node</th><th>Responsibility</th></tr></thead><tbody>
+<tr><td><code>classify</code></td><td class="responsibilities">Intent classifier (Qwen3 via vLLM) tags the query with one of six intents and a confidence. Decision-support classifier runs in parallel.</td></tr>
+<tr><td><code>route</code></td><td class="responsibilities">Selects retrieval strategy + per-query-class top-k. May short-circuit definition queries directly to a single-chunk answer per ADR-0004 (high-confidence cosine, no numeric claims, single chunk sufficient).</td></tr>
+<tr><td><code>execute</code></td><td class="responsibilities">Dispatches the appropriate retrieval bundle (Qdrant hybrid, Neo4j traversal, PostGIS filters), waits with split timeouts (Qdrant 2 s, reranker 8 s), reranks, returns the bound-evidence context envelope.</td></tr>
+<tr><td><code>assemble</code></td><td class="responsibilities">Builds the OIUR prompt for the chosen intent. Synthesises via vLLM. Body streams via <code>query.token</code>.</td></tr>
+<tr><td><code>validate</code></td><td class="responsibilities">Runs the &sect;04i layered guards against resolved spans.</td></tr>
+<tr><td><code>demote</code></td><td class="responsibilities">On validation failure: demote to a narrower prompt, drop suspect claims, optionally re-run retrieval with relaxed filters before falling through to refusal.</td></tr>
+<tr><td><code>persist</code></td><td class="responsibilities">Writes <code>answer_runs</code> + <code>answer_retrieval_items</code> + <code>answer_citation_spans</code> + <code>answer_citation_items</code> (&sect;10p, &sect;10p-i). Emits <code>query.complete</code> or <code>query.refusal</code>.</td></tr>
+</tbody></table>
+<p style="font-size:13px;margin:10px 0 0">Toggled by <code>AGENTIC_RETRIEVAL_V2_ENABLED</code>. The context-envelope shape is documented in <code>app/agent/agentic_retrieval/state.py</code>.</p>
+</div>
+
+<div class="section"><div class="section-label">04p &mdash; PDF Stack (ADR-0002)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">In-process PDF ingestion stack &mdash; <strong>canonical document parser</strong>. Lives in <code>src/dagster/georag_dagster/parsers/pdf_report.py</code> and is invoked from Hatchet's <code>ingest_pdf</code> workflow.</p>
+
+<p style="font-size:13px;font-weight:600;margin:8px 0 6px">Component inventory</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Component</th><th>Role</th></tr></thead><tbody>
+<tr><td>qpdf + pikepdf</td><td class="responsibilities">Preflight, repair, normalise. Pikepdf open-check + encrypted detection.</td></tr>
+<tr><td>PyMuPDF (fitz)</td><td class="responsibilities">Primary text + page-bbox extractor (5&ndash;10&times; faster than pdfplumber for text).</td></tr>
+<tr><td>pdfplumber</td><td class="responsibilities">Parallel multiprocessing pool (4 workers default). Column-aware text extraction, dual-pass table probe (lines + text strategies, every page, SHA1-deduped).</td></tr>
+<tr><td>pypdfium2</td><td class="responsibilities">Page rendering for figure extraction + OCR rasterisation.</td></tr>
+<tr><td>Docling (opt-in primary)</td><td class="responsibilities">Layout intelligence + TableFormer. Runs on GPU via <code>onnxruntime-gpu</code> + <code>AcceleratorDevice.CUDA</code> when <code>PDF_PARSER_DOCLING_ENABLED=true</code>.</td></tr>
+<tr><td>Tesseract (per-page OCR)</td><td class="responsibilities"><code>psm=3</code> multi-column. Triggered for any page &lt; 80 chars after the primary parser; tracked via <code>ocr_confidence</code> + <code>ocr_status</code> on each passage.</td></tr>
+<tr><td>PaddleOCR PP-OCRv5 / PP-StructureV3</td><td class="responsibilities">Whole-doc OCR safety net (final fallback when no other parser yields &ge; 200 chars).</td></tr>
+<tr><td>OCR quality LangGraph</td><td class="responsibilities">Confidence-driven retry agent (<code>ocr_quality_check</code> Hatchet workflow) escalates low-confidence pages through a re-OCR cluster.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Dispatch order inside <code>parse_pdf_report</code></p>
+<pre>parse_pdf_report(path)
+&#9500;&#9472; Docling (if PDF_PARSER_DOCLING_ENABLED, GPU)
+&#9474;    &rarr; text + tables-with-structure + figure regions
+&#9474;    &rarr; &lt;200 chars or exception &rarr; fall through
+&#9500;&#9472; PyMuPDF / fitz (default primary)
+&#9474;    &rarr; per-page OCR on pages &lt; 80 chars (psm=3)
+&#9474;    &rarr; &lt;200 chars total or exception &rarr; fall through
+&#9500;&#9472; pdfplumber (parallel pool, 4 workers)
+&#9474;    &rarr; per-page OCR on short pages, language detection per page
+&#9474;    &rarr; column-aware text extraction
+&#9492;&#9472; Whole-doc OCR (final safety net, all pages)
+
+# After text extraction (regardless of parser):
+&middot; _extract_all_tables_as_sections(path)  &mdash; dual-pass tables, SHA1-deduped
+&middot; _split_into_sections(full_text, per_page_text)  &mdash; split at NI 43-101 headings;
+  sliding-window fallback; sub-chunk &gt; 1500 chars with 200 overlap
+&middot; page_first / page_last + bbox tracked per passage
+&middot; ocr_quality_check sub-flow on low-confidence pages</pre>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Silver Review queue</p>
+<p style="font-size:13px;margin:0 0 12px">Per-page review surface backed by <code>silver.review_queue</code>: shows the evidence (rendered page image), parser identity, confidence, extracted text. Decisions land in <code>silver.review_queue</code> + feed the XGBoost OCR-quality classifier training set.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">TIFF scans</p>
+<p style="font-size:13px;margin:0">Scanned-document TIFFs are normalised to PDF (<code>tiff_normalize</code> Hatchet workflow) and routed through this stack &mdash; ensures full parity (multi-column OCR, dual table probe, structured Silver writes) per ADR-0005.</p>
+</div>
+
+<div class="section"><div class="section-label">05 &mdash; Deterministic Query Flow</div>
+<table class="flow-table"><thead><tr><th style="width:50px">#</th><th>Step</th><th>Detail</th></tr></thead><tbody>
+<tr><td>1</td><td>User submits query</td><td class="responsibilities">React UI &rarr; Inertia &rarr; Laravel controller. Sanctum cookie auth + workspace scope check.</td></tr>
+<tr><td>2</td><td>Laravel dispatches</td><td class="responsibilities">Job queued via Horizon. Reverb channel opened for streaming response.</td></tr>
+<tr><td>3</td><td>FastAPI call</td><td class="responsibilities">Laravel POSTs to FastAPI <code>POST /v1/query</code> with query + workspace context + service-to-service JWT (signed via <code>FastApiJwtMinter</code>, <code>kid</code> header for rotation).</td></tr>
+<tr><td>4</td><td>Agentic orchestration</td><td class="responsibilities">LangGraph: classify &rarr; route &rarr; execute &rarr; assemble &rarr; validate &rarr; demote &rarr; persist (&sect;04j). &sect;04i guards bind the trust contract.</td></tr>
+<tr><td>5</td><td>Stream back</td><td class="responsibilities">FastAPI streams tokens to Laravel over HTTP chunked transfer; Laravel forwards to Reverb channel; React renders incrementally per &sect;09b lifecycle states.</td></tr>
+<tr><td>6</td><td>Persist + audit</td><td class="responsibilities">Final response + citation graph + retrieval trace stored to the <strong>audit schema</strong> (<code>audit.query_audit_log</code>) separately from the geological domain. Operational + geology data must not be muddled.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">Streaming transport is Laravel-mediated. FastAPI never speaks directly to the browser &mdash; Laravel owns auth + streaming surface.</div></div>
+
+<div class="section"><div class="section-label">05b &mdash; Interoperability &amp; Export</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 8px"><strong>Export formats:</strong> CSV / XLSX (tables), GeoPackage (spatial), Shapefile (legacy), PDF (reports + viz), PNG/SVG (viz only), JSON (raw query results + citation graph).</p>
+<p style="font-size:14px;color:var(--muted);margin:0"><strong>Round-trip:</strong> All exports preserve source citations + CRS metadata. PDF reports embed citation footnotes per claim. Single-hole report exports follow the &sect;10v anchored-scroll layout (one document per hole).</p></div>
+
+<div class="section"><div class="section-label">05c &mdash; Performance Optimizations</div>
+<table class="flow-table"><thead><tr><th style="width:220px">Optimization</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Retrieval result cache</td><td class="responsibilities">Redis-backed. Caches <em>retrieval results only</em>, not final answers. Key: <code>(query_hash + workspace_id + data_version + retrieval_strategy_version + routing_categories_hash + filters_hash + RBAC_scope_hash)</code>. Invalidated on ingestion. Answer-level caching is intentionally not implemented &mdash; model_version, prompt_version, and citation_mode change too often to make answer cache keys stable.</td></tr>
+<tr><td>Embedding cache</td><td class="responsibilities">Identical chunk &rarr; identical embedding. Skip re-embed on reprocessing (text_hash check before dispatch).</td></tr>
+<tr><td>GPU embedding</td><td class="responsibilities">bge-small-en-v1.5 runs on the A4500 in the AI worker (<code>hatchet-worker-ai</code>). Sustains ~144 chunks/sec at the configured GPU memory budget.</td></tr>
+<tr><td>Reranker tuning</td><td class="responsibilities">CPU singleton with 10 torch threads, candidate text pre-truncated to 2000 chars, 8 s wait timeout (split from the 2 s Qdrant timeout).</td></tr>
+<tr><td>Subprocess pool for parse</td><td class="responsibilities"><code>parse</code> task runs in a subprocess pool so its GIL holds do not starve Hatchet's asyncio loop heartbeat.</td></tr>
+<tr><td>Materialized views</td><td class="responsibilities">Pre-computed grade-tonnage, hole density, project rollups, cross-section panels. Refreshed by <code>mv_refresh_silver</code> Hatchet workflow at end of ingestion.</td></tr>
+<tr><td>Reverb backpressure</td><td class="responsibilities">Token streaming throttled per-channel to avoid client overload on long responses.</td></tr>
+</tbody></table></div>
+
+<div class="section"><div class="section-label">06 &mdash; Database Performance Configuration</div>
+<table class="flow-table"><thead><tr><th style="width:140px">Store</th><th>Tuning</th></tr></thead><tbody>
+<tr><td>Neo4j</td><td class="responsibilities">Page cache sized to fit hot graph (60&ndash;80% of available RAM on graph node). Heap 8&ndash;16 GB. Bolt connection pool tuned to FastAPI worker count. JMX exporter exposes JVM-level metrics only (Community edition restriction).</td></tr>
+<tr><td>PostgreSQL 18 / PostGIS 3.6</td><td class="responsibilities">After bulk ingestion: GIST on geom columns &rarr; <code>CLUSTER</code> on the spatial index &rarr; <code>ANALYZE</code> &rarr; refresh materialised views. Threadripper tuning (dev): <code>shared_buffers=8GB</code>, <code>effective_cache_size=32GB</code>, <code>work_mem=192MB</code>, <code>maintenance_work_mem=2GB</code>, <code>max_worker_processes=24</code>, <code>max_parallel_workers=12</code>, <code>max_parallel_workers_per_gather=6</code>, <code>effective_io_concurrency=256</code>, <code>random_page_cost=1.1</code>. Applied via <code>docker/postgresql/init/Z_activate_threadripper_tuning.sql</code> (ALTER SYSTEM &mdash; <code>command:</code>-list overrides clash with the postgis image entrypoint). Aggressive path (dedicated server): <code>shared_buffers=16GB</code>, <code>effective_cache_size=48GB</code>.</td></tr>
+<tr><td>Qdrant</td><td class="responsibilities">HNSW <code>m=16</code>, <code>ef_construct=200</code>. Payload index on <code>workspace_id</code> for tenant filtering. Sparse-vectors config for SPLADE++.</td></tr>
+<tr><td>Redis</td><td class="responsibilities"><code>maxmemory-policy allkeys-lru</code> for cache DB; <code>noeviction</code> for queue DB; <code>volatile-lru</code> for sessions. Separate instances in staging/prod via the redis-staging overlay; single instance in dev.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">I/O method for PostgreSQL</p>
+<p style="font-size:13px;margin:0 0 12px"><code>io_method=io_uring</code> is rejected on Docker/WSL2 deployments &mdash; seccomp blocks io_uring syscalls. Default for containerised deployments: <code>io_method=worker</code>. <code>io_uring</code> requires a custom Docker seccomp profile or bare-metal deployment.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">WAL archiving</p>
+<p style="font-size:13px;margin:0 0 12px">Overlay <code>docker/compose.wal-archiving.yml</code> + activation script <code>docker/postgresql/init/Z_activate_wal_archiving.sql</code> enable <code>archive_mode=on</code> / <code>archive_command</code> / <code>archive_timeout</code> via ALTER SYSTEM. An Ofelia sidecar uploads from a shared WAL volume to durable storage. Dev profile opt-in; staging/prod layer the overlay.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Backups</p>
+<p style="font-size:13px;margin:0">Per-store Hatchet backup workflows: <code>backup_postgres</code>, <code>backup_neo4j</code>, <code>backup_qdrant</code>, <code>backup_redis</code>, <code>backup_seaweedfs</code>. Cold-tier archive (<code>cold_tier_archive</code>) plus a workspace-level <code>workspace_export</code> / <code>restore_workspace</code> pair for tenant-grade recovery drills.</p>
+</div>
+
+<div class="section"><div class="section-label">07 &mdash; Deployment Services</div>
+<table class="flow-table"><thead><tr><th style="width:200px">Service</th><th>Role</th></tr></thead><tbody>
+<tr><td>Laravel Octane (Swoole)</td><td class="responsibilities">Long-lived HTTP workers. Separate process. Replaces php-fpm.</td></tr>
+<tr><td>Laravel Horizon</td><td class="responsibilities">Queue worker supervision + dashboard. Separate process from Octane.</td></tr>
+<tr><td>Laravel Reverb</td><td class="responsibilities">WebSocket server for streaming. Separate process. Pub/sub via Redis. <strong>Env trap</strong>: <code>REVERB_HOST</code>/<code>REVERB_PORT</code> serve two purposes &mdash; server bind (e.g. <code>laravel-reverb:8080</code>) and browser WS connect (e.g. literal host on 8085). Vite does not expand <code>${VAR}</code> &mdash; if the browser bundle ships unexpanded placeholders, <code>wsPort</code> defaults to 80 and channels silently drop.</td></tr>
+<tr><td>FastAPI (Pydantic AI)</td><td class="responsibilities">Agentic orchestration + RAG pipeline. Uvicorn workers behind Caddy (TLS terminator). <code>UVICORN_WORKERS</code> env-driven (default 6 on the dev workstation).</td></tr>
+<tr><td>Hatchet engine + workers</td><td class="responsibilities"><code>hatchet-lite</code> ships the engine. Two worker pools: <code>hatchet-worker-ingestion</code> (CPU + I/O bound) and <code>hatchet-worker-ai</code> (GPU-bound &mdash; embeddings, OCR, vLLM-adjacent steps).</td></tr>
+<tr><td>Dagster</td><td class="responsibilities">Daemon + webserver. Asset-lineage-aware scheduled / bulk pipelines. Owns parser invocation for tabular formats and the desurvey asset.</td></tr>
+<tr><td>Kestra</td><td class="responsibilities">Optional secondary orchestrator for cross-system flows (legacy, scoped to a narrow set of integrations).</td></tr>
+<tr><td>vLLM</td><td class="responsibilities">GPU-backed inference. <code>vllm/vllm-openai:v0.21.0</code>. Serves <code>Qwen/Qwen3-14B-AWQ</code>. OpenAI-compatible API. Warmup container ensures the model is loaded before health-gating downstream traffic.</td></tr>
+<tr><td>Martin (MVT tiles)</td><td class="responsibilities">PostGIS-to-MVT tile server. Direct PostgreSQL connection (own pool, bypasses PgBouncer). Sidecar behind Laravel tile proxy (&sect;07c-tile).</td></tr>
+<tr><td>SeaweedFS</td><td class="responsibilities">S3-compatible object store. Bronze archive, generated exports, figure uploads.</td></tr>
+<tr><td>Caddy</td><td class="responsibilities">Reverse proxy + automatic TLS. Fronts Laravel, FastAPI, Hatchet UI, Grafana.</td></tr>
+<tr><td>Prometheus + Alertmanager</td><td class="responsibilities">Scrapes FastAPI, Laravel (Pulse exporter), Octane, postgres_exporter, redis_exporter, neo4j-jmx-exporter, Qdrant, vLLM, Martin (<code>/_/metrics</code>), Hatchet. Alerts on the SLOs in <code>docker/prometheus/rules/</code>.</td></tr>
+<tr><td>Loki + Promtail</td><td class="responsibilities">Log aggregation with retention configured per env. Promtail scrapes daily-rotated <code>storage/logs/authz_audit-*.log</code> + Docker stdout. Both Laravel (Monolog JsonFormatter) and FastAPI (<code>app/logging_config.py</code>) emit structured JSON consumable by Promtail's <code>json</code> stage.</td></tr>
+<tr><td>OpenTelemetry Collector + Tempo</td><td class="responsibilities">Distributed traces from FastAPI + Laravel; Tempo as the backend. Traceparent round-trips verified end-to-end.</td></tr>
+<tr><td>Grafana</td><td class="responsibilities">Dashboards consume Prometheus, Loki, Tempo. Ships preconfigured dashboards for ingestion SLOs, retrieval/answer latency, GPU utilisation, queue depth.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;margin:12px 0 0;color:var(--muted)"><strong>Compose overlays</strong> (<code>docker/compose.*.yml</code>): <code>exporters</code> (postgres / redis / neo4j-jmx sidecars), <code>redis-staging</code> (3-instance split), <code>wal-archiving</code>, <code>vllm</code> (GPU profile), <code>langfuse</code> (LLM observability sidecar). The canonical <code>docker-compose.yml</code> stays minimal; staging/prod layer the overlays they need.</p>
+<p style="font-size:13px;margin:8px 0 0;color:var(--muted)"><strong>k8s</strong>: Helm chart skeleton at <code>ops/charts/georag/</code> mirrors the compose surface (Laravel Octane + FastAPI templated; datastores externalised under <code>externalServices.*</code>). Production-maturity gates: NetworkPolicy (default-deny + per-component allow), HPA v2, PDB, cert-manager-annotated Ingress, Prometheus Operator ServiceMonitor. vLLM remains x86_64-only.</p>
+</div>
+
+<div class="section"><div class="section-label">07b &mdash; Orchestration Boundary (Horizon vs Hatchet vs Dagster)</div>
+<table class="flow-table"><thead><tr><th style="width:240px">Concern</th><th>Owner</th></tr></thead><tbody>
+<tr><td>User-triggered short jobs (notification dispatch, cache warm)</td><td class="responsibilities"><strong>Horizon.</strong> Laravel-internal, sub-second to a few seconds.</td></tr>
+<tr><td>Streaming response transport</td><td class="responsibilities"><strong>Horizon + Reverb.</strong> Owned by the Laravel layer.</td></tr>
+<tr><td>Cross-service workflows (PDF ingest, OCR retry, public-geo pulls, backups, learning loops, what-changed detection)</td><td class="responsibilities"><strong>Hatchet.</strong> Durable, retryable, observable, cross-language. ~40 workflows in <code>src/fastapi/app/hatchet_workflows/</code>.</td></tr>
+<tr><td>Scheduled / asset-lineage bulk pipelines (silver/gold materialisations, desurvey, cross-corpus linker, golden eval)</td><td class="responsibilities"><strong>Dagster.</strong> Sensors + schedules + asset graph.</td></tr>
+<tr><td>Cross-boundary handoff</td><td class="responsibilities">Dagster / Hatchet write to Postgres (<code>silver.ingest_progress</code> + outbox tables); Laravel listener notifies workspaces via Reverb.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">Rule of thumb: if a human is waiting on it and it stays inside Laravel &rarr; Horizon. If it crosses services or needs durable retries &rarr; Hatchet. If it has lineage and runs on a schedule &rarr; Dagster.</div></div>
+
+<div class="section"><div class="section-label">07c &mdash; Streaming Transport</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Laravel-mediated. FastAPI streams to Laravel over HTTP chunked transfer; Laravel forwards to Reverb channel; React subscribes via WebSocket. Every event carries <code>answer_run_id</code> so the UI can join against &sect;10p eval tables and feedback events.</p>
+<table class="flow-table"><thead><tr><th style="width:220px">Reverb event</th><th>Payload + visibility</th></tr></thead><tbody>
+<tr><td><code>query.token</code></td><td class="responsibilities">{ answer_run_id, query_id, token, position } &middot; <strong>draft</strong> state &middot; body tokens only, <em>no</em> citation refs (post-hoc model)</td></tr>
+<tr><td><code>query.body_done</code></td><td class="responsibilities">{ answer_run_id, query_id, total_tokens, generation_latency_ms } &middot; transitions <strong>draft &rarr; generated</strong></td></tr>
+<tr><td><code>query.citation_attached</code></td><td class="responsibilities">{ answer_run_id, query_id, span_id, char_start, char_end, citation_ids[], support_type, resolver_confidence } &middot; one event per resolved span</td></tr>
+<tr><td><code>query.validated</code></td><td class="responsibilities">{ answer_run_id, query_id, citation_latency_ms, unresolved_span_count } &middot; transitions <strong>generated &rarr; validated</strong>, &sect;04i guards passed</td></tr>
+<tr><td><code>query.complete</code></td><td class="responsibilities">{ answer_run_id, query_id, total_duration_ms } &middot; transitions <strong>validated &rarr; committed</strong>, persisted, feedback-eligible. <em>The only "done" event.</em></td></tr>
+<tr><td><code>query.suggestions</code></td><td class="responsibilities">{ answer_run_id, query_id, chips[ {label, intent_bucket, prompt, origin} ] } &middot; &sect;10q follow-up chips, emitted after <code>query.complete</code></td></tr>
+<tr><td><code>query.refusal</code></td><td class="responsibilities">{ answer_run_id, query_id, reason, stores_queried[], rewrite_attempts[], missing[] } &middot; transitions to <strong>rejected</strong>, triggers &sect;10u refusal UX</td></tr>
+<tr><td><code>ingestion.progress</code></td><td class="responsibilities">{ pipeline_run_id, asset, stage, pct, message } &middot; ingestion pipeline only, separate channel from query lifecycle</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px"><strong>Internal-only events</strong> (not forwarded to Reverb): pre-generation evidence-binding events are plumbing, not UI signals. The UI never renders pre-binding state &mdash; only the lifecycle states defined in &sect;09b.</div>
+</div>
+
+<div class="section"><div class="section-label">07c-tile &mdash; MVT Tile Proxy Contract</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Laravel reverse-proxies tile requests to Martin. Martin has no auth layer &mdash; all access control is enforced by the Laravel proxy middleware.</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Property</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Route</td><td class="responsibilities"><code>GET /tiles/{project_id}/{function_name}/{z}/{x}/{y}.pbf</code> &mdash; <code>project_id</code> in the URL <strong>path</strong> so browser/CDN caches isolate per project without <code>Vary</code> headers.</td></tr>
+<tr><td>Auth</td><td class="responsibilities">Sanctum session cookie required.</td></tr>
+<tr><td>Authorization</td><td class="responsibilities">Middleware confirms the requesting user has access to the specified <code>project_id</code> within their workspace RBAC scopes. 403 if not.</td></tr>
+<tr><td>Upstream proxy</td><td class="responsibilities">Proxies to <code>http://martin:3000/{function_name}/{z}/{x}/{y}?project_id={uuid}</code> on the internal Docker network.</td></tr>
+<tr><td>Cache headers</td><td class="responsibilities"><code>Cache-Control: public, max-age=300</code> (5 min TTL).</td></tr>
+<tr><td>Rate limit</td><td class="responsibilities">300 req/min/user via token bucket (burst-friendly &mdash; map panning generates many requests in &lt;1 s; a sliding window would incorrectly throttle).</td></tr>
+<tr><td>Error handling</td><td class="responsibilities">Martin 4xx/5xx mapped to Laravel 502 with generic client message. Upstream details only in server logs.</td></tr>
+<tr><td>Audit logging</td><td class="responsibilities">Every tile request logged with user_id, function_name, z/x/y, project_id, response_status, latency_ms.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Frontend integration &mdash; MapLibre source configuration</p>
+<pre>// Vector tile source &mdash; collars layer
+map.addSource('collars', {
+  type: 'vector',
+  tiles: [`/tiles/${activeProjectId}/collars_by_project/{z}/{x}/{y}.pbf`],
+  minzoom: 0, maxzoom: 16
+});
+map.addLayer({
+  id: 'collars-circles', type: 'circle', source: 'collars',
+  'source-layer': 'collars',
+  paint: {
+    'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 2, 14, 8],
+    'circle-color': ['match', ['get', 'status'],
+      'Completed', '#22c55e', 'Active', '#eab308', 'Abandoned', '#ef4444', '#6b7280'],
+    'circle-stroke-width': 1, 'circle-stroke-color': '#ffffff'
+  }
+});</pre>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Basemap style URL</p>
+<p style="font-size:13px;margin:0 0 0">Basemap URL is read by <code>useBasemapStyleUrl()</code> in <code>resources/js/lib/basemap.ts</code> from Inertia shared props. Lets staging/prod swap providers (on-prem MapTiler vs internet tile server) without code change. MapLibre GL only &mdash; never Mapbox GL.</p>
+</div>
+
+<div class="section"><div class="section-label">07d &mdash; Laravel &harr; FastAPI Contracts</div>
+<table class="flow-table"><thead><tr><th style="width:260px">Endpoint</th><th>Request / Response</th></tr></thead><tbody>
+<tr><td><code>POST /v1/query</code></td><td class="responsibilities">Req: <code>{ answer_run_id, query, workspace_id, user_id, rbac_scopes[], stream, citation_mode? }</code>. Res: chunked stream emitting the &sect;07c lifecycle events in order: <code>query.token</code> &rarr; <code>query.body_done</code> &rarr; <code>query.citation_attached</code> (&times;N) &rarr; <code>query.validated</code> &rarr; <code>query.complete</code> &rarr; <code>query.suggestions</code>. Refusal path emits <code>query.refusal</code> instead.</td></tr>
+<tr><td><code>POST /v1/retrieve</code></td><td class="responsibilities">Req: <code>{ answer_run_id, query, workspace_id, k, stores[], rerank }</code>. Res: <code>{ chunks[], entities[], structured_rows[], fusion_scores, reranker_scores, reranked_top_k[], retrieval_trace_id }</code>. Reranker version reported in response header for &sect;10p logging.</td></tr>
+<tr><td><code>POST /v1/viz/compute</code></td><td class="responsibilities">Req: <code>{ viz_type, params, workspace_id }</code>. Res: <code>{ plotly_spec | image_b64 | data_table }</code>.</td></tr>
+<tr><td><code>POST /v1/viz/qa</code></td><td class="responsibilities">Drillhole Visual QA agent. Powers the &sect;10v DrillholeDetail page. Returns top-level <code>{ status: ready|warning|critical, issues[ {field, severity, summary} ] }</code>.</td></tr>
+<tr><td><code>POST /v1/viz/readiness</code></td><td class="responsibilities">Visual-readiness probe used by Lakehouse / DrillholeDetail empty-states to identify which gold materialisation is missing.</td></tr>
+<tr><td><code>POST /internal/v1/shadow/ingest_pdf/trigger</code></td><td class="responsibilities">Laravel UploadController &rarr; FastAPI shadow_trigger router &rarr; Hatchet engine dispatch of the <code>ingest_pdf</code> workflow. Signed JWT.</td></tr>
+<tr><td><code>GET /v1/health</code></td><td class="responsibilities">Res: <code>{ status, vllm_ready, neo4j_ok, qdrant_ok, postgis_ok }</code>.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">All requests carry RBAC scopes. FastAPI enforces workspace isolation on every store query &mdash; never trusts caller.</div>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Browser &rarr; Laravel auth</p>
+<p style="font-size:13px;margin:0 0 8px">The React SPA uses Sanctum session-cookie auth &mdash; every <code>fetch()</code> sets <code>credentials: 'same-origin'</code>. No bearer tokens in <code>localStorage</code> (XSS-exfiltration target).</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Laravel &rarr; FastAPI auth</p>
+<p style="font-size:13px;margin:0 0 8px">Service-to-service JWTs minted by <code>FastApiJwtMinter</code> and stamped with a <code>kid</code> header (default <code>primary</code>). FastAPI maps <code>kid &rarr; secret</code> with optional <code>previous</code> slot for zero-downtime rotation. Missing <code>kid</code> falls back to primary; unknown <code>kid</code> &rarr; 401. Rotation procedure: <code>ops/runbooks/secret-rotation.md</code> &sect; FASTAPI_SERVICE_KEY.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Rate limiting</p>
+<p style="font-size:13px;margin:0 0 8px">slowapi <code>Limiter</code> attached at <code>src/fastapi/app/services/rate_limit.py</code>. Key function decodes the inbound JWT (unverified for rate-limit purposes &mdash; verification still happens in the auth dependency) to derive a per-tenant <code>(workspace_id, user_id)</code> key. Default tier 30 queries/min; the tile proxy retains its independent token-bucket limit.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Citation resolver registry</p>
+<p style="font-size:13px;margin:0"><code>App\Http\Controllers\CitationController</code> is a thin dispatcher. <code>App\Services\Citations\CitationResolverRegistry</code> (singleton) routes per <code>citation_type</code> to one of 11 resolvers (4 silver: Report / Collars / Lithology / Samples; 7 PGEO: Mine, MineralOccurrence, Drillhole, ResourcePotential, RockSample, AssessmentSurvey, MineralDisposition). New citation types require a single resolver class + registry binding.</p>
+</div>
+
+<div class="section"><div class="section-label">07e &mdash; Test Acceptance Contracts</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 0"><strong>Ingestion:</strong> validation corpus per format, collar counts + coordinate checksums + schema completeness must match expected. <strong>Retrieval:</strong> golden Q&amp;A set with expected citation node IDs &mdash; recall@k measured per release. <strong>Hallucination:</strong> adversarial prompt set must produce refusal-path responses, never confabulation. <strong>Performance:</strong> p95 query latency budgets per query class &mdash; tuned against the per-query-class top-k baseline and recorded as SLO targets in Grafana.</p>
+<p style="font-size:13px;margin:8px 0 0;color:var(--muted)">Reranker promotion gate: any reranker bump must clear <strong>&ge; +5pp NDCG@10</strong> on the eval set with <strong>no per-slice regression &gt; 2pp</strong> (see ADR-0003). Eval is run nightly via the <code>eval_real_rag_nightly</code> Hatchet workflow.</p>
+</div>
+
+<div class="section"><div class="section-label">08 &mdash; LLM &amp; AI Chat Architecture</div>
+<table class="flow-table"><thead><tr><th style="width:200px">Component</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Inference (canonical)</td><td class="responsibilities"><span class="tech-tag tag-amber">vLLM</span> serving <span class="tech-tag tag-amber">Qwen/Qwen3-14B-AWQ</span>. Continuous batching, paged attention. OpenAI-compatible API. <code>VLLM_MAX_MODEL_LEN</code> env-driven; default 8192 on the A4500 (~8 GB AWQ weights + paged-KV blocks + activations sit comfortably under <code>VLLM_GPU_MEM_UTIL=0.80</code>, leaving ~4 GB VRAM headroom for the co-tenant hatchet-worker-ai embed/rerank/sparse models). Bigger GPUs (&ge; 24 GB) raise <code>VLLM_MAX_MODEL_LEN</code> via env var or run a larger Qwen variant.</td></tr>
+<tr><td>Backend selection</td><td class="responsibilities">Single backend in production: <code>LLM_BACKEND=vllm</code>. Anthropic Claude (Opus / Sonnet / Haiku) is wired as an optional fallback (<code>LLM_BACKEND=anthropic</code>) for cloud-connected deployments + senior-reviewer milestone checks; prompt caching enabled via <code>cache_control: {type: "ephemeral"}</code>.</td></tr>
+<tr><td>Context budget</td><td class="responsibilities">Backend-aware via <code>MAX_CONTEXT_TOKENS</code> + per-category caps (<code>MAX_CONTEXT_COLLARS</code>, <code>MAX_CONTEXT_DOC_CHUNKS</code>, <code>MAX_CONTEXT_GRAPH_ENTITIES</code>, <code>MAX_CONTEXT_PG_RECORDS</code>). Defaults sized for the 8K vLLM window with headroom for the system prompt + tool-call schemas; scale with <code>VLLM_MAX_MODEL_LEN</code> on bigger hardware.</td></tr>
+<tr><td>Embeddings</td><td class="responsibilities"><code>bge-small-en-v1.5</code> (dense) on the GPU worker; <code>SPLADE++</code> (sparse) on the same GPU pool. Cached by chunk hash.</td></tr>
+<tr><td>Reranker</td><td class="responsibilities"><code>BAAI/bge-reranker-base</code> (Apache 2.0, SHA-pinned, CPU singleton). 10 torch threads, 8 s timeout, pre-truncate to 2000 chars. Fine-tuning v1 trains LoRA r=16 in place on synthetic literal + paraphrase queries from the &sect;04p corpus; promotion gated per ADR-0003.</td></tr>
+<tr><td>Agent framework</td><td class="responsibilities"><span class="tech-tag tag-amber">Pydantic AI</span>. Strongly-typed tool calls, deterministic output schemas. Citation-mandatory output type rejects any claim missing <code>source_chunk_id</code>.</td></tr>
+<tr><td>Workflow runtime</td><td class="responsibilities"><span class="tech-tag tag-amber">LangGraph</span> for the agentic-retrieval state graph (&sect;04j); <span class="tech-tag tag-amber">Hatchet</span> for cross-service workflows; <span class="tech-tag tag-amber">Pydantic AI</span> for typed agent calls.</td></tr>
+<tr><td>Document parsing</td><td class="responsibilities">In-process &sect;04p PDF stack. No external doc-parsing microservice.</td></tr>
+<tr><td>Prompt discipline</td><td class="responsibilities">Evidence-constrained synthesis enforced via system prompt + OIUR template. Post-hoc span resolution + &sect;04i guards verify after generation. Refusal path is the product.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px">Dify.ai explicitly rejected. Streamlit explicitly and permanently rejected. React + Inertia is the only frontend.</div>
+</div>
+
+<div class="section"><div class="section-label">09 &mdash; LLM Query Flow (OIUR)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">All non-trivial intents use the <strong>OIUR</strong> answer template: <em>Observation</em> (what the evidence shows), <em>Interpretation</em> (what it means in geological context), <em>Uncertainty</em> (confidence + what is unknown), <em>Recommendation</em> (suggested next step). Definition queries (ADR-0004) may bypass OIUR for a single-chunk literal answer.</p>
+<table class="flow-table"><thead><tr><th style="width:50px">#</th><th>Step</th></tr></thead><tbody>
+<tr><td>1</td><td class="responsibilities">LangGraph entry: query + workspace context + user pre-processor envelope (Field / Office mode, decision-support hints).</td></tr>
+<tr><td>2</td><td class="responsibilities">Intent classifier routes one of eight intents: factual_lookup / synthesis / hypothesis_generation / anomaly_detection / uncertainty_quantification / decision_support / project_summary / coverage_gap (ADR-0006 + ADR-0007). Decision-support classifier tags in parallel.</td></tr>
+<tr><td>3</td><td class="responsibilities">Tool calls dispatched in parallel: Qdrant hybrid search, Neo4j entity expansion, PostGIS structured filter. Split timeouts (Qdrant 2 s, reranker 8 s).</td></tr>
+<tr><td>4</td><td class="responsibilities">Reciprocal rank fusion combines multi-store results into a unified candidate set.</td></tr>
+<tr><td>4b</td><td class="responsibilities">Cross-encoder reranking. Top-k after rerank advances. Scores + stage written to <code>answer_retrieval_items</code>.</td></tr>
+<tr><td>5</td><td class="responsibilities">Evidence binding (pre-gen): each candidate annotated with source URI, page_first/last, node IDs, document revision; attached to context.</td></tr>
+<tr><td>6</td><td class="responsibilities">vLLM evidence-constrained synthesis under the OIUR template. Body text streams via <code>query.token</code>.</td></tr>
+<tr><td>7</td><td class="responsibilities">Span resolution (post-gen): claim spans matched to bound evidence and emitted as <code>query.citation_attached</code> events (see &sect;10r).</td></tr>
+<tr><td>7b</td><td class="responsibilities">&sect;04i guards run against resolved spans (numeric, entity, provenance, geological-rule). Refuse + retry on miss; partial-failure path per &sect;10r.</td></tr>
+<tr><td>8</td><td class="responsibilities">Persist via the <code>persist_node</code> step: <code>answer_runs</code> + <code>answer_retrieval_items</code> + <code>answer_citation_spans</code> + <code>answer_citation_items</code>. Lineage written to the audit schema.</td></tr>
+</tbody></table>
+<p style="font-size:13px;margin:12px 0 0;color:var(--muted)"><strong>Flags:</strong> <code>AGENTIC_RETRIEVAL_V2_ENABLED</code> toggles the LangGraph path; <code>GEO_ANSWER_OIUR_ENABLED</code> toggles the OIUR answer architecture. Both default off; flipped on per workspace as part of the geologist-question rollout.</p>
+</div>
+
+<div class="section"><div class="section-label">09b &mdash; Message Lifecycle &amp; Visibility States</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Explicit states for an in-flight answer so the UI never shows text that has not passed grounding checks.</p>
+<table class="flow-table"><thead><tr><th style="width:140px">State</th><th>What is true</th><th style="width:200px">User-visible?</th></tr></thead><tbody>
+<tr><td><strong>draft</strong></td><td class="responsibilities">Body tokens streaming from vLLM. Evidence is bound to context but no spans resolved yet. Could still fail validation.</td><td>Yes &mdash; rendered with a "drafting" indicator. Marked visually as provisional. Not feedback-eligible.</td></tr>
+<tr><td><strong>generated</strong></td><td class="responsibilities">Body stream complete. Span resolution running. No grounding verdict yet.</td><td>Yes &mdash; drafting indicator removed, citations not yet attached. Still not feedback-eligible.</td></tr>
+<tr><td><strong>validated</strong></td><td class="responsibilities">&sect;04i guards passed against resolved spans. All claims grounded to citations (or marked uncited per &sect;10r partial-failure rules).</td><td>Yes &mdash; citations rendered. Feedback-eligible.</td></tr>
+<tr><td><strong>committed</strong></td><td class="responsibilities">Persisted to <code>answer_runs</code> + <code>answer_retrieval_items</code> + <code>answer_citation_spans</code>. Joinable to feedback events.</td><td>Yes &mdash; final state. Suggestion chips (&sect;10q) rendered. Refusal UX (&sect;10u) rendered if applicable.</td></tr>
+<tr><td><strong>rejected</strong></td><td class="responsibilities">Validation failed after retries. Body text discarded; refusal response composed instead.</td><td>Body text replaced by &sect;10u refusal UI. Original draft tokens discarded from view.</td></tr>
+</tbody></table>
+<div class="key-note" style="margin-top:12px"><strong>Rule:</strong> A user can read draft text but cannot act on it (no feedback, no chip clicks, no copy-as-citation, no export) until state &ge; <strong>validated</strong>. The "drafting" visual treatment is the contract.</div>
+</div>
+
+<div class="section"><div class="section-label">10 &mdash; Document Ingestion Flow (Hatchet <code>ingest_pdf</code>)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">PDF ingest is a 5-task Hatchet workflow. Lives in <code>src/fastapi/app/hatchet_workflows/ingest_pdf.py</code>; parser lives in <code>src/dagster/georag_dagster/parsers/pdf_report.py</code>.</p>
+
+<pre>Browser upload
+   &darr; multipart POST /api/v1/projects/{id}/upload  (Laravel, 2 GB cap)
+Laravel UploadController &rarr; SeaweedFS bronze (figures/, reports/)
+   &darr; HTTP POST /internal/v1/shadow/ingest_pdf/trigger (Laravel&rarr;FastAPI, signed JWT)
+FastAPI &rarr; Hatchet engine: dispatch `ingest_pdf` workflow
+   &darr; Hatchet routes to the "ingestion" pool worker
+ingest_pdf workflow (5 tasks):
+   preflight &rarr; parse &rarr; persist &rarr; { embed_verify, p04p_dual_write } (parallel)
+                                         &darr;
+                                  embed_pending_passages_wf  (AI pool worker, GPU)
+                                         &darr;
+                                  qdrant_reports (vectors searchable)</pre>
+
+<table class="flow-table"><thead><tr><th>Task</th><th>execution_timeout</th><th>retries</th><th>What it does</th></tr></thead><tbody>
+<tr><td><code>preflight</code></td><td>60 s</td><td>2</td><td class="responsibilities">sha256 + magic-byte + pikepdf open check + page count. Encrypted check permissive (only rejects password-protected).</td></tr>
+<tr><td><code>parse</code></td><td>60 min</td><td>1</td><td class="responsibilities">Runs <code>parse_pdf_report</code> in a <strong>subprocess pool</strong> (own GIL &rarr; heartbeat safety). Returns ParseOut dict.</td></tr>
+<tr><td><code>persist</code></td><td>15 min</td><td>2</td><td class="responsibilities">Atomic single transaction: <code>silver.reports</code> + <code>silver.document_passages</code> + figures (when docling on). Inline embed dispatch.</td></tr>
+<tr><td><code>embed_verify</code></td><td>2 min</td><td>1</td><td class="responsibilities">Polls <code>silver.document_passages</code> for unembedded count for 90 s; re-dispatches <code>embed_pending_passages</code> if anything still pending. Closes the race where Hatchet retries can lose the inline embed dispatch.</td></tr>
+<tr><td><code>p04p_dual_write</code></td><td>45 min</td><td>1</td><td class="responsibilities">Populates layout-aware silver tables via <code>app.ocr._ingest_helper.run_p04p_for_ingest</code>. Reads PDF body from local cache (no S3 re-download).</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Heartbeat verifier</p>
+<p style="font-size:13px;margin:0 0 0">A 10-min cron sweep (<code>embed_pending_passages</code> verifier) catches any passages that escaped both inline dispatch and <code>embed_verify</code> &mdash; closing the dispatch race for good. Inline embed dispatch + verify task + cron sweep are the three layers.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Non-PDF formats</p>
+<p style="font-size:13px;margin:0 0 0">Tabular (CSV / XLSX / LAS) + spatial (Shapefile / GPKG / GeoTIFF / Esri FGDB) + DOCX are owned by Dagster assets, not Hatchet. They follow the same Bronze &rarr; Silver &rarr; Gold &rarr; Index path but skip the OCR loop.</p>
+</div>
+
+<div class="section"><div class="section-label">10p &mdash; Response Feedback Loop</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Per-assistant-message feedback drives product analytics and offline retrieval/citation evaluation. Feedback events join to a frozen answer trace via <code>answer_run_id</code>.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">UI</p>
+<p style="font-size:13px;margin:0 0 12px">Every assistant response renders &#128077; / &#128078;. &#128078; expands inline feedback controls with the taxonomy below + optional free-text note. User may attach one or more visible citations or highlighted answer spans to the feedback event.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Thumbs-down taxonomy (6 categories)</p>
+<table class="flow-table"><thead><tr><th style="width:220px">Category</th><th>Fix surface</th></tr></thead><tbody>
+<tr><td>Unsupported claim</td><td class="responsibilities">Synthesis / prompt / guardrails</td></tr>
+<tr><td>Wrong citation</td><td class="responsibilities">Resolver / span alignment</td></tr>
+<tr><td>Missed evidence</td><td class="responsibilities">Retrieval / reranking / chunking</td></tr>
+<tr><td>Extraction / numeric error</td><td class="responsibilities">Extraction / normalisation / validation</td></tr>
+<tr><td>Incomplete</td><td class="responsibilities">Partial answer &mdash; context budget or retrieval recall</td></tr>
+<tr><td>Other</td><td class="responsibilities">Free-text triage</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:18px 0 6px">Persistence &mdash; 4 tables</p>
+
+<p style="font-size:12px;font-weight:600;margin:10px 0 4px"><code>message_feedback</code> &mdash; small, UI-layer event</p>
+<p style="font-size:12px;font-family:ui-monospace,monospace;margin:0 0 10px">id &middot; workspace_id &middot; conversation_id &middot; message_id &middot; answer_run_id &middot; user_id &middot; verdict &middot; category &middot; note &middot; selected_citation_ids &middot; selected_claim_span_ids &middot; created_at</p>
+
+<p style="font-size:12px;font-weight:600;margin:10px 0 4px"><code>answer_runs</code> &mdash; frozen turn-level diagnostic record</p>
+<p style="font-size:12px;font-family:ui-monospace,monospace;margin:0 0 10px">answer_run_id &middot; workspace_id &middot; conversation_id &middot; message_id &middot; query_text &middot; query_class &middot; rewritten_query &middot; rewrite_attempts (jsonb) &middot; stores_queried (text[]) &middot; retrieval_k &middot; filters_applied (jsonb) &middot; retrieval_trace_id &middot; retrieval_strategy_version &middot; prompt_version &middot; model_name &middot; model_version &middot; embedding_model &middot; reranker_version &middot; citation_resolver_version &middot; citation_mode &middot; precedence_rule_applied &middot; retrieval_latency_ms &middot; generation_latency_ms &middot; citation_latency_ms &middot; input_tokens &middot; output_tokens &middot; context_tokens &middot; unresolved_span_count &middot; resolver_failure_code &middot; lifecycle_state &middot; abstained &middot; refusal_reason &middot; suggestion_outcome &middot; created_at &middot; committed_at</p>
+
+<p style="font-size:12px;font-weight:600;margin:10px 0 4px"><code>answer_retrieval_items</code> &mdash; one row per retrieved candidate</p>
+<p style="font-size:12px;font-family:ui-monospace,monospace;margin:0 0 10px">answer_run_id &middot; stage (retrieved / reranked / in_context / cited) &middot; rank &middot; document_id &middot; document_revision_id &middot; passage_id (FK to document_passages) &middot; node_ids &middot; retriever_score &middot; reranker_score &middot; included_in_context &middot; used_in_citation</p>
+
+<p style="font-size:12px;font-weight:600;margin:10px 0 4px"><code>answer_citation_spans</code> &mdash; one row per resolved claim span</p>
+<p style="font-size:12px;font-family:ui-monospace,monospace;margin:0 0 10px">answer_run_id &middot; span_id &middot; char_start &middot; char_end &middot; claim_text &middot; citation_ids &middot; support_type (direct / synthesized / comparative) &middot; resolver_confidence</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Requirements</p>
+<p style="font-size:13px;margin:0">Every feedback event must reference <code>answer_run_id</code>. Diagnostic records persist model/prompt/retrieval/citation versions. Retrieved chunk IDs are stored separately from UI citation IDs. Retrieval/rerank/context/citation stages must be queryable in SQL (not parsed from JSONB blobs).</p>
+
+<div class="key-note" style="margin-top:14px">Without normalised retrieval/span tables, you'll know users are unhappy but not whether to fix chunking, retrieval, reranking, citation binding, or generation.</div>
+</div>
+
+<div class="section"><div class="section-label">10p-i &mdash; Passage &amp; Citation Item Model</div>
+<p style="font-size:12px;font-weight:600;margin:10px 0 4px"><code>silver.document_passages</code> &mdash; canonical passage store, populated at ingestion time</p>
+<p style="font-size:12px;font-family:ui-monospace,monospace;margin:0 0 10px">passage_id (PK) &middot; document_id &middot; document_revision_id &middot; workspace_id &middot; page_first &middot; page_last &middot; section_heading &middot; paragraph_index &middot; char_offset_start &middot; char_offset_end &middot; text &middot; text_hash (sha256) &middot; token_count &middot; embedding_id (FK to qdrant) &middot; ocr_confidence &middot; ocr_status &middot; parser &middot; created_at</p>
+
+<p style="font-size:12px;font-weight:600;margin:10px 0 4px"><code>answer_citation_items</code> &mdash; what an inline citation actually points to</p>
+<p style="font-size:12px;font-family:ui-monospace,monospace;margin:0 0 10px">citation_id (PK) &middot; answer_run_id &middot; passage_id (FK to silver.document_passages) &middot; highlight_char_start &middot; highlight_char_end &middot; context_passages[] (FK array, &plusmn;2 sentences for inspector) &middot; source_uri &middot; source_type &middot; source_date &middot; author_qp &middot; linked_node_ids (Neo4j) &middot; created_at</p>
+
+<p style="font-size:13px;margin:14px 0 0"><code>answer_citation_spans.citation_ids</code> references <code>answer_citation_items.citation_id</code>. <code>answer_retrieval_items.passage_id</code> references <code>silver.document_passages.passage_id</code>. The &sect;10s evidence inspector reads exclusively from these two tables &mdash; never from raw retrieval JSONB.</p>
+
+<div class="key-note" style="margin-top:12px"><strong>Stability requirement:</strong> <code>passage_id</code> survives document re-ingestion as long as <code>text_hash</code> matches. If the passage text changes between revisions, a new <code>passage_id</code> is allocated and the old one is retained for citation backreferences. Citation links never silently break.</div>
+</div>
+
+<div class="section"><div class="section-label">10q &mdash; Suggested Follow-up Questions</div>
+<p style="font-size:13px;margin:0 0 12px">Suggestions generated in the <strong>same backend request</strong> but as a <strong>separate post-answer subtask</strong> using a reduced context (original query, final answer summary, cited entities + sources, answerability flags). Cannot reference entities outside the bound evidence set for that turn.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Rendering &mdash; 3 intent buckets, max 1 chip per bucket</p>
+<table class="flow-table"><thead><tr><th style="width:220px">Intent bucket</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>Drill deeper</td><td class="responsibilities">Expand on a specific entity, hole, formation, or claim in the answer</td></tr>
+<tr><td>Compare / pivot</td><td class="responsibilities">Lateral move &mdash; compare to another project, source, time period</td></tr>
+<tr><td>Validate / inspect evidence</td><td class="responsibilities">Open evidence inspector, surface conflicts, view supporting passage</td></tr>
+</tbody></table>
+<p style="font-size:13px;margin:10px 0 0">Show 0&ndash;3 chips. Prefer evidence-inspection chips when answerability is weak. If &lt; 2 grounded chips clear ranking threshold, fall back to safe meta-chips (<em>Show supporting passages</em>, <em>What data is missing here?</em>, <em>Compare cited sources</em>) or omit the row.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Omit rules</p>
+<p style="font-size:13px;margin:0 0 12px">Omit the chip row entirely if: generation fails &middot; answerability confidence low &middot; no novel grounded follow-up clears threshold &middot; the answer was a refusal (&sect;10u) &middot; the response is already an evidence-inspection or export flow.</p>
+
+<p style="font-size:13px;margin:0">Outcome recorded per turn in <code>answer_runs.suggestion_outcome</code> &mdash; <code>generated</code> / <code>omitted</code> / <code>failed</code>. Clicking a chip submits it as a new user message with <code>origin=suggested_followup</code> + parent <code>answer_run_id</code>.</p>
+</div>
+
+<div class="section"><div class="section-label">10r &mdash; Citation Precision Mode</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Two-stage model: evidence-constrained generation (&sect;04h, &sect;09) followed by post-hoc claim-span resolution. Body streams first via <code>query.token</code>; resolved citations stream on <code>query.citation_attached</code> and attach progressively to final text spans in the UI.</p>
+
+<table class="flow-table"><thead><tr><th style="width:280px">Mode</th><th>Behavior</th></tr></thead><tbody>
+<tr><td><code>posthoc_span_resolution</code> <strong>(default)</strong></td><td class="responsibilities">Body streams to completion, then spans resolved against bound evidence in a dedicated post-pass. Highest precision.</td></tr>
+<tr><td><code>hybrid_delayed_attachment</code></td><td class="responsibilities">Body streams; citations resolved in a sliding window with bounded delay. Lower latency, slightly lower precision.</td></tr>
+<tr><td><code>inline_streaming_experimental</code></td><td class="responsibilities">Per-token citation hints during streaming. Experimental &mdash; known to misattribute on long-range claims.</td></tr>
+</tbody></table>
+<p style="font-size:13px;margin:10px 0 0">Configurable at workspace level + environment default. Persisted per answer run in <code>answer_runs.citation_mode</code>.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Latency accounting</p>
+<p style="font-size:13px;margin:0 0 12px"><code>generation_latency_ms</code> + <code>citation_latency_ms</code> recorded independently in <code>answer_runs</code>.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Degraded behavior &mdash; partial citation failure</p>
+<p style="font-size:13px;margin:0">If body generation succeeds but citation resolution partially fails: answer body remains visible &middot; unresolved spans marked as uncited &middot; banner shows <em>"Some citations could not be attached"</em> &middot; unresolved span count + resolver failure metadata logged to <code>answer_runs</code> &middot; feedback path remains available so users can flag the uncited spans.</p>
+</div>
+
+<div class="section"><div class="section-label">10s &mdash; Evidence Inspector</div>
+<table class="flow-table"><thead><tr><th style="width:200px">Element</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Trigger</td><td class="responsibilities">Click any inline citation marker, or click "Show supporting passages" meta-chip.</td></tr>
+<tr><td>Exact passage</td><td class="responsibilities">Highlighted text from source document &mdash; verbatim, with surrounding context (&plusmn;2 sentences).</td></tr>
+<tr><td>Source location</td><td class="responsibilities">Document title, page_first/page_last, section heading, paragraph index. Deep-link to PDF viewer at exact page.</td></tr>
+<tr><td>Source metadata</td><td class="responsibilities">Source date, source type (NI 43-101 / press release / academic / internal report), author/QP, document revision ID, ingestion date.</td></tr>
+<tr><td>Support rationale</td><td class="responsibilities">Plain-language explanation of why this passage supports the claim. <strong>Templated or extractive only &mdash; never free-form generated.</strong> Field: <code>support_type</code> from <code>answer_citation_spans</code> (direct / synthesized / comparative); the source passage does the real explanatory work.</td></tr>
+<tr><td>Linked entities</td><td class="responsibilities">Neo4j node IDs surfaced as clickable chips &mdash; open project, hole, formation, or QP context panels.</td></tr>
+<tr><td>Feedback hook</td><td class="responsibilities">Inline &#128078; with &sect;10p taxonomy pre-filled to "Wrong citation".</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">10t &mdash; Conflict &amp; Freshness Handling</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Mining and exploration users need to know when sources disagree, when newer filings contradict older reports, and when an answer is built on stale material. Silent precedence is unacceptable.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Conflict surfacing</p>
+<table class="flow-table"><thead><tr><th style="width:220px">Condition</th><th>UI behavior</th></tr></thead><tbody>
+<tr><td>Sources disagree on a numeric value</td><td class="responsibilities">Render with both values + amber conflict badge. Click reveals side-by-side citations and precedence rule applied.</td></tr>
+<tr><td>Newer filing contradicts older report</td><td class="responsibilities">Default to newer source. Show "superseded by [newer source, date]" annotation on the older citation in evidence inspector.</td></tr>
+<tr><td>Resource estimate methodology differs</td><td class="responsibilities">Surface methodology (inferred / indicated / measured) on each citation. Do not silently aggregate across categories.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Freshness signaling</p>
+<p style="font-size:13px;margin:0 0 12px">Each citation carries an age indicator: green (&lt; 1 yr), amber (1&ndash;3 yr), red (&gt; 3 yr or pre-most-recent-filing). Workspace can configure thresholds. Stale-only answers (all citations red) prepend a "Latest available evidence is N years old" banner.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Precedence rules &mdash; query-intent-sensitive, workspace-configurable</p>
+<p style="font-size:13px;margin:0 0 8px">No global default precedence order. Precedence applies per <em>query intent class</em> (current-state / historical / methodology / regulatory / comparative); applied rule recorded in <code>answer_runs.precedence_rule_applied</code>. When precedence cannot be determined automatically, all conflicting sources are surfaced side-by-side with the conflict badge.</p>
+
+<div class="key-note" style="margin-top:14px">In junior mining, the difference between a 2018 inferred resource and a 2024 indicated resource is the difference between a story and a deal. The UI must never collapse them into one number without flagging it.</div>
+</div>
+
+<div class="section"><div class="section-label">10u &mdash; Refusal &amp; Uncertainty UX</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">The refusal path is the product (&sect;04i). When grounding fails, the response shows the user what was searched, what was missing, and what they can do next.</p>
+
+<table class="flow-table"><thead><tr><th style="width:200px">Element</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Refusal banner</td><td class="responsibilities">Clear, non-apologetic statement: <em>"Insufficient evidence to answer this question from the current corpus."</em> No hedging, no fake confidence.</td></tr>
+<tr><td>What was searched</td><td class="responsibilities">List of stores queried (Qdrant / Neo4j / PostGIS), query rewrites attempted, retrieval k, filters applied. Surfaces from <code>answer_runs.rewritten_query</code> + retrieval trace.</td></tr>
+<tr><td>What was missing</td><td class="responsibilities">Specific gaps: "no documents matching [entity]" / "no assays for hole [X]" / "no NI 43-101 newer than [date]" / "entity [Y] not in knowledge graph". Generated from retrieval trace, not LLM.</td></tr>
+<tr><td>Suggested next actions</td><td class="responsibilities">Widen scope (relax filters, expand date range), inspect what was retrieved, upload a new document, or contact SME. Each action is a one-click chip.</td></tr>
+<tr><td>Inspect retrieved evidence</td><td class="responsibilities">Even on refusal, show the top-k retrieved chunks with scores so the user can judge whether the corpus has anything relevant at all.</td></tr>
+<tr><td>Feedback hook</td><td class="responsibilities">Refusals are feedback-eligible. &sect;10p category "Missed evidence" tells the team the corpus has a gap.</td></tr>
+<tr><td>Persistence</td><td class="responsibilities">On refusal, set <code>answer_runs.abstained = true</code> and populate <code>answer_runs.refusal_reason</code> with the structured reason code from the <code>query.refusal</code> event. SQL-queryable for refusal-rate analytics &mdash; never inferred from response text.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">10v &mdash; Lakehouse + Drillhole Detail surfaces</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Two project-scoped Inertia surfaces that answer "what did we ingest and what can we see per hole?". Both reachable from the Foundry left rail and via deep-link.</p>
+
+<table class="flow-table"><thead><tr><th style="width:340px">Route</th><th>Controller</th><th>Inertia page</th></tr></thead><tbody>
+<tr><td><code>GET /projects/{slug}/lakehouse</code></td><td class="responsibilities"><code>App\Http\Controllers\Foundry\LakehouseController</code></td><td><code>resources/js/Pages/Foundry/Lakehouse.tsx</code></td></tr>
+<tr><td><code>GET /projects/{slug}/holes/{collarId}/detail</code></td><td class="responsibilities"><code>App\Http\Controllers\Foundry\DrillholeDetailController</code></td><td><code>resources/js/Pages/Foundry/DrillholeDetail.tsx</code></td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Lakehouse (project-scoped inventory)</p>
+<p style="font-size:13px;margin:0 0 8px">Three anchored sections (Bronze / Silver / Gold). Each section probes the schema for the relevant tables and shows <code>(rows, status, latest)</code> per table. Per-table queries wrapped in <code>safeQuery</code> + information_schema existence probe so a mid-migration cluster renders missing tables as a <em>missing</em> pill instead of 500'ing. The recency column auto-probes (<code>created_at &rarr; computed_at &rarr; ingested_at &rarr; indexed_at &rarr; updated_at</code>) because bronze tables use <code>ingested_at</code> / <code>indexed_at</code> rather than the silver/gold <code>created_at</code> convention.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Drillhole Detail (anchored-scroll per-hole page)</p>
+<p style="font-size:13px;margin:0 0 0">Sticky collar header, four anchored sections: <em>Strip Log</em>, <em>Assays</em>, <em>Structures</em>, <em>Cross Section</em>. Calls <code>POST /v1/viz/qa</code> server-side per render (Laravel &rarr; FastAPI bridge via <code>FastApiJwtMinter</code>) and surfaces the Drillhole Visual QA Agent envelope: top banner pill (ready / warning / critical), per-section severity pill, EmptyState per section identifying which gold materialisation is missing. Designed for single-page print/PDF export &mdash; tabs were rejected because the export contract wants one document per hole.</p>
+</div>
+
+<div class="section"><div class="section-label">10w &mdash; Ingestion Runs UI</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Per-project page (<code>resources/js/Pages/Foundry/IngestionRuns.tsx</code>) + Overview ingest card showing the in-flight + recent ingest history. Source: <code>silver.ingest_progress</code> + bronze SeaweedFS listing.</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Element</th><th>Detail</th></tr></thead><tbody>
+<tr><td>Run list</td><td class="responsibilities">One row per run; sortable by start time, status, document. Stage badges: preflight / parse / persist / embed / dual_write.</td></tr>
+<tr><td>Failure drill-down</td><td class="responsibilities">Click a failed run to see the structured error JSON from <code>silver.ingest_progress.error</code> plus the Hatchet step trace.</td></tr>
+<tr><td>Reverb live updates</td><td class="responsibilities"><code>ingestion.progress</code> events (&sect;07c) update the in-flight row without polling.</td></tr>
+<tr><td>Re-trigger</td><td class="responsibilities">From a failed/superseded run, "Replay from Bronze" dispatches the Hatchet workflow again with the same source URI.</td></tr>
+</tbody></table>
+</div>
+
+<div class="section"><div class="section-label">10x &mdash; Drill Upload Flow (operator-facing)</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">Four-slice upload &rarr; review pipeline for operator-supplied drill data. Lives in <code>resources/js/Pages/Foundry/DrillReview.tsx</code> + the matching controller; backed by <code>silver.review_queue</code>.</p>
+<table class="flow-table"><thead><tr><th style="width:80px">Slice</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>Upload</td><td class="responsibilities">Drag-drop CSV/XLSX collar + survey + assay bundles. Schema sniffed inline; column-mapping UI surfaces if auto-map &lt; threshold.</td></tr>
+<tr><td>Unit ambiguity</td><td class="responsibilities">When the unit string is ambiguous (e.g. <code>%</code> vs <code>ppm</code> for U3O8), reviewer disambiguates before silver write.</td></tr>
+<tr><td>Overlap check</td><td class="responsibilities">Detect collar / hole_id collisions against existing silver data; offer merge / skip / new-revision options.</td></tr>
+<tr><td>Review page</td><td class="responsibilities">Per-row pending entries land in <code>silver.review_queue</code>; reviewer approves or rejects; approvals commit to typed silver tables.</td></tr>
+</tbody></table>
+<p style="font-size:13px;margin:12px 0 0;color:var(--muted)"><strong>Spatial uncertainty:</strong> <code>spatial_uncertainty_m</code> on collar imports is not auto-populated &mdash; a backfill rubric is pending SME sign-off. Reviewer must enter values manually until then.</p>
+</div>
+
+<div class="section"><div class="section-label">11 &mdash; Hardware Sizing</div>
+<table class="flow-table"><thead><tr><th style="width:160px">Tier</th><th>Spec</th><th>Use</th></tr></thead><tbody>
+<tr><td>Dev workstation</td><td class="responsibilities">AMD Ryzen Threadripper Pro 5955WX (16 cores / 32 threads), 64 GB DDR4 ECC, NVIDIA RTX A4500 20 GB VRAM (Ampere GA102), 1.8 TB NVMe. Single-purpose, dedicated to GeoRAG.</td><td>vLLM + <code>Qwen/Qwen3-14B-AWQ</code> at <code>VLLM_MAX_MODEL_LEN=8192</code> and <code>VLLM_GPU_MEM_UTIL=0.80</code> (leaves ~4 GB VRAM for hatchet-worker-ai's bge-small + bge-reranker-base + SPLADE++). 2 sustained / 4&ndash;6 burst concurrent users at p95 &lt; 6 s. VRAM is the binding constraint; the 32 logical CPU threads are not stressed.</td></tr>
+<tr><td>Pilot deployment</td><td class="responsibilities">2&times; app nodes (16 vCPU / 64 GB), 1&times; GPU node (&ge; 24 GB VRAM), 1&times; data node (16 vCPU / 128 GB).</td><td>Single-tenant private cloud, &lt; 10 concurrent users. <code>VLLM_MAX_MODEL_LEN=16384</code> on a 24 GB card; <code>32768</code> on a 40 GB card.</td></tr>
+<tr><td>Production</td><td class="responsibilities">Horizontally scaled app tier behind LB; dedicated Neo4j (RAM-sized to graph), PostGIS (NVMe), Qdrant; GPU pool sized to query concurrency.</td><td>Multi-tenant or large single-tenant.</td></tr>
+<tr><td>On-premise / air-gapped</td><td class="responsibilities">Equivalent bare-metal. SeaweedFS instead of cloud S3. MapLibre instead of Mapbox. vLLM on owned GPUs.</td><td>Junior mining clients running fully isolated.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Critical deployment setting</p>
+<p style="font-size:13px;margin:0">Production and staging compose profiles must set <code>APP_DEBUG=false</code> explicitly &mdash; the dev default is <code>true</code>, which exposes full stack traces in error responses.</p>
+</div>
+
+<div class="section"><div class="section-label">11b &mdash; V1 Scope &amp; Deferred Items</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 8px"><strong>In V1:</strong> silver/gold geological domain schemas, 7-node KG core + 9-node Public-Geoscience extension, 5 viz types + Lakehouse + DrillholeDetail + IngestionRuns surfaces, citation-first chat with two-stage citation model, OIUR answer architecture, agentic-retrieval LangGraph, six-layer hallucination prevention, single-workspace RBAC, on-prem deployment path.</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">V1 ingestion format support matrix</p>
+<table class="flow-table"><thead><tr><th style="width:200px">Format</th><th style="width:120px">V1 status</th><th>Notes</th></tr></thead><tbody>
+<tr><td>CSV / XLSX (tabular)</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Delimiter auto-detect + decimal-comma transform + multi-sheet XLSX with sheet-type classifier.</td></tr>
+<tr><td>LAS (well logs)</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Standard well log format via <code>lasio</code>.</td></tr>
+<tr><td>Shapefile / GeoPackage</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Spatial vector data via GDAL / pyogrio. Lands in <code>silver.vector_features</code> (polymorphic) for generic geological features (faults / contacts / zones), plus drill-specific tables when attributes match the &sect;04e schema.</td></tr>
+<tr><td>Esri File Geodatabase (.gdb)</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Read-only via pyogrio's <code>OpenFileGDB</code> driver &mdash; no proprietary SDK. Disambiguate from Geosoft GDB by directory-vs-file inspection (see &sect;04d).</td></tr>
+<tr><td>GeoTIFF</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Raster surfaces + scanned document scans. Metadata + bounds land in <code>silver.raster_layers</code>; pixel bytes remain in SeaweedFS. Scanned-document TIFFs route through &sect;04p (ADR-0005).</td></tr>
+<tr><td>QField GPKG sync</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Field-collected GeoPackage uploads with spatial-only layer filter.</td></tr>
+<tr><td>NI 43-101 PDFs</td><td><span class="badge b-mand">In V1</span></td><td class="responsibilities">Via the &sect;04p in-process PDF stack (ADR-0002) &mdash; primary document type.</td></tr>
+<tr><td>DOCX</td><td><span class="badge b-high">In V1</span></td><td class="responsibilities">Internal reports, technical memos.</td></tr>
+<tr><td>KML / KMZ</td><td><span class="badge b-med">Roadmap</span></td><td class="responsibilities">Post-V1; deferred unless pilot demand.</td></tr>
+<tr><td>Geosoft GDB (binary channels)</td><td><span class="badge b-med">Roadmap</span></td><td class="responsibilities">Proprietary binary geophysics channel format &mdash; needs Geosoft SDK. <strong>Note:</strong> distinct from Esri File Geodatabase above despite the shared <code>.gdb</code> extension.</td></tr>
+<tr><td>SEG-Y (seismic)</td><td><span class="badge b-med">Roadmap</span></td><td class="responsibilities">Full-waveform processing deferred. <code>segyio</code> + fixtures exist for early validation; silver landing schema + Martin tile path not yet wired.</td></tr>
+<tr><td>acQuire / Maxwell / Leapfrog / IOgas exports</td><td><span class="badge b-med">Roadmap</span></td><td class="responsibilities">Vendor-specific drillhole exports &mdash; case-by-case. IOgas auto-detect parser blocked on a real export fixture.</td></tr>
+</tbody></table>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">Other deferred (post-V1)</p>
+<p style="font-size:14px;color:var(--muted);margin:0">3D scene visualisation &middot; multi-workspace federation &middot; real-time geophysical streaming ingestion &middot; fine-tuned domain LLM &middot; mobile UI &middot; collaborative annotation &middot; alerting on new ingested data &middot; automated NI 43-101 generation &middot; online learning from feedback &middot; project hibernation / annual licence lifecycle (gated on pricing decision) &middot; full multi-hop reranker (v2)</p>
+
+<p style="font-size:13px;font-weight:600;margin:14px 0 6px">V1 acceptance criteria</p>
+<p style="font-size:13px;margin:0">See <code>docs/acceptance-criteria.md</code> for the canonical ship-readiness checklist &mdash; test counts, monitoring targets, runbook coverage, and operator-setup blockers.</p>
+</div>
+
+<div class="section"><div class="section-label">12 &mdash; Version Compatibility Matrix</div>
+<table class="flow-table"><thead><tr><th style="width:170px">Component</th><th style="width:90px">Floor</th><th style="width:160px">Pinned</th><th>Notes</th></tr></thead><tbody>
+<tr><td>PHP</td><td>8.4</td><td>8.5</td><td class="responsibilities">Octane + Swoole + Laravel 13. opcache statically linked into <code>php:8.5-cli</code>; do not <code>docker-php-ext-install opcache</code>.</td></tr>
+<tr><td>Laravel</td><td>13.0</td><td>13.x</td><td class="responsibilities">Octane, Horizon, Reverb, Pulse, Sanctum, Inertia v3 &mdash; all first-party.</td></tr>
+<tr><td>Python</td><td>3.13</td><td>3.13.x</td><td class="responsibilities">FastAPI domain service, Pydantic AI, Dagster, Hatchet workers.</td></tr>
+<tr><td>FastAPI</td><td>0.136</td><td>0.136.0</td><td class="responsibilities">Pydantic v2 internals. asyncpg + redis.asyncio only &mdash; no sync drivers in handlers.</td></tr>
+<tr><td>Pydantic AI</td><td>0.2</td><td>0.2.x</td><td class="responsibilities">Typed agent outputs enforce citation-mandatory rule.</td></tr>
+<tr><td>Node</td><td>22 LTS</td><td>22.x</td><td class="responsibilities">Vite 8 + Vitest 4 require Node 22+.</td></tr>
+<tr><td>React</td><td>19</td><td>19.x</td><td class="responsibilities">Functional components, hooks. Inertia v3 React adapter.</td></tr>
+<tr><td>Tailwind CSS</td><td>4</td><td>4.x</td><td class="responsibilities">Utility-first; shadcn/ui components.</td></tr>
+<tr><td>PostgreSQL</td><td>18</td><td>18.3 (georag/postgres:18-ext)</td><td class="responsibilities">Custom image with PostGIS + extensions. Async I/O via <code>io_method=worker</code> on Docker; <code>io_uring</code> requires custom seccomp.</td></tr>
+<tr><td>PostGIS</td><td>3.6</td><td>3.6.x</td><td class="responsibilities">Bundled in the georag postgres image.</td></tr>
+<tr><td>PgBouncer</td><td>1.25</td><td>edoburu/pgbouncer:v1.25.1</td><td class="responsibilities">Transaction pool mode required for asyncpg. Edoburu uses <code>DB_*</code>/bare env vars (not <code>POSTGRESQL_*</code>/<code>PGBOUNCER_*</code>).</td></tr>
+<tr><td>Neo4j Community</td><td>2026.02</td><td>neo4j:2026-community</td><td class="responsibilities">CalVer. Manual page-cache warmup. JMX exposes JVM-level beans only (Community edition).</td></tr>
+<tr><td>Qdrant</td><td>1.17</td><td>1.17</td><td class="responsibilities">HNSW + payload indices. Async client only in FastAPI. Sparse vectors enabled.</td></tr>
+<tr><td>Redis</td><td>8.6</td><td>8.6.3-alpine</td><td class="responsibilities">phpredis verified compatible. Single instance in dev; per-role split in staging/prod.</td></tr>
+<tr><td>SeaweedFS</td><td>4.20</td><td>chrislusf/seaweedfs:4.20</td><td class="responsibilities">S3 port 8333. Apache 2.0. Compose service name kept as <code>minio</code> for env/DNS compatibility.</td></tr>
+<tr><td>Hatchet</td><td>lite</td><td>ghcr.io/hatchet-dev/hatchet/hatchet-lite</td><td class="responsibilities">Engine + UI. Two workers (<code>ingestion</code> + <code>ai</code>) ship from the <code>georag/fastapi</code> image.</td></tr>
+<tr><td>Dagster</td><td>1.13</td><td>1.13.x</td><td class="responsibilities">Asset-based pipelines. dagster-postgres + dagster-docker + dagster-webserver locked to the matching minor.</td></tr>
+<tr><td>vLLM</td><td>0.21</td><td>vllm/vllm-openai:v0.21.0</td><td class="responsibilities">Production GPU inference. Bumps require golden-query re-run on prod GPU before traffic flip.</td></tr>
+<tr><td>Kestra</td><td>1.2</td><td>kestra/kestra:v1.2.18</td><td class="responsibilities">Optional secondary orchestrator for legacy cross-system flows.</td></tr>
+<tr><td>MapLibre GL JS</td><td>5.x</td><td>5.x</td><td class="responsibilities">On-prem-friendly licensing (vs Mapbox).</td></tr>
+<tr><td>react-map-gl</td><td>8.x</td><td>8.x</td><td class="responsibilities">v8 supports MapLibre 5 peer dep range.</td></tr>
+<tr><td>Martin</td><td>1.x</td><td>1.7.0 (ghcr.io/maplibre/martin)</td><td class="responsibilities">PostGIS-to-MVT tile server. Direct PG connection. Prometheus endpoint at <code>/_/metrics</code>.</td></tr>
+<tr><td>Caddy</td><td>2.8</td><td>caddy:2.8-alpine</td><td class="responsibilities">Reverse proxy + automatic TLS.</td></tr>
+<tr><td>Prometheus</td><td>3.x</td><td>prom/prometheus:v3.11.3</td><td class="responsibilities">Metrics scrape from FastAPI, Octane, Hatchet, Dagster, PG, Redis, Neo4j, Qdrant, vLLM, Martin.</td></tr>
+<tr><td>Alertmanager</td><td>0.32</td><td>prom/alertmanager:v0.32.1</td><td class="responsibilities">Dev config in <code>docker/alertmanager/</code>; prod template with Slack + PagerDuty receivers.</td></tr>
+<tr><td>Loki / Promtail</td><td>3.4</td><td>grafana/loki:3.4.2 / promtail:3.4.2</td><td class="responsibilities">Log aggregation. Promtail's <code>json</code> stage consumes Laravel Monolog + FastAPI JsonFormatter output.</td></tr>
+<tr><td>OpenTelemetry Collector</td><td>0.151</td><td>otel/opentelemetry-collector-contrib:0.151.0</td><td class="responsibilities">Traces fan-out to Tempo.</td></tr>
+<tr><td>Tempo</td><td>2.6</td><td>grafana/tempo:2.6.1</td><td class="responsibilities">Distributed-trace backend.</td></tr>
+<tr><td>Grafana</td><td>11.6</td><td>grafana:11.6.1</td><td class="responsibilities">Dashboards consume Prometheus + Loki + Tempo.</td></tr>
+</tbody></table>
+<p style="font-size:13px;margin:12px 0 0;color:var(--muted)"><strong>Pinning convention</strong>: third-party images pinned to specific release tags + SHA where possible (no <code>:latest</code>); <code>georag/*</code> images tagged <code>:latest</code> mean "last local build".</p>
+</div>
+
+<div class="section"><div class="section-label">13 &mdash; Architecture Decision Records</div>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">All ADRs live under <code>docs/adr/</code>. Each is the canonical record of why a decision was made and what it superseded.</p>
+<table class="flow-table"><thead><tr><th style="width:80px">ID</th><th>Title</th><th style="width:110px">Status</th></tr></thead><tbody>
+<tr><td>ADR-0001</td><td class="responsibilities"><a href="docs/adr/0001-seaweedfs-replaces-minio.md">SeaweedFS replaces MinIO as the S3-compatible object store</a></td><td>Accepted</td></tr>
+<tr><td>ADR-0002</td><td class="responsibilities"><a href="docs/adr/0002-04p-stack-replaces-ragflow.md">&sect;04p PDF stack replaces RAGFlow as the canonical parser</a></td><td>Accepted</td></tr>
+<tr><td>ADR-0003</td><td class="responsibilities"><a href="docs/adr/0003-defer-v2m3-gpu-reranker.md">Defer bge-reranker-v2-m3 + GPU reranker host upgrade</a></td><td>Proposed (deferred)</td></tr>
+<tr><td>ADR-0004</td><td class="responsibilities"><a href="docs/adr/0004-orchestrator-definition-short-circuit.md">Orchestrator short-circuit for high-confidence definition queries</a></td><td>Proposed</td></tr>
+<tr><td>ADR-0005</td><td class="responsibilities"><a href="docs/adr/0005-tiff-normalize-to-pdf-stack.md">Normalize TIFF scans to PDF and route through the &sect;04p stack</a></td><td>Accepted</td></tr>
+<tr><td>ADR-0006</td><td class="responsibilities"><a href="docs/adr/0006-agentic-retrieval-single-graph.md">Agentic retrieval &mdash; one LangGraph + six routed intents (not six subgraphs)</a></td><td>Accepted</td></tr>
+</tbody></table>
+</div>
+
+<footer>georag-architecture.html &mdash; v1.49 &mdash; last updated 2026-05-27. Current-state reference. When code and this document disagree, the document is correct and the code needs fixing (or this document needs an explicit, deliberate update with a reason).</footer>
+</body></html>

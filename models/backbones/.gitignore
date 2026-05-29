@@ -1,0 +1,29 @@
+# ADR-0011 — keep manifests + vocab TSVs committed, skip the binary
+# checkpoints. Each backbone produced by Phase 1 / Phase 2 is a
+# ~750MB-1.1GB model.safetensors that would blow git's per-file cap.
+#
+# What stays committed:
+#   - vocab_extension_manifest.json
+#   - vocab_candidates.tsv
+#   - mlm_training_manifest.json
+#   - any *.json / *.tsv / *.md companion files
+#
+# What is ignored:
+#   - model.safetensors
+#   - tokenizer.json (it's ~17 MB — fine to skip; rebuildable from
+#                    base + vocab_candidates.tsv via
+#                    scripts/_extend_reranker_tokenizer.py)
+#   - sentencepiece.bpe.model
+#   - any per-epoch HF Trainer checkpoint state
+#   - checkpoints/
+
+model.safetensors
+tokenizer.json
+sentencepiece.bpe.model
+checkpoints/
+*.bin
+*.pt
+optimizer.pt
+scheduler.pt
+rng_state.pth
+scaler.pt

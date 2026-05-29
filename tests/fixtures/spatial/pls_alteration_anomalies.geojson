@@ -1,0 +1,62 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Triple R Alteration Zone",
+        "intensity": "Strong",
+        "mineral": "Chlorite-Illite",
+        "area_ha": 450
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-108.52, 58.04],
+          [-108.48, 58.04],
+          [-108.48, 58.07],
+          [-108.52, 58.07],
+          [-108.52, 58.04]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "R840 Anomaly",
+        "intensity": "Moderate",
+        "mineral": "Hematite-Clay",
+        "area_ha": 220
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-108.55, 58.08],
+          [-108.52, 58.08],
+          [-108.52, 58.10],
+          [-108.55, 58.10],
+          [-108.55, 58.08]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Forest Zone",
+        "intensity": "Weak",
+        "mineral": "Dravite",
+        "area_ha": 180
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-108.45, 58.05],
+          [-108.43, 58.05],
+          [-108.43, 58.08],
+          [-108.45, 58.08],
+          [-108.45, 58.05]
+        ]]
+      }
+    }
+  ]
+}

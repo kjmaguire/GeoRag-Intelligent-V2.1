@@ -1,0 +1,43 @@
+# ──────────────────────────────────────────────────────────────────
+# K3s tuning — defaults assume `local-path` StorageClass + Traefik
+# ingress, both of which K3s ships out of the box. No GPU operator
+# is assumed; if you have a GPU on the K3s node, install the
+# NVIDIA k8s-device-plugin DaemonSet first, then enable vllm.
+# ──────────────────────────────────────────────────────────────────
+global:
+  storageClass: local-path
+  ingressClass: traefik
+  tier: small
+
+ingress:
+  enabled: true
+  className: traefik
+  host: georag.local
+  tls:
+    enabled: false
+
+# Conservative resource defaults — fits a 4-core / 16Gi K3s node
+# (minus the headroom needed for K3s itself + vLLM if you enable it).
+postgresql:
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+
+neo4j:
+  heapInitialSize: 512m
+  heapMaxSize: 1G
+  pagecacheSize: 512m
+  resources:
+    requests: { cpu: "250m", memory: "1Gi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+vllm:
+  # Default OFF on K3s — most K3s nodes don't have GPUs. Flip to true
+  # AFTER installing the NVIDIA device plugin and setting nodeSelector.
+  enabled: false
+
+# Optional services off by default in the K3s preset
+laravelReverb:
+  enabled: false   # turn on once you wire a websocket-aware ingress
+dagster:
+  enabled: false   # turn on if you need scheduled batch ingestion

@@ -1,0 +1,102 @@
+{
+  "annotations": {"list": []},
+  "description": "§16.2 Workflow-tier dashboard 2/5 — Dagster asset materialisation health. Reads from the unified workflow.workflow_runs view + the bronze/silver/gold asset lineage Dagster publishes via OpenLineage.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Asset run latency p95 by tier (s)",
+      "description": "How long each asset materialisation took. Bronze (raw ingest) typically <60s; silver (joins + canonicalisation) <300s; gold (analytics) <900s. Sustained p95 above these bands = upstream slowdown.",
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, tier) (rate(dagster_asset_materialization_duration_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{tier}}"}],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "id": 1
+    },
+    {
+      "type": "timeseries",
+      "title": "Asset materialisation success rate (%)",
+      "description": "Per-asset success counter divided by total runs. Sustained <95% on any single asset is alert-worthy.",
+      "targets": [{"expr": "100 * sum by (asset_name) (rate(dagster_asset_materialization_total{status=\"success\"}[15m])) / sum by (asset_name) (rate(dagster_asset_materialization_total[15m]))", "refId": "A", "legendFormat": "{{asset_name}}"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 90}, {"color": "green", "value": 95}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "Asset freshness (minutes since last materialisation)",
+      "description": "How long since each asset was last successfully materialised. Stale gold assets break dashboards that depend on them. Materialise-on-schedule policy: bronze hourly, silver daily, gold daily.",
+      "targets": [{"expr": "(time() - dagster_asset_last_materialization_timestamp_seconds) / 60", "refId": "A", "legendFormat": "{{asset_name}}"}],
+      "fieldConfig": {"defaults": {"unit": "m", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1440}, {"color": "red", "value": 4320}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 3
+    },
+    {
+      "type": "timeseries",
+      "title": "data_version bumps by store (events/h)",
+      "description": "Tracks silver.workspaces.data_version and silver.projects.data_version increments. Each Dagster ingest run that produces new rows should bump these — they're the freshness signal that busts the retrieval cache (Global Invariant 12).",
+      "targets": [{"expr": "sum by (store) (rate(data_version_bumps_total[1h])) * 3600", "refId": "A", "legendFormat": "{{store}}"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Failed materialisations last 24h",
+      "description": "Any non-zero count warrants a triage. Cross-reference with audit.audit_ledger where action_type='asset.materialization_failed'.",
+      "targets": [{"expr": "sum(increase(dagster_asset_materialization_total{status=\"failure\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Rows ingested last 24h (bronze)",
+      "description": "Sum across all bronze asset materialisations. Indicates the platform is actively absorbing new data.",
+      "targets": [{"expr": "sum(increase(dagster_rows_materialized_total{tier=\"bronze\"}[24h]))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "Bronze→silver→gold lag (median, min)",
+      "description": "Median lag between bronze row insert and the matching silver/gold materialisation. Sustained > 1 hr means the schedule cadence isn't keeping up.",
+      "targets": [{"expr": "histogram_quantile(0.5, sum by (le) (rate(asset_propagation_lag_minutes_bucket[1h])))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "m"}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 16},
+      "id": 7
+    },
+    {
+      "type": "stat",
+      "title": "RUN_FAILURE rule active?",
+      "description": "Dagster sensor for the RUN_FAILURE event subscription. Should be 1 (active) at all times. 0 = sensor offline; new failures won't escalate.",
+      "targets": [{"expr": "dagster_sensor_active{sensor_name=\"run_failure_audit\"}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 16},
+      "id": 8
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": ["georag", "workflows", "phase-7", "phase-h3", "section-16.2", "dagster"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GeoRAG — Workflows (Dagster assets)",
+  "uid": "georag-workflows-dagster",
+  "version": 1
+}

@@ -1,0 +1,110 @@
+{{- if .Values.dagster.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-dagster-webserver
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.dagster.webserver.service.port }}
+      targetPort: http
+      name: http
+  selector: {{- include "georag.selectorLabels" (dict "component" "dagster-webserver" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-dagster-webserver
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dagster.webserver.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "dagster-webserver" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "dagster-webserver" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: webserver
+          image: {{ include "georag.image" (dict "repo" .Values.dagster.webserver.image.repository "tag" .Values.dagster.webserver.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: DAGSTER_PG_HOST
+              value: {{ .Release.Name }}-postgresql
+            - name: DAGSTER_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+          resources: {{- toYaml .Values.dagster.webserver.resources | nindent 12 }}
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /opt/dagster/dagster_home
+      volumes:
+        - name: dagster-home
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-dagster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-dagster-daemon
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dagster.daemon.replicas }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "dagster-daemon" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "dagster-daemon" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: daemon
+          image: {{ include "georag.image" (dict "repo" .Values.dagster.webserver.image.repository "tag" .Values.dagster.webserver.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["dagster-daemon", "run"]
+          env:
+            - name: DAGSTER_PG_HOST
+              value: {{ .Release.Name }}-postgresql
+            - name: DAGSTER_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+          resources: {{- toYaml .Values.dagster.daemon.resources | nindent 12 }}
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /opt/dagster/dagster_home
+      volumes:
+        - name: dagster-home
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-dagster
+{{- if .Values.dagster.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-dagster
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- $sc := include "georag.storageClass" (dict "svcStorageClass" "" "global" .Values.global) }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.dagster.persistence.size }}
+{{- end }}
+{{- end }}

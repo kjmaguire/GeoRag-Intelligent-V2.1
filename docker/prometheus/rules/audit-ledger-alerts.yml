@@ -1,0 +1,79 @@
+# Phase 0 audit-ledger integrity alerts (#8 — 2026-05-17).
+#
+# The audit_ledger_verify Hatchet workflow recomputes the SHA-256 chain
+# over a window of `audit.audit_ledger` rows and writes one row to
+# `audit.audit_ledger_verification_runs` per run. Each row has status
+# ∈ {clean, break, failed}.
+#
+# These alerts fire when the chain is broken OR when the nightly run
+# stops happening at all. Both are catastrophic for NI 43-101 audit
+# integrity — every Phase 0+ agent invocation's audit trail is
+# downstream of this ledger.
+#
+# Metric source: pg_postgres exporter exposes counters from a small
+# helper view (`audit.audit_ledger_verification_summary`) materialised
+# nightly by the verify workflow.
+
+groups:
+  - name: audit-ledger
+    interval: 1m
+    rules:
+      # A chain break in the most recent verification run. P1 — investigate
+      # immediately; downstream regulatory compliance depends on the ledger.
+      - alert: AuditLedgerChainBreak
+        expr: audit_ledger_last_run_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: audit
+          phase: "0"
+          runbook: docs/audit_ledger_hash_recipe.md
+        annotations:
+          summary: "audit.audit_ledger hash chain integrity verification FAILED"
+          description: |
+            The audit_ledger_verify Hatchet workflow detected a chain
+            break (recomputed hash != stored hash, or previous_hash
+            mismatch) in the latest run.
+
+            Action:
+              1. Find the offending row via the verification_run's
+                 first_break_id field.
+              2. Read docs/audit_ledger_hash_recipe.md for the canonical
+                 recompute procedure.
+              3. Do NOT delete the offending row — the break itself is
+                 evidence and must be preserved.
+              4. Notify Kyle + compliance immediately.
+
+      # The verify workflow hasn't produced a row in 36 hours (nightly
+      # cadence + slack). Either Hatchet is broken, the worker is dead,
+      # or the workflow itself errored.
+      - alert: AuditLedgerVerifyStale
+        expr: time() - audit_ledger_last_run_completed_at_seconds > 36 * 3600
+        for: 5m
+        labels:
+          severity: warning
+          service: audit
+          phase: "0"
+        annotations:
+          summary: "audit_ledger_verify has not run in >36h"
+          description: |
+            audit.audit_ledger_verification_runs hasn't received a fresh
+            row in over 36 hours. The nightly Hatchet workflow has either
+            stopped or is failing silently. Check Hatchet engine state,
+            worker logs, and the workflow's run history.
+
+      # The verify run errored (not a clean PASS, not a break — the
+      # workflow itself crashed). Surfaces infra-level problems.
+      - alert: AuditLedgerVerifyErrored
+        expr: audit_ledger_last_run_status == 2
+        for: 1m
+        labels:
+          severity: warning
+          service: audit
+          phase: "0"
+        annotations:
+          summary: "audit_ledger_verify workflow itself errored"
+          description: |
+            The nightly verify workflow crashed before producing a
+            clean/break verdict. Inspect Hatchet run logs for the
+            workflow `audit_ledger_verify`.

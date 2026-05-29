@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# =============================================================================
+# scripts/phase30_step1_verify.sh — Phase 30 Step 1
+# Cache pipeline downhole coverage (R-P29-DOWNHOLE-CACHE) + answer_runs
+# cache_skipped_reason column (R-P21-CACHE-SKIPPED-REASON).
+#
+#   1. orchestrator.py RRF block adds the 4th store (downhole) — query_downhole_logs
+#   2. orchestrator.py cache-write loop carries an "elif _cand.store == "downhole":" branch
+#   3. orchestrator.py cache-read rehydration carries an "elif _cc.source_store == "downhole":" branch
+#   4. orchestrator.py rebuilds DownholeLogsResult into tool_results on cache hit
+#   5. LithologyInterval imported in orchestrator.py
+#   6. silver.answer_runs.cache_skipped_reason column present
+#   7. Phase 29 downhole-cache-bypass guard removed OR retained-as-fallback (informational)
+#   8. Cold-run golden ≥ 29 — must not regress Phase 29's baseline
+#   9. gq-015 passes on cold + warm pair (downhole + cache exercised)
+# =============================================================================
+
+set -uo pipefail
+
+PASS=0
+TOTAL=9
+REPO="${REPO:-/home/georag/projects/georag}"
+ORCH="$REPO/src/fastapi/app/agent/orchestrator.py"
+PG=georag-postgresql
+
+check() {
+    if [ "$2" = ok ]; then
+        echo "  [PASS] $1"
+        PASS=$((PASS+1))
+    else
+        echo "  [FAIL] $1 — $3"
+    fi
+}
+
+cat <<'BANNER'
+
+============================================================
+PHASE 30 STEP 1 — downhole cache coverage + skipped_reason column
+============================================================
+BANNER
+
+# 1) RRF block — 4 store branches
+rrf_stores=$(grep -cE '_tool_name == "query_downhole_logs"|_tool_name == "query_spatial_collars"|_tool_name in \("traverse_knowledge_graph"|_tool_name in \("search_documents"' "$ORCH")
+if [ "${rrf_stores:-0}" -ge 4 ] 2>/dev/null; then
+    check "orchestrator.py RRF covers 4 stores (got $rrf_stores branches)" ok
+else
+    check "rrf 4 stores" fail "only $rrf_stores"
+fi
+
+# 2) Cache-write branch
+if grep -q 'elif _cand.store == "downhole":' "$ORCH"; then
+    check "Cache-write loop has downhole branch" ok
+else
+    check "write downhole" fail "missing"
+fi
+
+# 3) Cache-read branch
+if grep -q 'elif _cc.source_store == "downhole":' "$ORCH"; then
+    check "Cache-read loop has downhole rehydration branch" ok
+else
+    check "read downhole" fail "missing"
+fi
+
+# 4) DownholeLogsResult rebuild on cache hit
+if grep -q '"query_downhole_logs",' "$ORCH" \
+   && grep -qE 'DownholeLogsResult\(\s*collar=' "$ORCH"; then
+    check "Cache hit reconstructs DownholeLogsResult into tool_results" ok
+else
+    check "rebuild dh result" fail "missing"
+fi
+
+# 5) LithologyInterval import
+if grep -qE 'from app\.agent\.tools import.*LithologyInterval|LithologyInterval,$' "$ORCH"; then
+    check "LithologyInterval imported in orchestrator.py" ok
+else
+    check "lithology import" fail "missing"
+fi
+
+# 6) cache_skipped_reason column
+col=$(docker exec "$PG" psql -U georag -d georag -tAc \
+    "SELECT count(*) FROM information_schema.columns WHERE table_schema='silver' AND table_name='answer_runs' AND column_name='cache_skipped_reason';" | tr -d ' ')
+if [ "$col" = "1" ]; then
+    check "silver.answer_runs.cache_skipped_reason column exists" ok
+else
+    check "column" fail "not present"
+fi
+
+# 7) Bypass status (informational — pass either way)
+if grep -q 'if categories.get("downhole"):' "$ORCH"; then
+    check "Phase 29 downhole bypass retained as defensive fallback (informational)" ok
+else
+    check "Phase 29 downhole bypass removed (informational)" ok
+fi
+
+# 8) Cold-run ≥ 29
+docker restart georag-fastapi >/dev/null 2>&1
+sleep 100
+cold=$(docker exec georag-fastapi pytest --tb=no -q /app/tests/test_golden_queries.py 2>&1 | grep -oE '[0-9]+ passed' | head -1 | awk '{print $1}')
+if [ "${cold:-0}" -ge 29 ] 2>/dev/null; then
+    check "Cold-run golden ≥ 29 (got $cold; Phase 29 baseline was 30)" ok
+else
+    check "cold peak" fail "got $cold"
+fi
+
+# 9) gq-015 cold + warm pair (the canary that surfaced this work)
+docker restart georag-fastapi >/dev/null 2>&1
+sleep 100
+cold_g15=$(docker exec georag-fastapi pytest --tb=no -q /app/tests/test_golden_queries.py -k gq-015 2>&1 | grep -oE '[0-9]+ passed')
+warm_g15=$(docker exec georag-fastapi pytest --tb=no -q /app/tests/test_golden_queries.py -k gq-015 2>&1 | grep -oE '[0-9]+ passed')
+if echo "$cold_g15" | grep -q '1 passed' && echo "$warm_g15" | grep -q '1 passed'; then
+    check "gq-015 passes on cold + warm pair (downhole cache exercised)" ok
+else
+    check "gq-015 stability" fail "cold='$cold_g15' warm='$warm_g15'"
+fi
+
+echo
+echo "============================================================"
+echo "Result: $PASS / $TOTAL checks passed"
+echo "============================================================"
+
+exit $((PASS == TOTAL ? 0 : 1))

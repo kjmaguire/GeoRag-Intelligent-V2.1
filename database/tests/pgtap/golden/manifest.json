@@ -1,0 +1,16 @@
+{
+  "generated_at": "2026-04-26T18:25:37Z",
+  "project_id": "00000000-0000-0000-0000-deadbeefcafe",
+  "tile": {"z": 3, "x": 1, "y": 2},
+  "tile_coverage": "lon -135 to -90, lat ~41 to ~67 (WGS84)",
+  "note": "All etag_hash values are identical because they share md5(data_version|z|x|y|project_id). This is correct.",
+  "layers": {
+    "collars": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "e1aa3e412a19a56cb6810df932eee48e", "mvt_bytes": 358},
+    "drill_traces": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "2a5b60dcbd6a677c142ef61f68016f7d", "mvt_bytes": 274},
+    "seismic": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "9bd62f37ae939dfb4bcd1fa48e183327", "mvt_bytes": 223},
+    "boundaries": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "2681fbee28a088b4f9116f04855d3818", "mvt_bytes": 226},
+    "formations": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "7a95cd4517f105a2f030f2fa54c9c203", "mvt_bytes": 304},
+    "historic_workings": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "30b392f09f0bb7bf3d4ea4650163d90e", "mvt_bytes": 429},
+    "geochem": {"etag_hash": "5e649996d7df795f45651a59ca06bfc1", "mvt_md5": "4be83161da76152f072a9df8c5f844df", "mvt_bytes": 440}
+  }
+}

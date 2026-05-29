@@ -1,0 +1,83 @@
+{{- if .Values.seaweedfs.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-seaweedfs
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.seaweedfs.service.masterPort }}
+      targetPort: master
+      name: master
+    - port: {{ .Values.seaweedfs.service.s3Port }}
+      targetPort: s3
+      name: s3
+    - port: {{ .Values.seaweedfs.service.volumePort }}
+      targetPort: volume
+      name: volume
+  selector: {{- include "georag.selectorLabels" (dict "component" "seaweedfs" "root" .) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-seaweedfs
+  namespace: {{ .Values.global.namespace }}
+  labels: {{- include "georag.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}-seaweedfs
+  replicas: 1
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" "seaweedfs" "root" .) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "seaweedfs" "root" .) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: seaweedfs
+          image: {{ include "georag.image" (dict "repo" .Values.seaweedfs.image.repository "tag" .Values.seaweedfs.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/usr/bin/weed"]
+          args:
+            - server
+            - -dir=/data
+            - -master.port={{ .Values.seaweedfs.service.masterPort }}
+            - -volume.port={{ .Values.seaweedfs.service.volumePort }}
+            - -s3
+            - -s3.port={{ .Values.seaweedfs.service.s3Port }}
+            - -s3.allowEmptyFolder=true
+          ports:
+            - containerPort: {{ .Values.seaweedfs.service.masterPort }}
+              name: master
+            - containerPort: {{ .Values.seaweedfs.service.s3Port }}
+              name: s3
+            - containerPort: {{ .Values.seaweedfs.service.volumePort }}
+              name: volume
+          resources: {{- toYaml .Values.seaweedfs.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: master
+            initialDelaySeconds: 10
+            periodSeconds: 10
+  {{- if .Values.seaweedfs.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- $sc := include "georag.storageClass" (dict "svcStorageClass" "" "global" .Values.global) }}
+        {{- if $sc }}
+        storageClassName: {{ $sc }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.seaweedfs.persistence.size }}
+  {{- end }}
+{{- end }}

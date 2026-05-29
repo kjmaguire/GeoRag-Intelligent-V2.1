@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "georag.fullname" . }}-config
+  labels:
+    {{- include "georag.labels" . | nindent 4 }}
+data:
+  POSTGRES_HOST: {{ .Values.externalServices.pgbouncer.host | default .Values.externalServices.postgres.host | quote }}
+  POSTGRES_PORT: {{ .Values.externalServices.pgbouncer.port | default .Values.externalServices.postgres.port | quote }}
+  POSTGRES_DB: {{ .Values.externalServices.postgres.database | quote }}
+  REDIS_HOST: {{ .Values.externalServices.redis.host | quote }}
+  REDIS_PORT: {{ .Values.externalServices.redis.port | quote }}
+  NEO4J_BOLT_URI: {{ .Values.externalServices.neo4j.boltUri | quote }}
+  QDRANT_HOST: {{ .Values.externalServices.qdrant.host | quote }}
+  QDRANT_PORT: {{ .Values.externalServices.qdrant.port | quote }}
+  S3_ENDPOINT: {{ .Values.externalServices.seaweedfs.s3Endpoint | quote }}
+  OLLAMA_HOST: {{ .Values.externalServices.ollama.host | quote }}
+  OLLAMA_PORT: {{ .Values.externalServices.ollama.port | quote }}
+  LLM_PRIMARY_MODEL: {{ .Values.externalServices.ollama.primaryModel | quote }}
+  MARTIN_HOST: {{ .Values.externalServices.martin.host | quote }}
+  MARTIN_PORT: {{ .Values.externalServices.martin.port | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "georag.fullname" . }}-secrets
+  labels:
+    {{- include "georag.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  app_key: {{ .Values.secrets.appKey | quote }}
+  fastapi_service_key: {{ .Values.secrets.fastapiServiceKey | quote }}
+  fastapi_service_key_kid: {{ .Values.secrets.fastapiServiceKeyKid | quote }}
+  {{- if .Values.secrets.fastapiServiceKeyPrevious }}
+  fastapi_service_key_previous: {{ .Values.secrets.fastapiServiceKeyPrevious | quote }}
+  fastapi_service_key_previous_kid: {{ .Values.secrets.fastapiServiceKeyPreviousKid | quote }}
+  {{- end }}

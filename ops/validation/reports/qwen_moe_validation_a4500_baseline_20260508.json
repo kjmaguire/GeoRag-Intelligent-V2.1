@@ -1,0 +1,237 @@
+{
+  "started_at": "2026-05-08T18:44:12",
+  "baseline_model": "qwen2.5:14b",
+  "test_models": [
+    "qwen3:14b",
+    "qwen3:30b-a3b",
+    "qwen3.6:35b-a3b"
+  ],
+  "gen_params": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "max_tokens": 4096,
+    "seed": 42
+  },
+  "prompts": [
+    "Andes",
+    "Passive Margin",
+    "Faults",
+    "Geochem",
+    "Drilling"
+  ],
+  "per_model": {
+    "qwen2.5:14b": [
+      {
+        "prompt_key": "Andes",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen2.5:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen2.5:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Faults",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen2.5:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Geochem",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen2.5:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Drilling",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen2.5:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      }
+    ],
+    "qwen3:14b": [
+      {
+        "prompt_key": "Andes",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Faults",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Geochem",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Drilling",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3:14b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      }
+    ],
+    "qwen3:30b-a3b": [
+      {
+        "prompt_key": "Andes",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 48.19,
+        "completion_tokens": 3003,
+        "tok_per_sec": 62.31,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a concise yet comprehensive explanation of the **tectonic evolution of the Andes**, structured around **key phases** and **structural cross-section reasoning**. I'll describe the evolution us"
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "score": 0.6666666666666666,
+        "score_keyword": 0.6666666666666666,
+        "score_judge": null,
+        "latency_s": 22.52,
+        "completion_tokens": 2376,
+        "tok_per_sec": 105.48,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a **sequenced stratigraphic column** for a typical passive margin basin, ordered from **oldest (basal) to youngest (topmost)**, with **justifications for depositional environments** based on "
+      },
+      {
+        "prompt_key": "Faults",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 27.77,
+        "completion_tokens": 2847,
+        "tok_per_sec": 102.5,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a clear, concise differentiation of **thrust faults** and **normal faults** in terms of their **mechanics** within **compressional** (shortening) and **extensional** (stretching) tectonic reg"
+      },
+      {
+        "prompt_key": "Geochem",
+        "score": 1.0,
+        "score_keyword": 1.0,
+        "score_judge": null,
+        "latency_s": 24.36,
+        "completion_tokens": 2478,
+        "tok_per_sec": 101.74,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Interpreting a **gold-arsenic (Au-As) geochemical anomaly in a greenstone belt** requires integrating structural, lithological, and hydrothermal context. Below is a structured interpretation, addressi"
+      },
+      {
+        "prompt_key": "Drilling",
+        "score": 0.5714285714285714,
+        "score_keyword": 0.5714285714285714,
+        "score_judge": null,
+        "latency_s": 31.94,
+        "completion_tokens": 3167,
+        "tok_per_sec": 99.15,
+        "peak_vram_mb": 0.0,
+        "has_think_block": false,
+        "thinking_len": 0,
+        "answer_preview": "Below is a **comprehensive, risk-optimized Phase-1 diamond drilling program** for an IOCG (Iron Oxide Copper Gold) prospect, designed for **minimal historical data** and **limited magnetic survey cove"
+      }
+    ],
+    "qwen3.6:35b-a3b": [
+      {
+        "prompt_key": "Andes",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3.6:35b-a3b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Passive Margin",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3.6:35b-a3b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Faults",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3.6:35b-a3b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Geochem",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3.6:35b-a3b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      },
+      {
+        "prompt_key": "Drilling",
+        "error": "Error code: 404 - {'error': {'message': \"model 'qwen3.6:35b-a3b' not found\", 'type': 'not_found_error', 'param': None, 'code': None}}",
+        "peak_vram_mb": 0.0
+      }
+    ]
+  },
+  "aggregate": {
+    "qwen2.5:14b": {
+      "avg_score": 0.0,
+      "avg_score_keyword": 0.0,
+      "avg_score_judge": null,
+      "judge_runs": 0,
+      "avg_tok_per_sec": 0.0,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 5
+    },
+    "qwen3:14b": {
+      "avg_score": 0.0,
+      "avg_score_keyword": 0.0,
+      "avg_score_judge": null,
+      "judge_runs": 0,
+      "avg_tok_per_sec": 0.0,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 5
+    },
+    "qwen3:30b-a3b": {
+      "avg_score": 0.848,
+      "avg_score_keyword": 0.848,
+      "avg_score_judge": null,
+      "judge_runs": 0,
+      "avg_tok_per_sec": 94.24,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 0
+    },
+    "qwen3.6:35b-a3b": {
+      "avg_score": 0.0,
+      "avg_score_keyword": 0.0,
+      "avg_score_judge": null,
+      "judge_runs": 0,
+      "avg_tok_per_sec": 0.0,
+      "avg_vram_mb": 0.0,
+      "peak_vram_mb": 0.0,
+      "supports_thinking": false,
+      "errors": 5
+    }
+  },
+  "judge": {
+    "enabled": false,
+    "model": null
+  },
+  "recommendation": {
+    "required_score": 0.0,
+    "min_tokens_per_sec": 5.0,
+    "baseline_avg_score": 0.0,
+    "winners": [
+      {
+        "model": "qwen3:30b-a3b",
+        "score": 0.848,
+        "tok_s": 94.24
+      }
+    ],
+    "selected": "qwen3:30b-a3b",
+    "reason": "Passed both gates: score \u2265 0.000 and tok/s \u2265 5.0. MoE preferred among passing."
+  },
+  "finished_at": "2026-05-08T18:46:48"
+}

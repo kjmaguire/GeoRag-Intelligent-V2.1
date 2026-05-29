@@ -1,0 +1,89 @@
+# =============================================================================
+# docker/.dockerignore
+#
+# Shared Docker build context exclusions for GeoRAG.
+#
+# This file lives in docker/ alongside the Dockerfiles. When building from the
+# project root (context: .) these patterns tell Docker what NOT to send to the
+# build daemon, keeping context transfers fast and preventing secrets from
+# leaking into image layers.
+#
+# Copy or symlink this to the project root as .dockerignore if your compose
+# build context is set to "." (the default for all GeoRAG services).
+# =============================================================================
+
+# ── Version control ──────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── Dependency directories (installed fresh inside the build) ────────────────
+node_modules
+vendor
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Environment / secrets (NEVER bake into an image) ────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+
+# ── GeoRAG-specific tool directories ────────────────────────────────────────
+# Claude Code project files — no relevance inside a container
+.claude/
+# OpenSpec specification files — build-time artefact, not runtime code
+openspec/
+
+# ── Laravel runtime-generated content ────────────────────────────────────────
+# Logs are written by the running container, not baked in
+storage/logs/*
+# Framework cache is regenerated on boot via artisan commands
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+bootstrap/cache/*
+
+# ── Test artefacts ───────────────────────────────────────────────────────────
+tests/
+test/
+spec/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.php
+coverage/
+.phpunit.result.cache
+pytest_cache/
+.pytest_cache/
+
+# ── Editor / IDE files ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Documentation (not needed at runtime) ───────────────────────────────────
+*.md
+docs/
+georag-architecture.html
+
+# ── Build outputs that belong to their own layer, not the source COPY ────────
+# (These exist in the builder stage; we COPY --from=builder selectively.)
+public/build/
+public/hot
+
+# ── CI / CD ──────────────────────────────────────────────────────────────────
+.github/
+.gitlab-ci.yml
+Jenkinsfile

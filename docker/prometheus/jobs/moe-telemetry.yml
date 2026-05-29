@@ -1,0 +1,24 @@
+# Prometheus scrape job for the MoE telemetry sidecar.
+# Include from prometheus.yml when the moe-telemetry compose overlay
+# is active. Standalone file so the canonical prometheus.yml only
+# references it via scrape_config_files.
+#
+# Metrics surface (see ops/observability/moe_telemetry_exporter.py):
+#   qwen_moe_router_entropy_top2{model}                gauge
+#   qwen_moe_expert_token_total{model,layer,expert}    counter
+#   qwen_moe_expert_active_ratio{model,expert}         gauge
+#   qwen_moe_kv_cache_used_bytes{model,slot}           gauge
+#   qwen_moe_kv_cache_max_bytes{model,slot}            gauge
+#   qwen_moe_offload_layers_cpu{model}                 gauge
+#   qwen_moe_scrape_duration_seconds                   histogram
+#   qwen_moe_scrape_failures_total{reason}             counter
+
+- job_name: moe-telemetry
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  static_configs:
+    - targets:
+        - "moe-telemetry:9479"
+      labels:
+        component: llm
+        subsystem: moe_routing

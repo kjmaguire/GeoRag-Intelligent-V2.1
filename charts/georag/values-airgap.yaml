@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────────────────────────
+# Air-gapped install — assumes images live in a private registry
+# (Harbor / distribution / `ctr image import` into K3s containerd).
+# The build_airgap_bundle.sh script generates a tarball containing
+# every referenced image; install.sh loads them.
+# ──────────────────────────────────────────────────────────────────
+global:
+  # Point at your customer's private registry. The chart prepends
+  # this to every image reference (see templates/_helpers.tpl).
+  imageRegistry: "registry.internal.local/georag"
+  imagePullPolicy: IfNotPresent
+  storageClass: local-path
+  ingressClass: traefik
+
+ingress:
+  enabled: true
+  className: traefik
+  host: georag.local
+  tls:
+    enabled: false  # internal-only by default; layer TLS externally if needed
+
+vllm:
+  # Air-gap installs almost always ship the model weights as a
+  # separate PVC rather than pulling from HuggingFace at boot.
+  enabled: true
+  model:
+    useLocalPvc: true
+    localPvcSize: 60Gi   # Qwen/Qwen3-14B-AWQ is ~8Gi; reserve headroom for swap to larger variant
+  nodeSelector:
+    nvidia.com/gpu.product: ""  # set during deploy

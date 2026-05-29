@@ -1,0 +1,17 @@
+{
+    "data": {
+        "node_types": [
+            { "type": "Lithology", "count": 8412, "delta_7d": 82 },
+            { "type": "Mineralization", "count": 3108, "delta_7d": 41 },
+            { "type": "Structural", "count": 2847, "delta_7d": 28 },
+            { "type": "Sample", "count": 9221, "delta_7d": 118 },
+            { "type": "Drillhole", "count": 412, "delta_7d": 4 },
+            { "type": "Assay", "count": 4108, "delta_7d": 39 },
+            { "type": "Document", "count": 5412, "delta_7d": 142 }
+        ],
+        "edge_count": 94000,
+        "edge_delta_7d": 1200
+    },
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 900
+}

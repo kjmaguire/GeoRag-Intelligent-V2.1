@@ -1,0 +1,78 @@
+# Module 10 Chunk 10.4 — Redis alert rules.
+# Metrics from oliver006/redis_exporter.
+
+groups:
+  - name: redis
+    interval: 30s
+    rules:
+      - alert: RedisLowAvailability
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is DOWN"
+          description: "redis_exporter reports redis_up=0. Chat cache, session store, and queue dispatch are all broken."
+
+      - alert: RedisMemoryHigh
+        expr: |
+          (redis_memory_used_bytes / redis_memory_max_bytes) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis memory usage > 85% of maxmemory"
+          description: "{{ $value | humanizePercentage }} of {{ $labels.instance }}'s maxmemory. LRU eviction imminent."
+
+      - alert: RedisMemoryCritical
+        expr: |
+          (redis_memory_used_bytes / redis_memory_max_bytes) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis memory > 95% — eviction storm"
+          description: "{{ $value | humanizePercentage }} of maxmemory. Cache hit rate will collapse."
+
+      - alert: RedisRejectedConnections
+        expr: rate(redis_rejected_connections_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis is rejecting connections"
+          description: "{{ $value }}/s connection rejections — maxclients limit reached or memory exhausted."
+
+      - alert: RedisSlowlogGrowing
+        expr: redis_slowlog_length > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis slowlog > 100 entries"
+          description: "{{ $value }} slow commands queued. Likely a long-running KEYS/SCAN or oversized payload."
+
+      # Drift detector for the noeviction guarantee on redis-queue.
+      # Per ops/runbooks/redis-3-instance-rollout.md, redis-queue is
+      # configured maxmemory-policy=noeviction so Horizon jobs cannot be
+      # silently dropped under memory pressure. If this alert fires, someone
+      # changed the policy or pointed Horizon at the wrong instance.
+      - alert: RedisQueueEvictionAttempt
+        expr: increase(redis_evicted_keys_total{role="queue"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+          role: queue
+        annotations:
+          summary: "Eviction observed on noeviction queue Redis (role=queue) — Horizon job loss risk"
+          description: |
+            redis_evicted_keys_total{role="queue"} increased by {{ $value }} over 5m.
+            redis-queue is configured noeviction; any eviction is a configuration drift.
+            Check `CONFIG GET maxmemory-policy` on redis-queue and verify the compose
+            command args match docker/compose.redis-staging.yml.

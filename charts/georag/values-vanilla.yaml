@@ -1,0 +1,41 @@
+# ──────────────────────────────────────────────────────────────────
+# Vanilla Kubernetes tuning — assumes the cluster admin gives you a
+# StorageClass + ingress controller (nginx by default; override if
+# using HAProxy / Contour / Cloud LB).
+# ──────────────────────────────────────────────────────────────────
+global:
+  # Leave empty to use the cluster default StorageClass.
+  storageClass: ""
+  ingressClass: nginx
+  tier: medium
+
+ingress:
+  enabled: true
+  className: nginx
+  host: georag.example.com
+  tls:
+    enabled: true
+    secretName: georag-tls
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+# Medium-tier sizing
+postgresql:
+  resources:
+    requests: { cpu: "2", memory: "4Gi" }
+    limits:   { cpu: "8", memory: "16Gi" }
+
+neo4j:
+  heapInitialSize: 2G
+  heapMaxSize: 4G
+  pagecacheSize: 2G
+  resources:
+    requests: { cpu: "1", memory: "4Gi" }
+    limits:   { cpu: "4", memory: "8Gi" }
+
+vllm:
+  # Vanilla customers typically have GPU operators installed.
+  # Set nodeSelector to your cluster's GPU label.
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-A100-SXM4-40GB"

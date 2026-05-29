@@ -1,0 +1,39 @@
+# Dagster instance configuration
+# This file is read from DAGSTER_HOME at runtime.
+# Storage is backed by PostgreSQL for durability across restarts.
+
+storage:
+  postgres:
+    postgres_db:
+      hostname:
+        env: DAGSTER_PG_HOST
+      port:
+        env: DAGSTER_PG_PORT
+      username:
+        env: DAGSTER_PG_USER
+      password:
+        env: DAGSTER_PG_PASSWORD
+      db_name:
+        env: DAGSTER_PG_DB
+
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+# 2026-05-23 CSV audit gap #3 — concurrency pool for the four CSV silver
+# assets (silver_collars, silver_surveys, silver_lithology, silver_samples).
+# Op-granularity pools cap concurrent silver-CSV materializations so bulk
+# INSERTs into silver.* don't pile up DB lock contention or exhaust the
+# pgbouncer pool. The pool tag is declared on each asset via
+# `pool="csv_silver_ingest"`. Different workloads (PDF ingest, geophysics,
+# etc.) use their own pools and aren't affected.
+#
+# default_limit: 4 — matches the CPU pool size, balances throughput vs DB
+# contention. Override per-pool at runtime via:
+#   dagster instance concurrency set --pool=csv_silver_ingest --limit=N
+#
+# See [[csv-audit-2026-05-23]] for the audit + design rationale.
+concurrency:
+  pools:
+    granularity: op
+    default_limit: 4

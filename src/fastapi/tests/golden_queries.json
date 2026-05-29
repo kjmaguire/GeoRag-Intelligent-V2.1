@@ -1,0 +1,321 @@
+[
+  {
+    "query_id": "factual.deepest_hole",
+    "query_text": "What's the deepest drillhole in the Crackingstone Property?",
+    "intent": "factual_lookup",
+    "tags": ["regression", "factual_lookup", "single-fact"],
+    "description": "Citation-style answer expects document spine + at most one supporting collar/spatial. Graph evidence is excluded by the factual_lookup quota.",
+    "criteria": [
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "min_kind_count", "value": {"document": 1}},
+      {"kind": "max_kind_count", "value": {"graph": 0}},
+      {"kind": "first_authority_rank_le", "value": 2},
+      {"kind": "budget_reached", "value": true}
+    ]
+  },
+  {
+    "query_id": "factual.assay_grade",
+    "query_text": "What was the top assay grade in PLS-22-08?",
+    "intent": "factual_lookup",
+    "tags": ["regression", "factual_lookup", "single-number"],
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "max_kind_count", "value": {"graph": 0}},
+      {"kind": "min_evidence_total", "value": 1}
+    ]
+  },
+
+  {
+    "query_id": "synthesis.corridor_integration",
+    "query_text": "Integrate all evidence for the Crackingstone Corridor mineralisation",
+    "intent": "synthesis",
+    "tags": ["regression", "synthesis", "multi-source"],
+    "description": "Balanced quota across documents + spatial + assay + table/collar/graph. At least 3 distinct kinds expected.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "contains_kind", "value": "spatial"},
+      {"kind": "contains_kind", "value": "assay"},
+      {"kind": "min_kind_count", "value": {"document": 1, "spatial": 1, "assay": 1}},
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "budget_reached", "value": true}
+    ]
+  },
+  {
+    "query_id": "synthesis.diverse_kinds",
+    "query_text": "What's the geological story of this property?",
+    "intent": "synthesis",
+    "tags": ["regression", "synthesis", "diverse"],
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "min_kind_count", "value": {"document": 1}},
+      {"kind": "max_kind_count", "value": {"document": 3, "spatial": 2, "assay": 2}}
+    ]
+  },
+
+  {
+    "query_id": "hypothesis.competing_models",
+    "query_text": "What geological models could explain the Cu-Au anomaly at depth?",
+    "intent": "hypothesis_generation",
+    "tags": ["regression", "hypothesis_generation", "graph-heavy"],
+    "description": "Hypothesis quota prefers graph (relationship paths) + assay (numerical anchors) over documents.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "max_kind_count", "value": {"document": 2}},
+      {"kind": "min_kind_count", "value": {"assay": 1, "graph": 1}}
+    ]
+  },
+
+  {
+    "query_id": "anomaly.outlier_grades",
+    "query_text": "Show me grade outliers in the south corridor",
+    "intent": "anomaly_detection",
+    "tags": ["regression", "anomaly_detection", "numbers-first"],
+    "description": "Anomaly quota: assay=5, table=3, document=1. The answer IS the numeric table — protect assay AND document.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "assay"},
+      {"kind": "min_kind_count", "value": {"assay": 1}},
+      {"kind": "max_kind_count", "value": {"document": 1, "graph": 0}}
+    ]
+  },
+  {
+    "query_id": "anomaly.qaqc_flagged",
+    "query_text": "Which assay intervals are flagged QA/QC suspect?",
+    "intent": "anomaly_detection",
+    "tags": ["regression", "anomaly_detection", "qaqc"],
+    "criteria": [
+      {"kind": "contains_kind", "value": "assay"},
+      {"kind": "max_kind_count", "value": {"graph": 0}}
+    ]
+  },
+
+  {
+    "query_id": "uncertainty.depth_estimate",
+    "query_text": "How certain are we about the mineralisation depth?",
+    "intent": "uncertainty_quantification",
+    "tags": ["regression", "uncertainty_quantification", "balanced"],
+    "description": "Uncertainty quota: balanced document + assay + spatial. Conflict-detection enabled by the retrieval profile.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "min_kind_count", "value": {"document": 1, "assay": 1}},
+      {"kind": "first_kind_is", "value": "document"}
+    ]
+  },
+
+  {
+    "query_id": "decision.drill_target",
+    "query_text": "Should we drill the corridor at coordinates 105.4W 39.5N this season?",
+    "intent": "decision_support",
+    "tags": ["regression", "decision_support", "ranked-options"],
+    "description": "Decision quota: document=4 (regulatory spine). Documents protected.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "min_kind_count", "value": {"document": 1}}
+    ]
+  },
+
+  {
+    "query_id": "project_summary.executive",
+    "query_text": "Give me an executive summary of the Crackingstone project",
+    "intent": "project_summary",
+    "tags": ["regression", "project_summary", "chat-card"],
+    "description": "Project summary is SQL-aggregate-first; quota is doc+table only.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "max_kind_count", "value": {"spatial": 0, "assay": 0, "graph": 0}}
+    ]
+  },
+
+  {
+    "query_id": "coverage_gap.holes_without_assays",
+    "query_text": "Which drillholes have no downstream assay data?",
+    "intent": "coverage_gap",
+    "tags": ["regression", "coverage_gap", "chat-card"],
+    "description": "Coverage gap quota: table=3 (the gap rows ARE the answer); table protected.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "table"},
+      {"kind": "max_kind_count", "value": {"graph": 0, "assay": 0}}
+    ]
+  },
+
+  {
+    "query_id": "authority.ni43_above_memo",
+    "query_text": "What does the technical report say about the Cu zone?",
+    "intent": "factual_lookup",
+    "tags": ["regression", "authority_ranking"],
+    "description": "Authority invariant — NI 43-101 must appear before an Internal Memo in the prepared packet, regardless of input order.",
+    "criteria": [
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "first_document_type_matches", "value": "NI 43-101"},
+      {"kind": "first_authority_rank_le", "value": 1}
+    ]
+  },
+
+  {
+    "query_id": "diversity.graph_excluded_for_factual",
+    "query_text": "What's the total depth of hole DDH-1234?",
+    "intent": "factual_lookup",
+    "tags": ["regression", "diversity_quota"],
+    "description": "Diversity invariant — factual_lookup quota for graph is 0. Even when input has graph evidence, the output packet must not.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "max_kind_count", "value": {"graph": 0}}
+    ]
+  },
+
+  {
+    "query_id": "budget.fits_for_small_packet",
+    "query_text": "Pick the most relevant doc for this project",
+    "intent": "factual_lookup",
+    "tags": ["regression", "budget"],
+    "description": "Budget invariant — a small packet under the per-intent quota should always reach the budget target.",
+    "criteria": [
+      {"kind": "budget_reached", "value": true},
+      {"kind": "min_evidence_total", "value": 1}
+    ]
+  },
+
+  {
+    "query_id": "edge.empty_packet_returns_empty",
+    "query_text": "Anything about this project at all?",
+    "intent": "synthesis",
+    "tags": ["regression", "edge_case", "empty_packet"],
+    "description": "Edge — an empty input packet must produce an empty output packet without raising.",
+    "criteria": [
+      {"kind": "max_evidence_total", "value": 0},
+      {"kind": "exact_kinds", "value": []}
+    ]
+  },
+
+  {
+    "query_id": "edge.single_low_authority_doc",
+    "query_text": "What does the internal memo say?",
+    "intent": "factual_lookup",
+    "tags": ["regression", "edge_case", "low_authority"],
+    "description": "When the ONLY available document is rank-5 (Internal Memo), authority sort doesn't make it disappear — it's still the only spine.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "document"},
+      {"kind": "min_evidence_total", "value": 1}
+    ]
+  },
+
+  {
+    "query_id": "edge.all_assay_no_documents",
+    "query_text": "Show me all anomalous grades",
+    "intent": "anomaly_detection",
+    "tags": ["regression", "edge_case", "missing_kind"],
+    "description": "Anomaly intent with NO document evidence — the protected_kinds set includes document; the answer should still surface the assays. (reached_budget may or may not be True depending on packet size; we only assert the assays survive.)",
+    "criteria": [
+      {"kind": "contains_kind", "value": "assay"},
+      {"kind": "min_kind_count", "value": {"assay": 1}}
+    ]
+  },
+
+  {
+    "query_id": "edge.only_documents_synthesis",
+    "query_text": "Summarise the corridor based purely on the reports",
+    "intent": "synthesis",
+    "tags": ["regression", "edge_case", "single_kind"],
+    "description": "Synthesis with only document evidence — diversity pass can't add kinds that aren't there; output still authority-sorts the docs.",
+    "criteria": [
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "max_evidence_total", "value": 5}
+    ]
+  },
+
+  {
+    "query_id": "edge.anomaly_with_qaqc_flags",
+    "query_text": "Which assays have QA/QC issues in the south corridor?",
+    "intent": "anomaly_detection",
+    "tags": ["regression", "anomaly_detection", "qaqc"],
+    "description": "Anomaly path that surfaces QA/QC-flagged assays. The quota lets assays dominate (≥3 expected when input is rich).",
+    "criteria": [
+      {"kind": "contains_kind", "value": "assay"},
+      {"kind": "max_kind_count", "value": {"graph": 0}}
+    ]
+  },
+
+  {
+    "query_id": "edge.spatial_only_packet",
+    "query_text": "Where are the high-grade zones spatially?",
+    "intent": "synthesis",
+    "tags": ["regression", "edge_case", "spatial_only"],
+    "description": "Synthesis with mostly spatial evidence — the protected set is {document}, so when no doc is present the budget pass MAY return unreached. The shape we lock: spatial is preserved.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "spatial"}
+    ]
+  },
+
+  {
+    "query_id": "edge.budget_pressure_high_volume",
+    "query_text": "Tell me everything about the corridor mineralisation",
+    "intent": "synthesis",
+    "tags": ["regression", "budget_pressure"],
+    "description": "High-volume synthesis with many evidence members. The budget pass should trim; remaining_budget MUST end ≥ 0 because synthesis allows trimming non-protected kinds.",
+    "criteria": [
+      {"kind": "budget_reached", "value": true},
+      {"kind": "max_evidence_total", "value": 10}
+    ]
+  },
+
+  {
+    "query_id": "edge.coverage_gap_only_tables",
+    "query_text": "Which drillholes have only basic data?",
+    "intent": "coverage_gap",
+    "tags": ["regression", "coverage_gap", "edge_case"],
+    "description": "Coverage_gap with table-only input — table is the protected kind for this intent.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "table"},
+      {"kind": "min_kind_count", "value": {"table": 1}}
+    ]
+  },
+
+  {
+    "query_id": "authority.current_outranks_superseded",
+    "query_text": "What's the latest mineralisation interpretation?",
+    "intent": "synthesis",
+    "tags": ["regression", "authority_ranking", "supersession"],
+    "description": "Two NI 43-101 docs in input — one current, one superseded. Authority sort places the CURRENT one first.",
+    "criteria": [
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "first_document_type_matches", "value": "NI 43-101"},
+      {"kind": "first_authority_rank_le", "value": 1}
+    ]
+  },
+
+  {
+    "query_id": "diversity.hypothesis_keeps_graph_paths",
+    "query_text": "What models could explain the deep Cu enrichment?",
+    "intent": "hypothesis_generation",
+    "tags": ["regression", "hypothesis_generation", "graph_quota"],
+    "description": "Hypothesis quota: graph=3 — graph paths must be preserved at the top of the packet when available.",
+    "criteria": [
+      {"kind": "contains_kind", "value": "graph"},
+      {"kind": "min_kind_count", "value": {"graph": 1}}
+    ]
+  },
+
+  {
+    "query_id": "diversity.project_summary_no_spatial",
+    "query_text": "Brief me on the project",
+    "intent": "project_summary",
+    "tags": ["regression", "project_summary", "chat_card"],
+    "description": "project_summary quota: spatial=0, assay=0, collar=0, graph=0. Only doc+table survive.",
+    "criteria": [
+      {"kind": "max_kind_count", "value": {"spatial": 0, "assay": 0, "collar": 0, "graph": 0}}
+    ]
+  },
+
+  {
+    "query_id": "diversity.decision_promotes_documents",
+    "query_text": "Should we permit the corridor for drilling next season?",
+    "intent": "decision_support",
+    "tags": ["regression", "decision_support"],
+    "description": "Decision quota: document=4 — documents dominate the prepared packet.",
+    "criteria": [
+      {"kind": "first_kind_is", "value": "document"},
+      {"kind": "min_kind_count", "value": {"document": 2}}
+    ]
+  }
+]

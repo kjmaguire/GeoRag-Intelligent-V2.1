@@ -1,0 +1,107 @@
+# Module 10 Chunk 10.4 — PostgreSQL alert rules.
+# Metrics from postgres_exporter (prometheuscommunity/postgres-exporter).
+# Series: pg_up, pg_stat_database_*, pg_locks_count, pg_settings_max_connections,
+# pg_stat_activity_count.
+
+groups:
+  - name: postgres
+    interval: 30s
+    rules:
+      - alert: PostgresLowAvailability
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: postgresql
+        annotations:
+          summary: "PostgreSQL is DOWN"
+          description: "postgres_exporter reports pg_up=0. Check the postgresql container."
+
+      - alert: PostgresHighConnectionUsage
+        expr: |
+          (
+            sum(pg_stat_activity_count) by (instance)
+            /
+            on(instance) max(pg_settings_max_connections) by (instance)
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: postgresql
+        annotations:
+          summary: "PostgreSQL connection usage > 80%"
+          description: "{{ $value | humanizePercentage }} of max_connections in use. PgBouncer may be misconfigured or a leak exists."
+
+      - alert: PostgresHighConnectionUsageCritical
+        expr: |
+          (
+            sum(pg_stat_activity_count) by (instance)
+            /
+            on(instance) max(pg_settings_max_connections) by (instance)
+          ) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: postgresql
+        annotations:
+          summary: "PostgreSQL near connection limit (>95%)"
+          description: "Imminent connection exhaustion at {{ $value | humanizePercentage }}. New connections will be refused."
+
+      - alert: PostgresLockContention
+        expr: pg_locks_count{mode=~"AccessExclusiveLock|RowExclusiveLock"} > 50
+        for: 5m
+        labels:
+          severity: warning
+          service: postgresql
+        annotations:
+          summary: "PostgreSQL lock contention high"
+          description: "{{ $value }} {{ $labels.mode }} locks held. Long-running write transactions may block queries."
+
+      - alert: PostgresReplicationLagHigh
+        expr: pg_replication_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: postgresql
+        annotations:
+          summary: "PostgreSQL replication lag > 60s"
+          description: "Replica is {{ $value }}s behind primary. Read traffic on replica may serve stale data."
+
+      # WAL archiving health — activated 2026-05-07 via
+      # docker/compose.wal-archiving.yml + init/Z_activate_wal_archiving.sql.
+      # When archive_command fails (S3 down, volume full, permissions),
+      # pg_stat_archiver.failed_count rises and PG retains WAL until success.
+      # If left unchecked, pg_wal can fill the data volume and stall PostgreSQL.
+      - alert: PostgresArchiveCommandFailing
+        expr: increase(pg_stat_archiver_failed_count[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgresql
+        annotations:
+          summary: "PostgreSQL archive_command failed {{ $value }}x in 5m"
+          description: |
+            archive_command exits non-zero, blocking WAL recycling. PG retains the
+            unarchived segment and will eventually fill pg_wal. Common causes:
+            SeaweedFS endpoint unreachable, /pg_wal_archive volume full, permissions
+            on the shared volume changed. Investigate via:
+              docker logs georag-postgresql --tail 200 | grep archive
+              docker exec georag-backup-agent ls -lh /pg_wal_archive/
+
+      # WAL archive lag — pg_stat_archiver hasn't archived a segment in N seconds.
+      # archive_timeout is set to 60s so a healthy idle cluster archives every
+      # minute. A 30-minute gap means archiving is broken.
+      - alert: PostgresArchiveLagHigh
+        expr: |
+          (time() - pg_stat_archiver_last_archived_time) > 1800
+        for: 5m
+        labels:
+          severity: warning
+          service: postgresql
+        annotations:
+          summary: "No WAL segment archived in {{ $value | humanizeDuration }}"
+          description: |
+            archive_timeout=60s should produce an archived segment at least every minute
+            on a healthy cluster. {{ $value | humanizeDuration }} since the last
+            successful archive suggests archive_command is silently broken or PostgreSQL
+            has zero write activity. Check pg_stat_archiver and recent docker logs.

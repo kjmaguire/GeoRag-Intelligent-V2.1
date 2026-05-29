@@ -1,0 +1,20 @@
+{
+  "id": 3,
+  "name": "Mineral Occurrences",
+  "type": "Feature Layer",
+  "geometryType": "esriGeometryPoint",
+  "capabilities": "Query,Extract",
+  "maxRecordCount": 2000,
+  "sourceSpatialReference": {
+    "wkid": 2957,
+    "latestWkid": 2957
+  },
+  "editingInfo": {
+    "lastEditDate": 1712534400000
+  },
+  "fields": [
+    {"name": "OBJECTID", "type": "esriFieldTypeOID"},
+    {"name": "NAME", "type": "esriFieldTypeString"},
+    {"name": "STATUS", "type": "esriFieldTypeString"}
+  ]
+}

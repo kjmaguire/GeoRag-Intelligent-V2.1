@@ -1,0 +1,52 @@
+{
+    "data": [
+        {
+            "id": "qry-001",
+            "query_text": "Compare Au grades between the Main Zone and South Stockwork from 2023 drilling.",
+            "user_email": "jcohen@ncordillera",
+            "created_at": "2026-04-13T14:19:00Z",
+            "citation_state": "resolved",
+            "citation_count": 7,
+            "latency_ms": 2100
+        },
+        {
+            "id": "qry-002",
+            "query_text": "What lithologies host the highest copper assays in DDH-2024-018?",
+            "user_email": "mpatel@ncordillera",
+            "created_at": "2026-04-13T14:02:00Z",
+            "citation_state": "resolved",
+            "citation_count": 4,
+            "latency_ms": 1800
+        },
+        {
+            "id": "qry-003",
+            "query_text": "Summarize structural controls on mineralization noted in the 2022 technical report.",
+            "user_email": "jcohen@ncordillera",
+            "created_at": "2026-04-13T13:48:00Z",
+            "citation_state": "partial",
+            "citation_count": 5,
+            "unresolved_spans": 1,
+            "latency_ms": 3200
+        },
+        {
+            "id": "qry-004",
+            "query_text": "Are there any historical assays above 10 g/t Au within 200m of the proposed pad location?",
+            "user_email": "klee@ncordillera",
+            "created_at": "2026-04-13T13:31:00Z",
+            "citation_state": "resolved",
+            "citation_count": 12,
+            "latency_ms": 4400
+        },
+        {
+            "id": "qry-005",
+            "query_text": "What does the 2019 IP survey indicate about the eastern extension?",
+            "user_email": "klee@ncordillera",
+            "created_at": "2026-04-13T13:12:00Z",
+            "citation_state": "failed",
+            "citation_count": 0,
+            "latency_ms": null
+        }
+    ],
+    "generated_at": "2026-04-13T14:22:00Z",
+    "cache_ttl_seconds": 300
+}

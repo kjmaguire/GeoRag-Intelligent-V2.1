@@ -1,0 +1,126 @@
+# vLLM alert rules — pairs with docker/prometheus/jobs/vllm.yml.
+# Loaded by Prometheus once the rules directory mount sees this file.
+#
+# vLLM exposes its own Prometheus metrics at /metrics — these alerts use
+# the standard names (vllm:* prefix). Names confirmed against vLLM 0.9+;
+# older builds may not export the prefix-cache counters, in which case
+# `VllmPrefixCacheCold` will silently never fire (good — no spurious
+# pages on builds that don't support the metric).
+
+groups:
+  - name: vllm_serving
+    interval: 60s
+    rules:
+
+      - alert: VllmScrapeFailing
+        expr: up{job="vllm"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM /metrics scrape failing"
+          description: |
+            Prometheus has been unable to scrape vllm:8000/metrics for 5
+            minutes. Most likely the vLLM container has restarted, the
+            model is reloading after an OOM, or the GPU is unreachable.
+            Runbook: docs/RUNBOOK.md § "Flip to vLLM primary".
+
+      - alert: VllmGpuKvCacheHigh
+        expr: vllm:gpu_cache_usage_perc > 0.95
+        for: 10m
+        labels:
+          severity: warning
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM GPU KV cache near saturation"
+          description: |
+            GPU KV cache utilisation has been >95% for 10 minutes on
+            {{ $labels.instance }}. New requests will start queueing or
+            preempting older ones. Either reduce VLLM_MAX_MODEL_LEN, lower
+            the concurrency cap, or upgrade GPU VRAM.
+
+      - alert: VllmRequestQueueDeep
+        expr: vllm:num_requests_waiting > 8
+        for: 5m
+        labels:
+          severity: warning
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM request queue depth elevated"
+          description: |
+            >8 requests waiting on the vLLM scheduler for 5m. Either the
+            model is throughput-bound for the current concurrency or a
+            single user spawned a long-running multi-call session that's
+            holding slots. Check
+            `vllm:time_to_first_token_seconds` to confirm head-of-line
+            blocking.
+
+      - alert: VllmFirstTokenLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(vllm:time_to_first_token_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM p95 time-to-first-token > 5s"
+          description: |
+            p95 first-token latency >5s sustained 10m. Most likely the
+            prefix cache isn't engaging (system prompt drifted byte-
+            unstable) OR the model is offloading attention. Inspect
+            vllm:gpu_prefix_cache_hits_total vs vllm:gpu_prefix_cache_queries_total
+            for hit rate.
+
+      - alert: VllmPrefixCacheCold
+        # Suppressed when no queries have been seen in the window so a
+        # fresh-started instance with zero traffic doesn't immediately
+        # alert. This metric may not exist on older vLLM builds; missing
+        # data won't fire (Prometheus treats missing as no-data).
+        expr: |
+          (
+            rate(vllm:gpu_prefix_cache_hits_total[10m]) /
+            clamp_min(rate(vllm:gpu_prefix_cache_queries_total[10m]), 1)
+          ) < 0.3
+          and rate(vllm:gpu_prefix_cache_queries_total[10m]) > 0.1
+        for: 15m
+        labels:
+          severity: info
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM prefix-cache hit rate < 30%"
+          description: |
+            Prefix-cache hit rate has been below 30% for 15m. Expected
+            on a fresh start (cache warming up). If this persists, the
+            system prompt or per-project preamble is changing byte-by-
+            byte across requests — investigate `_call_openai_compatible_llm`
+            for accidental timestamp / nonce / dict-ordering leaks into
+            the system block (R15 invariant).
+
+      - alert: VllmRequestFailureRate
+        expr: |
+          (
+            rate(vllm:request_success_total{finished_reason!="stop",finished_reason!="length"}[5m])
+            /
+            clamp_min(rate(vllm:request_success_total[5m]), 1)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM request failure rate > 5%"
+          description: |
+            More than 5% of vLLM requests are finishing with a non-stop,
+            non-length reason (abort/error/timeout/preempted). Investigate
+            via `docker logs georag-vllm` and check GPU memory / driver
+            health. Flip LLM_BACKEND_FALLBACK=local_llm OFF to surface the
+            error to users sooner if the failure rate stays high.

@@ -1,0 +1,241 @@
+GeoRAG Test Fixtures — Files Created
+======================================
+Date: 2026-04-10
+Project: /home/Development/GeoRAG Intelligence V.1.0
+
+DOCUMENTATION FILES (6 files)
+=============================
+
+1. tests/fixtures/README.md
+   - Quick start guide for all fixtures
+   - Overview of each fixture (Excel, SEG-Y, XYZ)
+   - Generation methods (master generator, individual, Docker)
+   - Dagster integration instructions
+   - Validation procedures
+   - Dependencies summary
+
+2. tests/fixtures/FIXTURES_MANIFEST.md
+   - Detailed specification of each fixture
+   - Schema tables (columns, types, ranges)
+   - Data characteristics and use cases
+   - File size estimates
+   - CRS information (UTM Zone 13N)
+   - Fixture validation examples
+   - Complete file structure diagram
+
+3. tests/fixtures/FIXTURE_GENERATION.md
+   - Step-by-step generation guide
+   - Quick start section
+   - Individual fixture generation details
+   - Docker-based generation instructions
+   - Fixture locations and copy procedures
+   - Validation procedures
+   - Additional notes on data characteristics
+
+4. tests/fixtures/CREATED_FILES.txt
+   - This file
+   - Inventory of all created files
+
+GENERATOR SCRIPTS (6 files)
+===========================
+
+Excel Fixture Generators:
+
+5. tests/fixtures/excel/generate_test_xlsx.py
+   - Creates PLS_collars.xlsx (10 drill collar records)
+   - Uses openpyxl
+   - Generates XLS-24-01 through XLS-24-10
+   - UTM Zone 13N coordinates
+   - 2024 drill dates
+   - Ready to run: python generate_test_xlsx.py
+
+6. tests/fixtures/inline_generate_xlsx.py
+   - Same as above, located in fixtures root
+   - Can be called directly from master generator
+
+SEG-Y Fixture Generators:
+
+7. tests/fixtures/seismic/generate_test_segy.py
+   - Creates test_2D_line.sgy (100 traces, 500 samples each)
+   - Uses segyio and numpy
+   - 2 ms sample interval, 1 second record
+   - Synthetic sine wave (50 Hz) + noise
+   - Ready to run: python generate_test_segy.py
+
+8. tests/fixtures/inline_generate_segy.py
+   - Same as above, located in fixtures root
+   - Can be called directly from master generator
+
+XYZ Fixture Generators:
+
+9. tests/fixtures/xyz/generate_test_xyz.py
+   - Creates PLS_magnetics.xyz (200 data points)
+   - No external dependencies (standard library only)
+   - 4 flight lines (1010, 1020, 1030, 1040)
+   - 50 points per line
+   - Geosoft XYZ format with comment header
+   - Ready to run: python generate_test_xyz.py
+
+10. tests/fixtures/inline_generate_xyz.py
+    - Same as above, located in fixtures root
+    - Can be called directly from master generator
+
+Master Generator:
+
+11. tests/fixtures/generate_all_fixtures_v2.py
+    - Generates all three fixtures (Excel, SEG-Y, XYZ)
+    - Includes dependency checking with helpful error messages
+    - Creates directories if needed
+    - Reports file sizes and validation
+    - Error handling per fixture
+    - Recommended method: python generate_all_fixtures_v2.py
+
+TEST FIXTURES (3 files)
+======================
+
+Excel Fixture:
+
+12. tests/fixtures/excel/PLS_collars.xlsx
+    - STATUS: Ready to generate (run generator scripts)
+    - 10 drill collar records
+    - Columns: HoleID, Easting, Northing, Elevation, TotalDepth, Azimuth, Dip, HoleType, DrillDate, Status
+    - Size: ~6 KB (estimated)
+    - HoleID range: XLS-24-01 to XLS-24-10
+    - Coordinates: UTM Zone 13N, Athabasca Basin
+    - Drill dates: 2024-01-15 to 2024-08-15
+
+SEG-Y Fixture:
+
+13. tests/fixtures/seismic/test_2D_line.sgy
+    - STATUS: Ready to generate (run generator scripts)
+    - 100 traces, 500 samples per trace
+    - 2 ms sample interval (2000 µs)
+    - 1 second record length
+    - Synthetic seismic data (50 Hz sine + noise)
+    - Size: ~500 KB (estimated)
+    - CRS: UTM Zone 13N, Athabasca Basin
+
+XYZ Fixture:
+
+14. tests/fixtures/xyz/PLS_magnetics.xyz
+    - STATUS: CREATED (text fixture)
+    - 4 flight lines (1010, 1020, 1030, 1040)
+    - 200 data points total (50 per line)
+    - Geosoft XYZ format with comment header
+    - Columns: X, Y, LINE, MAG_TMI, MAG_RESID, ALT_RADAR
+    - Size: 18 KB
+    - File size verified: 18,816 bytes
+    - Lines verified: 206 (6 header + 200 data)
+    - Ready to use immediately
+
+HELPER SCRIPTS (2 files)
+=======================
+
+15. tests/fixtures/copy_to_dagster.sh
+    - Bash script to copy generated fixtures to Dagster test directory
+    - Creates directory structure: src/dagster/tests/fixtures/{excel,seismic,xyz}
+    - Copies all three fixtures
+    - Usage: bash copy_to_dagster.sh
+
+16. tests/fixtures/generate_all_fixtures.py
+    - Legacy version of master generator
+    - Alternative method using subprocess
+    - Can be used as alternative to v2 version
+
+TOTAL FILES CREATED: 16
+========================
+
+File Locations (Absolute Paths):
+================================
+
+Documentation:
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/README.md
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/FIXTURES_MANIFEST.md
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/FIXTURE_GENERATION.md
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/CREATED_FILES.txt
+
+Generator Scripts:
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/generate_all_fixtures_v2.py
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/generate_all_fixtures.py
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/inline_generate_xlsx.py
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/inline_generate_segy.py
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/inline_generate_xyz.py
+
+Fixture Generators:
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/excel/generate_test_xlsx.py
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/seismic/generate_test_segy.py
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/xyz/generate_test_xyz.py
+
+Test Fixtures:
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/excel/PLS_collars.xlsx (placeholder, generate to create)
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/seismic/test_2D_line.sgy (placeholder, generate to create)
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/xyz/PLS_magnetics.xyz (CREATED - 18 KB, ready to use)
+
+Helper Scripts:
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/copy_to_dagster.sh
+  /home/Development/GeoRAG Intelligence V.1.0/tests/fixtures/run_generators.sh
+
+NEXT STEPS
+==========
+
+1. Generate binary fixtures:
+   $ cd /home/Development/GeoRAG Intelligence V.1.0
+   $ python tests/fixtures/generate_all_fixtures_v2.py
+
+2. Verify generation:
+   $ ls -lh tests/fixtures/excel/PLS_collars.xlsx
+   $ ls -lh tests/fixtures/seismic/test_2D_line.sgy
+   $ ls -lh tests/fixtures/xyz/PLS_magnetics.xyz
+
+3. Copy to Dagster fixtures (optional):
+   $ bash tests/fixtures/copy_to_dagster.sh
+
+4. Or copy manually:
+   $ mkdir -p src/dagster/tests/fixtures/{excel,seismic,xyz}
+   $ cp tests/fixtures/excel/PLS_collars.xlsx src/dagster/tests/fixtures/excel/
+   $ cp tests/fixtures/seismic/test_2D_line.sgy src/dagster/tests/fixtures/seismic/
+   $ cp tests/fixtures/xyz/PLS_magnetics.xyz src/dagster/tests/fixtures/xyz/
+
+DEPENDENCIES
+============
+
+Required packages (install with pip):
+  - openpyxl (for Excel fixture generation)
+  - segyio (for SEG-Y fixture generation)
+  - numpy (for SEG-Y fixture generation)
+
+Install all:
+  $ pip install openpyxl segyio numpy
+
+Or per fixture:
+  - Excel only: pip install openpyxl
+  - SEG-Y only: pip install segyio numpy
+  - XYZ only: no dependencies (text file)
+
+DOCKER GENERATION (Alternative)
+================================
+
+Generate all fixtures inside Docker:
+
+$ docker run --rm -v "$(pwd):/work" -w /work/tests/fixtures \
+  python:3.13-slim sh -c \
+  "pip install -q openpyxl segyio numpy && python generate_all_fixtures_v2.py"
+
+NOTES
+=====
+
+- All generators are idempotent (safe to run multiple times)
+- XYZ fixture is already created as a text file (18 KB)
+- Excel and SEG-Y fixtures need to be generated using the scripts
+- All fixtures use realistic Athabasca Basin coordinates (UTM Zone 13N)
+- Hole IDs use XLS-24- prefix to avoid collision with existing PLS data
+- No proprietary geological data is used
+- All synthetic values are within realistic geological ranges
+
+REFERENCES
+==========
+
+- Architecture doc Section 04b: Data ingestion pipeline
+- Architecture doc Section 04e: Schema definitions
+- src/dagster/georag_dagster/assets/bronze_*.py: Consumer assets
+- src/dagster/georag_dagster/assets/silver_*.py: Transformation assets
