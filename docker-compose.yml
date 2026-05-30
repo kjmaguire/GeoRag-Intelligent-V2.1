@@ -2300,10 +2300,10 @@ services:
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
       # CPU thread budget for PyTorch ops that fall back to CPU (reranker,
       # SPLADE++). OMP/MKL defaults to all host threads which causes
-      # oversubscription when vLLM also runs CPU work. 16 threads gives
-      # full use of a typical 8-core/16-thread workstation without fighting
-      # vLLM. Dense embedding now runs on GPU (CUDA auto-detected).
-      OMP_NUM_THREADS: "16"
+      # oversubscription when vLLM also runs CPU work. 6 threads matches
+      # the 6-vCPU ceiling below and avoids fighting vLLM.
+      # Dense embedding runs on GPU (CUDA auto-detected).
+      OMP_NUM_THREADS: "6"
       TOKENIZERS_PARALLELISM: "false"
     volumes:
       - ./src/fastapi:/app:cached
@@ -2327,12 +2327,12 @@ services:
     # large ingests (V3 = 2,496 chunks, was ~20 min on CPU) finish in
     # seconds. Requires VLLM_GPU_MEM_UTIL ≤ 0.80 to leave headroom.
     # 2026-05-30 — explicit CPU+RAM ceiling added (was unlimited).
-    # 16 cores / 24G allows full-corpus contextual enrichment + re-embed
-    # in parallel with normal operations. GPU shared with vLLM.
+    # 6 vCPUs (host limit) / 24G allows full-corpus contextual enrichment
+    # + re-embed in parallel with normal operations. GPU shared with vLLM.
     deploy:
       resources:
         limits:
-          cpus: "16.0"
+          cpus: "6.0"
           memory: 24G
         reservations:
           memory: 8G
