@@ -31,8 +31,11 @@ class QueryAuditLog extends Model
     // Schema-qualified per §05 step 6: audit data lives in its own schema,
     // not in `public`. Migration: 2026_05_07_120000_move_query_audit_log_to_audit_schema.php.
     protected $table = 'audit.query_audit_log';
+
     protected $primaryKey = 'audit_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -51,15 +54,19 @@ class QueryAuditLog extends Model
         'llm_model',
         'ip_address',
         'dispatched_at',
+        'faithfulness_score',
+        'context_precision_score',
     ];
 
     protected $casts = [
-        'query_text'    => 'encrypted',
+        'query_text' => 'encrypted',
         'response_text' => 'encrypted',
-        'citations'     => 'array',
-        'sources_used'  => 'array',
-        'confidence'    => 'float',
+        'citations' => 'array',
+        'sources_used' => 'array',
+        'confidence' => 'float',
         'dispatched_at' => 'datetime',
+        'faithfulness_score' => 'float',
+        'context_precision_score' => 'float',
     ];
 
     /**
@@ -94,6 +101,7 @@ class QueryAuditLog extends Model
     public static function hashQueryText(string $value): string
     {
         $normalised = mb_strtolower(trim($value));
+
         return hash_hmac('sha256', $normalised, config('app.key'));
     }
 

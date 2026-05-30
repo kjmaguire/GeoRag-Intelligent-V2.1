@@ -75,6 +75,7 @@ from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
+from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
 
 
 # Pool → workflow list. Phase 1 Step 4 added `ingest_pdf` to the ingestion
@@ -193,6 +194,10 @@ POOLS = {
         # per-workspace threshold. Cron every 5 min; idempotent within
         # the window so operators see one alert per breach, not 12.
         cost_burn_watcher,
+        # Answer quality eval — Qwen3-as-judge faithfulness + context
+        # precision scoring. Nightly catch-up at 06:00 UTC; scores
+        # audit.query_audit_log rows where faithfulness_score IS NULL.
+        score_answer_quality_wf,
         # bc_minfile_pull (§6.2) + nrcan_geo_pull (§6.3) retired 2026-05-25 —
         # superseded by Dagster Bronze→Silver pipeline. Stale cron entries on
         # the Hatchet engine side were cleared via the de-registration sweep
