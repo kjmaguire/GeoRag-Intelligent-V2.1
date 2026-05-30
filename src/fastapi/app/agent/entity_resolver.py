@@ -29,7 +29,7 @@ Three resolve flavours:
      ``detector``. Pure side-effect; no return value change.
 
 The module is async: it expects an asyncpg pool. All queries set the
-``georag.workspace_id`` GUC inside the transaction so RLS works.
+``app.workspace_id`` GUC inside the transaction so RLS works.
 
 Pure-function unit-testable shell:
   - :func:`resolve_entity` takes the pool, workspace_id, entity_type,
@@ -153,7 +153,7 @@ async def resolve_entity(
 
     Args:
         pool: asyncpg.Pool-like with async ``acquire()`` context manager.
-        workspace_id: Tenant scope — set as ``georag.workspace_id``
+        workspace_id: Tenant scope — set as ``app.workspace_id``
             GUC inside the transaction so RLS applies.
         entity_type: One of the 10 known entity kinds. Unknown types
             raise ValueError to avoid silent typos.
@@ -179,7 +179,7 @@ async def resolve_entity(
             ``workspace_id`` empty.
     """
     if not workspace_id:
-        raise ValueError("workspace_id is required (sets georag.workspace_id)")
+        raise ValueError("workspace_id is required (sets app.workspace_id)")
     if entity_type not in _VALID_ENTITY_TYPES:
         raise ValueError(
             f"unknown entity_type {entity_type!r}; valid: "

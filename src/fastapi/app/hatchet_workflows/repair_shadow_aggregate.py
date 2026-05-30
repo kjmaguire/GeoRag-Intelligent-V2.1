@@ -20,7 +20,7 @@ The workflow's value:
      and Stage 3 (low-cost loop enable) per ``repair_loop_spec.md``
      §8 both need this aggregated view to size their cost +
      latency impact.
-  3. Is workspace-scoped — uses ``set_config('georag.workspace_id',
+  3. Is workspace-scoped — uses ``set_config('app.workspace_id',
      ...)`` so RLS applies. The aggregator runs once per workspace.
 
 Schedule: ``15 2 * * *`` UTC (15 minutes after the audit-ledger
@@ -113,7 +113,7 @@ def _build_dsn() -> str:
 # CREATE TABLE IF NOT EXISTS pattern matches the rest of gold.* used
 # by other workflows).
 #
-# IMPORTANT: every write sets georag.workspace_id GUC so RLS applies
+# IMPORTANT: every write sets app.workspace_id GUC so RLS applies
 # (gold.repair_shadow_daily is workspace-scoped). The cron path
 # acquires the workspace list via a separate query first, then loops.
 

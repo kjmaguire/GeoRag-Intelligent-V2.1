@@ -14,7 +14,7 @@ Tier 2 (TIFFs requiring OCR) is deferred.
 
 Per file:
   - Wraps each ingest in its own asyncpg transaction
-  - Sets RLS GUCs (app.workspace_id + georag.project_id + georag.workspace_id)
+  - Sets RLS GUCs (app.workspace_id + app.project_id)
   - Collects per-file result for the summary
 
 Per cluster (overall run):

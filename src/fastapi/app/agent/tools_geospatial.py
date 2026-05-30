@@ -8,7 +8,7 @@ Thin async tool function that:
      :func:`app.agent.geospatial_planner.plan_spatial_query`
   3. Executes against the asyncpg pool via
      :func:`app.agent.geospatial_planner.execute_spatial_query` with
-     ``georag.workspace_id`` GUC set
+     ``app.workspace_id`` GUC set
   4. Wraps the results in a typed :class:`SpatialGeometryResult` so
      ``extract_spatial_evidence`` (the §3a converter) can pick them up
 
@@ -30,7 +30,7 @@ unambiguous nouns ("collars" → silver.collars, "smdi" / "occurrence"
 → public.smdi_deposits, etc.). LLM-based intent extraction is a
 future enhancement.
 
-Pure-async + workspace-scoped — sets ``georag.workspace_id`` inside
+Pure-async + workspace-scoped — sets ``app.workspace_id`` inside
 the transaction. Workspace_id is REQUIRED; raises ValueError if
 missing.
 """
@@ -214,7 +214,7 @@ async def query_spatial_geometry(
         deps: Caller's AgentDeps bundle. Expects ``deps.pg_pool`` to
             be an asyncpg.Pool-like object.
         workspace_id: Tenant scope — set as the
-            ``georag.workspace_id`` GUC inside the transaction. RLS
+            ``app.workspace_id`` GUC inside the transaction. RLS
             REQUIRES this; the function raises ValueError when empty.
         project_id: Currently informational only — geometry comes from
             ``geometry_wkt``. Reserved for future per-project default
@@ -239,7 +239,7 @@ async def query_spatial_geometry(
         absent — the orchestrator should NOT call us blind).
     """
     if not workspace_id:
-        raise ValueError("workspace_id is required (sets georag.workspace_id)")
+        raise ValueError("workspace_id is required (sets app.workspace_id)")
 
     pool = getattr(deps, "pg_pool", None)
     if pool is None:

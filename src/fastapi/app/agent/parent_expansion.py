@@ -18,7 +18,7 @@ Three-step algorithm:
      rank is inherited from the child (parents share the same
      document, so they share authority).
 
-Pure-async; sets ``georag.workspace_id`` GUC for RLS. Best-effort:
+Pure-async; sets ``app.workspace_id`` GUC for RLS. Best-effort:
 DB failure logs + returns the packet unchanged.
 
 Cap: ``max_parents_per_packet`` (default 5) bounds the extra evidence
@@ -84,11 +84,11 @@ async def fetch_parent_chunks(
     Missing chunk_ids are silently absent from the output — the
     expander treats them as "no parent available" and skips.
 
-    Workspace tenancy: sets ``georag.workspace_id`` GUC so RLS
+    Workspace tenancy: sets ``app.workspace_id`` GUC so RLS
     applies on silver.document_passages.
     """
     if not workspace_id:
-        raise ValueError("workspace_id is required (sets georag.workspace_id)")
+        raise ValueError("workspace_id is required (sets app.workspace_id)")
     if not parent_chunk_ids:
         return {}
 

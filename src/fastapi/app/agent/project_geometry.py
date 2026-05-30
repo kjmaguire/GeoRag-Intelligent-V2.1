@@ -19,7 +19,7 @@ Returns a WKT polygon string or None when neither path resolves
 invent geometries — None from this supplier means the spatial
 query is skipped, not auto-widened.
 
-Pure-async; sets ``georag.workspace_id`` GUC for RLS.
+Pure-async; sets ``app.workspace_id`` GUC for RLS.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ async def get_project_bbox_wkt(
 ) -> str | None:
     """Return a WKT polygon for the project's bounding box, or None.
 
-    Workspace tenancy: every query sets `georag.workspace_id` GUC
+    Workspace tenancy: every query sets `app.workspace_id` GUC
     inside the transaction so RLS applies on silver.collars +
     silver.projects.
 
@@ -88,7 +88,7 @@ async def get_project_bbox_wkt(
             should skip rather than crash)
     """
     if not workspace_id:
-        raise ValueError("workspace_id is required (sets georag.workspace_id)")
+        raise ValueError("workspace_id is required (sets app.workspace_id)")
     if not project_id:
         return None
 
