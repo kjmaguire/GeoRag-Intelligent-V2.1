@@ -165,7 +165,7 @@ class AgentDeps:
                         raise ValueError(
                             f"acquire_scoped: refusing to set non-UUID project_id={pid!r}"
                         )
-                    await conn.execute(f"SET LOCAL georag.project_id = '{pid}'")
+                    await conn.execute(f"SET LOCAL app.project_id = '{pid}'")
 
                     # Module 9 Chunk 9.3 — workspace_id GUC. Set when the
                     # caller carries workspace context so RLS policies on
@@ -181,7 +181,7 @@ class AgentDeps:
                                 f"acquire_scoped: refusing to set non-UUID workspace_id={wid!r}"
                             )
                         await conn.execute(
-                            f"SET LOCAL georag.workspace_id = '{wid}'"
+                            f"SET LOCAL app.workspace_id = '{wid}'"
                         )
                 yield conn
 

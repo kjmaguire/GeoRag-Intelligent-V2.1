@@ -101,7 +101,7 @@ async def fetch_parent_chunks(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "SELECT set_config('georag.workspace_id', $1, true)",
+                    "SELECT set_config('app.workspace_id', $1, true)",
                     workspace_id,
                 )
                 rows = await conn.fetch(_FETCH_PARENTS_SQL, unique_ids)

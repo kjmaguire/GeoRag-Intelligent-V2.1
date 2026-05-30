@@ -339,8 +339,8 @@ async def derive_project(project_id: str) -> dict:
             raise RuntimeError(f"project_id {project_id} not found")
 
         await conn.execute("SELECT set_config('app.workspace_id', $1, false)", workspace_id)
-        await conn.execute("SELECT set_config('georag.workspace_id', $1, false)", workspace_id)
-        await conn.execute("SELECT set_config('georag.project_id', $1, false)", project_id)
+        await conn.execute("SELECT set_config('app.workspace_id', $1, false)", workspace_id)
+        await conn.execute("SELECT set_config('app.project_id', $1, false)", project_id)
 
         collars = await conn.fetch(
             "SELECT collar_id::text AS collar_id, hole_id FROM silver.collars WHERE project_id = $1::uuid ORDER BY hole_id",

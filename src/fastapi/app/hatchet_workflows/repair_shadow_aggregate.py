@@ -150,10 +150,10 @@ BEGIN
         CREATE POLICY repair_shadow_daily_workspace_isolation
             ON gold.repair_shadow_daily
             USING (
-                workspace_id::text = current_setting('georag.workspace_id', true)
+                workspace_id::text = current_setting('app.workspace_id', true)
             )
             WITH CHECK (
-                workspace_id::text = current_setting('georag.workspace_id', true)
+                workspace_id::text = current_setting('app.workspace_id', true)
             );
     END IF;
 END
@@ -325,7 +325,7 @@ async def aggregate_window(
             try:
                 async with conn.transaction():
                     await conn.execute(
-                        "SELECT set_config('georag.workspace_id', $1, true)",
+                        "SELECT set_config('app.workspace_id', $1, true)",
                         ws,
                     )
                     result = await conn.execute(

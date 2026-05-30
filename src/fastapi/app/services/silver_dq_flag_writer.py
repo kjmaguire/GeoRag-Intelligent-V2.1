@@ -194,7 +194,7 @@ async def upsert_flag(
         # is_local=true (3rd arg) so the setting auto-resets when the
         # tx closes — no cross-request leakage on a pooled connection.
         await conn.execute(
-            "SELECT set_config('georag.workspace_id', $1, true)",
+            "SELECT set_config('app.workspace_id', $1, true)",
             flag.workspace_id,
         )
         await conn.execute(
@@ -337,7 +337,7 @@ def upsert_flag_sync(conn: Any, flag: DataQualityFlag) -> bool:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT set_config('georag.workspace_id', %s, true)",
+                "SELECT set_config('app.workspace_id', %s, true)",
                 (flag.workspace_id,),
             )
             cur.execute(_UPSERT_SQL_PSYCOPG2, {

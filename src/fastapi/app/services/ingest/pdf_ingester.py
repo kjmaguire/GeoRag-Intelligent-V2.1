@@ -434,7 +434,7 @@ async def ingest_pdf_file(
     # Set the project-scope GUC for RLS on document_passages
     if project_id:
         await conn.execute(
-            "SELECT set_config('georag.project_id', $1, true)",
+            "SELECT set_config('app.project_id', $1, true)",
             project_id,
         )
 

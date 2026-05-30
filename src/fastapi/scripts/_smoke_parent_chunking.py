@@ -66,7 +66,7 @@ async def main() -> int:
     try:
         workspace_id = "a0000000-0000-0000-0000-000000000001"
         await conn.execute(
-            "SELECT set_config('georag.workspace_id', $1, true)", workspace_id,
+            "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
         )
 
         project_row = await conn.fetchrow(

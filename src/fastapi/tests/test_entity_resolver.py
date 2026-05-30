@@ -316,7 +316,7 @@ async def test_resolve_sets_workspace_id_GUC_inside_transaction():
     )
     # First execute call is set_config; arg matches workspace_id.
     assert any(
-        "set_config('georag.workspace_id'" in sql
+        "set_config('app.workspace_id'" in sql
         and args == ("ws-tenant-7",)
         for sql, args in conn.execute_calls
     )

@@ -76,14 +76,14 @@ async def _set_rls_gucs(
         "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
     )
     await conn.execute(
-        "SELECT set_config('georag.workspace_id', $1, true)", workspace_id,
+        "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
     )
     if project_id:
         await conn.execute(
-            "SELECT set_config('georag.project_id', $1, true)", project_id,
+            "SELECT set_config('app.project_id', $1, true)", project_id,
         )
     else:
-        await conn.execute("RESET georag.project_id")
+        await conn.execute("RESET app.project_id")
 
 
 async def _find_project_id(

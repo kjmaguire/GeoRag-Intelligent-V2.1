@@ -292,7 +292,7 @@ def plan_spatial_query(spec: SpatialQuerySpec) -> SpatialPlan:
     if target.workspace_scoped:
         where_clauses.append(
             f"{_workspace_column(target)} = "
-            f"current_setting('georag.workspace_id')::uuid"
+            f"current_setting('app.workspace_id')::uuid"
         )
 
     # WHERE clause assembly.
@@ -385,7 +385,7 @@ async def execute_spatial_query(
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
-                "SELECT set_config('georag.workspace_id', $1, true)",
+                "SELECT set_config('app.workspace_id', $1, true)",
                 workspace_id,
             )
             rows = await conn.fetch(plan.sql, *plan.params)

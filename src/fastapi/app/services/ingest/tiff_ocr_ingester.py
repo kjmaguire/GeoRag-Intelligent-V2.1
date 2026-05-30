@@ -372,13 +372,10 @@ async def ocr_cluster_tiffs(
     try:
         # Session-level GUCs
         await conn.execute(
-            "SELECT set_config('georag.workspace_id', $1, false)", workspace_id,
-        )
-        await conn.execute(
             "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
         )
         await conn.execute(
-            "SELECT set_config('georag.project_id', $1, false)", project_id,
+            "SELECT set_config('app.project_id', $1, false)", project_id,
         )
 
         tiff_paths = sorted(

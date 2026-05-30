@@ -202,7 +202,7 @@ async def resolve_entity(
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
-                "SELECT set_config('georag.workspace_id', $1, true)",
+                "SELECT set_config('app.workspace_id', $1, true)",
                 workspace_id,
             )
 
@@ -310,7 +310,7 @@ async def log_alias_gap(
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
-                "SELECT set_config('georag.workspace_id', $1, true)",
+                "SELECT set_config('app.workspace_id', $1, true)",
                 workspace_id,
             )
             await _insert_gap(
@@ -354,7 +354,7 @@ async def _insert_gap(
                 workspace_id
             ) VALUES (
                 $1, $2, $3, $4, $5::uuid, $6,
-                current_setting('georag.workspace_id', true)::uuid
+                current_setting('app.workspace_id', true)::uuid
             )
             """,
             entity_text,

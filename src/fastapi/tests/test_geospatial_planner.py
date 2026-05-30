@@ -138,7 +138,7 @@ def test_silver_target_pins_workspace_id_predicate():
         geometry_wkt="POINT(0 0)",
     )
     plan = plan_spatial_query(spec)
-    assert "workspace_id = current_setting('georag.workspace_id')::uuid" in plan.sql
+    assert "workspace_id = current_setting('app.workspace_id')::uuid" in plan.sql
 
 
 def test_public_smdi_does_not_pin_workspace_predicate():
@@ -429,7 +429,7 @@ async def test_executor_sets_workspace_id_GUC_before_query():
     # set_config was called with the workspace_id.
     assert len(conn.execute_calls) == 1
     set_sql, set_args = conn.execute_calls[0]
-    assert "set_config('georag.workspace_id'" in set_sql
+    assert "set_config('app.workspace_id'" in set_sql
     assert set_args == ("a0000000-0000-0000-0000-000000000001",)
 
 

@@ -388,7 +388,7 @@ async def write_trace(pool: object, trace: RetrievalTrace) -> UUID | None:
             # gives us atomicity around the INSERT.
             async with conn.transaction():
                 await conn.execute(
-                    "SELECT set_config('georag.workspace_id', $1, true)",
+                    "SELECT set_config('app.workspace_id', $1, true)",
                     str(trace.workspace_id),
                 )
                 row = await conn.fetchrow(_INSERT_SQL, *params)

@@ -96,7 +96,7 @@ async def get_project_bbox_wkt(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "SELECT set_config('georag.workspace_id', $1, true)",
+                    "SELECT set_config('app.workspace_id', $1, true)",
                     workspace_id,
                 )
                 # Try the cached bbox column first (cheap PK hit).

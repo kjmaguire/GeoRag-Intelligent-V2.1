@@ -132,17 +132,17 @@ async def embed_pending_passages(
         # Set RLS GUCs. Wrapped in an explicit transaction so SET LOCAL
         # takes effect on subsequent queries within the same session.
         await pg_conn.execute(
-            "SELECT set_config('georag.workspace_id', $1, false)", workspace_id,
+            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
         )
         await pg_conn.execute(
             "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
         )
         if project_id:
             await pg_conn.execute(
-                "SELECT set_config('georag.project_id', $1, false)", project_id,
+                "SELECT set_config('app.project_id', $1, false)", project_id,
             )
         else:
-            await pg_conn.execute("RESET georag.project_id")
+            await pg_conn.execute("RESET app.project_id")
 
         # LEFT JOIN to silver.reports so passages without a parent
         # document_id (e.g. chunk_kind='public_geo_synthesis' from the

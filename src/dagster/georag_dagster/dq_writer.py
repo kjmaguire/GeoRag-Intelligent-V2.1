@@ -172,7 +172,7 @@ def upsert_flag_sync(conn, flag):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT set_config('georag.workspace_id', %s, true)",
+                "SELECT set_config('app.workspace_id', %s, true)",
                 (flag.workspace_id,),
             )
             cur.execute(_UPSERT_SQL, {

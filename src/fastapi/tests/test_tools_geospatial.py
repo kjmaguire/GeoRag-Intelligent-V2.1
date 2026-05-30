@@ -310,6 +310,6 @@ async def test_query_sets_workspace_id_guc_inside_transaction():
     )
     # First execute call inside the transaction is set_config.
     assert any(
-        "set_config('georag.workspace_id'" in sql and args == ("ws-tenant-9",)
+        "set_config('app.workspace_id'" in sql and args == ("ws-tenant-9",)
         for sql, args in conn.execute_calls
     )

@@ -173,7 +173,7 @@ async def test_sets_workspace_guc_inside_transaction():
         pool, workspace_id="ws-tenant-7", project_id="p-1",
     )
     assert any(
-        "set_config('georag.workspace_id'" in sql
+        "set_config('app.workspace_id'" in sql
         and args == ("ws-tenant-7",)
         for sql, args in conn.execute_calls
     )

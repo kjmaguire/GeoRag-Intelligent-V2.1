@@ -98,7 +98,7 @@ async def test_flag_off_sets_only_statement_timeout(_flag):
 
     sqls = _calls(execute)
     assert any("SET LOCAL statement_timeout" in s for s in sqls)
-    assert not any("georag.project_id" in s for s in sqls)
+    assert not any("app.project_id" in s for s in sqls)
 
 
 @pytest.mark.asyncio
@@ -115,7 +115,7 @@ async def test_flag_on_sets_guc_and_timeout(_flag):
 
     sqls = _calls(execute)
     assert any("SET LOCAL statement_timeout" in s for s in sqls)
-    assert any(f"SET LOCAL georag.project_id = '{pid}'" == s for s in sqls)
+    assert any(f"SET LOCAL app.project_id = '{pid}'" == s for s in sqls)
 
 
 @pytest.mark.asyncio
@@ -158,4 +158,45 @@ async def test_flag_on_with_empty_project_id_skips_guc(_flag):
 
     sqls = _calls(execute)
     assert any("SET LOCAL statement_timeout" in s for s in sqls)
-    assert not any("georag.project_id" in s for s in sqls)
+    assert not any("app.project_id" in s for s in sqls)
+
+
+def test_no_production_files_set_legacy_georag_gucs():
+    """Regression: no .py file in src/ may call set_config with the legacy
+    'georag.workspace_id' or 'georag.project_id' GUC names.
+
+    The RLS policies read 'app.workspace_id' / 'app.project_id'.  Any
+    file that still writes under the old namespace is a silent fail-open
+    tenancy gap — all rows visible to that code path, regardless of
+    tenant.
+
+    Skips:
+      - This test file itself (contains the literal string for the pattern).
+      - Any path whose parts include '_deprecated'.
+    """
+    import pathlib
+    import re
+
+    src_root = pathlib.Path(__file__).parents[2]  # …/src/
+    pattern = re.compile(r"set_config.*georag\.(workspace_id|project_id)")
+
+    violations: list[str] = []
+    for py_file in src_root.rglob("*.py"):
+        if py_file == pathlib.Path(__file__):
+            continue
+        if "_deprecated" in py_file.parts:
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if pattern.search(content):
+            violations.append(str(py_file.relative_to(src_root)))
+
+    assert violations == [], (
+        "The following files still call set_config() with the legacy "
+        "'georag.workspace_id' or 'georag.project_id' GUC names. "
+        "Update them to use 'app.workspace_id' / 'app.project_id' "
+        "so the RLS policies actually fire:\n"
+        + "\n".join(f"  {v}" for v in sorted(violations))
+    )
