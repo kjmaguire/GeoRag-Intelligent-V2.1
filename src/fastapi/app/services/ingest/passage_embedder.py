@@ -110,12 +110,16 @@ async def embed_pending_passages(
 
     # ── Load models / clients if not provided ─────────────────────
     if embedding_model is None:
+        import torch
         from sentence_transformers import SentenceTransformer
         from app.config import settings
-        log.info("embed_pending.loading_embedding_model name=%s",
-                 settings.EMBEDDING_MODEL_NAME)
+        # Use CUDA when available — A4500 does ~144 chunks/sec vs ~4 on CPU.
+        # Falls back to CPU gracefully if no GPU present or CUDA unavailable.
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        log.info("embed_pending.loading_embedding_model name=%s device=%s",
+                 settings.EMBEDDING_MODEL_NAME, _device)
         embedding_model = SentenceTransformer(
-            settings.EMBEDDING_MODEL_NAME, device="cpu",
+            settings.EMBEDDING_MODEL_NAME, device=_device,
         )
 
     own_qdrant = False
