@@ -56,7 +56,18 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT INSERT, UPDATE ON TABLES TO geor
 -- Once that migration runs, the table lives in `audit.query_audit_log` and
 -- the migration re-issues the grant on its new location. This block stays
 -- defensive so init-roles.sql is correct before AND after the move.
-GRANT INSERT ON public.query_audit_log TO georag_audit;
+-- Guard: public.query_audit_log is created by Laravel migration
+-- 2026_04_12_000000_create_query_audit_log_table and does NOT exist at
+-- Docker init time on fresh clusters. Skip this grant if the table is
+-- absent — it will be re-issued by the 2026_05_07 migration when it runs.
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'query_audit_log'
+    ) THEN
+        EXECUTE 'GRANT INSERT ON public.query_audit_log TO georag_audit';
+    END IF;
+END $$;
 ALTER DEFAULT PRIVILEGES IN SCHEMA audit
     GRANT INSERT ON TABLES TO georag_audit;
 ALTER DEFAULT PRIVILEGES IN SCHEMA audit
