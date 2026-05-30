@@ -31,6 +31,12 @@ from dataclasses import dataclass, field
 import asyncpg
 import httpx
 
+# Pool size: enough for CONCURRENCY concurrent writers + a few for the
+# reader (batch fetch) and count queries. asyncpg raises
+# "another operation is in progress" when two coroutines share a
+# single Connection concurrently — a pool eliminates that.
+_PG_POOL_MAX = None  # set after CONCURRENCY is parsed
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -51,6 +57,10 @@ VLLM_MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen3-14B-AWQ")
 CONCURRENCY = int(os.environ.get("ENRICH_CONCURRENCY", "24"))
 BATCH_SIZE = int(os.environ.get("ENRICH_BATCH", "500"))
 SKIP_EXISTING = os.environ.get("ENRICH_SKIP_EXISTING", "1") == "1"
+
+# Pool needs at least CONCURRENCY connections for writers + 2 spare for
+# the batch-fetch and count queries that run from the main coroutine.
+_PG_POOL_MAX = CONCURRENCY + 4
 
 _MAX_ENRICHED_LENGTH = 4096
 _MAX_TEXT_TO_LLM = 2500
@@ -101,7 +111,7 @@ async def _enrich_one(
     row: dict,
     http: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
-    pg_conn: asyncpg.Connection,
+    pg_pool: asyncpg.Pool,
     stats: EnrichStats,
 ) -> None:
     async with semaphore:
@@ -126,13 +136,17 @@ async def _enrich_one(
             resp.raise_for_status()
             header = resp.json()["choices"][0]["message"]["content"].strip()
             enriched = _combine(header, row["text"])
-            await pg_conn.execute(
-                "UPDATE silver.document_passages "
-                "   SET contextualized_content = $1 "
-                " WHERE passage_id = $2::uuid",
-                enriched,
-                row["passage_id"],
-            )
+            # Each coroutine acquires its own connection from the pool so
+            # concurrent writes don't collide (fixes asyncpg
+            # "another operation is in progress" error).
+            async with pg_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE silver.document_passages "
+                    "   SET contextualized_content = $1 "
+                    " WHERE passage_id = $2::uuid",
+                    enriched,
+                    row["passage_id"],
+                )
             stats.enriched += 1
         except Exception as exc:
             stats.errors += 1
@@ -145,56 +159,75 @@ async def main() -> None:
         CONCURRENCY, SKIP_EXISTING,
     )
 
-    pg = await asyncpg.connect(PG_DSN, statement_cache_size=0)
+    pg_pool = await asyncpg.create_pool(
+        PG_DSN,
+        statement_cache_size=0,
+        min_size=4,
+        max_size=_PG_POOL_MAX,
+    )
 
     # Count total work
-    if SKIP_EXISTING:
-        count_row = await pg.fetchrow(
-            "SELECT COUNT(*) AS n FROM silver.document_passages WHERE contextualized_content IS NULL"
-        )
-    else:
-        count_row = await pg.fetchrow("SELECT COUNT(*) AS n FROM silver.document_passages")
+    async with pg_pool.acquire() as pg:
+        if SKIP_EXISTING:
+            count_row = await pg.fetchrow(
+                "SELECT COUNT(*) AS n FROM silver.document_passages WHERE contextualized_content IS NULL"
+            )
+        else:
+            count_row = await pg.fetchrow("SELECT COUNT(*) AS n FROM silver.document_passages")
 
     stats = EnrichStats(total=count_row["n"])
-    log.info("Passages to enrich: %d", stats.total)
+    log.info("Passages to enrich: %d (pool_max=%d)", stats.total, _PG_POOL_MAX)
 
     if stats.total == 0:
         log.info("Nothing to do — all passages already have contextualized_content.")
-        await pg.close()
+        await pg_pool.close()
         return
 
-    # Fetch in order of creation so we make steady progress that can be resumed
+    # OFFSET behaviour:
+    #   SKIP_EXISTING=True  → always OFFSET 0. The WHERE clause shrinks as rows
+    #                         are enriched, so OFFSET 0 always gives the next
+    #                         un-enriched batch. Advancing the offset with a live
+    #                         WHERE filter causes "drift" — failed rows fall behind
+    #                         the cursor and are never retried in this run.
+    #   SKIP_EXISTING=False → advance offset normally (full table scan without a
+    #                         shrinking filter, so drift isn't an issue).
     offset = 0
     semaphore = asyncio.Semaphore(CONCURRENCY)
 
     async with httpx.AsyncClient() as http:
         while True:
             skip_clause = "WHERE contextualized_content IS NULL" if SKIP_EXISTING else ""
-            rows = await pg.fetch(
-                f"""
-                SELECT dp.passage_id::text,
-                       dp.text,
-                       dp.ordinal,
-                       COALESCE(r.title, dp.chunk_kind, 'Document') AS document_title,
-                       COUNT(*) OVER (PARTITION BY dp.document_id) AS total_passages
-                FROM silver.document_passages dp
-                LEFT JOIN silver.reports r ON r.report_id = dp.document_id
-                {skip_clause}
-                ORDER BY dp.created_at ASC, dp.passage_id ASC
-                LIMIT {BATCH_SIZE} OFFSET {offset}
-                """
-            )
+            async with pg_pool.acquire() as pg:
+                rows = await pg.fetch(
+                    f"""
+                    SELECT dp.passage_id::text,
+                           dp.text,
+                           dp.ordinal,
+                           COALESCE(r.title, dp.chunk_kind, 'Document') AS document_title,
+                           COUNT(*) OVER (PARTITION BY dp.document_id) AS total_passages
+                    FROM silver.document_passages dp
+                    LEFT JOIN silver.reports r ON r.report_id = dp.document_id
+                    {skip_clause}
+                    ORDER BY dp.created_at ASC, dp.passage_id ASC
+                    LIMIT {BATCH_SIZE} OFFSET {offset}
+                    """
+                )
 
             if not rows:
                 break
 
             tasks = [
-                _enrich_one(dict(r), http, semaphore, pg, stats)
+                _enrich_one(dict(r), http, semaphore, pg_pool, stats)
                 for r in rows
             ]
             await asyncio.gather(*tasks)
 
-            offset += len(rows)
+            # Advance offset only when NOT using SKIP_EXISTING — with the
+            # WHERE filter the result set shrinks after each batch, so
+            # OFFSET 0 always points at the next un-enriched block.
+            if not SKIP_EXISTING:
+                offset += len(rows)
+
             pct = 100 * (stats.enriched + stats.skipped + stats.errors) / max(stats.total, 1)
             log.info(
                 "Progress: %d/%d (%.1f%%)  enriched=%d  errors=%d  "
@@ -211,7 +244,7 @@ async def main() -> None:
             # Yield to event loop briefly between batches
             await asyncio.sleep(0.1)
 
-    await pg.close()
+    await pg_pool.close()
     log.info(
         "Done. enriched=%d  skipped=%d  errors=%d  elapsed=%.0fs",
         stats.enriched, stats.skipped, stats.errors, stats.elapsed,
