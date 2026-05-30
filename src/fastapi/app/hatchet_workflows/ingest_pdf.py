@@ -489,6 +489,63 @@ ingest_pdf = hatchet.workflow(
 async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
     """Download from S3, compute sha256, validate magic bytes + size + encryption."""
     log.info("ingest_pdf.preflight start key=%s", input.minio_key)
+
+    # CC-03 Item 8 — lifecycle guard. If the project is not active, skip
+    # the whole workflow by returning a synthetic PreflightOut that marks
+    # the run as invalid. We don't raise — Hatchet would retry a raise,
+    # burning retries for something that won't change until the project
+    # is reactivated. Returning early with valid=False causes parse() to
+    # short-circuit and persist() to produce an empty report with a
+    # descriptive warning; the operator can see the skip_reason in the
+    # Hatchet run record.
+    if input.project_id:
+        _skip_reason: str | None = None
+        try:
+            _lc_pool = await asyncpg.create_pool(
+                _dsn(), min_size=1, max_size=1, statement_cache_size=0
+            )
+            try:
+                async with _lc_pool.acquire() as _lc_conn:
+                    async with _lc_conn.transaction():
+                        if input.workspace_id:
+                            await _lc_conn.execute(
+                                "SELECT set_config('app.workspace_id', $1, true)",
+                                str(input.workspace_id),
+                            )
+                        _lc_row = await _lc_conn.fetchrow(
+                            "SELECT lifecycle_state FROM silver.projects "
+                            "WHERE project_id = $1::uuid",
+                            str(input.project_id),
+                        )
+                        if _lc_row is not None:
+                            _state = _lc_row["lifecycle_state"]
+                            if _state != "active":
+                                _skip_reason = f"project_not_active:{_state}"
+            finally:
+                await _lc_pool.close()
+        except Exception as _lc_err:
+            # Connection failure or table-not-found (e.g. first-run before
+            # migration). Log and proceed — fail open is safer than silently
+            # dropping every ingest on startup errors.
+            log.warning(
+                "ingest_pdf.preflight: lifecycle check failed (non-fatal): %s", _lc_err
+            )
+
+        if _skip_reason:
+            log.info(
+                "ingest_pdf.preflight: skipping workflow — project=%s reason=%s",
+                input.project_id,
+                _skip_reason,
+            )
+            return PreflightOut(
+                sha256="",
+                page_count=0,
+                file_size=0,
+                encrypted=False,
+                valid=False,
+                error=_skip_reason,
+            )
+
     if input.project_id and input.workspace_id:
         await ingest_progress.mark_started(
             workspace_id=str(input.workspace_id),

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.config import settings
@@ -22,6 +22,7 @@ from app.hatchet_workflows.tiff_normalize import (
     TiffNormalizeInput,
     tiff_normalize,
 )
+from app.middleware.project_lifecycle import require_active_project
 
 
 log = logging.getLogger("georag.shadow_trigger")
@@ -54,11 +55,17 @@ class TriggerIngestPdfResponse(BaseModel):
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(_check_service_key)],
 )
-async def trigger_ingest_pdf(payload: IngestPdfInput) -> TriggerIngestPdfResponse:
+async def trigger_ingest_pdf(
+    payload: IngestPdfInput,
+    request: Request,
+) -> TriggerIngestPdfResponse:
     """Trigger the ingest_pdf Hatchet workflow with the given input.
 
     Returns 202 Accepted with the workflow_run_id. Caller does NOT wait
     for completion.
+
+    CC-03 Item 8: rejected with 403/402 when the project is not in the
+    'active' lifecycle state (hibernated / archived / past_due).
 
     Historical context: silver.shadow_runs was the v1.49-vs-Hatchet
     diff-pairing table; Phase 4 Step 6 dropped it. The endpoint still
@@ -69,6 +76,21 @@ async def trigger_ingest_pdf(payload: IngestPdfInput) -> TriggerIngestPdfRespons
         "trigger_ingest_pdf: workspace_id=%s correlation=%s key=%s",
         payload.workspace_id, payload.correlation_token, payload.minio_key,
     )
+
+    # CC-03 Item 8 — lifecycle guard. Block ingest on non-active projects.
+    # workspace_id GUC set so the RLS policy admits the silver.projects row.
+    if payload.project_id:
+        _pg_pool = request.app.state.pg_pool
+        async with _pg_pool.acquire() as _conn:
+            async with _conn.transaction():
+                if payload.workspace_id:
+                    await _conn.execute(
+                        f"SET LOCAL app.workspace_id = '{payload.workspace_id}'"
+                    )
+                await require_active_project(
+                    project_id=str(payload.project_id), conn=_conn
+                )
+
     ref = await ingest_pdf.aio_run_no_wait(payload)
     return TriggerIngestPdfResponse(
         workflow_run_id=ref.workflow_run_id,
@@ -82,7 +104,10 @@ async def trigger_ingest_pdf(payload: IngestPdfInput) -> TriggerIngestPdfRespons
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(_check_service_key)],
 )
-async def trigger_tiff_normalize(payload: TiffNormalizeInput) -> TriggerIngestPdfResponse:
+async def trigger_tiff_normalize(
+    payload: TiffNormalizeInput,
+    request: Request,
+) -> TriggerIngestPdfResponse:
     """Trigger the tiff_normalize Hatchet workflow (ADR-0005).
 
     The workflow streams the TIFF from MinIO, wraps losslessly to a
@@ -90,11 +115,28 @@ async def trigger_tiff_normalize(payload: TiffNormalizeInput) -> TriggerIngestPd
     the existing ``ingest_pdf`` workflow against that derived PDF. The
     returned workflow_run_id is the *normalize* run; the downstream
     ingest_pdf run id is captured in the normalize output.
+
+    CC-03 Item 8: rejected with 403/402 when the project is not in the
+    'active' lifecycle state (hibernated / archived / past_due).
     """
     log.info(
         "trigger_tiff_normalize: workspace_id=%s correlation=%s key=%s",
         payload.workspace_id, payload.correlation_token, payload.minio_key,
     )
+
+    # CC-03 Item 8 — lifecycle guard. Block ingest on non-active projects.
+    if payload.project_id:
+        _pg_pool = request.app.state.pg_pool
+        async with _pg_pool.acquire() as _conn:
+            async with _conn.transaction():
+                if payload.workspace_id:
+                    await _conn.execute(
+                        f"SET LOCAL app.workspace_id = '{payload.workspace_id}'"
+                    )
+                await require_active_project(
+                    project_id=str(payload.project_id), conn=_conn
+                )
+
     ref = await tiff_normalize.aio_run_no_wait(payload)
     return TriggerIngestPdfResponse(
         workflow_run_id=ref.workflow_run_id,

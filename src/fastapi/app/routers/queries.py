@@ -646,6 +646,44 @@ async def post_query(
                 detail="JWT project does not match request project.",
             )
 
+    # CC-03 Item 8 — lifecycle guard. Checked BEFORE opening the
+    # StreamingResponse so we can return a clean HTTP error code (403/402)
+    # instead of an SSE `failed` frame the client might miss or mishandle.
+    # Requires the app.workspace_id GUC to be set so the RLS policy admits
+    # the row; we pass the workspace_id from the JWT (or None to stay single-
+    # tenant). The guard raises HTTPException on non-active states so FastAPI
+    # handles it before the streaming context opens.
+    try:
+        from app.middleware.project_lifecycle import require_active_project  # noqa: PLC0415
+        _pg_pool = request.app.state.pg_pool
+        async with _pg_pool.acquire() as _lc_conn:
+            async with _lc_conn.transaction():
+                if user and user.project_id:
+                    import re as _re_lc  # noqa: PLC0415
+                    _wid = getattr(user, "workspace_id", None)
+                    if _wid and _re_lc.match(
+                        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                        str(_wid),
+                        _re_lc.IGNORECASE,
+                    ):
+                        await _lc_conn.execute(
+                            f"SET LOCAL app.workspace_id = '{_wid}'"
+                        )
+                await require_active_project(
+                    project_id=body.project_id, conn=_lc_conn
+                )
+    except HTTPException:
+        raise
+    except Exception as _lc_err:
+        # If the lifecycle check itself fails (e.g. pool not yet ready),
+        # log a warning and let the request proceed rather than blocking
+        # legitimate queries. This keeps the guard non-fatal on startup.
+        logger.warning(
+            "post_query: lifecycle check failed (non-fatal) project=%s err=%s",
+            body.project_id,
+            _lc_err,
+        )
+
     # M7B1 — Create a request-scoped EventStamper. The UUID is pre-generated
     # here rather than delegated to the orchestrator so the stamper is live
     # before the first keepalive frame. The DB answer_run_id (generated inside
