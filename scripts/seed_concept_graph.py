@@ -33,10 +33,11 @@ async def main() -> None:
     conn = await asyncpg.connect(PG_DSN)
     try:
         rows = await conn.fetch(
-            "SELECT id::text, canonical_term, ontology_class, "
-            "       COALESCE(cgi_uri, '') AS cgi_uri "
+            "SELECT term_id::text AS id, canonical_term, "
+            "       class AS ontology_class, "
+            "       COALESCE(payload->>'cgi_uri', '') AS cgi_uri "
             "FROM silver.geological_ontology_terms "
-            "ORDER BY ontology_class, canonical_term"
+            "ORDER BY class, canonical_term"
         )
     finally:
         await conn.close()
