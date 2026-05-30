@@ -904,6 +904,9 @@ services:
       # instead. Used for A/B benches comparing fine-tuned candidates
       # against the stock baseline without rebuilding the image.
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # ADR-0008 — embedding model path. Default = stock BAAI/bge-small-en-v1.5.
+      # Set to /app/models/bge-small-domain-ft after promoting the domain FT model.
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
       # Phase 3 Step 3 — per-flow JWT signing secret for Kestra → FastAPI
       # integrations bridge (Authorization: Bearer <jwt>). Distinct from
       # FASTAPI_SERVICE_KEY so rotation of one doesn't disturb the other.
@@ -2293,6 +2296,8 @@ services:
       # the SDK-transport BASE_URL is safe to point in-network.
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # ADR-0008 — embedding model path. Must match the fastapi service.
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
     volumes:
       - ./src/fastapi:/app:cached
       - ./src/dagster/georag_dagster:/app/georag_dagster:cached
