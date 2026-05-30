@@ -62,6 +62,7 @@ from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-p
 from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
 from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
 from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
+from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
 from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
 from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
 from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
@@ -151,6 +152,10 @@ POOLS = {
         # sync. Runs BGE + SPLADE++ embeddings + upserts to the
         # georag_reports collection.
         embed_pending_passages_wf,
+        # Contextual retrieval — daily 04:30 UTC, before embed at 05:45 UTC.
+        # Generates Qwen3 context headers (contextualized_content) so
+        # passage_embedder uses enriched text for better recall.
+        enrich_passage_context_wf,
         # Doc-phase 98 / Master-plan §10.10 — support_replay re-
         # executes failed workflows in dry-run mode for diagnosis.
         # Skeleton.

@@ -153,7 +153,7 @@ async def embed_pending_passages(
         query = (
             "SELECT dp.passage_id::text AS passage_id, "
             "       dp.document_id::text AS document_id, "
-            "       dp.text, dp.ordinal, dp.page_first, dp.page_last, "
+            "       dp.contextualized_content, dp.text, dp.ordinal, dp.page_first, dp.page_last, "
             # Phase 3 (2026-05-22) — OCR provenance travels with the
             # qdrant point so retrieval can weight low-confidence
             # passages down without a Postgres join. NULL means the
@@ -189,7 +189,7 @@ async def embed_pending_passages(
         # ── Encode in batches ─────────────────────────────────────
         for batch_start in range(0, len(rows), batch_size):
             batch = rows[batch_start:batch_start + batch_size]
-            texts = [r["text"] for r in batch]
+            texts = [r["contextualized_content"] or r["text"] for r in batch]
 
             # Dense encode (BGE-small, normalized)
             try:
