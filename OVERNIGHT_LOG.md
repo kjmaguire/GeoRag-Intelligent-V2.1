@@ -3439,4 +3439,148 @@ Default: **(α) park reranker FT, ship instrumentation for real query collection
 
 — Claude (Plan B v2 ran clean · second HOLD · stock baseline still live · data-volume verdict is now unambiguous · MLM backbone preserved for any future cycle)
 
+---
+
+## §40 — ADR-0008 bge-small embedding FT eval — 2026-05-29 morning
+
+**Owner**: Claude (Kyle override — "I want to run it regardless") · **Outcome**: **PASS — promotion path open**
+
+### Surprise: the embedding FT worked where the reranker didn't
+
+```
+                stock      candidate    delta
+NDCG@10         0.754  →   0.781        +0.027
+MRR             0.676  →   0.710        +0.034
+Recall@1        0.547  →   0.569        +0.022
+Recall@5        0.879  →   0.938        +0.059   ← +5.9 pp ✅
+Recall@10       1.000  =   1.000          0
+n_queries: 5007 · n_skipped: 136 (rows with < 2 candidates, skipped by eval harness)
+```
+
+Verdict from `_eval_bge_small.py`: **"candidate non-regressing on all 3 headline metrics — promote-candidate path is OPEN (still subject to golden-set bench)".**
+
+### Why the bi-encoder succeeded where the cross-encoder failed
+
+The §38/§39 reranker cycles failed because:
+- Cross-encoder MS MARCO prior is extremely dense; 13k synthetic pairs can't overcome it
+- Contrastive signal on narrow synthetic distributions causes out-of-distribution collapse
+
+The bi-encoder succeeded because:
+1. **Stage A MLM pretraining on 158k domain passages** adapts shared vocabulary representations (lithology, alteration, deposit type, geochemical terms). This benefit is general — it improves all downstream retrieval types, not just the training distribution.
+2. **Stage B MultipleNegativesRankingLoss** is more data-efficient than cross-encoder classification loss. 13k triplets is sufficient to shift the embedding space toward domain-specific similarity.
+3. **Dual-encoder architecture generalizes better** — the model doesn't see (query, passage) pairs together during training, so it can't overfit to query phrasing.
+
+The test set (5,143 rows from TIER 0a OOD split) is semantically harder than stock can handle, but the domain vocabulary adaptation in Stage A meaningfully shifts the embedding space toward geoscience terminology.
+
+### Artifacts
+- **Stage A MLM**: `/tmp/bge-small-domain-ft/stage_a_mlm/` (persistent during container lifetime)
+- **Stage B final**: `/tmp/bge-small-domain-ft/` (sentence-transformers format, loadable via `SentenceTransformer(path)`)
+- **Bench JSON**: `/tmp/bge-small-bench.json`
+
+⚠️ `/tmp/` is NOT persistent across container restarts. The model must be saved to a permanent location before promoting.
+
+### Promotion decision — Kyle's call
+
+The eval gate is open. Promotion requires:
+
+1. **Save model to permanent storage** — copy `/tmp/bge-small-domain-ft/` to a bind-mount path (e.g., `/models/bge-small-domain-ft/`) or upload to SeaweedFS bucket `model-artifacts/`.
+2. **Update `.env`** — set `EMBEDDING_MODEL_NAME=<permanent-path>` on hatchet-worker-ai.
+3. **Restart hatchet-worker-ai** to pick up the new model.
+4. **Run the 166-q golden-set bench** (`scripts/run_golden_bench.sh`) to confirm Recall@10 doesn't regress on known-good queries.
+5. **Re-embed all 150k+ passages in Qdrant** `georag_chunks` — the embedding space has shifted, so all existing Qdrant vectors are stale relative to the new model. The `embed_pending_passages` Hatchet workflow handles this after `embedding_id IS NULL` is reset. (This is a non-trivial op — it re-encodes the full corpus.)
+
+Step 5 is the gate: until the Qdrant vectors are re-encoded with the new model, queries from the new model won't match the existing vectors (mixed embedding space = degraded retrieval). Do NOT promote to live traffic before completing the full re-embed.
+
+**Shortcut path for evaluation only**: run golden-set bench with the new model encoding queries against the existing (stock) Qdrant corpus. The mismatch will show degraded scores — this tells you the re-embed is necessary, not that the model is bad.
+
+### Recommended immediate action (Claude's suggestion, Kyle decides)
+- (α) **Park promotion for now** — the re-embed step touches the live Qdrant corpus and should run in a maintenance window. Note the PASS verdict; schedule promotion + full re-embed when convenient.
+- (β) **Promote to dev now** — copy the model to `/models/`, update EMBEDDING_MODEL_NAME, re-embed dev corpus (~150k passages at 144 chunks/sec GPU ≈ 17 minutes). Low risk in dev.
+
+Option (β) is feasible today in ~30 minutes total (model copy + re-embed). Option (α) defers it cleanly.
+
+### Service state at end of §40
+- `georag-vllm` ✅ restarted (was paused since §39)
+- `georag-hatchet-worker-ai` 🔄 restarting now
+- Stock `BAAI/bge-small-en-v1.5` still active in hatchet-worker-ai (no model swap until Kyle approves)
+- Domain FT artifacts in `/tmp/bge-small-domain-ft/` — ephemeral until saved
+
+— Claude (§40 PASS — embedding FT beats stock on OOD bench · all deltas positive · promotion path open · Kyle decides model save + re-embed window)
+
+---
+
+## §41 — ADR-0011 LoRA v2 (augmented dataset) — 2026-05-30
+
+**Approach:** Path A+B combined — fix bad positives + paraphrase augmentation + 13 new domain queries + hard negative mining → LoRA r=16 on MLM backbone.
+
+### What was built
+
+| Component | Detail |
+|---|---|
+| Dataset | 132 pairs (train=112, val=10, test=10) |
+| Domains covered | 8: uranium grade, gold grade, geophysics, QA/QC, property tenure, historical exploration, recommendations, copper/base metals |
+| Phrasing styles | 6: direct, factual, comparative, analytical, spatial, conversational |
+| Bad positives fixed | 3 (Q07, Q10, Q18 — wrong passage → re-searched Qdrant) |
+| New domain queries | 13 with positives found (score ≥ 0.68); 7 dropped (score < threshold) |
+| Paraphrase variants | 61 generated via Qwen3-14B-AWQ |
+| LoRA config | r=16, α=32, dropout=0.05, target=[query, value], 8 epochs |
+| Training convergence | val_loss 0.4622 → 0.3047 · train/val gap ≈ 0 at epoch 7 (no overfit) |
+
+### Bench results (OOD 5,143-query test set)
+
+```
+                stock       LoRA v2      delta
+NDCG@10         0.9239  →   0.6524       -0.2715  ❌
+MRR             0.8987  →   0.5413       -0.3574  ❌
+Recall@1        0.8359  →   0.3362       -0.4997  ❌
+Recall@5        0.9846  →   0.8907       -0.0939  ❌
+Recall@10       1.0000  =   1.0000        0.0000
+n_queries: 5143 · n_skipped: 0
+```
+
+**Verdict: HOLD** — LoRA v2 does not beat stock on OOD bench.
+
+### Improvement trajectory vs §39 (LoRA v1, 19 queries, 1 domain)
+
+```
+             §39 LoRA v1   §41 LoRA v2   gain
+NDCG@10        0.575  →      0.652        +0.077
+MRR            0.441  →      0.541        +0.100
+Recall@1       0.213  →      0.336        +0.123 (+58%)
+```
+
+The augmentation strategy (8× more pairs, 8 domains, 6 phrasing styles) did meaningfully improve over §39. The direction is right — but we are still -0.27 NDCG below stock. Each subsequent HOLD narrows the gap but demonstrates the fundamental limit.
+
+### Why cross-encoder FT keeps failing on OOD
+
+Three HOLD verdicts now (§38 full FT, §39 LoRA v1, §41 LoRA v2). The pattern is consistent:
+
+1. **MS MARCO prior is extremely dense.** BAAI/bge-reranker-base was pretrained on ~40M MSMARCO passage pairs. Any geological FT dataset we can build (132 pairs → ~10k synthetic pairs) is orders of magnitude smaller than the pretraining distribution.
+
+2. **Cross-encoder architecture learns interaction features, not just vocabulary.** Unlike bi-encoder embedding FT (§40 PASS), the cross-encoder sees the (query, passage) pair together. Domain FT teaches it to weight geological lexical cues — but this competes with general relevance patterns that dominate the OOD bench.
+
+3. **OOD bench is structurally harder for domain-adapted models.** The 5,143-row OOD test spans the full georag_chunks corpus. Domain FT shifts decision boundaries toward known-domain signals; queries outside those 8 domains are penalized. Recall@10 stays 1.0 (the positive IS found) but ranking-within-top-10 degrades badly.
+
+4. **The improvement rate is ~+0.077 NDCG per 113 training pairs.** To extrapolate to stock parity (NDCG 0.924) would require (0.924-0.652)/0.077 × 113 ≈ 400 more pairs = ~530 total. That's ~20 months of real user queries at 27/month.
+
+### Definitive decision
+
+**DO NOT retry cross-encoder reranker FT until ≥ 500 real user queries are available.** This is now the third confirmed HOLD. The MLM-adapted backbone (`/tmp/reranker-mlm`) is preserved for any future cycle but the LoRA training loop is parked.
+
+Stock `BAAI/bge-reranker-base` remains the production reranker. It performs excellently on the OOD bench (NDCG=0.924, Recall@1=0.836) and that's what matters until real user query volume arrives.
+
+### ADR-0011 artifacts (all ephemeral in /tmp/)
+- MLM backbone: `/tmp/reranker-mlm` (preserved in S3 at `s3://reranker-checkpoints/v1/run_id=2026-05-29-mlm-extended/`)
+- LoRA v2 best adapter: `/tmp/reranker-lora-v2/best_adapter/`
+- Augmented dataset: `/tmp/reranker-train-augmented/{train,val,test}.jsonl`
+- Bench JSON: `/tmp/reranker-lora-v2-bench.json`
+
+### Service state at end of §41
+- `georag-vllm` ✅ restarted (was paused during LoRA training + eval)
+- `georag-hatchet-worker-ai` ✅ running (stock reranker active — no change)
+- `BAAI/bge-reranker-base` remains production reranker
+- eval script `scripts/_eval_lora_against_mlm.py` fixed: uses `PeftModel.from_pretrained()` instead of manual `model.safetensors` path
+
+— Claude (§41 HOLD — LoRA v2 +7.7pp NDCG vs §39 but still -27pp vs stock · 3rd confirmed HOLD · reranker FT parked · stock reranker stays · vLLM restarted)
+
 

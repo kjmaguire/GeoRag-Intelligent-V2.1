@@ -81,6 +81,12 @@ src/fastapi/C:/
 src/fastapi/bench_results/*.json
 !src/fastapi/bench_results/.gitkeep
 
+# ADR-0008 — bge-small domain FT model files. 1.8 GB binary; lives at
+# src/fastapi/models/ (bind-mounted as /app/models/ in both fastapi and
+# hatchet-worker-ai containers). The canonical copy is persisted inside
+# the container bind-mount; git is not the right place for model weights.
+src/fastapi/models/
+
 # §38/§39 reranker overnight — host-side artifacts that bind-mount or
 # get stamped into the repo from docker exec calls. The real durable
 # copies live in MinIO under `reranker-checkpoints/` / `reranker-labels/`.

@@ -87,8 +87,6 @@ def main():
 
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
-    from peft import LoraConfig, TaskType, get_peft_model
-    from safetensors.torch import load_file
 
     rows = load_test(args.test)
     print(f"loaded {len(rows)} test rows")
@@ -110,26 +108,12 @@ def main():
     print(f"\n[2/2] candidate: base={args.candidate_base} + adapter={args.candidate_adapter}")
     candidate_tok = AutoTokenizer.from_pretrained(args.candidate_base)
     base = AutoModelForSequenceClassification.from_pretrained(
-        args.candidate_base, num_labels=1,
+        args.candidate_base, num_labels=1, ignore_mismatched_sizes=True,
     )
-    lora_config = LoraConfig(
-        task_type=TaskType.SEQ_CLS,
-        r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
-        target_modules=["query", "value"], bias="none",
-    )
-    candidate_model = get_peft_model(base, lora_config)
-
-    # The Trainer's save_model on a PeftModel writes keys WITHOUT the
-    # `base_model.model.` outer prefix. Re-prepend it before load.
-    raw_state = load_file(f"{args.candidate_adapter}/model.safetensors", device=device)
-    fixed_state = {f"base_model.model.{k}": v for k, v in raw_state.items()}
-    missing, unexpected = candidate_model.load_state_dict(fixed_state, strict=False)
-    print(f"  load_state_dict missing={len(missing)} unexpected={len(unexpected)}")
-    if missing[:3]:
-        print(f"  (first missing) {missing[:3]}")
-    if unexpected[:3]:
-        print(f"  (first unexpected) {unexpected[:3]}")
-
+    # Use PeftModel.from_pretrained — handles adapter_model.safetensors and
+    # all key-prefix wrangling automatically regardless of PEFT version.
+    from peft import PeftModel
+    candidate_model = PeftModel.from_pretrained(base, args.candidate_adapter)
     candidate_model = candidate_model.merge_and_unload()
     candidate_model.to(device).eval()
     candidate_metrics = evaluate(candidate_model, candidate_tok, rows, device)
