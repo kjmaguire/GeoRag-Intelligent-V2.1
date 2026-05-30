@@ -78,8 +78,12 @@ src/fastapi/C:/
 # timestamp in the filename and may be 100s of KB each; track them
 # in an operations repo or as CI artifacts, not the source tree.
 # Keep the directory so first-time runs don't error.
+# Exception: pre-* baseline files are the comparison anchor — keep those.
 src/fastapi/bench_results/*.json
 !src/fastapi/bench_results/.gitkeep
+bench_results/*.json
+!bench_results/.gitkeep
+!bench_results/*pre-*.json
 
 # ADR-0008 — bge-small domain FT model files. 1.8 GB binary; lives at
 # src/fastapi/models/ (bind-mounted as /app/models/ in both fastapi and
