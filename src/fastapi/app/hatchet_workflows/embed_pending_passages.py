@@ -87,8 +87,13 @@ embed_pending_passages_wf = hatchet.workflow(
     # same workspace; different workspaces still embed in parallel.
     # GROUP_ROUND_ROBIN queues rather than cancels so an in-flight large
     # bulk run can't be interrupted by a tiny safety-net tick.
+    # Concurrency key: use workspace_id when provided (manual/ingest triggers),
+    # fall back to the literal string "cron" for cron-fired runs that have no
+    # workspace_id in the input. Without this fallback the expression evaluates
+    # to null on cron runs, causing all cron jobs to pile up in the same null
+    # concurrency slot and block indefinitely (bug fixed 2026-06-01).
     concurrency=ConcurrencyExpression(
-        expression="input.workspace_id",
+        expression="input.workspace_id != '' ? input.workspace_id : 'cron'",
         max_runs=1,
         limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
     ),
