@@ -1567,8 +1567,9 @@ async def search_documents(
       permissive cosine threshold (RETRIEVAL_QUALITY_THRESHOLD = 0.3).
 
     Stage 2 — Cross-encoder reranking (when reranker is available):
-      Each (query, chunk.text) pair is scored by the ms-marco-MiniLM-L-6-v2
-      cross-encoder, which produces raw logits.  Candidates are sorted by
+      Each (query, chunk.text) pair is scored by Qwen/Qwen3-Reranker-0.6B
+      (yes-vs-no logit delta, ~[-15, +15] typical range — broader than the
+      previous bge-reranker-base).  Candidates are sorted by
       logit descending; only the top RERANKER_TOP_K (5) with logit >=
       RERANKER_SCORE_THRESHOLD (0.0) are returned.  The reranker score
       replaces the raw Qdrant cosine in the returned relevance_score field.
@@ -1628,7 +1629,16 @@ async def search_documents(
     else:
         initial_limit = min(limit, 50)
 
-    async def _run_search() -> list[DocumentChunk]:
+    async def _run_search(query_text_for_embedding: str | None = None) -> list[DocumentChunk]:
+        """Embed + retrieve for a single query string.
+
+        ``query_text_for_embedding`` overrides the outer-scope ``query_text``
+        when multi-query expansion is active (2026-06-01). The sparse
+        encoder also uses the override so dense and sparse paths see the
+        same alternative phrasing. When None the original literal query
+        is used (backwards-compatible single-query path).
+        """
+        active_query = query_text_for_embedding or query_text
         loop = asyncio.get_event_loop()
         # Eval 15 R3 — geological query expansion. Annotate symbols
         # (Au→gold, g/t→grams per tonne, DDH→diamond drillhole) so the
@@ -1638,7 +1648,7 @@ async def search_documents(
         from app.services.geological_query_expansion import (  # noqa: PLC0415
             expand_query as _expand_geo_query,
         )
-        _expanded_query = _expand_geo_query(query_text)
+        _expanded_query = _expand_geo_query(active_query)
 
         # Eval 04 P3 — bge-small geological instruction prefix.
         # bge-small-en-v1.5 was trained to interpret a short instruction
@@ -1649,18 +1659,22 @@ async def search_documents(
         # the model treats the query like a passage and degrades
         # query/passage symmetry.
         #
-        # We use the geological-tilted variant (mentions "geological
-        # context") because the offline ablation showed +1.8 pts nDCG
-        # on the 200-query golden set vs the generic prompt.
-        _embed_input = (
-            "Represent this geological query for searching relevant "
-            "passages: " + _expanded_query
-        )
+        # Qwen3-Embedding swap (2026-06-03): the bge-era manual prefix
+        # ("Represent this geological query...") is replaced with sentence-
+        # transformers' `prompt_name="query"`, which applies the
+        # model-card-published query template
+        # ("Instruct: Given a web search query, retrieve relevant passages
+        # that answer the query\nQuery: <q>"). Documents stay raw — this is
+        # Qwen3-Embedding's query/document asymmetric encoding. Empty
+        # EMBEDDING_QUERY_PROMPT_NAME falls back to raw encoding for A-B.
+        _prompt_name = settings.EMBEDDING_QUERY_PROMPT_NAME or None
         # Dense query embedding (sync inference, off the event loop).
         query_vector: list[float] = await loop.run_in_executor(
             None,
             lambda: ctx.deps.embedding_model.encode(
-                _embed_input, normalize_embeddings=True
+                _expanded_query,
+                normalize_embeddings=True,
+                prompt_name=_prompt_name,
             ).tolist(),
         )
         # Sparse query encoding via SPLADE++ (sync inference, off the event loop).
@@ -1669,26 +1683,40 @@ async def search_documents(
         from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
         query_sparse: dict[int, float] = await loop.run_in_executor(
             None,
-            lambda: encode_sparse(query_text),
+            lambda: encode_sparse(active_query),
         )
 
         # Resolve workspace_id for mandatory GI-9 filter.
-        # Module 9 will provide workspace_id via JWT claims; until then we
-        # derive it from the project row (same approach as orchestrator).
-        _workspace_id = "a0000000-0000-0000-0000-000000000001"  # default
-        try:
-            if ctx.deps.pg_pool is not None:
-                async with ctx.deps.pg_pool.acquire() as _conn:
-                    _wid_row = await _conn.fetchrow(
-                        "SELECT workspace_id::text FROM silver.projects WHERE project_id = $1::uuid",
-                        project_id,
-                    )
-                if _wid_row and _wid_row["workspace_id"]:
-                    _workspace_id = _wid_row["workspace_id"]
-        except Exception as _wid_exc:
-            logger.debug(
-                "search_documents: workspace_id lookup failed (using default): %s", _wid_exc
-            )
+        # Resolution order (2026-06-03 audit item B — WorkspaceContext):
+        #   1. ctx.deps.workspace_id (JWT-derived)
+        #   2. silver.projects.workspace_id lookup by project_id
+        #   3. WorkspaceContext fallback (Phase 1: default tenant + metric;
+        #      Phase 2: hard error). Only fires when both 1 and 2 fail —
+        #      means the project_id is bogus or DB is unreachable.
+        _resolved_workspace_id: str | None = None
+        if getattr(ctx.deps, "workspace_id", None):
+            _resolved_workspace_id = str(ctx.deps.workspace_id)
+        else:
+            try:
+                if ctx.deps.pg_pool is not None:
+                    async with ctx.deps.pg_pool.acquire() as _conn:
+                        _wid_row = await _conn.fetchrow(
+                            "SELECT workspace_id::text FROM silver.projects WHERE project_id = $1::uuid",
+                            project_id,
+                        )
+                    if _wid_row and _wid_row["workspace_id"]:
+                        _resolved_workspace_id = _wid_row["workspace_id"]
+            except Exception as _wid_exc:
+                logger.debug(
+                    "search_documents: workspace_id lookup failed (using default): %s", _wid_exc
+                )
+
+        from types import SimpleNamespace as _SN_st  # noqa: PLC0415
+        from app.agent.workspace_context import WorkspaceContext as _WC_st  # noqa: PLC0415
+        _workspace_id = _WC_st.from_state(
+            _SN_st(workspace_id=_resolved_workspace_id),
+            site="tools.search_documents",
+        ).workspace_id
 
         # Query the active document collection via the Qdrant 1.17 Query API.
         # ADR-0010 flip — RETRIEVAL_USE_DOCUMENT_PASSAGES selects between the
@@ -1746,19 +1774,176 @@ async def search_documents(
             )
         return candidates
 
+    # ── 2026-06-02 — Multi-project decomposition ──────────────────────
+    # When MULTI_PROJECT_DECOMPOSITION_ENABLED and the query references
+    # 2+ named projects in the workspace, split into per-project sub-
+    # queries before running multi-query expansion. Fixes the
+    # asymmetric retrieval problem on cross-project comparison queries
+    # (50-question cross-project bench 2026-06-02 showed 60% refusal
+    # rate because retrieval pulled chunks for only ONE side of the
+    # comparison).
+    queries_to_search: list[str] = [query_text]
+    if settings.MULTI_PROJECT_DECOMPOSITION_ENABLED:
+        try:
+            from app.services.multi_project_decomposition import (  # noqa: PLC0415
+                decompose_query,
+                load_workspace_project_names,
+            )
+            # Workspace_id is derived inside _run_search via the
+            # silver.projects lookup; do the same here so per-project
+            # sub-queries scope to the right project list.
+            _wid_for_decomp: str | None = None
+            if ctx.deps.pg_pool is not None:
+                try:
+                    async with ctx.deps.pg_pool.acquire() as _conn:
+                        _wid_row = await _conn.fetchrow(
+                            "SELECT workspace_id::text FROM silver.projects "
+                            "WHERE project_id = $1::uuid",
+                            project_id,
+                        )
+                    if _wid_row and _wid_row["workspace_id"]:
+                        _wid_for_decomp = _wid_row["workspace_id"]
+                except Exception:  # noqa: BLE001
+                    _wid_for_decomp = None
+
+            _project_names = await load_workspace_project_names(
+                ctx.deps.pg_pool, _wid_for_decomp
+            )
+            _decomp = decompose_query(query_text, _project_names)
+            if _decomp.applied:
+                queries_to_search = list(_decomp.all_queries())
+                logger.info(
+                    "search_documents: multi-project decomposition fired "
+                    "for project=%s detected=%s (%d sub-queries + original)",
+                    project_id,
+                    _decomp.detected_projects,
+                    len(_decomp.sub_queries),
+                )
+        except Exception as _mpd_exc:  # noqa: BLE001
+            logger.warning(
+                "search_documents: multi-project decomposition failed "
+                "(%s) — proceeding with original query only",
+                _mpd_exc,
+            )
+
+    # ── 2026-06-01 — Multi-query expansion ─────────────────────────────
+    # When MULTI_QUERY_EXPANSION_ENABLED, ask a small LLM to draft
+    # alternative phrasings of query_text (synonym swap, HyDE, entity-
+    # focused) and union the Qdrant results across all of them. Catches
+    # corpus-vocabulary mismatches the user can't be expected to know
+    # (e.g. "Red Lake Gold Project" ↔ "Dixie Project" / "WRLG";
+    # "Article 5" ↔ "Section 5"). The reranker still runs against the
+    # ORIGINAL query so semantic intent is preserved.
+    if settings.MULTI_QUERY_EXPANSION_ENABLED:
+        try:
+            from app.services.multi_query_expansion import (  # noqa: PLC0415
+                expand_query_multi,
+            )
+            # Compose with multi-project decomposition: expand the
+            # ORIGINAL query only (the per-project sub-queries are
+            # already targeted; further LLM expansion would just add
+            # 6+ redundant variants and pad the candidate pool). If
+            # decomposition didn't fire, queries_to_search is just
+            # [query_text] at this point and the expansion is a
+            # no-op-aware passthrough.
+            _expansions = await expand_query_multi(
+                query_text,
+                anthropic_client=getattr(ctx.deps, "anthropic_client", None),
+                openai_http_client=getattr(ctx.deps, "openai_http_client", None),
+                redis_client=getattr(ctx.deps, "redis_client", None),
+                pg_pool=ctx.deps.pg_pool,
+            )
+            # _expansions[0] is the original; skip it to avoid
+            # duplicating the seed. The decomposition sub-queries (if
+            # any) stay in queries_to_search.
+            for _exp in _expansions[1:]:
+                if _exp not in queries_to_search:
+                    queries_to_search.append(_exp)
+            if len(queries_to_search) > 1:
+                logger.info(
+                    "search_documents: composed fan-out %d total variants "
+                    "for project=%s query_hash=%s",
+                    len(queries_to_search),
+                    project_id,
+                    query_hash(query_text),
+                )
+        except Exception as _mqe_exc:  # noqa: BLE001
+            # Defensive: expand_query_multi already swallows its own
+            # failures, but belt-and-suspenders here. Never let the
+            # expansion helper block the primary retrieval path.
+            logger.warning(
+                "search_documents: multi-query expansion failed (%s) — "
+                "proceeding with current queries_to_search list",
+                _mqe_exc,
+            )
+
+    # Fan out the inner _run_search across every variant in parallel.
+    # gather(return_exceptions=True) lets one variant's failure (e.g.
+    # malformed sparse vector for an unusual phrasing) drop without
+    # killing the others.
     try:
-        chunks = await asyncio.wait_for(_run_search(), timeout=settings.TIMEOUT_QDRANT_S)
+        per_query_results: list[Any] = await asyncio.wait_for(
+            asyncio.gather(
+                *(_run_search(q) for q in queries_to_search),
+                return_exceptions=True,
+            ),
+            timeout=settings.TIMEOUT_QDRANT_S,
+        )
     except TimeoutError:
         logger.warning(
-            "search_documents timed out after %.1fs for project=%s query_hash=%s",
+            "search_documents timed out after %.1fs for project=%s query_hash=%s "
+            "(variants=%d)",
             settings.TIMEOUT_QDRANT_S,
             project_id,
             query_hash(query_text),
+            len(queries_to_search),
         )
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (timeout)")
     except Exception:
         logger.exception("search_documents failed for project=%s", project_id)
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection} (error)")
+
+    # Union results by chunk_id, keep the max raw qdrant score across
+    # variants. The reranker downstream re-scores everything against the
+    # original query, so the union score is just used for tie-breaking
+    # if reranker is unavailable.
+    merged: dict[str, DocumentChunk] = {}
+    variants_with_results = 0
+    for result in per_query_results:
+        if isinstance(result, Exception):
+            logger.debug("search_documents: one variant raised %s — skipping", result)
+            continue
+        if not result:
+            continue
+        variants_with_results += 1
+        for chunk in result:
+            existing = merged.get(chunk.chunk_id)
+            if existing is None or chunk.relevance_score > existing.relevance_score:
+                merged[chunk.chunk_id] = chunk
+
+    chunks = list(merged.values())
+    # Sort by raw qdrant score so the reranker sees the strongest
+    # candidates first (deterministic ordering when reranker is absent).
+    chunks.sort(key=lambda c: c.relevance_score, reverse=True)
+    # Cap union size to stay within the reranker's wall-clock budget.
+    # Empirically (2026-06-02 diag run) bge-reranker-base on CPU
+    # times out at TIMEOUT_RERANKER_S=8s when given ≥25 pairs; at 18
+    # pairs it finishes comfortably. Decomposition + expansion can
+    # surface more candidates than that without lifting recall enough
+    # to justify the wider reranker pool — most of the long tail is
+    # near-duplicate chunks that MMR would prune anyway.
+    _union_ceiling = min(settings.RETRIEVAL_TOP_N * 2, 18)
+    if len(chunks) > _union_ceiling:
+        chunks = chunks[:_union_ceiling]
+
+    if variants_with_results > 1:
+        logger.info(
+            "search_documents: union of %d variants → %d unique candidates "
+            "for project=%s",
+            variants_with_results,
+            len(chunks),
+            project_id,
+        )
 
     if not chunks:
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection}")
@@ -1855,6 +2040,107 @@ async def search_documents(
                 chunks[0].relevance_score if chunks else 0.0,
                 project_id,
             )
+
+            # ── 2026-06-03 (audit item D) — source-trust boost ────────
+            # Multiplicative modulation of the reranker score by the
+            # per-source trust score in silver.source_trust_scores. Gated
+            # by SOURCE_TRUST_BOOST_ENABLED (default OFF); when first
+            # flipped on, SOURCE_TRUST_BOOST_SHADOW_MODE keeps the live
+            # ordering untouched so we can measure the rerank delta
+            # against the golden bench before committing.
+            #
+            # Why HERE (post-rerank) and not in fusion: cross-encoder
+            # rerank scores are already relevance-normalised; trust is a
+            # SEPARATE document-credibility signal that should compose
+            # on top, not get blended into the fusion. Doing it pre-rerank
+            # would let trust short-circuit the reranker's relevance call.
+            if (
+                settings.SOURCE_TRUST_BOOST_ENABLED
+                and chunks
+                and ctx.deps.pg_pool is not None
+            ):
+                try:
+                    from app.services.source_trust import (  # noqa: PLC0415
+                        boost_by_trust,
+                    )
+                    from app.metrics import (  # noqa: PLC0415
+                        SOURCE_TRUST_BOOST_APPLIED,
+                        SOURCE_TRUST_BOOST_RANK_DELTA,
+                    )
+
+                    pre_order_ids = [c.chunk_id for c in chunks]
+                    pre_top1 = pre_order_ids[0]
+
+                    chunk_dicts = [
+                        {
+                            "chunk_id": c.chunk_id,
+                            "source_document_id": c.source_document_id,
+                            "score": c.relevance_score,
+                        }
+                        for c in chunks
+                    ]
+                    async with ctx.deps.pg_pool.acquire() as _trust_conn:
+                        boosted = await boost_by_trust(
+                            _trust_conn,
+                            workspace_id=_workspace_id,
+                            retrieved_chunks=chunk_dicts,
+                            boost_weight=settings.SOURCE_TRUST_BOOST_WEIGHT,
+                            fallback_trust=settings.SOURCE_TRUST_BOOST_FALLBACK,
+                        )
+
+                    post_order_ids = [b["chunk_id"] for b in boosted]
+                    post_top1 = post_order_ids[0] if post_order_ids else pre_top1
+                    pre_idx = {cid: i for i, cid in enumerate(pre_order_ids)}
+                    rank_delta = sum(
+                        abs(pre_idx.get(cid, i) - i)
+                        for i, cid in enumerate(post_order_ids)
+                    )
+                    top1_changed = pre_top1 != post_top1
+                    mode = (
+                        "shadow"
+                        if settings.SOURCE_TRUST_BOOST_SHADOW_MODE
+                        else "live"
+                    )
+
+                    SOURCE_TRUST_BOOST_APPLIED.labels(
+                        mode=mode,
+                        top1_changed=str(top1_changed).lower(),
+                    ).inc()
+                    SOURCE_TRUST_BOOST_RANK_DELTA.observe(rank_delta)
+
+                    if not settings.SOURCE_TRUST_BOOST_SHADOW_MODE:
+                        # LIVE — apply the boosted scores + ordering.
+                        score_map = {b["chunk_id"]: b for b in boosted}
+                        reordered: list[DocumentChunk] = []
+                        for c in chunks:
+                            b = score_map.get(c.chunk_id)
+                            if b is not None:
+                                # boost_by_trust already clipped score
+                                # arithmetic; keep within [0, 1] for the
+                                # Citation model contract.
+                                c.relevance_score = max(
+                                    0.0, min(1.0, float(b["score"]))
+                                )
+                            reordered.append(c)
+                        reordered.sort(
+                            key=lambda c: c.relevance_score, reverse=True
+                        )
+                        chunks = reordered
+
+                    logger.info(
+                        "search_documents: source-trust boost mode=%s "
+                        "top1_changed=%s rank_delta=%d (project=%s)",
+                        mode, top1_changed, rank_delta, project_id,
+                    )
+                except Exception as _boost_exc:  # noqa: BLE001
+                    # Boost is best-effort: a failure here MUST NOT break
+                    # the live retrieval path. Surface in logs so the
+                    # shadow rollout catches integration bugs early.
+                    logger.warning(
+                        "search_documents: source-trust boost failed "
+                        "(project=%s): %s",
+                        project_id, _boost_exc,
+                    )
 
         return DocumentSearchResult(
             chunks=chunks,

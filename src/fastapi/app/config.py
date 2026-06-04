@@ -178,7 +178,36 @@ class Settings(BaseSettings):
     # /v1/chat/completions endpoint; Anthropic uses its native messages API.
     # -------------------------------------------------------------------------
 
-    LLM_BACKEND: str = "vllm"  # "vllm" | "anthropic"
+    LLM_BACKEND: str = "vllm"  # "vllm" | "anthropic"  (NOT "ollama" — see _validate_llm_backend below)
+
+    @field_validator("LLM_BACKEND")
+    @classmethod
+    def _validate_llm_backend(cls, v: str) -> str:
+        """Fail-fast guard on the Ollama sunset (2026-05-18).
+
+        BackendLiteral in app/models/answer_run.py still admits 'ollama'
+        for READING historical silver.answer_runs rows. But the 2026-06-02
+        audit migration tightened the DB CHECK to reject 'ollama' on
+        WRITE — so any new orchestrator run that resolves
+        `_backend_used_final = settings.LLM_BACKEND` to 'ollama' would
+        ValidationError-pass through Pydantic then PostgresCheckViolation-
+        fail at INSERT time, leaving the answer streamed but the audit row
+        missing (the EXACT silent-failure shape Theme D is supposed to
+        prevent).
+
+        Reject at config-load instead — FastAPI refuses to boot rather
+        than serve traffic that will silently lose lineage rows.
+        """
+        if v not in ("vllm", "anthropic"):
+            raise ValueError(
+                f"LLM_BACKEND must be 'vllm' or 'anthropic' (got {v!r}). "
+                "'ollama' was sunset 2026-05-18 — the matching CHECK "
+                "constraint on silver.answer_runs.backend_used was "
+                "tightened by migration "
+                "2026_06_02_220000_drop_ollama_from_answer_runs_backend_check, "
+                "so writes under LLM_BACKEND=ollama would fail at INSERT."
+            )
+        return v
 
     # Primary OpenAI-compatible target. With LLM_BACKEND=vllm (the only
     # local-LLM option post-cutover), the VLLM_* values below are
@@ -200,10 +229,13 @@ class Settings(BaseSettings):
     # `--quantization compressed-tensors`, NOT `awq_marlin`.
     #
     # Sized to fit the dev workstation's RTX A4500 (20 GB, compute 8.6 —
-    # Ampere). FP8 is not viable on Ampere (no native; emulation is slow);
-    # BF16 30B is too large to fit. AWQ INT4 weights are ~17 GB, leaving
-    # ~1.5-2 GB for KV cache at max_model_len=8192 with
-    # gpu_memory_utilization=0.92.
+    # Ampere). FP8 weights/compute is not viable on Ampere (no native; Ada
+    # SM 8.9+ required) but FP8 KV-cache STORAGE is fine via emulation. For
+    # Qwen3-14B AWQ INT4: weights ≈ 8.5 GB, working buffers ≈ 2.5 GB, leaving
+    # ~6.5 GB for the FP8 KV pool at gpu_memory_utilization=0.93. That fits
+    # max_model_len=16K at max-num-seqs=8 (~85K KV-token capacity vs
+    # theoretical peak 128K — realistic per-query ~4K context keeps actual
+    # KV well under budget).
     #
     # `VLLM_QUANTIZATION` is the value passed to `--quantization` on the vLLM
     # serve command. `awq_marlin` selects the Marlin INT4 kernels (Ampere-
@@ -225,7 +257,12 @@ class Settings(BaseSettings):
     VLLM_URL: str = "http://vllm:8000/v1"
     VLLM_MODEL: str = "Qwen/Qwen3-14B-AWQ"
     VLLM_QUANTIZATION: str = "awq_marlin"
-    VLLM_MAX_MODEL_LEN: int = 8192
+    # 2026-06-03 — raised 8192 → 16384 (Qwen3-14B native is 32K; A4500 KV
+    # math fits 16K at max-num-seqs=8). The dynamic max_tokens cap in
+    # _call_openai_compatible_llm reads this value to keep prompt+output
+    # under the engine's ceiling. Must stay in lockstep with the compose-
+    # side `--max-model-len`.
+    VLLM_MAX_MODEL_LEN: int = 16384
     VLLM_GPU_MEMORY_UTILIZATION: float = 0.92
     # Per-request output ceiling. Mirrors LLM_MAX_OUTPUT_TOKENS for the
     # OpenAI-compat path; keep aligned so the budget is consistent across
@@ -260,6 +297,19 @@ class Settings(BaseSettings):
     QWEN3_MIN_P: float = 0.0
     QWEN3_PRESENCE_PENALTY_NO_THINK: float = 1.5
 
+    # Temperature regimes (per Qwen team's published guidance):
+    #   *_GROUNDED   — low for RAG synthesis where determinism matters and
+    #                  we want the model to quote the context, not invent.
+    #                  RAG-specific divergence from Qwen's published default;
+    #                  callers that need creativity opt into *_DIVERSE.
+    #   *_DIVERSE    — Qwen's non-thinking default (0.7) for paraphrase
+    #                  generation, query expansion, HyDE-style hypotheticals.
+    #                  At 0.2 the multi-query expander was producing
+    #                  near-duplicate paraphrases that defeated the purpose
+    #                  of multi-query retrieval.
+    QWEN3_TEMPERATURE_GROUNDED: float = 0.1
+    QWEN3_TEMPERATURE_DIVERSE: float = 0.7
+
     # When thinking is ON, reasoning trace tokens are written to the
     # `reasoning` field but still draw from the response token budget on
     # Ollama 0.21.0. Bump the per-call num_predict by this much on
@@ -275,9 +325,15 @@ class Settings(BaseSettings):
     # for development; turn on in production if 429s from standard tier bite.
     ANTHROPIC_USE_PRIORITY_TIER: bool = False
 
-    # Legacy OpenAI-compatible fallback (pre-Anthropic integration). Kept for
-    # back-compat when users already configured LLM_FALLBACK_URL against an
-    # OpenAI-shaped proxy. For new installs, prefer LLM_BACKEND=anthropic.
+    # DEAD SETTINGS — kept for env-shape back-compat only. No production
+    # code reads them. The actual cross-backend failover is driven by
+    # `_resolve_local_llm_fallback_target()` in app/agent/llm_calls.py:654
+    # which prefers VLLM_URL/VLLM_MODEL, then LLM_PRIMARY_URL/LLM_PRIMARY_MODEL.
+    # Setting LLM_FALLBACK_ENABLED=true has zero behavioural effect — this is
+    # the trap the 2026-06-02 audit pass 4 caught (see P2-D in
+    # docs/handover/AUDIT_AND_FIX_REPORT.md). DO NOT add reads here without
+    # also wiring the failover path; deleting outright is preferable once
+    # any external deploys have rotated off these env keys.
     LLM_FALLBACK_ENABLED: bool = False
     LLM_FALLBACK_URL: str = ""
     LLM_FALLBACK_MODEL: str = ""
@@ -847,16 +903,39 @@ class Settings(BaseSettings):
     # Embedding and reranker model selection
     # -------------------------------------------------------------------------
 
-    # bge-small-en-v1.5 replaces all-MiniLM-L6-v2 — same 384 dim, cosine, but
-    # scores 10-15% higher on mineral/geological queries.  No Qdrant collection
-    # recreation is needed; run scripts/reembed_qdrant.py to re-encode existing
-    # points with the new model.
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
+    # Qwen3-Embedding-0.6B replaces bge-small-en-v1.5 (swapped 2026-06-03).
+    # MTEB-retrieval leaderboard: Qwen3-Embedding-0.6B beats bge-small by a
+    # wide margin and beats bge-large in most categories. Matryoshka (MRL)
+    # support means we can ship any output dim in [32, 1024]; we default to
+    # 1024 for full quality (Qdrant cosine cost scales linearly).
+    #
+    # Dimension change 384 → 1024 INVALIDATES every existing Qdrant
+    # vector. Migration is destructive: recreate collections, re-embed the
+    # corpus. See docs/runbooks/embedding-swap-qwen3.md.
+    #
+    # Query-side instruction: Qwen3-Embedding gives a 1-5% boost when the
+    # query is wrapped with "Instruct: <task>\nQuery: <q>". sentence-
+    # transformers' `prompt_name="query"` applies this automatically from
+    # the model card. Documents are encoded RAW (no instruction).
+    EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
+    EMBEDDING_DIMENSION: int = 1024
+    # Passed to SentenceTransformer.encode(prompt_name=...). When set,
+    # sentence-transformers reads the prompt template from the model's
+    # config_sentence_transformers.json (Qwen3-Embedding ships one).
+    # Use empty string to fall back to raw encoding (debug / A-B).
+    EMBEDDING_QUERY_PROMPT_NAME: str = "query"
 
-    # ms-marco-MiniLM-L-6-v2 is a cross-encoder that re-scores (query, chunk) pairs
-    # and produces raw logits.  Positive logits indicate a good match; the threshold
-    # is set to 0.0 (any positive score) to avoid over-filtering.
-    RERANKER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # INFORMATIONAL ONLY — the live reranker constant is owned by
+    # app/services/reranker.py (RERANKER_MODEL_NAME). This setting is not
+    # read anywhere; it exists for parity with the older ms-marco-era
+    # config shape. Kept in sync with the live constant so any future code
+    # that grows a `settings.RERANKER_MODEL_NAME` reference picks up the
+    # right model, not the retired one. To actually switch models, edit
+    # reranker.py + RERANKER_REVISION together.
+    # Qwen3-Reranker-0.6B score scale: yes-vs-no logit delta, broader range
+    # than bge ([-15, +15] typical). Threshold 0.0 still means "positive
+    # logit → relevant"; absolute magnitudes need re-tuning per corpus.
+    RERANKER_MODEL_NAME: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # Number of chunks fetched from Qdrant before reranking (coarse retrieval).
     # Latency-fix follow-up — was 20; cold queries blew the search_documents
@@ -865,6 +944,116 @@ class Settings(BaseSettings):
     # recall impact (bottom-10 ANN candidates almost never contain the
     # cited passage) and halves reranker wall time.
     RETRIEVAL_TOP_N: int = 10
+
+    # ── 2026-06-01 — Multi-query expansion ────────────────────────────
+    # When enabled, search_documents asks a small LLM to draft N
+    # alternative phrasings of the user's question (synonym swap, HyDE
+    # hypothetical, entity-focused) and unions retrieval across all of
+    # them. Reranker still runs against the ORIGINAL query so semantic
+    # intent is preserved. Catches naming/phrasing mismatches between
+    # the user's question and the corpus vocabulary (e.g. "Red Lake
+    # Gold Project" ↔ "Dixie Project" / "WRLG").
+    #
+    # Cost: +1 LLM call per uncached query (~300-800ms on Qwen3-14B-AWQ).
+    # Cached in Redis for 24h by sha256(query); typical hit rate ~60-80%
+    # under normal traffic (same questions get re-asked across sessions).
+    MULTI_QUERY_EXPANSION_ENABLED: bool = True
+    MULTI_QUERY_EXPANSION_N: int = 3
+    MULTI_QUERY_EXPANSION_TIMEOUT_S: float = 6.0
+    MULTI_QUERY_EXPANSION_CACHE_TTL_S: int = 86400  # 24h
+
+    # 2026-06-02 — Multi-project query decomposition. When the query
+    # mentions 2+ named projects in the workspace, split into per-
+    # project sub-queries before retrieval. Fixes asymmetric retrieval
+    # on cross-project comparison queries (50-question bench showed
+    # 60% refusal rate; cross-project bench result coming).
+    MULTI_PROJECT_DECOMPOSITION_ENABLED: bool = True
+
+    # ── 2026-06-03 (audit item D) — Source-trust boost ────────────────
+    # Modulates the cross-encoder rerank score by per-source trust
+    # (silver.source_trust_scores) so the LLM sees the most credible
+    # sources first. Multiplicative formula (boost.py):
+    #     boosted = score * (1 + WEIGHT * (trust - 0.5))
+    # — neutral trust (0.5) passes through unchanged, trust=1.0 gives
+    # WEIGHT/2 lift, trust=0.0 gives WEIGHT/2 cut. No discontinuities.
+    #
+    # Rollout (item D, AUDIT_AND_FIX_REPORT.md):
+    #   1. ENABLED=False (default) — boost code path is skipped entirely.
+    #   2. ENABLED=True + SHADOW_MODE=True — compute boost, emit metric,
+    #      DO NOT mutate scores. Watch georag_source_trust_boost_applied
+    #      against the golden-question bench for one sprint.
+    #   3. SHADOW_MODE=False — boost actually re-sorts chunks. Only flip
+    #      after the shadow week shows the rank-delta histogram and the
+    #      top1_changed counter look reasonable.
+    SOURCE_TRUST_BOOST_ENABLED: bool = False
+    SOURCE_TRUST_BOOST_SHADOW_MODE: bool = True
+    SOURCE_TRUST_BOOST_WEIGHT: float = 0.2
+    SOURCE_TRUST_BOOST_FALLBACK: float = 0.5
+
+    # ── 2026-06-01 — Sentence-level grounding verification ────────────
+    # After the LLM emits an answer, run an NLI-style check on each
+    # cited sentence vs. its cited chunks. Layer 2 typed-output
+    # validation enforces *structural* citation discipline (every
+    # claim has a marker); this layer adds the SEMANTIC check
+    # (the cited chunk actually supports the claim).
+    #
+    # Default is OFF — flip to True once you've spot-checked that the
+    # verifier model agrees with human readers on supported/unsupported
+    # verdicts. Currently the report is advisory only (metadata only,
+    # answer text is NOT modified). DROP_MODE removes flagged sentences
+    # before emit but should only be enabled after the operator has
+    # built trust in the verdicts.
+    SENTENCE_GROUNDING_ENABLED: bool = False
+    SENTENCE_GROUNDING_DROP_MODE: bool = False
+    SENTENCE_GROUNDING_MAX_SENTENCES: int = 12  # per answer
+    SENTENCE_GROUNDING_PER_SENTENCE_TIMEOUT_S: float = 4.0
+    SENTENCE_GROUNDING_CONCURRENCY: int = 4
+    SENTENCE_GROUNDING_CACHE_TTL_S: int = 86400  # 24h
+
+    # ── 2026-06-01 — Citation-first generation (#5, scaffold only) ────
+    # Atomic-claim extractor + composer pipeline. The extractor is
+    # production-ready (app.services.atomic_claim_extractor). The
+    # composer is a prototype. NOT yet wired into the orchestrator —
+    # wiring is a separate session requiring eval-driven A/B against
+    # the existing free-text pathway on the 1500 gap questions.
+    # 2026-06-01 — flipped ON: wired as a refusal-only salvage path in
+    # run_deterministic_rag. Only fires when the primary LLM call
+    # returned a refusal AND retrieval surfaced document chunks.
+    # Baseline 80% pass rate path is untouched; this targets the 20%
+    # refusal subset where the LLM bailed despite having relevant
+    # chunks in context. Disable to revert to legacy refusal-as-final.
+    CITATION_FIRST_ENABLED: bool = True
+    CITATION_FIRST_EXTRACTOR_TIMEOUT_S: float = 8.0
+    CITATION_FIRST_EXTRACTOR_CONCURRENCY: int = 4
+    CITATION_FIRST_COMPOSER_TIMEOUT_S: float = 15.0
+
+    # ── 2026-06-01 — Map-reduce summarization pipeline (#6) ───────────
+    # Dedicated summarize/synthesize path: scope decision → map (per-
+    # chunk summary) → reduce (synthesis) → faithfulness gate. Module
+    # is callable today via summarize_scope(...); NOT yet wired to the
+    # intent dispatcher. Wiring needs an IntentRoute.SUMMARIZE addition
+    # and a follow-up session.
+    #
+    # DEAD SETTING (audit item H, 2026-06-03) — NO READERS.
+    # ── This bool is documented as a gate, but NO production code reads
+    # it (grep `SUMMARIZER_ENABLED` outside docs/tests returns zero hits).
+    # The module `app/services/corpus_summarizer.py` runs unconditionally
+    # whenever `summarize_scope()` is called directly, and the orchestrator
+    # never calls it because the IntentRoute.SUMMARIZE dispatch was never
+    # added. ACTION when next touching this block:
+    #   - Wire it: add IntentRoute.SUMMARIZE + gate `corpus_summarizer`
+    #     invocation on this flag. Then this comment can come out.
+    #   - OR delete it: remove this field + the 5 SUMMARIZER_* sibling
+    #     fields below + corpus_summarizer.py + summarize_scope tests.
+    # Do NOT add NEW code that reads this flag without doing one of those
+    # — the half-wired state is what AUDIT_AND_FIX_REPORT.md item H was
+    # opened to close. Pinned by tests/test_dead_settings_tagged.py.
+    SUMMARIZER_ENABLED: bool = False
+    SUMMARIZER_SCOPE_TIMEOUT_S: float = 4.0
+    SUMMARIZER_MAP_TIMEOUT_S: float = 8.0
+    SUMMARIZER_REDUCE_TIMEOUT_S: float = 20.0
+    SUMMARIZER_MAP_CONCURRENCY: int = 5
+    SUMMARIZER_MAX_CHUNKS: int = 20  # per summary
 
     # Number of chunks to keep after reranking (fine retrieval, Layer 1 gate).
     # P1 #17 — bumped from 5 to 12 to give MMR a real candidate pool.
@@ -883,8 +1072,12 @@ class Settings(BaseSettings):
     # wiring is tracked as the §2a M-effort follow-up (see
     # `docs/architecture/six_subgraphs_spec.md` §6 gap list).
     #
-    # The values follow plan §2a Table A verbatim. Override via .env
-    # for benchmarking without touching code.
+    # The values follow plan §2a Table A verbatim. Note: overriding
+    # via .env has ZERO behavioural effect today — these settings are
+    # not read by any production code path (verified 2026-06-02 audit
+    # pass; see P2-D / dead-settings sweep in
+    # docs/handover/AUDIT_AND_FIX_REPORT.md). Wire the §2a path before
+    # changing the defaults.
     QDRANT_DENSE_TOP_K: int = 40
     QDRANT_SPARSE_TOP_K: int = 40
     POSTGIS_TOP_K: int = 50
@@ -907,6 +1100,20 @@ class Settings(BaseSettings):
     # change to update). The import is at module top — an in-class
     # ``from typing import ClassVar`` creates a non-annotated class
     # attribute that Pydantic's namespace inspector rejects.
+    #
+    # DEAD SETTING (audit item H, 2026-06-03) — NO READERS.
+    # ── This dict was added in OVERNIGHT_LOG.md step 2b "add 12-key
+    # temperature mapping" but never imported anywhere. The vLLM /
+    # Anthropic call paths use `settings.VLLM_TEMPERATURE` (line 263)
+    # as the single global temperature; no code looks up per-intent
+    # temperature here. Either:
+    #   - Wire it: change the LLM call sites in `orchestrator/__init__.py`
+    #     to look up `TEMPERATURE_BY_QUERY_TYPE.get(intent, VLLM_TEMPERATURE)`
+    #     and inject the result into the sampling params. Then delete
+    #     this comment.
+    #   - OR delete the field outright — there's no env-var contract
+    #     to preserve (ClassVar, not env-loaded).
+    # Pinned by tests/test_dead_settings_tagged.py.
     TEMPERATURE_BY_QUERY_TYPE: ClassVar[dict[str, float]] = {
         # Plan §2b intent-style keys (agentic_retrieval intents)
         "factual_lookup": 0.10,

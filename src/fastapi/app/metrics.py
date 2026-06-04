@@ -461,3 +461,83 @@ AGENTIC_PERSIST_FAILURES = Counter(
     "agentic-retrieval persist_node DB writes that exhausted all retries.",
     labelnames=("stage",),
 )
+
+# ---------------------------------------------------------------------------
+# Workspace resolution failures (2026-06-03 audit item B, Phase 1).
+#
+# Fires every time a hot path falls back to the hardcoded default-tenant
+# UUID because the upstream auth/middleware didn't supply a workspace
+# context. Phase 1 of the rollout: observe-only — the fallback still
+# applies so behavior is unchanged. Watch the counter for one sprint;
+# any non-zero rate means a real caller path is failing to thread the
+# workspace claim through. Phase 2 flips the silent fallback to a
+# hard `WorkspaceResolutionError`.
+#
+# Labels:
+#   - site: short tag for the call site ("orchestrator", "persist_node",
+#           "search_documents", etc.). Lets ops see WHICH path is
+#           leaking workspace context.
+# ---------------------------------------------------------------------------
+
+WORKSPACE_RESOLUTION_FAILURES = Counter(
+    "georag_workspace_resolution_failures_total",
+    "Hot-path workspace resolution that fell back to the default tenant. "
+    "Non-zero = upstream auth not threading workspace_id correctly. See "
+    "app/agent/workspace_context.py for the WorkspaceContext type and "
+    "AUDIT_AND_FIX_REPORT.md item B for the phased rollout to hard-fail.",
+    labelnames=("site",),
+)
+
+# ---------------------------------------------------------------------------
+# Qdrant payload audit (Guard 2 for 2026-06-01 outage).
+#
+# qdrant_payload_audit_wf scrolls a random sample of georag_chunks points
+# hourly and asserts the retrieval-required payload contract (text +
+# report_id + workspace_id). A non-zero rate here means new writes are
+# producing degenerate points that retrieval can't use — chat will refuse.
+# Alerts should page on rate > 0 sustained for 15 min.
+# ---------------------------------------------------------------------------
+
+QDRANT_PAYLOAD_AUDIT_VIOLATIONS = Counter(
+    "georag_qdrant_payload_audit_violations_total",
+    "georag_chunks points found by the hourly audit missing required payload keys.",
+    labelnames=("collection", "missing_key"),
+)
+
+QDRANT_PAYLOAD_AUDIT_RUNS = Counter(
+    "georag_qdrant_payload_audit_runs_total",
+    "Hourly Qdrant payload audit runs, labelled by outcome.",
+    labelnames=("outcome",),
+)
+
+# ---------------------------------------------------------------------------
+# Source-trust boost (audit item D — 2026-06-03).
+#
+# Flagged by SOURCE_TRUST_BOOST_ENABLED. When enabled in `shadow` mode the
+# boost is computed and its impact recorded HERE but the live ordering is
+# NOT modified — this lets ops measure the rerank delta against the
+# golden-question bench before flipping to `live`.
+#
+# Labels:
+#   - mode: "shadow" (compute+log only) or "live" (mutate scores+re-sort).
+#   - top1_changed: "true" if the top-1 chunk after boost differs from
+#                   the top-1 before boost. Lets ops see "how often does
+#                   trust actually flip the winner?" — the headline KPI
+#                   for whether the boost is doing real work.
+# ---------------------------------------------------------------------------
+
+SOURCE_TRUST_BOOST_APPLIED = Counter(
+    "georag_source_trust_boost_applied_total",
+    "Times boost_by_trust ran inside search_documents, labelled by mode "
+    "and whether the boost flipped the top-1 chunk. See "
+    "app/services/source_trust/boost.py for the formula and "
+    "AUDIT_AND_FIX_REPORT.md item D for the shadow → live rollout plan.",
+    labelnames=("mode", "top1_changed"),
+)
+
+SOURCE_TRUST_BOOST_RANK_DELTA = Histogram(
+    "georag_source_trust_boost_rank_delta",
+    "Absolute change in chunk position induced by boost_by_trust (per-chunk, "
+    "summed across the result set). Higher = boost is reshuffling more.",
+    buckets=(0, 1, 2, 3, 5, 8, 13, 21, 34),
+)
