@@ -93,6 +93,65 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(30)->by((string) $key);
         });
 
+        // ── Per-workspace limiters (audit item F, 2026-06-03) ────────
+        //
+        // 'uploads' and 'charts' are keyed on workspace_id, not user_id.
+        // Rationale: a malicious or runaway user inside workspace W
+        // shouldn't be able to drain compute that other members of W
+        // also share. Per-user keying would let one operator pin Dagster
+        // queues for the whole team; per-workspace keying matches the
+        // resource boundary the workspace itself enforces (RLS, queues,
+        // billing). Anonymous fallback to IP so a broken SPA can't poison
+        // every other anonymous request via a shared sentinel.
+        //
+        // Workspace resolution is fed by HandleInertiaRequests
+        // (session('current_workspace_id') — landed with audit item A);
+        // it falls back to the user's default workspace, then user id,
+        // then IP, so the limiter still works for unauth+legacy requests.
+        //
+        // Artisan exemption is automatic: rate limiters only execute as
+        // route middleware. `artisan ingest:reingest-project` and friends
+        // never traverse this code path, so backfills aren't capped.
+        $workspaceKey = static function (Request $request, string $prefix): string {
+            $workspaceId = (string) ($request->session()->get('current_workspace_id') ?? '');
+            if ($workspaceId === '') {
+                $user = $request->user();
+                if ($user !== null && method_exists($user, 'defaultWorkspaceId')) {
+                    $workspaceId = (string) ($user->defaultWorkspaceId() ?? '');
+                }
+            }
+            if ($workspaceId !== '') {
+                return $prefix.':ws:'.$workspaceId;
+            }
+            // Fall back to user id, then IP, then sentinel.
+            $userId = $request->user()?->id;
+            if ($userId !== null) {
+                return $prefix.':u:'.$userId;
+            }
+
+            return $prefix.':ip:'.($request->ip() ?? 'anonymous-unknown');
+        };
+
+        // 'uploads': 200 / hour per workspace.
+        // Sized for normal exploration teams: typical bulk drop is
+        // 50-150 files in one session; 200/hr leaves room for two such
+        // bursts plus retries without bumping into the limit. A team
+        // running an actual backfill should use artisan (which is exempt)
+        // rather than the UI.
+        RateLimiter::for('uploads', function (Request $request) use ($workspaceKey): Limit {
+            return Limit::perHour(200)->by($workspaceKey($request, 'uploads'));
+        });
+
+        // 'charts': 60 / minute per workspace.
+        // Chart renders are interactive: pan / filter / re-pivot can
+        // fire 10-20 renders/min from a single tab. 60/min absorbs three
+        // concurrent operators in one workspace without throttling, but
+        // shuts down a runaway loop (looped frontend re-renders, bot
+        // scraping the gallery) within a minute.
+        RateLimiter::for('charts', function (Request $request) use ($workspaceKey): Limit {
+            return Limit::perMinute(60)->by($workspaceKey($request, 'charts'));
+        });
+
         // Phase H4 §7 — bridge:report-progress rate limit.
         // FastAPI POSTs to /api/internal/admin/reports/{build_id}/progress
         // from generate_report; even a runaway worker shouldn't be able to

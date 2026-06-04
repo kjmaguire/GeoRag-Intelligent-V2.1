@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\CollarController;
 use App\Http\Controllers\Api\V1\ColumnMappingController;
 use App\Http\Controllers\Api\V1\CoverageDensityController;
 use App\Http\Controllers\Api\V1\DrillUploadController;
+use App\Http\Controllers\Api\V1\EvidenceController;
 use App\Http\Controllers\Api\V1\ExportController;
 use App\Http\Controllers\Api\V1\HoleAnalysisController;
 use App\Http\Controllers\Api\V1\IngestProgressController;
@@ -145,14 +146,22 @@ Route::prefix('v1')->group(function () {
         Route::get('exports/{export}/download', [ExportController::class, 'download'])
             ->name('exports.download');
 
-        // File upload — uploads to MinIO bronze bucket (triggers Dagster sensor)
-        Route::post('projects/{project}/upload', [UploadController::class, 'store']);
+        // File upload — uploads to MinIO bronze bucket (triggers Dagster sensor).
+        // throttle:uploads (audit item F) — 200/hr per workspace. The dispatch-
+        // side HatchetDispatchThrottle still applies its own per-workspace cap
+        // downstream; this is the EDGE limiter that stops the user from queueing
+        // ten thousand uploads before they hit the dispatch layer.
+        Route::post('projects/{project}/upload', [UploadController::class, 'store'])
+            ->middleware('throttle:uploads');
         Route::get('upload/categories', [UploadController::class, 'categories']);
 
         // CC-01 Item 1 — drill-data upload: slug-routed, bronze.source_files
         // anchored, synchronous Dagster GraphQL dispatch. Distinct from the
         // generic /upload above by design — see DrillUploadController docblock.
-        Route::post('projects/{slug}/drill-uploads', [DrillUploadController::class, 'store']);
+        // Same throttle:uploads bucket so a 200-file drill upload doesn't share
+        // budget separately from a parallel generic-upload session.
+        Route::post('projects/{slug}/drill-uploads', [DrillUploadController::class, 'store'])
+            ->middleware('throttle:uploads');
 
         // Vendor profiles — global column-mapping profiles for parser-time field resolution
         Route::apiResource('vendor-profiles', VendorProfileController::class);
@@ -163,6 +172,14 @@ Route::prefix('v1')->group(function () {
 
         // Citation resolution — looks up source text for a citation's source_chunk_id
         Route::get('citations/resolve', [CitationController::class, 'resolve']);
+
+        // Evidence Inspector — Laravel proxy for FastAPI /v1/evidence/{id}.
+        // Added 2026-06-03 to close the VITE_SERVICE_KEY leak vector
+        // (see EvidenceController docblock + AUDIT_AND_FIX_REPORT.md
+        // Theme K). The proxy resolves the evidence_item's project,
+        // gates on hasProjectAccess, mints the FastAPI JWT, injects
+        // the service key, and forwards.
+        Route::get('evidence/{evidenceId}', [EvidenceController::class, 'show']);
 
         // §19.2 Trust Inspector — proxy to FastAPI trust-summary endpoint.
         // Powers the per-answer-run drawer with the 7-section trust payload.
@@ -180,10 +197,14 @@ Route::prefix('v1')->group(function () {
         )->where('tail', '.*');
 
         // §17.3 Charts Gallery — render any of the 8 chart kinds.
+        // throttle:charts (audit item F) — 60/min per workspace. Renders are
+        // interactive and bursty; the limit is sized to absorb 3 concurrent
+        // operators per workspace while shutting down a runaway re-render loop
+        // inside a minute.
         Route::post(
             'charts/render',
             [ChartsGalleryController::class, 'render'],
-        );
+        )->middleware('throttle:charts');
 
         // §3.3 Public REST API breadth — 8 endpoint groups + self-describing index.
         Route::get('', [PublicApiController::class, 'index']);
