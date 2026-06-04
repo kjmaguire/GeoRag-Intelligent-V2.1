@@ -24,7 +24,23 @@
 -- shared_preload_libraries (set in docker-compose command:); CREATE EXTENSION
 -- registers the (small) catalog metadata. Without preload, "extension" still
 -- works but the auto-logging behavior is inactive.
-CREATE EXTENSION IF NOT EXISTS auto_explain;
+--
+-- 2026-06-03 — Wrapped in a tolerant DO block. The vanilla postgis/postgis
+-- Debian image used by the migration-ordering verifier (see
+-- scripts/verify_migration_ordering.sh) doesn't ship the auto_explain
+-- contrib `.so`, so `CREATE EXTENSION IF NOT EXISTS auto_explain` raises
+-- "extension not available". The DO block checks pg_available_extensions
+-- and skips silently when missing. Production PG has it; dev / verifier
+-- containers don't.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'auto_explain') THEN
+        CREATE EXTENSION IF NOT EXISTS auto_explain;
+    ELSE
+        RAISE NOTICE 'auto_explain not available in this Postgres build — skipping. Production should have it via contrib package.';
+    END IF;
+END
+$$;
 
 -- h3: geospatial hex indexing. Used by gold-tier aggregation and (Phase 5+)
 -- target scoring grid math. h3_postgis requires postgis_raster, which has a
