@@ -38,14 +38,59 @@ class HandleInertiaRequests extends Middleware
      */
     public function share(Request $request): array
     {
+        $user = $request->user();
+
+        // ── Workspace context (2026-06-03 audit item A) ─────────────
+        // Resolve the user's workspace memberships + current selection
+        // once per request and surface to every Inertia page. Previously
+        // each controller had to derive workspace_id from the user's
+        // projects, and a dozen sites had it wrong (`$user->workspace_id`
+        // null read → hardcoded default-tenant fallback). With this
+        // shared data:
+        //
+        //   - Frontend reads `auth.user.current_workspace_id` instead of
+        //     a localStorage key that's never set.
+        //   - Controllers reach for `$request->user()->defaultWorkspaceId()`
+        //     or session('current_workspace_id') instead of the
+        //     `?? '<default>'` anti-pattern.
+        //   - The Reverb workspace.{id}.activity subscription target
+        //     stops landing on the default tenant for everyone.
+        //
+        // The current_workspace_id lookup order:
+        //   1. session('current_workspace_id') — user explicitly chose
+        //      a workspace via UI (workspace switcher, future).
+        //   2. User->defaultWorkspaceId() — earliest-joined workspace.
+        //   3. null — brand-new account before onboarding.
+        //
+        // Lazy-closed for both the workspaces list and the id so partial
+        // reloads can skip them.
+        $workspacesShare = fn () => $user
+            ? $user->workspaces()
+                ->orderBy('workspace_user.created_at', 'asc')
+                ->get(['silver.workspaces.workspace_id', 'silver.workspaces.name', 'silver.workspaces.slug'])
+                ->map(fn ($w) => [
+                    'workspace_id' => (string) $w->workspace_id,
+                    'name' => (string) $w->name,
+                    'slug' => (string) ($w->slug ?? ''),
+                    'role' => (string) ($w->pivot->role ?? 'member'),
+                ])->values()->all()
+            : [];
+
+        $currentWorkspaceShare = fn () => $user
+            ? ($request->session()->get('current_workspace_id') ?? $user->defaultWorkspaceId())
+            : null;
+
         return [
             ...parent::share($request),
             'auth' => [
-                'user' => $request->user() ? [
-                    'id' => $request->user()->id,
-                    'name' => $request->user()->name,
-                    'email' => $request->user()->email,
-                    'is_admin' => (bool) ($request->user()->is_admin ?? false),
+                'user' => $user ? [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'is_admin' => (bool) ($user->is_admin ?? false),
+                    // Workspace context — see workspace-share rationale above.
+                    'workspaces' => $workspacesShare,
+                    'current_workspace_id' => $currentWorkspaceShare,
                 ] : null,
             ],
             'flash' => [
