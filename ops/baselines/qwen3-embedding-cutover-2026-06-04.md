@@ -3,8 +3,17 @@
 **Cutover status:** EMBED IN PROGRESS (live as of doc commit time)
 **Production state at commit:** 9,099 silver passages being re-embedded
 into 1,024-dim `georag_chunks` collection with Qwen/Qwen3-Embedding-0.6B
-**Embed rate:** ~30 passages/min on CPU (single-process)
-**ETA at this rate:** ~5 hours from cutover start (16:41 UTC → ~21:41 UTC)
+**Embed rate (revised):** ~113 passages/min on the A4500 GPU
+(batch=32 × ~17s/batch). 261 batches total against the
+`silver.document_passages WHERE embedding_id IS NULL` queue (8,331
+rows pending + 768 already landed before the L5 incident).
+**ETA at this rate:** ~73 min from the resumed-at timestamp.
+
+The previous "~30 passages/min on CPU, ~5 hours" estimate was for the
+initial run that died with the FastAPI container at 768 points. The
+resumed run is GPU-accelerated via SPLADE++ on CUDA + Qwen3 on CUDA
+and the rate is ~3.8× faster. Don't pin the original ETA in the
+runbook — capacity depends on the box.
 
 ## Eval baseline
 
@@ -68,6 +77,31 @@ vector name error: text`. **Real fix:** the cutover used a direct
 `curl PUT /collections/georag_chunks` with both dense + sparse
 vectors_config. init_qdrant.py needs a follow-up commit to declare
 the sparse vector schema natively.
+
+### 5a. Container death = embed death (no resume infrastructure)
+
+When the FastAPI container died mid-cutover (because pr/13 didn't merge
+pr/03 archive-ingest-runs, so `app.hatchet_workflows.ingest_zip_archive`
+couldn't import + uvicorn went into a death-loop), the bare-subprocess
+embed died with it. There's no resume — embedding state lives in
+`silver.document_passages.embedding_id` so the script CAN safely resume
+("WHERE embedding_id IS NULL" is the work-queue), but the L1 cutover
+script was `reembed_qdrant.py` which iterates the qdrant collection,
+not silver — so it only re-encoded the 768 already in qdrant and stalled
+on 0 new work. **Fix:** added `_embed_silver_pending_cutover.py` that
+calls the canonical `embed_pending_passages` service directly. Pin
+this script in the runbook for any future cold-start re-embed.
+
+### 5b. pr/13 missing merge of pr/03 = bootable image gap
+
+`pr/13-mechanical-followups` was built on `pr/08 + pr/08b + pr/12`
+without merging `pr/03-archive-ingest-runs-observability`. But
+`app/routers/shadow_trigger.py` (introduced earlier) imports
+`app.hatchet_workflows.ingest_zip_archive` which only exists on pr/03.
+Lesson: when a router imports a workflow from a different PR branch,
+the PR-stacking tree must form a DAG that includes BOTH branches as
+ancestors of any branch tested standalone. Fixed by merging pr/03 into
+pr/13 (commit 279dea1).
 
 ### 5. Production was running bge-small-domain-ft (a fine-tune)
 
