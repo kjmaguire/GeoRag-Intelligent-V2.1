@@ -216,10 +216,9 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # left in the allowlist as a sentinel (will be deleted in a
         # separate cleanup).
         "hatchet_workflows/_archived/shadow_diff.py",
-        # support_replay.py remains: has the support_cockpit-style
-        # mid-transaction GUC realignment pattern (set default → read
-        # ticket workspace → realign). NOT a mechanical migration.
-        "hatchet_workflows/support_replay.py",
+        # support_replay.py — MIGRATED 2026-06-04 to ADR-0014
+        # lookup_and_rescope (block A) + scoped_connection (block B).
+        # No longer needs the allowlist entry.
         # OCR persist helper — migrated 2026-06-03.
         # routers (4 sites remaining after REC#2 Phase-2 sweep).
         # citation_feedback.py migrated 2026-06-03 via REC#2 Phase 2.
@@ -245,9 +244,12 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # cron-style batch list-tickets path — that one is a single
         # scope (not two-phase) and should migrate to scoped_connection
         # instead of lookup_and_rescope.
-        "services/support_cockpit/escalation_routing.py",
-        "services/support_cockpit/root_cause_investigation.py",
-        "services/support_cockpit/support_packet.py",
+        # 3 of 4 support_cockpit services (escalation_routing,
+        # root_cause_investigation, support_packet) migrated to
+        # lookup_and_rescope 2026-06-04 — no longer have bespoke
+        # set_config. ticket_triage.py keeps its entry because its
+        # cron-style batch path still uses a single-scope set_config
+        # (the primary triage_ticket path is on lookup_and_rescope).
         "services/support_cockpit/ticket_triage.py",
         # services/tool_gateway/gateway.py migrated 2026-06-03 (REC#2
         # Phase-2 sweep — 10 bespoke sites replaced with scoped_connection).

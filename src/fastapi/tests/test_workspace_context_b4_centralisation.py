@@ -111,14 +111,14 @@ def test_migrated_sites_import_the_constant() -> None:
         APP / "agents" / "phase10" / "root_cause_investigation.py",
         APP / "agents" / "phase10" / "support_packet.py",
         APP / "agents" / "phase10" / "ticket_triage.py",
-        # support_cockpit services (4 remaining; customer_response_drafting
-        # migrated to ADR-0014 lookup_and_rescope which removed the
-        # LEGACY_DEFAULT_TENANT_UUID import entirely — its REC#2 Phase-2
-        # supersedes B4 for that file. Pinned now by
-        # tests/test_lookup_and_rescope.py + tests/test_scoped_connection.py).
-        APP / "services" / "support_cockpit" / "escalation_routing.py",
-        APP / "services" / "support_cockpit" / "root_cause_investigation.py",
-        APP / "services" / "support_cockpit" / "support_packet.py",
+        # support_cockpit services — ADR-0014 lookup_and_rescope landed
+        # 2026-06-04 across escalation_routing, root_cause_investigation,
+        # support_packet, AND customer_response_drafting (the original
+        # reference). All four no longer import LEGACY_DEFAULT_TENANT_UUID;
+        # they're pinned by tests/test_lookup_and_rescope.py +
+        # tests/test_scoped_connection.py instead. ticket_triage.py keeps
+        # the import because its cron-style batch path still uses the
+        # constant directly (single-scope, not two-phase).
         APP / "services" / "support_cockpit" / "ticket_triage.py",
         # hatchet_workflows (6 in B4, then 4 after REC#1).
         # REC#1 (2026-06-03) superseded B4 for embed_pending_passages.py
@@ -130,7 +130,11 @@ def test_migrated_sites_import_the_constant() -> None:
         # tests/test_workspace_dependency.py::test_no_workflow_input_defaults_legacy_uuid.
         APP / "hatchet_workflows" / "ingest_pdf.py",
         APP / "hatchet_workflows" / "nightly_ingestion_integrity.py",
-        APP / "hatchet_workflows" / "support_replay.py",
+        # support_replay.py migrated to ADR-0014 lookup_and_rescope +
+        # scoped_connection (2026-06-04), which removed the
+        # LEGACY_DEFAULT_TENANT_UUID + WORKSPACE_RESOLUTION_FAILURES
+        # imports entirely. Pinned by tests/test_lookup_and_rescope.py
+        # + tests/test_scoped_connection.py.
         APP / "hatchet_workflows" / "train_target_model.py",
         # router + service (2)
         APP / "routers" / "visualizations.py",
@@ -166,7 +170,10 @@ def test_runtime_fallback_sites_emit_resolution_metric() -> None:
     """
     metric_emitting_sites = [
         APP / "hatchet_workflows" / "ingest_pdf.py",
-        APP / "hatchet_workflows" / "support_replay.py",
+        # support_replay.py no longer emits the metric because the
+        # bootstrap-lookup-realign pattern was replaced by
+        # lookup_and_rescope (which counts elevation via its own
+        # bootstrap_reason allowlist + metric). 2026-06-04 ADR-0014 swap.
         APP / "hatchet_workflows" / "train_target_model.py",
         APP / "routers" / "visualizations.py",
         APP / "services" / "tool_gateway" / "impls.py",
