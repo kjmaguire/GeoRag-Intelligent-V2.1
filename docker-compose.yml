@@ -627,7 +627,10 @@ services:
       resources:
         limits:
           cpus: "2.0"
-          memory: 2G
+          # Raised from 2G → 8G to support ZIP archive uploads (up to 5 GB
+          # ZIPs). Swoole streams large files but workers need headroom to
+          # hold the upload body during MinIO put + SHA256 computation.
+          memory: 8G
         reservations:
           memory: 256M
     profiles: ["dev-light", "dev-full"]
@@ -809,7 +812,26 @@ services:
     ports:
       - "${MARTIN_PORT:-3002}:3000"
     environment:
-      DATABASE_URL: "postgresql://${GEORAG_APP_USER:-georag_app}:${GEORAG_APP_PASSWORD}@postgresql:5432/${POSTGRES_DB:-georag}"
+      # 2026-06-03 audit item E — Martin connects as the read-only
+      # `martin_ro` role, NOT `georag_app`. Martin's job is rendering
+      # tiles (SELECT on silver + EXECUTE on pg_*_by_project functions);
+      # giving it the read+write `georag_app` role meant a Martin
+      # compromise (SSRF, PostGIS injection through a tile function)
+      # could write to silver. `martin_ro` inherits `georag_read`
+      # (SELECT on silver) and gets per-function EXECUTE via migration
+      # 2026_06_03_030000. See AUDIT_AND_FIX_REPORT.md Theme E.
+      #
+      # Rotation playbook for prod (NOT applied automatically — env
+      # must carry MARTIN_RO_PASSWORD before this service restarts):
+      #   1. Apply migration 2026_06_03_030000_grant_tile_functions_to_martin_ro.
+      #   2. Set MARTIN_RO_PASSWORD in the prod env (SOPS / vault).
+      #   3. ALTER ROLE martin_ro WITH PASSWORD '<value>' on the cluster.
+      #   4. docker compose up -d martin (it picks up the new env on restart).
+      #   5. Verify tiles render via /tiles/silver/collars/0/0/0.pbf.
+      #   6. Revoke any lingering georag_app workspace-specific grants
+      #      that were added explicitly for Martin in the past (none
+      #      identified in this audit; check log scrape).
+      DATABASE_URL: "postgresql://${MARTIN_RO_USER:-martin_ro}:${MARTIN_RO_PASSWORD:-${GEORAG_APP_PASSWORD}}@postgresql:5432/${POSTGRES_DB:-georag}"
     volumes:
       - ./docker/martin/martin.yaml:/config/martin.yaml:ro
     networks:
@@ -1453,6 +1475,7 @@ services:
         mc mb --ignore-existing georag/${MINIO_BUCKET_EXPORTS:-exports} &&
         mc mb --ignore-existing georag/${MINIO_BUCKET_BRONZE_RASTER:-bronze-raster} &&
         mc mb --ignore-existing georag/${MINIO_BUCKET_BACKUPS:-georag-backups} &&
+        mc mb --ignore-existing georag/${MINIO_BUCKET_WORKSPACE_EXPORTS:-workspace-exports} &&
         mc mb --ignore-existing georag/tier-hot &&
         mc mb --ignore-existing georag/tier-warm &&
         mc mb --ignore-existing georag/tier-cold &&
@@ -1486,18 +1509,23 @@ services:
   #       Anthropic-429s through `_call_openai_compatible_llm` against
   #       VLLM_URL/VLLM_MODEL — see app/agent/orchestrator.py.
   #
-  # Canonical V1 prod model is `Qwen/Qwen3-14B-AWQ` — a 30B-param
-  # MoE model with ~3B active params/token:
-  #   - FP16:           ~60 GB VRAM   (1 × H100 80GB or 2 × A6000)
-  #   - INT8:           ~32 GB VRAM   (1 × A6000 or 2 × A5000)
-  #   - 4-bit quant:    ~16 GB VRAM   (RTX 4090 / 4080 16GB OK)
-  # The 16-GB-Q4 path makes Qwen 3 14B viable on dev workstations
-  # while the same model scales to prod GPUs.
+  # Canonical V1 prod model is `Qwen/Qwen3-14B-AWQ` — the dense 14.8B-param
+  # Qwen3 hybrid model (thinking-toggleable via chat_template_kwargs), AWQ
+  # INT4 quantised. The earlier Qwen3-30B-A3B MoE was reverted to this 14B
+  # dense AWQ in 2026-05 to free VRAM for hatchet-worker-ai's bge-small /
+  # bge-reranker-base / SPLADE++ co-tenancy on the A4500.
+  # VRAM footprint (vLLM v0.21, max-model-len=16K, max-num-seqs=8):
+  #   - Weights (AWQ INT4):           ~8.5 GB
+  #   - Working buffers + cudagraphs: ~2.5 GB
+  #   - KV pool (FP8 KV-cache):       ~6.5 GB (~85K KV-tokens)
+  #   - Total at gpu_memory_util=0.93 on a 20 GB A4500: ~17.5 GB
+  # Native context 32K (extensible to 131K with YaRN); we serve 16K to
+  # leave KV headroom for max-num-seqs=8 concurrency.
   #
   # Workstation-friendly fits on a single GPU:
-  #   VLLM_MODEL=Qwen/Qwen3-14B-AWQ                  # 30B MoE / ~16 GB Q4 (CANONICAL V1)
-  #   VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct                  # 7B VL  / ~16 GB FP16 (§04p Stage-6)
-  #   VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct             # 8B     / ~16 GB FP16 (alternative)
+  #   VLLM_MODEL=Qwen/Qwen3-14B-AWQ                  # 14B dense AWQ / ~9 GB weights (CANONICAL V1)
+  #   VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct         # 7B VL  / ~16 GB FP16 (§04p Stage-6)
+  #   VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct    # 8B     / ~16 GB FP16 (alternative)
   #
   # Bring vLLM up explicitly when prod-shaped testing is needed:
   #   docker compose --profile gpu-llm-prod up -d vllm
@@ -1555,6 +1583,19 @@ services:
       - '8000'
       - '--host'
       - '0.0.0.0'
+      # Context window. 2026-06-03 — raised default 8192 → 16384 with the
+      # matching max-num-seqs drop 12 → 8 below. Qwen3-14B-AWQ supports
+      # 32K native (131K with YaRN). FP8 KV math on A4500:
+      #   weights ≈ 8.5 GB (14.8B × 0.5 bytes INT4 + ~10% AWQ overhead)
+      #   working buffers + cuda graphs ≈ 2.5 GB
+      #   free for KV ≈ 18.6 × 0.93 − 8.5 − 2.5 ≈ 6.5 GB
+      #   FP8 KV per token ≈ 80 KiB
+      #   KV-token capacity ≈ 6.5 GiB / 80 KiB ≈ 85K tokens
+      #   At max-num-seqs=8, 16K context: peak 128K tokens (theoretical
+      #   only — most queries use ≤4K context, so realistic peak is well
+      #   inside budget). vLLM preempts cleanly when KV is exhausted.
+      # Set VLLM_MAX_MODEL_LEN=8192 + VLLM_MAX_NUM_SEQS=12 for the old
+      # throughput-favoring profile.
       - '--max-model-len'
       - '${VLLM_MAX_MODEL_LEN:-16384}'
       - '--gpu-memory-utilization'
@@ -1566,9 +1607,11 @@ services:
       # Concurrency cap. vLLM defaults to ~256 which is sized for H100/A100;
       # on the A4500 (20 GB VRAM, ADR-0001) every concurrent sequence
       # claims KV-pool slots and pushes the engine into swap or OOM (exit
-      # 137). Floor matches the burst target (2 sustained / 4-6 burst).
+      # 137). 2026-06-03 — dropped 12 → 8 in lockstep with the 8K → 16K
+      # max-model-len raise so peak KV stays in budget. Burst target
+      # (2 sustained / 4-6 burst) is still met.
       - '--max-num-seqs'
-      - '${VLLM_MAX_NUM_SEQS:-12}'
+      - '${VLLM_MAX_NUM_SEQS:-8}'
       - '--enable-prefix-caching'
       - '--enable-chunked-prefill'
       # NOTE: v0.21 made xgrammar the default guided-decoding backend
@@ -1602,9 +1645,36 @@ services:
       # startup error reported by the engine core under the post-Phase-5
       # config. If you raise --max-num-seqs back above 8, raise this too.
       - '--compilation-config'
-      - '{"max_cudagraph_capture_size":12,"cudagraph_capture_sizes":[1,2,4,8,12]}'
+      # cudagraph capture set MUST track max-num-seqs (above). When
+      # max-num-seqs=8 the graphs for batch ≥ 12 are unused buffer reservation;
+      # capturing only [1,2,4,8] gives full kernel coverage for the live
+      # concurrency band. If you raise max-num-seqs back to 12, raise this
+      # capture set to [1,2,4,8,12] in lockstep.
+      - '{"max_cudagraph_capture_size":8,"cudagraph_capture_sizes":[1,2,4,8]}'
       - '--tensor-parallel-size'
       - '${VLLM_TENSOR_PARALLEL:-1}'
+      # Tighten chat-template trust boundary. vLLM defaults to trusting the
+      # model's bundled chat template; require explicit error if Qwen3 ever
+      # ships an updated template we haven't reviewed (Hard Rule #5 —
+      # hallucination prevention). Matches docker/compose.vllm.yml.
+      - '--trust-remote-code=false'
+      # We never request logprobs in this stack. Capping at 0 frees the
+      # per-step logprob allocation (small but real on long generations).
+      # Raise to 5 if a future Pydantic-AI judge needs top-k logprobs.
+      - '--max-logprobs=0'
+      # Qwen3 reasoning parser (vLLM v0.21+). When the model emits
+      # <think>...</think> blocks (Qwen3 hybrid model with enable_thinking
+      # left on, or a fine-tune that ignores the chat-template flag),
+      # vLLM extracts them into message.reasoning_content instead of
+      # leaving them inline in message.content. Cleaner than the post-hoc
+      # regex strip in _call_openai_compatible_llm — the strip stays as
+      # defence-in-depth, but the parser handles the common case at the
+      # engine boundary. Costs nothing when no <think> blocks emitted.
+      - '--reasoning-parser=qwen3'
+      # Enable the reasoning extractor (the --reasoning-parser flag
+      # selects WHICH parser; this flag turns the extractor ON). Both are
+      # required.
+      - '--enable-reasoning'
     # Larger SHM than docker's 64 MiB default — vLLM uses SHM for inter-
     # worker tensor staging (when tensor-parallel > 1) and for prefix-cache
     # shards. Generous on the dev box; raise on multi-GPU prod.
