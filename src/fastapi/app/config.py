@@ -847,16 +847,38 @@ class Settings(BaseSettings):
     # Embedding and reranker model selection
     # -------------------------------------------------------------------------
 
-    # bge-small-en-v1.5 replaces all-MiniLM-L6-v2 — same 384 dim, cosine, but
-    # scores 10-15% higher on mineral/geological queries.  No Qdrant collection
-    # recreation is needed; run scripts/reembed_qdrant.py to re-encode existing
-    # points with the new model.
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
+    # Qwen/Qwen3-Embedding-0.6B (1024-dim, cosine) replaces BAAI/bge-small-en-v1.5
+    # (384-dim) per the 2026-06-03 dual model swap. Dim change required full
+    # Qdrant collection recreation (see scripts/reembed_qdrant.py + the
+    # qdrant-snapshot runbook). Family-aligned with the Qwen3-14B-AWQ
+    # synthesizer + Qwen3-Reranker-0.6B (shared tokenizer + training data
+    # distribution). Until the re-embed runs against a fresh collection,
+    # queries return HTTP 400 (collection dim mismatch).
+    #
+    # NOTE: this setting documents the model identity. The actual class
+    # loader lives in app/main.py lifespan — settings.EMBEDDING_MODEL_NAME
+    # is read by smoke/diagnostic scripts to assert parity vs the loaded
+    # model. Updating this setting alone does NOT change the runtime
+    # model; production code path uses the constant in main.py.
+    EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
 
-    # ms-marco-MiniLM-L-6-v2 is a cross-encoder that re-scores (query, chunk) pairs
-    # and produces raw logits.  Positive logits indicate a good match; the threshold
-    # is set to 0.0 (any positive score) to avoid over-filtering.
-    RERANKER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB) replaces
+    # BAAI/bge-reranker-base per the 2026-06-03 swap. Architecturally a
+    # CausalLM that returns a yes-token-logit minus no-token-logit ratio,
+    # wrapped transparently by sentence-transformers CrossEncoder. Score
+    # scale is REAL-VALUED, sign-preserved — but the magnitude band
+    # differs:
+    #
+    #     bge-reranker-base:   typical [-10, +10]
+    #     Qwen3-Reranker-0.6B: typical [-15, +15]
+    #
+    # The RERANKER_SCORE_THRESHOLD default (0.0 — sign-only filter)
+    # carries over unchanged because the sign convention is preserved.
+    # Operators using non-zero thresholds must re-tune against the
+    # golden_queries set (see scripts/run_eval_120.py) after the swap.
+    # See app/services/reranker.py for the loader; this setting is the
+    # parity check, not the runtime model selector.
+    RERANKER_MODEL_NAME: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # Number of chunks fetched from Qdrant before reranking (coarse retrieval).
     # Latency-fix follow-up — was 20; cold queries blew the search_documents
@@ -948,6 +970,18 @@ class Settings(BaseSettings):
     # full recall; precision degrades but the LLM weights citations by
     # score internally and the cascade-fix is to fine-tune the reranker
     # (see [[reranker-v1]]) rather than fight the threshold.
+    #
+    # 2026-06-04 — Qwen3-Reranker swap.
+    # Qwen/Qwen3-Reranker-0.6B replaces BAAI/bge-reranker-base. SIGN
+    # CONVENTION IS PRESERVED (positive logit = relevant) but magnitudes
+    # differ: Qwen3 emits ~[-15, +15] vs bge's ~[-10, +10]. The 0.0
+    # default still means "any positive logit passes" and works
+    # unchanged for the sign-only filter case. Operators on non-zero
+    # thresholds must re-tune — a bge 1.0 threshold corresponds roughly
+    # to a Qwen3 1.5 threshold (proportional to the wider band) but the
+    # only honest answer is to re-baseline via scripts/run_eval_120.py
+    # after the swap. Re-baseline output committed under
+    # ops/baselines/qwen3-reranker-2026-06-04.md.
     RERANKER_SCORE_THRESHOLD: float = 0.0
 
     # -------------------------------------------------------------------------
