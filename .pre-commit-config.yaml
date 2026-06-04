@@ -100,3 +100,38 @@ repos:
           if it ever hits. At inception this hook caught `rapidfuzz`
           undeclared (hard-imported by parsers/_hole_id.py without a
           pyproject entry); doc-phase 126 also added it.
+
+      - id: audit-invariants-php
+        name: Run PHP audit invariants (tenancy + frontend file-content pins)
+        entry: scripts/check_audit_invariants_php.sh
+        language: script
+        pass_filenames: false
+        # Only fire when something the invariants actually pin has changed.
+        # Pre-commit's `files:` regex narrows the trigger; the script
+        # itself runs the full suite (it's <5s) for completeness.
+        files: ^(app/|database/migrations/|docker/postgresql/|docker-compose\.yml|routes/|resources/js/Pages/|tests/Feature/Tenancy/|tests/Feature/Frontend/)
+        stages: [pre-commit]
+        description: >
+          REC#3 (2026-06-03) — runs the PHP audit invariants locally
+          before commit. Each test file pins one bug class an earlier
+          audit caught (workspace_user pivot, Martin role isolation,
+          rate-limit keying, legacy GUC writes, deleted Chat.tsx, etc.).
+          Index + rationale: docs/AUDIT_INVARIANTS.md. CI mirror:
+          .github/workflows/audit-invariants.yml.
+
+      - id: audit-invariants-python
+        name: Run Python audit invariants (workspace context + RLS + observability pins)
+        entry: scripts/check_audit_invariants_python.sh
+        language: script
+        pass_filenames: false
+        # Same narrowing logic as the PHP hook — fire on changes the
+        # invariants actually monitor.
+        files: ^(src/fastapi/app/|src/fastapi/tests/test_(workspace_context|workspace_context_b4_centralisation|dead_settings_tagged|source_trust_boost_wiring|ingest_zip_archive_observability|shadow_trigger_observability|vllm_payload_shape|acquire_scoped)\.py)
+        stages: [pre-commit]
+        description: >
+          REC#3 (2026-06-03) — runs the Python audit invariants locally
+          before commit. Pins typed WorkspaceContext usage, LEGACY_DEFAULT_TENANT_UUID
+          centralisation, dead-setting inventory, source-trust boost
+          wiring, ingest-zip observability, shadow-trigger parameter
+          binding, vLLM payload shape. Index: docs/AUDIT_INVARIANTS.md.
+          Prefers docker exec; falls back to host pytest.

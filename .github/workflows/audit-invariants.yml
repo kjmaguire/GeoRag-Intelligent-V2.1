@@ -1,0 +1,184 @@
+name: Audit Invariants
+
+# REC#3 — every audit pin runs on every PR.
+#
+# Background
+# ----------
+# Two `audit-and-fix.md` remediation passes have happened in the last 30
+# days (2026-06-02, 2026-06-03), and both produced the same shape of
+# findings: workspace-resolution fallbacks, RLS fail-open policies,
+# stale CHECK enums, dead settings, comment/code drift. The pattern is
+# CATCHING bugs after merge, not preventing them. This workflow flips
+# that: every guard the audits produced is a PR gate, so the same bug
+# class can't ship a second time without an explicit acknowledgement.
+#
+# Speed budget
+# ------------
+# Every check here is a file-content / import-time assertion — no live
+# DB, no live LLM, no docker compose. Targets <60s wall-clock so it
+# blocks PRs without slowing review.
+#
+# Failure semantics
+# -----------------
+# A failure ALWAYS means one of:
+#   1. You re-introduced a bug class an earlier audit caught
+#   2. You intentionally changed an invariant, and need to update the
+#      corresponding test entry in `docs/AUDIT_INVARIANTS.md`
+# Either way the test message explains what to do; this workflow is
+# noise-free by design.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: audit-invariants-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── PHP file-content audit pins ────────────────────────────────────
+  php-invariants:
+    name: PHP audit invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: pdo_sqlite, redis
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Run audit invariants (file-content tests, no DB)
+        run: |
+          # Tenancy + frontend invariants. Each file pins one bug class
+          # an earlier audit caught — see docs/AUDIT_INVARIANTS.md for
+          # the index. SQLite-backed so no PG service needed in this job.
+          php artisan test --compact \
+            tests/Feature/Tenancy/ArchiveIngestRunsMigrationTest.php \
+            tests/Feature/Tenancy/MartinRoleReadOnlyTest.php \
+            tests/Feature/Tenancy/NoLegacyGucSetConfigInPhpTest.php \
+            tests/Feature/Tenancy/ProjectCreationWorkspaceResolutionTest.php \
+            tests/Feature/Tenancy/WorkspaceActivityChannelAuthTest.php \
+            tests/Feature/Tenancy/WorkspaceRateLimitsTest.php \
+            tests/Feature/Tenancy/WorkspaceUserMembershipTest.php \
+            tests/Feature/Frontend/LegacyChatPageDeletedTest.php
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ":memory:"
+
+  # ─── Python file-content audit pins ─────────────────────────────────
+  python-invariants:
+    name: Python audit invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install FastAPI test deps (minimal subset)
+        # The audit invariants don't need the full FastAPI dep tree —
+        # they need pytest + prometheus_client + pydantic + asyncpg
+        # (for import smoke). Keep this list tight so the workflow
+        # stays under the speed budget.
+        working-directory: src/fastapi
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Run audit invariants
+        working-directory: src/fastapi
+        run: |
+          # Each test pins one bug class — see docs/AUDIT_INVARIANTS.md
+          # for the full index. -q for the speed budget; failure mode
+          # is detailed by individual assertion messages.
+          python -m pytest -q \
+            tests/test_acquire_scoped.py \
+            tests/test_dead_settings_tagged.py \
+            tests/test_ingest_zip_archive_observability.py \
+            tests/test_shadow_trigger_observability.py \
+            tests/test_source_trust_boost_wiring.py \
+            tests/test_vllm_payload_shape.py \
+            tests/test_workspace_context.py \
+            tests/test_workspace_context_b4_centralisation.py \
+            tests/test_workspace_dependency.py \
+            tests/test_scoped_connection.py \
+            tests/test_lookup_and_rescope.py
+        env:
+          # Tests must not require a live Postgres / vLLM / Qdrant.
+          # The few that touch settings/env still need a non-empty
+          # FASTAPI_SERVICE_KEY for config.py to import cleanly.
+          FASTAPI_SERVICE_KEY: "dummy-ci-key-not-used-for-auth"
+          POSTGRES_PASSWORD: "dummy-ci-not-used"
+
+  # ─── Hook discipline ────────────────────────────────────────────────
+  # The pre-commit config carries the FAST subset of these checks; this
+  # job verifies the pre-commit config itself stays valid + that the
+  # hook scripts exist + are executable. Catches the "deleted a script
+  # but forgot to remove the pre-commit entry" drift class.
+  precommit-config:
+    name: Pre-commit config integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Validate pre-commit config
+        run: pre-commit validate-config
+
+      - name: Verify all hook scripts exist + are executable
+        run: |
+          set -euo pipefail
+          # Extract every `entry:` script path from the config + assert
+          # the file exists and is +x. Drift here = a contributor
+          # deleted scripts/foo.sh without removing the hook entry,
+          # which silently disables the hook locally + breaks CI.
+          python - <<'PY'
+          import re
+          import os
+          import sys
+          import yaml
+          cfg = yaml.safe_load(open(".pre-commit-config.yaml"))
+          missing = []
+          for repo in cfg.get("repos", []):
+              for hook in repo.get("hooks", []):
+                  entry = hook.get("entry", "")
+                  # Strip flags, take the first token (the script).
+                  candidate = entry.split()[0] if entry else ""
+                  if candidate.startswith("scripts/"):
+                      if not os.path.isfile(candidate):
+                          missing.append(f"{hook['id']}: {candidate} not found")
+                      elif not os.access(candidate, os.X_OK):
+                          # On Windows / case-sensitive FS some scripts
+                          # lose +x — `bash scripts/foo.sh` still works
+                          # but unix-friendly tooling does not.
+                          print(f"  (warn) {hook['id']}: {candidate} is not executable")
+          if missing:
+              print("PRE-COMMIT CONFIG DRIFT:", file=sys.stderr)
+              for m in missing:
+                  print("  " + m, file=sys.stderr)
+              sys.exit(1)
+          print("pre-commit config integrity OK")
+          PY
