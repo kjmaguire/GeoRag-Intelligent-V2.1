@@ -44,6 +44,7 @@ class OnboardingController extends Controller
         'uranium', 'gold', 'copper', 'lithium', 'oil_gas',
         'silver', 'nickel', 'cobalt', 'REE', 'custom',
     ];
+
     private const REGIONS = [
         'CA-SK' => 'Saskatchewan',
         'CA-BC' => 'British Columbia',
@@ -51,7 +52,7 @@ class OnboardingController extends Controller
         'CA-YT' => 'Yukon',
         'CA-ON' => 'Ontario',
         'CA-QC' => 'Québec',
-        'US'    => 'United States',
+        'US' => 'United States',
         'OTHER' => 'Other',
     ];
 
@@ -83,10 +84,14 @@ class OnboardingController extends Controller
         }
 
         // Update the user's default workspace (silver.workspaces row).
-        // The user's first project's workspace_id is the authoritative one;
-        // if they don't have a project yet, we update the seeded "default"
-        // workspace (a0000000-…001) since that's where new projects land.
+        // Audit item J1 (2026-06-03) — prefer User->defaultWorkspaceId()
+        // (workspace_user pivot, audit item A) over the legacy "user has
+        // a project that joins to a workspace" path. The orWhere on the
+        // seeded default UUID stays as the bootstrap fallback for the
+        // genuine first-onboarding case (no project, no pivot yet).
         try {
+            $defaultWsId = $user->defaultWorkspaceId()
+                ?? 'a0000000-0000-0000-0000-000000000001';
             DB::table('silver.workspaces as w')
                 ->whereExists(function ($q) use ($user) {
                     $q->from('project_user as pu')
@@ -94,7 +99,7 @@ class OnboardingController extends Controller
                         ->whereColumn('p.workspace_id', 'w.workspace_id')
                         ->where('pu.user_id', $user->id);
                 })
-                ->orWhere('workspace_id', 'a0000000-0000-0000-0000-000000000001')
+                ->orWhere('workspace_id', $defaultWsId)
                 ->update([
                     'name' => $data['workspace_name'],
                     'updated_at' => now(),
@@ -137,9 +142,14 @@ class OnboardingController extends Controller
 
         try {
             DB::transaction(function () use ($projectId, $data, $slug, $commodity, $region, $user) {
+                // Audit item J1 — use User->defaultWorkspaceId() (pivot-
+                // backed, audit item A); fall back to the seeded default
+                // only on a true first-boot pivotless state.
+                $newProjectWorkspaceId = $user->defaultWorkspaceId()
+                    ?? 'a0000000-0000-0000-0000-000000000001';
                 DB::table('silver.projects')->insert([
                     'project_id' => $projectId,
-                    'workspace_id' => 'a0000000-0000-0000-0000-000000000001',
+                    'workspace_id' => $newProjectWorkspaceId,
                     'project_name' => $data['project_name'],
                     'slug' => $slug,
                     'crs_datum' => 'EPSG:32613',
@@ -162,6 +172,7 @@ class OnboardingController extends Controller
             });
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json([
                 'error' => 'failed to create project',
                 'reason' => $e->getMessage(),
@@ -174,14 +185,17 @@ class OnboardingController extends Controller
         if (! empty($data['aoi_geojson']) && isset($data['aoi_geojson']['type'])) {
             try {
                 $geojson = json_encode($data['aoi_geojson']);
+                // Audit item J1 — pivot-backed default workspace.
+                $aoiWorkspaceId = $user->defaultWorkspaceId()
+                    ?? 'a0000000-0000-0000-0000-000000000001';
                 DB::statement(
-                    "INSERT INTO interpretation.interpretation_target_zones
+                    'INSERT INTO interpretation.interpretation_target_zones
                         (workspace_id, project_id, author_user_id, name, rationale,
                          commodity, confidence, geom)
                      VALUES (?, ?, ?, ?, ?, ?, ?,
-                             ST_SetSRID(ST_GeomFromGeoJSON(?), 4326))",
+                             ST_SetSRID(ST_GeomFromGeoJSON(?), 4326))',
                     [
-                        'a0000000-0000-0000-0000-000000000001',
+                        $aoiWorkspaceId,
                         $projectId,
                         $user->id,
                         $data['project_name'].' AOI',
@@ -242,6 +256,7 @@ class OnboardingController extends Controller
         if ($projectId) {
             return redirect()->route('chat', ['project_id' => $projectId]);
         }
+
         return redirect()->route('chat');
     }
 }

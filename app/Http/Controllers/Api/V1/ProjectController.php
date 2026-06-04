@@ -48,7 +48,15 @@ class ProjectController extends Controller
     {
         try {
             $project = new Project($request->validated());
-            $project->workspace_id = $request->user()->workspace_id
+            // Audit item J1 (2026-06-03) — resolve workspace via the
+            // workspace_user pivot (User->defaultWorkspaceId()) introduced
+            // in audit item A. The legacy users-table column form was
+            // never authoritative; the pivot is. Hardcoded UUID stays only
+            // as the very-last-ditch fallback for a fresh single-tenant
+            // bootstrap where no pivot rows exist yet — this matches
+            // OnboardingController's seeded default workspace.
+            $user = $request->user();
+            $project->workspace_id = $user->defaultWorkspaceId()
                 ?? 'a0000000-0000-0000-0000-000000000001';
             $project->save();
             // Automatically add the creator as owner.

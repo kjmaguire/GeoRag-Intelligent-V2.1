@@ -49,7 +49,7 @@ def _make_capturing_client() -> tuple[Any, dict[str, Any]]:
     return client, captured
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
+# Phase-2 cleanup landed in orchestrator (top-level top_p/top_k/min_p/presence_penalty + response_format) — unskipped 2026-06-03 per audit item I1.
 @pytest.mark.asyncio
 async def test_vllm_payload_omits_ollama_only_fields():
     """The vLLM branch must NOT emit Ollama-specific fields:
@@ -90,7 +90,7 @@ async def test_vllm_payload_omits_ollama_only_fields():
     )
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
+# Phase-2 cleanup landed in orchestrator (top-level top_p/top_k/min_p/presence_penalty + response_format) — unskipped 2026-06-03 per audit item I1.
 @pytest.mark.asyncio
 async def test_vllm_sampling_defaults_promoted_to_top_level():
     """QWEN3_TOP_P / TOP_K / MIN_P flow through to TOP-LEVEL fields on
@@ -116,7 +116,7 @@ async def test_vllm_sampling_defaults_promoted_to_top_level():
     assert payload["min_p"] == pytest.approx(0.0)
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
+# Phase-2 cleanup landed in orchestrator (top-level top_p/top_k/min_p/presence_penalty + response_format) — unskipped 2026-06-03 per audit item I1.
 @pytest.mark.asyncio
 async def test_vllm_presence_penalty_thinking_off():
     """presence_penalty=1.5 (the no-think default) lands at top level on
@@ -159,7 +159,7 @@ async def test_vllm_presence_penalty_absent_when_thinking_on():
     )
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
+# Phase-2 cleanup landed in orchestrator (top-level top_p/top_k/min_p/presence_penalty + response_format) — unskipped 2026-06-03 per audit item I1.
 @pytest.mark.asyncio
 async def test_vllm_json_mode_uses_response_format():
     """Structured-output requests on vLLM emit the OpenAI-compat-standard
@@ -184,6 +184,91 @@ async def test_vllm_json_mode_uses_response_format():
     )
     # presence_penalty on structured paths uses the lower (structured) value.
     assert payload.get("presence_penalty") == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_vllm_guided_json_forwarded_to_engine():
+    """When the caller passes a `guided_json` schema, it lands at the top
+    level of the request body so vLLM's xgrammar backend can constrain
+    decoding. The schema MUST appear verbatim — re-encoding via
+    `extra_body` (an OpenAI-SDK convention) would not work for raw HTTPX."""
+    client, captured = _make_capturing_client()
+
+    schema = {
+        "type": "object",
+        "properties": {"verdict": {"type": "boolean"}},
+        "required": ["verdict"],
+        "additionalProperties": False,
+    }
+
+    await _call_openai_compatible_llm(
+        user_message="hi",
+        temperature=0.0,
+        base_url="http://vllm:8000/v1",
+        model="Qwen/Qwen3-14B-AWQ",
+        http_client=client,
+        enable_thinking=False,
+        response_format="json",
+        guided_json=schema,
+    )
+
+    payload = captured["json"]
+    assert payload.get("guided_json") == schema, (
+        "guided_json was not forwarded verbatim to the vLLM request body — "
+        "schema-constrained decoding will not engage."
+    )
+    # And `response_format` JSON-mode is still set so the structured
+    # presence_penalty arithmetic applies.
+    assert payload.get("response_format") == {"type": "json_object"}
+    assert payload.get("presence_penalty") == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_vllm_guided_json_absent_when_not_passed():
+    """No silent injection — when guided_json is None the field must not
+    appear on the wire. Defends against future refactors that bind a
+    default schema and break callers that intentionally want any-JSON."""
+    client, captured = _make_capturing_client()
+
+    await _call_openai_compatible_llm(
+        user_message="hi",
+        temperature=0.0,
+        base_url="http://vllm:8000/v1",
+        model="Qwen/Qwen3-14B-AWQ",
+        http_client=client,
+        enable_thinking=False,
+        response_format="json",
+    )
+
+    payload = captured["json"]
+    assert "guided_json" not in payload
+
+
+@pytest.mark.asyncio
+async def test_vllm_guided_json_works_without_response_format():
+    """Schema-constrained decoding can be requested without ALSO asking
+    for json_object mode — vLLM's xgrammar still enforces the schema, and
+    the structured presence_penalty must NOT be applied in this case
+    (the caller didn't opt into JSON-mode wire shaping)."""
+    client, captured = _make_capturing_client()
+
+    schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
+
+    await _call_openai_compatible_llm(
+        user_message="hi",
+        temperature=0.0,
+        base_url="http://vllm:8000/v1",
+        model="Qwen/Qwen3-14B-AWQ",
+        http_client=client,
+        enable_thinking=False,
+        guided_json=schema,
+    )
+
+    payload = captured["json"]
+    assert payload.get("guided_json") == schema
+    assert "response_format" not in payload
+    # Still on the free-text presence-penalty path (no JSON-mode opt-in).
+    assert payload.get("presence_penalty") == pytest.approx(1.5)
 
 
 @pytest.mark.asyncio
@@ -215,7 +300,7 @@ async def test_vllm_thinking_token_bump_still_applies(monkeypatch):
     assert payload["max_tokens"] == 4096 + 2048
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
+# Phase-2 cleanup landed in orchestrator (top-level top_p/top_k/min_p/presence_penalty + response_format) — unskipped 2026-06-03 per audit item I1.
 @pytest.mark.asyncio
 async def test_vllm_backend_detection_via_settings(monkeypatch):
     """When base_url is empty (orchestrator using settings), the backend
@@ -241,3 +326,91 @@ async def test_vllm_backend_detection_via_settings(monkeypatch):
     assert "options" not in payload
     assert "think" not in payload
     assert payload["top_p"] == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
+async def test_vllm_adhoc_client_uses_split_timeout(monkeypatch):
+    """When no pooled http_client is supplied, the ad-hoc fallback in
+    `_call_openai_compatible_llm` must construct httpx.AsyncClient with a
+    split timeout (5s connect, TIMEOUT_GATHER_S read). A single-float
+    timeout regression would let vLLM-down conditions hang for the full
+    read budget before failing over."""
+    import httpx as _httpx
+    from app.agent import llm_calls
+
+    monkeypatch.setattr(llm_calls.settings, "TIMEOUT_GATHER_S", 8.0, raising=False)
+
+    captured: dict[str, object] = {}
+    real_async_client = _httpx.AsyncClient
+
+    class _Probe(real_async_client):  # type: ignore[misc]
+        def __init__(self, *args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            super().__init__(*args, **kwargs)
+
+        async def post(self, *args, **kwargs):  # type: ignore[override]
+            return SimpleNamespace(
+                status_code=200,
+                raise_for_status=lambda: None,
+                json=lambda: {
+                    "choices": [{"message": {"content": "ok", "reasoning": ""}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+    monkeypatch.setattr(llm_calls.httpx, "AsyncClient", _Probe)
+
+    await llm_calls._call_openai_compatible_llm(
+        user_message="hi",
+        temperature=0.0,
+        base_url="http://vllm:8000/v1",
+        model="Qwen/Qwen3-14B-AWQ",
+        enable_thinking=False,
+    )
+
+    timeout = captured.get("timeout")
+    assert isinstance(timeout, _httpx.Timeout), (
+        "ad-hoc httpx.AsyncClient was constructed with a non-Timeout value — "
+        "regressed back to single-float TIMEOUT_GATHER_S which hides vLLM-down."
+    )
+    assert timeout.connect == pytest.approx(5.0)
+    assert timeout.read == pytest.approx(8.0)
+    assert timeout.write == pytest.approx(5.0)
+    assert timeout.pool == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_call_llm_forwards_guided_json_to_vllm_branch(monkeypatch):
+    """The `_call_llm` dispatcher must forward guided_json through to
+    `_call_openai_compatible_llm` when LLM_BACKEND=vllm. Regression guard:
+    a kwarg dropped at the dispatcher layer would silently disable
+    schema-constrained decoding for every structured caller."""
+    from app.agent import llm_calls
+
+    monkeypatch.setattr(llm_calls.settings, "LLM_BACKEND", "vllm", raising=False)
+    monkeypatch.setattr(llm_calls.settings, "VLLM_URL", "http://vllm:8000/v1", raising=False)
+    monkeypatch.setattr(llm_calls.settings, "VLLM_MODEL", "Qwen/Qwen3-14B-AWQ", raising=False)
+    monkeypatch.setattr(llm_calls.settings, "MAX_LLM_CALLS_PER_QUERY", 8, raising=False)
+    # Reset the per-run call counter so this test isn't affected by ordering.
+    llm_calls._llm_call_counter.set(0)
+
+    client, captured = _make_capturing_client()
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+
+    await llm_calls._call_llm(
+        query="what is the depth of PLS-22-08?",
+        context="The hole PLS-22-08 reached 510 m.",
+        temperature=0.0,
+        openai_http_client=client,
+        system_prompt="test-system",
+        response_format="json",
+        guided_json=schema,
+        audit_label="test",
+    )
+
+    payload = captured["json"]
+    assert payload.get("guided_json") == schema

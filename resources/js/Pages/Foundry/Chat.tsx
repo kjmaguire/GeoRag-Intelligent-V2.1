@@ -25,7 +25,7 @@ import {
  * /api/v1/conversations/{uuid} so the threads rail picks it up on next
  * page load.
  *
- * Not yet ported from legacy Pages/Chat.tsx:
+ * Outstanding feature work (not yet ported into this Foundry-shell page):
  *   - EvidenceInspector + TrustInspector side panels
  *   - Conflict-detection + freshness rendering
  *   - Map / viz payload rendering (M2 P5 visualization)
@@ -91,8 +91,8 @@ interface ChatPageProps {
     empty: boolean;
 }
 
-// Six suggestion chips covering the main intent classes. Same set as
-// legacy Pages/Chat.tsx; copy worded for Wyoming roll-front uranium.
+// Six suggestion chips covering the main intent classes;
+// copy worded for Wyoming roll-front uranium.
 const SUGGESTION_CHIPS: Array<{ label: string; query: string }> = [
     { label: 'How many drill holes are in this project?', query: 'How many drill holes are in this project?' },
     { label: 'Summarise the deepest five holes', query: 'Summarise the deepest five drill holes with their total depth and ore intercepts.' },
