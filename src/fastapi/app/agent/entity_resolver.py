@@ -201,9 +201,8 @@ async def resolve_entity(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                workspace_id,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.entity_resolver"
             )
 
             # Exact lookup first.
@@ -309,9 +308,8 @@ async def log_alias_gap(
     normalised = normalise_entity_text(entity_text)
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                workspace_id,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.entity_resolver"
             )
             await _insert_gap(
                 conn,

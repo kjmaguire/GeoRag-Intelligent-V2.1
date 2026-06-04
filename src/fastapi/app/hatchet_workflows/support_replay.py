@@ -33,8 +33,10 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
+from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.support_cockpit.customer_response_drafting import (
     draft_customer_response,
 )
@@ -119,9 +121,13 @@ async def execute(input: SupportReplayInput, ctx: Context) -> SupportReplayOutpu
             # Block-3 RLS: ops.support_replay_runs is workspace_id-scoped.
             # Set GUC to Default Workspace first so the support_tickets
             # lookup succeeds; then realign to the ticket's workspace.
+            # Bootstrap GUC to Default Workspace so the support_tickets
+            # lookup succeeds under RLS (cross-tenant read of an ops table).
+            # This is an intentional bootstrap path, not a fallback — but the
+            # B4 audit centralised the constant, so swap the literal.
             await conn.execute(
                 "SELECT set_config('app.workspace_id', $1, false)",
-                "a0000000-0000-0000-0000-000000000001",
+                LEGACY_DEFAULT_TENANT_UUID,
             )
             ticket_ws = await conn.fetchval(
                 """
@@ -129,7 +135,15 @@ async def execute(input: SupportReplayInput, ctx: Context) -> SupportReplayOutpu
                  WHERE ticket_id = $1::uuid
                 """,
                 str(input.ticket_id),
-            ) or "a0000000-0000-0000-0000-000000000001"
+            )
+            if not ticket_ws:
+                ticket_ws = LEGACY_DEFAULT_TENANT_UUID
+                try:
+                    WORKSPACE_RESOLUTION_FAILURES.labels(
+                        site="support_replay.ticket_ws_lookup"
+                    ).inc()
+                except Exception:
+                    pass
             await conn.execute(
                 "SELECT set_config('app.workspace_id', $1, false)", ticket_ws,
             )

@@ -33,7 +33,10 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
+from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 
 
 log = logging.getLogger("georag.hatchet.train_target_model")
@@ -241,7 +244,13 @@ async def execute(
             str(input.target_model_id),
         )
         if workspace_id is None:
-            workspace_id = "a0000000-0000-0000-0000-000000000001"
+            workspace_id = LEGACY_DEFAULT_TENANT_UUID
+            try:
+                WORKSPACE_RESOLUTION_FAILURES.labels(
+                    site="train_target_model.lookup"
+                ).inc()
+            except Exception:
+                pass
 
         # Bump version number for this model.
         next_version = await conn.fetchval(
@@ -254,8 +263,8 @@ async def execute(
         )
 
         version_id = uuid4()
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="hatchet.train_target_model"
         )
         await conn.execute(
             """

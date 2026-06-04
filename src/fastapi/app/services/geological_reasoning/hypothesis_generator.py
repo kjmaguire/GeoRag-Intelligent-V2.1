@@ -46,6 +46,7 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.geological_reasoning.hypothesis_generator")
 
@@ -228,9 +229,8 @@ async def generate_hypotheses_for_question(
             async with conn.transaction():
                 # 0. Set the GUC so RLS WITH CHECK on silver.hypotheses
                 #    accepts the INSERT.
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    workspace_str,
+                await bind_workspace_scope(
+                    conn, workspace_id=workspace_str, site="hypothesis_generator"
                 )
 
                 drafts = _synthetic_hypothesis_set(

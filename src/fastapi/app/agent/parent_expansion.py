@@ -36,6 +36,7 @@ from app.agent.evidence import (
     DocumentEvidence,
     EvidencePacket,
 )
+from app.db import bind_workspace_scope
 
 
 logger = logging.getLogger(__name__)
@@ -100,10 +101,9 @@ async def fetch_parent_chunks(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    workspace_id,
-                )
+                await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.parent_expansion"
+            )
                 rows = await conn.fetch(_FETCH_PARENTS_SQL, unique_ids)
     except Exception:
         logger.warning(

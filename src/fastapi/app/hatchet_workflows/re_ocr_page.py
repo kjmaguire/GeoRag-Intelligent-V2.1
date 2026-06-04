@@ -42,6 +42,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.ocr.parse_scanned import parse_scanned
 from app.ocr.quality_graph import MAX_OCR_RETRIES, RETRY_SETTINGS_BY_ATTEMPT
@@ -136,9 +137,8 @@ async def execute(input: ReOcrPageInput, ctx: Context) -> ReOcrPageOutput:
 
     conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, true)",
-            workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="hatchet.re_ocr_page"
         )
 
         # ---- Stage 1: look up bronze key + current retry_count ----
@@ -256,9 +256,8 @@ async def execute(input: ReOcrPageInput, ctx: Context) -> ReOcrPageOutput:
     # ---- Stage 3: persist new rows ----
     conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, true)",
-            workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="hatchet.re_ocr_page"
         )
         async with conn.transaction():
             # 3a. parser_run_artifacts row for this retry pass

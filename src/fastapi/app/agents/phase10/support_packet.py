@@ -7,6 +7,7 @@ workflow_runs scoped to the ticket's workspace. SeaweedFS upload of
 the bundle is deferred to §15.4 follow-up.
 """
 from __future__ import annotations
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 from datetime import datetime
@@ -68,7 +69,7 @@ async def support_packet(
     try:
         # Block-3 RLS — ops.support_tickets is workspace_id-scoped.
         ws = str(ctx.workspace_id) if ctx and ctx.workspace_id \
-             else "a0000000-0000-0000-0000-000000000001"
+             else LEGACY_DEFAULT_TENANT_UUID
         await conn.execute(
             "SELECT set_config('app.workspace_id', $1, false)", ws,
         )

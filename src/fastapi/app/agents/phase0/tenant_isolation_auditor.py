@@ -22,6 +22,7 @@ import httpx
 
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
+from app.db import bind_workspace_scope
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +96,7 @@ async def tenant_isolation_audit(
                 async with conn.transaction():
                     # SET LOCAL doesn't accept $-parameter binding; use
                     # set_config(name, value, is_local=true) instead.
-                    await conn.execute(
-                        "SELECT set_config('app.workspace_id', $1, true)",
-                        str(ws_a),
+                    await bind_workspace_scope(conn, workspace_id=str(ws_a, site="phase0.tenant_isolation_auditor"),
                     )
                     rows = await conn.fetchval(
                         f'SELECT count(*) FROM "{schema}"."{table}" WHERE workspace_id = $1',

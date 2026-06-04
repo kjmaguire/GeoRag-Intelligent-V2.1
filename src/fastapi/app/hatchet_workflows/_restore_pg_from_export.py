@@ -22,6 +22,8 @@ source DB.
 
 from __future__ import annotations
 
+from app.db import bind_workspace_scope
+
 import gzip
 import io
 import json
@@ -182,8 +184,8 @@ async def restore_postgres_from_export(
     tables_touched: list[str] = []
     try:
         # Set RLS scope so writes land under the target workspace.
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="hatchet.restore_pg_from_export"
         )
         # Per-row SAVEPOINTs so a single constraint violation (e.g.
         # FK to a workspace that exists at export time but not at

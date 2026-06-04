@@ -18,6 +18,7 @@ The function returns a count dict (table_name → row count written)
 for telemetry / handoff debugging.
 """
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import json
 import os
@@ -53,9 +54,7 @@ async def transactional_workspace_session(
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                str(workspace_id),
+            await bind_workspace_scope(conn, workspace_id=str(workspace_id, site="ocr._persist"),
             )
             yield conn
 

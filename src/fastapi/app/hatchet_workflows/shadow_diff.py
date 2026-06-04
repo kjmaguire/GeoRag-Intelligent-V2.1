@@ -33,6 +33,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.services.shadow_diff import classify_shadow_run
 
@@ -205,9 +206,8 @@ async def classify(input: ShadowDiffInput, ctx: Context) -> ShadowDiffFinalOut:
             duration_ms = int((time.monotonic() - t_start) * 1000)
 
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    str(row["workspace_id"]),
+                await bind_workspace_scope(
+                    conn, workspace_id=str(row["workspace_id"]), site="hatchet.shadow_diff"
                 )
                 await conn.execute(
                     """

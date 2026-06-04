@@ -384,9 +384,8 @@ async def execute_spatial_query(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                workspace_id,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.geospatial_planner"
             )
             rows = await conn.fetch(plan.sql, *plan.params)
     return [dict(row) for row in rows]

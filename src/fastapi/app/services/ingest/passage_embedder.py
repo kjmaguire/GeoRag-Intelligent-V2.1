@@ -12,16 +12,21 @@ Collection georag_reports doesn't exist``.
 For every passage row in `silver.document_passages` where
 `embedding_id IS NULL`:
 
-  1. Encode the text via BGE-small (dense, 384-dim, normalized)
+  1. Encode the text via Qwen3-Embedding-0.6B (dense, 1024-dim, normalized).
+     Documents are encoded RAW — the query-side "Instruct: ...\nQuery: ..."
+     template is asymmetric and applied only on retrieval (see
+     tools.search_documents). Documents must NOT carry the query template
+     or the query/document vectors live in different subspaces.
   2. Encode via SPLADE++ (sparse, named "text")
   3. Upsert to Qdrant `georag_chunks` with payload:
        { report_id, project_id, workspace_id,
          section_number, section_title, text }
   4. Update `silver.document_passages.embedding_id` with the Qdrant point ID
 
-Collection schema (existing):
-  - vectors_config: {'': VectorParams(size=384, distance=Cosine)}
+Collection schema (post 2026-06-03 Qwen3-Embedding swap):
+  - vectors_config: {'': VectorParams(size=1024, distance=Cosine)}
   - sparse_vectors: {'text': SparseVectorParams(...)}
+  Re-create via scripts/init_qdrant.py with GEORAG_VECTOR_SIZE=1024.
 
 Section fields:
   Passages from PDFs/XLSX don't carry true §15 section structure, so
@@ -44,10 +49,23 @@ import asyncpg
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import PointStruct, SparseVector
 
+from app.db import bind_workspace_scope
+
 log = logging.getLogger("georag.ingest.passage_embedder")
 
 
 _QDRANT_COLLECTION = "georag_chunks"
+
+# Payload keys retrieval reads at app/agent/tools.py:1731-1743. A point
+# missing any of these effectively disappears from chat — empty text →
+# reranker drops it → empty context → orchestrator's "I don't have data
+# on that in this project" refusal fires. Asserted on every batch's
+# built payload (cheap, catches programmer errors) and re-asserted by
+# scrolling one freshly-written point from the first batch (catches
+# silent schema/serialization corruption like the 2026-06-01 outage
+# where every canonical writer 400ed on the missing sparse "text" slot
+# and the system silently degraded to minimal payloads).
+_REQUIRED_PAYLOAD_KEYS = ("text", "report_id", "workspace_id")
 
 
 @dataclass
@@ -133,13 +151,14 @@ async def embed_pending_passages(
     # ── Load passage rows ─────────────────────────────────────────
     pg_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        # Set RLS GUCs. Wrapped in an explicit transaction so SET LOCAL
-        # takes effect on subsequent queries within the same session.
-        await pg_conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
-        await pg_conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+        # REC#2 Phase-2 (2026-06-03) — bind_workspace_scope via the
+        # canonical helper. Pre-migration this site had a duplicate
+        # set_config call (lines 152-154 in git history); collapsed to
+        # a single bind. Phase-2 also tightens the SET LOCAL scope flag
+        # from `false` (session — wrong under PgBouncer) to `true`
+        # (transaction-scoped — correct).
+        await bind_workspace_scope(
+            pg_conn, workspace_id=workspace_id, site="passage_embedder",
         )
         if project_id:
             await pg_conn.execute(
@@ -191,6 +210,7 @@ async def embed_pending_passages(
             return result
 
         # ── Encode in batches ─────────────────────────────────────
+        _verified_this_run = False
         for batch_start in range(0, len(rows), batch_size):
             batch = rows[batch_start:batch_start + batch_size]
             texts = [r["contextualized_content"] or r["text"] for r in batch]
@@ -245,6 +265,18 @@ async def embed_pending_passages(
                     # from narrative report chunks.
                     "chunk_kind": row.get("chunk_kind") if isinstance(row, dict) else row["chunk_kind"],
                 }
+                # Pre-upsert payload contract assertion. Failing here is a
+                # programmer error (the writer dropped a key it shouldn't have);
+                # the right move is to abort the whole run loudly rather than
+                # quietly ship points the retrieval layer can't use.
+                _missing_keys = [k for k in _REQUIRED_PAYLOAD_KEYS if k not in payload or payload[k] in (None, "")]
+                if _missing_keys:
+                    raise RuntimeError(
+                        f"embed_pending.payload_contract_violated: passage "
+                        f"{row['passage_id']} missing required keys {_missing_keys} "
+                        f"(have={sorted(payload.keys())}). Aborting to prevent "
+                        f"silent retrieval degradation."
+                    )
                 points.append(PointStruct(
                     id=point_id, vector=vector_dict, payload=payload,
                 ))
@@ -261,6 +293,51 @@ async def embed_pending_passages(
                 result.passages_skipped += len(batch)
                 log.warning("embed_pending.upsert_failed err=%s", e)
                 continue
+
+            # Post-upsert verification on the FIRST successful batch of each
+            # run only — retrieve one freshly-written point and confirm Qdrant
+            # stored the payload contract intact. One round-trip per run
+            # (~5ms) catches silent schema/serialization corruption (the
+            # 2026-06-01 outage: missing sparse "text" slot caused canonical
+            # upserts to 400 and an unknown code path stripped payload to
+            # make uploads succeed).
+            if points and not _verified_this_run:
+                _verified_this_run = True
+                try:
+                    _verify = await qdrant_client.retrieve(
+                        collection_name=_QDRANT_COLLECTION,
+                        ids=[points[0].id],
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                    if not _verify:
+                        raise RuntimeError(
+                            f"embed_pending.verify_failed: just-upserted point "
+                            f"{points[0].id} not retrievable. Qdrant state is "
+                            f"inconsistent — aborting before more bad data lands."
+                        )
+                    _vp = _verify[0].payload or {}
+                    _vmissing = [k for k in _REQUIRED_PAYLOAD_KEYS if k not in _vp or _vp[k] in (None, "")]
+                    if _vmissing:
+                        raise RuntimeError(
+                            f"embed_pending.verify_failed: just-upserted point "
+                            f"{points[0].id} payload missing {_vmissing} "
+                            f"(stored keys={sorted(_vp.keys())}). The Qdrant "
+                            f"collection schema or some intermediary is "
+                            f"stripping payload — aborting before more bad "
+                            f"data lands. Check georag_chunks sparse 'text' "
+                            f"vector slot config and any non-canonical upsert "
+                            f"paths."
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as _vexc:
+                    # Qdrant unreachable mid-run is a transient issue, not a
+                    # contract violation — log and continue rather than aborting
+                    # the whole embed.
+                    log.warning(
+                        "embed_pending.verify_skipped err=%s", _vexc,
+                    )
 
             # Update silver.document_passages.embedding_id
             for row, point in zip(batch, points):

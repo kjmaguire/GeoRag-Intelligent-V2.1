@@ -22,6 +22,8 @@ Per cluster (overall run):
 """
 from __future__ import annotations
 
+from app.db import bind_workspace_scope
+
 import asyncio
 import logging
 import os
@@ -72,11 +74,11 @@ async def _set_rls_gucs(
     project_id: str | None = None,
 ) -> None:
     """Apply the GUCs that the RLS policies check."""
-    await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
+    await bind_workspace_scope(
+        conn, workspace_id=workspace_id, site="ingest.cluster_runner"
     )
-    await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
+    await bind_workspace_scope(
+        conn, workspace_id=workspace_id, site="ingest.cluster_runner"
     )
     if project_id:
         await conn.execute(
@@ -144,7 +146,7 @@ async def ingest_cluster(
 
     try:
         # ── Pass 0 — Pre-create project so every subsequent INSERT has
-        # a valid georag.project_id GUC value. silver.collars has an
+        # a valid app.project_id GUC value. silver.collars has an
         # RLS policy that requires the GUC to be NULL OR a valid uuid;
         # leaving it as empty-string ("" from a prior session) breaks
         # the ::uuid cast.

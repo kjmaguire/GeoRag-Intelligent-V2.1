@@ -38,6 +38,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 
@@ -186,9 +187,8 @@ async def run(
     )
     try:
         async with pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                str(input.workspace_id),
+            await bind_workspace_scope(
+                conn, workspace_id=str(input.workspace_id), site="hatchet.ocr_quality_check"
             )
             rows = await conn.fetch(
                 """

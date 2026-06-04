@@ -41,9 +41,12 @@ from hatchet_sdk import (
 )
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows import _progress as ingest_progress
+from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 
 
 log = logging.getLogger("georag.hatchet.ingest_pdf")
@@ -303,7 +306,17 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
 # Input + per-step output models
 # =============================================================================
 class IngestPdfInput(BaseModel):
-    """The Laravel ShadowRouter (Step 5) sends this when dual-writing."""
+    """The Laravel ShadowRouter (Step 5) sends this when dual-writing.
+
+    `project_id` is typed `str` (not `UUID`) so the many downstream
+    `str(input.project_id)` call sites stay no-ops, but a Pydantic
+    field_validator rejects non-UUID input at the boundary —
+    defence in depth against the SQL-injection shape the
+    2026-06-02/03 audit caught on the sibling ingest_zip_archive
+    trigger. The shadow_trigger router uses parameter binding so a
+    malformed string can't actually inject, but this guard prevents
+    malformed rows from ever landing in silver.ingest_progress.
+    """
 
     workspace_id: UUID = Field(..., description="Workspace context for RLS.")
     project_id: str = Field(..., description="Project the upload belongs to.")
@@ -314,6 +327,23 @@ class IngestPdfInput(BaseModel):
         ..., description="Shared token for shadow_runs row pairing — also the dedupe key."
     )
     actor_id: int | None = Field(default=None, description="public.users.id of uploader.")
+
+    # Defence-in-depth UUID guard; see class docstring.
+    from pydantic import field_validator as _fv
+
+    @_fv("project_id")
+    @classmethod
+    def _validate_project_id_uuid(cls, v: str) -> str:
+        import re as _re
+        if not _re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            v,
+            _re.IGNORECASE,
+        ):
+            raise ValueError(
+                "IngestPdfInput.project_id must be a UUID (canonical 8-4-4-4-12 form)."
+            )
+        return v
 
 
 class PreflightOut(BaseModel):
@@ -508,9 +538,8 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
                 async with _lc_pool.acquire() as _lc_conn:
                     async with _lc_conn.transaction():
                         if input.workspace_id:
-                            await _lc_conn.execute(
-                                "SELECT set_config('app.workspace_id', $1, true)",
-                                str(input.workspace_id),
+                            await bind_workspace_scope(
+                                _lc_conn, workspace_id=str(input.workspace_id), site="hatchet.ingest_pdf"
                             )
                         _lc_row = await _lc_conn.fetchrow(
                             "SELECT lifecycle_state FROM silver.projects "
@@ -968,7 +997,15 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         workspace_id_str = str(input.workspace_id)
     else:
         # Recover from the bronze manifest or default workspace.
-        workspace_id_str = "a0000000-0000-0000-0000-000000000001"
+        # Audit item B4 — centralised legacy default + metric so Phase-2
+        # cutover (raise instead of fallback) sees this as a single search.
+        workspace_id_str = LEGACY_DEFAULT_TENANT_UUID
+        try:
+            WORKSPACE_RESOLUTION_FAILURES.labels(
+                site="ingest_pdf.persist"
+            ).inc()
+        except Exception:
+            pass
         log.warning(
             "ingest_pdf.persist: input.workspace_id was null; "
             "falling back to default workspace. minio_key=%s",
@@ -988,9 +1025,8 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # passages land together, or neither does and Hatchet retries.
             passages_written = 0
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    workspace_id_str,
+                await bind_workspace_scope(
+                    conn, workspace_id=workspace_id_str, site="hatchet.ingest_pdf"
                 )
                 await conn.execute(
                     INSERT_REPORT_SQL,
@@ -1330,8 +1366,16 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                 EmbedPendingPassagesInput,
                 embed_pending_passages_wf,
             )
-            wsid = str(input.workspace_id) if input.workspace_id \
-                else "a0000000-0000-0000-0000-000000000001"
+            if input.workspace_id:
+                wsid = str(input.workspace_id)
+            else:
+                wsid = LEGACY_DEFAULT_TENANT_UUID
+                try:
+                    WORKSPACE_RESOLUTION_FAILURES.labels(
+                        site="ingest_pdf.dispatch_embed"
+                    ).inc()
+                except Exception:
+                    pass
             embed_input = EmbedPendingPassagesInput(
                 workspace_id=wsid,
                 project_id=str(input.project_id),

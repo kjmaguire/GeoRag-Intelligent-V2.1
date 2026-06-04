@@ -26,6 +26,7 @@ block the data pipeline).
 """
 
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import logging
 from dataclasses import dataclass
@@ -193,9 +194,8 @@ async def upsert_flag(
         # policy lets the INSERT/UPDATE through. Using set_config with
         # is_local=true (3rd arg) so the setting auto-resets when the
         # tx closes — no cross-request leakage on a pooled connection.
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, true)",
-            flag.workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=flag.workspace_id, site="silver_dq_flag_writer"
         )
         await conn.execute(
             _UPSERT_SQL,

@@ -11,6 +11,7 @@ enriched passages automatically get better embeddings on next embed run.
 Doc: https://www.anthropic.com/news/contextual-retrieval
 """
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import logging
 import os
@@ -113,9 +114,7 @@ async def enrich_passage_context(
 
     pg_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        await pg_conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id
-        )
+        await bind_workspace_scope(pg_conn, workspace_id=workspace_id, site="ingest.context_enricher")
 
         query = (
             "SELECT dp.passage_id::text, dp.text, dp.ordinal, "

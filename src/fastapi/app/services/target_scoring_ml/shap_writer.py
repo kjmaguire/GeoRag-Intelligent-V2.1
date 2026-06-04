@@ -14,6 +14,7 @@ Phase H4 graduation — the writer now performs the real INSERT against
 ``targeting.target_score_factors`` using caller-supplied attributions.
 The attribution values come from either real SHAP (when xgboost +
 shap deps ship) OR the linear baseline emitted by
+from app.db import bind_workspace_scope
 ``xgboost_inference.score_zone_xgboost`` (always available). The
 table schema doesn't care which produced the numbers.
 """
@@ -96,8 +97,7 @@ async def write_shap_factors(
         return 0
 
     # Make sure the session has the GUC set so the WITH CHECK passes.
-    await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, false)", str(workspace_id),
+    await bind_workspace_scope(conn, workspace_id=str(workspace_id, site="shap_writer"),
     )
 
     rows_written = 0

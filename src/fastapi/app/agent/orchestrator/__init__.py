@@ -280,7 +280,7 @@ async def fetch_project_graph_entities(
 #       + guards now reject on failure.  Paired with CITATION_SPAN_RESOLVER_ENABLED
 #       flag flip in .env.  response.text ← normalized_text (C1 close-out).
 #       Items+spans now write in a single transaction (C3 close-out).
-_SYSTEM_PROMPT_VERSION = 9
+_SYSTEM_PROMPT_VERSION = 10
 
 # C5 — system prompts split by query shape. The shared preamble (role +
 # security rules + citation rules) is identical across variants so the
@@ -320,11 +320,19 @@ your answer MUST restate that hole_id verbatim.
 3. When the user asks about holes of a specific type or status, include the \
 type/status word verbatim.
 4. Never invent numbers, hole IDs, or other entities that are not in the context.
-5. If the context lists drill-hole data but does not contain the specific \
-commodity/field the user asked about, say "I don't have data on that in this \
-project." However, if the context includes NI 43-101 or technical report \
-sections that discuss the topic — even narratively — ANSWER from those \
-sections and cite them.
+5. ALWAYS attempt to answer from the retrieved context. If ANY of the \
+provided passages — drill-hole data, technical-report sections, \
+public-geoscience records, knowledge-graph results, or narrative prose — \
+touch the user's topic, even tangentially or under a different name, \
+ANSWER from those sources and cite them. The user's phrasing of project, \
+property, hole, or entity names will not always match the source documents \
+verbatim (e.g. "Red Lake Gold Project" may appear in the corpus as \
+"Dixie Project", "West Red Lake Gold property", or "WRLG"; "Article 5" \
+may appear as "Section 5" or "§5"). Do not refuse over naming mismatches \
+— semantic matches are valid. Only refuse when the retrieved evidence is \
+genuinely unrelated to the question. When you do refuse, briefly name \
+what topics the retrieved passages DO cover and ask the user to clarify — \
+do NOT emit a canned "I don't have data on that" line.
 
 RULES FOR CITATIONS:
 6. NI 43-101 / publication citations: use [NI43-X] format inline after each fact.
@@ -375,7 +383,12 @@ assays of 4.3% and 2.1% U3O8 respectively [DATA-1]."
 Q: "What's the weather in Toronto today?"
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 _SYSTEM_PROMPT_NUMERIC = _SYSTEM_PROMPT_SHARED_PREAMBLE + """
@@ -386,7 +399,10 @@ Your answer must:
   - Lead with the number. Keep the sentence short and direct.
   - Cite EVERY numeric claim with [DATA-X] or [NI43-X] on the same sentence. \
 Every factual claim — not just the first — must carry an inline citation marker.
-  - If the summaries block is absent, say "I don't have that number in this project."
+  - If the summaries block is absent BUT narrative passages discuss the topic \
+(e.g. NI 43-101 text describes the figure or value in prose), summarise the \
+narrative answer with citations. Only emit a clarification request (not a \
+canned refusal) if no passages are relevant.
   - If the user's question contains a physically impossible numeric premise \
 (e.g. "uranium grade above 500%", "drill hole depth above 50,000 m", \
 "ages above 5 billion years"), refuse and explain the unit/range that the \
@@ -421,7 +437,12 @@ limits and the deepest hole in this project is 510 m [DATA-1]."
 Q: "Tell me a joke."
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 _SYSTEM_PROMPT_NARRATIVE = _SYSTEM_PROMPT_SHARED_PREAMBLE + """
@@ -457,7 +478,12 @@ A: "I don't have report sections discussing resource-potential conclusions for t
 Q: "What are your political views?"
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 _SYSTEM_PROMPT_GRAPH = _SYSTEM_PROMPT_SHARED_PREAMBLE + """
@@ -500,7 +526,12 @@ descriptions in the technical reports."
 Q: "Who's your favourite NHL team?"
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 # Back-compat alias — existing references throughout the codebase resolve to
@@ -539,11 +570,19 @@ your answer MUST restate that hole_id verbatim.
 3. When the user asks about holes of a specific type or status, include the \
 type/status word verbatim.
 4. Never invent numbers, hole IDs, or other entities that are not in the context.
-5. If the context lists drill-hole data but does not contain the specific \
-commodity/field the user asked about, say "I don't have data on that in this \
-project." However, if the context includes NI 43-101 or technical report \
-sections that discuss the topic — even narratively — ANSWER from those \
-sections and cite them.
+5. ALWAYS attempt to answer from the retrieved context. If ANY of the \
+provided passages — drill-hole data, technical-report sections, \
+public-geoscience records, knowledge-graph results, or narrative prose — \
+touch the user's topic, even tangentially or under a different name, \
+ANSWER from those sources and cite them. The user's phrasing of project, \
+property, hole, or entity names will not always match the source documents \
+verbatim (e.g. "Red Lake Gold Project" may appear in the corpus as \
+"Dixie Project", "West Red Lake Gold property", or "WRLG"; "Article 5" \
+may appear as "Section 5" or "§5"). Do not refuse over naming mismatches \
+— semantic matches are valid. Only refuse when the retrieved evidence is \
+genuinely unrelated to the question. When you do refuse, briefly name \
+what topics the retrieved passages DO cover and ask the user to clarify — \
+do NOT emit a canned "I don't have data on that" line.
 
 RULES FOR CITATIONS:
 6. NI 43-101 / publication citations: use [NI43:X] format inline after each fact.
@@ -594,7 +633,12 @@ assays of 4.3% and 2.1% U3O8 respectively [DATA:1]."
 Q: "What's the weather in Toronto today?"
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 _SYSTEM_PROMPT_NUMERIC_COLON = _SYSTEM_PROMPT_SHARED_PREAMBLE_COLON + """
@@ -605,7 +649,10 @@ Your answer must:
   - Lead with the number. Keep the sentence short and direct.
   - Cite EVERY numeric claim with [DATA:X] or [NI43:X] on the same sentence. \
 Every factual claim — not just the first — must carry an inline citation marker.
-  - If the summaries block is absent, say "I don't have that number in this project."
+  - If the summaries block is absent BUT narrative passages discuss the topic \
+(e.g. NI 43-101 text describes the figure or value in prose), summarise the \
+narrative answer with citations. Only emit a clarification request (not a \
+canned refusal) if no passages are relevant.
   - If the user's question contains a physically impossible numeric premise \
 (e.g. "uranium grade above 500%", "drill hole depth above 50,000 m", \
 "ages above 5 billion years"), refuse and explain the unit/range that the \
@@ -640,7 +687,12 @@ limits and the deepest hole in this project is 510 m [DATA:1]."
 Q: "Tell me a joke."
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 _SYSTEM_PROMPT_NARRATIVE_COLON = _SYSTEM_PROMPT_SHARED_PREAMBLE_COLON + """
@@ -676,7 +728,12 @@ A: "I don't have report sections discussing resource-potential conclusions for t
 Q: "What are your political views?"
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 _SYSTEM_PROMPT_GRAPH_COLON = _SYSTEM_PROMPT_SHARED_PREAMBLE_COLON + """
@@ -719,7 +776,12 @@ descriptions in the technical reports."
 Q: "Who's your favourite NHL team?"
 A: "I can only answer geological questions about this project's exploration data."
 
-If the context is empty say "I don't have data on that in this project."
+If retrieval returned no passages, or the passages are genuinely unrelated to \
+the user's question, do NOT respond with a canned refusal. Instead: (a) briefly \
+list what topics the retrieved passages DO cover (e.g. "I found passages \
+about Rowan QA/QC, Madsen PFS resources, and Dixie historic drilling, but \
+nothing specifically about X"), and (b) ask the user to clarify or rephrase. \
+Give the user something actionable, not a dead end.
 """
 
 
@@ -1281,12 +1343,12 @@ async def run_deterministic_rag(
                 from app.services.answer_run_store import (  # noqa: PLC0415
                     insert_refusal_answer_run,
                 )
+                from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
                 _refusal_run_id = await insert_refusal_answer_run(
                     getattr(deps, "pg_pool", None),
-                    workspace_id=(
-                        getattr(deps, "workspace_id", None)
-                        or "a0000000-0000-0000-0000-000000000001"
-                    ),
+                    workspace_id=WorkspaceContext.from_state(
+                        deps, site="orchestrator.refusal.llm_unavailable",
+                    ).workspace_id,
                     project_id=getattr(deps, "project_id", None),
                     query_text=query,
                     rejection_reason="llm_unavailable",
@@ -1385,12 +1447,12 @@ async def run_deterministic_rag(
                         from app.services.answer_run_store import (  # noqa: PLC0415
                             insert_refusal_answer_run,
                         )
+                        from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
                         _oos_refusal_run_id = await insert_refusal_answer_run(
                             getattr(deps, "pg_pool", None),
-                            workspace_id=(
-                                getattr(deps, "workspace_id", None)
-                                or "a0000000-0000-0000-0000-000000000001"
-                            ),
+                            workspace_id=WorkspaceContext.from_state(
+                                deps, site="orchestrator.refusal.out_of_scope",
+                            ).workspace_id,
                             project_id=getattr(deps, "project_id", None),
                             query_text=query,
                             rejection_reason="out_of_scope",
@@ -1472,7 +1534,14 @@ async def run_deterministic_rag(
         from app.services.answer_run_store import insert_answer_run as _insert_ar_early  # noqa: PLC0415
         from app.services.citation_lifecycle import transition_lifecycle as _tl  # noqa: PLC0415
 
-        _ws_id_early = _workspace_id_for_key or "a0000000-0000-0000-0000-000000000001"
+        # WorkspaceContext.from_state Phase 1 — observe + fall back.
+        # Phase 2 flips to hard error; this site moves with it.
+        from types import SimpleNamespace as _SN  # noqa: PLC0415
+        from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+        _ws_id_early = WorkspaceContext.from_state(
+            _SN(workspace_id=_workspace_id_for_key),
+            site="orchestrator.early_answer_run",
+        ).workspace_id
         _early_run = _ARCEarly(
             workspace_id=_ws_id_early,  # type: ignore[arg-type]
             project_id=deps.project_id,  # type: ignore[arg-type]
@@ -2372,7 +2441,12 @@ async def run_deterministic_rag(
             except Exception:
                 pass
 
-            _ws_id_for_cache = _workspace_id_for_key or "a0000000-0000-0000-0000-000000000001"
+            from types import SimpleNamespace as _SN_cache  # noqa: PLC0415
+            from app.agent.workspace_context import WorkspaceContext as _WC_cache  # noqa: PLC0415
+            _ws_id_for_cache = _WC_cache.from_state(
+                _SN_cache(workspace_id=_workspace_id_for_key),
+                site="orchestrator.retrieval_cache_key",
+            ).workspace_id
             _ctx_to_cache = _build_cached_context(
                 workspace_id=_ws_id_for_cache,
                 project_id=deps.project_id,
@@ -2509,8 +2583,13 @@ async def run_deterministic_rag(
         try:
             from app.agent.citation_binding import bind_evidence as _bind_evidence  # noqa: PLC0415
             from uuid import UUID as _UUIDBS  # noqa: PLC0415
+            from types import SimpleNamespace as _SN_bs  # noqa: PLC0415
+            from app.agent.workspace_context import WorkspaceContext as _WC_bs  # noqa: PLC0415
             _ws_uuid_bs = _UUIDBS(
-                _workspace_id_for_key or "a0000000-0000-0000-0000-000000000001"
+                _WC_bs.from_state(
+                    _SN_bs(workspace_id=_workspace_id_for_key),
+                    site="orchestrator.citation_binding.bind_evidence",
+                ).workspace_id
             )
             _bound_set = _bind_evidence(
                 workspace_id=_ws_uuid_bs,
@@ -3046,8 +3125,99 @@ async def run_deterministic_rag(
 
         logger.info("run_deterministic_rag: llm_text='%.160s'", llm_text)
 
-        # Step 4b: proactive anomaly detection
+        # Step 4a+ — 2026-06-01 — citation-first salvage path.
+        # When the primary LLM call produced a refusal-shaped answer
+        # AND we have document chunks in the tool results AND the
+        # CITATION_FIRST_ENABLED flag is on, try the atomic-claim
+        # extractor + composer pipeline as a recovery attempt.
+        #
+        # Rationale: 60% refusal rate on cross-project comparison
+        # queries comes from LLM over-refusal even when retrieval
+        # surfaced relevant chunks. Forcing the LLM to compose from
+        # PRE-EXTRACTED atomic claims removes the refusal escape
+        # hatch — its input becomes "here are facts, write the
+        # answer." The composer can still degrade to "the claims
+        # don't cover this" when retrieval is genuinely thin, but
+        # the bar for refusal goes up.
+        #
+        # Only fires on refusal — the 80% baseline path is untouched.
+        # Adds 2 LLM calls (extractor + composer) to the refusal
+        # subset; cached by chunk_id so reruns are cheap.
         from app.agent.response_assembler import _is_refusal
+        if (
+            settings.CITATION_FIRST_ENABLED
+            and llm_text
+            and _is_refusal(llm_text)
+        ):
+            try:
+                # Harvest (chunk_id, text) pairs from any DocumentSearchResult
+                # in the tool_results. Other tool types (spatial, graph) need
+                # different scaffolding — out of scope for the first cut.
+                _doc_chunks: list[tuple[str, str]] = []
+                for _tool_name, _result in tool_results:
+                    _result_chunks = getattr(_result, "chunks", None)
+                    if not _result_chunks:
+                        continue
+                    for _chunk in _result_chunks:
+                        _cid = getattr(_chunk, "chunk_id", None)
+                        _ctext = getattr(_chunk, "text", None)
+                        if _cid and _ctext:
+                            _doc_chunks.append((str(_cid), str(_ctext)))
+
+                if _doc_chunks:
+                    logger.info(
+                        "run_deterministic_rag: refusal detected — trying "
+                        "citation-first salvage on %d retrieved chunks",
+                        len(_doc_chunks),
+                    )
+                    from app.services.atomic_claim_extractor import (  # noqa: PLC0415
+                        build_claim_pool,
+                        compose_from_claims,
+                    )
+
+                    _claim_pool = await build_claim_pool(
+                        query,
+                        _doc_chunks,
+                        anthropic_client=getattr(deps, "anthropic_client", None),
+                        openai_http_client=getattr(deps, "openai_http_client", None),
+                        pg_pool=getattr(deps, "pg_pool", None),
+                    )
+
+                    if _claim_pool.claims:
+                        _composed = await compose_from_claims(
+                            query,
+                            _claim_pool,
+                            anthropic_client=getattr(deps, "anthropic_client", None),
+                            openai_http_client=getattr(deps, "openai_http_client", None),
+                            pg_pool=getattr(deps, "pg_pool", None),
+                        )
+                        if _composed and not _is_refusal(_composed):
+                            logger.info(
+                                "run_deterministic_rag: citation-first salvage "
+                                "succeeded — replacing refusal with %d-char "
+                                "claim-grounded answer (claims=%d)",
+                                len(_composed),
+                                len(_claim_pool.claims),
+                            )
+                            llm_text = _composed
+                        else:
+                            logger.info(
+                                "run_deterministic_rag: citation-first composer "
+                                "also produced refusal / empty — keeping original"
+                            )
+                    else:
+                        logger.info(
+                            "run_deterministic_rag: citation-first extractor found "
+                            "no atomic claims in %d chunks — keeping original refusal",
+                            len(_doc_chunks),
+                        )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "run_deterministic_rag: citation-first salvage failed — "
+                    "shipping original answer"
+                )
+
+        # Step 4b: proactive anomaly detection
         try:
             if not _is_refusal(llm_text):
                 insights = detect_anomalies(tool_results, query)
@@ -3101,6 +3271,46 @@ async def run_deterministic_rag(
             map_payload=map_payload,
             viz_payload=viz_payload,
         )
+
+        # Step 6b — 2026-06-01 — sentence-level grounding verification.
+        # Flag-gated; runs the NLI-style check on every cited sentence
+        # against its cited chunks, attaches a GroundingReport to the
+        # response metadata. Advisory only — answer text is not modified
+        # unless SENTENCE_GROUNDING_DROP_MODE is also flipped on (still
+        # gated by trust-building period). Skipped silently when the
+        # flag is off or the verifier hits any error.
+        if settings.SENTENCE_GROUNDING_ENABLED:
+            try:
+                from app.services.sentence_grounding import (  # noqa: PLC0415
+                    build_chunk_text_lookup_from_tool_results,
+                    build_marker_to_chunk_id,
+                    verify_answer_grounding,
+                )
+                _marker_lookup = build_marker_to_chunk_id(response.citations)
+                _chunk_text_lookup = build_chunk_text_lookup_from_tool_results(
+                    tool_results
+                )
+                _grounding = await verify_answer_grounding(
+                    response.text,
+                    _marker_lookup,
+                    _chunk_text_lookup,
+                    anthropic_client=getattr(deps, "anthropic_client", None),
+                    openai_http_client=getattr(deps, "openai_http_client", None),
+                    redis_client=getattr(deps, "redis_client", None),
+                    pg_pool=deps.pg_pool,
+                )
+                response.grounding_report = _grounding.to_jsonable()
+                logger.info(
+                    "run_deterministic_rag: grounding_report attached "
+                    "(verifier_ran=%s, summary=%s)",
+                    _grounding.verifier_ran,
+                    _grounding.summary,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "run_deterministic_rag: sentence grounding failed — "
+                    "shipping answer without grounding_report"
+                )
 
         # Step 7: Layer 2 — typed output validation.
         response = validate_and_repair(response)
@@ -3267,9 +3477,16 @@ async def run_deterministic_rag(
         if partial_failures:
             _pf_details = {tool_name: exc_class for tool_name, exc_class in partial_failures}
 
-        # Resolve workspace_id (Module 9 will supply via JWT; until then use the
-        # _workspace_id_for_key resolved earlier in this function).
-        _ws_id_for_insert = _workspace_id_for_key or "a0000000-0000-0000-0000-000000000001"
+        # Resolve workspace_id via WorkspaceContext (Phase 1 — observes +
+        # falls back; Phase 2 will hard-fail). _workspace_id_for_key was
+        # resolved earlier in this function from the JWT / project-id
+        # lookup; this site applies the typed wrapper.
+        from types import SimpleNamespace as _SN_ins  # noqa: PLC0415
+        from app.agent.workspace_context import WorkspaceContext as _WC_ins  # noqa: PLC0415
+        _ws_id_for_insert = _WC_ins.from_state(
+            _SN_ins(workspace_id=_workspace_id_for_key),
+            site="orchestrator.answer_run_insert",
+        ).workspace_id
 
         # Phase B addendum: on cache hit, populate cache_hit_of_run_id from the
         # cached context's original_answer_run_id (set by the originating run's

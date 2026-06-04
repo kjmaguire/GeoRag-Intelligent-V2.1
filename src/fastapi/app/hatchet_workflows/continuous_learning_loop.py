@@ -41,6 +41,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 
@@ -124,8 +125,11 @@ async def execute(
 
         for ws in ws_rows:
             ws_id = ws["workspace_id"]
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", ws_id,
+            # REC#2 Phase-2 (2026-06-03) — bind_workspace_scope replaces
+            # the bespoke set_config call. Same effect; centralised UUID
+            # validation; loud failure if ws_id ever falls through as None.
+            await bind_workspace_scope(
+                conn, workspace_id=ws_id, site="continuous_learning_loop"
             )
 
             outcome_delta = await conn.fetchval(

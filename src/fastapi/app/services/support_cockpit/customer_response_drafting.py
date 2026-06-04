@@ -29,6 +29,7 @@ touching the surrounding orchestration.
 """
 
 from __future__ import annotations
+from app.db import lookup_and_rescope
 
 import logging
 import os
@@ -189,106 +190,100 @@ async def draft_customer_response(
         )
 
     try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                # Block-3 RLS: ops.support_tickets is workspace_id-scoped.
-                # We don't know the ticket's workspace yet, so default
-                # to the Default Workspace (matches the legacy
-                # single-tenant fixture path). For multi-tenant calls
-                # the caller pre-sets the GUC.
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    "a0000000-0000-0000-0000-000000000001",
-                )
-                # 1. Read ticket.
-                ticket = await conn.fetchrow(
-                    """
-                    SELECT ticket_id::text AS ticket_id,
-                           workspace_id::text AS workspace_id,
-                           category, severity, status
-                      FROM ops.support_tickets
-                     WHERE ticket_id = $1::uuid
-                       FOR UPDATE
-                    """,
-                    ticket_str,
-                )
-                if ticket is None:
-                    raise ValueError(f"ticket not found: {ticket_str}")
-                # Realign the GUC to the ticket's actual workspace for
-                # subsequent writes/reads in this transaction.
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    ticket["workspace_id"],
-                )
+        # ADR-0014 — two-phase workspace scoping. The helper:
+        #   1. Bootstraps the GUC to default tenant (cross-tenant ticket
+        #      lookup) via bootstrap_workspace_id(reason=...), so the
+        #      elevation is COUNTED in WORKSPACE_RESOLUTION_FAILURES
+        #   2. Runs the lookup_sql
+        #   3. UUID-validates ticket["workspace_id"] (catches malformed
+        #      ticket rows before SET LOCAL interpolation — the real
+        #      defect ADR-0014 closes)
+        #   4. Rebinds the GUC to the ticket's workspace
+        #   5. Yields (conn, ticket) — subsequent writes are scoped.
+        # Raises BareConnectionError if the ticket doesn't exist or has
+        # a malformed workspace_id; the caller catches Exception → 500.
+        async with lookup_and_rescope(
+            pool,
+            lookup_sql="""
+                SELECT ticket_id::text AS ticket_id,
+                       workspace_id::text AS workspace_id,
+                       category, severity, status
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                   FOR UPDATE
+                """,
+            lookup_args=(ticket_str,),
+            site="support_cockpit.customer_response_drafting",
+            bootstrap_reason="support_cockpit.elevated_lookup",
+        ) as (conn, ticket):
+            # 2. Look up the most-recent investigation summary, if any.
+            inv_row = await conn.fetchrow(
+                """
+                SELECT trace_summary
+                  FROM ops.support_ticket_traces
+                 WHERE ticket_id = $1::uuid
+                 ORDER BY added_at DESC
+                 LIMIT 1
+                """,
+                ticket_str,
+            )
+            investigation_summary = (
+                inv_row["trace_summary"] if inv_row else None
+            )
 
-                # 2. Look up the most-recent investigation summary, if any.
-                inv_row = await conn.fetchrow(
-                    """
-                    SELECT trace_summary
-                      FROM ops.support_ticket_traces
-                     WHERE ticket_id = $1::uuid
-                     ORDER BY added_at DESC
-                     LIMIT 1
-                    """,
-                    ticket_str,
-                )
-                investigation_summary = (
-                    inv_row["trace_summary"] if inv_row else None
-                )
+            # 3. Synthesize.
+            response_text = _synthesize_response(
+                category=ticket["category"],
+                severity=ticket["severity"],
+                investigation_summary=investigation_summary,
+            )
 
-                # 3. Synthesize.
-                response_text = _synthesize_response(
-                    category=ticket["category"],
-                    severity=ticket["severity"],
-                    investigation_summary=investigation_summary,
-                )
+            # 4. Persist on the ticket.
+            await conn.execute(
+                """
+                UPDATE ops.support_tickets
+                   SET customer_visible_response = $1
+                 WHERE ticket_id = $2::uuid
+                """,
+                response_text, ticket_str,
+            )
 
-                # 4. Persist on the ticket.
-                await conn.execute(
-                    """
-                    UPDATE ops.support_tickets
-                       SET customer_visible_response = $1
-                     WHERE ticket_id = $2::uuid
-                    """,
-                    response_text, ticket_str,
-                )
+            # 5. Audit anchor.
+            word_count = len(response_text.split())
+            await emit_audit(
+                conn,
+                action_type="support.ticket.response_drafted",
+                workspace_id=ticket["workspace_id"],
+                actor_id=actor_user_id,
+                actor_kind="agent",
+                target_schema="ops",
+                target_table="support_tickets",
+                target_id=ticket_str,
+                payload={
+                    "evaluator": "synthetic_stub",
+                    "doc_phase": 143,
+                    "category": ticket["category"],
+                    "severity": ticket["severity"],
+                    "response_word_count": word_count,
+                    "investigation_summary_used": investigation_summary is not None,
+                },
+            )
 
-                # 5. Audit anchor.
-                word_count = len(response_text.split())
-                await emit_audit(
-                    conn,
-                    action_type="support.ticket.response_drafted",
-                    workspace_id=ticket["workspace_id"],
-                    actor_id=actor_user_id,
-                    actor_kind="agent",
-                    target_schema="ops",
-                    target_table="support_tickets",
-                    target_id=ticket_str,
-                    payload={
-                        "evaluator": "synthetic_stub",
-                        "doc_phase": 143,
-                        "category": ticket["category"],
-                        "severity": ticket["severity"],
-                        "response_word_count": word_count,
-                        "investigation_summary_used": investigation_summary is not None,
-                    },
-                )
+            log.info(
+                "customer_response_drafting.completed ticket=%s "
+                "category=%s severity=%s word_count=%d",
+                ticket_str, ticket["category"], ticket["severity"],
+                word_count,
+            )
 
-                log.info(
-                    "customer_response_drafting.completed ticket=%s "
-                    "category=%s severity=%s word_count=%d",
-                    ticket_str, ticket["category"], ticket["severity"],
-                    word_count,
-                )
-
-                return DraftOutcome(
-                    ticket_id=UUID(ticket_str),
-                    category=ticket["category"],
-                    severity=ticket["severity"],
-                    response_text=response_text,
-                    response_word_count=word_count,
-                    drafting_method="synthetic_stub",
-                )
+            return DraftOutcome(
+                ticket_id=UUID(ticket_str),
+                category=ticket["category"],
+                severity=ticket["severity"],
+                response_text=response_text,
+                response_word_count=word_count,
+                drafting_method="synthetic_stub",
+            )
     finally:
         if owns_pool and pool is not None:
             await pool.close()

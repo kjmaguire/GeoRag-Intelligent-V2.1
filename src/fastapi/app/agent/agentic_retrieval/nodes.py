@@ -289,11 +289,15 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
 
     # ADR-0007 PR-1 chat-card tools take ``(deps, workspace_id, project_id)``
     # directly — no RunContext wrapper. workspace_id is JWT-derived and
-    # MUST be supplied; we fall back to the default dev workspace so the
-    # graph keeps running in unit tests where deps.workspace_id isn't set.
-    workspace_id = getattr(deps, "workspace_id", None) or (
-        "a0000000-0000-0000-0000-000000000001"
-    )
+    # MUST be supplied; we used to silently fall back to the default
+    # tenant when deps.workspace_id wasn't set, which the 2026-06-03 audit
+    # established as a multi-tenant contamination bug. Now resolved via
+    # WorkspaceContext.from_state which emits a metric on every fallback
+    # (Phase 1 observe-only) and will hard-fail in Phase 2.
+    from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+    workspace_id = WorkspaceContext.from_state(
+        deps, site="agentic_retrieval.execute_node.chat_cards",
+    ).workspace_id
 
     # ToolContext is the same shim the deterministic orchestrator uses to
     # adapt AgentDeps into a RunContext-shaped object for the legacy tools.
@@ -451,9 +455,10 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 "agentic_retrieval.execute: query_collar_details import failed"
             )
         else:
-            workspace_id = getattr(state.deps, "workspace_id", None) or (
-                "a0000000-0000-0000-0000-000000000001"
-            )
+            from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+            workspace_id = WorkspaceContext.from_state(
+                state.deps, site="agentic_retrieval.execute_node.collar_details",
+            ).workspace_id
             project_id = getattr(state.deps, "project_id", None)
             if project_id is not None:
                 for hid in hole_ids:
@@ -1931,7 +1936,10 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         return {}
 
     project_id = getattr(state.deps, "project_id", None)
-    workspace_id = getattr(state.deps, "workspace_id", None) or "a0000000-0000-0000-0000-000000000001"
+    from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+    workspace_id = WorkspaceContext.from_state(
+        state.deps, site="agentic_retrieval.persist_node",
+    ).workspace_id
 
     try:
         from app.agent.lineage import build_lineage_payload  # noqa: PLC0415

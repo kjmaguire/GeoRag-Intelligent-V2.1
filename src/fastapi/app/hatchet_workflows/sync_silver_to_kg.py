@@ -29,6 +29,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.services.ingest.kg_sync import sync_silver_project_to_neo4j
 
@@ -116,9 +117,11 @@ async def run(
             # downstream kg_sync call sets GUC and finds the project.
             project_pairs: list[tuple[str, str]] = []
             for ws_row in ws_rows:
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    ws_row["wid"],
+                # REC#2 Phase-2 (2026-06-03).
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id=ws_row["wid"],
+                    site="sync_silver_to_kg.project_discovery",
                 )
                 rows = await conn.fetch(
                     "SELECT project_id::text AS pid FROM silver.projects"
@@ -144,8 +147,10 @@ async def run(
                 # tenant slice.
                 wid = project_workspace_map.get(pid)
                 if wid:
-                    await conn.execute(
-                        "SELECT set_config('app.workspace_id', $1, false)", wid,
+                    await bind_workspace_scope(
+                        conn,
+                        workspace_id=wid,
+                        site="sync_silver_to_kg.per_project",
                     )
                 r = await sync_silver_project_to_neo4j(conn, project_id=pid)
                 total_nodes += (

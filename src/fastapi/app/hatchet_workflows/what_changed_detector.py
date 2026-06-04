@@ -34,6 +34,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.what_changed_detector")
@@ -129,9 +130,8 @@ async def execute(input: WhatChangedInput, ctx: Context) -> WhatChangedOutput:
     try:
         async with pool.acquire() as conn:
             # Block-3 RLS: scope to the workspace we're detecting for.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                workspace_str,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_str, site="hatchet.what_changed_detector"
             )
             ingest = await _count_audits(
                 conn, workspace_str, ["ingest_pdf.", "ingest.", "ocr."],

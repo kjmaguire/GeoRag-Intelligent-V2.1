@@ -29,6 +29,7 @@ Idempotency: all merges use `MERGE` on `(label, name, project_id)` so
 re-running is safe.
 """
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import logging
 import os
@@ -110,9 +111,8 @@ async def sync_silver_project_to_neo4j(
     # are workspace_id-scoped now. Set the GUC to the project's workspace
     # so the subsequent reads return the project's rows.
     if proj_row["workspace_id"]:
-        await pg_conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)",
-            proj_row["workspace_id"],
+        await bind_workspace_scope(
+            pg_conn, workspace_id=proj_row["workspace_id"], site="ingest.kg_sync"
         )
 
     proj_name = proj_row["project_name"]

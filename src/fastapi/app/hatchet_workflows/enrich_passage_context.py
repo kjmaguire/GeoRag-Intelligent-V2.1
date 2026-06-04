@@ -28,9 +28,10 @@ log = logging.getLogger("georag.hatchet.enrich_passage_context")
 
 
 class EnrichPassageContextInput(BaseModel):
-    workspace_id: str = Field(
-        default="a0000000-0000-0000-0000-000000000001",
-    )
+    # REC#1 (2026-06-03) — REQUIRED, no default. See
+    # embed_pending_passages.py + _workspace_input.py for the bootstrap
+    # path on the small set of legitimate default-tenant callers.
+    workspace_id: str = Field(..., description="Workspace UUID. REQUIRED.")
     project_id: str = Field(default="*")
     batch_size: int = Field(default=8)
     max_passages: int | None = Field(default=None)

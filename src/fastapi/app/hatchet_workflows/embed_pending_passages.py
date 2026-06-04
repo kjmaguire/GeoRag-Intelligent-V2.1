@@ -33,9 +33,20 @@ log = logging.getLogger("georag.hatchet.embed_pending_passages")
 
 
 class EmbedPendingPassagesInput(BaseModel):
+    # REC#1 (2026-06-03) — workspace_id is REQUIRED. The Pydantic
+    # Field no longer has a default. Bootstrap callers (Dagster
+    # scheduled embed, manual reingest CLI) get the legacy default via
+    # `bootstrap_workspace_id(reason=...)` from
+    # `app.hatchet_workflows._workspace_input`, which logs +
+    # increments WORKSPACE_RESOLUTION_FAILURES so the bootstrap usage
+    # stays observable.
     workspace_id: str = Field(
-        default="a0000000-0000-0000-0000-000000000001",
-        description="Workspace UUID for RLS scoping. Default = Default Workspace.",
+        ...,
+        description=(
+            "Workspace UUID for RLS scoping. REQUIRED — see "
+            "_workspace_input.bootstrap_workspace_id for the legitimate "
+            "default-tenant bootstrap path."
+        ),
     )
     project_id: str = Field(
         default="*",
@@ -229,6 +240,36 @@ async def run(
         len(project_ids), total_seen, total_embedded, total_upserted,
         total_skipped, len(errors),
     )
+
+    # 2026-06-01 Guard 3 — post-embed retrieval smoke.
+    # Only runs when this workflow actually upserted points. Picks one
+    # freshly-embedded passage, encodes its first words as a query, runs
+    # the hybrid_query pipeline against the workspace, and asserts the
+    # top hit carries non-empty text. This exercises the FULL retrieval
+    # contract that user-facing chat depends on (dense + sparse encoders,
+    # Qdrant index, hybrid scoring, payload extraction) — Guard 1 only
+    # verifies what we wrote and Guard 2 only verifies payload shape at
+    # rest. A failure here means the payload looks right but chat is
+    # still broken (e.g., sparse encoder regressed, scoring threshold
+    # too tight, payload key renamed without retrieval-side update).
+    # Failure is loud (ERROR + Prom + audit) but non-blocking — the
+    # data IS embedded, the issue is in the query path and needs human
+    # triage rather than blocking ingest.
+    if total_upserted > 0:
+        try:
+            from app.hatchet_workflows.embed_pending_passages_smoke import (  # noqa: PLC0415
+                run_retrieval_smoke,
+            )
+            smoke = await run_retrieval_smoke(workspace_id=input.workspace_id)
+            log.info("embed_pending_passages.smoke result=%s", smoke)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"smoke_failed:{type(exc).__name__}:{exc}")
+            log.exception(
+                "embed_pending_passages.smoke_failed err=%s — embed succeeded "
+                "but retrieval is broken for workspace=%s. Investigate before "
+                "the next user query.",
+                exc, input.workspace_id,
+            )
 
     # Sweep silver.ingest_progress: any row sitting at embed_verify/embedding
     # for a project that now has zero unembedded passages is logically

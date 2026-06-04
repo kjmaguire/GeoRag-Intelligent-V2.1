@@ -6,6 +6,7 @@ template-driven draft per ticket category. The DRAFT goes back to
 ops for review before sending — this agent never auto-sends.
 """
 from __future__ import annotations
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 from typing import Any
@@ -90,7 +91,7 @@ async def customer_response_drafting(
     try:
         # Block-3 RLS — ops.support_tickets is workspace_id-scoped.
         ws = str(ctx.workspace_id) if ctx and ctx.workspace_id \
-             else "a0000000-0000-0000-0000-000000000001"
+             else LEGACY_DEFAULT_TENANT_UUID
         await conn.execute(
             "SELECT set_config('app.workspace_id', $1, false)", ws,
         )

@@ -95,10 +95,9 @@ async def get_project_bbox_wkt(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    workspace_id,
-                )
+                await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.project_geometry"
+            )
                 # Try the cached bbox column first (cheap PK hit).
                 # silver.projects MAY not have a `bbox` column on
                 # every deployment — catch the UndefinedColumn error

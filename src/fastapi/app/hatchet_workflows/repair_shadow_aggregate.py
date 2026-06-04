@@ -42,6 +42,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 
@@ -324,9 +325,8 @@ async def aggregate_window(
         for ws in workspaces:
             try:
                 async with conn.transaction():
-                    await conn.execute(
-                        "SELECT set_config('app.workspace_id', $1, true)",
-                        ws,
+                    await bind_workspace_scope(
+                        conn, workspace_id=ws, site="hatchet.repair_shadow_aggregate"
                     )
                     result = await conn.execute(
                         _AGGREGATE_SQL,
