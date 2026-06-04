@@ -31,6 +31,7 @@ URIs.
 """
 
 from __future__ import annotations
+from app.db import lookup_and_rescope
 
 import json
 import logging
@@ -117,15 +118,10 @@ async def build_support_packet(
         )
 
     try:
-        async with pool.acquire() as conn:
-            # Block-3 RLS — see customer_response_drafting pattern.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                "a0000000-0000-0000-0000-000000000001",
-            )
-            # 1. Ticket row.
-            ticket_row = await conn.fetchrow(
-                """
+        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py.
+        async with lookup_and_rescope(
+            pool,
+            lookup_sql="""
                 SELECT ticket_id::text AS ticket_id,
                        workspace_id::text AS workspace_id,
                        reported_by_user_id, reported_at, channel,
@@ -136,15 +132,10 @@ async def build_support_packet(
                   FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
                 """,
-                ticket_str,
-            )
-            if ticket_row is None:
-                raise ValueError(f"ticket not found: {ticket_str}")
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                ticket_row["workspace_id"],
-            )
-
+            lookup_args=(ticket_str,),
+            site="support_cockpit.support_packet",
+            bootstrap_reason="support_cockpit.elevated_lookup",
+        ) as (conn, ticket_row):
             ticket_dict = _record_to_dict(ticket_row)
 
             # 2. Triage anchors (support.ticket.triaged for this ticket).

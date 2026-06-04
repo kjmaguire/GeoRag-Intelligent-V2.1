@@ -862,6 +862,18 @@ class Settings(BaseSettings):
     # model; production code path uses the constant in main.py.
     EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
 
+    # Vector dim of the embedding model. main.py asserts the loaded model
+    # matches this at startup (fail-fast); also referenced by init_qdrant.py
+    # via GEORAG_VECTOR_SIZE. Drift = silent 400 on every UPSERT.
+    EMBEDDING_DIMENSION: int = 1024
+
+    # Qwen3-Embedding supports an instruction prompt prepended at encode
+    # time. main.py passes settings.EMBEDDING_QUERY_PROMPT_NAME or None
+    # to SentenceTransformer.encode(prompt_name=...). Empty string keeps
+    # the bge-era no-prompt behavior on a forward-compatible setting; set
+    # to "query" to enable Qwen3's instruction prefix per its model card.
+    EMBEDDING_QUERY_PROMPT_NAME: str = ""
+
     # Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB) replaces
     # BAAI/bge-reranker-base per the 2026-06-03 swap. Architecturally a
     # CausalLM that returns a yes-token-logit minus no-token-logit ratio,
