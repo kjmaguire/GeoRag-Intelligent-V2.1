@@ -224,7 +224,7 @@ dependencies = [
     # GHSA-983w-rhvv-gwmv (SSRF protection bypass via HTTP redirect,
     # fix in 68.0). Stays inside a major-version range so the PDF
     # renderer's HTML/CSS expectations don't shift.
-    "weasyprint>=68.0,<69.0",
+    "weasyprint>=68.0,<70.0",
     "python-docx>=1.1,<2.0",
     "openpyxl>=3.1,<4.0",
 
