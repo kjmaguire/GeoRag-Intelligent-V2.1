@@ -367,7 +367,7 @@ jobs:
 
       - name: Upload staging test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: staging-test-results-${{ needs.check-ci.outputs.short_sha }}
           path: src/fastapi/test-results-staging-integration.xml

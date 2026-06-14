@@ -94,7 +94,7 @@ jobs:
 
       - name: Upload load test artifact
         if: always() && steps.secrets.outputs.missing != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-baseline-${{ github.run_number }}
           path: src/fastapi/load-test-results.json
