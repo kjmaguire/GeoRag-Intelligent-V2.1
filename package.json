@@ -31,7 +31,7 @@
         "react-map-gl": "^8.1.0",
         "react-markdown": "^10.1.0",
         "react-plotly.js": "^2.6.0",
-        "tailwind-merge": "^3.5.0"
+        "tailwind-merge": "^3.6.0"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.3.0",
