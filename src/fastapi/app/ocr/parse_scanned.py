@@ -144,15 +144,26 @@ def _parse_scanned_sync(
     # used by services/pdf_ocr.py so routing is consistent across both
     # PaddleOCR call sites.
     from app.ocr._paddleocr_gpu import paddleocr_use_gpu  # noqa: PLC0415
+    import logging as _logging  # noqa: PLC0415
     use_gpu = paddleocr_use_gpu()
+    # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
+    #   use_angle_cls   -> use_textline_orientation
+    #   use_gpu         -> device="gpu:0" | "cpu"
+    #   show_log        -> dropped (logging module instead)
+    #   det_model_dir   -> text_detection_model_dir
+    #   rec_model_dir   -> text_recognition_model_dir
+    #   cls_model_dir   -> textline_orientation_model_dir
+    # The settings_used dict downstream still records `use_angle_cls`
+    # (key kept stable for the silver schema) — only the call surface
+    # changes here, not the persisted column name.
+    _logging.getLogger("paddleocr").setLevel(_logging.WARNING)
     ocr = PaddleOCR(
-        use_angle_cls=effective_settings["use_angle_cls"],
+        use_textline_orientation=effective_settings["use_angle_cls"],
         lang=lang,
-        use_gpu=use_gpu,
-        show_log=False,
-        det_model_dir=_model_dir("det", lang),
-        rec_model_dir=_model_dir("rec", lang),
-        cls_model_dir=_model_dir("cls", lang),
+        device="gpu:0" if use_gpu else "cpu",
+        text_detection_model_dir=_model_dir("det", lang),
+        text_recognition_model_dir=_model_dir("rec", lang),
+        textline_orientation_model_dir=_model_dir("cls", lang),
     )
 
     pdf = pdfium.PdfDocument(str(pdf_path))
@@ -174,7 +185,9 @@ def _parse_scanned_sync(
             arr = np.asarray(bitmap.to_pil().convert("RGB"))
 
             try:
-                result = ocr.ocr(arr)
+                # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
+                # `ocr.ocr(arr)` -> `ocr.predict(arr)`.
+                result = ocr.predict(arr)
             except Exception as exc:  # PaddleOCR can throw on degenerate pages
                 # Record the failure as a zero-confidence page; the
                 # caller (quality_graph) will route to retry/review.
@@ -185,32 +198,47 @@ def _parse_scanned_sync(
                 per_page_retry_counts.append(0)
                 continue
 
-            page_lines = _flatten_paddleocr_result(result)
+            # PaddleOCR 3.x return shape: list[OCRResult]. Each result
+            # has rec_texts/rec_scores/rec_boxes (axis-aligned already
+            # in pixel coords). The _flatten_paddleocr_result helper that
+            # normalised the 2.x nested-tuple shape is no longer needed —
+            # kept in the module for reference + the smoke-test path.
+            page_result = result[0] if (result and result[0] is not None) else None
+            if page_result is None:
+                per_page_ocr_confidence.append(0.0)
+                per_page_text_line_counts.append(0)
+                per_page_deskew_applied.append(effective_settings["use_angle_cls"])
+                per_page_rotation_applied.append(0.0)
+                per_page_retry_counts.append(0)
+                continue
+
+            texts = getattr(page_result, "rec_texts", []) or []
+            scores = getattr(page_result, "rec_scores", []) or []
+            boxes = getattr(page_result, "rec_boxes", None)
+
             confidences: list[float] = []
             region_idx = 0
-            for line in page_lines:
-                bbox_4pt, text_conf = line
-                if not text_conf or len(text_conf) < 2:
-                    continue
-                text, conf = text_conf[0], text_conf[1]
+            for idx, (text, conf) in enumerate(zip(texts, scores)):
                 if not text:
                     continue
-                # Convert the 4-corner-point box to a (x0,y0,x1,y1) bbox.
-                xs = [float(p[0]) for p in bbox_4pt]
-                ys = [float(p[1]) for p in bbox_4pt]
-                bbox = [
-                    round(min(xs), 3),
-                    round(min(ys), 3),
-                    round(max(xs), 3),
-                    round(max(ys), 3),
-                ]
+                # rec_boxes is already axis-aligned [x_min, y_min, x_max,
+                # y_max] in pixel coords — no min/max-over-corners needed.
+                if boxes is not None and idx < len(boxes):
+                    bbox = [
+                        round(float(boxes[idx][0]), 3),
+                        round(float(boxes[idx][1]), 3),
+                        round(float(boxes[idx][2]), 3),
+                        round(float(boxes[idx][3]), 3),
+                    ]
+                else:
+                    bbox = [0.0, 0.0, 0.0, 0.0]
                 passages.append({
                     "page": page_idx,
                     "region": region_idx,
                     "bbox": bbox,
                     "source_method": "paddleocr_pp_ocrv5",
                     "extraction_confidence": float(conf),
-                    "text_content": text,
+                    "text_content": str(text),
                 })
                 confidences.append(float(conf))
                 region_idx += 1
@@ -241,15 +269,23 @@ def _parse_scanned_sync(
 
 
 def _flatten_paddleocr_result(result: Any) -> list[tuple[Any, Any]]:
-    """Normalize PaddleOCR's nested result shape into a flat list of
-    ``(bbox_4pt, (text, confidence))`` tuples.
+    """LEGACY (PaddleOCR 2.x): normalize the nested ``[[bbox, (text, conf)], ...]``
+    return shape into a flat list. Retained for two reasons:
+      1. The ocr_cpu_smoke validation script (ops/validation/ocr_cpu_smoke.py)
+         still references it to assert the 2.x→3.x cutover happened.
+      2. Anyone hitting a 2.x model output (e.g. via a third-party PaddleOCR
+         build, or a stubbed test fixture) can still parse it.
 
-    PaddleOCR's `ocr()` return shape varies by version:
-    - 2.6+: ``[[ [bbox, (text, conf)], ... ]]`` (outer list = batch of 1 image)
-    - older: ``[ [bbox, (text, conf)], ... ]``
-    This helper handles both.
+    The main code path was rewritten in the 2026-06-23 PaddleOCR 3.x migration
+    (ADR-0016) to consume `result[0].rec_texts / rec_scores / rec_boxes`
+    directly — no flattening required.
     """
     if not result:
+        return []
+    # 3.x guard: if the first element looks like a PaddleOCR 3.x OCRResult
+    # (has rec_texts/rec_scores attributes), the legacy helper can't parse
+    # it and the caller should be using the attribute access pattern instead.
+    if result and hasattr(result[0], "rec_texts"):
         return []
     # Unwrap a one-element batch list if present
     if isinstance(result, list) and len(result) == 1 and isinstance(result[0], list):

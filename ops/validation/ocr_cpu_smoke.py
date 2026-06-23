@@ -180,23 +180,27 @@ def bench_scanned_parse(pdf_bytes: bytes) -> dict:
     input — bypassing fitz entirely. This bench mirrors that pattern.
 
     Writes the bytes to /tmp/_smoke_scanned.pdf, renders each page to a
-    numpy array via pypdfium2, then invokes paddleocr.ocr() with the
+    numpy array via pypdfium2, then invokes paddleocr.predict() with the
     array (PaddleOCR's image-input path is fitz-free).
     """
     out_path = Path("/tmp/_smoke_scanned.pdf")
     out_path.write_bytes(pdf_bytes)
 
     def parse():
+        import logging
         import numpy as np
         import pypdfium2 as pdfium
         from paddleocr import PaddleOCR
 
-        # use_angle_cls=False to keep the bench minimal; real Step 4 will
-        # add deskew + angle classification.
-        ocr = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+        # 2026-06-23 — PaddleOCR 3.x migration (ADR-0016):
+        # use_angle_cls -> use_textline_orientation; show_log dropped.
+        # use_textline_orientation=False keeps the bench minimal — the real
+        # Step 4 path adds deskew + orientation.
+        logging.getLogger("paddleocr").setLevel(logging.WARNING)
+        ocr = PaddleOCR(use_textline_orientation=False, lang="en")
 
-        # Render each page to a numpy array. PaddleOCR.ocr() accepts a
-        # numpy ndarray for image input — no fitz needed.
+        # Render each page to a numpy array. PaddleOCR.predict() accepts
+        # a numpy ndarray for image input — no fitz needed.
         pdf = pdfium.PdfDocument(str(out_path))
         page_results = []
         pages_ocrd = 0
@@ -205,10 +209,13 @@ def bench_scanned_parse(pdf_bytes: bytes) -> dict:
             page = pdf[page_idx]
             bitmap = page.render(scale=2.0)
             arr = np.asarray(bitmap.to_pil().convert("RGB"))
-            r = ocr.ocr(arr)
+            # 3.x: predict() returns [OCRResult]; rec_texts is the line list.
+            r = ocr.predict(arr)
             pages_ocrd += 1
-            text_lines += sum(len(p) for p in (r or []) if p)
-            page_results.append(len(r[0]) if r and r[0] else 0)
+            page_obj = r[0] if (r and r[0] is not None) else None
+            line_count = len(getattr(page_obj, "rec_texts", []) or []) if page_obj else 0
+            text_lines += line_count
+            page_results.append(line_count)
 
         return {
             "pages_ocrd": pages_ocrd,

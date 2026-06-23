@@ -169,7 +169,14 @@ dependencies = [
     #         --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ \\
     #         --extra-index-url https://pypi.org/simple/
     "paddlepaddle>=3.1",
-    "paddleocr>=2.10",
+    # 2026-06-23 sweep: paddleocr 2.10 -> 3.7+ (currently resolves 3.7.0).
+    # Major bump: 3.x ships PP-OCRv5/v6 as default + new `.predict()` API
+    # surface + renamed constructor kwargs (`use_angle_cls` ->
+    # `use_textline_orientation`, `use_gpu` -> `device`, etc.).
+    # Call sites updated in lockstep — see ADR-0016 for the migration
+    # rationale and rollout. Cap held below 4.0 so a future 4.x cut is a
+    # deliberate decision, not an accidental resolver pickup.
+    "paddleocr>=3.7,<4.0",
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the

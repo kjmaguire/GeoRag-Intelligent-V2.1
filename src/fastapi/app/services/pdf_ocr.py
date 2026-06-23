@@ -116,6 +116,7 @@ def _get_ocr_instance():  # type: ignore[return]
         return _OCR_INSTANCE
 
     try:
+        import logging as _logging  # noqa: PLC0415
         from paddleocr import PaddleOCR  # noqa: PLC0415
         from app.ocr._paddleocr_gpu import paddleocr_use_gpu  # noqa: PLC0415
 
@@ -125,22 +126,28 @@ def _get_ocr_instance():  # type: ignore[return]
         # compiled with CUDA, and ≥ PADDLEOCR_MIN_FREE_VRAM_MB is free
         # on device 0. False otherwise → CPU path unchanged.
         use_gpu = paddleocr_use_gpu()
+        # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
+        #   use_angle_cls=True   -> use_textline_orientation=True
+        #   use_gpu=<bool>       -> device="gpu:0" | "cpu"
+        #   show_log=False       -> dropped (control via logging module)
+        # The legacy kwargs still produce DeprecationWarnings on 3.x and
+        # would be hard errors on a future 4.x — moving to the new names
+        # now keeps us forward-compatible.
+        _logging.getLogger("paddleocr").setLevel(_logging.WARNING)
         _OCR_INSTANCE = PaddleOCR(
-            use_angle_cls=True,
+            use_textline_orientation=True,
             lang=lang,
-            use_gpu=use_gpu,
-            # Suppress paddleocr's verbose initialisation output.
-            show_log=False,
+            device="gpu:0" if use_gpu else "cpu",
         )
         logger.debug(
-            "PaddleOCR PP-OCRv5 instance created in worker (lang=%s, use_gpu=%s)",
-            lang, use_gpu,
+            "PaddleOCR instance created in worker (lang=%s, device=%s)",
+            lang, "gpu:0" if use_gpu else "cpu",
         )
         return _OCR_INSTANCE
     except ImportError as exc:
         raise RuntimeError(
             "paddleocr is not installed. "
-            "Run: uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'"
+            "Run: uv pip install 'paddlepaddle>=3.1' 'paddleocr>=3.7,<4.0'"
         ) from exc
 
 
@@ -194,34 +201,48 @@ def _ocr_worker(crop_png: bytes, dpi: int) -> dict:  # noqa: ARG001
         # Fallback: pass the raw bytes — PaddleOCR can open PNG bytes.
         img_array = crop_png  # type: ignore[assignment]
 
-    result = ocr.ocr(img_array, cls=True)
+    # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
+    # `ocr.ocr(img, cls=True)` -> `ocr.predict(img)`. The cls toggle is
+    # now controlled at constructor time via `use_textline_orientation`
+    # so the per-call argument went away.
+    result = ocr.predict(img_array)
 
-    # PaddleOCR returns None when no text is detected.
-    if result is None or (isinstance(result, list) and (not result or result[0] is None)):
+    # PaddleOCR 3.x: predict() returns a list of OCRResult objects (one
+    # per input image). Each has rec_texts (list[str]), rec_scores
+    # (list[float]), rec_boxes (Nx4 ndarray of [x_min, y_min, x_max, y_max]
+    # in pixel coords), and rec_polys (4-corner polygons). The 2.x nested
+    # `[[bbox, (text, conf)], ...]` shape is gone.
+    if not result or result[0] is None:
         return {
             "text_content": "",
             "lines": [],
             "mean_confidence": 1.0,  # no lines detected — no confidence to average
         }
 
-    lines: list[dict] = []
-    # result shape: [[page_lines]] or [page_lines] depending on PaddleOCR version.
-    # Flatten one level if we got the outer-list-per-page wrapper.
-    raw_lines = result[0] if (result and isinstance(result[0], list)) else result
+    page = result[0]
+    texts = getattr(page, "rec_texts", []) or []
+    scores = getattr(page, "rec_scores", []) or []
+    boxes = getattr(page, "rec_boxes", None)
 
-    for line in raw_lines:
-        if line is None:
+    lines: list[dict] = []
+    for idx, (text, conf) in enumerate(zip(texts, scores)):
+        if not text:
             continue
-        # PaddleOCR line format: [[x0,y0], [x1,y0], [x1,y1], [x0,y1]], (text, confidence)
-        box_pts, (text, confidence) = line
-        # Compute axis-aligned bbox from the four corner points.
-        xs = [pt[0] for pt in box_pts]
-        ys = [pt[1] for pt in box_pts]
-        bbox = [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))]
+        # rec_boxes is already axis-aligned in pixel coords — no min/max
+        # over corner points needed (that was 2.x bookkeeping).
+        if boxes is not None and idx < len(boxes):
+            bbox = [
+                float(boxes[idx][0]),
+                float(boxes[idx][1]),
+                float(boxes[idx][2]),
+                float(boxes[idx][3]),
+            ]
+        else:
+            bbox = [0.0, 0.0, 0.0, 0.0]
         lines.append({
             "text": str(text),
             "bbox": bbox,
-            "confidence": float(confidence),
+            "confidence": float(conf),
         })
 
     mean_confidence = (
