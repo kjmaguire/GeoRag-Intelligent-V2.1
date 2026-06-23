@@ -40,6 +40,7 @@ from app.ocr.parse_native import parse_native
 from app.ocr.parse_scanned import parse_scanned
 from app.ocr.parse_mixed import parse_mixed
 from app.ocr.parse_table_heavy import parse_table_heavy
+from app.ocr.parse_docparser_vl import parse_docparser_vl
 from app.ocr.render import render_page
 from app.ocr.quality_graph import route_page, summarize_document
 
@@ -50,6 +51,7 @@ __all__ = [
     "parse_scanned",
     "parse_mixed",
     "parse_table_heavy",
+    "parse_docparser_vl",
     "render_page",
     "route_page",
     "summarize_document",

@@ -84,6 +84,29 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # -------------------------------------------------------------------------
+    # §04p PDF doc-parser backend — ADR-0016 Phase 2 (PaddleOCR-VL)
+    # -------------------------------------------------------------------------
+    # Selects the full-page, layout-aware parser used by the §04p stack's
+    # "Stage-6-style" parse slot. `docling` is the production default
+    # (parse_mixed / parse_table_heavy via Docling). `paddleocr-vl` routes that
+    # slot through app.ocr.parse_docparser_vl (PaddleOCR-VL-1.6). Additive +
+    # flag-gated per ADR-0016 — the default keeps current behaviour; promotion
+    # is gated on the Phase 2 shadow-run eval (ADR-0016 step 4).
+    PDF_DOCPARSER_BACKEND: str = "docling"
+
+    @field_validator("PDF_DOCPARSER_BACKEND")
+    @classmethod
+    def _validate_docparser_backend(cls, v: str) -> str:
+        allowed = {"docling", "paddleocr-vl"}
+        normalized = v.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"PDF_DOCPARSER_BACKEND must be one of {sorted(allowed)}, "
+                f"got {v!r}."
+            )
+        return normalized
+
+    # -------------------------------------------------------------------------
     # Sentry — error tracking, traces, profiling, logs
     # -------------------------------------------------------------------------
     # Same Sentry project as the Laravel side ("georag"). Leave blank to

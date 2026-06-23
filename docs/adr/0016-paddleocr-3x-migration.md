@@ -81,9 +81,9 @@ The two are complementary — PP-OCRv5 for per-crop precision work, PaddleOCR-VL
 
 ### Phase 2 rollout plan (Proposed)
 
-1. Add the `[doc-parser]` extra: `paddleocr[doc-parser]>=3.7,<4.0`. Brings in `PaddleOCRVL` + a special safetensors build. Weights download from HF on first use.
-2. Introduce a feature flag `PDF_DOCPARSER_BACKEND` with values `docling` (current default) | `paddleocr-vl`. Default stays `docling`.
-3. Wire a new parser class `PaddleOCRVLParser` in `app/ocr/` that mirrors the docling parser interface — same input (PDF path or bytes), same output schema (Markdown + figure regions + table regions).
+1. ✅ **Landed (2026-06-23).** Add the `[doc-parser]` extra: `paddleocr[doc-parser]>=3.7,<4.0`. Brings in `PaddleOCRVL` + a special safetensors build. Weights download from HF on first use.
+2. ✅ **Landed (2026-06-23).** Introduce a feature flag `PDF_DOCPARSER_BACKEND` with values `docling` (current default) | `paddleocr-vl`. Default stays `docling`. (`app/config.py::Settings.PDF_DOCPARSER_BACKEND`, validated.)
+3. ✅ **Landed (2026-06-23).** Wire the new parser in `app/ocr/` that mirrors the docling parser interface — same input (PDF path), same output schema (parse_mixed-compatible passages/tables/layouts + an additive `markdown` field). Implemented as `app/ocr/parse_docparser_vl.py::parse_docparser_vl` — a module-level async function matching the §04p parser convention (parse_native/parse_scanned/parse_mixed/…) rather than a standalone class, so it is a drop-in for the orchestrator and `_persist.py`. Flag-gated into the orchestrator's **mixed** slot only (`_orchestrator._parse_mixed_slot`); `scanned`/`table_heavy` keep their own parsers pending step 5. 35 unit tests mock the pipeline seam — the model never loads under CI.
 4. **Shadow run on a golden 20-PDF corpus.** Run both parsers on the same input; compare:
    - Markdown structural fidelity (heading hierarchy, table row count).
    - Figure detection recall.

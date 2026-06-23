@@ -36,6 +36,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.config import settings
+from app.ocr.parse_docparser_vl import parse_docparser_vl
 from app.ocr.parse_mixed import parse_mixed
 from app.ocr.parse_native import parse_native
 from app.ocr.parse_scanned import parse_scanned
@@ -108,10 +110,12 @@ async def orchestrate(
     elif document_profile == "scanned":
         parses["scanned"] = await parse_scanned(pdf_path)
     elif document_profile == "mixed":
-        mixed_result = await parse_mixed(pdf_path)
+        mixed_result = await _parse_mixed_slot(pdf_path)
         parses["mixed"] = mixed_result
         # Mixed documents may have pages that came back without text
-        # from Docling (image-only pages); OCR those.
+        # from Docling (image-only pages); OCR those. PaddleOCR-VL
+        # recognises text end-to-end, so it returns pages_needing_ocr=[]
+        # and this external-OCR pass is skipped.
         if mixed_result.get("pages_needing_ocr"):
             scanned_for_ocr = await parse_scanned(
                 pdf_path,
@@ -200,6 +204,21 @@ async def orchestrate(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+async def _parse_mixed_slot(pdf_path: Path) -> dict[str, Any]:
+    """Dispatch the full-page (mixed-profile) parse slot per ADR-0016 Phase 2.
+
+    Default ``PDF_DOCPARSER_BACKEND=docling`` → ``parse_mixed`` (Docling,
+    unchanged production behaviour). ``paddleocr-vl`` routes this slot through
+    the PaddleOCR-VL parser, which emits the same schema. Only the mixed slot
+    is flag-gated — ``scanned`` and ``table_heavy`` keep their own parsers
+    until the Phase 2 shadow-run eval informs per-document-class promotion
+    (ADR-0016 step 5).
+    """
+    if settings.PDF_DOCPARSER_BACKEND == "paddleocr-vl":
+        return await parse_docparser_vl(pdf_path)
+    return await parse_mixed(pdf_path)
+
 
 def _parse_result_for_page(
     parses: dict[str, Any],
