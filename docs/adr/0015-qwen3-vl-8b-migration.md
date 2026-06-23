@@ -40,7 +40,15 @@ Adopt **`Qwen/Qwen3-VL-8B-Instruct-AWQ`** as the §04p Stage-6 model, gated on a
    - Schema-valid output rate (must be ≥ 95% — same bar as the existing typed-output validators).
    - Figure→caption link rate vs the 2.5-VL baseline.
    - Per-page latency p95.
-4. **Promote.** Once the three metrics meet the gate in `services/eval/promotion_gate.py`, flip the default in `pdf_vl.py` from version `2` to `3` and document the cutover date in the project memory.
+
+   **Gate machinery landed (2026-06-23):** `services/eval/pdf_vl_shadow.py`
+   computes all three metrics and the promote/block decision from a list of
+   per-section `VlShadowObservation` rows (`assess_vl_shadow(...)`). Thresholds:
+   schema-valid ≥ 0.95, figure-link-rate regression ≤ 2.0 pp below the V2
+   baseline, ≥ 20 observations (latency p95 is reported, not gated). Still
+   pending: V3 serving (step 2) and the runtime dual-write that populates the
+   observations (lives next to the existing shadow-trigger path).
+4. **Promote.** Once the three metrics meet the gate (`assess_vl_shadow().allow`), flip the default in `pdf_vl.py` from version `2` to `3` and document the cutover date in the project memory.
 5. **Rollback.** Set `PDF_VL_MODEL_VERSION=2` in the affected workspace's env to revert without a deploy.
 
 ## Consequences
