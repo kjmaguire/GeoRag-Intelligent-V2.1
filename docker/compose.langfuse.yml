@@ -47,7 +47,13 @@ services:
   # Pinned to a specific minor; Langfuse v3 requires CH >= 24.3. Bump
   # deliberately on a feature branch.
   clickhouse:
-    image: clickhouse/clickhouse-server:24.10-alpine
+    # 2026-06-23 sweep: 24.10-alpine -> 26.3-alpine (LTS) + SHA pin.
+    # Async inserts on by default (cuts part churn under FastAPI trace
+    # bursts) + improved JOIN reordering + materialized CTEs. CH supports
+    # rolling upgrades across LTS lines so existing trace data carries
+    # forward. Stay on the LTS track — Langfuse v3 names 26.x in its
+    # tested matrix.
+    image: clickhouse/clickhouse-server:26.3-alpine@sha256:5760feb32c82d55a525920bbe4b5fb354e37d4fb95859a56814191c43394fc6f
     container_name: georag-clickhouse
     restart: unless-stopped
     networks:

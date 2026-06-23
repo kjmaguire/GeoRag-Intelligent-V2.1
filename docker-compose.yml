@@ -426,7 +426,12 @@ services:
   # ---------------------------------------------------------------------------
   redis:
     # B8 — digest pinned 2026-04-19
-    image: redis:8.6.3-alpine@sha256:b9646e7cdf8165d985b88bb3e61b3f2f7625db7f6c98af79def91997d04f26b9
+    # 2026-06-23 sweep: 8.6.3 -> 8.6.4 (latest 8.6.x alpine on Docker Hub).
+    # Operator: the audit also flagged 8.8.0 as available, but the alpine
+    # variant Docker Hub publishes for the 8.x line currently caps at
+    # 8.6.4. Stay on the alpine track for image-size + image-attack-surface
+    # parity with the rest of the stack.
+    image: redis:8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763
     container_name: georag-redis
     restart: unless-stopped
     # Redis review — full config notes:
@@ -802,7 +807,11 @@ services:
     # process_*, http_requests_total). Unlocks the 4 alert rules in
     # docker/prometheus/rules/martin-alerts.yml previously DORMANT per
     # feedback_martin_tile_gotchas.md gotcha 3.
-    image: ghcr.io/maplibre/martin:1.7.0@sha256:077329dbde8d791f030b9eab63f4681772480be2f6ceebab0108cb79cebb4aa3
+    # 2026-06-23 sweep: 1.7.0 -> 1.11.0. Brings PMTiles improvements +
+    # query plan caching + composite source enhancements. The 1.x line
+    # has been API-stable through this range; martin.yaml schema is
+    # unchanged. PostGIS 3.6 fully supported.
+    image: ghcr.io/maplibre/martin:1.11.0@sha256:0650e9025f5fcffdc686358114679421b5e6b0ca37b374ad8a66f14709d59d2b
     container_name: georag-martin
     restart: unless-stopped
     command: --config /config/martin.yaml
@@ -1288,7 +1297,11 @@ services:
   qdrant:
     # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
     # B8 — digest pinned 2026-04-19 (v1.17 is a floating minor tag)
-    image: qdrant/qdrant:v1.17@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+    # 2026-06-23 sweep: v1.17 (floating minor) -> v1.17.1 (patch).
+    # Digest is identical — the floating v1.17 tag had already been
+    # promoted to v1.17.1's content upstream — but the explicit tag-text
+    # update makes the "we're on the patched release" intent visible.
+    image: qdrant/qdrant:v1.17.1@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
     container_name: georag-qdrant
     restart: unless-stopped
     ports:
@@ -1391,7 +1404,12 @@ services:
     # free-licensing rule (MinIO went AGPL v3 in 2024, then archived its repo
     # Feb 2026 \u2014 see ADR for full reasoning).
     # B8 — digest pinned 2026-04-19
-    image: chrislusf/seaweedfs:4.20@sha256:cea8339d21dad1b200adce581dd7434d254b8f5975f142c3b4c930ba78647eef
+    # 2026-06-23 sweep: 4.20 -> 4.35 (15 minor releases caught up).
+    # Brings POSIX advisory locks, in-memory POSIX lock manager, and the
+    # SetAttr/GetAttr crash fixes under writebackCache — directly relevant
+    # to the concurrent Hatchet worker writes that exercise this service.
+    # Filer is backward-compatible across this range.
+    image: chrislusf/seaweedfs:4.35@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
     container_name: georag-minio
     restart: unless-stopped
     # `sh script` instead of direct exec so a missing executable bit on the
@@ -2501,7 +2519,9 @@ services:
   # Prometheus to scrape on internal :8895/metrics.
   # ---------------------------------------------------------------------------
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.151.0
+    # 2026-06-23 sweep: 0.151.0 -> 0.154.0 + SHA pin. Weekly cadence
+    # release line; bug fixes + new receivers/exporters in each minor.
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
     container_name: georag-otel-collector
     restart: unless-stopped
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -2536,7 +2556,11 @@ services:
   # workflow_runs.trace_id to http://${TEMPO_HOST_PORT}:3200/api/traces/<id>.
   # ---------------------------------------------------------------------------
   tempo:
-    image: grafana/tempo:2.6.1
+    # 2026-06-23 sweep: 2.6.1 -> 2.10.7 + SHA pin. TraceQL improvements +
+    # metrics-generator perf gains across the 2.7/2.8/2.9/2.10 line.
+    # Block format is backward-compatible — existing /var/tempo/blocks
+    # data reads fine.
+    image: grafana/tempo:2.10.7@sha256:032b3acb51ed02c4b801473d54bb63e9e9f13738d215126d9843c30283794f4b
     container_name: georag-tempo
     restart: unless-stopped
     command: ["-config.file=/etc/tempo.yaml"]
@@ -2740,7 +2764,10 @@ services:
   # transition from PromQL counter to LogQL count_over_time per the panel TODO.
   # ---------------------------------------------------------------------------
   loki:
-    image: grafana/loki:3.4.2
+    # 2026-06-23 sweep: 3.4.2 -> 3.7.2 + SHA pin. Bloom-filter improvements
+    # + structured-metadata querying. BoltDB shipper format is
+    # forward/backward compatible across 3.x; existing chunks read fine.
+    image: grafana/loki:3.7.2@sha256:191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86
     container_name: georag-loki
     restart: unless-stopped
     command: -config.file=/etc/loki/loki-config.yaml
@@ -2767,7 +2794,14 @@ services:
   # to Loki with channel/service labels.
   # ---------------------------------------------------------------------------
   promtail:
-    image: grafana/promtail:3.4.2
+    # 2026-06-23 sweep: 3.4.2 -> 3.5.5 + SHA pin. Promtail tagging is
+    # FROZEN at the 3.5.x line by Grafana — they've publicly deprecated
+    # Promtail in favour of Grafana Alloy. 3.5.5 is the terminal Promtail
+    # release; future log-pipeline work should target the Alloy migration
+    # (see docs/runbooks/promtail-to-alloy-migration.md once landed).
+    # Until then, Promtail 3.5.5 + Loki 3.7.2 are still wire-compatible
+    # (Promtail's push API is forward-compatible against Loki 3.x).
+    image: grafana/promtail:3.5.5@sha256:784743d283f71f644e290d7b9fadf5e1edff405d2756974c6e13fa7978c08b64
     container_name: georag-promtail
     restart: unless-stopped
     command: -config.file=/etc/promtail/promtail-config.yaml
@@ -2801,7 +2835,13 @@ services:
   grafana:
     # Task 1: pinned to current stable release.
     # B8 — digest pinned 2026-04-19
-    image: grafana/grafana:11.6.1@sha256:52c3e20686b860c6dc1f623811565773cf51eefa378817a4896dfc863c3c82c8
+    # 2026-06-23 sweep: 11.6.1 -> 12.4.5. Scenes-based dashboards GA,
+    # dashboard schemas v2, interactive learning UX. Dashboards are
+    # generally portable across the 11 -> 12 jump; data-source plugins
+    # we use (Prometheus, Loki, Tempo) are first-party. After deploy,
+    # spot-check the 14 system + 3 product dashboards for layout drift
+    # — Scenes engine occasionally re-renders panels slightly differently.
+    image: grafana/grafana:12.4.5@sha256:26b8f35a9e4e4431995cf64c3f396505a4faf17bcfc19f9ed84943ec6bfd5ecd
     container_name: georag-grafana
     restart: unless-stopped
     ports:
