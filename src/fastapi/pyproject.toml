@@ -12,7 +12,16 @@ dependencies = [
     #   GHSA-2jrp-274c-jhv3 — SSRF in URL Download Handler (fix: 1.56.0)
     #   GHSA-wjp5-868j-wqv7 — Stored XSS via Path Traversal in Web UI CDN URL
     #                          (fix: 1.51.0)
-    "pydantic-ai>=1.56",
+    # 2026-06-23 deps-rot fix: switched from `pydantic-ai` (meta) to
+    # `pydantic-ai-slim[anthropic,openai]`. The meta package transitively
+    # pulls in `pydantic-ai-slim[bedrock]`, whose boto3 range is
+    # incompatible with `aioboto3>=13.0` — the uv resolver reported
+    # `aioboto3>=13.0.0 and pydantic-ai>=1.56.0 are incompatible` and
+    # the build hard-failed at the `uv pip install` step. We only use
+    # the Anthropic fallback path + the OpenAI-compatible client against
+    # vLLM (`app/agent/llm_calls.py`), so the slim variant with explicit
+    # providers is the documented escape hatch.
+    "pydantic-ai-slim[anthropic,openai]>=1.56",
     "pydantic-settings>=2.7",
     "asyncpg>=0.30.0",
     "redis>=7.0",
