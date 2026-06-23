@@ -176,7 +176,14 @@ dependencies = [
     # Call sites updated in lockstep — see ADR-0016 for the migration
     # rationale and rollout. Cap held below 4.0 so a future 4.x cut is a
     # deliberate decision, not an accidental resolver pickup.
-    "paddleocr>=3.7,<4.0",
+    # 2026-06-23 sweep — Phase 2 scaffolding (ADR-0016): `[doc-parser]`
+    # extra pulls in `PaddleOCRVL` + a special safetensors build for
+    # the PaddleOCR-VL-1.6 end-to-end full-page parser. Wiring lives
+    # behind the PDF_DOCPARSER_BACKEND env flag (default `docling`).
+    # Adding the extra here means the weights/dep chain are installed
+    # at image build time; flipping the flag at runtime is a zero-rebuild
+    # cutover once shadow eval gates pass.
+    "paddleocr[doc-parser]>=3.7,<4.0",
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the

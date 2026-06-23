@@ -500,3 +500,29 @@ jobs:
           name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}
           path: /tmp/sbom-${{ matrix.service }}.spdx.json
           retention-days: 90
+
+      # ---------------------------------------------------------------------
+      # Cosign keyless image signing (2026-06-23 sweep).
+      # Sigstore keyless signing via GitHub OIDC — no private key to
+      # manage. Each pushed image gets a Rekor transparency-log entry
+      # binding the digest to the workflow + commit SHA + branch ref.
+      # Verify downstream with:
+      #   cosign verify \
+      #     --certificate-identity-regexp "https://github\.com/${OWNER}/" \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     ghcr.io/${OWNER}/georag-${SERVICE}@sha256:<digest>
+      # PR builds are not signed (no push happens, no digest to sign).
+      # ---------------------------------------------------------------------
+      - name: Install Cosign — ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Cosign sign image — ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}@${{ steps.build.outputs.digest }}"

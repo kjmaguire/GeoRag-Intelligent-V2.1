@@ -37,7 +37,10 @@ be served by vLLM:
   with multipart image content.
 
 Config env vars (all optional — defaults work for the in-network vllm service):
-  PDF_VL_MODEL_ID        — model identifier (default: "Qwen/Qwen2.5-VL-7B-Instruct")
+  PDF_VL_MODEL_VERSION   — "2" (default) for Qwen2.5-VL-7B, "3" for Qwen3-VL-8B (ADR-0015)
+  PDF_VL_MODEL_ID        — explicit override (wins over PDF_VL_MODEL_VERSION)
+  PDF_VL_MODEL_ID_V2     — model id when PDF_VL_MODEL_VERSION=2 (default Qwen2.5-VL-7B-Instruct)
+  PDF_VL_MODEL_ID_V3     — model id when PDF_VL_MODEL_VERSION=3 (default Qwen3-VL-8B-Instruct-AWQ)
   PDF_VL_BACKEND         — "vllm" | "anthropic" (default: "vllm")
   PDF_VL_BACKEND_URL     — full base URL (default: "http://vllm:8000/v1")
   PDF_VL_TIMEOUT_S       — seconds to wait for VL inference (default: 120)
@@ -93,11 +96,38 @@ logger = logging.getLogger(__name__)
 # Configuration (read from environment at construction time)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+# 2026-06-23 sweep — Qwen3-VL-8B migration scaffolding (ADR-0015).
+# Two-version model registry, gated by PDF_VL_MODEL_VERSION:
+#   PDF_VL_MODEL_VERSION=2 (default) -> use PDF_VL_MODEL_ID_V2 / PDF_VL_MODEL_ID
+#   PDF_VL_MODEL_VERSION=3           -> use PDF_VL_MODEL_ID_V3
+# Default remains 2.5-VL until the operator runs the shadow-eval gate
+# per ADR-0015 step 3. Flip with `PDF_VL_MODEL_VERSION=3` (no rebuild
+# needed) once shadow run + golden-question pass-rate ≥ baseline.
+_DEFAULT_MODEL_VERSION = "2"
+_DEFAULT_MODEL_ID_V2 = "Qwen/Qwen2.5-VL-7B-Instruct"
+_DEFAULT_MODEL_ID_V3 = "Qwen/Qwen3-VL-8B-Instruct-AWQ"
+_DEFAULT_MODEL_ID = _DEFAULT_MODEL_ID_V2  # back-compat alias
 _DEFAULT_BACKEND = "vllm"
 _DEFAULT_BACKEND_URL = "http://vllm:8000/v1"
 _DEFAULT_TIMEOUT_S = 120.0
 _DEFAULT_MAX_PAGES = 4
+
+
+def _resolve_model_id() -> str:
+    """Pick the VL model identifier honoring PDF_VL_MODEL_VERSION.
+
+    Precedence (highest first):
+      1. PDF_VL_MODEL_ID — explicit override (operator/runbook)
+      2. PDF_VL_MODEL_VERSION=3 + PDF_VL_MODEL_ID_V3
+      3. PDF_VL_MODEL_VERSION=2 (or unset) + PDF_VL_MODEL_ID_V2
+    """
+    explicit = os.environ.get("PDF_VL_MODEL_ID")
+    if explicit:
+        return explicit
+    version = os.environ.get("PDF_VL_MODEL_VERSION", _DEFAULT_MODEL_VERSION).strip()
+    if version == "3":
+        return os.environ.get("PDF_VL_MODEL_ID_V3", _DEFAULT_MODEL_ID_V3)
+    return os.environ.get("PDF_VL_MODEL_ID_V2", _DEFAULT_MODEL_ID_V2)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +346,7 @@ class PdfVlService:
         self._http_client = http_client  # may be None in test paths
 
         # Read config from environment (same pattern as pdf_ocr.py).
-        self._model_id = os.environ.get("PDF_VL_MODEL_ID", _DEFAULT_MODEL_ID)
+        self._model_id = _resolve_model_id()
         self._backend = os.environ.get("PDF_VL_BACKEND", _DEFAULT_BACKEND)
         self._backend_url = os.environ.get("PDF_VL_BACKEND_URL", _DEFAULT_BACKEND_URL).rstrip("/")
         self._timeout_s = float(os.environ.get("PDF_VL_TIMEOUT_S", str(_DEFAULT_TIMEOUT_S)))
@@ -538,6 +568,14 @@ class PdfVlService:
             "temperature": 0.1,  # low — we want deterministic structured output
             "max_tokens": 2048,
         }
+        # Schema-constrained decoding on vLLM (no-op on backends that don't
+        # support `guided_json`). VlSummaryShape IS the §04i citation
+        # completeness contract; forwarding its JSON Schema means xgrammar
+        # refuses to emit a `summary` without a matching `claims[].bbox`.
+        # The downstream Pydantic validation becomes a defence-in-depth check
+        # rather than the primary enforcement.
+        if self._backend == "vllm":
+            chat_body["guided_json"] = VlSummaryShape.model_json_schema()
 
         endpoint = f"{self._backend_url}/chat/completions"
 

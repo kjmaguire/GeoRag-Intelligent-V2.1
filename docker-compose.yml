@@ -111,6 +111,12 @@ volumes:
   # Module 10 Chunk 10.6 — Promtail tail-position cursor (resume after restart).
   promtail_positions:
     driver: local
+  # 2026-06-23 sweep — Alloy data dir (component state + file positions).
+  # Promtail-to-Alloy migration runs both in parallel during the shadow
+  # window per ops/runbooks/promtail-to-alloy-migration.md; this volume
+  # is the Alloy equivalent of promtail_positions plus component cache.
+  alloy_data:
+    driver: local
   dagster_home:
     driver: local
   # Backup staging volume — writable scratch space for backup artifacts in transit.
@@ -2867,6 +2873,47 @@ services:
       retries: 3
       start_period: 15s
     stop_grace_period: 10s
+    profiles: ["dev-monitor", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # GRAFANA ALLOY (2026-06-23 sweep) — Promtail successor (Phase 1 scaffold).
+  # Runs IN PARALLEL with promtail above per the migration plan in
+  # ops/runbooks/promtail-to-alloy-migration.md. Translated config lives at
+  # docker/alloy/config.alloy. During the shadow window both ship to Loki
+  # — Alloy writes to a separate tenant (see config.alloy comment) so per-
+  # stream line counts can be diffed cleanly before cutover. Once cutover
+  # passes the shadow-window gate, comment-out promtail and remove the
+  # tenant_id line in config.alloy.
+  # ---------------------------------------------------------------------------
+  alloy:
+    image: grafana/alloy:v1.10.0@sha256:1bc130e909116a4bf950eb5187a346007d3b796f96832b529acb14a64e41230f
+    container_name: georag-alloy
+    restart: unless-stopped
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    volumes:
+      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./storage/logs:/laravel-logs:ro
+      - alloy_data:/var/lib/alloy/data
+    networks:
+      - georag
+    depends_on:
+      loki:
+        condition: service_healthy
+    healthcheck:
+      # Alloy exposes /-/ready on the configured HTTP listen addr.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:12345/-/ready >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 10s
+    # Same profile gating as promtail — both ship under dev-monitor / dev-full
+    # during the shadow window.
     profiles: ["dev-monitor", "dev-full"]
 
   # ---------------------------------------------------------------------------
