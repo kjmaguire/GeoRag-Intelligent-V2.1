@@ -1212,6 +1212,24 @@ services:
       # path expansion, and merge.node — the standard graph toolkit.
       # Restricted to apoc.* so we don't enable APOC Extended (CSV/JSON
       # loaders that talk to the public internet) by accident.
+      #
+      # 2026-06-23 sweep: APOC version pinning is implicit — the
+      # NEO4J_PLUGINS mechanism fetches the APOC jar matching the
+      # running Neo4j version. Since the Neo4j image above is SHA-pinned
+      # (image: neo4j:2026-community@sha256:a5feb81d...), the APOC
+      # version that gets downloaded is also implicitly version-locked.
+      # The neo4j_plugins named volume persists the jar across container
+      # restarts so re-downloads don't happen on every up.
+      #
+      # If you bump the Neo4j SHA, also delete the neo4j_plugins volume
+      # so the matching APOC version gets re-fetched:
+      #   docker volume rm georagintelligencev10_neo4j_plugins
+      # then `docker compose up neo4j` to re-trigger plugin download.
+      #
+      # For air-gapped deploys: mount the APOC jar manually into /plugins
+      # and drop the NEO4J_PLUGINS env (auto-download requires HTTPS to
+      # GitHub releases). See ops/runbooks/neo4j-backup.md for the
+      # offline jar-acquisition procedure.
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_dbms_security_procedures_allowlist: "apoc.*"
@@ -1927,13 +1945,20 @@ services:
       SERVER_MSGQUEUE_KIND: postgres
       SERVER_DEFAULT_ENGINE_VERSION: V1
       SERVER_AUTH_COOKIE_DOMAIN: localhost
-      SERVER_AUTH_COOKIE_INSECURE: "t"
+      # 2026-06-23 sweep: 3 INSECURE flags were hardcoded to "t" (dev
+      # default). Promoted to env-driven so .env.production can flip
+      # them to "f" before any public exposure WITHOUT a compose change.
+      # Defaults preserve current dev behaviour. See
+      # .env.production.example for the production-safe values + the
+      # operator pre-flight check that asserts they're flipped before
+      # the cd.yml deploy proceeds.
+      SERVER_AUTH_COOKIE_INSECURE: "${HATCHET_AUTH_COOKIE_INSECURE:-t}"
       SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
-      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_INSECURE: "${HATCHET_GRPC_INSECURE:-t}"
       SERVER_GRPC_BROADCAST_ADDRESS: "localhost:${HATCHET_GRPC_PORT:-7077}"
       SERVER_GRPC_PORT: "7077"
       SERVER_URL: "http://localhost:${HATCHET_API_PORT:-8889}"
-      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "${HATCHET_AUTH_SET_EMAIL_VERIFIED:-t}"
       SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: "hatchet-lite:7077"
     volumes:
       - hatchet_config:/config
@@ -1993,16 +2018,21 @@ services:
     # Phase 10 (2026-05-22): unstructured[pdf] dropped from the
     # bootstrap. The fitz-first dispatch in pdf_report.py never calls
     # it; Phase 2.1 made that path unreachable.
+    # 2026-06-23 sweep: polars + pytesseract bootstrap removed (now in
+    # pyproject.toml so the image ships with both). The paddlepaddle-gpu
+    # conditional install is RETAINED — the GPU wheel lives on the
+    # Paddle private index (https://www.paddlepaddle.org.cn/packages/
+    # stable/cu126/) which isn't on PyPI, so pyproject can only declare
+    # the CPU build. The GPU swap remains opt-in via PADDLEOCR_USE_GPU=true
+    # for hosts with NVIDIA passthrough.
     command: >
-      sh -c "(pip show polars >/dev/null 2>&1 || pip install --no-cache-dir polars) &&
-             (pip show pytesseract >/dev/null 2>&1 || pip install --no-cache-dir pytesseract) &&
-             (if [ \"$$PADDLEOCR_USE_GPU\" = \"true\" ] && ! python -c 'import paddle; assert paddle.device.is_compiled_with_cuda()' 2>/dev/null; then
-                pip uninstall -y paddlepaddle 2>/dev/null || true;
-                pip install --no-cache-dir 'paddlepaddle-gpu==3.3.1' --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ --extra-index-url https://pypi.org/simple/;
-                # paddle-gpu pins nccl 2.25.1 which breaks torch's nccl 2.30 ABI.
-                # Re-pin afterward so torch.cuda still works.
-                pip install --no-cache-dir 'nvidia-nccl-cu12>=2.30' || true;
-              fi) &&
+      sh -c "if [ \"$$PADDLEOCR_USE_GPU\" = \"true\" ] && ! python -c 'import paddle; assert paddle.device.is_compiled_with_cuda()' 2>/dev/null; then
+               pip uninstall -y paddlepaddle 2>/dev/null || true;
+               pip install --no-cache-dir 'paddlepaddle-gpu==3.3.1' --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ --extra-index-url https://pypi.org/simple/;
+               # paddle-gpu pins nccl 2.25.1 which breaks torch's nccl 2.30 ABI.
+               # Re-pin afterward so torch.cuda still works.
+               pip install --no-cache-dir 'nvidia-nccl-cu12>=2.30' || true;
+             fi &&
              exec python3 -m app.hatchet_workflows.worker"
     depends_on:
       hatchet-lite:
@@ -2199,13 +2229,14 @@ services:
     image: georag/fastapi:latest
     container_name: georag-hatchet-worker-ai
     restart: unless-stopped
-    # Same startup-install bootstrap as the ingestion worker so the AI
-    # pool worker (which runs embed_pending_passages_wf) survives a
-    # force-recreate without losing polars/pytesseract.
-    command: >
-      sh -c "(pip show polars >/dev/null 2>&1 || pip install --no-cache-dir polars) &&
-             (pip show pytesseract >/dev/null 2>&1 || pip install --no-cache-dir pytesseract) &&
-             exec python3 -m app.hatchet_workflows.worker"
+    # 2026-06-23 sweep: bootstrap pip installs removed. polars + pytesseract
+    # are now declared in src/fastapi/pyproject.toml (Phase 5 / Phase 10
+    # baked them in), so a freshly built georag/fastapi:latest image
+    # already has both. The defensive `pip show ... || pip install` block
+    # was a holdover from the period when the image was rebuilt less
+    # often than pyproject changed; it cost 30s on every cold restart and
+    # broke airgap deploys that can't reach PyPI.
+    command: ["python3", "-m", "app.hatchet_workflows.worker"]
     depends_on:
       hatchet-lite:
         condition: service_healthy
