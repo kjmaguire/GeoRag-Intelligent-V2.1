@@ -30,6 +30,13 @@ dependencies = [
     # API-breaking changes in sentence-transformers compatibility —
     # deferred until sentence-transformers ships its 5.x-compatible
     # release. Tracked: `docs/phase_h_python_deps_audit.md`.
+    #
+    # 2026-06-03 sweep: cap CANNOT be lifted to 5.x — `optimum-onnx`
+    # (transitive dep of `sentence-transformers[onnx]`) hard-caps
+    # transformers <4.58.0. The audit's "this cap blocks vLLM 0.22's
+    # transformers-v5 expectation" finding remains true in spirit, but
+    # the real upper bound is set by optimum-onnx, not by us. Revisit
+    # when optimum-onnx ships transformers-5.x compatibility.
     "transformers>=4.40,<5.0",
     "httpx>=0.28",
     "prometheus-fastapi-instrumentator>=7.0",

@@ -84,19 +84,45 @@ COPY uv.lock* ./
 # extra by name. The §7 / §8 / §9 / §12 graphs all need LangGraph in
 # the runtime image; opt-in via --extra langgraph keeps the install
 # story consistent across consumers (Dagster, dev sandboxes can pick).
-# 2026-06-03 sweep: removed a second `uv pip install` block that hardcoded
-# `langgraph>=0.2.50,<0.3`, which silently DOWNGRADED langgraph from the
-# pyproject `>=1.0.10,<2.0` pin after the first install. The runtime image
-# was shipping langgraph 0.2.x while pyproject + tests assumed 1.x — all
-# "tested on langgraph 1.x" claims were invalidated. The extras the old
-# block added (langgraph-checkpoint-postgres, langchain-mcp-adapters,
-# langfuse) are now declared in pyproject.toml so a single install covers
-# everything from the same source of truth.
+# 2026-06-03 sweep findings (workaround retained; see TODO below):
+#
+# THE BUG: this second `uv pip install` block hardcodes
+# `langgraph>=0.2.50,<0.3` which silently DOWNGRADES langgraph from
+# the pyproject `>=1.0.10,<2.0` pin after the first install. The runtime
+# image therefore ships langgraph 0.2.x while pyproject + tests assume
+# 1.x — every "tested on langgraph 1.x" claim is invalidated. Verified
+# directly on a built image: `langgraph: 0.2.76`.
+#
+# WHY THE WORKAROUND STAYS FOR NOW: removing this overlay exposes
+# accumulated dep-resolution rot in pyproject.toml that prevents a
+# clean `--no-cache` rebuild:
+#   * pydantic-ai (meta) >=1.56 transitively pulls in [bedrock] which
+#     needs a boto3 range incompatible with aioboto3>=13.0.
+#   * sentence-transformers[onnx]>=5.0 brings in optimum-onnx which
+#     hard-caps transformers<4.58.0.
+#   * The pip fallback below ALSO fails because the Python one-liner
+#     space-joins PEP 508 markers ("...; platform_system == 'Linux'")
+#     into invalid requirement strings.
+# A proper fix requires `uv lock` regeneration against current upstream,
+# possibly switching to `pydantic-ai-slim[anthropic,openai]`, and
+# deciding whether the [onnx] extra is needed for SPLADE++ + bge-small
+# inference paths. Track as a follow-up — this PR's scope is version
+# audit + tag pinning, not pyproject dep-graph repair.
+#
+# TODO(deps-rot): regenerate uv.lock + remove the langgraph overlay
+# below. Until then the image build is cache-dependent: a fresh
+# --no-cache build will fail at this layer.
 RUN uv pip install --system --no-cache -r pyproject.toml \
+    && uv pip install --system --no-cache \
+        "langgraph>=0.2.50,<0.3" \
+        "langgraph-checkpoint-postgres>=2.0,<3.0" \
+        "langchain-mcp-adapters>=0.2,<0.3" \
+        "langfuse>=3.0,<4.0" \
     || pip install --no-cache-dir $(python3 -c "\
 import tomllib, pathlib; \
 d = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); \
-print(' '.join(d['project']['dependencies']))")
+print(' '.join(d['project']['dependencies']))") \
+        langgraph langgraph-checkpoint-postgres langchain-mcp-adapters langfuse
 
 # Dev tools — pytest + pytest-asyncio. Image carries them so test runs
 # work after a fresh `docker compose up -d --force-recreate fastapi`
