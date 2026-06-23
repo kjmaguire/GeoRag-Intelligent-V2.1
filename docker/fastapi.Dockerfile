@@ -26,6 +26,58 @@
 # =============================================================================
 
 # =============================================================================
+# Stage 0 — tesseract-builder (2026-06-23 sweep)
+# =============================================================================
+# Compile Tesseract 5.5 from source. Debian trixie's apt-shipped
+# tesseract-ocr caps at 5.4.x; the 5.5.x line ships speed + layout
+# improvements that benefit Stage-5 fallback OCR (per ADR-0017).
+# Source build is gated to this stage — runtime image only receives
+# the resulting /opt/tesseract binaries + tessdata, NOT the toolchain.
+#
+# To bump: change TESSERACT_VERSION below + rebuild + run
+# ops/validation/ocr_cpu_smoke.py against a golden NI 43-101 crop to
+# confirm no confidence-distribution regression.
+FROM python:3.13-slim@sha256:c33f0bc4364a6881bed1ec0cc2665e6c53c87a43e774aaeab88e6f17af105e4f AS tesseract-builder
+
+ARG TESSERACT_VERSION=5.5.2
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        libleptonica-dev \
+        libpng-dev \
+        libjpeg62-turbo-dev \
+        libtiff-dev \
+        zlib1g-dev \
+        libicu-dev \
+        libpango1.0-dev \
+        libcairo2-dev \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/tesseract-ocr/tesseract/archive/refs/tags/${TESSERACT_VERSION}.tar.gz" \
+        | tar xz -C /tmp \
+    && cd "/tmp/tesseract-${TESSERACT_VERSION}" \
+    && ./autogen.sh \
+    && ./configure --prefix=/opt/tesseract --disable-debug --disable-doc --disable-graphics \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf "/tmp/tesseract-${TESSERACT_VERSION}"
+
+# English language data (fast variant — smaller weights, comparable accuracy
+# on printed text in NI 43-101 reports). Bump traineddata source to the
+# full LSTM variant under `tessdata` (not `tessdata_fast`) if accuracy
+# on degraded scans becomes the bottleneck.
+RUN mkdir -p /opt/tesseract/share/tessdata \
+    && curl -fsSL https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata \
+        -o /opt/tesseract/share/tessdata/eng.traineddata
+
+
+# =============================================================================
 # Stage 1 — builder
 # Compile every C extension against full -dev headers.
 # Nothing from this layer ends up in the final image except site-packages.
@@ -154,7 +206,20 @@ LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Py
 # libgeos-c1t64    → GEOS geometry runtime (Shapely, GeoPandas)
 # libproj25        → PROJ cartographic projection runtime (pyproj)
 # curl             → Docker HEALTHCHECK probe
-# tesseract-ocr + poppler-utils → OCR + PDF tooling (existing)
+# poppler-utils    → PDF tooling (used by pdfminer.six / pdfplumber)
+#
+# 2026-06-23 sweep — Tesseract 5.5 from source (ADR-0017):
+# Removed trixie's `tesseract-ocr` + `tesseract-ocr-eng` apt packages
+# (they cap at 5.4.x). Tesseract 5.5.2 binaries now copied from the
+# tesseract-builder stage below; runtime needs the matching shared
+# libraries to dynamically link:
+#   libleptonica6     → Leptonica image-processing runtime (linked by tesseract)
+#   libpng16-16       → PNG runtime
+#   libjpeg62-turbo   → JPEG runtime
+#   libtiff6          → TIFF runtime
+#   libicu76          → ICU runtime (Tesseract's Unicode support)
+# Pango / Cairo / GLib are already in the runtime list for WeasyPrint
+# so Tesseract gets those for free.
 #
 # Doc-phase 122-fix — OpenCV system libs for paddleocr (which transitively
 # loads cv2):
@@ -179,9 +244,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgeos-c1t64 \
     libproj25 \
     curl \
-    tesseract-ocr \
-    tesseract-ocr-eng \
     poppler-utils \
+    libleptonica6 \
+    libpng16-16 \
+    libjpeg62-turbo \
+    libtiff6 \
+    libicu76 \
+    libgomp1 \
     libgl1 \
     libglib2.0-0 \
     libpango-1.0-0 \
@@ -194,6 +263,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Tesseract 5.5 from the tesseract-builder stage (ADR-0017)
+# ---------------------------------------------------------------------------
+COPY --from=tesseract-builder /opt/tesseract /opt/tesseract
+ENV PATH=/opt/tesseract/bin:$PATH \
+    TESSDATA_PREFIX=/opt/tesseract/share/tessdata
 
 # ---------------------------------------------------------------------------
 # Copy compiled Python environment from builder.
