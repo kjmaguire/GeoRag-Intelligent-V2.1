@@ -104,11 +104,17 @@ COPY uv.lock* ./
 #   3. transformers<5.0 cap stays — optimum-onnx (transitive via
 #      sentence-transformers[onnx]) hard-caps it there, so the
 #      audit's "lift the cap" finding is moot.
+# Pip fallback: emit deps to a requirements.txt file (one per line) rather
+# than space-joining into a shell command. PEP 508 markers like
+# `onnxruntime-gpu>=1.20; platform_system == 'Linux'` contain semicolons
+# and equals that get mangled when the shell re-tokenizes a space-joined
+# string. Writing to a file preserves each marker intact for `pip -r`.
 RUN uv pip install --system --no-cache -r pyproject.toml \
-    || pip install --no-cache-dir $(python3 -c "\
+    || ( python3 -c "\
 import tomllib, pathlib; \
-d = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); \
-print(' '.join(d['project']['dependencies']))")
+deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']; \
+pathlib.Path('/tmp/reqs.txt').write_text('\n'.join(deps) + '\n')" \
+    && pip install --no-cache-dir -r /tmp/reqs.txt )
 
 # Dev tools — pytest + pytest-asyncio. Image carries them so test runs
 # work after a fresh `docker compose up -d --force-recreate fastapi`

@@ -25,9 +25,13 @@ class TestEstimateCost:
         assert abs(cost - 0.0117) < 1e-6
 
     def test_local_models_are_free(self):
-        # Ollama + vLLM have zero API-side cost — infra is tracked elsewhere.
-        assert estimate_cost_usd("qwen2.5:14b", 1000, 500) == 0.0
-        assert estimate_cost_usd("deepseek-ai/DeepSeek-V3", 10000, 2000) == 0.0
+        # vLLM-served models have zero API-side cost — infra is tracked elsewhere.
+        # 2026-06-23: swapped from Ollama-era `qwen2.5:14b` to the current
+        # vLLM model `Qwen/Qwen3-14B-AWQ` post-Ollama cutover (see project
+        # memory `project_qwen_ecosystem_swap_2026_06_03`). DeepSeek-V3
+        # assertion dropped — we don't serve it and the second assertion
+        # was just demonstrating the same property.
+        assert estimate_cost_usd("Qwen/Qwen3-14B-AWQ", 1000, 500) == 0.0
 
     def test_unknown_model_uses_standard_fallback(self):
         # Sonnet-equivalent rates: 1000 * 3e-6 + 500 * 15e-6 = 0.003 + 0.0075 = 0.0105
