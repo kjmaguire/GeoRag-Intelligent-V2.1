@@ -257,6 +257,17 @@ dependencies = [
     "xgboost>=2.1,<3.0",
     "shap>=0.46,<1.0",
     "scikit-learn>=1.5,<2.0",
+    # 2026-06-23 deps-rot fix: shap transitively depends on numba ->
+    # llvmlite. Without these top-level pins uv backtracks to
+    # `llvmlite==0.36.0` (a 2021 release that doesn't build on Python
+    # 3.13) — observed in the failed --no-cache fastapi build of 2026-06.
+    # llvmlite 0.43 + numba 0.60 are the first versions with Py 3.13
+    # binary wheels on PyPI. Pinning them at the top level overrides
+    # the transitive-constraint backtracking and keeps the resolver
+    # on a wheel-installable path. Bump these when Py 3.14 cutover
+    # forces another floor raise.
+    "llvmlite>=0.43",
+    "numba>=0.60",
 ]
 
 [project.optional-dependencies]
