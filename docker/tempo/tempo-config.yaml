@@ -61,6 +61,8 @@ overrides:
 # in OTel collector. Phase 0 keeps trace ingest simple.
 
 # Querier configuration — defaults are fine for Phase 0.
+# 2026-06-23 sweep: the `querier.search.external_endpoints` field was
+# removed in Tempo 2.7. It was always empty here (scaffolding for a
+# never-built federated-search topology). Drop the block entirely;
+# Tempo 2.10 refuses to parse the config otherwise.
 querier:
-  search:
-    external_endpoints: []

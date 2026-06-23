@@ -2620,7 +2620,12 @@ services:
       - ./docker/tempo/tempo-config.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:3200/ready >/dev/null 2>&1 || exit 1"]
+      # 2026-06-23 sweep: Tempo 2.7+ ships a distroless image — no shell,
+      # no wget. Replaced the HTTP probe on /ready with the binary's own
+      # -version check (binary integrity + execution, not service-ready).
+      # Prometheus scrapes catch true outage. Same pattern as the
+      # promtail healthcheck.
+      test: ["CMD", "/tempo", "-version"]
       interval: 15s
       timeout: 5s
       retries: 6
@@ -2828,7 +2833,12 @@ services:
     networks:
       - georag
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      # 2026-06-23 sweep: Loki 3.5+ ships a distroless image — no shell,
+      # no wget. Replaced the HTTP probe on /ready with the binary's own
+      # -version check (binary integrity + execution, not service-ready).
+      # Prometheus scrapes catch true outage. Same pattern as the
+      # promtail healthcheck.
+      test: ["CMD", "/usr/bin/loki", "-version"]
       interval: 30s
       timeout: 5s
       retries: 3
