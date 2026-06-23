@@ -135,6 +135,13 @@ services:
   # langfuse-web — UI + ingestion API
   # ---------------------------------------------------------------------------
   langfuse-web:
+    # 2026-06-03 sweep: floating `:3` major tag flagged for SHA pinning.
+    # Self-host v3 is still the supported track (v4 is Cloud Preview only,
+    # not GA for self-host). Operator: pin to a concrete v3.x digest via
+    #   docker pull langfuse/langfuse:3
+    #   docker inspect langfuse/langfuse:3 | grep -A1 RepoDigests
+    # and replace this line with `langfuse/langfuse:3@sha256:<digest>`.
+    # MUST move in lockstep with the langfuse-worker pin below.
     image: langfuse/langfuse:3
     container_name: georag-langfuse-web
     restart: unless-stopped
@@ -244,6 +251,9 @@ services:
   # langfuse-worker — background trace ingestion + scoring + alerting
   # ---------------------------------------------------------------------------
   langfuse-worker:
+    # 2026-06-03 sweep: pin in lockstep with langfuse-web above. Operator:
+    #   docker pull langfuse/langfuse-worker:3
+    #   docker inspect langfuse/langfuse-worker:3 | grep -A1 RepoDigests
     image: langfuse/langfuse-worker:3
     container_name: georag-langfuse-worker
     restart: unless-stopped

@@ -1888,7 +1888,14 @@ services:
   #        7077 → 7077 gRPC (workers connect here).
   # ---------------------------------------------------------------------------
   hatchet-lite:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest
+    # 2026-06-03 sweep: floating :latest pinned to a concrete tag aligned
+    # with `hatchet-sdk>=1.33` in pyproject.toml. The Cameco-recovery
+    # incident (2026-06-02, project_cameco_recovery memory) was the exact
+    # failure mode this prevents: a silent engine bump invalidating the
+    # SDK contract. Operator: pin to digest after pull —
+    #   docker pull ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12
+    #   docker images ghcr.io/hatchet-dev/hatchet/hatchet-lite --digests
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12
     container_name: georag-hatchet
     restart: unless-stopped
     depends_on:
@@ -2441,7 +2448,13 @@ services:
   # users keep that path; PAT + WS operators use this edge.
   # ---------------------------------------------------------------------------
   caddy:
-    image: caddy:2.8-alpine
+    # 2026-06-03 sweep: 2.8-alpine -> 2.11.3-alpine to pick up CVE patches
+    # in 2.9/2.10/2.11 (admin API, HTTP matchers, TLS auth — CVE-2026-27585
+    # through 27589). Drop-in upgrade, no config breakage expected on the
+    # forward_auth + reverse-proxy block below. Operator: pin to digest
+    # after a successful pull via `docker images caddy:2.11.3-alpine
+    # --digests`. Caddyfile + container env are unchanged.
+    image: caddy:2.11.3-alpine
     container_name: georag-caddy
     restart: unless-stopped
     ports:
