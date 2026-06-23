@@ -13,10 +13,15 @@
 #   pg_repack       main          (online table reorganize without exclusive locks)
 #   pg_ivm          main          (incremental view maintenance for materialized views)
 #
-# All extensions are cloned from upstream main / latest and built with PGXS.
-# PG 18 was released late 2025; some extensions still ship PG 18 support only
-# on main as of May 2026 — pinning to released tags risks build failures, so
-# we accept "main at build time" for now and document via the git rev label.
+# All extensions are built with PGXS (h3-pg uses CMake).
+# 2026-06-03 sweep: all clones pinned to released tags. Previously every
+# image rebuild fetched HEAD which made the same image non-reproducible
+# day-to-day. Verified tags (PG 18 support confirmed for pg_partman v5.4.3
+# + pg_ivm v1.14; others are post-PG18-GA releases and assumed-good — run
+# `make installcheck` against PG 18 in CI if you suspect regression).
+#
+# To bump an extension: change the `--branch` arg + rebuild + run pgTAP
+# (`composer run pgtap`). Don't drop the branch arg back to floating HEAD.
 # =============================================================================
 
 ARG BASE_DIGEST=sha256:369b23d36107b84282dd2dfe29e431e8fce80976200aa2037a8eee5d88d850b6
@@ -84,7 +89,9 @@ RUN git clone --depth=1 --branch v4.2.0 https://github.com/uber/h3.git \
 
 # ---- 2. h3-pg (PG extension binding) ---------------------------------------
 # h3-pg uses CMake (not raw PGXS). It expects pg_config on PATH.
-RUN git clone --depth=1 https://github.com/zachasme/h3-pg.git \
+# 2026-06-03 sweep: pinned to v4.5.0. Upstream moved from zachasme/h3-pg
+# (archived 2025-12-30) to postgis/h3-pg — using the canonical repo.
+RUN git clone --depth=1 --branch v4.5.0 https://github.com/postgis/h3-pg.git \
  && cmake \
         -S h3-pg -B h3-pg/build \
         -DCMAKE_BUILD_TYPE=Release \
@@ -96,19 +103,28 @@ RUN git clone --depth=1 https://github.com/zachasme/h3-pg.git \
 # that emit/link LLVM bitcode are skipped (see ENV note above for why).
 
 # ---- 3. hypopg --------------------------------------------------------------
-RUN git clone --depth=1 https://github.com/HypoPG/hypopg.git \
+# 2026-06-03 sweep: pinned to 1.4.3 (current line; supports PG ≥ 9.2,
+# release notes include PG 19 compat fix → PG 18 known-good).
+RUN git clone --depth=1 --branch 1.4.3 https://github.com/HypoPG/hypopg.git \
  && cd hypopg \
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf hypopg
 
 # ---- 4. pg_stat_kcache ------------------------------------------------------
-RUN git clone --depth=1 https://github.com/powa-team/pg_stat_kcache.git \
+# 2026-06-03 sweep: pinned to REL2_3_2 (powa-team convention is REL<MAJ>_<MIN>_<PATCH>).
+# Loaded via shared_preload_libraries in compose — config-key drift across
+# HEAD bumps could silently break boot, so this pin matters more than most.
+RUN git clone --depth=1 --branch REL2_3_2 https://github.com/powa-team/pg_stat_kcache.git \
  && cd pg_stat_kcache \
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_stat_kcache
 
 # ---- 5. pg_partman ----------------------------------------------------------
-RUN git clone --depth=1 https://github.com/pgpartman/pg_partman.git \
+# 2026-06-03 sweep: pinned to v5.4.3. CHANGELOG v5.3.0/v5.3.1 explicitly
+# handle PG 18 behaviors — PG 18 confirmed. NB: `partman` schema +
+# bgworker config GUCs (pg_partman_bgw.*) are version-sensitive; bumping
+# this pin requires re-reading the changelog for breaking config keys.
+RUN git clone --depth=1 --branch v5.4.3 https://github.com/pgpartman/pg_partman.git \
  && cd pg_partman \
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_partman
@@ -116,13 +132,21 @@ RUN git clone --depth=1 https://github.com/pgpartman/pg_partman.git \
 # ---- 6. pg_repack -----------------------------------------------------------
 # pg_repack ships both a server-side extension and a client binary — both
 # end up under /usr/local/{lib,bin}/postgresql which is already on PATH.
-RUN git clone --depth=1 https://github.com/reorg/pg_repack.git \
+# 2026-06-03 sweep: pinned to ver_1.5.3 (tag prefix is `ver_` per upstream
+# convention; no GitHub Releases page, only git tags). Released 2025-10-26,
+# post-PG-18 GA. Client/server version skew silently corrupts repack runs
+# so pinning eliminates a real foot-gun.
+RUN git clone --depth=1 --branch ver_1.5.3 https://github.com/reorg/pg_repack.git \
  && cd pg_repack \
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_repack
 
 # ---- 7. pg_ivm --------------------------------------------------------------
-RUN git clone --depth=1 https://github.com/sraoss/pg_ivm.git \
+# 2026-06-03 sweep: pinned to v1.14. README explicitly lists PG 13/14/15/16/17/18
+# as compatible — PG 18 confirmed. Phase 0 install only (no IMMVs created
+# yet); installed-not-used surface area worth keeping pinned so the
+# eventual Phase 5+ IMMV adoption doesn't surprise-rebuild against HEAD.
+RUN git clone --depth=1 --branch v1.14 https://github.com/sraoss/pg_ivm.git \
  && cd pg_ivm \
  && make with_llvm=no && make with_llvm=no install \
  && cd .. && rm -rf pg_ivm
