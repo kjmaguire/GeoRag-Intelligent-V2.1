@@ -14,3 +14,21 @@ dist
 *.egg-info
 .claude
 tests/fixtures
+
+# 2026-06-03 sweep: keep the build context out of the bytes graveyard.
+# - C:    Stray dir created by a Windows uv invocation that stripped the
+#         drive colon — produced a literal `C:` subtree containing
+#         `C:/Users/.../uv-cache/...` paths. Buildkit chokes on the
+#         path shape ("invalid file request") so we exclude it
+#         defensively in case it returns.
+# - models/         Downloaded HF / SBERT model weights (e.g.
+#                   bge-small-domain-ft, ~1.8 GB). Models live in HF_HOME
+#                   at runtime, never baked in.
+# - bench_results/  Local benchmark output (per-run JSON). Build artefact.
+# - retrieval_threshold_sweep.csv  Local eval scratch file.
+# - run_eval*.py    One-shot eval drivers; not imported by the app.
+C:
+models/
+bench_results/
+retrieval_threshold_sweep.csv
+run_eval*.py
