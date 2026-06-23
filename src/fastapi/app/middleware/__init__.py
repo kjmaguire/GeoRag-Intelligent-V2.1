@@ -28,8 +28,17 @@ BodySizeLimitMiddleware = _mod.BodySizeLimitMiddleware
 GlobalTimeoutMiddleware = _mod.GlobalTimeoutMiddleware
 StructuredAccessLogMiddleware = _mod.StructuredAccessLogMiddleware
 
+# W3C Trace Context helpers (Module 10 Chunk 10.6). Still defined in the
+# sibling middleware.py and used by StructuredAccessLogMiddleware — re-export
+# them too so direct callers/tests can reach them through ``app.middleware``
+# despite the package shadowing the module.
+_is_valid_traceparent = _mod._is_valid_traceparent
+_mint_traceparent = _mod._mint_traceparent
+
 __all__ = [
     "BodySizeLimitMiddleware",
     "GlobalTimeoutMiddleware",
     "StructuredAccessLogMiddleware",
+    "_is_valid_traceparent",
+    "_mint_traceparent",
 ]
