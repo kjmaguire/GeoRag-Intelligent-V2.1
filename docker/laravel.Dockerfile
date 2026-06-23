@@ -67,10 +67,17 @@ RUN docker-php-ext-configure gd \
 #   --enable-swoole-pgsql   → async PostgreSQL client built into Swoole
 #   --enable-openssl        → TLS support for WebSocket / HTTP2
 # Note: PECL Swoole build flags are passed via INI-style prompt responses.
+#
+# 2026-06-03 sweep: PECL versions pinned. Previously `pecl install swoole
+# redis` grabbed whatever was latest at build time — a surprise Swoole
+# bump can break Octane in subtle ways (worker lifecycle, signal handling,
+# coroutine semantics). Bump deliberately:
+#   - swoole 6.2.0+ adds PHP 8.5 support; 6.x is in Octane 2's tested band
+#   - phpredis 6.3.0 includes the PHP 8.5 compile fix
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && pecl install swoole redis \
+    && pecl install swoole-6.2.1 redis-6.3.0 \
     && docker-php-ext-enable swoole redis
 
 # Install Composer from its official image — avoids curling an installer script.
@@ -133,6 +140,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # PHP extensions — identical to builder stage.
 # NOTE: opcache is statically built into php:8.5-cli (see builder stage above).
+# 2026-06-03 sweep: PECL versions pinned in lockstep with the builder
+# stage above (swoole-6.2.1 / redis-6.3.0). Both stages MUST move
+# together — version skew between builder + runtime PECL extensions
+# silently produces a runtime image whose extension ABI doesn't match
+# the build that compiled it.
 RUN docker-php-ext-configure gd \
         --with-freetype \
         --with-jpeg \
@@ -144,7 +156,7 @@ RUN docker-php-ext-configure gd \
         pcntl \
         sockets \
         bcmath \
-    && pecl install swoole redis \
+    && pecl install swoole-6.2.1 redis-6.3.0 \
     && docker-php-ext-enable swoole redis
 
 # OPcache tuning for Octane (preload-friendly, long TTL since code doesn't change at runtime).
