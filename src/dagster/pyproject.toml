@@ -22,9 +22,14 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "asyncpg>=0.30",
     "httpx>=0.28",
-    "neo4j>=5.28",
-    "qdrant-client>=1.13",
-    "sentence-transformers>=4.1",
+    # 2026-06-23 sweep: cross-service pin sync with FastAPI pyproject so
+    # shared code paths use the same client libs across both services.
+    #   neo4j               5.28 -> 6.0  (FastAPI is on >=6.0)
+    #   sentence-transformers 4.1  -> 5.0  (FastAPI is on >=5.0)
+    #   qdrant-client       1.13 -> 1.17 (FastAPI is on >=1.17)
+    "neo4j>=6.0",
+    "qdrant-client>=1.17",
+    "sentence-transformers>=5.0",
     # SPLADE++ sparse encoder (Module 4 Chunk 2)
     "torch>=2.3,<3.0",
     "transformers>=4.40,<5.0",
@@ -36,7 +41,11 @@ dependencies = [
     "xlrd>=1.2,<2.0",
     "ezdxf>=1.0,<2.0",
     "wellpathpy>=0.5.0,<1.0.0",
-    "rio-cogeo>=5.0.0,<6.0.0",
+    # 2026-06-23 sweep: lifted <6.0 cap; current is 7.0.2. The cap was
+    # historical caution, now two majors stale. Breaking changes between
+    # 5/6/7 are around CLI flags + rasterio plugin entry points — review
+    # if you hit unexpected behaviour on cogeo profile creation.
+    "rio-cogeo>=5.0.0,<8.0.0",
     # Phase 7 Step 1 (R-P6-1) — OTel SDK + OTLP HTTP exporter so
     # georag_dagster.observability.install_tracer_provider() can wire
     # a real provider when OTEL_EXPORTER_OTLP_ENDPOINT is set. The
@@ -52,7 +61,11 @@ dependencies = [
     # vLLM OpenAI-compatible client — used by the reranker_labels asset
     # group for synthetic query generation against the in-cluster Qwen
     # model. Hard dep because VllmResource.get_client() returns OpenAI().
-    "openai>=1.40,<2",
+    # 2026-06-23 sweep: cap lifted <2 -> <3. SDK 2.x has been GA for months;
+    # cleaner streaming + structured-output ergonomics. For a thin wrapper
+    # around vLLM's OpenAI-compatible endpoint the call surface we use is
+    # stable across 1.x -> 2.x.
+    "openai>=1.40,<3",
 ]
 
 [project.optional-dependencies]
