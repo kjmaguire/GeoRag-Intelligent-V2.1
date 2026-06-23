@@ -30,7 +30,11 @@
 # Compile every C extension against full -dev headers.
 # Nothing from this layer ends up in the final image except site-packages.
 # =============================================================================
-FROM python:3.13-slim AS builder
+# 2026-06-03 sweep: digest captured from `docker pull python:3.13-slim`.
+# Re-pin via the same after a Python patch release (3.13.x bumps the
+# slim base periodically). Both builder + runtime stages MUST use the
+# same digest so site-packages copied across stages have matching ABI.
+FROM python:3.13-slim@sha256:c33f0bc4364a6881bed1ec0cc2665e6c53c87a43e774aaeab88e6f17af105e4f AS builder
 
 # ---------------------------------------------------------------------------
 # Build-time system dependencies
@@ -117,7 +121,7 @@ RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true
 # Stage 2 — runtime
 # Lean image: runtime shared libraries only, no compiler toolchain.
 # =============================================================================
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim@sha256:c33f0bc4364a6881bed1ec0cc2665e6c53c87a43e774aaeab88e6f17af105e4f AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG FastAPI"
 LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Python 3.13"

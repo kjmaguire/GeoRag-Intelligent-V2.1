@@ -21,7 +21,11 @@
 # Installs all build-time dependencies, Composer packages, and Node assets.
 # Nothing from this stage bloats the final image except the outputs we COPY.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli AS builder
+# 2026-06-03 sweep: digest captured from `docker pull php:8.5-cli`.
+# Re-pin via the same after a PHP 8.5.x patch. Both builder + runtime
+# stages MUST use the same digest so the PECL extensions compiled in
+# builder match the runtime PHP ABI byte-for-byte.
+FROM php:8.5-cli@sha256:1954ff5cd21f222c992b79d25e403b2600cec829678d5bb7076883f3a44c0d6e AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -81,7 +85,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && docker-php-ext-enable swoole redis
 
 # Install Composer from its official image — avoids curling an installer script.
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+# 2026-06-03 sweep: digest captured from `docker pull composer:2`.
+COPY --from=composer:2@sha256:7725eb4545c438629ae8bde3ef0bb9a5038ef566126ad878442a69007242d267 /usr/bin/composer /usr/bin/composer
 
 # Install Node.js 22.x (LTS) for the Inertia SSR + Vite asset build.
 # We pin the major version; the NodeSource script locks to the latest 22.x patch.
@@ -120,7 +125,7 @@ RUN npm run build
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli AS runtime
+FROM php:8.5-cli@sha256:1954ff5cd21f222c992b79d25e403b2600cec829678d5bb7076883f3a44c0d6e AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"

@@ -135,14 +135,13 @@ services:
   # langfuse-web — UI + ingestion API
   # ---------------------------------------------------------------------------
   langfuse-web:
-    # 2026-06-03 sweep: floating `:3` major tag flagged for SHA pinning.
-    # Self-host v3 is still the supported track (v4 is Cloud Preview only,
-    # not GA for self-host). Operator: pin to a concrete v3.x digest via
-    #   docker pull langfuse/langfuse:3
-    #   docker inspect langfuse/langfuse:3 | grep -A1 RepoDigests
-    # and replace this line with `langfuse/langfuse:3@sha256:<digest>`.
-    # MUST move in lockstep with the langfuse-worker pin below.
-    image: langfuse/langfuse:3
+    # 2026-06-03 sweep: pinned to digest captured from `docker pull
+    # langfuse/langfuse:3` on 2026-06-03. Self-host v3 is still the
+    # supported track (v4 is Cloud Preview only, not GA for self-host).
+    # Re-pin with `docker pull langfuse/langfuse:3 && docker inspect
+    # langfuse/langfuse:3 --format '{{index .RepoDigests 0}}'` after
+    # any version bump. MUST move in lockstep with langfuse-worker below.
+    image: langfuse/langfuse:3@sha256:571446cb16a5d66707f094e638bb156cb9cebaa992d76a7213d2150ce9e1ee18
     container_name: georag-langfuse-web
     restart: unless-stopped
     depends_on:
@@ -251,10 +250,10 @@ services:
   # langfuse-worker — background trace ingestion + scoring + alerting
   # ---------------------------------------------------------------------------
   langfuse-worker:
-    # 2026-06-03 sweep: pin in lockstep with langfuse-web above. Operator:
-    #   docker pull langfuse/langfuse-worker:3
-    #   docker inspect langfuse/langfuse-worker:3 | grep -A1 RepoDigests
-    image: langfuse/langfuse-worker:3
+    # 2026-06-03 sweep: pinned in lockstep with langfuse-web above.
+    # Digest captured from `docker pull langfuse/langfuse-worker:3` on
+    # the same day so worker ABI matches web. Re-pin both together.
+    image: langfuse/langfuse-worker:3@sha256:90df7fbd475abd66b1a9a2e10c99f542a94670a6fc898ddd5809ac3147e601f8
     container_name: georag-langfuse-worker
     restart: unless-stopped
     depends_on:
