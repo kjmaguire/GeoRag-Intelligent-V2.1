@@ -45,7 +45,7 @@ Total gaps found: **19** (Critical: 3, Moderate: 9, Minor: 7, Confirmed accurate
 ### M2 — Model-routing tier system undocumented
 - **Category:** 10. LLM / ML pipeline
 - **Location:** `src/fastapi/app/config.py` + `src/fastapi/app/agent/model_routing.py`
-- **What it is:** `MODEL_TIER_FAST="claude-haiku-4-5"`, `MODEL_TIER_STANDARD="claude-sonnet-4-5"`, `MODEL_TIER_DEEP="claude-opus-4-7"`. Functions `select_tier()`, `downshift()`, `is_retriable_via_failover()`, classifier-fallback → DEEP rule.
+- **What it is:** `MODEL_TIER_FAST="claude-haiku-4-5"`, `MODEL_TIER_STANDARD="claude-sonnet-4-6"`, `MODEL_TIER_DEEP="claude-opus-4-8"`. Functions `select_tier()`, `downshift()`, `is_retriable_via_failover()`, classifier-fallback → DEEP rule. (STANDARD bumped 4-5→4-6 and DEEP bumped 4-7→4-8 in the 2026-06 audit sweep.)
 - **What's missing:** SAD §4.4 + Index §5.7 only name `MODEL_ROUTING_ENABLED`; the actual 3-tier logic + tier→model mapping + downshift rules are invisible.
 
 ### M3 — Per-intent retrieval profile shape not documented

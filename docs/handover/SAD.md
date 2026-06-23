@@ -321,8 +321,8 @@ Three `StateGraph` instantiations, each with its own state schema + node module 
 
    **Tier enum** (`ModelTier`):
    - `FAST` → `MODEL_TIER_FAST` (default `claude-haiku-4-5`)
-   - `STANDARD` → `MODEL_TIER_STANDARD` (default `claude-sonnet-4-5`)
-   - `DEEP` → `MODEL_TIER_DEEP` (default `claude-opus-4-7`, falls back to `ANTHROPIC_MODEL`)
+   - `STANDARD` → `MODEL_TIER_STANDARD` (default `claude-sonnet-4-6`)
+   - `DEEP` → `MODEL_TIER_DEEP` (default `claude-opus-4-8`, falls back to `ANTHROPIC_MODEL`)
 
    **`select_tier(categories, retry_count)` priority order** (first match wins):
    1. `MODEL_ROUTING_ENABLED=False` → always `DEEP`
