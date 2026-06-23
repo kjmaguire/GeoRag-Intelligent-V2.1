@@ -154,7 +154,7 @@ def test_submit_caller_params_override_defaults() -> None:
             BatchRequest(
                 custom_id="a",
                 messages=[{"role": "user", "content": "q"}],
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
                 max_tokens=1024,
                 params={"temperature": 0.05, "stop_sequences": ["###"]},
             )

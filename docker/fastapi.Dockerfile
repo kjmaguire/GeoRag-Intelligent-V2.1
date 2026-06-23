@@ -80,17 +80,19 @@ COPY uv.lock* ./
 # extra by name. The §7 / §8 / §9 / §12 graphs all need LangGraph in
 # the runtime image; opt-in via --extra langgraph keeps the install
 # story consistent across consumers (Dagster, dev sandboxes can pick).
+# 2026-06-03 sweep: removed a second `uv pip install` block that hardcoded
+# `langgraph>=0.2.50,<0.3`, which silently DOWNGRADED langgraph from the
+# pyproject `>=1.0.10,<2.0` pin after the first install. The runtime image
+# was shipping langgraph 0.2.x while pyproject + tests assumed 1.x — all
+# "tested on langgraph 1.x" claims were invalidated. The extras the old
+# block added (langgraph-checkpoint-postgres, langchain-mcp-adapters,
+# langfuse) are now declared in pyproject.toml so a single install covers
+# everything from the same source of truth.
 RUN uv pip install --system --no-cache -r pyproject.toml \
-    && uv pip install --system --no-cache \
-        "langgraph>=0.2.50,<0.3" \
-        "langgraph-checkpoint-postgres>=2.0,<3.0" \
-        "langchain-mcp-adapters>=0.2,<0.3" \
-        "langfuse>=3.0,<4.0" \
     || pip install --no-cache-dir $(python3 -c "\
 import tomllib, pathlib; \
 d = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); \
-print(' '.join(d['project']['dependencies']))") \
-        langgraph langgraph-checkpoint-postgres langchain-mcp-adapters langfuse
+print(' '.join(d['project']['dependencies']))")
 
 # Dev tools — pytest + pytest-asyncio. Image carries them so test runs
 # work after a fresh `docker compose up -d --force-recreate fastapi`

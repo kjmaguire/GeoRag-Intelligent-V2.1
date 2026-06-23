@@ -46,10 +46,15 @@ class Pricing:
 # whenever the ephemeral cache rotated (every 5 min for the default TTL).
 _PRICE_TABLE: dict[str, Pricing] = {
     # Anthropic — cache_creation is 1.25× the input rate (published).
+    # Sonnet 4-5/4-6 + Opus 4-7/4-8 all retained: old IDs may still appear
+    # in traffic during a rolling deploy. Tiered defaults moved to 4-6/4-8
+    # in the 2026-06 model-ID sweep; old keys can be removed once trace
+    # data confirms no residual calls on the legacy IDs.
     "claude-haiku-4-5":   Pricing(1.00,  0.10,  1.25,  5.00),
     "claude-sonnet-4-5":  Pricing(3.00,  0.30,  3.75, 15.00),
     "claude-sonnet-4-6":  Pricing(3.00,  0.30,  3.75, 15.00),
     "claude-opus-4-7":    Pricing(15.00, 1.50, 18.75, 75.00),
+    "claude-opus-4-8":    Pricing(15.00, 1.50, 18.75, 75.00),
 
     # Local / OpenAI-compatible — vLLM is "free" from an API-spend
     # perspective (infra cost handled elsewhere). We still track token

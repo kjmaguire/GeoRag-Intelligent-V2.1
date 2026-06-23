@@ -51,7 +51,7 @@
     {
       "type": "timeseries",
       "title": "Spend rate $/min by model",
-      "description": "Per-model dollar rate. claude-opus-4-7 should dominate visible spend on Anthropic-backed paths. vllm rows are 0 because vLLM is self-hosted (pricing module returns 0 for those models).",
+      "description": "Per-model dollar rate. claude-opus-4-8 should dominate visible spend on Anthropic-backed paths. vllm rows are 0 because vLLM is self-hosted (pricing module returns 0 for those models).",
       "targets": [{"expr": "sum by (model) (rate(llm_cost_usd_total[5m])) * 60", "refId": "A", "legendFormat": "{{model}}"}],
       "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4, "custom": {"stacking": {"mode": "normal"}}}},
       "datasource": {"type": "prometheus", "uid": "prometheus"},

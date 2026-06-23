@@ -985,13 +985,13 @@ services:
       # to "anthropic" to activate. See docs/RUNBOOK.md "LLM backend
       # selection" for the full flip procedure.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-7}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-8}
       ANTHROPIC_MAX_OUTPUT_TOKENS: ${ANTHROPIC_MAX_OUTPUT_TOKENS:-4096}
       ANTHROPIC_ENABLE_PROMPT_CACHING: ${ANTHROPIC_ENABLE_PROMPT_CACHING:-true}
       ANTHROPIC_USE_PRIORITY_TIER: ${ANTHROPIC_USE_PRIORITY_TIER:-false}
       MODEL_TIER_FAST: ${MODEL_TIER_FAST:-claude-haiku-4-5}
-      MODEL_TIER_STANDARD: ${MODEL_TIER_STANDARD:-claude-sonnet-4-5}
-      MODEL_TIER_DEEP: ${MODEL_TIER_DEEP:-claude-opus-4-7}
+      MODEL_TIER_STANDARD: ${MODEL_TIER_STANDARD:-claude-sonnet-4-6}
+      MODEL_TIER_DEEP: ${MODEL_TIER_DEEP:-claude-opus-4-8}
       # Cross-database timeouts (Section 06e)
       TIMEOUT_POSTGIS_S: ${TIMEOUT_POSTGIS_S:-5}
       TIMEOUT_NEO4J_S: ${TIMEOUT_NEO4J_S:-3}

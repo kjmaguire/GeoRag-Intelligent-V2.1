@@ -96,7 +96,7 @@ def tier_to_model(tier: ModelTier) -> str:
     if tier is ModelTier.FAST:
         return getattr(settings, "MODEL_TIER_FAST", "claude-haiku-4-5")
     if tier is ModelTier.STANDARD:
-        return getattr(settings, "MODEL_TIER_STANDARD", "claude-sonnet-4-5")
+        return getattr(settings, "MODEL_TIER_STANDARD", "claude-sonnet-4-6")
     return getattr(settings, "MODEL_TIER_DEEP", settings.ANTHROPIC_MODEL)
 
 
@@ -116,7 +116,7 @@ def tier_to_model_for_backend(tier: ModelTier, backend: str) -> str:
     """
     if backend == "anthropic":
         if not getattr(settings, "MODEL_ROUTING_ENABLED", True):
-            return getattr(settings, "ANTHROPIC_MODEL", "claude-opus-4-7")
+            return getattr(settings, "ANTHROPIC_MODEL", "claude-opus-4-8")
         return tier_to_model(tier)
     if backend == "vllm":
         # Single-instance vLLM: always serve the configured checkpoint.

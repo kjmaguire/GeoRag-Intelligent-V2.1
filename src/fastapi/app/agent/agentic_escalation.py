@@ -227,7 +227,7 @@ async def _build_agent(deps: AgentDeps) -> Agent | None:
     # AsyncAnthropic instance so we reuse the pooled client from app.state
     # rather than paying a second TLS handshake.
     provider = AnthropicProvider(anthropic_client=client)
-    model_name = getattr(settings, "MODEL_TIER_STANDARD", "claude-sonnet-4-5")
+    model_name = getattr(settings, "MODEL_TIER_STANDARD", "claude-sonnet-4-6")
     model = AnthropicModel(model_name, provider=provider)
 
     agent: Agent[AgentDeps] = Agent(

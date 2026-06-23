@@ -50,13 +50,13 @@ FlashInfer JIT compilation tax (~28 → 154 tok/s, A4500 + Qwen3-14B-AWQ).
 Anthropic primary, vLLM as backup on 429.
 Env vars [docker-compose.yml:975-985](../../../docker-compose.yml):
 - `ANTHROPIC_API_KEY`
-- `ANTHROPIC_MODEL=claude-opus-4-7`
+- `ANTHROPIC_MODEL=claude-opus-4-8`
 - `ANTHROPIC_MAX_OUTPUT_TOKENS=4096`
 - `ANTHROPIC_ENABLE_PROMPT_CACHING=true`
 - `ANTHROPIC_USE_PRIORITY_TIER=false`
 - `MODEL_TIER_FAST=claude-haiku-4-5`
-- `MODEL_TIER_STANDARD=claude-sonnet-4-5`
-- `MODEL_TIER_DEEP=claude-opus-4-7`
+- `MODEL_TIER_STANDARD=claude-sonnet-4-6`
+- `MODEL_TIER_DEEP=claude-opus-4-8`
 
 ### Qwen2.5-VL (figures)
 

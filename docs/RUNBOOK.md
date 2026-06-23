@@ -858,7 +858,7 @@ print('ANTHROPIC_API_KEY set:', bool(settings.ANTHROPIC_API_KEY))
 
 # Per-attempt audit log shows which model handled each call
 docker compose logs fastapi --tail=200 | grep "_call_llm: attempt"
-# Expect: "_call_llm: attempt=1/8 label=primary model=claude-sonnet-4-5..."
+# Expect: "_call_llm: attempt=1/8 label=primary model=claude-sonnet-4-6..."
 ```
 
 ---

@@ -235,10 +235,10 @@ class Settings(BaseSettings):
 
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
-    # Default to Opus 4.7 (strongest agentic coding, 1M ctx). Swap to
+    # Default to Opus 4.8 (strongest agentic coding, 1M ctx). Swap to
     # claude-sonnet-4-6 for cheaper/faster synthesis, or claude-haiku-4-5
     # for the fast-path LLM summary when the classifier is confident.
-    ANTHROPIC_MODEL: str = "claude-opus-4-7"
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
     ANTHROPIC_MAX_OUTPUT_TOKENS: int = 4096
 
     # Ollama review #5 — `num_predict` cap for the OpenAI-compatible
@@ -393,8 +393,8 @@ class Settings(BaseSettings):
     # pre-B1 behaviour) for A/B comparison against the golden set.
     MODEL_ROUTING_ENABLED: bool = True
     MODEL_TIER_FAST: str = "claude-haiku-4-5"
-    MODEL_TIER_STANDARD: str = "claude-sonnet-4-5"
-    MODEL_TIER_DEEP: str = "claude-opus-4-7"
+    MODEL_TIER_STANDARD: str = "claude-sonnet-4-6"
+    MODEL_TIER_DEEP: str = "claude-opus-4-8"
     # R11 — hard-fail when the orchestrator is asked to run on Anthropic but
     # the pooled AsyncAnthropic client wasn't attached at startup. Set to
     # False only during bootstrapping (tests, mid-migration deploys) when

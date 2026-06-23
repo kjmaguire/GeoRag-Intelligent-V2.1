@@ -75,7 +75,7 @@ class TestSelectTier:
     def test_routing_disabled_always_deep(self):
         with patch("app.agent.model_routing.settings") as mock_settings:
             mock_settings.MODEL_ROUTING_ENABLED = False
-            mock_settings.ANTHROPIC_MODEL = "claude-opus-4-7"
+            mock_settings.ANTHROPIC_MODEL = "claude-opus-4-8"
             assert select_tier(_categories(spatial=True)) is ModelTier.DEEP
 
 
@@ -90,14 +90,14 @@ class TestTierToModel:
 
     def test_standard_resolves_to_sonnet_by_default(self):
         with patch("app.agent.model_routing.settings") as m:
-            m.MODEL_TIER_STANDARD = "claude-sonnet-4-5"
-            assert tier_to_model(ModelTier.STANDARD) == "claude-sonnet-4-5"
+            m.MODEL_TIER_STANDARD = "claude-sonnet-4-6"
+            assert tier_to_model(ModelTier.STANDARD) == "claude-sonnet-4-6"
 
     def test_deep_resolves_to_opus_by_default(self):
         with patch("app.agent.model_routing.settings") as m:
-            m.MODEL_TIER_DEEP = "claude-opus-4-7"
-            m.ANTHROPIC_MODEL = "claude-opus-4-7"
-            assert tier_to_model(ModelTier.DEEP) == "claude-opus-4-7"
+            m.MODEL_TIER_DEEP = "claude-opus-4-8"
+            m.ANTHROPIC_MODEL = "claude-opus-4-8"
+            assert tier_to_model(ModelTier.DEEP) == "claude-opus-4-8"
 
 
 # ── downshift ────────────────────────────────────────────────────────────
