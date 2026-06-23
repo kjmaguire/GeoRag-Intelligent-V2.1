@@ -8,7 +8,7 @@ import CitationPGEODetail from '../Components/PublicGeoscience/CitationPGEODetai
 import ProjectContextBanner from '../Components/ProjectContextBanner';
 import { EvidenceInspector } from '../Components/chat/EvidenceInspector';
 import { TrustInspector } from '../Components/chat/TrustInspector';
-import { useEventDedup } from '../hooks/useEventDedup';
+import { useEventDedup } from '../Hooks/useEventDedup';
 
 // Initial welcome message shown before the user sends anything
 // Extend window with Laravel Echo instance (set in bootstrap.js)

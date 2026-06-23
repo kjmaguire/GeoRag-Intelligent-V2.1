@@ -18,8 +18,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useEventDedup } from '../../hooks/useEventDedup';
-import type { DeduplicableEvent } from '../../hooks/useEventDedup';
+import { useEventDedup } from '../../Hooks/useEventDedup';
+import type { DeduplicableEvent } from '../../Hooks/useEventDedup';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
