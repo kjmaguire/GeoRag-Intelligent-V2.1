@@ -73,11 +73,11 @@ return new class extends Migration
     {
         // SQLite (used by the PHPUnit suite) has no schema concept and no
         // ALTER TABLE ... SET SCHEMA. Skip the schema move entirely under
-        // SQLite — the test DB keeps query_audit_log in the default schema
-        // and the Eloquent model's `$table = 'audit.query_audit_log'`
-        // attribute resolves to a literal table name on SQLite. The
-        // `create_query_audit_log_table` migration is also driver-aware
-        // and creates the test-side table with that compound name.
+        // SQLite — the test DB keeps the table under its original bare name
+        // `query_audit_log` (the create migration and every ALTER in the
+        // chain use that name on all drivers). Migrations that touch this
+        // table after the move must therefore branch on the driver and use
+        // the bare `query_audit_log` name under SQLite.
         if (DB::connection()->getDriverName() === 'sqlite') {
             return;
         }

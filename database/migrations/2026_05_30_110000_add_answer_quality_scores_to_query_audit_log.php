@@ -8,9 +8,12 @@ return new class extends Migration
     public function up(): void
     {
         if (DB::connection()->getDriverName() === 'sqlite') {
-            // SQLite test DB — audit.query_audit_log is a flat name
-            DB::statement('ALTER TABLE "audit.query_audit_log" ADD COLUMN faithfulness_score REAL NULL');
-            DB::statement('ALTER TABLE "audit.query_audit_log" ADD COLUMN context_precision_score REAL NULL');
+            // SQLite test DB — the move-to-audit-schema migration
+            // (2026_05_07_120000) is a no-op under SQLite, and every ALTER in
+            // this table's chain uses the bare name. So the table is plain
+            // `query_audit_log` here, NOT the compound `audit.query_audit_log`.
+            DB::statement('ALTER TABLE query_audit_log ADD COLUMN faithfulness_score REAL NULL');
+            DB::statement('ALTER TABLE query_audit_log ADD COLUMN context_precision_score REAL NULL');
 
             return;
         }
