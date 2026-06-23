@@ -69,6 +69,20 @@ dependencies = [
     "langgraph>=1.0.10,<2.0",
     "langgraph-checkpoint>=4.0.0,<5.0",
     "langchain-core>=1.2.22,<2.0",
+    # 2026-06-23 sweep — REGRESSION FIX from the langgraph-overlay
+    # removal in commit ac3b5fd. The old Dockerfile overlay installed
+    # `langfuse>=3.0,<4.0` as a side effect of the downgrade hack;
+    # when the overlay was removed, langfuse went missing from the
+    # image and `app/main.py::lifespan` started logging
+    #   "Failed to initialise Langfuse client — RAG traces will not
+    #    be recorded. App continues without observability."
+    # on every container start. App continues per the warning, but
+    # RAG traces silently stop reaching the Langfuse OLAP store.
+    # Promoting langfuse to a top-level dep here so it lands in the
+    # image without the overlay. Sibling extras the overlay added
+    # (langgraph-checkpoint-postgres, langchain-mcp-adapters) are
+    # genuinely unused per the earlier grep — leaving those out.
+    "langfuse>=3.0,<4.0",
     # Direct dep so the Anthropic-backed LLM path is first-class, not
     # transitive through pydantic-ai. Needed for prompt caching breakpoints
     # and the messages API shape (priority tier, 300k-batch beta, adaptive
