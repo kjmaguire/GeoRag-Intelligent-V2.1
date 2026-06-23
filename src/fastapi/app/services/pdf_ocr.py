@@ -90,7 +90,23 @@ except ImportError:
     _PADDLEOCR_AVAILABLE = False
     logger.warning(
         "paddleocr is not installed — pdf_ocr_service will be unavailable. "
-        "Run: uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10' to enable OCR."
+        "Run: uv pip install 'paddlepaddle>=3.1' 'paddleocr>=3.7,<4.0' to enable OCR."
+    )
+except (PermissionError, OSError) as exc:
+    # PaddleOCR 3.x creates $HOME/.paddlex/temp at import time (paddlex
+    # cache scaffold). If HOME is unset or unwritable, that mkdir raises
+    # PermissionError BEFORE the package finishes importing — turning
+    # the previous graceful ImportError-only path into a hard crash.
+    # Treat the same as "not installed": degrade pdf_ocr_service rather
+    # than take down FastAPI startup. The compose env sets HOME=/tmp on
+    # every service that loads this module, so this branch is defensive
+    # against drift in deployment env (e.g. a fresh `docker run` without
+    # the compose env file).
+    _PADDLEOCR_AVAILABLE = False
+    logger.warning(
+        "paddleocr is installed but failed to initialise its cache dir: %s. "
+        "Set HOME to a writable path (e.g. /tmp) before app startup.",
+        exc,
     )
 
 

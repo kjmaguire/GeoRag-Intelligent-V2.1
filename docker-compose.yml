@@ -1048,6 +1048,13 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
+      # 2026-06-23 sweep — PaddleOCR 3.x (ADR-0016) calls Path.mkdir on
+      # $HOME/.paddlex/temp at IMPORT time (not first-use). www-data's
+      # default HOME (/var/www) doesn't exist in this image, so the
+      # mkdir explodes with PermissionError before any startup code
+      # runs. Redirect HOME to /tmp so the cache dir lands somewhere
+      # writable. Matches the hatchet-worker-ingestion HOME=/tmp pin.
+      HOME: /tmp
       # Sentry observability — same project as Laravel side. Blank DSN
       # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
       SENTRY_DSN: ${SENTRY_DSN:-}
@@ -2315,6 +2322,11 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
+      # 2026-06-23 sweep — PaddleOCR 3.x calls Path.mkdir on
+      # $HOME/.paddlex/temp at IMPORT time; redirect HOME to /tmp so
+      # the AI worker can import pdf_ocr.py without crashing (matches
+      # the ingestion worker's HOME pin).
+      HOME: /tmp
       # Phase 2.0 + 2.1 (2026-05-22) — same docling + rapidocr envs as
       # the ingestion worker. The AI pool worker doesn't currently
       # parse PDFs end-to-end, but it can import the parser transitively
