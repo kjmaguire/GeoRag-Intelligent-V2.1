@@ -77,6 +77,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -483,6 +484,91 @@ class PdfVlService:
         )
         return result, False
 
+    async def shadow_observe_section(
+        self,
+        pdf_bytes: bytes,
+        pdf_id: str,
+        section_ref: dict[str, Any],
+        *,
+        v2_model_id: str | None = None,
+        v3_model_id: str | None = None,
+    ) -> "VlShadowObservation":
+        """Run BOTH VL model versions on the same pages — ADR-0015 step-3 dual-write.
+
+        Renders the section ONCE and feeds the identical images to each model so
+        the comparison isolates the model, not the input. Returns a paired
+        ``VlShadowObservation`` for ``services.eval.pdf_vl_shadow.assess_vl_shadow``.
+
+        This is a read-only probe — neither result is persisted to
+        silver.pdf_vl_summaries (the shadow window must not pollute the
+        production cache). A version that errors or whose output fails
+        VlSummaryShape is recorded as schema-invalid for that version (never
+        raised) so the gate can measure the schema-valid *rate*.
+
+        Defaults: V2 ← ``PDF_VL_MODEL_ID_V2``, V3 ← ``PDF_VL_MODEL_ID_V3``.
+        """
+        from app.services.eval.pdf_vl_shadow import VlShadowObservation
+
+        v2 = v2_model_id or os.environ.get("PDF_VL_MODEL_ID_V2", _DEFAULT_MODEL_ID_V2)
+        v3 = v3_model_id or os.environ.get("PDF_VL_MODEL_ID_V3", _DEFAULT_MODEL_ID_V3)
+
+        section_ref_hash = _hash_section_ref(section_ref)
+        pages = await self._resolve_pages(section_ref)
+        if len(pages) > self._max_pages:
+            raise VlSectionTooLargeError(page_count=len(pages), max_pages=self._max_pages)
+
+        # Render once; both models score the same pixels.
+        png_list: list[bytes] = []
+        for page_num in pages:
+            png_list.append(
+                await self._render_service.render_page(
+                    pdf_bytes=pdf_bytes, pdf_id=pdf_id, page=page_num, dpi=200,
+                )
+            )
+
+        v2_summary, v2_ms = await self._timed_summarize_for_model(png_list, pages, v2)
+        v3_summary, v3_ms = await self._timed_summarize_for_model(png_list, pages, v3)
+
+        logger.info(
+            "shadow_observe_section pdf_id=%s pages=%r v2_valid=%s v3_valid=%s "
+            "v2_ms=%.0f v3_ms=%.0f",
+            pdf_id[:16], pages, v2_summary is not None, v3_summary is not None,
+            v2_ms, v3_ms,
+        )
+        return VlShadowObservation.from_summaries(
+            pdf_id=pdf_id,
+            section_ref_hash=section_ref_hash,
+            page_count=len(pages),
+            v2_summary=v2_summary,
+            v3_summary=v3_summary,
+            v2_latency_ms=v2_ms,
+            v3_latency_ms=v3_ms,
+        )
+
+    async def _timed_summarize_for_model(
+        self,
+        png_list: list[bytes],
+        pages: list[int],
+        model_id: str,
+    ) -> tuple["VlSummaryShape | None", float]:
+        """Call the VL backend for one model, time it, validate the output.
+
+        Returns ``(VlSummaryShape | None, latency_ms)`` — ``None`` when the
+        backend errors or the output fails schema validation. The failure is
+        logged and swallowed, never raised: a shadow run measures the
+        schema-valid rate, so an invalid response is a data point, not a crash.
+        """
+        start = time.perf_counter()
+        summary: VlSummaryShape | None
+        try:
+            raw_content, _usage = await self._call_vl_backend(png_list, pages, model_id=model_id)
+            summary = _parse_and_validate(raw_content)
+        except (VlBackendError, VlOutputShapeError) as exc:
+            logger.warning("shadow: model=%s produced no valid output: %s", model_id, exc)
+            summary = None
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        return summary, latency_ms
+
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
@@ -517,6 +603,7 @@ class PdfVlService:
         self,
         png_list: list[bytes],
         pages: list[int],
+        model_id: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """POST multipart chat-completions request to the VL backend.
 
@@ -558,7 +645,7 @@ class PdfVlService:
             )
 
         chat_body: dict[str, Any] = {
-            "model": self._model_id,
+            "model": model_id or self._model_id,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},

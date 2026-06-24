@@ -45,9 +45,14 @@ Adopt **`Qwen/Qwen3-VL-8B-Instruct-AWQ`** as the §04p Stage-6 model, gated on a
    computes all three metrics and the promote/block decision from a list of
    per-section `VlShadowObservation` rows (`assess_vl_shadow(...)`). Thresholds:
    schema-valid ≥ 0.95, figure-link-rate regression ≤ 2.0 pp below the V2
-   baseline, ≥ 20 observations (latency p95 is reported, not gated). Still
-   pending: V3 serving (step 2) and the runtime dual-write that populates the
-   observations (lives next to the existing shadow-trigger path).
+   baseline, ≥ 20 observations (latency p95 is reported, not gated). The
+   **dual-write runtime** also landed: `PdfVlService.shadow_observe_section`
+   renders a section once, scores it with both model versions
+   (`_call_vl_backend` is now model-parametrized), and returns a
+   `VlShadowObservation` for the gate — read-only, never persisted, and it
+   records an errored/invalid version as schema-invalid rather than raising.
+   Still pending: V3 serving (step 2) and wiring `shadow_observe_section` into
+   the shadow-trigger path to run it across the golden corpus.
 4. **Promote.** Once the three metrics meet the gate (`assess_vl_shadow().allow`), flip the default in `pdf_vl.py` from version `2` to `3` and document the cutover date in the project memory.
 5. **Rollback.** Set `PDF_VL_MODEL_VERSION=2` in the affected workspace's env to revert without a deploy.
 
