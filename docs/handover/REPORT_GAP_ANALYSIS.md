@@ -11,19 +11,19 @@ Total gaps found: **19** (Critical: 3, Moderate: 9, Minor: 7, Confirmed accurate
 
 ## Critical Gaps (missing entirely — would materially affect a reader's understanding)
 
-### C1 — Reranker model identity mismatch
+### C1 — Reranker model identity mismatch — **RESOLVED 2026-06-02**
 - **Category:** 10. LLM / ML pipeline
 - **Location:** `src/fastapi/app/services/reranker.py`
-- **What it is:** Live code pins `RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"` (revision `2cfc18c9415c…`, score range [-1, +1] logit). SAD §2.1 + §3.3 + §3.3.5 + DFS all say reranker = `cross-encoder/ms-marco-MiniLM-L-6-v2`.
-- **Why missed:** Carried forward from an earlier model decision; never propagated when reranker was switched to bge-reranker-base. Memory note "Reranker overnight 2026-05-29" + ADR-0011 both reference bge-reranker-base; handover never re-synced.
-- **Why it matters:** Two different models with different score-normalisation regimes. Anyone setting up the reranker tier from the handover will pull the wrong weights.
+- **Status:** SAD §2.1 + §3.3 (line 53, 242, 416) and DFS §2.3 (line 128, 154) now name `BAAI/bge-reranker-base` explicitly, including revision `2cfc18c9415c…` and the `[-1, +1]` logit score range. The mismatch this gap describes no longer exists in the live handover. Kept for change-log audit; do not re-open unless `grep -r "ms-marco\|MiniLM" docs/handover/` finds a regression.
+- **What it was:** Live code pinned `RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"` (revision `2cfc18c9415c…`, score range [-1, +1] logit). SAD §2.1 + §3.3 + §3.3.5 + DFS used to say reranker = `cross-encoder/ms-marco-MiniLM-L-6-v2`.
+- **Why it mattered:** Two different models with different score-normalisation regimes. Anyone setting up the reranker tier from the handover would have pulled the wrong weights.
 
-### C2 — `georag_app` and `martin_ro` PG roles never created in init scripts
+### C2 — `georag_app` and `martin_ro` PG roles never created in init scripts — **RESOLVED 2026-06-02**
 - **Category:** 9. Security
-- **Location:** `docker/postgresql/init/init-roles.sql` + entire `docker/postgresql/init/` tree
-- **What it is:** `init-roles.sql` only creates `georag_read`, `georag_write`, `georag_audit` (all NOLOGIN). 30+ migrations call `GRANT ... TO georag_app;` and Martin's `martin_ro` role is named in SAD §4.2 + API §7 + DFS §4.1. Neither role is provisioned by any file under `docker/postgresql/` or `database/raw/phase0/`.
-- **Why missed:** Existing `project_init_roles_gap` memory note flagged placement; the deeper gap is **non-existence**. CICD §6.2 init sequence doesn't show where they come from.
-- **Why it matters:** Fresh cluster's `artisan migrate --database=pgsql_migrations` will fail on first GRANT statement.
+- **Location:** `docker/postgresql/init/00-create-app-roles.sql`
+- **Status:** New init script `00-create-app-roles.sql` lands before `init-roles.sql` (numeric prefix ordering) and idempotently creates both `georag_app` (LOGIN INHERIT, granted georag_read + georag_write) and `martin_ro` (LOGIN NOINHERIT). Includes a SUPERUSER/BYPASSRLS guard that fails bootstrap if either role accidentally inherits those flags. Placeholder passwords must be rotated via SOPS before any production deploy.
+- **What it was:** `init-roles.sql` only created `georag_read`, `georag_write`, `georag_audit` (all NOLOGIN). 26 migrations call `GRANT ... TO georag_app;` and Martin's `martin_ro` role was named in SAD §4.2 + API §7 + DFS §4.1 but provisioned by no init file. `database/raw/phase1/10-georag-app-role.sql` defines georag_app but lives outside the postgres auto-init dir.
+- **Why it mattered:** Fresh cluster's `artisan migrate --database=pgsql_migrations` failed on first GRANT statement.
 
 ### C3 — Fusion algorithm (RRF) not documented anywhere
 - **Category:** 7. Retrieval pipeline

@@ -119,12 +119,16 @@ sequenceDiagram
     L-->>U: 202 Accepted
     H->>F: POST /internal/queries (X-Service-Key + JWT)
     F->>F: intent classifier (1 of 8) + LangGraph route
+    F->>F: multi-query expansion (3 variants — flag MULTI_QUERY_EXPANSION_ENABLED)
+    F->>F: multi-project decomposition if 2+ projects (flag MULTI_PROJECT_DECOMPOSITION_ENABLED)
     F->>P: SET LOCAL app.workspace_id, georag.{project,workspace}_id, statement_timeout
-    F->>Q: hybrid search (dense + sparse, workspace_id filter)
+    F->>Q: hybrid search (dense + sparse, workspace_id filter) fan-out across expansion×decomposition
     F->>P: SQL tool calls (RLS scoped)
     F->>N: KG retrieval (entity expand)
     F->>F: rerank (bge-reranker-base, 8s wait_for)
     F->>V: stream answer (with typed citations)
+    F-->>F: on refusal: citation-first salvage (flag CITATION_FIRST_ENABLED)
+    F-->>F: sentence-grounding verifier (flag SENTENCE_GROUNDING_ENABLED, OFF by default)
     V-->>F: tokens
     F-->>H: SSE
     H->>R: broadcast on query.{queryId} (delta + completed/failed)
@@ -251,7 +255,7 @@ On a fresh cluster: `artisan migrate --database=pgsql_migrations` fails on the f
 | `interpretation` | 4 | `interpretation_notes`, `interpretation_section_lines`, `interpretation_target_zones`, `interpretation_comments` |
 | `targeting` | 10 | `target_recommendations`, `target_scores`, `target_score_factors`, `target_model_versions`, `target_outcomes`, `target_backtests`, `target_review_decisions`, plus auxiliaries |
 | `public_geo` | 21 | SMDI / MINFILE / MRDS feature stores + jurisdiction registry + sources. Global / publish-read |
-| `eval` | 3 | `golden_questions`, `run_results`, `run_summaries` |
+| `eval` | 3 | `golden_questions` (1500+ rows after 2026-06-01 ChatGPT gap import; `question_set` CHECK extended to include `gap_import_single_project` + `gap_import_cross_project`), `run_results`, `run_summaries` |
 | `ops` | 3 | `support_tickets`, `support_ticket_traces`, `support_replay_runs` |
 | `backups` | 1 | `snapshot_runs` |
 | `partman` | 5 | `pg_partman` extension scaffolding (no active partitioned tables — flag §5.2) |

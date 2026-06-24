@@ -62,6 +62,7 @@ from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-p
 from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
 from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
 from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
+from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
 from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
 from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
 from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
@@ -76,6 +77,7 @@ from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
 from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
+from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
 
 
 # Pool → workflow list. Phase 1 Step 4 added `ingest_pdf` to the ingestion
@@ -88,7 +90,7 @@ from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  
 #   ai        : audit_ledger_verify + phase2_smoke + public_geoscience_pull
 #               + external_notification + 7 agent workflows = 11
 POOLS = {
-    "ingestion": [outbox_dispatcher, ingest_pdf, re_ocr_page, ocr_quality_check_wf, tiff_ocr_cluster, tiff_normalize, stale_run_detector, nightly_ingestion_integrity, reliability_metrics_publisher] + INGESTION_AGENT_WORKFLOWS,
+    "ingestion": [outbox_dispatcher, ingest_pdf, re_ocr_page, ocr_quality_check_wf, tiff_ocr_cluster, tiff_normalize, stale_run_detector, nightly_ingestion_integrity, reliability_metrics_publisher, ingest_zip_archive] + INGESTION_AGENT_WORKFLOWS,
     "ai": [
         audit_ledger_verify,
         # Plan §4b Stage 1 follow-up — nightly aggregator of repair-loop
@@ -153,6 +155,12 @@ POOLS = {
         # sync. Runs BGE + SPLADE++ embeddings + upserts to the
         # georag_reports collection.
         embed_pending_passages_wf,
+        # 2026-06-01 Guard 2 — hourly payload-shape audit on georag_chunks.
+        # Catches silent-degrade writers between FastAPI restarts (the
+        # startup healthcheck at app/main.py section 6.5 only fires at
+        # boot). Cheap (~50 scrolls + one audit_ledger row) and pages
+        # within ~5 minutes of any new write producing minimal payloads.
+        qdrant_payload_audit_wf,
         # Contextual retrieval — daily 04:30 UTC, before embed at 05:45 UTC.
         # Generates Qwen3 context headers (contextualized_content) so
         # passage_embedder uses enriched text for better recall.

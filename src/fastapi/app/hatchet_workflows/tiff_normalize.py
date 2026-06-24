@@ -62,6 +62,25 @@ class TiffNormalizeInput(BaseModel):
     )
     actor_id: int | None = Field(default=None, description="public.users.id of uploader.")
 
+    # Defence-in-depth UUID guard on project_id (typed str for downstream
+    # ergonomics). Mirrors IngestPdfInput + IngestZipArchiveInput.
+    # 2026-06-03 audit — see AUDIT_AND_FIX_REPORT.md Theme G.
+    from pydantic import field_validator as _fv
+
+    @_fv("project_id")
+    @classmethod
+    def _validate_project_id_uuid(cls, v: str) -> str:
+        import re as _re
+        if not _re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            v,
+            _re.IGNORECASE,
+        ):
+            raise ValueError(
+                "TiffNormalizeInput.project_id must be a UUID (canonical 8-4-4-4-12 form)."
+            )
+        return v
+
 
 class TiffNormalizeOutput(BaseModel):
     """Workflow output. Captures whether normalise actually ran or was
