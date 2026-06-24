@@ -89,6 +89,17 @@ The two are complementary — PP-OCRv5 for per-crop precision work, PaddleOCR-VL
    - Figure detection recall.
    - Per-page latency.
    - VRAM peak.
+
+   ✅ **Harness landed (2026-06-24):** `services/eval/docparser_shadow.py`.
+   `run_docparser_shadow_pair(pdf)` runs both parsers on one PDF, times each, and
+   builds a `DocparserShadowObservation` (table count + row count, figure count,
+   heading count, text-region count per side). `assess_docparser_shadow(obs)`
+   computes the VL/Docling ratios + per-page latency p95 and recommends
+   `promote` / `hold` / `insufficient_data`: VL must not regress beyond 5% on the
+   value-add signals (table rows, figures, headings) over ≥20 PDFs; latency is
+   reported, not gated. 12 unit tests (parsers mocked — the model never loads).
+   Still pending: serving the PaddleOCR-VL model + running it over the golden
+   corpus (and the VRAM profile) before the step-5 promotion call.
 5. **Promote per-document-class.** Possible cutover heuristic: `paddleocr-vl` for `scanned=true ∨ tables_detected>N`, `docling` otherwise. Or full cutover if the eval shows VL strictly dominates.
 
 ### Phase 2 risks
