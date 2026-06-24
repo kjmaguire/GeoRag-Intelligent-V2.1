@@ -61,6 +61,7 @@ string import RERANKER_VERSION directly without loading the model.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -101,6 +102,45 @@ RERANKER_TOP_K_DEFAULT = 20
 # ---------------------------------------------------------------------------
 
 RERANKER_TIMEOUT_S = 2.0
+
+
+# ---------------------------------------------------------------------------
+# Shared reranker sidecar (2026-06-24)
+# ---------------------------------------------------------------------------
+# Each uvicorn worker used to load its OWN CrossEncoder copy (6 workers → 6×
+# ~1-1.5 GiB → OOM-killed the container under the 10 GiB limit). When
+# RERANKER_SERVICE_URL is set, get_reranker_or_none() instead returns a thin
+# HTTP proxy to the dedicated single-process `reranker` sidecar that hosts ONE
+# model copy — the workers share it. Unset (the default) keeps the in-process
+# load, so tests and the sidecar itself behave exactly as before.
+RERANKER_SERVICE_URL = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
+# Outer budget for the sidecar HTTP round-trip. Generous on purpose: the
+# orchestrator already wraps the predict() call in its own RERANKER_TIMEOUT_S
+# wait_for, so that fires first and this only guards a wedged sidecar.
+RERANKER_SERVICE_TIMEOUT_S = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
+
+
+class _RemoteReranker:
+    """HTTP proxy with the only CrossEncoder method callers use: ``predict``.
+
+    Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` by
+    POSTing the pairs to the reranker sidecar. Kept deliberately minimal so it
+    is a drop-in for ``get_reranker_or_none()`` consumers (orchestrator +
+    eval Layer 5). A wedged/absent sidecar raises here; callers already treat a
+    reranker failure as a soft-degrade to RRF order (spec B6 fallback).
+    """
+
+    def __init__(self, base_url: str, timeout_s: float) -> None:
+        self._url = base_url.rstrip("/") + "/rerank"
+        self._timeout_s = timeout_s
+
+    def predict(self, pairs: "list[tuple[str, str]]") -> list[float]:
+        import httpx  # noqa: PLC0415
+
+        payload = {"pairs": [[str(q), str(p)] for q, p in pairs]}
+        resp = httpx.post(self._url, json=payload, timeout=self._timeout_s)
+        resp.raise_for_status()
+        return [float(s) for s in resp.json()["scores"]]
 
 
 @lru_cache(maxsize=1)
@@ -171,12 +211,20 @@ def _get_reranker() -> "CrossEncoder":
     return model
 
 
-def get_reranker_or_none() -> "CrossEncoder | None":
-    """Return the singleton reranker, or None if it failed to load.
+def get_reranker_or_none() -> "CrossEncoder | _RemoteReranker | None":
+    """Return the reranker (local singleton, remote proxy, or None).
 
-    This wrapper catches all exceptions so callers can handle the absent-
-    reranker path (RRF order fallback) without try/except boilerplate.
+    When RERANKER_SERVICE_URL is set, returns an HTTP proxy to the shared
+    `reranker` sidecar — no local model is loaded in this process. Otherwise
+    loads the in-process CrossEncoder singleton. All exceptions are caught so
+    callers can handle the absent-reranker path (RRF order fallback) without
+    try/except boilerplate. Env is read fresh each call so it stays
+    monkeypatchable in tests.
     """
+    service_url = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
+    if service_url:
+        timeout_s = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
+        return _RemoteReranker(service_url, timeout_s)
     try:
         return _get_reranker()
     except Exception:

@@ -928,6 +928,11 @@ services:
       # instead. Used for A/B benches comparing fine-tuned candidates
       # against the stock baseline without rebuilding the image.
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # 2026-06-24 — share ONE reranker model via the `reranker` sidecar
+      # instead of each of the 6 uvicorn workers loading its own CrossEncoder
+      # copy (that was the OOM driver). app/services/reranker.py returns an
+      # HTTP proxy when this is set. Unset to fall back to per-worker load.
+      RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
       # ADR-0008 — embedding model path. Default = stock BAAI/bge-small-en-v1.5.
       # Set to /app/models/bge-small-domain-ft after promoting the domain FT model.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
@@ -1164,6 +1169,63 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # RERANKER SIDECAR — single shared cross-encoder (2026-06-24)
+  # Hosts ONE bge-reranker-base copy so the 6 fastapi uvicorn workers don't each
+  # load their own (the OOM driver — see the fastapi memory-limit comment). The
+  # workers reach it via RERANKER_SERVICE_URL; app/reranker_service.py is the
+  # app. Reuses the fastapi image + the shared fastapi_hf_cache volume so the
+  # model isn't re-downloaded. Fail-soft: if this is down, the orchestrator
+  # degrades to RRF order, so fastapi does NOT hard-depend on it.
+  # ---------------------------------------------------------------------------
+  reranker:
+    image: georag/fastapi:latest
+    container_name: georag-reranker
+    restart: unless-stopped
+    command: >
+      uvicorn app.reranker_service:app
+        --host 0.0.0.0
+        --port 8000
+        --workers ${RERANKER_WORKERS:-1}
+        --no-access-log
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      OMP_NUM_THREADS: "10"
+      TOKENIZERS_PARALLELISM: "false"
+      # Honour the same LoRA-candidate override as fastapi for A/B parity.
+      RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # IMPORTANT: do NOT set RERANKER_SERVICE_URL here — this service IS the
+      # model host; setting it would make the sidecar proxy to itself.
+    user: "33:33"
+    volumes:
+      - ./src/fastapi:/app:cached
+      - fastapi_hf_cache:/tmp/hf_cache
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 15s
+    shm_size: 512m
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 3g
+        reservations:
+          memory: 1g
     profiles: ["dev-data", "dev-full"]
 
   # ===========================================================================
