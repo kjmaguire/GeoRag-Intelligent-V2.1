@@ -6,6 +6,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -32,6 +33,38 @@ class CitationFeedbackController extends Controller
             'verdict' => ['required', 'in:wrong,right,partial'],
             'reason' => ['nullable', 'string', 'max:2000'],
         ]);
+
+        // Tenancy gate (Theme H extension — 2026-06-03 audit pass 6).
+        //
+        // Without this check, the controller forwarded a payload-supplied
+        // workspace_id to FastAPI which writes to silver.source_trust_features
+        // tagged with that workspace_id. An attacker could:
+        //   1. POST verdict=wrong with workspace_id=<other tenant>, any
+        //      answer_run_id/citation_item_id of theirs.
+        //   2. The trust-score aggregator would later down-weight cited
+        //      documents IN THAT OTHER TENANT based on the planted vote.
+        // This is a cross-tenant feedback-poisoning vector.
+        //
+        // Resolve the answer_run's true project_id from the DB and verify
+        // the user has access. Also confirm the claimed workspace_id
+        // matches the answer_run's actual workspace (no cross-stitching).
+        $answerRun = DB::table('silver.answer_runs')
+            ->where('answer_run_id', $payload['answer_run_id'])
+            ->select('project_id', 'workspace_id')
+            ->first();
+        if ($answerRun === null
+            || $answerRun->project_id === null
+            || ! $user->hasProjectAccess((string) $answerRun->project_id)
+        ) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+        if ((string) $answerRun->workspace_id !== $payload['workspace_id']) {
+            // Payload's workspace_id doesn't match the answer_run's
+            // actual workspace — refuse rather than write a row with
+            // a mis-stitched tenant tag.
+            return response()->json(['error' => 'workspace_mismatch'], 422);
+        }
+
         $payload['submitted_by_user_id'] = $user->id;
 
         $serviceKey = config('services.fastapi.service_key');
@@ -58,8 +91,8 @@ class CitationFeedbackController extends Controller
         if (! $response->ok()) {
             return response()->json(
                 ['error' => 'fastapi returned non-2xx',
-                 'fastapi_status' => $response->status(),
-                 'fastapi_body' => $response->json()],
+                    'fastapi_status' => $response->status(),
+                    'fastapi_body' => $response->json()],
                 502,
             );
         }
