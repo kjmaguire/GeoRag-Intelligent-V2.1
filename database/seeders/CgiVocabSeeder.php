@@ -148,10 +148,13 @@ class CgiVocabSeeder extends Seeder
      *
      * Returns [inserted_count, updated_count].
      *
-     * The seeder sets georag.workspace_id GUC inside a single transaction
-     * so RLS lets the INSERTs through. Uses ON CONFLICT DO UPDATE to
-     * keep the seeder idempotent — rerunning bumps updated_at on
-     * existing rows without duplicating.
+     * The seeder sets the canonical app.workspace_id GUC inside a single
+     * transaction so RLS lets the INSERTs through. (Previously set the
+     * legacy georag.workspace_id GUC which the May-29 sweep migrated
+     * away from — silver.entity_aliases policies now read app.workspace_id
+     * only, so the legacy GUC was a silent fail-closed.) Uses ON CONFLICT
+     * DO UPDATE to keep the seeder idempotent — rerunning bumps
+     * updated_at on existing rows without duplicating.
      *
      * @param list<array{_meta: array<string, mixed>, entries: list<array{canonical: string, uri: string|null, aliases: list<string>}>}> $vocabs
      *
@@ -163,7 +166,7 @@ class CgiVocabSeeder extends Seeder
         $updated = 0;
 
         DB::transaction(function () use ($workspaceId, $vocabs, &$inserted, &$updated): void {
-            DB::statement("SELECT set_config('georag.workspace_id', ?, true)", [$workspaceId]);
+            DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
 
             foreach ($vocabs as $vocab) {
                 $entityType = (string) $vocab['_meta']['entity_type'];
