@@ -874,6 +874,15 @@ services:
     image: georag/fastapi:latest
     container_name: georag-fastapi
     restart: unless-stopped
+    # 2026-06-24: bump /dev/shm from Docker's 64 MB default. The §04p PDF
+    # services (render/extract/layout) open ProcessPoolExecutors whose SemLocks
+    # live in /dev/shm, and library process pools (loky/joblib via
+    # sentence-transformers etc.) leak `sem.loky-*` semaphores there over long
+    # uptimes. At 64 MB they fill /dev/shm and new pools fail with
+    # `OSError: [Errno 28] No space left on device`, 503-ing /pdf/* and marking
+    # the container unhealthy. 1 GB matches the precedent set elsewhere in this
+    # file. (The loky leak itself is a separate, deeper fix.)
+    shm_size: 1gb
     # 2026-05-22: explicit command — `docker commit` from the worker
     # container baked the worker CMD into georag/fastapi:latest, so this
     # service was accidentally running the Hatchet worker instead of
