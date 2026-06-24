@@ -23,7 +23,21 @@ log = logging.getLogger("georag.hatchet.score_answer_quality")
 
 
 class ScoreAnswerQualityInput(BaseModel):
-    workspace_id: str = Field(default="a0000000-0000-0000-0000-000000000001")
+    """Input for the daily 06:00 UTC quality-scoring cron.
+
+    `workspace_id` defaults to None which means "all workspaces" —
+    every unscored row across the cluster. The previous default
+    (hardcoded `a0000000-...001` default-tenant UUID) silently
+    excluded every non-default tenant from scoring, so any non-
+    default workspace's `audit.query_audit_log` rows accumulated
+    forever with `faithfulness_score IS NULL`. 2026-06-03 audit
+    pass — see AUDIT_AND_FIX_REPORT.md Theme H spinoffs.
+
+    When invoked manually with an explicit workspace_id, scopes to
+    that workspace.
+    """
+
+    workspace_id: str | None = Field(default=None)
     batch_size: int = Field(default=20)
     max_age_hours: int = Field(default=24)
 
@@ -60,22 +74,41 @@ async def run(
     errors: list[str] = []
 
     try:
-        rows = await conn.fetch(
-            """
-            SELECT audit_id::text,
-                   sources_used
-            FROM audit.query_audit_log
-            WHERE faithfulness_score IS NULL
-              AND sources_used IS NOT NULL
-              AND workspace_id = $1::uuid
-              AND created_at > NOW() - ($2 || ' hours')::interval
-            ORDER BY created_at DESC
-            LIMIT $3
-            """,
-            input.workspace_id,
-            str(input.max_age_hours),
-            input.batch_size,
-        )
+        # workspace_id is optional — None means "all workspaces".
+        # When set, scoped to a single workspace (manual reruns,
+        # backfills). Conditional WHERE keeps the index path tight.
+        if input.workspace_id is None:
+            rows = await conn.fetch(
+                """
+                SELECT audit_id::text,
+                       sources_used
+                FROM audit.query_audit_log
+                WHERE faithfulness_score IS NULL
+                  AND sources_used IS NOT NULL
+                  AND created_at > NOW() - ($1 || ' hours')::interval
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                str(input.max_age_hours),
+                input.batch_size,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT audit_id::text,
+                       sources_used
+                FROM audit.query_audit_log
+                WHERE faithfulness_score IS NULL
+                  AND sources_used IS NOT NULL
+                  AND workspace_id = $1::uuid
+                  AND created_at > NOW() - ($2 || ' hours')::interval
+                ORDER BY created_at DESC
+                LIMIT $3
+                """,
+                input.workspace_id,
+                str(input.max_age_hours),
+                input.batch_size,
+            )
         log.info("score_answer_quality.start rows=%d", len(rows))
 
         for row in rows:
