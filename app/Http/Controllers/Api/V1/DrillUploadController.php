@@ -9,6 +9,7 @@ use App\Models\Project;
 use App\Services\Dagster\DagsterGraphQLClient;
 use App\Services\Dagster\DrillAssetSelector;
 use App\Services\FastApiJwtMinter;
+use App\Services\Ingestion\HatchetDispatchThrottle;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -271,6 +272,12 @@ class DrillUploadController extends Controller
                 $projectId,
                 [],
             );
+
+            // Same per-workspace throttle as UploadController. The
+            // drill-upload path can also burst (operators uploading a
+            // folder of well reports), so it shares the cancellation
+            // vulnerability described in [[cameco-recovery-2026-06-02]].
+            app(HatchetDispatchThrottle::class)->wait($workspaceId);
 
             $resp = Http::withHeaders([
                 'X-Service-Key' => $serviceKey,

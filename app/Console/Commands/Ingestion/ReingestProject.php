@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
-#[Signature('ingest:reingest-project {projectId : silver.projects.project_id (uuid)} {--dry-run : list actions without modifying anything} {--missing-only : skip files already in silver.reports; do NOT delete existing rows or Qdrant points; useful when some workflows got cancelled by Hatchet concurrency} {--throttle-ms=2000 : sleep this long between trigger calls to avoid Hatchet GROUP_ROUND_ROBIN cancellations} {--qdrant-collection=georag_reports} {--qdrant-host=qdrant} {--qdrant-port=6333} {--actor-id=0}')]
+#[Signature('ingest:reingest-project {projectId : silver.projects.project_id (uuid)} {--dry-run : list actions without modifying anything} {--missing-only : skip files already in silver.reports; do NOT delete existing rows or Qdrant points; useful when some workflows got cancelled by Hatchet concurrency} {--keys-file= : path to a JSON file containing an array of objects with a "minio_key" field; only those keys are re-triggered (intersected with what is actually in S3). Composes with --missing-only.} {--throttle-ms=2000 : sleep this long between trigger calls to avoid Hatchet GROUP_ROUND_ROBIN cancellations} {--qdrant-collection= : Qdrant collection to wipe on a destructive (non --missing-only) run. Defaults to the canonical collection per ADR-0010: georag_chunks when RETRIEVAL_USE_DOCUMENT_PASSAGES is true, else the legacy georag_reports.} {--qdrant-host=qdrant} {--qdrant-port=6333} {--actor-id=0}')]
 #[Description('Re-ingest every PDF currently sitting in bronze (S3) under reports/{projectId}/. Deletes existing silver.reports rows for the project (cascades to document_passages) and the corresponding Qdrant points, then fires ingest_pdf Hatchet workflows for each S3 object so the new chunker reprocesses them end-to-end.')]
 class ReingestProject extends Command
 {
@@ -28,8 +28,25 @@ class ReingestProject extends Command
 
         $dryRun = (bool) $this->option('dry-run');
         $missingOnly = (bool) $this->option('missing-only');
+        // --keys-file always runs in additive (missing-only) mode. Recovery
+        // is by definition a "re-trigger this specific subset"; we never
+        // want the destructive delete-all branch to fire when the operator
+        // is hand-feeding a recovery manifest.
+        if ($this->option('keys-file') && ! $missingOnly) {
+            $this->warn('--keys-file: forcing --missing-only (recovery is always additive).');
+            $missingOnly = true;
+        }
         $throttleMs = max(0, (int) $this->option('throttle-ms'));
-        $collection = (string) $this->option('qdrant-collection');
+        // ADR-0010: canonical RAG collection is georag_chunks (document
+        // passages). The legacy georag_reports collection is only
+        // retained for the report-level path that predates the cutover.
+        // Default tracks the same env flag FastAPI reads
+        // (RETRIEVAL_USE_DOCUMENT_PASSAGES) so a destructive re-ingest
+        // wipes whatever Qdrant collection retrieval is actually serving.
+        $collectionOpt = $this->option('qdrant-collection');
+        $collection = $collectionOpt !== null && $collectionOpt !== ''
+            ? (string) $collectionOpt
+            : ($this->canonicalQdrantCollection());
         $qdrantHost = (string) $this->option('qdrant-host');
         $qdrantPort = (int) $this->option('qdrant-port');
         $actorId = (int) $this->option('actor-id');
@@ -52,6 +69,42 @@ class ReingestProject extends Command
             return self::SUCCESS;
         }
         $this->info('Found '.count($keys).' S3 objects to re-ingest.');
+
+        // --keys-file: targeted recovery mode. Restrict $keys to only those
+        // minio_keys present in the JSON file. Used to recover a specific
+        // batch of files that got CANCELLED by Hatchet concurrency without
+        // re-triggering every PDF under reports/{projectId}/.
+        //
+        // File shape: [{"minio_key":"reports/<uuid>/...pdf", ...}, ...]
+        // Extra keys per entry are ignored.
+        $keysFile = $this->option('keys-file');
+        if ($keysFile) {
+            try {
+                $wanted = $this->loadWantedKeys($keysFile);
+            } catch (\InvalidArgumentException $e) {
+                $this->error($e->getMessage());
+
+                return self::INVALID;
+            }
+            $wantedCount = count($wanted);
+            $before = count($keys);
+            $keys = array_values(array_filter(
+                $keys,
+                fn (string $k): bool => isset($wanted[$k]),
+            ));
+            $missingInS3 = $wantedCount - count($keys);
+            $this->info(
+                '--keys-file: '.count($keys).'/'.$wantedCount.' wanted keys found in S3'
+                    .' (filtered from '.$before.' total S3 objects'
+                    .($missingInS3 > 0 ? ", {$missingInS3} wanted keys NOT in S3" : '')
+                    .').',
+            );
+            if (empty($keys)) {
+                $this->warn('None of the requested keys are present in S3 — nothing to re-ingest.');
+
+                return self::SUCCESS;
+            }
+        }
 
         $existingReports = DB::table('silver.reports')
             ->where('project_id', $projectId)
@@ -167,6 +220,83 @@ class ReingestProject extends Command
         $this->line('  docker logs -f georag-hatchet-worker-ingestion');
 
         return $failed === 0 ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Resolve the default Qdrant collection per ADR-0010.
+     *
+     * The FastAPI side reads `RETRIEVAL_USE_DOCUMENT_PASSAGES` (defaults
+     * to true in `src/fastapi/app/config.py`). When that flag is true,
+     * retrieval serves `georag_chunks`; otherwise it serves the legacy
+     * `georag_reports`. A destructive re-ingest should wipe whatever
+     * collection retrieval actually reads from.
+     *
+     * Mirrors the FastAPI flag semantics: any of 1/true/on/yes (case
+     * insensitive) counts as true. Unset → defaults to true (matches the
+     * Pydantic Settings default).
+     */
+    protected function canonicalQdrantCollection(): string
+    {
+        $raw = env('RETRIEVAL_USE_DOCUMENT_PASSAGES');
+        if ($raw === null || $raw === '') {
+            return 'georag_chunks';
+        }
+        $useChunks = in_array(
+            strtolower((string) $raw),
+            ['1', 'true', 'on', 'yes'],
+            true,
+        );
+
+        return $useChunks ? 'georag_chunks' : 'georag_reports';
+    }
+
+    /**
+     * Parse a --keys-file manifest into a set of wanted minio_keys.
+     *
+     * The manifest is a JSON array of objects; each object must carry a
+     * non-empty string `minio_key` field. Extra fields are ignored.
+     * Duplicates collapse via the array-as-set return shape.
+     *
+     * @return array<string, true> map of minio_key => true (set semantics)
+     *
+     * @throws \InvalidArgumentException with an operator-readable reason
+     */
+    protected function loadWantedKeys(string $path): array
+    {
+        if (! is_file($path)) {
+            throw new \InvalidArgumentException("--keys-file not found: {$path}");
+        }
+        $raw = file_get_contents($path);
+        try {
+            $entries = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new \InvalidArgumentException(
+                "--keys-file is not valid JSON: {$e->getMessage()}",
+            );
+        }
+        // Require an actual JSON array (not an object). `array_is_list`
+        // returns false on associative arrays like {"minio_key": "x"};
+        // catching that explicitly produces a clearer operator message
+        // than letting it fall through to "no minio_key entries".
+        if (! is_array($entries) || ! array_is_list($entries)) {
+            throw new \InvalidArgumentException(
+                '--keys-file must contain a JSON array of objects.',
+            );
+        }
+        /** @var array<string, true> $wanted */
+        $wanted = [];
+        foreach ($entries as $e) {
+            if (is_array($e) && ! empty($e['minio_key']) && is_string($e['minio_key'])) {
+                $wanted[$e['minio_key']] = true;
+            }
+        }
+        if ($wanted === []) {
+            throw new \InvalidArgumentException(
+                '--keys-file contained no minio_key entries.',
+            );
+        }
+
+        return $wanted;
     }
 
     /**
