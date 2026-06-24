@@ -223,22 +223,43 @@ async def _call_openai_compatible_llm(
     enable_thinking: bool = bool(
         os.getenv("ENABLE_THINKING_FREE_TEXT_DEFAULT", "false").lower() == "true"
     ),
-    # MoE review (2026-05-08): structured-output discipline. When the caller
-    # needs JSON (citation-span resolver, tool-call payloads, classifier
-    # escalation), pass `response_format="json"`. Effects on the Ollama path:
-    #   1. `format: "json"` is set on the request payload — Ollama constrains
-    #      decoding to valid JSON.
+    # Structured-output discipline. When the caller needs JSON (citation-span
+    # resolver, tool-call payloads, classifier escalation, atomic-claim
+    # extractor, multi-query expansion, etc.), pass `response_format="json"`.
+    # Effects on the vLLM path:
+    #   1. `response_format: {"type": "json_object"}` is set — vLLM's xgrammar
+    #      backend (launch-default since v0.21) constrains decoding to valid
+    #      JSON. The model can still emit ANY valid JSON shape.
     #   2. `presence_penalty` switches to QWEN3_PRESENCE_PENALTY_STRUCTURED
     #      (0.0 by default) instead of QWEN3_PRESENCE_PENALTY_NO_THINK (1.5).
     #      The high penalty is correct for free-text (mitigates Qwen3
-    #      repetition loops) but hurts JSON because every closing brace,
-    #      every repeated field name, gets penalised.
-    # On the vLLM path `format: "json"` is harmless (vLLM ignores unknown
-    # keys); structured output there is enforced via JSON-Schema guided
-    # decoding when caller passes the schema separately.
+    #      repetition loops) but hurts JSON — every closing brace and every
+    #      repeated field name gets penalised.
     response_format: str | None = None,
+    # Schema-constrained decoding. When set, the caller's JSON Schema is
+    # forwarded to vLLM as `guided_json` (vLLM's OpenAI extension, served by
+    # xgrammar). The engine refuses to emit any token that would invalidate
+    # the schema, eliminating the validator-retry loop that
+    # `response_format="json"` alone leaves in place. Pair with
+    # `response_format="json"` to also get the structured presence_penalty.
+    #
+    # Wire shape: top-level `guided_json: <schema>` on the request body —
+    # vLLM's OpenAI-compat endpoint accepts the field directly (no
+    # `extra_body` wrapper needed; that's an OpenAI-SDK convention we bypass
+    # by talking to the endpoint over raw httpx).
+    #
+    # Anthropic path: this parameter is currently ignored (the Anthropic
+    # branch enforces JSON via Claude's native prompt-cache + tool-use
+    # forcing). Forwarded by the dispatcher for symmetry.
+    guided_json: dict[str, Any] | None = None,
 ) -> str:
-    """Call the OpenAI-compatible /v1/chat/completions endpoint (Ollama/vLLM).
+    """Call the OpenAI-compatible /v1/chat/completions endpoint (vLLM).
+
+    Historical note: this helper also drove an Ollama backend prior to the
+    2026-05-17 cutover. Post-cutover vLLM is the only local-LLM backend;
+    the OpenAI-compatible wire shape is preserved so a non-vLLM endpoint
+    (LiteLLM proxy, vLLM-equivalent fork) can be substituted at the URL
+    layer without code changes.
 
     Prompt structure (R15):
       - `system` role: static system prompt + per-project preamble. This is
@@ -249,8 +270,6 @@ async def _call_openai_compatible_llm(
         it off into a separate message maximises cache locality and lifts
         first-token latency substantially on the second+ query in a session.
       - `user` role: per-turn CONTEXT + USER QUESTION.
-    Ollama accepts the same two-message shape; it doesn't run the vLLM
-    prefix cache but the structural split doesn't hurt.
 
     `base_url` and `model` (R12): override the settings-derived target so
     the Anthropic→local-vLLM failover path can hit a specific endpoint
@@ -261,22 +280,21 @@ async def _call_openai_compatible_llm(
     handshake + warmup per call. When None we fall back to ad-hoc
     construction so tests and pre-pool deploys keep working.
 
-    Streaming (Ollama review #2 / parity with P0 #5)
-    ------------------------------------------------
+    Streaming
+    ---------
     When `token_callback` is supplied we set `stream: true` on the request
-    and parse the NDJSON event stream that Ollama emits, forwarding each
-    chunk's `delta.content` to the callback. The previous behaviour
-    (`stream: false` regardless) meant time-to-first-token equalled the
-    full generation time on every request — the SSE layer had to
-    word-split the final text and emit fake deltas. With real streaming,
-    `FIRST_TOKEN_LATENCY{backend="ollama"}` becomes an honest measure of
+    and parse the SSE event stream, forwarding each chunk's `delta.content`
+    to the callback. The previous blocking behaviour meant
+    time-to-first-token equalled the full generation time on every request;
+    real streaming makes FIRST_TOKEN_LATENCY an honest measure of
     user-perceived latency.
 
-    Token cap (Ollama review #5)
-    ----------------------------
-    `num_predict = settings.LLM_MAX_OUTPUT_TOKENS` is set inside the
-    `options` block so a small model that gets stuck in a repetition
-    loop can't generate forever and burn the FastAPI 8 s deadline.
+    Token cap
+    ---------
+    `max_tokens = settings.LLM_MAX_OUTPUT_TOKENS` caps generation so a
+    model that gets stuck in a repetition loop can't burn the FastAPI 8 s
+    deadline. Dynamically reduced when `prompt_tokens + max_tokens` would
+    exceed `VLLM_MAX_MODEL_LEN` (see the cap block below).
     """
     static_prompt = system_prompt or _default_system_prompt()
     # Concatenate the three stable blocks in the same order as the
@@ -344,28 +362,22 @@ async def _call_openai_compatible_llm(
             max_output = _room_for_output
 
     # Qwen3 sampling defaults (per Qwen team's published recommendations).
-    # Sent in `options` since they're Ollama-specific knobs; the OpenAI-compat
-    # shim translates top-level → options.* internally only for a fixed set,
-    # and presence_penalty/min_p/top_k aren't part of that translation.
+    # vLLM extends the OpenAI-compatible API to accept top_p / top_k / min_p /
+    # presence_penalty as top-level fields — we forward them directly.
     qwen3_top_p = float(getattr(settings, "QWEN3_TOP_P", 0.8))
     qwen3_top_k = int(getattr(settings, "QWEN3_TOP_K", 20))
     qwen3_min_p = float(getattr(settings, "QWEN3_MIN_P", 0.0))
     qwen3_no_think_presence = float(
         getattr(settings, "QWEN3_PRESENCE_PENALTY_NO_THINK", 1.5)
     )
-    # MoE review (2026-05-08, item #5): separate presence_penalty for
-    # JSON / structured paths so the high free-text value doesn't break
-    # schema compliance.
+    # Separate presence_penalty for JSON / structured paths so the high
+    # free-text value (mitigates Qwen3 repetition loops) doesn't break
+    # schema compliance — every closing brace and repeated field name
+    # would otherwise get penalised.
     qwen3_structured_presence = float(
         getattr(settings, "QWEN3_PRESENCE_PENALTY_STRUCTURED", 0.0)
     )
     structured_output = (response_format or "").lower() == "json"
-    # MoE review (2026-05-08, item #8): num_thread for the CPU-offloaded
-    # experts. 0 means "Ollama default" (min(physical_cores, 8)). Set
-    # QWEN3_NUM_THREAD to a positive int on workstations with >8 cores
-    # to widen CPU compute on the offloaded path. Ignored when nothing
-    # offloads.
-    qwen3_num_thread = int(getattr(settings, "QWEN3_NUM_THREAD", 0) or 0)
 
     request_payload: dict[str, Any] = {
         "model": effective_model,
@@ -390,12 +402,14 @@ async def _call_openai_compatible_llm(
     elif not enable_thinking:
         request_payload["presence_penalty"] = qwen3_no_think_presence
 
-    # vLLM JSON mode uses the OpenAI-compat-standard `response_format`
-    # field. For schema-constrained decoding (rather than just "JSON-shaped"),
-    # callers can pass an `extra_body={"guided_json": <schema>}` through a
-    # follow-up patch.
+    # vLLM JSON mode uses the OpenAI-compat-standard `response_format` field
+    # for "any valid JSON" decoding. For schema-CONSTRAINED decoding the
+    # caller passes a `guided_json` dict (see kwarg docstring); we forward
+    # it as a top-level field per vLLM's OpenAI-compat extension.
     if structured_output:
         request_payload["response_format"] = {"type": "json_object"}
+    if guided_json is not None:
+        request_payload["guided_json"] = guided_json
 
     # Qwen3 chat-template thinking control (Phase 5 follow-up, 2026-05-19).
     # Prior comment claimed vLLM "produces normal output without an explicit
@@ -451,7 +465,7 @@ async def _call_openai_compatible_llm(
         return response.json()
 
     async def _do_streaming_call(client: httpx.AsyncClient) -> dict:
-        """NDJSON streaming path. Yields each delta to `token_callback`
+        """SSE streaming path. Yields each delta to `token_callback`
         and re-assembles the final usage block + completion text."""
         text_parts: list[str] = []
         usage: dict[str, Any] = {}
@@ -464,9 +478,10 @@ async def _call_openai_compatible_llm(
             async for line in resp.aiter_lines():
                 if not line:
                     continue
-                # OpenAI-compat shim sends `data: {...}` SSE-style lines
-                # AND a final `data: [DONE]` sentinel. Ollama's native
-                # endpoint sends raw NDJSON — handle both.
+                # vLLM emits standard OpenAI SSE: `data: {...}` lines and a
+                # final `data: [DONE]` sentinel. The `data: ` prefix strip
+                # also covers any non-vLLM OpenAI-compat endpoint that
+                # substitutes here.
                 if line.startswith("data: "):
                     line = line[len("data: "):]
                 if line.strip() == "[DONE]":
@@ -498,8 +513,8 @@ async def _call_openai_compatible_llm(
                             )
 
                 # Usage block lives on the final chunk in OpenAI-compat
-                # mode and on every chunk in Ollama-native mode — keep
-                # the latest non-empty seen.
+                # mode — keep the latest non-empty seen so a vLLM build
+                # that emits usage progressively still works.
                 u = chunk.get("usage")
                 if u:
                     usage = u
@@ -518,7 +533,16 @@ async def _call_openai_compatible_llm(
         else:
             data = await _do_blocking_call(http_client)
     else:
-        async with httpx.AsyncClient(timeout=settings.TIMEOUT_GATHER_S) as client:
+        # Ad-hoc fallback (tests, pre-pool startup). Mirror the split-timeout
+        # shape used by the pooled client in lifespan so a vLLM-down condition
+        # surfaces fast even on this code path.
+        _adhoc_timeout = httpx.Timeout(
+            connect=5.0,
+            read=settings.TIMEOUT_GATHER_S,
+            write=5.0,
+            pool=5.0,
+        )
+        async with httpx.AsyncClient(timeout=_adhoc_timeout) as client:
             if stream_enabled:
                 data = await _do_streaming_call(client)
             else:
@@ -551,12 +575,12 @@ async def _call_openai_compatible_llm(
         except ImportError:
             pass
 
-    # TOOL-CALL-01 fix 2026-04-21 — empty-content guard (change c).
-    # When Ollama returns empty `content` but non-empty `reasoning`, the thinking
-    # budget was exhausted before the model could write any answer text. This is
-    # RC-C2: budget exhaustion. Log a structured warning and return a safe fallback
-    # so downstream citation/response assembly has something to work with — empty
-    # content propagates poorly (triggers sentinel citations, retry loops, etc.).
+    # Empty-content guard (TOOL-CALL-01, 2026-04-21).
+    # When the model returns empty `content` but non-empty `reasoning`, the
+    # thinking budget was exhausted before any answer text was emitted. Log
+    # a structured warning and return a safe fallback so downstream
+    # citation/response assembly has something to work with — empty content
+    # propagates poorly (triggers sentinel citations, retry loops, etc.).
     # The fallback text is user-visible only when every retry also fails.
     raw_content = data["choices"][0]["message"]["content"]
     content = (raw_content or "").strip()
@@ -585,8 +609,9 @@ async def _call_openai_compatible_llm(
                 len(stripped),
             )
             content = stripped or content  # never empty the answer
-    # `reasoning` is in the top-level message for Ollama's OpenAI-compat shim
-    # (separate from `content`). Not part of the OpenAI spec so we guard carefully.
+    # `reasoning` is a vendor extension some backends place on
+    # message.reasoning (separate from `content`). Not part of the OpenAI
+    # spec so we guard carefully.
     reasoning: str = (
         (data.get("choices") or [{}])[0]
         .get("message", {})
@@ -998,10 +1023,16 @@ async def _call_llm(
     ),
     # MoE review (2026-05-08): when callers need JSON-shaped output, pass
     # response_format="json". Forwarded to the OpenAI-compatible path so
-    # `format: "json"` + structured presence_penalty are applied. The
-    # Anthropic path uses its own response_format mechanism (tools/JSON
-    # mode) and ignores this flag.
+    # `response_format: {"type": "json_object"}` + structured presence_penalty
+    # are applied. The Anthropic path uses its own response_format mechanism
+    # (tools/JSON mode) and ignores this flag.
     response_format: str | None = None,
+    # Schema-constrained decoding on vLLM. When set, vLLM's xgrammar
+    # backend refuses to emit tokens that would violate the schema —
+    # eliminates the validator-retry loop that response_format="json" alone
+    # leaves in place. Forwarded only to the OpenAI-compat path; the
+    # Anthropic branch ignores it.
+    guided_json: dict[str, Any] | None = None,
 ) -> str:
     """Make a single LLM call to summarize the context into a plain English answer.
 
@@ -1074,14 +1105,14 @@ async def _call_llm(
             workspace_id=workspace_id,
             pg_pool=pg_pool,
         )
-    # OpenAI-compatible path. Ollama review #2: token_callback is now
-    # honoured here too — `_call_openai_compatible_llm` flips
-    # `stream: true` and forwards each NDJSON delta through the
-    # callback so first-token latency is the genuine measure on Ollama.
-    # P1 #12: the OpenAI-compat path does not benefit from the
-    # multi-turn cache trick (no published prefix-cache for vLLM/Ollama
-    # via this entry point); we splice CORRECTION inline as a fallback
-    # so retries still convey the validation feedback to the model.
+    # OpenAI-compatible (vLLM) path. token_callback is honoured —
+    # `_call_openai_compatible_llm` flips `stream: true` and forwards each
+    # SSE delta through the callback so first-token latency is the genuine
+    # measure.
+    # P1 #12: the vLLM path does not benefit from the multi-turn cache
+    # trick (vLLM's prefix cache is request-by-request, not multi-turn);
+    # we splice CORRECTION inline as a fallback so retries still convey
+    # the validation feedback to the model.
     if correction_hint:
         user_message = (
             f"{user_message}\n\n"
@@ -1098,6 +1129,7 @@ async def _call_llm(
         token_callback=token_callback,
         enable_thinking=enable_thinking,
         response_format=response_format,
+        guided_json=guided_json,
     )
 
 

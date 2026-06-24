@@ -336,6 +336,22 @@ class GeoRAGResponse(BaseModel):
             "and tool results. Clicking one sends it as a new user query."
         ),
     )
+    # 2026-06-01 — sentence-level grounding report. Optional advisory
+    # output of the NLI-style verifier (see app.services.sentence_grounding).
+    # When SENTENCE_GROUNDING_ENABLED is on, every cited sentence is checked
+    # against its cited chunks and tagged supported / unsupported /
+    # uncited / unverified. Frontend renders a per-sentence "may not be
+    # supported by sources" indicator on unsupported sentences. None when
+    # the verifier is disabled.
+    # Shape: {sentences: [{text, verdict, cited_chunk_ids, rationale}], summary: {verdict: count}, verifier_ran, verifier_error}
+    grounding_report: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Sentence-level grounding verification report. Advisory only — "
+            "answer text is not modified. Renderer surfaces per-sentence "
+            "support badges; None when SENTENCE_GROUNDING_ENABLED is off."
+        ),
+    )
     # Module 6 Phase B Chunk 4a — structured refusal payload (spec B4).
     # Present when citation guards rejected the answer or an LLM / timeout
     # error occurred.  None on successful committed answers.

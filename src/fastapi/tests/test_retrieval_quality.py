@@ -475,8 +475,14 @@ async def test_embedding_model_consistency() -> None:
             # failing. First-time deploys legitimately have gaps.
             continue
         info = await client.get_collection(collection)
-        assert info.config.params.vectors.size == 384, (
-            f"{collection}: expected 384-dim vectors, got {info.config.params.vectors.size}"
+        # Read expected dim from settings so the assertion tracks the live
+        # embedding model. Swapped 2026-06-03 from hard-coded 384 (bge-small)
+        # to settings.EMBEDDING_DIMENSION (1024 for Qwen3-Embedding-0.6B).
+        from app.config import settings as _settings  # noqa: PLC0415
+        _expected = _settings.EMBEDDING_DIMENSION
+        assert info.config.params.vectors.size == _expected, (
+            f"{collection}: expected {_expected}-dim vectors, "
+            f"got {info.config.params.vectors.size}"
         )
 
     await client.close()
