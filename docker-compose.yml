@@ -1142,7 +1142,16 @@ services:
           # existing dense embedding cache (~2.4 GiB idle baseline per Module 2 C4).
           # 4 uvicorn workers × ~500 MB SPLADE = ~2 GiB SPLADE + ~2.4 GiB dense baseline = ~4.4 GiB.
           # 6G provides ~1.6 GiB headroom for concurrent RAG request spikes.
-          memory: 10g
+          # 2026-06-24: bumped 10g → 16g. The service actually runs 6 workers
+          # (UVICORN_WORKERS default), NOT the 4 the comment above assumed, and
+          # each worker lazily loads its OWN copy of the cross-encoder reranker
+          # (bge-reranker-base, CPU) on first query — on top of the dense
+          # embedding + SPLADE caches. A real /internal/queries call drove the
+          # container to the 10g ceiling and it was OOM-killed mid-stream
+          # (OOMKilled=true), dropping the SSE connection. 16g gives the 6×
+          # reranker + caches steady state real headroom. (Deeper fix: load the
+          # reranker once and share it, or drop worker count — separate follow-up.)
+          memory: 16g
         reservations:
           memory: 5g
           # 2026-05-19: GPU passthrough added for in-process LoRA fine-tuning
