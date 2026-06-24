@@ -2977,7 +2977,13 @@ services:
       retries: 3
       start_period: 15s
     stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
+    # 2026-06-24: Promtail→Alloy cutover complete. Grafana Alloy (below) is now
+    # the active log shipper (dev-monitor); it tails the same Laravel logs, so
+    # leaving Promtail in dev-monitor would double-ship every line into Loki.
+    # Parked in a non-active `promtail-legacy` profile: it no longer auto-starts
+    # but stays defined for rollback (`--profile promtail-legacy up -d promtail`,
+    # and stop Alloy). See docs/runbooks/promtail-to-alloy-migration.md.
+    profiles: ["promtail-legacy"]
 
   # ---------------------------------------------------------------------------
   # GRAFANA ALLOY (2026-06-23 sweep) — Promtail successor (Phase 1 scaffold).
