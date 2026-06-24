@@ -562,11 +562,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL_NAME)
     _t0 = time.perf_counter()
     try:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        # Shared embedding sidecar when EMBEDDING_SERVICE_URL is set (one model
+        # for all workers over a localhost hop); else a local CPU model as
+        # before. See app.services.embedding.
+        from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME, device="cpu")
+        embedding_model = get_embedding_model(settings.EMBEDDING_MODEL_NAME)
         # Warm up: encode a dummy string so the first real request does not
-        # pay the JIT/model-init penalty.
+        # pay the JIT/model-init penalty (a no-op round-trip for the sidecar
+        # proxy, which also validates connectivity at startup).
         embedding_model.encode("warm-up", normalize_embeddings=True)
         _elapsed = time.perf_counter() - _t0
         app.state.embedding_model = embedding_model
