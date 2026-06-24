@@ -21,7 +21,13 @@ class Tier3Controller extends Controller
     {
         $user = $request->user();
         $isAdmin = (bool) ($user->is_admin ?? false);
-        $wsId = (string) ($user->workspace_id ?? '');
+        // 2026-06-03 audit: `$user->workspace_id` is null (no column) so
+        // this always defaulted to empty string → the "latest request"
+        // lookup matched nothing and the Inertia page rendered "no
+        // request" even when the user had pending tier3 unlocks in
+        // their actual workspace. Resolve from the user's first project.
+        $wsId = (string) ($user->projects()
+            ->value('silver.projects.workspace_id') ?? '');
 
         $layers = [
             ['layer_id' => 'petroleum_wells', 'label' => 'Petroleum wells', 'jurisdictions' => ['AB', 'BC', 'SK'], 'license' => 'Restricted-attribution', 'row_count_estimate' => '612k wells'],
@@ -65,11 +71,24 @@ class Tier3Controller extends Controller
             'attest_attribution' => 'boolean',
         ]);
 
+        // 2026-06-03 audit: resolve real workspace_id from the user's
+        // first project (User has no workspace_id column, so the
+        // previous `?? all-zeros` fallback always fired, and the row
+        // was effectively invisible — the admin review queue filters
+        // by workspace_id and never matched all-zeros). Refuse the
+        // insert when no real workspace can be resolved rather than
+        // silently writing a row no one will see.
+        $resolvedWorkspaceId = $user->projects()
+            ->value('silver.projects.workspace_id');
+        if ($resolvedWorkspaceId === null) {
+            return back()->with('error', 'Unable to resolve your workspace; tier3 request not submitted.');
+        }
+
         try {
             DB::table('silver.tier3_unlock_requests')->insert([
-                'workspace_id' => $user->workspace_id ?? '00000000-0000-0000-0000-000000000000',
+                'workspace_id' => $resolvedWorkspaceId,
                 'requested_by' => $user->id,
-                'layer_ids' => '{' . implode(',', array_map(fn ($s) => '"' . addslashes((string) $s) . '"', $data['layer_ids'] ?? [])) . '}',
+                'layer_ids' => '{'.implode(',', array_map(fn ($s) => '"'.addslashes((string) $s).'"', $data['layer_ids'] ?? [])).'}',
                 'attest_purpose' => (bool) ($data['attest_purpose'] ?? false),
                 'attest_retention' => (bool) ($data['attest_retention'] ?? false),
                 'attest_attribution' => (bool) ($data['attest_attribution'] ?? false),
@@ -78,7 +97,7 @@ class Tier3Controller extends Controller
                 'updated_at' => now(),
             ]);
         } catch (\Throwable $e) {
-            return back()->with('flash', 'Tier 3 request could not be saved: ' . $e->getMessage());
+            return back()->with('flash', 'Tier 3 request could not be saved: '.$e->getMessage());
         }
 
         return back()->with('flash', 'Tier 3 unlock request recorded (pending admin review).');

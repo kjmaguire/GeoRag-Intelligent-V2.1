@@ -75,7 +75,7 @@ const CATEGORY_EXTS: Record<Category, string[]> = {
     surveys: ['csv'],
     lithology: ['csv'],
     samples: ['csv'],
-    reports: ['pdf'],
+    reports: ['pdf', 'tif', 'tiff'],
     well_logs: ['las'],
     spatial: ['geojson', 'shp', 'zip', 'kmz', 'kml'], // kmz/kml accepted at backend? falls under spatial; backend allows geojson/shp/zip.
     excel: ['xlsx', 'xls'],
@@ -83,12 +83,11 @@ const CATEGORY_EXTS: Record<Category, string[]> = {
     xyz: ['xyz', 'dat', 'txt'],
 };
 
-// Extensions the backend's UploadController will outright reject (raster imagery
-// is not yet wired into the bronze sensor). We still let users queue them so the
-// gap is visible — they're flagged unsupported and skipped on submit.
-const UNSUPPORTED_EXTS = new Set(['tif', 'tiff', 'jpg', 'jpeg', 'png', 'gif', 'bmp']);
+// Extensions the backend's UploadController will outright reject. TIFF scans
+// route through `reports` → tiff_normalize per ADR-0005 and are supported.
+const UNSUPPORTED_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp']);
 
-const MAX_FILE_BYTES = 100 * 1024 * 1024; // matches UploadController validation (100 MB)
+const MAX_FILE_BYTES = 6 * 1024 * 1024 * 1024; // 6 GB — matches UploadController + Octane limits (ZIP archive support)
 
 function extOf(name: string): string {
     return name.split('.').pop()?.toLowerCase() ?? '';
@@ -146,42 +145,47 @@ export default function FoundryNewProject() {
 
     const [queue, setQueue] = useState<QueuedFile[]>([]);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    // Use a ref callback to set webkitdirectory directly on the DOM node —
+    // React JSX doesn't reliably pass non-standard attributes through to the
+    // DOM in all browser/version combinations.
+    const folderInputRef = useCallback((node: HTMLInputElement | null) => {
+        if (node) {
+            (node as any).webkitdirectory = true;
+            (node as any).directory = true; // Edge/IE fallback
+        }
+    }, []);
     const [dragging, setDragging] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
     const [submitProgress, setSubmitProgress] = useState<{ done: number; total: number } | null>(null);
+    const [skipped, setSkipped] = useState<{ names: string[] } | null>(null);
 
     const addFiles = useCallback(async (files: FileList | File[]) => {
         const arr: QueuedFile[] = [];
+        const skippedNames: string[] = [];
         for (const f of Array.from(files)) {
             const ext = extOf(f.name);
-            // Expand .zip client-side so each inner file becomes its own queue entry.
-            // Falls back to uploading the .zip as-is on any extraction failure
-            // (encrypted, corrupt, unsupported format, etc.).
+            // Drop files we can't categorise (unknown extension, raster images,
+            // or 0-byte folder shells dragged in instead of using Select Folder).
+            // Keep ZIPs — they're handled below with their own error message.
+            if (ext !== 'zip' && (autoCategory(ext) === null || f.size === 0)) {
+                skippedNames.push(f.name);
+                continue;
+            }
+            // Large ZIPs can't be extracted in-browser (memory limit).
+            // Queue as a normal file but flag it so the UI shows a tip to use Select Folder.
             if (ext === 'zip') {
-                try {
-                    const zip = await JSZip.loadAsync(f);
-                    const entries = Object.values(zip.files).filter((e) => !e.dir);
-                    for (const entry of entries) {
-                        const innerName = entry.name.split('/').pop() ?? entry.name;
-                        const innerExt = extOf(innerName);
-                        const blob = await entry.async('blob');
-                        const innerFile = new File([blob], innerName, { type: blob.type });
-                        arr.push({
-                            id: newId(),
-                            file: innerFile,
-                            name: innerName,
-                            size: blob.size,
-                            ext: innerExt,
-                            category: autoCategory(innerExt),
-                            status: 'queued',
-                            parentZip: f.name,
-                        });
-                    }
-                    continue;
-                } catch {
-                    // fall through — queue the zip itself
-                }
+                arr.push({
+                    id: newId(),
+                    file: f,
+                    name: f.name,
+                    size: f.size,
+                    ext,
+                    category: 'spatial', // ZIP is valid; spatial is the right bucket
+                    status: 'error',
+                    error: 'Extract this ZIP on your computer first, then use "📁 Select Folder" to load all files at once.',
+                });
+                continue;
             }
             arr.push({
                 id: newId(),
@@ -194,19 +198,78 @@ export default function FoundryNewProject() {
             });
         }
         setQueue((q) => [...q, ...arr]);
+        if (skippedNames.length > 0) {
+            setSkipped({ names: skippedNames });
+        }
     }, []);
 
     const removeFile = (id: string) => setQueue((q) => q.filter((x) => x.id !== id));
     const setCategory = (id: string, cat: Category) =>
         setQueue((q) => q.map((x) => (x.id === id ? { ...x, category: cat } : x)));
 
+    // Recursively walk a dropped directory entry, returning every File inside.
+    // Browser drag-drop exposes folders as 0-byte File objects in
+    // `dataTransfer.files`; the real contents only come out via the
+    // DataTransferItem `webkitGetAsEntry()` API + `directoryReader.readEntries`.
+    // Note: readEntries returns at most 100 entries per call, so we loop until
+    // it returns empty (otherwise large folders silently truncate).
+    const walkEntry = useCallback(async (entry: any): Promise<File[]> => {
+        if (!entry) return [];
+        if (entry.isFile) {
+            return new Promise<File[]>((resolve) => {
+                entry.file(
+                    (f: File) => resolve([f]),
+                    () => resolve([]),
+                );
+            });
+        }
+        if (entry.isDirectory) {
+            const reader = entry.createReader();
+            const out: File[] = [];
+            while (true) {
+                const batch: any[] = await new Promise((resolve) => {
+                    reader.readEntries(
+                        (entries: any[]) => resolve(entries),
+                        () => resolve([]),
+                    );
+                });
+                if (!batch.length) break;
+                for (const child of batch) {
+                    const files = await walkEntry(child);
+                    out.push(...files);
+                }
+            }
+            return out;
+        }
+        return [];
+    }, []);
+
     const onDrop = useCallback(
-        (e: React.DragEvent<HTMLDivElement>) => {
+        async (e: React.DragEvent<HTMLDivElement>) => {
             e.preventDefault();
             setDragging(false);
+            const items = e.dataTransfer?.items;
+            // Prefer the items API when available — it lets us recurse into
+            // dropped folders. Fall back to dataTransfer.files when not.
+            if (items && items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+                const collected: File[] = [];
+                const entries: any[] = [];
+                for (let i = 0; i < items.length; i++) {
+                    const entry = items[i].webkitGetAsEntry?.();
+                    if (entry) entries.push(entry);
+                }
+                for (const entry of entries) {
+                    const files = await walkEntry(entry);
+                    collected.push(...files);
+                }
+                if (collected.length > 0) {
+                    addFiles(collected);
+                    return;
+                }
+            }
             if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
         },
-        [addFiles],
+        [addFiles, walkEntry],
     );
 
     const queueSummary = useMemo(() => {
@@ -394,7 +457,7 @@ export default function FoundryNewProject() {
                                     Per-file cap: 100&nbsp;MB.
                                 </p>
 
-                                {/* Drop zone */}
+                                {/* Drop zone — click opens individual file picker */}
                                 <div
                                     onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
                                     onDragLeave={() => setDragging(false)}
@@ -413,7 +476,7 @@ export default function FoundryNewProject() {
                                         {dragging ? 'Release to add files' : 'Drag files here, or click to browse'}
                                     </div>
                                     <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
-                                        CSV · PDF · LAS · GeoJSON / SHP · KMZ · XLSX · SEG-Y · XYZ · ZIP
+                                        CSV · PDF · LAS · GeoJSON / SHP · KMZ · XLSX · SEG-Y · XYZ
                                     </div>
                                     <input
                                         ref={fileInputRef}
@@ -426,6 +489,26 @@ export default function FoundryNewProject() {
                                         }}
                                     />
                                 </div>
+
+                                {/* Folder picker — completely separate from the drop zone to avoid nested click conflicts */}
+                                <label className="flex items-center justify-center gap-2 rounded-md border cursor-pointer transition-colors px-4 py-3"
+                                    style={{ borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+                                >
+                                    <span className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>📁 Select Folder</span>
+                                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                        — pick a directory, all files load automatically
+                                    </span>
+                                    <input
+                                        ref={folderInputRef}
+                                        type="file"
+                                        multiple
+                                        className="sr-only"
+                                        onChange={(e) => {
+                                            if (e.target.files?.length) addFiles(e.target.files);
+                                            e.target.value = '';
+                                        }}
+                                    />
+                                </label>
 
                                 {/* Cloud URL — stubbed; backend doesn't accept paste-URL yet */}
                                 <div
@@ -443,6 +526,36 @@ export default function FoundryNewProject() {
                                     />
                                     <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>soon</span>
                                 </div>
+
+                                {/* Skipped-file notice (unrecognised extension / 0-byte folder shells) */}
+                                {skipped && skipped.names.length > 0 && (
+                                    <div
+                                        className="flex items-start gap-2 rounded border px-3 py-2 text-[11px]"
+                                        style={{ borderColor: 'var(--warn, oklch(0.78 0.18 75))', color: 'var(--warn, oklch(0.78 0.18 75))', background: 'var(--bg-1)' }}
+                                    >
+                                        <div className="flex-1 min-w-0">
+                                            <div className="font-mono uppercase tracking-wider text-[10px]">
+                                                Skipped {skipped.names.length} file{skipped.names.length === 1 ? '' : 's'} · unrecognised format or empty folder
+                                            </div>
+                                            <div className="truncate" title={skipped.names.join(', ')} style={{ color: 'var(--fg-2)' }}>
+                                                {skipped.names.slice(0, 3).join(', ')}
+                                                {skipped.names.length > 3 && ` … +${skipped.names.length - 3} more`}
+                                            </div>
+                                            <div className="text-[10px]" style={{ color: 'var(--fg-3)' }}>
+                                                Tip: if you dragged a folder, use 📁 Select Folder instead so its contents are enumerated.
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSkipped(null)}
+                                            className="text-[11px] px-2 py-0.5"
+                                            style={{ color: 'var(--fg-3)' }}
+                                            aria-label="Dismiss skipped-files notice"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                )}
 
                                 {/* Queued files */}
                                 {queue.length > 0 && (
@@ -508,7 +621,7 @@ export default function FoundryNewProject() {
                                                             </select>
                                                         )}
                                                         <span className="text-[10px] font-mono uppercase tracking-wider text-center" style={{ color: oversize ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-3)' }}>
-                                                            {oversize ? '>100MB' : ''}
+                                                            {oversize ? '>6GB' : ''}
                                                         </span>
                                                         <button
                                                             type="button"

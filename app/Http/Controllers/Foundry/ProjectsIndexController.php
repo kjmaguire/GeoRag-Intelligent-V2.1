@@ -41,10 +41,19 @@ class ProjectsIndexController extends Controller
             ])
             ->values();
 
+        // Top-level workspace_id for useWorkspaceActivity. See
+        // PortfolioController for the rationale — the
+        // `$user->workspace_id ?? <hardcoded>` fallback always fired
+        // because User has no workspace_id column, and after the
+        // Theme F channel-auth fix that subscription is denied for
+        // any user whose projects aren't in the default tenant.
+        // Derive from the first owned project instead.
+        $resolvedWorkspaceId = $projects->isEmpty()
+            ? null
+            : (string) $projects->first()['workspace_id'];
+
         return Inertia::render('Foundry/Projects', [
-            // Top-level workspace_id for the useWorkspaceActivity Reverb
-            // subscription. Same fallback as Portfolio.
-            'workspace_id' => (string) ($user->workspace_id ?? 'a0000000-0000-0000-0000-000000000001'),
+            'workspace_id' => $resolvedWorkspaceId,
             'projects' => $projects,
             'empty' => $projects->isEmpty(),
         ]);

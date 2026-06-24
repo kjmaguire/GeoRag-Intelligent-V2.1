@@ -35,21 +35,49 @@ class PublicApiController extends Controller
 {
     public function answer(Request $request, string $answerRunId): JsonResponse
     {
+        // Tenancy gate (Theme H — 2026-06-03 audit). Without this check
+        // any authenticated user could fetch any answer_run by id —
+        // query_text + query_class + model_name leak tenant operational
+        // context. Resolve the answer_run's project_id first, then verify
+        // the caller has access. The Laravel-side check is defence-in-depth
+        // — RLS on silver.answer_runs is the durable enforcement, but the
+        // app-layer gate doesn't depend on every read path correctly
+        // setting the app.workspace_id GUC.
+        $user = $request->user();
+        if (! $user) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
         $row = DB::selectOne(
-            "SELECT answer_run_id::text AS id, query_text, query_class, model_name,
+            'SELECT answer_run_id::text AS id, project_id::text AS project_id,
+                    query_text, query_class, model_name,
                     citation_lifecycle_state, partial_resolution_rate,
                     created_at
-               FROM silver.answer_runs WHERE answer_run_id = ?::uuid",
+               FROM silver.answer_runs WHERE answer_run_id = ?::uuid',
             [$answerRunId],
         );
         if (! $row) {
-            return response()->json(['error' => 'answer_run not found'], 404);
+            return response()->json(['error' => 'not_found'], 404);
         }
+        if ($row->project_id === null || ! $user->hasProjectAccess($row->project_id)) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+
         return response()->json($row);
     }
 
     public function mapLayers(Request $request, string $projectId): JsonResponse
     {
+        // Tenancy gate — Sanctum auth alone is not sufficient; without
+        // this check any authenticated user could enumerate layer URLs
+        // for any project (the URLs themselves embed project_id in tile
+        // query strings). Returning 404 (not 403) matches the
+        // IngestProgressController pattern and avoids leaking existence.
+        // See docs/handover/AUDIT_AND_FIX_REPORT.md Theme H.
+        $user = $request->user();
+        if ($user === null || ! $user->hasProjectAccess($projectId)) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+
         // Layers available for this project: workspace silver + public-geo + targeting
         return response()->json([
             'project_id' => $projectId,
@@ -68,28 +96,41 @@ class PublicApiController extends Controller
     {
         $limit = (int) $request->query('limit', 25);
         $rows = DB::select(
-            "SELECT report_id::text AS id, title, company, commodity,
+            'SELECT report_id::text AS id, title, company, commodity,
                     project_name, region, filing_date, created_at
                FROM silver.reports
               ORDER BY created_at DESC NULLS LAST
-              LIMIT ?",
+              LIMIT ?',
             [min($limit, 200)],
         );
+
         return response()->json(['items' => $rows, 'count' => count($rows)]);
     }
 
     public function targets(Request $request, string $projectId): JsonResponse
     {
+        // Tenancy gate — `targeting.target_recommendations` is sensitive
+        // (ranked drill-site recommendations + explanation markdown).
+        // The Phase 0 raw-SQL RLS block missed this table; the
+        // 2026_06_03_010000 migration backfills the policy, but app-
+        // layer gating is the defence-in-depth that doesn't depend on
+        // every read path correctly setting the app.workspace_id GUC.
+        // See docs/handover/AUDIT_AND_FIX_REPORT.md Theme H.
+        $user = $request->user();
+        if ($user === null || ! $user->hasProjectAccess($projectId)) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
         $rows = DB::select(
-            "SELECT recommendation_id::text AS id, rank, run_id::text,
+            'SELECT recommendation_id::text AS id, rank, run_id::text,
                     LEFT(explanation_markdown, 500) AS explanation_preview,
                     created_at
                FROM targeting.target_recommendations
               WHERE project_id = ?::uuid
               ORDER BY rank ASC NULLS LAST, created_at DESC
-              LIMIT 50",
+              LIMIT 50',
             [$projectId],
         );
+
         return response()->json(['project_id' => $projectId, 'items' => $rows]);
     }
 
@@ -99,6 +140,11 @@ class PublicApiController extends Controller
         $user = $request->user();
         if (! $user) {
             return response()->json(['error' => 'unauthenticated'], 401);
+        }
+        // Tenancy gate — see ::targets() above. Interpretations carry
+        // QP notes + drilled target zones; cross-tenant read is sensitive.
+        if (! $user->hasProjectAccess($projectId)) {
+            return response()->json(['error' => 'not_found'], 404);
         }
         $fastApi = rtrim(config('services.fastapi.internal_url'), '/');
         $svc = config('services.fastapi.service_key');
@@ -121,16 +167,30 @@ class PublicApiController extends Controller
 
     public function audit(Request $request, string $workspaceId): JsonResponse
     {
+        // Tenancy gate — audit ledger leaks workspace operational
+        // activity (action types, actors, target tables). User must
+        // have at least one project in the workspace to read its audit
+        // trail. Mirrors the Reverb workspace.{}.activity scoping fix
+        // (Theme F). See AUDIT_AND_FIX_REPORT.md Theme H.
+        $user = $request->user();
+        if ($user === null
+            || ! $user->projects()
+                ->where('silver.projects.workspace_id', $workspaceId)
+                ->exists()
+        ) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
         $limit = (int) $request->query('limit', 50);
         $rows = DB::select(
-            "SELECT id::text, action_type, actor_id, actor_kind,
+            'SELECT id::text, action_type, actor_id, actor_kind,
                     target_schema, target_table, target_id, created_at
                FROM audit.audit_ledger
               WHERE workspace_id = ?::uuid OR workspace_id IS NULL
               ORDER BY created_at DESC
-              LIMIT ?",
+              LIMIT ?',
             [$workspaceId, min($limit, 500)],
         );
+
         return response()->json([
             'workspace_id' => $workspaceId,
             'items' => $rows,
@@ -141,9 +201,19 @@ class PublicApiController extends Controller
 
     public function usage(Request $request, string $workspaceId): JsonResponse
     {
+        // Tenancy gate — usage rollups expose billing-grade workspace
+        // cost data. Same scoping as ::audit() above.
+        $user = $request->user();
+        if ($user === null
+            || ! $user->projects()
+                ->where('silver.projects.workspace_id', $workspaceId)
+                ->exists()
+        ) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
         $sinceDays = (int) $request->query('days', 30);
         $byDay = DB::select(
-            "SELECT rollup_date::text,
+            'SELECT rollup_date::text,
                     sum(invocations_total)::int AS invocations,
                     sum(tokens_prompt_total + tokens_completion_total)::bigint AS tokens,
                     round(sum(cost_usd_total)::numeric, 4) AS cost_usd
@@ -151,11 +221,11 @@ class PublicApiController extends Controller
               WHERE workspace_id = ?::uuid
                 AND rollup_date >= current_date - ?::int
               GROUP BY rollup_date
-              ORDER BY rollup_date",
+              ORDER BY rollup_date',
             [$workspaceId, $sinceDays],
         );
         $byAgent = DB::select(
-            "SELECT agent_name,
+            'SELECT agent_name,
                     sum(invocations_total)::int AS invocations,
                     round(sum(cost_usd_total)::numeric, 4) AS cost_usd
                FROM usage.usage_aggregates_daily
@@ -163,9 +233,10 @@ class PublicApiController extends Controller
                 AND rollup_date >= current_date - ?::int
               GROUP BY agent_name
               ORDER BY cost_usd DESC NULLS LAST
-              LIMIT 15",
+              LIMIT 15',
             [$workspaceId, $sinceDays],
         );
+
         return response()->json([
             'workspace_id' => $workspaceId, 'window_days' => $sinceDays,
             'by_day' => $byDay, 'by_agent' => $byAgent,
@@ -182,6 +253,7 @@ class PublicApiController extends Controller
               WHERE flow_type = 'outbound_webhook'
               ORDER BY flow_name",
         );
+
         return response()->json(['items' => $rows, 'count' => count($rows)]);
     }
 
@@ -212,6 +284,7 @@ class PublicApiController extends Controller
             return response()->json(['error' => 'openapi.json not present — run scripts/generate_openapi.sh'], 404);
         }
         $body = file_get_contents($path);
+
         return response()->json(json_decode($body, true));
     }
 }

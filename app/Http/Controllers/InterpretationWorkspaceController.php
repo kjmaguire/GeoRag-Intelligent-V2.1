@@ -7,9 +7,11 @@ namespace App\Http\Controllers;
 use App\Services\FastApiJwtMinter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 /**
  * §19.3 Interpretation Workspace — Inertia page + thin proxy.
@@ -34,9 +36,31 @@ class InterpretationWorkspaceController extends Controller
 {
     public function index(Request $request, string $projectId): Response
     {
+        // Tenancy gate + real workspace resolution (2026-06-03 audit).
+        //
+        // Previously hard-coded workspace_id to the default-tenant placeholder
+        // — every user (regardless of project / workspace) saw the same value.
+        // The downstream React page then used that hardcoded id for any
+        // workspace-scoped Reverb subscriptions / API calls, so a non-default
+        // tenant's interpretation activity was emitted on a foreign channel.
+        //
+        // Resolve the real workspace_id from silver.projects and gate
+        // on hasProjectAccess so the page can't be loaded for a project
+        // the caller doesn't own.
+        $user = $request->user();
+        if ($user === null || ! $user->hasProjectAccess($projectId)) {
+            throw new NotFoundHttpException;
+        }
+        $workspaceId = DB::table('silver.projects')
+            ->where('project_id', $projectId)
+            ->value('workspace_id');
+        if ($workspaceId === null) {
+            throw new NotFoundHttpException;
+        }
+
         return Inertia::render('InterpretationWorkspace', [
             'project_id' => $projectId,
-            'workspace_id' => 'a0000000-0000-0000-0000-000000000001',
+            'workspace_id' => (string) $workspaceId,
         ]);
     }
 
@@ -58,7 +82,17 @@ class InterpretationWorkspaceController extends Controller
             return response()->json(['error' => 'fastapi service key missing'], 500);
         }
 
+        // Tenancy gate (Theme H extension — 2026-06-03 audit pass 5+++)
+        //
+        // Same shape as the TrustController bug — minting a JWT with a
+        // caller-supplied project_id lets an attacker in workspace A
+        // trigger interpretation reads/writes for any project they can
+        // name. The FastAPI side trusts the JWT's project claim for
+        // workspace resolution, so the gate must be here.
         $projectId = (string) $request->query('project_id', '');
+        if ($projectId === '' || ! $user->hasProjectAccess($projectId)) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
         $jwt = app(FastApiJwtMinter::class)->mint(
             (string) $user->id,
             $projectId,
@@ -77,11 +111,11 @@ class InterpretationWorkspaceController extends Controller
 
         try {
             $resp = match ($method) {
-                'GET'    => $client->get($url, $request->query()),
-                'POST'   => $client->post($url, $request->all()),
-                'PUT'    => $client->put($url, $request->all()),
+                'GET' => $client->get($url, $request->query()),
+                'POST' => $client->post($url, $request->all()),
+                'PUT' => $client->put($url, $request->all()),
                 'DELETE' => $client->delete($url),
-                default  => abort(405),
+                default => abort(405),
             };
         } catch (\Throwable $exc) {
             return response()->json([
