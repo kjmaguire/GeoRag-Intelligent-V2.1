@@ -3014,16 +3014,15 @@ services:
     depends_on:
       loki:
         condition: service_healthy
-    healthcheck:
-      # Alloy exposes /-/ready on the configured HTTP listen addr.
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:12345/-/ready >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
+    # 2026-06-24: no container healthcheck. The grafana/alloy image is
+    # distroless — no wget/curl/shell HTTP client — so an in-container probe of
+    # /-/ready cannot run. The old `CMD-SHELL wget …` always exited 1 and
+    # reported a FALSE "unhealthy" while Alloy was in fact ready (GET
+    # :12345/-/ready returns 200, "Alloy is ready"). Health is observable
+    # externally via that endpoint; nothing depends_on Alloy's health gate.
     stop_grace_period: 10s
-    # Same profile gating as promtail — both ship under dev-monitor / dev-full
-    # during the shadow window.
+    # Active log shipper after the Promtail→Alloy cutover (promtail parked in the
+    # promtail-legacy profile above).
     profiles: ["dev-monitor", "dev-full"]
 
   # ---------------------------------------------------------------------------
