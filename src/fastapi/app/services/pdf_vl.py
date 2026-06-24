@@ -40,7 +40,8 @@ Config env vars (all optional — defaults work for the in-network vllm service)
   PDF_VL_MODEL_VERSION   — "2" (default) for Qwen2.5-VL-7B, "3" for Qwen3-VL-8B (ADR-0015)
   PDF_VL_MODEL_ID        — explicit override (wins over PDF_VL_MODEL_VERSION)
   PDF_VL_MODEL_ID_V2     — model id when PDF_VL_MODEL_VERSION=2 (default Qwen2.5-VL-7B-Instruct)
-  PDF_VL_MODEL_ID_V3     — model id when PDF_VL_MODEL_VERSION=3 (default Qwen3-VL-8B-Instruct-AWQ)
+  PDF_VL_MODEL_ID_V3     — model id when PDF_VL_MODEL_VERSION=3 (default Qwen3-VL-8B-Instruct;
+                           no official AWQ exists — set a community W4A16 quant here for low VRAM)
   PDF_VL_BACKEND         — "vllm" | "anthropic" (default: "vllm")
   PDF_VL_BACKEND_URL     — full base URL (default: "http://vllm:8000/v1")
   PDF_VL_TIMEOUT_S       — seconds to wait for VL inference (default: 120)
@@ -106,7 +107,14 @@ logger = logging.getLogger(__name__)
 # needed) once shadow run + golden-question pass-rate ≥ baseline.
 _DEFAULT_MODEL_VERSION = "2"
 _DEFAULT_MODEL_ID_V2 = "Qwen/Qwen2.5-VL-7B-Instruct"
-_DEFAULT_MODEL_ID_V3 = "Qwen/Qwen3-VL-8B-Instruct-AWQ"
+# 2026-06-24: ADR-0015 named "Qwen/Qwen3-VL-8B-Instruct-AWQ" — but Qwen never
+# published an official AWQ of Qwen3-VL-8B (verified on HF: 404). The canonical
+# id is the BF16 base below (~17.5 GB — needs ~18 GB VRAM, i.e. its own GPU or a
+# big util cut on the main LLM). For constrained VRAM, point PDF_VL_MODEL_ID_V3
+# at a community W4A16/AWQ quant (~5-6 GB), e.g. cyankiwi/Qwen3-VL-8B-Instruct-
+# AWQ-4bit or MLliu6/Qwen3-VL-8B-Instruct-AWQ-W4A16 (unofficial — vet before
+# promoting). See ADR-0015 + docs/runbooks for the serving decision.
+_DEFAULT_MODEL_ID_V3 = "Qwen/Qwen3-VL-8B-Instruct"
 _DEFAULT_MODEL_ID = _DEFAULT_MODEL_ID_V2  # back-compat alias
 _DEFAULT_BACKEND = "vllm"
 _DEFAULT_BACKEND_URL = "http://vllm:8000/v1"

@@ -28,7 +28,25 @@ Qwen3-VL (4B / 8B / 32B dense + 30B-A3B MoE) was released by Alibaba's Qwen team
 
 ## Decision
 
-Adopt **`Qwen/Qwen3-VL-8B-Instruct-AWQ`** as the §04p Stage-6 model, gated on a shadow-mode evaluation pass against the figure-grounded subset of `eval.golden_questions`.
+Adopt **`Qwen/Qwen3-VL-8B-Instruct`** as the §04p Stage-6 model, gated on a shadow-mode evaluation pass against the figure-grounded subset of `eval.golden_questions`.
+
+> **⚠ Correction 2026-06-24 — the original `Qwen/Qwen3-VL-8B-Instruct-AWQ` does not exist.**
+> Qwen never published an official AWQ of Qwen3-VL-8B (verified on HF: 404). The
+> canonical model is the BF16 `Qwen/Qwen3-VL-8B-Instruct` (~8.8 B params → ~17.5 GB),
+> which does **not** fit the dev A4500 (20 GB) alongside the main Qwen3-14B-AWQ vLLM
+> + the embedding/reranker tenancy. Serving options for the shadow run, in order of
+> preference:
+> 1. **Own GPU / production sizing** — serve the BF16 model on dedicated VRAM (clean).
+> 2. **Community W4A16/AWQ quant (~5-6 GB)** — e.g. `cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit`
+>    or `MLliu6/Qwen3-VL-8B-Instruct-AWQ-W4A16`, served as a 2nd vLLM with the main
+>    vLLM's `gpu_memory_utilization` dropped 0.92 → ~0.62 (cuts the live LLM's KV
+>    cache / concurrency). Unofficial — **vet quant quality before promoting**.
+> 3. **Smaller `Qwen3-VL-4B-Instruct` (or its community AWQ, ~3 GB)** — fits with
+>    minimal LLM impact; weaker than 8B.
+> `pdf_vl._DEFAULT_MODEL_ID_V3` now points at the real BF16 id; set
+> `PDF_VL_MODEL_ID_V3` to a quant for constrained VRAM. The shadow gate + dual-write
+> machinery (`pdf_vl_shadow.py`, `pdf_vl.shadow_observe_section`) are already built —
+> only a servable endpoint is missing.
 
 ## Rollout plan (gated, reversible)
 
