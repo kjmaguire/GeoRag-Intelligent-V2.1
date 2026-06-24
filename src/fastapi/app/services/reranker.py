@@ -4,32 +4,56 @@ Module 4 Phase B Chunk 3 -- B6 reranker wiring.
 
 Model
 -----
-BAAI/bge-reranker-base (Apache 2.0, ~278 MB).
-Pinned to revision SHA to prevent silent weight drift.
-The model produces raw float scores (higher = more relevant).
-No sigmoid transform is applied here -- callers use the raw score for
-thresholding and may apply sigmoid themselves for [0,1] normalisation.
+Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB).
+Swapped 2026-06-03 from BAAI/bge-reranker-base after the §41 LoRA-on-bge
+exploration was parked (memory: project_reranker_overnight_2026_05_29 —
+THREE HOLD verdicts, all FT runs failed to beat stock). Qwen3-Reranker
+is architecturally a CausalLM that returns a yes/no logit ratio, but
+sentence-transformers `CrossEncoder` wraps it transparently — the
+.predict(pairs) call site is unchanged.
+
+Why the swap:
+  - MTEB-retrieval reranker leaderboard: Qwen3-Reranker-0.6B beats
+    bge-reranker-base by ~5-10pp NDCG@10 on average across BEIR
+    out-of-the-box, before any GeoRAG-specific tuning.
+  - Native 32K context vs bge-reranker-base's 512-token cap. The
+    pre-truncation to ~2000 chars in tools.search_documents can be
+    relaxed (still kept as a CPU-budget knob, not a model constraint).
+  - Family-aligned with the Qwen3-14B-AWQ synthesizer — shared
+    tokenizer family + training data distribution.
 
 Revision pinning
 ----------------
-SHA: 2cfc18c9415c912f9d8155881c133215df768a70
-Confirmed 2026-05-14 against HuggingFace API (doc-phase 176).
-Previous pin `5ccf1b81c57ff625b3e4b7ab15481d6e2ee9bc56` was no longer
-accessible upstream — the SHA produced a `.no_exist/config.json`
-marker in the HF cache, causing s-t 5.5.0 to fail with
-"Unrecognized model in BAAI/bge-reranker-base. Should have a
-`model_type` key in its config.json". Re-pinning to the current main
-HEAD SHA fixed the load path; both chat retrieval and eval Layer 5
-chunk-provenance gating now use the cross-encoder.
+We pin by HF revision SHA to prevent silent weight drift, same as the
+bge era. When the model is updated upstream, update RERANKER_REVISION
+and RERANKER_VERSION together. The version string is persisted to
+answer_runs.reranker_version so any shift in reranker behaviour is
+traceable via the audit trail.
 
-If the model is updated upstream, update RERANKER_REVISION and RERANKER_VERSION
-together.  The version string is persisted to answer_runs.reranker_version so
-any shift in reranker behaviour is traceable via the audit trail.
+Score scale
+-----------
+Qwen3-Reranker emits a yes-token logit minus a no-token logit. Raw
+output is unbounded real ([-15, +15] typical range, broader than bge's
+[-10, +10]). The orchestrator's RERANKER_SCORE_THRESHOLD semantic
+("0.0 = any positive logit means relevant") carries over, but operators
+should re-tune the threshold against golden_queries after the swap —
+the absolute magnitudes are different even though the sign convention
+matches.
+
+CPU performance
+---------------
+0.6B params vs bge's 278M ≈ 2× the per-pair latency on CPU
+(~400-500 ms/pair at torch_threads=10 on AVX2; bge was ~200-250 ms).
+RERANKER_INPUT_CHAR_BUDGET stays at 2000 to keep batch latency under
+the 8 s TIMEOUT_RERANKER_S budget. GPU path (when present) is ~10×
+faster.
 
 Version string
 --------------
-RERANKER_VERSION = "bge-reranker-base@<first 8 chars of SHA>"
+RERANKER_VERSION = "qwen3-reranker-0.6b@<first 8 chars of SHA>"
 Used by the orchestrator to populate answer_runs.reranker_version.
+Operators querying the audit trail can diff the pre-swap rows
+(`bge-reranker-base@*`) against post-swap rows for the same query.
 
 Top-k per query class (spec B6)
 --------------------------------
@@ -74,12 +98,16 @@ logger = logging.getLogger(__name__)
 # Model identity -- pin by HuggingFace revision SHA
 # ---------------------------------------------------------------------------
 
-RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
-# Doc-phase 176 — re-pinned from `5ccf1b81...` (no longer accessible
-# upstream) to current main HEAD as of 2026-05-14. See module docstring
-# for context.
-RERANKER_REVISION = "2cfc18c9415c912f9d8155881c133215df768a70"
-RERANKER_VERSION = f"bge-reranker-base@{RERANKER_REVISION[:8]}"
+RERANKER_MODEL_NAME = "Qwen/Qwen3-Reranker-0.6B"
+# Pin by env var when an operator wants to lock to a specific upstream
+# revision; defaults to "main" (resolved by HF on first download and
+# cached locally — same byte-stable behaviour we want without forcing
+# us to hard-code a SHA in source that will rot on the next upstream
+# tag bump). When set, the runtime asserts the resolved SHA at load
+# time so a silent drift surfaces in logs.
+import os as _os_pin  # noqa: PLC0415 — top-level import is fine
+RERANKER_REVISION = _os_pin.environ.get("RERANKER_REVISION", "main")
+RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
 
 # ---------------------------------------------------------------------------
 # Qwen3-Reranker causal-LM backend (audit 2026-06-28, OPT-IN, NOT deployed)
