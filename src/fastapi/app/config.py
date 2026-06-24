@@ -540,6 +540,19 @@ class Settings(BaseSettings):
     # before flipping. See docs/module-6-chunk-2-design.md.
     CITATION_SPAN_RESOLVER_ENABLED: bool = False
 
+    # 2026-06-24: defensive flag for the citation-first salvage path. The
+    # orchestrator (run_deterministic_rag) gates a salvage block on
+    # `settings.CITATION_FIRST_ENABLED`, but the flag, its 3 companion timeout/
+    # concurrency settings, AND the app.services.atomic_claim_extractor service
+    # were never committed (lost uncommitted work — the live pieces are on the
+    # pr/w01 slice, and even there the config is missing). Without this field the
+    # reference is a latent AttributeError if that path is ever reached. Pinned
+    # OFF so the block is skipped cleanly and the absent service is never
+    # imported. To actually enable citation-first, restore the service + the
+    # CITATION_FIRST_{EXTRACTOR_TIMEOUT_S,EXTRACTOR_CONCURRENCY,COMPOSER_TIMEOUT_S}
+    # settings as a deliberate unit (or deploy pr/w01 whole).
+    CITATION_FIRST_ENABLED: bool = False
+
     # -------------------------------------------------------------------------
     # Phase 1 / Step 1.2 — OIUR answer schema rollout
     # -------------------------------------------------------------------------
