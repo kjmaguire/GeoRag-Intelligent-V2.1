@@ -25,6 +25,19 @@ route:
   group_interval: 5m
   repeat_interval: 4h
   routes:
+    # Watchdog is the deadman canary (vector(1) — always firing). It
+    # belongs on its own route so the default `receiver: warn-webhook`
+    # doesn't spam every repeat_interval. In production this route
+    # should point at a dedicated deadman service (deadmanssnitch.com,
+    # PagerDuty heartbeat, etc.) that PAGES when the heartbeat goes
+    # missing. Wired to dev-null here so the dev environment doesn't
+    # firehose the warn webhook. Match by alertname to keep severity
+    # available for filtering downstream.
+    - matchers:
+        - alertname = "Watchdog"
+      receiver: dev-null
+      group_wait: 0s
+      repeat_interval: 1m
     - matchers:
         - severity = "critical"
       receiver: critical-webhook
