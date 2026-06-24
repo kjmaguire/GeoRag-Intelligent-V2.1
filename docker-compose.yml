@@ -1030,6 +1030,12 @@ services:
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
       VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
+      # §04p VL parser (ADR-0015). Default v2 (Qwen2.5-VL) + main vllm URL is
+      # conservative; .env sets version=3 + PDF_VL_BACKEND_URL=http://vllm-vl...
+      # to route figure requests to the Qwen3-VL-8B sidecar.
+      PDF_VL_MODEL_VERSION: ${PDF_VL_MODEL_VERSION:-2}
+      PDF_VL_MODEL_ID_V3: ${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}
+      PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-http://vllm:8000/v1}
       VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEM_UTIL:-0.92}
       # Anthropic — set ANTHROPIC_API_KEY in .env + flip LLM_BACKEND
       # to "anthropic" to activate. See docs/RUNBOOK.md "LLM backend
@@ -1913,6 +1919,78 @@ services:
     # Profile renamed gpu-llm-prod → gpu-llm during the cutover (vLLM is
     # now the dev + prod default, not a prod-only profile). The old name
     # is preserved as an alias below for back-compat with deploy scripts.
+    profiles: ["gpu-llm", "gpu-llm-prod"]
+
+  # ---------------------------------------------------------------------------
+  # vllm-vl (2026-06-24) — second vLLM for the §04p VL parser (ADR-0015 v3).
+  # ---------------------------------------------------------------------------
+  # Serves Qwen3-VL for figure/diagram understanding. No official AWQ of
+  # Qwen3-VL-8B exists; the 8B community quants (~6-7 GB) also do NOT fit the
+  # 20 GB A4500 alongside the main 14B text LLM (vLLM OOM'd — verified), so this
+  # defaults to the community Qwen3-VL-*4B* 8-bit quant (~6.2 GB weights, the
+  # largest that fits). Vet the community quant before any production use.
+  # Shares the A4500 with the main vLLM: VLLM_GPU_MEM_UTIL is lowered to 0.72
+  # (see .env) to free room — trades the main LLM's KV headroom for VL (demo).
+  # --enforce-eager (skip cudagraph) + max-model-len 4096 keep the VL footprint
+  # inside the tight GPU share. fastapi/pdf_vl.py reaches it via
+  # PDF_VL_BACKEND_URL=http://vllm-vl:8000/v1 + PDF_VL_MODEL_VERSION=3. The
+  # compressed-tensors quant is auto-detected by vLLM (no --quantization flag).
+  vllm-vl:
+    image: vllm/vllm-openai:v0.21.0@sha256:a230095847e93bd4df9888b33dab956fa9504537b828a23657d2b26fed57b5c9
+    container_name: georag-vllm-vl
+    restart: unless-stopped
+    ports:
+      - "${VLLM_VL_PORT:-8002}:8000"
+    ipc: host
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /root/.cache/huggingface
+      TOKENIZERS_PARALLELISM: "false"
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+    command:
+      - '--model'
+      - '${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}'
+      - '--served-model-name'
+      - '${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}'
+      - '--port'
+      - '8000'
+      - '--host'
+      - '0.0.0.0'
+      - '--max-model-len'
+      - '${VLLM_VL_MAX_MODEL_LEN:-4096}'
+      - '--gpu-memory-utilization'
+      - '${VLLM_VL_GPU_MEM_UTIL:-0.46}'
+      - '--kv-cache-dtype'
+      - '${VLLM_VL_KV_CACHE_DTYPE:-fp8}'
+      - '--max-num-seqs'
+      - '${VLLM_VL_MAX_NUM_SEQS:-4}'
+      - '--enable-prefix-caching'
+      # Low-volume VL sidecar: skip CUDA-graph capture. With the cudagraph
+      # profiler disabled (env above, inherited from the main vLLM tuning) the
+      # graphs aren't memory-accounted and OOM during capture at this tight GPU
+      # share. Eager mode frees that ~1-2 GB; latency impact is negligible at
+      # ingest-rate (figure-extraction) concurrency.
+      - '--enforce-eager'
+    shm_size: "4gb"
+    volumes:
+      - vllm_hf_cache:/root/.cache/huggingface
+    networks:
+      - georag
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-1}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health -o /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # First start downloads the ~6 GB quant from HF + loads it.
+      start_period: 900s
+    stop_grace_period: 30s
     profiles: ["gpu-llm", "gpu-llm-prod"]
 
   # ---------------------------------------------------------------------------
