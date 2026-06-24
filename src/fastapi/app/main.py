@@ -22,7 +22,9 @@ Pool storage on app.state
   app.state.anthropic_client — anthropic.AsyncAnthropic | None (B2 — pooled
                                to avoid TLS handshake + pool churn per request;
                                None if LLM_BACKEND != "anthropic" or key unset)
-  app.state.embedding_model  — SentenceTransformer (BAAI/bge-small-en-v1.5, CPU)
+  app.state.embedding_model  — embedding model (EMBEDDING_MODEL_NAME); a shared-
+                               sidecar proxy when EMBEDDING_SERVICE_URL is set
+                               (default), else a local SentenceTransformer (CPU)
   app.state.reranker         — CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
 
 Timeout constants are imported from app.config.settings so every module
@@ -138,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
       2. AsyncQdrantClient → Qdrant vector store
       3. Neo4j AsyncDriver → knowledge graph
       4. redis.asyncio client → caching / session store
-      5. SentenceTransformer embedding model (BAAI/bge-small-en-v1.5, CPU)
+      5. Embedding model — shared sidecar proxy (EMBEDDING_SERVICE_URL) or local
       6. CrossEncoder reranker (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
 
     Teardown is the mirror: each client is closed in reverse order so

@@ -947,6 +947,13 @@ services:
       # term). app/services/embedding.get_embedding_model() returns an HTTP
       # proxy when this is set; empty → each worker loads its own (legacy).
       EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embedding:8000}
+      # 2026-06-24 — share ONE SPLADE++ model via the `sparse` sidecar. SPLADE
+      # was the last GPU user in the workers; routing it to a CPU sidecar lets
+      # the workers drop their CUDA contexts and frees the model's A4500 VRAM.
+      # app/services/sparse_encoder.encode_sparse{,_batch} proxy when this is
+      # set; empty → each worker loads its own (legacy). NOT set on Dagster
+      # (bulk indexing keeps its local model) or the sidecar itself.
+      SPARSE_SERVICE_URL: ${SPARSE_SERVICE_URL:-http://sparse:8000}
       # ADR-0008 — embedding model path. Default = stock BAAI/bge-small-en-v1.5.
       # Set to /app/models/bge-small-domain-ft after promoting the domain FT model.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
@@ -1147,6 +1154,10 @@ services:
       # first. /health is 200 only once its model is ready.
       embedding:
         condition: service_healthy
+      # Shared SPLADE sidecar: fastapi pre-warms SPLADE at startup through the
+      # proxy (SPARSE_SERVICE_URL), so the sidecar must be loaded first.
+      sparse:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -1301,6 +1312,60 @@ services:
           memory: 4g
         reservations:
           memory: 2g
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # SPARSE (SPLADE++) SIDECAR (2026-06-24) — shared sparse-encoder host.
+  # Hosts ONE SPLADE++ model for all fastapi workers, which proxy to it via
+  # SPARSE_SERVICE_URL. Runs on CPU (no GPU device mapped → torch sees no CUDA →
+  # fp32 CPU), which frees the model's VRAM on the A4500 AND lets the fastapi
+  # workers — for whom SPLADE was the last GPU user — drop their CUDA contexts.
+  # Same pattern as the reranker + embedding sidecars. Must NOT set
+  # SPARSE_SERVICE_URL (it is the model host; the service self-checks and exits).
+  # ---------------------------------------------------------------------------
+  sparse:
+    image: georag/fastapi:latest
+    container_name: georag-sparse
+    restart: unless-stopped
+    command: >
+      uvicorn app.sparse_service:app
+        --host 0.0.0.0
+        --port 8000
+        --workers 1
+        --no-access-log
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      OMP_NUM_THREADS: "10"
+      TOKENIZERS_PARALLELISM: "false"
+      # IMPORTANT: do NOT set SPARSE_SERVICE_URL — this service IS the model
+      # host; setting it would make the encode functions recurse over HTTP.
+    user: "33:33"
+    volumes:
+      - ./src/fastapi:/app:cached
+      - fastapi_hf_cache:/tmp/hf_cache
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 3g
+        reservations:
+          memory: 1g
     profiles: ["dev-data", "dev-full"]
 
   # ===========================================================================

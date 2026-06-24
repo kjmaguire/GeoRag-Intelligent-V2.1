@@ -70,6 +70,7 @@ worker subprocess loads its own model copy. This is the expected behaviour.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,35 @@ SPARSE_MODEL_NAME = "naver/splade-cocondenser-ensembledistil"
 SPARSE_MODEL_REVISION = "49cf4c7b0db5b870a401ddf5e2669993ef3699c7"
 # Short form stored in answer_runs.sparse_model_version and Qdrant payload parser_version
 SPARSE_MODEL_VERSION = "splade-cocondenser-ensembledistil@49cf4c7b"
+
+
+# ---------------------------------------------------------------------------
+# Shared-sidecar routing (FastAPI query workers only)
+# ---------------------------------------------------------------------------
+# When SPARSE_SERVICE_URL is set, encode_sparse{,_batch} POST to the shared
+# SPLADE sidecar (app.sparse_service) over a localhost hop instead of loading a
+# per-process model. Set ONLY on the FastAPI service — NOT on the Dagster index
+# pipeline (bulk indexing keeps its own local model for throughput) and NOT on
+# the sidecar itself (which would proxy to itself). The sidecar runs THIS SAME
+# code with the URL unset, so the produced vectors are identical. Sibling of the
+# embedding sidecar (app/services/embedding.py). This block is part of the
+# KEEP-IN-SYNC contract above; it is inert wherever SPARSE_SERVICE_URL is unset.
+SPARSE_SERVICE_URL = (os.environ.get("SPARSE_SERVICE_URL") or "").strip()
+
+
+def _remote_encode_sparse(texts: list[str]) -> list[dict[int, float]]:
+    """Encode via the shared SPLADE sidecar. JSON object keys are strings, so
+    the int token-ids round-trip as strings and are restored to int here."""
+    import httpx  # noqa: PLC0415
+
+    timeout_s = float(os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30")
+    resp = httpx.post(
+        f"{SPARSE_SERVICE_URL.rstrip('/')}/sparse",
+        json={"texts": texts},
+        timeout=timeout_s,
+    )
+    resp.raise_for_status()
+    return [{int(k): v for k, v in d.items()} for d in resp.json()["sparse"]]
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +183,9 @@ def encode_sparse(text: str) -> dict[int, float]:
         >>> len(v)   # 50-500
         >>> max(v.values())  # > 0.0
     """
+    if SPARSE_SERVICE_URL:
+        return _remote_encode_sparse([text])[0]
+
     import torch
 
     tokenizer, model = _get_sparse_model()
@@ -207,6 +240,9 @@ def encode_sparse_batch(texts: list[str], batch_size: int = 32) -> list[dict[int
     Returns:
         List of sparse dicts in the same order as input texts.
     """
+    if SPARSE_SERVICE_URL:
+        return _remote_encode_sparse(texts)
+
     import torch
 
     tokenizer, model = _get_sparse_model()
