@@ -888,11 +888,19 @@ services:
     # service was accidentally running the Hatchet worker instead of
     # uvicorn. Pinning the command here so future image changes can't
     # silently swap the chat service to a background worker again.
+    # 2026-06-24: UVICORN_WORKERS default 6 → 3. The worker count multiplies
+    # EVERY per-worker model (dense embedding + SPLADE encoder + §04p process
+    # pools) — the real root of the memory bloat that OOM-killed this container
+    # (the reranker, now in its own sidecar, was a smaller slice). 3 workers
+    # halve that footprint; ample for dev concurrency. Override via the env.
+    # NB: comments must live HERE, not inside the `command: >` folded scalar —
+    # `#` lines there become literal argv and break compose ("invalid command
+    # line string").
     command: >
       uvicorn app.main:app
         --host 0.0.0.0
         --port 8000
-        --workers ${UVICORN_WORKERS:-6}
+        --workers ${UVICORN_WORKERS:-3}
         --no-access-log
         --proxy-headers
         --forwarded-allow-ips *
