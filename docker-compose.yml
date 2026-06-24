@@ -1898,10 +1898,16 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "dagster-daemon liveness-check || exit 1"]
-      interval: 30s
-      timeout: 10s
+      # 2026-06-24: the daemon is live (liveness-check returns rc=0) but the
+      # check itself takes ~21s — `dagster-daemon liveness-check` is a fresh CLI
+      # invocation that re-imports dagster + the georag_dagster code location
+      # every time. At the old 10s timeout it ALWAYS exceeded → false-unhealthy
+      # for 25h. Raised timeout 10s → 35s to fit the real cost, and interval
+      # 30s → 60s so consecutive ~21s checks don't run nose-to-tail.
+      interval: 60s
+      timeout: 35s
       retries: 3
-      start_period: 60s
+      start_period: 90s
     # SG-01 fix (CRITICAL): Dagster run workers can be mid-pipeline for up to 120s.
     # Without this, docker stop SIGKILLs after 10s and in-progress ingestion runs
     # are lost with no checkpoint.
