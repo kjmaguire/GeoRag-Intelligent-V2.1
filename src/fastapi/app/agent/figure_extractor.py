@@ -1,36 +1,30 @@
-"""PDF figure extraction + VL captioning.
+"""PDF figure extraction + VL captioning — building blocks for the figure path.
 
-TWO figure mechanisms exist — know which you're touching:
+CANONICAL figure indexing lives in the ingest_pdf `persist` task: it consumes
+docling's figure_manifest, uploads each figure to S3, and builds a ReportSection
+per figure → silver.document_passages → the `georag_chunks` collection chat
+queries (ADR-0010, RETRIEVAL_USE_DOCUMENT_PASSAGES=True). Since 2026-06-24
+persist also folds a Qwen3-VL caption into that section (flag
+FIGURE_VL_DESCRIPTIONS) via caption_image_with_vl below.
 
-  CANONICAL (production): the ingest_pdf `persist` task consumes docling's
-    figure_manifest, uploads each figure to S3, and builds a ReportSection per
-    figure → silver.document_passages → the `georag_chunks` collection chat
-    actually queries (ADR-0010, RETRIEVAL_USE_DOCUMENT_PASSAGES=True). Since
-    2026-06-24 persist also folds a Qwen3-VL caption into that section (flag
-    FIGURE_VL_DESCRIPTIONS) via caption_image_with_vl below.
+This module no longer indexes anything itself — it provides the reusable pieces.
+(The legacy standalone indexing to the `georag_reports` collection was removed
+2026-06-24 once that collection was confirmed empty/decommissioned under the
+ADR-0010 canonical flip — it would only have written into a dead, un-queried
+collection.)
 
-  LEGACY (this module's indexing): extract_and_index_figures →
-    index_figures_to_qdrant writes to the `georag_reports` collection, which chat
-    NO LONGER queries after the ADR-0010 canonical flip — those figures are not
-    retrievable in the canonical config. Retained for the legacy collection /
-    backfill-to-legacy only. Do NOT wire it into the ingest path: that would
-    duplicate the canonical mechanism into a dead collection (the trap avoided
-    on 2026-06-24).
-
-Reusable building blocks (used by BOTH paths — keep):
   - extract_figures_from_pdf    — embedded RASTER images (pypdfium2, Apache-2.0;
                                   replaced the removed AGPL PyMuPDF path).
   - extract_figures_from_layout — render page + crop §04p layout figure bboxes;
                                   catches VECTOR figures too (cross-sections/maps).
   - caption_image_with_vl       — shared single-image Qwen3-VL call; used by the
                                   canonical persist path AND describe_figures_with_vl.
+  - describe_figures_with_vl    — caption a batch of extracted figures (VL, with
+                                  the heuristic as the per-figure fallback).
   - generate_figure_descriptions — rule-based fallback when VL is unavailable.
 
-Open follow-ups: retire this legacy indexing once `georag_reports` is fully
-decommissioned (ADR-0010 backfill); a canonical figure-backfill tool (figures →
-document_passages → georag_chunks) for already-ingested reports; per-parser
-bbox-coord adapters for extract_figures_from_layout (it assumes the
-docling/pdfminer points/bottom-left convention).
+Follow-up: per-parser bbox-coord adapters for extract_figures_from_layout (it
+assumes the docling/pdfminer points/bottom-left convention).
 """
 
 from __future__ import annotations
@@ -40,7 +34,6 @@ import hashlib
 import io
 import logging
 import os
-import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -49,9 +42,10 @@ logger = logging.getLogger(__name__)
 MIN_IMAGE_BYTES = 5_000       # 5 KB
 MIN_IMAGE_DIMENSION = 100     # 100 px width or height
 
-# When truthy, extract_and_index_figures describes figures with the Qwen3-VL
-# sidecar (PDF_VL_BACKEND_URL) instead of the rule-based heuristic. Off by
-# default — the VL path adds a per-figure inference call; opt in per deployment.
+# Master switch for VL figure captioning, read by the ingest_pdf persist task
+# (as _FIGURE_VL_CAPTIONS) to caption docling figures with the Qwen3-VL sidecar
+# instead of the docling/heuristic caption. Off by default — the VL path adds a
+# per-figure inference call; opt in per deployment (FIGURE_VL_DESCRIPTIONS=1).
 FIGURE_VL_DESCRIPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -414,108 +408,3 @@ async def describe_figures_with_vl(
             await client.aclose()
 
     return figures
-
-
-async def index_figures_to_qdrant(
-    figures: list[dict],
-    report_id: str,
-    project_id: str,
-    report_title: str,
-    qdrant_client: Any,
-    embedding_model: Any,
-    collection: str = "georag_reports",
-) -> int:
-    """Embed figure descriptions and upsert into Qdrant.
-
-    ⚠ LEGACY: defaults to the `georag_reports` collection, which chat no longer
-    queries under ADR-0010 (RETRIEVAL_USE_DOCUMENT_PASSAGES=True). The canonical
-    figure path is the ingest_pdf persist ReportSection flow → georag_chunks.
-    See the module docstring.
-
-    Returns the number of points upserted.
-    """
-    if not figures:
-        return 0
-
-    texts = [f["description"] for f in figures]
-    vectors = embedding_model.encode(texts).tolist()
-
-    from qdrant_client.models import PointStruct
-
-    points = []
-    for fig, vec in zip(figures, vectors):
-        point_id = str(uuid.uuid4())
-        points.append(
-            PointStruct(
-                id=point_id,
-                vector=vec,
-                payload={
-                    "text": fig["description"],
-                    "document_title": report_title,
-                    "document_type": "NI43",
-                    "report_id": report_id,
-                    "project_id": project_id,
-                    "section_number": f"Figure (page {fig['page']})",
-                    "section_title": f"Extracted figure — page {fig['page']}",
-                    "page": fig["page"],
-                    "content_type": "figure_description",
-                    "figure_sha256": fig["sha256"],
-                    "figure_width": fig["width"],
-                    "figure_height": fig["height"],
-                },
-            )
-        )
-
-    await qdrant_client.upsert(collection_name=collection, points=points)
-
-    logger.info(
-        "figure_extractor: indexed %d figure descriptions into %s",
-        len(points),
-        collection,
-    )
-
-    return len(points)
-
-
-async def extract_and_index_figures(
-    pdf_path: str,
-    report_id: str,
-    project_id: str,
-    report_title: str,
-    qdrant_client: Any,
-    embedding_model: Any,
-    *,
-    use_vl: bool | None = None,
-) -> int:
-    """Full pipeline: extract → describe → embed → index.
-
-    ⚠ LEGACY entrypoint — indexes to `georag_reports` (not chat-queried under
-    ADR-0010). Used by the standalone scripts/index_figures.py for the legacy
-    collection. New figures flow through the canonical ingest_pdf persist path;
-    do NOT call this from the ingest workflow. See the module docstring.
-
-    Args:
-        use_vl: describe figures with the Qwen3-VL sidecar instead of the
-            page-position heuristic. ``None`` (default) reads the
-            ``FIGURE_VL_DESCRIPTIONS`` env flag. VL failures fall back to the
-            heuristic per figure, so this never blocks indexing.
-
-    Returns:
-        The number of figures indexed.
-    """
-    figures = extract_figures_from_pdf(pdf_path)
-    if not figures:
-        return 0
-
-    if use_vl is None:
-        use_vl = FIGURE_VL_DESCRIPTIONS
-    if use_vl:
-        figures = await describe_figures_with_vl(figures, report_title)
-    else:
-        figures = generate_figure_descriptions(figures, report_title)
-
-    count = await index_figures_to_qdrant(
-        figures, report_id, project_id, report_title,
-        qdrant_client, embedding_model,
-    )
-    return count
