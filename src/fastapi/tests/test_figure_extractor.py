@@ -8,6 +8,7 @@ so the path can't silently regress to a no-op stub again.
 from __future__ import annotations
 
 import asyncio
+import io
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from app.agent.figure_extractor import (
     MIN_IMAGE_BYTES,
     MIN_IMAGE_DIMENSION,
     describe_figures_with_vl,
+    extract_figures_from_layout,
     extract_figures_from_pdf,
 )
 
@@ -83,6 +85,56 @@ def test_extract_figures_distinct_images_on_pages(tmp_path: Path) -> None:
 def test_extract_figures_missing_file_returns_empty() -> None:
     # Bad path must degrade to [] (callers run it opportunistically), not raise.
     assert extract_figures_from_pdf("/nonexistent/does-not-exist.pdf") == []
+
+
+# --- extract_figures_from_layout (render + crop figure bboxes) --------------
+
+def _letter_pdf_with_block(
+    path: Path,
+    *,
+    rows: tuple[int, int] = (100, 250),
+    cols: tuple[int, int] = (100, 300),
+    color: tuple[int, int, int] = (220, 30, 30),
+) -> Path:
+    """US-Letter-sized (612x792 px == pt @72dpi) white page with a coloured
+    block at the given image rows/cols, plus light noise (> MIN_IMAGE_BYTES)."""
+    arr = np.full((792, 612, 3), 255, dtype="uint8")
+    arr[rows[0]:rows[1], cols[0]:cols[1]] = color
+    arr = np.clip(
+        arr.astype("int16") + (np.random.RandomState(2).rand(792, 612, 3) * 18).astype("int16"),
+        0, 255,
+    ).astype("uint8")
+    Image.fromarray(arr, "RGB").save(str(path), format="PDF")
+    return path
+
+
+def test_extract_figures_from_layout_crops_correct_region(tmp_path: Path) -> None:
+    pdf = _letter_pdf_with_block(tmp_path / "layout.pdf")
+    # Docling coords (points, bottom-left, page 792 tall): image rows 100..250
+    # from top → top=692, bottom=542; cols 100..300 → left=100, right=300.
+    regions = [{"page": 1, "bbox": [100, 542, 300, 692], "layout_label": "figure"}]
+    figs = extract_figures_from_layout(str(pdf), regions)
+
+    assert len(figs) == 1
+    f = figs[0]
+    assert f["page"] == 1
+    assert f["width"] == 400 and f["height"] == 300   # 200x150 block @ render_scale 2
+    crop = np.array(Image.open(io.BytesIO(f["image_bytes"]))).reshape(-1, 3).mean(0)
+    assert crop[0] > 170 and crop[1] < 80 and crop[2] < 80   # the red block, not white page
+
+
+def test_extract_figures_from_layout_skips_invalid_regions(tmp_path: Path) -> None:
+    pdf = _letter_pdf_with_block(tmp_path / "layout.pdf")
+    regions = [
+        {"page": 99, "bbox": [100, 542, 300, 692]},   # page out of range
+        {"page": 1, "bbox": [0, 0, 0, 0]},             # degenerate → 0 area
+        {"page": 1},                                    # missing bbox
+    ]
+    assert extract_figures_from_layout(str(pdf), regions) == []
+
+
+def test_extract_figures_from_layout_bad_path_returns_empty() -> None:
+    assert extract_figures_from_layout("/nope/missing.pdf", [{"page": 1, "bbox": [1, 2, 3, 4]}]) == []
 
 
 # --- describe_figures_with_vl (Qwen3-VL captioning, mocked backend) ---------

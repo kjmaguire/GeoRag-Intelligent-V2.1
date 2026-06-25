@@ -140,6 +140,104 @@ def extract_figures_from_pdf(pdf_path: str) -> list[dict]:
     return figures
 
 
+def extract_figures_from_layout(
+    pdf_path: str,
+    figure_regions: list[dict],
+    *,
+    render_scale: float = 2.0,
+) -> list[dict]:
+    """Render + crop figure regions from §04p layout bboxes (vector + raster).
+
+    Unlike extract_figures_from_pdf (embedded RASTER images only), this renders
+    the page and crops the figure's bounding box, so it captures figures drawn
+    as VECTOR graphics too — most geological cross-sections, plan maps and
+    grade-tonnage curves. Feed it the layout entries whose layout_label is
+    "figure" from the §04p parse.
+
+    Coordinate convention: bbox is ``[left, bottom, right, top]`` in PDF POINTS,
+    BOTTOMLEFT origin — what parse_mixed (docling) / parse_native (pdfminer)
+    emit via _bbox_from_prov. parse_scanned / parse_docparser_vl emit pixel-space
+    bboxes; convert those before calling (a parser-specific adapter is a
+    follow-up). Same output dict shape as extract_figures_from_pdf.
+    """
+    import pypdfium2 as pdfium  # noqa: PLC0415
+
+    try:
+        pdf = pdfium.PdfDocument(pdf_path)
+    except Exception:
+        logger.exception("extract_figures_from_layout: cannot open %s", pdf_path)
+        return []
+
+    # Group by page so each page is rendered once even with several figures.
+    by_page: dict[int, list[dict]] = {}
+    for region in figure_regions:
+        try:
+            by_page.setdefault(int(region["page"]), []).append(region)
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    figures: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for page_num, regions in sorted(by_page.items()):
+            page_idx = page_num - 1
+            if page_idx < 0 or page_idx >= len(pdf):
+                continue
+            page = pdf[page_idx]
+            try:
+                _w_pts, h_pts = page.get_size()
+                page_img = page.render(scale=render_scale).to_pil().convert("RGB")
+            except Exception:
+                logger.warning("extract_figures_from_layout: render failed on page %d", page_num)
+                continue
+
+            for region in regions:
+                bbox = region.get("bbox")
+                if not bbox or len(bbox) != 4:
+                    continue
+                left, bottom, right, top = (float(v) for v in bbox)
+                # points/bottom-left → pixels/top-left at render_scale.
+                x0 = max(0, int(round(left * render_scale)))
+                x1 = min(page_img.width, int(round(right * render_scale)))
+                y0 = max(0, int(round((h_pts - top) * render_scale)))
+                y1 = min(page_img.height, int(round((h_pts - bottom) * render_scale)))
+                width_px, height_px = x1 - x0, y1 - y0
+                if width_px <= 0 or height_px <= 0:
+                    continue
+                if width_px < MIN_IMAGE_DIMENSION and height_px < MIN_IMAGE_DIMENSION:
+                    continue
+
+                buf = io.BytesIO()
+                page_img.crop((x0, y0, x1, y1)).save(buf, format="PNG")
+                data = buf.getvalue()
+                if len(data) < MIN_IMAGE_BYTES:
+                    continue
+                sha = hashlib.sha256(data).hexdigest()
+                if sha in seen:
+                    continue
+                seen.add(sha)
+                figures.append({
+                    "page": page_num,
+                    "width": width_px,
+                    "height": height_px,
+                    "sha256": sha,
+                    "format": "png",
+                    "image_bytes": data,
+                })
+    finally:
+        try:
+            pdf.close()
+        except Exception:
+            pass
+
+    logger.info(
+        "extract_figures_from_layout: %d figure(s) from %d region(s) in %s",
+        len(figures), len(figure_regions),
+        os.path.basename(pdf_path) if pdf_path else "<unspecified>",
+    )
+    return figures
+
+
 def generate_figure_descriptions(figures: list[dict], report_title: str) -> list[dict]:
     """Generate text descriptions for extracted figures.
 
