@@ -130,6 +130,37 @@ def test_parse_scanned_produces_passages_with_confidence(
         assert 0.0 <= passage["extraction_confidence"] <= 1.0
 
 
+def test_ocr_field_reads_dict_result() -> None:
+    """Fast regression guard for the 2026-06-24 scanned-OCR fix.
+
+    PaddleOCR 3.7's ``OCRResult`` is a ``dict`` subclass, so its rec_texts /
+    rec_scores / rec_boxes are KEYS, not attributes. The parse loop previously
+    used ``getattr(page_result, "rec_texts", [])`` which silently returned the
+    default → 0 passages on every scanned PDF despite a successful OCR pass.
+    ``_ocr_field`` must read dict results by key. This test needs no model and
+    runs in the fast suite, unlike the real-engine tests above (which only run
+    where PaddleOCR + its model downloads are available), so the bug can't
+    silently rot back in.
+    """
+    from app.ocr.parse_scanned import _ocr_field
+
+    # OCRResult is a dict subclass — emulate with a plain dict.
+    dict_result = {"rec_texts": ["NI 43-101"], "rec_scores": [0.99]}
+    assert _ocr_field(dict_result, "rec_texts", []) == ["NI 43-101"]
+    assert _ocr_field(dict_result, "rec_scores", []) == [0.99]
+    # The exact bug: getattr on the dict returns the default, not the value.
+    assert getattr(dict_result, "rec_texts", []) == []
+    # Missing key → default.
+    assert _ocr_field(dict_result, "rec_boxes", None) is None
+
+    # Attribute-style fallback for any build that exposes attrs instead of keys.
+    class _AttrResult:
+        rec_texts = ["x"]
+
+    assert _ocr_field(_AttrResult(), "rec_texts", []) == ["x"]
+    assert _ocr_field(_AttrResult(), "missing", "dflt") == "dflt"
+
+
 def test_parse_scanned_pages_slice(synthetic_scanned_pdf: Path) -> None:
     from app.ocr.parse_scanned import parse_scanned
 

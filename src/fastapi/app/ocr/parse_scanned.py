@@ -72,26 +72,18 @@ DEFAULT_SCANNED_SETTINGS: dict[str, Any] = {
 }
 
 
-def _model_dir(category: str, lang: str) -> str:
-    """Build the explicit PaddleOCR model dir path for a category.
+def _ocr_field(result: Any, key: str, default: Any) -> Any:
+    """Read a field from a PaddleOCR ``predict()`` result element.
 
-    PaddleOCR's path convention is:
-        {root}/whl/{category}/{lang_or_global}/{model_name}/
-    where:
-      - det → per-language
-      - rec → per-language
-      - cls → global (no lang subdir; PaddleOCR uses a fixed name)
+    PaddleOCR 3.7's ``OCRResult`` is a ``dict`` subclass — ``rec_texts`` /
+    ``rec_scores`` / ``rec_boxes`` are dict KEYS, not attributes. Plain
+    ``getattr()`` therefore silently returned the default, so a successful OCR
+    pass yielded 0 passages. Prefer key access; fall back to attribute access
+    for any build that exposes them as attributes instead.
     """
-    base = f"{_PADDLEOCR_HOME}/whl/{category}"
-    if category == "cls":
-        return f"{base}/ch_ppocr_mobile_v2.0_cls_infer"
-    # Per-language det + rec
-    name_lang = "en" if lang == "en" else lang
-    if category == "det":
-        return f"{base}/{name_lang}/en_PP-OCRv3_det_infer"
-    if category == "rec":
-        return f"{base}/{name_lang}/en_PP-OCRv4_rec_infer"
-    return base
+    if isinstance(result, dict) and key in result:
+        return result[key]
+    return getattr(result, key, default)
 
 
 async def parse_scanned(
@@ -161,9 +153,20 @@ def _parse_scanned_sync(
         use_textline_orientation=effective_settings["use_angle_cls"],
         lang=lang,
         device="gpu:0" if use_gpu else "cpu",
-        text_detection_model_dir=_model_dir("det", lang),
-        text_recognition_model_dir=_model_dir("rec", lang),
-        textline_orientation_model_dir=_model_dir("cls", lang),
+        # 2026-06-24: let PaddleOCR 3.7 auto-manage its PP-OCRv5/v6 models in the
+        # PaddleX cache (/tmp/.paddlex/official_models). The old explicit
+        # *_model_dir args pointed at legacy 2.x model names (ch_ppocr_mobile_
+        # v2.0_cls / PP-OCRv3_det / PP-OCRv4_rec) in the dead /tmp/.paddleocr/whl
+        # cache that 3.x never populates → FileNotFoundError on every scanned
+        # PDF. (Half-finished 2.x→3.x migration: param names + .predict() were
+        # updated, the model paths were not.)
+        #
+        # enable_mkldnn=False: the oneDNN path raises a PIR attribute-conversion
+        # NotImplementedError (ConvertPirAttribute2RuntimeAttribute) on this
+        # paddle CPU build. Eager kernels are slower (~30 s vs a few s/page) but
+        # correct. Re-enable once the PIR/oneDNN issue is resolved (see the
+        # MKLDNN-perf follow-up) for the fast path back.
+        enable_mkldnn=False,
     )
 
     pdf = pdfium.PdfDocument(str(pdf_path))
@@ -212,9 +215,9 @@ def _parse_scanned_sync(
                 per_page_retry_counts.append(0)
                 continue
 
-            texts = getattr(page_result, "rec_texts", []) or []
-            scores = getattr(page_result, "rec_scores", []) or []
-            boxes = getattr(page_result, "rec_boxes", None)
+            texts = _ocr_field(page_result, "rec_texts", []) or []
+            scores = _ocr_field(page_result, "rec_scores", []) or []
+            boxes = _ocr_field(page_result, "rec_boxes", None)
 
             confidences: list[float] = []
             region_idx = 0
