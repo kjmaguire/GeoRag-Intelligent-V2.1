@@ -1,44 +1,27 @@
 """PDF figure extraction and vision-based indexing.
 
-⚠️ TEMPORARILY STUBBED — CC-1 audit follow-up (2026-05-27)
+`extract_figures_from_pdf` extracts embedded raster images via pypdfium2
+(Apache-2.0) — the permissive replacement for the original PyMuPDF (`fitz`,
+AGPL-3.0) path, which was on the permanent-reject list and removed from
+pyproject.toml (2026-05-27 CC-1 audit). Restored 2026-06-24.
 
-PyMuPDF (`fitz`) is AGPL-3.0 and was on the project's permanent-reject
-list per plan §"What is deliberately not in this plan". The dependency
-has been REMOVED from pyproject.toml in favour of permissive
-alternatives (pypdfium2 — Apache 2.0; pypdf — BSD-3).
+Pipeline: extract_figures_from_pdf → generate_figure_descriptions →
+index_figures_to_qdrant (collection `georag_reports`). `extract_and_index_figures`
+runs all three. Today the only caller is the standalone scripts/index_figures.py;
+the §04p ingest workflow does NOT call it yet.
 
-This module's two functions (`extract_figures_from_pdf` and
-`extract_and_index_figures`) now return [] / 0 respectively. They
-preserve their public signatures so callers (e.g. ingest_pdf workflow
-steps that call `extract_and_index_figures` opportunistically) keep
-working without code changes; the result is that figure descriptions
-are not indexed into Qdrant until a permissive replacement lands.
-
-Follow-up work (planned, not in this session):
-
-  1. Rewrite `extract_figures_from_pdf` against pypdfium2's
-     `PdfDocument` + `PdfPage.get_objects(filter=...)` API. The
-     equivalent fitz calls were:
-        fitz.open(path)             → pdfium.PdfDocument(path)
-        len(doc)                    → len(pdf)
-        doc[page_num]               → pdf[page_num]
-        page.get_images(full=True)  → page.get_objects() filtered by
-                                       type == OBJECT_IMAGE
-        doc.extract_image(xref)     → image_obj.get_bitmap().to_pil()
-                                       → io.BytesIO buffer
-        doc.close()                 → pdf.close()
-
-  2. Verify against a real NI 43-101 PDF that figure counts + bytes +
-     dimensions match (within tolerance) what the old fitz path
-     produced. Memory `project_overnight_run_2026_05_22` references
-     figure_extractor + minio presigning — preserve that contract.
-
-  3. Re-enable indexing into the `georag_reports` Qdrant collection;
-     the embedding + payload shape is unchanged.
-
-For now, callers see a no-op. Figure-description Qdrant points
-written before this change remain indexed — only new ingest runs
-miss figure descriptions until the rewrite lands.
+Remaining follow-ups (each a separate piece of work):
+  1. **Vector figures.** Embedded-image extraction misses figures drawn as
+     vector graphics (many geological cross-sections / plan maps). A
+     layout-region render (use the §04p `layouts` figure bboxes + pypdfium2
+     page render + crop) would capture those too.
+  2. **VL descriptions.** generate_figure_descriptions is still rule-based
+     (page-position + aspect-ratio heuristics). Wiring it to the Qwen3-VL
+     sidecar (app.services.pdf_vl, served via vllm-vl) would give real
+     content-aware descriptions — that's where the local VL serving pays off.
+  3. **Auto-ingest wiring.** Call extract_and_index_figures from the ingest_pdf
+     workflow so figures are indexed during normal ingest, not only via the
+     manual script.
 """
 
 from __future__ import annotations
@@ -58,22 +41,85 @@ MIN_IMAGE_DIMENSION = 100     # 100 px width or height
 
 
 def extract_figures_from_pdf(pdf_path: str) -> list[dict]:
-    """STUB — CC-1 audit follow-up. PyMuPDF removed (AGPL).
+    """Extract embedded raster images from a PDF via pypdfium2 (Apache-2.0).
 
-    See module docstring for rewrite plan. Returns [] so callers keep
-    working without code changes; ingest pipelines just don't get
-    figure-description Qdrant entries until the pypdfium2 rewrite
-    lands.
+    Permissive replacement for the removed PyMuPDF (AGPL) path. Walks each page's
+    image objects, decodes them, and returns one dict per qualifying image.
+    Icons/logos/bullets are filtered by MIN_IMAGE_BYTES / MIN_IMAGE_DIMENSION,
+    and repeated images (letterheads on every page) are de-duped by SHA-256.
+
+    Scope: this finds embedded **raster** images only. Vector figures — many
+    geological cross-sections, plan maps and grade-tonnage curves are drawn as
+    vector graphics — are NOT captured here; a layout-region render + VL pass is
+    the richer follow-up (see module docstring).
 
     Returns:
-        Always an empty list.
+        list[dict], each: {page (1-based), width, height, sha256, format,
+        image_bytes}. Empty list if the PDF can't be opened or has no qualifying
+        images.
     """
+    import pypdfium2 as pdfium  # noqa: PLC0415 — heavy import, lazy
+
+    try:
+        pdf = pdfium.PdfDocument(pdf_path)
+    except Exception:
+        logger.exception("extract_figures_from_pdf: cannot open %s", pdf_path)
+        return []
+
+    figures: list[dict] = []
+    seen: set[str] = set()
+    try:
+        for page_idx in range(len(pdf)):
+            page = pdf[page_idx]
+            try:
+                objects = page.get_objects(filter=(pdfium.raw.FPDF_PAGEOBJ_IMAGE,))
+            except Exception:
+                logger.warning(
+                    "extract_figures_from_pdf: get_objects failed on page %d of %s",
+                    page_idx, os.path.basename(pdf_path) if pdf_path else "<unspecified>",
+                )
+                continue
+
+            for obj in objects:
+                try:
+                    pil = obj.get_bitmap().to_pil()
+                except Exception:
+                    continue  # undecodable image object — skip, don't abort the page
+                width, height = pil.size
+                # Filter tiny glyphs/icons/bullets (both dims small).
+                if width < MIN_IMAGE_DIMENSION and height < MIN_IMAGE_DIMENSION:
+                    continue
+                if pil.mode not in ("RGB", "L"):
+                    pil = pil.convert("RGB")
+                buf = io.BytesIO()
+                pil.save(buf, format="PNG")
+                data = buf.getvalue()
+                if len(data) < MIN_IMAGE_BYTES:
+                    continue
+                sha = hashlib.sha256(data).hexdigest()
+                if sha in seen:
+                    continue  # same image repeated across pages (e.g. letterhead)
+                seen.add(sha)
+                figures.append({
+                    "page": page_idx + 1,
+                    "width": width,
+                    "height": height,
+                    "sha256": sha,
+                    "format": "png",
+                    "image_bytes": data,
+                })
+    finally:
+        try:
+            pdf.close()
+        except Exception:
+            pass
+
     logger.info(
-        "figure_extractor.extract_figures_from_pdf: stub — PyMuPDF (AGPL) "
-        "removed pending pypdfium2 rewrite. Path skipped: %s",
+        "extract_figures_from_pdf: %d figure(s) from %s",
+        len(figures),
         os.path.basename(pdf_path) if pdf_path else "<unspecified>",
     )
-    return []
+    return figures
 
 
 def generate_figure_descriptions(figures: list[dict], report_title: str) -> list[dict]:
