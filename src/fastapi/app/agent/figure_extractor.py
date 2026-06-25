@@ -291,6 +291,68 @@ def generate_figure_descriptions(figures: list[dict], report_title: str) -> list
     return figures
 
 
+async def caption_image_with_vl(
+    image_bytes: bytes,
+    *,
+    context: str | None = None,
+    http_client: Any = None,
+    timeout_s: float | None = None,
+) -> str | None:
+    """Return a 1-3 sentence Qwen3-VL description of a figure image, or None.
+
+    The shared single-image VL call — used by describe_figures_with_vl and the
+    ingest_pdf persist figure-captioning path. NEVER raises: returns None on any
+    backend failure (down, timeout, empty reply) so callers keep their own
+    fallback (heuristic text / docling caption). Reuses pdf_vl's backend config
+    (PDF_VL_BACKEND_URL + resolved model id, i.e. the vllm-vl sidecar).
+    """
+    import httpx  # noqa: PLC0415
+
+    from app.services.pdf_vl import _DEFAULT_BACKEND_URL, _resolve_model_id  # noqa: PLC0415
+
+    backend_url = os.environ.get("PDF_VL_BACKEND_URL", _DEFAULT_BACKEND_URL).rstrip("/")
+    endpoint = f"{backend_url}/chat/completions"
+    model_id = _resolve_model_id()
+    if timeout_s is None:
+        timeout_s = float(os.environ.get("PDF_VL_TIMEOUT_S", "120"))
+
+    prompt = _FIGURE_VL_PROMPT + (f"\n\nSource report: {context}." if context else "")
+    body = {
+        "model": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii"),
+                        },
+                    },
+                ],
+            }
+        ],
+        "stream": False,
+        "temperature": 0.1,
+        "max_tokens": 256,
+    }
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=timeout_s)
+    try:
+        resp = await client.post(endpoint, json=body, timeout=timeout_s)
+        resp.raise_for_status()
+        text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        return text or None
+    except Exception as exc:  # noqa: BLE001 — caller keeps its fallback
+        logger.warning("caption_image_with_vl: VL failed (%s)", type(exc).__name__)
+        return None
+    finally:
+        if own_client:
+            await client.aclose()
+
+
 async def describe_figures_with_vl(
     figures: list[dict],
     report_title: str,
@@ -301,17 +363,15 @@ async def describe_figures_with_vl(
 
     Content-aware alternative to generate_figure_descriptions' page-position
     heuristics. Heuristic descriptions are computed FIRST as a guaranteed
-    fallback: any VL failure (backend down, timeout, empty reply) keeps the
-    heuristic text for that figure, so indexing is never blocked by the VL path.
-
-    Figures are described sequentially — the vllm-vl sidecar runs few concurrent
-    sequences and figure counts per report are small.
+    fallback: any VL failure keeps the heuristic text for that figure, so
+    indexing is never blocked. Figures are described sequentially — the vllm-vl
+    sidecar runs few concurrent sequences and figure counts per report are small.
 
     Args:
         figures: from extract_figures_from_pdf (each has image_bytes/page/sha256).
         report_title: source report title, woven into the prompt + description.
-        http_client: optional shared httpx.AsyncClient (e.g.
-            app.state.openai_http_client); a per-call client is used otherwise.
+        http_client: optional shared httpx.AsyncClient; a per-call client
+            otherwise.
 
     Returns:
         The same list with 'description' set — VL where it succeeded, else the
@@ -319,56 +379,27 @@ async def describe_figures_with_vl(
     """
     import httpx  # noqa: PLC0415
 
-    from app.services.pdf_vl import _DEFAULT_BACKEND_URL, _resolve_model_id  # noqa: PLC0415
-
     # Heuristic descriptions first — a guaranteed fallback for every figure.
     generate_figure_descriptions(figures, report_title)
     if not figures:
         return figures
 
-    backend_url = os.environ.get("PDF_VL_BACKEND_URL", _DEFAULT_BACKEND_URL).rstrip("/")
-    endpoint = f"{backend_url}/chat/completions"
-    model_id = _resolve_model_id()
     timeout_s = float(os.environ.get("PDF_VL_TIMEOUT_S", "120"))
-
-    async def _describe(fig: dict, client: "httpx.AsyncClient") -> None:
-        b64 = base64.b64encode(fig["image_bytes"]).decode("ascii")
-        body = {
-            "model": model_id,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"{_FIGURE_VL_PROMPT}\n\nSource report: {report_title}."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                    ],
-                }
-            ],
-            "stream": False,
-            "temperature": 0.1,
-            "max_tokens": 256,
-        }
-        try:
-            resp = await client.post(endpoint, json=body, timeout=timeout_s)
-            resp.raise_for_status()
-            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
-        except Exception as exc:  # noqa: BLE001 — keep the heuristic fallback
-            logger.warning(
-                "describe_figures_with_vl: VL failed for page %s (%s) — heuristic kept",
-                fig.get("page"), type(exc).__name__,
-            )
-            return
-        if text:
-            fig["description"] = (
-                f"Figure from {report_title}, page {fig['page']}: {text} "
-                f"[SHA256: {fig['sha256']}]"
-            )
-
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=timeout_s)
     try:
         for fig in figures:
-            await _describe(fig, client)
+            text = await caption_image_with_vl(
+                fig["image_bytes"],
+                context=report_title,
+                http_client=client,
+                timeout_s=timeout_s,
+            )
+            if text:
+                fig["description"] = (
+                    f"Figure from {report_title}, page {fig['page']}: {text} "
+                    f"[SHA256: {fig['sha256']}]"
+                )
     finally:
         if own_client:
             await client.aclose()

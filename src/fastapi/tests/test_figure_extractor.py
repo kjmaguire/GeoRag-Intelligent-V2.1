@@ -18,6 +18,7 @@ from PIL import Image
 from app.agent.figure_extractor import (
     MIN_IMAGE_BYTES,
     MIN_IMAGE_DIMENSION,
+    caption_image_with_vl,
     describe_figures_with_vl,
     extract_figures_from_layout,
     extract_figures_from_pdf,
@@ -205,3 +206,22 @@ def test_describe_figures_with_vl_empty_reply_keeps_heuristic() -> None:
     client = _FakeClient(payload={"choices": [{"message": {"content": "   "}}]})
     out = asyncio.run(describe_figures_with_vl([_figure(1)], "Test Report", http_client=client))
     assert "Image is 300x200 px" in out[0]["description"]
+
+
+# --- caption_image_with_vl (shared single-image VL call) --------------------
+
+def test_caption_image_with_vl_returns_text() -> None:
+    client = _FakeClient(payload={"choices": [{"message": {"content": "A grade-tonnage curve."}}]})
+    out = asyncio.run(caption_image_with_vl(b"png-bytes", context="Report X", http_client=client))
+    assert out == "A grade-tonnage curve."
+    assert client.calls == 1
+
+
+def test_caption_image_with_vl_none_on_failure() -> None:
+    client = _FakeClient(raise_exc=RuntimeError("vllm-vl down"))
+    assert asyncio.run(caption_image_with_vl(b"png-bytes", http_client=client)) is None
+
+
+def test_caption_image_with_vl_none_on_empty_reply() -> None:
+    client = _FakeClient(payload={"choices": [{"message": {"content": "  "}}]})
+    assert asyncio.run(caption_image_with_vl(b"png-bytes", http_client=client)) is None

@@ -208,6 +208,14 @@ def _reset_parse_pool() -> None:
 # explicit cleanup hook below.
 _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
+# Phase 2 (2026-06-24): when set, persist captions each docling figure with the
+# Qwen3-VL sidecar (an S3 GET + a VL call per figure) and folds the description
+# into the figure's ReportSection text before embedding. Off by default — shares
+# the FIGURE_VL_DESCRIPTIONS switch with the standalone figure_extractor path.
+_FIGURE_VL_CAPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 
 def _cached_pdf_path(sha256: str) -> str:
     """Return the path where a PDF body lives in the local body cache."""
@@ -922,9 +930,28 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         )
                         final_key = None
 
+                # Phase 2: content-aware caption from the Qwen3-VL sidecar,
+                # folded into the section text so it's embedded with the figure.
+                # Flag-gated + best-effort: any failure keeps the docling caption.
+                vl_desc: str | None = None
+                if _FIGURE_VL_CAPTIONS and final_key:
+                    try:
+                        from app.agent.figure_extractor import caption_image_with_vl
+                        _img = s3.get_object(Bucket=bucket, Key=final_key)["Body"].read()
+                        vl_desc = await caption_image_with_vl(
+                            _img, context=parsed.get("title"),
+                        )
+                    except Exception as vl_exc:  # noqa: BLE001 — never block persist
+                        log.warning(
+                            "ingest_pdf.persist: figure VL caption failed (key=%s): %s",
+                            final_key, vl_exc,
+                        )
+
                 section_lines = [f"Figure on page {page_no}."]
                 if caption:
                     section_lines.append(f"Caption: {caption}")
+                if vl_desc:
+                    section_lines.append(f"Description: {vl_desc}")
                 if final_key:
                     section_lines.append(f"Image: s3://{bucket}/{final_key}")
                 figure_sections_out.append({
