@@ -7,6 +7,7 @@ so the path can't silently regress to a no-op stub again.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from PIL import Image
 from app.agent.figure_extractor import (
     MIN_IMAGE_BYTES,
     MIN_IMAGE_DIMENSION,
+    describe_figures_with_vl,
     extract_figures_from_pdf,
 )
 
@@ -81,3 +83,73 @@ def test_extract_figures_distinct_images_on_pages(tmp_path: Path) -> None:
 def test_extract_figures_missing_file_returns_empty() -> None:
     # Bad path must degrade to [] (callers run it opportunistically), not raise.
     assert extract_figures_from_pdf("/nonexistent/does-not-exist.pdf") == []
+
+
+# --- describe_figures_with_vl (Qwen3-VL captioning, mocked backend) ---------
+
+class _FakeResp:
+    def __init__(self, payload: dict) -> None:
+        self._p = payload
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._p
+
+
+class _FakeClient:
+    """Stand-in for httpx.AsyncClient — returns a canned reply or raises."""
+
+    def __init__(self, payload: dict | None = None, raise_exc: Exception | None = None) -> None:
+        self._payload = payload
+        self._raise = raise_exc
+        self.calls = 0
+
+    async def post(self, url, json=None, timeout=None):  # noqa: ANN001
+        self.calls += 1
+        if self._raise is not None:
+            raise self._raise
+        return _FakeResp(self._payload or {})
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _figure(page: int = 1) -> dict:
+    return {
+        "page": page, "width": 300, "height": 200,
+        "sha256": "a" * 64, "format": "png", "image_bytes": b"\x89PNG-bytes",
+    }
+
+
+def test_describe_figures_with_vl_uses_vl_text() -> None:
+    payload = {"choices": [{"message": {
+        "content": "A drill collar location plan showing 12 holes over the PLS conductor."
+    }}]}
+    client = _FakeClient(payload=payload)
+    out = asyncio.run(describe_figures_with_vl([_figure(2)], "Test Report", http_client=client))
+
+    assert client.calls == 1
+    desc = out[0]["description"]
+    assert "drill collar location plan" in desc   # VL text used
+    assert "Test Report" in desc and "page 2" in desc
+
+
+def test_describe_figures_with_vl_falls_back_to_heuristic_on_failure() -> None:
+    client = _FakeClient(raise_exc=RuntimeError("vllm-vl unreachable"))
+    out = asyncio.run(describe_figures_with_vl([_figure(1)], "Test Report", http_client=client))
+
+    # VL failed → the heuristic description (computed first) is retained,
+    # indexing is never blocked.
+    desc = out[0]["description"]
+    assert desc
+    assert "Image is 300x200 px" in desc   # heuristic signature, not VL text
+
+
+def test_describe_figures_with_vl_empty_reply_keeps_heuristic() -> None:
+    # 200 but empty content → keep the heuristic, don't write a blank description.
+    client = _FakeClient(payload={"choices": [{"message": {"content": "   "}}]})
+    out = asyncio.run(describe_figures_with_vl([_figure(1)], "Test Report", http_client=client))
+    assert "Image is 300x200 px" in out[0]["description"]

@@ -26,6 +26,7 @@ Remaining follow-ups (each a separate piece of work):
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import logging
@@ -38,6 +39,23 @@ logger = logging.getLogger(__name__)
 # Minimum image size thresholds to filter out icons/logos/bullets
 MIN_IMAGE_BYTES = 5_000       # 5 KB
 MIN_IMAGE_DIMENSION = 100     # 100 px width or height
+
+# When truthy, extract_and_index_figures describes figures with the Qwen3-VL
+# sidecar (PDF_VL_BACKEND_URL) instead of the rule-based heuristic. Off by
+# default — the VL path adds a per-figure inference call; opt in per deployment.
+FIGURE_VL_DESCRIPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Prompt for the VL figure-captioning call. Retrieval-oriented + grounded.
+_FIGURE_VL_PROMPT = (
+    "You are a geological-document analyst. In 1-3 sentences, describe this figure "
+    "from a mining/exploration technical report for search indexing. State the "
+    "figure type (e.g. location map, geological cross-section, drill plan/collar "
+    "map, grade-tonnage curve, stratigraphic column, geophysical survey, core "
+    "photo), what it depicts, and any visible labels, units, place names, or hole "
+    "IDs. Be specific and factual — do not invent details that are not visible."
+)
 
 
 def extract_figures_from_pdf(pdf_path: str) -> list[dict]:
@@ -175,6 +193,91 @@ def generate_figure_descriptions(figures: list[dict], report_title: str) -> list
     return figures
 
 
+async def describe_figures_with_vl(
+    figures: list[dict],
+    report_title: str,
+    *,
+    http_client: Any = None,
+) -> list[dict]:
+    """Populate fig['description'] via the Qwen3-VL sidecar (PDF_VL_BACKEND_URL).
+
+    Content-aware alternative to generate_figure_descriptions' page-position
+    heuristics. Heuristic descriptions are computed FIRST as a guaranteed
+    fallback: any VL failure (backend down, timeout, empty reply) keeps the
+    heuristic text for that figure, so indexing is never blocked by the VL path.
+
+    Figures are described sequentially — the vllm-vl sidecar runs few concurrent
+    sequences and figure counts per report are small.
+
+    Args:
+        figures: from extract_figures_from_pdf (each has image_bytes/page/sha256).
+        report_title: source report title, woven into the prompt + description.
+        http_client: optional shared httpx.AsyncClient (e.g.
+            app.state.openai_http_client); a per-call client is used otherwise.
+
+    Returns:
+        The same list with 'description' set — VL where it succeeded, else the
+        heuristic.
+    """
+    import httpx  # noqa: PLC0415
+
+    from app.services.pdf_vl import _DEFAULT_BACKEND_URL, _resolve_model_id  # noqa: PLC0415
+
+    # Heuristic descriptions first — a guaranteed fallback for every figure.
+    generate_figure_descriptions(figures, report_title)
+    if not figures:
+        return figures
+
+    backend_url = os.environ.get("PDF_VL_BACKEND_URL", _DEFAULT_BACKEND_URL).rstrip("/")
+    endpoint = f"{backend_url}/chat/completions"
+    model_id = _resolve_model_id()
+    timeout_s = float(os.environ.get("PDF_VL_TIMEOUT_S", "120"))
+
+    async def _describe(fig: dict, client: "httpx.AsyncClient") -> None:
+        b64 = base64.b64encode(fig["image_bytes"]).decode("ascii")
+        body = {
+            "model": model_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"{_FIGURE_VL_PROMPT}\n\nSource report: {report_title}."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ],
+                }
+            ],
+            "stream": False,
+            "temperature": 0.1,
+            "max_tokens": 256,
+        }
+        try:
+            resp = await client.post(endpoint, json=body, timeout=timeout_s)
+            resp.raise_for_status()
+            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        except Exception as exc:  # noqa: BLE001 — keep the heuristic fallback
+            logger.warning(
+                "describe_figures_with_vl: VL failed for page %s (%s) — heuristic kept",
+                fig.get("page"), type(exc).__name__,
+            )
+            return
+        if text:
+            fig["description"] = (
+                f"Figure from {report_title}, page {fig['page']}: {text} "
+                f"[SHA256: {fig['sha256']}]"
+            )
+
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=timeout_s)
+    try:
+        for fig in figures:
+            await _describe(fig, client)
+    finally:
+        if own_client:
+            await client.aclose()
+
+    return figures
+
+
 async def index_figures_to_qdrant(
     figures: list[dict],
     report_id: str,
@@ -238,16 +341,31 @@ async def extract_and_index_figures(
     report_title: str,
     qdrant_client: Any,
     embedding_model: Any,
+    *,
+    use_vl: bool | None = None,
 ) -> int:
     """Full pipeline: extract → describe → embed → index.
 
-    Returns the number of figures indexed.
+    Args:
+        use_vl: describe figures with the Qwen3-VL sidecar instead of the
+            page-position heuristic. ``None`` (default) reads the
+            ``FIGURE_VL_DESCRIPTIONS`` env flag. VL failures fall back to the
+            heuristic per figure, so this never blocks indexing.
+
+    Returns:
+        The number of figures indexed.
     """
     figures = extract_figures_from_pdf(pdf_path)
     if not figures:
         return 0
 
-    figures = generate_figure_descriptions(figures, report_title)
+    if use_vl is None:
+        use_vl = FIGURE_VL_DESCRIPTIONS
+    if use_vl:
+        figures = await describe_figures_with_vl(figures, report_title)
+    else:
+        figures = generate_figure_descriptions(figures, report_title)
+
     count = await index_figures_to_qdrant(
         figures, report_id, project_id, report_title,
         qdrant_client, embedding_model,
