@@ -1715,7 +1715,7 @@ services:
     # Re-using minio/mc as the S3 admin client \u2014 it speaks generic S3 and
     # works fine against SeaweedFS's S3 endpoint.
     # B8 — digest pinned 2026-04-19
-    image: minio/mc:RELEASE.2025-04-08T15-39-49Z@sha256:7e3efb09c22c0882fbf341b9d99f61f94ae6c4c20a06f2f1a2b20ea8993d8952
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     container_name: georag-minio-init
     entrypoint: >
       sh -c "
@@ -3018,7 +3018,7 @@ services:
   # redis_memory_used_bytes, slowlog depth on :9121/metrics.
   # ---------------------------------------------------------------------------
   redis_exporter:
-    image: oliver006/redis_exporter:v1.74.0-alpine
+    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
     container_name: georag-redis-exporter
     restart: unless-stopped
     environment:

@@ -59,7 +59,7 @@ services:
   redis_exporter:
     profiles:
       - dev-monitor
-    image: oliver006/redis_exporter:v1.74.0-alpine
+    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
     container_name: georag-redis-exporter
     command:
       - --redis.addr=redis://redis:6380
