@@ -128,7 +128,7 @@ jobs:
       # Install SOPS for secret decryption.
       - name: Install SOPS
         run: |
-          SOPS_VERSION=3.9.4
+          SOPS_VERSION=3.13.1
           curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops_${SOPS_VERSION}_linux_amd64.deb" \
             -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb
@@ -254,7 +254,7 @@ jobs:
 
       - name: Install SOPS
         run: |
-          SOPS_VERSION=3.9.4
+          SOPS_VERSION=3.13.1
           curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops_${SOPS_VERSION}_linux_amd64.deb" \
             -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb
@@ -433,7 +433,7 @@ jobs:
 
       - name: Install SOPS
         run: |
-          SOPS_VERSION=3.9.4
+          SOPS_VERSION=3.13.1
           curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops_${SOPS_VERSION}_linux_amd64.deb" \
             -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb

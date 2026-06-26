@@ -50,7 +50,7 @@ concurrency:
   cancel-in-progress: false  # never cancel a release gate run mid-flight
 
 env:
-  PHP_VERSION: "8.4"
+  PHP_VERSION: "8.5"
   PYTHON_VERSION: "3.13"
   COMPOSE_PROJECT_NAME: georag
 

@@ -24,23 +24,30 @@
 # Scripts are bind-mounted read-only at /backup-scripts/
 # Staging volume is mounted at /backup/staging (rw)
 #
-# Base image: alpine:3.20 — pinned by digest.
+# Base image: alpine:3.22 — pinned by digest (bumped from EOL 3.20).
 # Re-pin procedure:
-#   docker pull alpine:3.20
-#   docker inspect alpine:3.20 --format '{{index .RepoDigests 0}}'
+#   docker pull alpine:3.22
+#   docker inspect alpine:3.22 --format '{{index .RepoDigests 0}}'
 #   Update the FROM line below.
 #
 # postgresql18-client is sourced from Alpine edge/main + edge/community via
 # explicit --repository flags. This is a deliberate version override: Alpine
-# 3.20 stable repos top out at pg16, but pg_basebackup enforces strict
+# stable repos lag the pg18 client, but pg_basebackup enforces strict
 # major-version matching (16 client vs 18 server returns "incompatible server
 # version"). The edge packages are pinned via the FROM digest to a reproducible
 # build layer.
 # =============================================================================
 
-# Digest pinned 2026-04-19 from alpine:3.20 (docker.io/library/alpine:3.20)
-# docker pull alpine:3.20 && docker inspect alpine:3.20 --format '{{index .RepoDigests 0}}'
-FROM alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+# 2026-06-24 re-audit: bumped 3.20 -> 3.22. Alpine 3.20 hit EOL on
+# 2026-04-01 (no more security updates). 3.22 is current stable.
+# The pg18-client edge-repo mechanism (--repository flags below) is
+# unaffected by the base bump (edge is edge regardless of stable
+# version). REBUILD + smoke-test the backup path after this change:
+#   docker compose build backup-agent
+#   docker exec georag-backup-agent pg_basebackup --version   # expect 18.x
+# Digest pinned 2026-06-24 from alpine:3.22
+# docker pull alpine:3.22 && docker inspect alpine:3.22 --format '{{index .RepoDigests 0}}'
+FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 
 # Install backup tools in a single layer.
 # postgresql18-client: pg_basebackup 18.3 sourced from Alpine edge repos via

@@ -100,8 +100,15 @@ dependencies = [
     #                      GHSA-mj87-hwqh-73pj (5.3, ResourceWarning leak)   fix 0.0.26
     #   authlib            GHSA-r95x-qfjj-fjj2 (6.1, JWS header confusion)   fix 1.6.12
     #                      GHSA-jj8c-mmj3-mmgv (5.4, weak audience check)    fix 1.6.11
+    #
+    # 2026-06-24 re-audit: python-multipart floor raised 0.0.27 -> 0.0.31.
+    # Two newer advisories now sit ABOVE the old floor:
+    #   CVE-2026-53537 (param smuggling)     fix 0.0.30
+    #   CVE-2026-53540 (DoS)                 fix 0.0.31
+    # urllib3 (>=2.7.0) + authlib (>=1.6.12) re-checked — both floors are
+    # still above all current advisories, left unchanged.
     "urllib3>=2.7.0,<3.0",
-    "python-multipart>=0.0.27",
+    "python-multipart>=0.0.31",
     "authlib>=1.6.12",
     # §04p Phase 1.A — PDF Ingestion Subsystem
     # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
@@ -291,7 +298,11 @@ dependencies = [
     # GHSA-983w-rhvv-gwmv (SSRF protection bypass via HTTP redirect,
     # fix in 68.0). Stays inside a major-version range so the PDF
     # renderer's HTML/CSS expectations don't shift.
-    "weasyprint>=68.0,<69.0",
+    # 2026-06-24 re-audit: cap raised <69.0 -> <70.0. The old <69.0 cap
+    # EXCLUDED the only patched release for CVE-2026-49452 (CSS injection),
+    # which was fixed in weasyprint 69.0. Admitting 69.x closes it while
+    # still blocking a 70.x major jump.
+    "weasyprint>=68.0,<70.0",
     "python-docx>=1.1,<2.0",
     "openpyxl>=3.1,<4.0",
 

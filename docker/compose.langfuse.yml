@@ -94,7 +94,10 @@ services:
   # langfuse-init — one-shot database/role provisioning (matches n8n-init shape)
   # ---------------------------------------------------------------------------
   langfuse-init:
-    image: postgres:18-alpine
+    # 2026-06-24 re-audit: was unpinned `postgres:18-alpine`; pinned to
+    # 18.4-alpine + digest for reproducibility (this one-shot init ran a
+    # different PG client version on every fresh pull).
+    image: postgres:18.4-alpine@sha256:1b1689b20d16a014a3d195653381cf2caa75a41a92d93b255a9d6ea29fd353aa
     container_name: georag-langfuse-init
     restart: "no"
     depends_on:

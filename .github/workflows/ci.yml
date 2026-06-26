@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PHP_VERSION: "8.4"
+  PHP_VERSION: "8.5"
   NODE_VERSION: "22"
   PYTHON_VERSION: "3.13"
 
@@ -475,7 +475,10 @@ jobs:
       # base images are updated to non-EOL OS versions.
       # ignore-unfixed: true skips CVEs with no upstream fix (noise reduction).
       - name: Trivy scan — ${{ matrix.service }}
-        uses: aquasecurity/trivy-action@master
+        # 2026-06-24 re-audit: was @master — a floating branch ref on a
+        # repo that suffered a tag-hijack supply-chain incident in March
+        # 2026 (GHSA-69fq-xp46-6x23). Pinned to a release tag.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
           format: table
@@ -515,9 +518,11 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Install Cosign — ${{ matrix.service }}
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3
+        # 2026-06-24 re-audit: installer v3 cannot install Cosign v3.x;
+        # bumped to v4 + cosign-release to the current v3.1.1.
+        uses: sigstore/cosign-installer@v4
         with:
-          cosign-release: 'v2.4.1'
+          cosign-release: 'v3.1.1'
 
       - name: Cosign sign image — ${{ matrix.service }}
         if: github.event_name != 'pull_request'

@@ -2003,7 +2003,11 @@ services:
   # real user never sees the cold path. Exits 0 when done; `restart: "no"`
   # prevents looping. Profile-gated to track the vllm service.
   vllm-warmup:
-    image: curlimages/curl:8.10.1
+    # 2026-06-24 re-audit: 8.10.1 -> 8.21.0 + digest. 8.10.1 was ~10
+    # releases stale with credential-leak CVEs (CVE-2024-11053 .netrc,
+    # CVE-2026-8927 cross-proxy Digest leak). Non-critical sidecar but
+    # easy to keep current.
+    image: curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
     container_name: georag-vllm-warmup
     profiles: ["gpu-llm", "gpu-llm-prod"]
     depends_on:
