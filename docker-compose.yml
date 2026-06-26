@@ -1792,7 +1792,19 @@ services:
     # Larger GPUs (L40S 48 GB, A100 80 GB) unlock BF16 and longer context.
     # 2026-05-18 — bumped v0.19.1 → v0.21.0 for MoE scheduler + speculative
     # decoding improvements. Digest pinned post-pull-and-validate.
-    image: vllm/vllm-openai:v0.21.0@sha256:a230095847e93bd4df9888b33dab956fa9504537b828a23657d2b26fed57b5c9
+    # 2026-06-26 — bumped v0.21.0 → v0.23.0. ~29% E2E latency win (0.22
+    # CUTLASS FP8 batch-invariant path). VALIDATED on the live A4500:
+    # all tuned flags accepted unchanged (speculative-config ngram +
+    # compilation-config cudagraph_capture_sizes/max_cudagraph_capture_size
+    # both honored), engine init OK, no OOM (KV cache 3.28 GiB / 43k
+    # tokens at the .env mem-util 0.72), health green, smoke chat
+    # completion served. Two 0.23 behaviors noted: (1) Qwen3 dense now
+    # runs Model Runner V2 by default (since 0.22) — re-validate KV
+    # headroom if VLLM_GPU_MEM_UTIL is raised back toward 0.93; (2) vLLM
+    # auto-downgrades cudagraph_mode FULL_AND_PIECEWISE -> PIECEWISE under
+    # spec-decode+FlashInfer (handled internally, non-fatal). Image ships
+    # CUDA 13.0/torch 2.11 — host driver is CUDA 13.2, compatible.
+    image: vllm/vllm-openai:v0.23.0@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
     container_name: georag-vllm
     restart: unless-stopped
     ports:
@@ -1936,7 +1948,7 @@ services:
   # PDF_VL_BACKEND_URL=http://vllm-vl:8000/v1 + PDF_VL_MODEL_VERSION=3. The
   # compressed-tensors quant is auto-detected by vLLM (no --quantization flag).
   vllm-vl:
-    image: vllm/vllm-openai:v0.21.0@sha256:a230095847e93bd4df9888b33dab956fa9504537b828a23657d2b26fed57b5c9
+    image: vllm/vllm-openai:v0.23.0@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
     container_name: georag-vllm-vl
     restart: unless-stopped
     ports:
