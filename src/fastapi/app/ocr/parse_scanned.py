@@ -161,12 +161,22 @@ def _parse_scanned_sync(
         # PDF. (Half-finished 2.x→3.x migration: param names + .predict() were
         # updated, the model paths were not.)
         #
-        # enable_mkldnn=False: the oneDNN path raises a PIR attribute-conversion
-        # NotImplementedError (ConvertPirAttribute2RuntimeAttribute) on this
-        # paddle CPU build. Eager kernels are slower (~30 s vs a few s/page) but
-        # correct. Re-enable once the PIR/oneDNN issue is resolved (see the
-        # MKLDNN-perf follow-up) for the fast path back.
-        enable_mkldnn=False,
+        # enable_mkldnn=True: the oneDNN fast path. It is ~2.6x faster than
+        # eager CPU kernels (~12 s vs ~31 s/page warm on the PLS-2024 fixture
+        # under a loaded host) with byte-identical output. The fast path is
+        # only safe because we pin paddlepaddle<3.3 (see pyproject.toml): on
+        # paddle 3.3.x the PIR-based oneDNN executor crashes on CPU with
+        # `ConvertPirAttribute2RuntimeAttribute not support
+        # ArrayAttribute<DoubleAttribute>` — a 3.3.x regression
+        # (PaddlePaddle/Paddle#77340) that no runtime flag dodges (the
+        # device-type setter force-sets FLAGS_enable_pir_api=1 and the CPU
+        # predictor always calls enable_new_executor(), so enable_new_ir=False
+        # does not avoid it). The upstream fix (Paddle PR #77430) is merged to
+        # `develop` and verified on nightly 3.5.0.dev, but no stable wheel
+        # carries it yet — see the pyproject.toml paddlepaddle pin for the
+        # un-pin trigger. If paddle is ever bumped to ≥3.3 before a fixed
+        # stable release, this MUST go back to enable_mkldnn=False.
+        enable_mkldnn=True,
     )
 
     pdf = pdfium.PdfDocument(str(pdf_path))

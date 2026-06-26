@@ -169,6 +169,29 @@ dependencies = [
     #   Wheel size: ~500 MB (CPU) to ~2 GB (GPU).  Install time is significant.
     #   PaddleOCR depends on paddlepaddle but does not always pull it cleanly
     #   via its own transitive deps, so we pin it explicitly here.
+    #   UPPER CAP <3.3 (2026-06-25): paddle 3.3.x introduced a CPU oneDNN
+    #   regression — the PIR-based oneDNN executor raises
+    #   `ConvertPirAttribute2RuntimeAttribute not support
+    #   ArrayAttribute<DoubleAttribute>` on every scanned-PDF OCR pass
+    #   (PaddlePaddle/Paddle#77340). No runtime flag dodges it: PaddleX
+    #   force-sets FLAGS_enable_pir_api=1 and the CPU predictor always calls
+    #   enable_new_executor(), so enable_new_ir=False does not help.
+    #   UPSTREAM STATUS (verified 2026-06-25): the fix is already merged to
+    #   Paddle `develop` — PR PaddlePaddle/Paddle#77430 ("fixing 77340",
+    #   merged 2026-04-16) adds the ArrayAttribute<DoubleAttribute> branch.
+    #   Verified empirically: nightly paddlepaddle==3.5.0.dev20260625 runs
+    #   enable_mkldnn=True on the PLS-2024 fixture with NO crash. BUT no
+    #   *stable* wheel carries it yet — both PyPI and the Paddle stable index
+    #   top out at the broken 3.3.1, and issue #77340 is still open (unreleased
+    #   /not backported). So we pin below 3.3 where mkldnn-on is correct AND
+    #   ~2.6x faster than eager (ocr/parse_scanned.py relies on this).
+    #   UN-PIN TRIGGER: when a stable paddle >3.3 that includes #77430 ships,
+    #   raise this cap (e.g. >=3.4) and re-run
+    #   `pytest tests/test_ocr_scanned_path.py -k produces_passages` with
+    #   enable_mkldnn=True. Do NOT ride a nightly in prod. NOTE: the GPU wheel
+    #   below is still 3.3.1 — the bug is CPU-oneDNN-only so GPU inference is
+    #   unaffected, BUT a GPU host that falls back to CPU OCR (use_gpu False)
+    #   would hit it; pin the GPU wheel too if that becomes a real path.
     # paddleocr: Apache 2.0 — PP-OCRv5 text recognition engine.
     #   Downloads model weights (~50–150 MB) on first use per lang code.
     #   Default lang is 'en' (overridable via env PDF_OCR_LANG).
@@ -177,12 +200,12 @@ dependencies = [
     #   (~500 MB CPU wheel, ~2 GB GPU wheel).  Either rebuild the fastapi
     #   Docker image or run:
     #     # CPU (laptops, CI):
-    #     uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'
+    #     uv pip install 'paddlepaddle>=3.1,<3.3' 'paddleocr[doc-parser]>=3.7,<4.0'
     #     # GPU (production workers with CUDA passthrough):
     #     pip install 'paddlepaddle-gpu==3.3.1' \\
     #         --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ \\
     #         --extra-index-url https://pypi.org/simple/
-    "paddlepaddle>=3.1",
+    "paddlepaddle>=3.1,<3.3",
     # 2026-06-23 sweep: paddleocr 2.10 -> 3.7+ (currently resolves 3.7.0).
     # Major bump: 3.x ships PP-OCRv5/v6 as default + new `.predict()` API
     # surface + renamed constructor kwargs (`use_angle_cls` ->
