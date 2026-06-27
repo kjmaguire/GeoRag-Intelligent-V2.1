@@ -2761,7 +2761,9 @@ services:
   # YAML files are the source of truth.
   # ---------------------------------------------------------------------------
   kestra:
-    image: kestra/kestra:v1.2.18
+    # v1.3.25 (2026-06, SHA-pinned). Bumped from v1.2.18 in the 2026-06-26
+    # version sweep; minor within the v1 line — flows + plugin API stable.
+    image: kestra/kestra:v1.3.25@sha256:2289a0cd123e4b7a76661b486cdaaada42c1759502d09746b7930d1c8ca6d402
     container_name: georag-kestra
     restart: unless-stopped
     # Kestra base image runs without root, but standalone mode needs root
