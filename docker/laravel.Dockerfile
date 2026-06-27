@@ -88,9 +88,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 2026-06-03 sweep: digest captured from `docker pull composer:2`.
 COPY --from=composer:2@sha256:7725eb4545c438629ae8bde3ef0bb9a5038ef566126ad878442a69007242d267 /usr/bin/composer /usr/bin/composer
 
-# Install Node.js 22.x (LTS) for the Inertia SSR + Vite asset build.
-# We pin the major version; the NodeSource script locks to the latest 22.x patch.
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+# Install Node.js 24.x (Active LTS) for the Inertia SSR + Vite asset build.
+# We pin the major version; the NodeSource script locks to the latest 24.x patch.
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
