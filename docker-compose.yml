@@ -3214,14 +3214,12 @@ services:
     profiles: ["promtail-legacy"]
 
   # ---------------------------------------------------------------------------
-  # GRAFANA ALLOY (2026-06-23 sweep) — Promtail successor (Phase 1 scaffold).
-  # Runs IN PARALLEL with promtail above per the migration plan in
-  # ops/runbooks/promtail-to-alloy-migration.md. Translated config lives at
-  # docker/alloy/config.alloy. During the shadow window both ship to Loki
-  # — Alloy writes to a separate tenant (see config.alloy comment) so per-
-  # stream line counts can be diffed cleanly before cutover. Once cutover
-  # passes the shadow-window gate, comment-out promtail and remove the
-  # tenant_id line in config.alloy.
+  # GRAFANA ALLOY (2026-06-23 sweep) — Promtail successor. PRIMARY log shipper
+  # as of the 2026-06-24 cutover: Promtail is parked in the `promtail-legacy`
+  # profile (no longer auto-starts) and Alloy writes to Loki's default tenant
+  # (the shadow-window tenant_id was removed from docker/alloy/config.alloy).
+  # Config lives at docker/alloy/config.alloy. Rollback + history:
+  # docs/runbooks/promtail-to-alloy-migration.md.
   # ---------------------------------------------------------------------------
   alloy:
     image: grafana/alloy:v1.10.0@sha256:1bc130e909116a4bf950eb5187a346007d3b796f96832b529acb14a64e41230f

@@ -27,17 +27,15 @@
 //     — Optional consolidation."
 
 // -----------------------------------------------------------------------------
-// Logging output endpoint — Loki. During the shadow window, Alloy posts
-// to a dedicated tenant (X-Scope-OrgID header) so its stream doesn't
-// pollute Promtail's canonical stream. Promote to the same tenant /
-// drop the header at cutover time.
+// Logging output endpoint — Loki. Cutover complete (2026-06-24): Alloy is
+// the primary log shipper and writes to the default tenant (no X-Scope-OrgID
+// header). The former shadow-window tenant_id ("alloy-shadow") has been
+// removed. Promtail is parked in the `promtail-legacy` compose profile for
+// rollback. See docs/runbooks/promtail-to-alloy-migration.md.
 // -----------------------------------------------------------------------------
 loki.write "default" {
   endpoint {
     url = "http://loki:3100/loki/api/v1/push"
-    // SHADOW WINDOW ONLY — separate tenant so we can A/B diff:
-    //   tenant_id = "alloy-shadow"
-    // At cutover, delete the tenant_id line above.
   }
 }
 
