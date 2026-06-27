@@ -7,7 +7,7 @@ import '@fontsource/inter-tight/700.css';
 import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/600.css';
-import { createInertiaApp } from '@inertiajs/react';
+import { createInertiaApp, type ResolvedComponent } from '@inertiajs/react';
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from './Components/ErrorBoundary';
 
@@ -31,13 +31,17 @@ createInertiaApp({
     resolve: (name: string) => {
         const pages = import.meta.glob('./Pages/**/*.tsx') as Record<
             string,
-            () => Promise<{ default: React.ComponentType }>
+            () => Promise<{ default: ResolvedComponent }>
         >;
         const loader = pages[`./Pages/${name}.tsx`];
         if (!loader) {
             throw new Error(`[Inertia] page not found: ${name}`);
         }
-        return loader();
+        // @inertiajs/react v3's ComponentResolver async branch is
+        // `Promise<ReactComponent>` — the component itself, NOT the module
+        // object (v2 accepted `Promise<{ default }>`; v3 does not). Unwrap the
+        // default so code-split pages resolve to the bare component.
+        return loader().then((module) => module.default);
     },
     setup({ el, App, props }) {
         createRoot(el!).render(
