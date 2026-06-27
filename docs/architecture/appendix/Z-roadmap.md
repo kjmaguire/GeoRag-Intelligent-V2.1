@@ -163,3 +163,16 @@ implementation work the appendices specify. Priority order:
 24. **Cutover from `index_reports` → `index_document_passages`** — both run today; flip the reranker chain + retrieval default once `georag_chunks` is fully populated.
 25. **`gold.repair_shadow_daily` Grafana dashboard** — workflow writes rows; dashboard JSON still owed.
 26. **`silver.entity_aliases` SME backfill loop** — gap rows accrue in `silver.entity_gaps`; SME-facing UI to convert gaps → aliases is owed.
+
+### Pass 5 additions (2026-06-26 — 2026-06 audit wave)
+
+27. **🔴 Dagster index assets hardcode 384-dim — fix before any re-materialise.** [index_document_passages.py:67](../../../src/dagster/georag_dagster/assets/index_document_passages.py), `index_reports.py`, `index_public_geoscience.py` all declare 384-dim `VectorParams`; production `georag_chunks` is 1024-dim (Qwen3). Re-running them recreates the collection at the wrong dim and breaks retrieval. Make them read `EMBEDDING_DIMENSION` from settings, or guard against down-dim recreation. See [Ch 18 §2.1](../manual/18-model-stack-evolution.md).
+28. **Propagate the Qwen3 swap into code defaults** — `embedding_service.py:41` + `docker-compose.yml` defaults + `services/reranker.py` still name bge models; a fresh `.env.example` install gets the old models. Either flip the defaults or document the required `.env` lines prominently.
+29. **Add `EMBEDDING_MODEL_NAME` + `EMBEDDING_DIMENSION` to `.env.example`** — currently absent; fresh installs fall through to the bge-small compose default.
+30. **Write the embedding-swap runbook** — memory expected `docs/runbooks/embedding-swap-qwen3.md`; it doesn't exist. The cutover learnings live only in `ops/baselines/qwen3-embedding-cutover-2026-06-04.md`.
+31. **Commit the post-swap eval baseline** — `run_eval_120.py` was PENDING at cutover; no committed artifact confirms the 1024-dim Qwen3 retrieval quality vs the prior bge-small-domain-ft.
+32. **Qwen3-VL-8B deploy gate** (ADR-0015) — needs a servable endpoint (community W4A16 quant; official AWQ doesn't exist) + wire the shadow observer across the golden corpus.
+33. **PaddleOCR-VL Phase 2** (ADR-0016) — serving + golden-corpus shadow run for the full-page parser.
+34. **`silver_nl_summaries` group-name drift** — the two NL-summary asset files use inconsistent `group_name` (`silver_nl_summaries` vs `nl_summaries`); reconcile.
+35. **`lookup_and_pivot` helper** (ADR-0014) — the 6 remaining two-phase workspace-scoping sites need a canonical helper.
+36. **Billing wiring for `project.lifecycle_state='past_due'`** — column landed; billing integration still intentionally deferred (Kyle pricing decision).

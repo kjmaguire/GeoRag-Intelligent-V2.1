@@ -173,6 +173,10 @@ Notable assets ([src/dagster/georag_dagster/assets/](../../../src/dagster/georag
 | `index_neo4j.py` | Silver → Neo4j graph | Neo4j |
 | `index_public_geoscience.py` | public_geo → Qdrant | Qdrant `public_geoscience` collection |
 | `index_reports.py` | silver.document_passages → Qdrant | Qdrant `reports` collection |
+| `index_document_passages.py` | silver.document_passages → Qdrant | Qdrant `georag_chunks` (canonical, ADR-0010). ⚠️ declares 384-dim — see [Ch 18 §2.1 re-index hazard](18-model-stack-evolution.md) |
+| `silver_nl_summaries.py` | assays_v2 / lithology / collars → NL passages | `silver.document_passages` (chunk_kind=`structured_summary`, ADR-0012) |
+| `silver_samples_nl_summary.py` | silver.samples → NL passages | `silver.document_passages` (ADR-0012) |
+| `data_dictionary_dump.py` | information_schema → catalog | `s3://catalogs/data_dictionary/` (Appendix F — generator shipped) |
 | `reranker_labels.py` + `reranker_labels_helpers.py` | Synthetic label generation | `eval.reranker_training_pairs` |
 | `commit_ingestion_run.py` | Marks `bronze.ingest_runs` completed + broadcasts | Reverb `workspace-data-updated.{workspace_id}` |
 

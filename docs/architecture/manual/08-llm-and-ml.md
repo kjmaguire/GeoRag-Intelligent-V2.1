@@ -66,52 +66,78 @@ config. The VL pass over figure pages is gated on
 
 ---
 
-> **ADR-0008** ([docs/adr/0008-embedding-model-evaluation.md](../../adr/0008-embedding-model-evaluation.md))
-> — Accepted Option D: domain-fine-tune `bge-small` in place (keep
-> 384-dim). Bigger embedders (e.g., bge-large, jina-v3) were evaluated
-> and rejected because the dim cost on the Qdrant payload + reranker
-> latency on CPU outweighed recall gains.
+> ## ⚠️ MODEL STACK SWAPPED 2026-06-03 — config/runtime split
 >
-> **ADR-0003** ([docs/adr/0003-defer-v2m3-gpu-reranker.md](../../adr/0003-defer-v2m3-gpu-reranker.md))
-> — Proposed (Deferred): bumping to `bge-reranker-v2-m3` requires a GPU
-> reranker host. Trigger conditions for the bump live in the ADR.
+> The embedding + reranker models were swapped to the Qwen3 line on
+> **2026-06-03** (the "Qwen ecosystem swap"), but the swap reached
+> production via **`.env` override only** — the code defaults, the
+> Dagster re-index assets, and the compose defaults still name the old
+> bge models. **Read the two-column table below as the source of truth.**
+>
+> | Slot | Production (live, env-driven) | Code default (stale) |
+> |---|---|---|
+> | Dense embedder | `Qwen/Qwen3-Embedding-0.6B`, **1024-dim** ([config.py:899,904](../../../src/fastapi/app/config.py)) | `BAAI/bge-small-en-v1.5`, 384-dim ([embedding_service.py:41](../../../src/fastapi/app/embedding_service.py), [docker-compose.yml:959](../../../docker-compose.yml)) |
+> | Cross-encoder reranker | `Qwen/Qwen3-Reranker-0.6B` (via `RERANKER_MODEL_PATH` override) ([config.py:929](../../../src/fastapi/app/config.py)) | `BAAI/bge-reranker-base@2cfc18c9` ([services/reranker.py:77,81](../../../src/fastapi/app/services/reranker.py)) |
+>
+> **🔴 Live re-index hazard.** The Dagster index assets still declare
+> 384-dim `VectorParams` ([index_document_passages.py:67,263](../../../src/dagster/georag_dagster/assets/index_document_passages.py),
+> [index_reports.py:64](../../../src/dagster/georag_dagster/assets/index_reports.py),
+> [index_public_geoscience.py:82](../../../src/dagster/georag_dagster/assets/index_public_geoscience.py)).
+> Production `georag_chunks` is 1024-dim — **re-running a Dagster index
+> asset would recreate the collection at 384-dim and break retrieval.**
+> Tracked as a Z-roadmap item; the live re-embed used a standalone
+> script ([scripts/reembed_qdrant.py:47-48](../../../src/fastapi/scripts/reembed_qdrant.py),
+> `_embed_silver_pending_cutover.py`), not the Dagster asset.
+>
+> **ADR history (now partly superseded):**
+> - **ADR-0008** ([0008](../../adr/0008-embedding-model-evaluation.md)) Accepted Option D (domain-FT bge-small 384-dim) — **superseded** by the 2026-06-03 Qwen3 swap, which discards the bge-small domain FT.
+> - **ADR-0011** ([0011](../../adr/0011-reranker-domain-adaptation.md)) Proposed reranker domain adaptation (vocab → MLM → full FT on bge-reranker-base) — **dormant**: it predates the Qwen3-Reranker swap and is framed entirely around bge.
+> - **ADR-0003** ([0003](../../adr/0003-defer-v2m3-gpu-reranker.md)) Proposed/Deferred bge-reranker-v2-m3.
+>
+> Full audit-wave detail: [Ch 18 — Model Stack Evolution](18-model-stack-evolution.md).
 
-## 2. bge-small-en — dense embedder
+## 2. Dense embedder — Qwen3-Embedding-0.6B (was bge-small)
 
 **Classification:** ML model (single forward pass per chunk).
 
-- Path: `BAAI/bge-small-en-v1.5` (or local equivalent), loaded via
-  `sentence-transformers`.
-- Vector dim: 384.
-- Where: runs **on the GPU** in `hatchet-worker-ai`
-  ([docker-compose.yml:2286-2292](../../../docker-compose.yml)).
-- Throughput: 144 chunks/s on A4500 vs 3-4 chunks/s CPU
-  ([project_gpu_acceleration_2026_05_22](../notes/INDEX.md#project_gpu_acceleration_2026_05_22)).
-- Cache: `HF_HOME=/tmp/hf_cache`, `SENTENCE_TRANSFORMERS_HOME=/tmp/hf_cache` (mounted as `fastapi_hf_cache` named volume).
-- Invocation:
-  [src/fastapi/app/hatchet_workflows/embed_pending_passages.py](../../../src/fastapi/app/hatchet_workflows/embed_pending_passages.py)
+- **Production**: `Qwen/Qwen3-Embedding-0.6B`, **1024-dim, cosine**
+  ([config.py:899-911](../../../src/fastapi/app/config.py)). Optional
+  Qwen3 instruction-prefix support via `EMBEDDING_QUERY_PROMPT_NAME`
+  (default off).
+- **Code default still bge-small 384-dim** — see the hazard box above.
+- Loaded via `sentence-transformers` in the `fastapi` lifespan
+  ([main.py:564-584](../../../src/fastapi/app/main.py)), or proxied to the
+  **embedding sidecar** ([embedding_service.py](../../../src/fastapi/app/embedding_service.py))
+  when `EMBEDDING_SERVICE_URL` is set (the 2026-06-24 one-copy fix).
+- Invocation: [embed_pending_passages.py](../../../src/fastapi/app/hatchet_workflows/embed_pending_passages.py)
   + `services/passage_embedder.py`.
-- Target collection: Qdrant `reports` (silver.document_passages),
-  `public_geoscience`.
+- Target collection: Qdrant **`georag_chunks`** (canonical, ADR-0010),
+  plus `georag_reports` (legacy) + `public_geoscience`.
+- Cutover: production cutover initiated 2026-06-04 — 9,099 silver
+  passages re-embedded into the 1024-dim collection at ~113 passages/min
+  on A4500; post-swap eval baseline uncommitted/pending
+  ([ops/baselines/qwen3-embedding-cutover-2026-06-04.md](../../../ops/baselines/qwen3-embedding-cutover-2026-06-04.md)).
 
 ---
 
-## 3. bge-reranker-base — cross-encoder reranker
+## 3. Cross-encoder reranker — Qwen3-Reranker-0.6B (was bge-reranker-base)
 
 **Classification:** ML model.
 
-- Loaded via `sentence-transformers.CrossEncoder`.
-- Where: runs on **CPU** in the `fastapi` container (no GPU contention with
-  vLLM during chat).
-- Thread bound: `OMP_NUM_THREADS=10`, `TOKENIZERS_PARALLELISM=false`
-  ([docker-compose.yml:898-900](../../../docker-compose.yml)) — bge-reranker’s
-  intra-op parallelism would otherwise oversubscribe vs vLLM CPU work.
+- **Production**: `Qwen/Qwen3-Reranker-0.6B` — a CausalLM that returns a
+  yes/no token-logit ratio, wrapped by a `sentence-transformers`
+  `CrossEncoder`-style interface, loaded via the `RERANKER_MODEL_PATH`
+  env override ([services/reranker.py:181-211](../../../src/fastapi/app/services/reranker.py)).
+- **Code default still `BAAI/bge-reranker-base@2cfc18c9`** ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) — see hazard box.
+- Where: **CPU** in the `fastapi` container (no GPU contention with vLLM
+  during chat), or the **reranker sidecar** ([reranker_service.py](../../../src/fastapi/app/reranker_service.py))
+  when `RERANKER_SERVICE_URL` is set — the 2026-06-24 fix for the
+  "6 uvicorn workers each load a reranker copy → OOM" problem
+  ([fastapi resource fixes 2026-06-24](../notes/INDEX.md)).
+- Thread bound: `OMP_NUM_THREADS=10`, `TOKENIZERS_PARALLELISM=false`.
 - Timeout split (from [project_latency_fix_2026_05_20](../notes/INDEX.md#project_latency_fix_2026_05_20)):
-  - Qdrant `wait_for` 2 s
-  - Reranker `wait_for` 8 s
-  - Pre-truncate query+passage to 2000 chars
-  - Halve candidates (20 → 10) before reranking
-  - Result: cold path 6 s real answers vs prior 3 s refusals.
+  Qdrant `wait_for` 2 s, reranker `wait_for` 8 s, pre-truncate to 2000
+  chars, halve candidates 20→10.
 - Invocation: inside the agentic LangGraph `execute_node`, fed by
   `services/fusion.py`.
 

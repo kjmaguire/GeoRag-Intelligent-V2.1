@@ -267,17 +267,25 @@ See [Ch 16 §1](../manual/16-algorithmic-spines.md).
 
 ## 15. Model registry summary
 
-| Model | Loaded by | Where it runs | LoRA-tunable? |
-|---|---|---|---|
-| Qwen/Qwen3-14B-AWQ | vllm container | GPU | No (full bake) |
-| Qwen/Qwen2.5-VL-7B (opt-in) | vllm container | GPU | No |
-| BAAI/bge-small-en-v1.5 | hatchet-worker-ai | GPU | **Yes** — ADR-0008 Option D path |
-| BAAI/bge-reranker-base | fastapi container | CPU + (optional GPU for LoRA bake) | **Yes (live)** — §10.1 |
-| naver/splade-cocondenser-ensembledistil | hatchet-worker-ai | GPU | No |
-| Anthropic Claude (Haiku/Sonnet/Opus) | Anthropic API | — | No |
-| Generator model (label synthesis) | `ELVISIO/Qwen3-30B-A3B-Instruct-2507-AWQ` on vLLM | GPU | No |
-| Source-trust model | Custom; written by `train_source_trust` workflow | CPU at serve | n/a (sklearn-style) |
-| Target scoring model | Custom; written by `train_target_model` workflow | CPU at serve | n/a (weighted scoring; Phase 12 = XGBoost+SHAP) |
+> **⚠️ Updated for the 2026-06-03 Qwen3 swap.** Production (env-driven)
+> vs code-default columns differ for the embedder + reranker — see
+> [Ch 18 §2](../manual/18-model-stack-evolution.md) for the config/runtime
+> split + the live Dagster 384-dim re-index hazard.
+
+| Model (production) | Code default (stale) | Loaded by | Where it runs | Tunable? |
+|---|---|---|---|---|
+| Qwen/Qwen3-14B-AWQ (synthesizer) | same | vllm container | GPU | No (full bake) |
+| **Qwen/Qwen3-Embedding-0.6B (1024-dim)** | BAAI/bge-small-en-v1.5 (384) | fastapi / embedding sidecar | CPU/GPU | dense FT path |
+| **Qwen/Qwen3-Reranker-0.6B** (via `RERANKER_MODEL_PATH`) | BAAI/bge-reranker-base@2cfc18c9 | fastapi / reranker sidecar | CPU | LoRA/full FT (dormant — ADR-0011) |
+| Qwen/Qwen2.5-VL-7B-Instruct (V2 default) | same; V3=Qwen3-VL-8B gated (ADR-0015) | vllm-vl sidecar | GPU | No |
+| naver/splade-cocondenser-ensembledistil (sparse) | same | hatchet-worker-ai | GPU | No |
+| PaddleOCR PP-OCRv5 (paddleocr 3.7) | — | both workers | CPU/GPU | No (ADR-0016) |
+| Tesseract 5.5.2 (from source) | — | both workers | CPU | No (ADR-0017) |
+| Anthropic Claude (Haiku/Sonnet/Opus) | same | Anthropic API | — | No |
+| Label-synthesis generator | `ELVISIO/Qwen3-30B-A3B-Instruct-2507-AWQ` | vLLM | GPU | No |
+| Source-trust model | — | `train_source_trust` workflow | CPU at serve | n/a (sklearn-style) |
+| Target scoring model | — | `train_target_model` workflow | CPU at serve | weighted; Phase 12 = XGBoost+SHAP |
+| Answer-quality judge | Qwen3-14B-AWQ (as judge) | `score_answer_quality` workflow | GPU | No |
 
 ## 16. Open work tracked
 
