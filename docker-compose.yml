@@ -2036,7 +2036,16 @@ services:
       # First start downloads the ~6 GB quant from HF + loads it.
       start_period: 900s
     stop_grace_period: 30s
-    profiles: ["gpu-llm", "gpu-llm-prod"]
+    # 2026-06-29: moved OFF the default gpu-llm profile to its own opt-in
+    # "vl-ingest" profile. The A4500 (20 GB) cannot comfortably host
+    # vllm(14B) + vllm-vl(4B) + the GPU reranker simultaneously; the reranker
+    # (+13.9% NDCG, serves every chat query) takes priority over figure VL
+    # captioning (FIGURE_VL_DESCRIPTIONS is off by default). To run figure
+    # ingest, start with `--profile gpu-llm --profile vl-ingest` AND set
+    # FIGURE_VL_DESCRIPTIONS=true — then either accept the tight VRAM or trim
+    # vllm --gpu-memory-utilization (0.72→~0.62). See
+    # docs/runbooks/reranker-qwen3-flip.md.
+    profiles: ["vl-ingest"]
 
   # ---------------------------------------------------------------------------
   # vllm-warmup — one-shot sidecar.
