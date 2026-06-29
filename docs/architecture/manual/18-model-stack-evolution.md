@@ -29,24 +29,25 @@ defaults.** Always read the model stack in two columns.
 | Slot | Production (live, env-driven) | Code/compose default (stale) |
 |---|---|---|
 | Dense embedder | `Qwen/Qwen3-Embedding-0.6B` **1024-dim** ([config.py:899,904](../../../src/fastapi/app/config.py)) | `BAAI/bge-small-en-v1.5` 384-dim ([embedding_service.py:41](../../../src/fastapi/app/embedding_service.py); [docker-compose.yml:959,1298,2694](../../../docker-compose.yml)) |
-| Reranker | **`BAAI/bge-reranker-base` is LIVE** — `RERANKER_MODEL_PATH` is empty in the running container (verified 2026-06-28). The Qwen3-Reranker swap did NOT happen and is **not a config flip** (see ⚠️ below). | `BAAI/bge-reranker-base@2cfc18c9` ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) |
+| Reranker | **`BAAI/bge-reranker-base` is LIVE** (verified 2026-06-28). Qwen3-Reranker is a **validated +13.9% NDCG win** (eval 2026-06-29) with the CausalLM backend now built, but is **not yet deployed** — VRAM-gated (see ⚠️ below + runbook). | `BAAI/bge-reranker-base@2cfc18c9` ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) |
 | VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` (V2 default; V3=Qwen3-VL-8B gated) ([pdf_vl.py:109,117,118](../../../src/fastapi/app/services/pdf_vl.py)) | same |
 | Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` (**unchanged**) ([.env.example:492,612](../../../.env.example)) | same |
 | Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | same |
 
-> ⚠️ **Reranker swap is NOT a config flip (audit 2026-06-28).** Setting
-> `RERANKER_MODEL_PATH=Qwen/Qwen3-Reranker-0.6B` will **break** the reranker.
-> The service loads the path via `sentence_transformers.CrossEncoder(path,
-> device="cpu")` ([reranker.py:188-194](../../../src/fastapi/app/services/reranker.py)),
-> but Qwen3-Reranker is a **causal-LM** reranker (scored via yes/no token
-> logits with an instruction template) — NOT a sequence-classification
-> CrossEncoder, so it won't load that way. A real swap requires: (1) a
-> CausalLM inference path in `reranker.py` (load `AutoModelForCausalLM`, format
-> query+doc with the Qwen3-Reranker prompt, score from the yes/no logits),
-> (2) **GPU** — a 0.6B causal LM doing ~20 forward passes/query on CPU blows
-> the 8s rerank timeout (current reranker is CPU-only), and (3) a golden-eval
-> pass. Until then bge-reranker-base stays live. (ADR-0011's "superseded by the
-> Qwen3-Reranker swap" note is aspirational — the swap has not shipped.)
+> ⚠️ **Reranker swap is a VALIDATED WIN but deployment is VRAM-gated
+> (2026-06-29).** Setting only `RERANKER_MODEL_PATH=Qwen/Qwen3-Reranker-0.6B`
+> still **breaks** the reranker (it loads via `CrossEncoder(path, device="cpu")`
+> but Qwen3-Reranker is a **causal-LM** reranker scored via yes/no logits).
+> The CausalLM inference path **now exists** —
+> `app.services.reranker._Qwen3CausalReranker`, opt-in via
+> `RERANKER_BACKEND=qwen3_causal` (built 2026-06-28). A golden-set eval
+> (2026-06-29, `scripts/eval_reranker_qwen3_vs_bge.py`) shows **Qwen3-Reranker
+> NDCG@10 0.7048 vs bge 0.6188 — +13.9%, a clear win** (stock, not the
+> fine-tuned variant that earned the prior HOLD verdicts). It is NOT yet live:
+> the causal-LM reranker needs ~1.3 GB **GPU** (CPU blows the 8 s timeout) and
+> the A4500 has only ~0.6 GB free with the full stack up. Flipping it requires
+> freeing VRAM first — see [reranker-qwen3-flip runbook](../../runbooks/reranker-qwen3-flip.md)
+> for the 3 VRAM options + exact steps. Until then bge-reranker-base stays live.
 
 ### 2.1 The live re-index hazard 🔴
 
