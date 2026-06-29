@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Services\FastApiJwtMinter;
+use App\Services\Ingestion\HatchetDispatchThrottle;
 use App\Services\Ingestion\ShadowRouter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -40,6 +41,7 @@ class UploadController extends Controller
 {
     public function __construct(
         private readonly ShadowRouter $shadowRouter,
+        private readonly HatchetDispatchThrottle $dispatchThrottle,
     ) {}
 
     /**
@@ -64,6 +66,10 @@ class UploadController extends Controller
         // Geophysics interpretation summary JSON — consumed by Dagster
         // silver_geophysics asset. Schema documented in src/dagster/.../bronze_geophysics.py.
         'geophysics' => ['json'],
+        // ZIP archives containing hundreds of small files (TIF, LAS, LOG,
+        // XLSX, PDF ≤10 MB each). The Hatchet ingest_zip_archive workflow
+        // extracts each entry and fans it out to the appropriate ingester.
+        'archive' => ['zip'],
     ];
 
     /**
@@ -91,7 +97,7 @@ class UploadController extends Controller
         }
 
         $validated = $request->validate([
-            'file' => ['required', 'file', 'max:2097152'], // 2 GB
+            'file' => ['required', 'file', 'max:6291456'], // 6 GB
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(self::CATEGORIES))],
             'vendor_profile_id' => ['nullable', 'integer', 'exists:vendor_profiles,id'],
         ]);
@@ -249,6 +255,17 @@ class UploadController extends Controller
                 );
             }
 
+            // ZIP archive extraction — fan-out each contained file to the
+            // appropriate ingester via the ingest_zip_archive Hatchet workflow.
+            if ($category === 'archive' && $ext === 'zip') {
+                $this->dispatchZipExtraction(
+                    user: $user,
+                    projectId: $projectId,
+                    minioKey: $minioKey,
+                    responseData: $responseData,
+                );
+            }
+
             return response()->json($responseData, 201);
         } catch (Throwable $e) {
             Log::error('UploadController: upload failed', [
@@ -338,6 +355,15 @@ class UploadController extends Controller
                 ? '/internal/v1/shadow/tiff_normalize/trigger'
                 : '/internal/v1/shadow/ingest_pdf/trigger';
 
+            // Throttle per-workspace before the trigger HTTP call so a
+            // bulk upload can't saturate Hatchet's GROUP_ROUND_ROBIN
+            // queue and lose the tail to silent CANCELLED events. The
+            // tiff_normalize workflow also internally triggers ingest_pdf
+            // against the same per-workspace concurrency group, so it
+            // needs the same throttling as the direct PDF path.
+            // See [[cameco-recovery-2026-06-02]].
+            $this->dispatchThrottle->wait($workspaceId);
+
             $resp = Http::withHeaders([
                 'X-Service-Key' => $serviceKey,
                 'Authorization' => 'Bearer '.$jwt,
@@ -373,6 +399,109 @@ class UploadController extends Controller
         } catch (Throwable $e) {
             // Swallow — never block the upload response on ingest plumbing.
             Log::warning('UploadController: ShadowRouter dispatch failed', [
+                'project_id' => $projectId,
+                'minio_key' => $minioKey,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Dispatch the ingest_zip_archive Hatchet workflow for a freshly-uploaded ZIP.
+     *
+     * Mirrors dispatchShadowIfPdf() — look up workspace_id, mint a JWT,
+     * POST to FastAPI's internal trigger endpoint, and annotate $responseData.
+     * Failures are swallowed so the upload response is never blocked.
+     *
+     * @param array<string, mixed> $responseData
+     */
+    private function dispatchZipExtraction(
+        $user,
+        string $projectId,
+        string $minioKey,
+        array &$responseData,
+    ): void {
+        try {
+            $row = DB::selectOne(
+                'SELECT workspace_id::text AS workspace_id FROM silver.projects WHERE project_id = ?',
+                [$projectId],
+            );
+            if ($row === null || empty($row->workspace_id)) {
+                Log::info('UploadController: zip ingest skip — no workspace_id', [
+                    'project_id' => $projectId,
+                ]);
+
+                return;
+            }
+            $workspaceId = $row->workspace_id;
+
+            $fastApiBase = rtrim(
+                config('services.fastapi.internal_url')
+                    ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                '/',
+            );
+            $serviceKey = config('services.fastapi.service_key')
+                ?? env('FASTAPI_SERVICE_KEY');
+            if (! $serviceKey) {
+                Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — zip ingest not dispatched');
+
+                return;
+            }
+
+            $jwt = app(FastApiJwtMinter::class)->mint(
+                (string) ($user->id ?? 'unknown'),
+                $projectId,
+                [],
+            );
+
+            $runId = Str::uuid()->toString();
+            $payload = [
+                'workspace_id' => $workspaceId,
+                'project_id' => $projectId,
+                'minio_key' => $minioKey,
+                'run_id' => $runId,
+            ];
+
+            // ZIP archives extract internally and fan out individual
+            // ingest_pdf triggers, so a single zip upload can easily
+            // saturate the workspace's Hatchet queue. Throttle the
+            // initial dispatch the same way the PDF path does.
+            $this->dispatchThrottle->wait($workspaceId);
+
+            $resp = Http::withHeaders([
+                'X-Service-Key' => $serviceKey,
+                'Authorization' => 'Bearer '.$jwt,
+                'Accept' => 'application/json',
+            ])->timeout(15)->post(
+                $fastApiBase.'/internal/v1/shadow/ingest_zip_archive/trigger',
+                $payload,
+            );
+
+            if ($resp->successful()) {
+                $body = $resp->json();
+                $responseData['ingest'] = [
+                    'dispatched' => true,
+                    'hatchet_workflow_run_id' => $body['hatchet_workflow_run_id'] ?? $body['workflow_run_id'] ?? null,
+                    'run_id' => $runId,
+                ];
+                Log::info('UploadController: ingest_zip_archive dispatched', [
+                    'workspace_id' => $workspaceId,
+                    'project_id' => $projectId,
+                    'minio_key' => $minioKey,
+                    'workflow_run_id' => $body['hatchet_workflow_run_id'] ?? null,
+                ]);
+            } else {
+                Log::warning('UploadController: ingest_zip_archive dispatch returned non-2xx', [
+                    'status' => $resp->status(),
+                    'body' => $resp->body(),
+                ]);
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'fastapi non-2xx '.$resp->status(),
+                ];
+            }
+        } catch (Throwable $e) {
+            Log::warning('UploadController: dispatchZipExtraction failed', [
                 'project_id' => $projectId,
                 'minio_key' => $minioKey,
                 'error' => $e->getMessage(),
