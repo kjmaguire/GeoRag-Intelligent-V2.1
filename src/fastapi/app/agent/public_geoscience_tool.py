@@ -300,10 +300,16 @@ async def _embed_query(deps: AgentDeps, text_query: str | None) -> list[float] |
     # consistent dimensionality and filters still work. The embedding is
     # then effectively just "Canadian geological-survey records" noise.
     q = text_query if text_query and text_query.strip() else "Canadian public geological-survey records"
+    # Qwen3-Embedding query template (matches tools.search_documents). When
+    # EMBEDDING_QUERY_PROMPT_NAME is unset we fall back to raw encoding.
+    from app.config import settings as _settings  # noqa: PLC0415
+    _prompt_name = _settings.EMBEDDING_QUERY_PROMPT_NAME or None
     try:
         vec = await loop.run_in_executor(
             None,
-            lambda: model.encode(q, normalize_embeddings=True).tolist(),
+            lambda: model.encode(
+                q, normalize_embeddings=True, prompt_name=_prompt_name,
+            ).tolist(),
         )
         return vec
     except Exception:

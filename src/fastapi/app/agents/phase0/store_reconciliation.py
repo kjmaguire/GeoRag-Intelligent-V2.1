@@ -182,8 +182,19 @@ async def store_reconciliation_run(
         try:
             from qdrant_client.models import Filter, FieldCondition, MatchValue  # noqa: PLC0415
 
+            # ADR-0010: canonical collection is georag_chunks when
+            # RETRIEVAL_USE_DOCUMENT_PASSAGES is true (the default since
+            # 2026-05-28). Hardcoded "georag_reports" reported false drift
+            # post-cutover because passages now land in chunks. Use the
+            # same flag the live retrieval path consults.
+            from app.config import settings  # local import to avoid cycle
+            _collection = (
+                "georag_chunks"
+                if settings.RETRIEVAL_USE_DOCUMENT_PASSAGES
+                else "georag_reports"
+            )
             r = await qc.count(
-                collection_name="georag_reports",
+                collection_name=_collection,
                 count_filter=Filter(must=[
                     FieldCondition(
                         key="workspace_id",

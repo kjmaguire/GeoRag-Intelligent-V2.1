@@ -30,7 +30,7 @@
 | 3 | LangGraph subgraphs (3) + 8 intents | SAD | [x] | SAD §3.3.2 |
 | 3-split | RAG flow names the agentic_retrieval graph | DFS | [x] | DFS §2.3 |
 | 3a | Per-graph node inventory (agentic_retrieval / report_builder / target_recommendation) | SAD | [x] | SAD §3.3.2 |
-| 4 | Hatchet workflow modules (46; live verified 2026-05-29) — data flows | DFS | [x] | DFS §2.2 + DFS §7.2 + DFS §7.4 + SAD §3.4 |
+| 4 | Hatchet workflow modules (52; live verified 2026-06-02; +3 June: `embed_pending_passages_smoke`, `ingest_zip_archive`, `qdrant_payload_audit`) — data flows | DFS | [x] | DFS §2.2 + DFS §7.2 + DFS §7.4 + SAD §3.4 |
 | 4-split | Hatchet engine compose envelope + WORKER_POOL | CICD | [x] | CICD §6.3 |
 | 4a | Worker pool `ingestion` | CICD | [x] | CICD §6.3 |
 | 4b | Worker pool `ai` | CICD | [x] | CICD §6.3 |
@@ -54,6 +54,9 @@
 | 7j | SeaweedFS buckets (3) + Laravel disks | DFS | [x] | DFS §5.1 |
 | 8a | Reverb channels (30 patterns) | API | [x] | API §6.1 |
 | 8b | Reverb event classes (11) + payload field shapes | API | [x] | API §6.2 + §6.2.1 |
+| 2j | Retrieval-quality overhaul 2026-06-02 (5 new services + 6 new flags + GeoRAGResponse.grounding_report) | SAD | [x] | SAD §3.3.7 + DFS §2.3 |
+| 5c | Dagster + Hatchet 2026-06 deltas (smoke + zip-archive + qdrant-audit workflows) | DFS | [x] | DFS §2.2 + SAD §3.4 |
+| 24a | 1500 ChatGPT gap-question import + 2 new question_set buckets | DFS | [x] | DFS §4.2 (eval row) + SAD §3.3.6 |
 | 9a | Laravel api.php (61 direct + 6 resource = 67 entries, ~91 expanded; live verified 2026-05-29) | API | [x] | API §3.1–§3.9 |
 | 9b | Laravel web.php (155 routes; live verified 2026-05-29) | API | [x] | API §3.10 + §3.11 |
 | 9b-split | /admin/integrations/kestra/{path?} SSO bridge | CICD | [x] | CICD §6.9 |

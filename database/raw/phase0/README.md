@@ -51,42 +51,38 @@ UUID or unset (single-tenant fallback).
   transactions, so callers must wrap with `async with conn.transaction()`
   or use `set_config(name, value, true)` instead.
 
-### `georag.workspace_id` (uuid, transaction-local)
+### `app.workspace_id` (uuid, transaction-local) — CANONICAL
 
-* **Set by**: `AgentDeps.acquire_scoped()` (Module 9 Chunk 9.3 onward)
-  and every Hatchet workflow that needs to write workspace-scoped
-  silver rows (`field_outcome_learning`, `evaluate_workspace`, etc.).
-* **Read by**: Workspace-scoped RLS policies installed in
-  `database/migrations/2026_04_22_170000_extend_rls_workspace_coverage.php`
-  on `silver.evidence_items`, `silver.answer_runs`,
-  `silver.answer_retrieval_items`, `silver.answer_citation_items`,
-  `silver.answer_citation_spans`, `silver.document_revisions`,
-  `silver.document_passages`, `silver.message_feedback`.
-* **Contract**: identical shape to `georag.project_id` — null admits
-  all, set admits matching `workspace_id`.
+* **Set by**: `AgentDeps.acquire_scoped()` (Module 9 Chunk 9.3 onward),
+  Laravel's `App\Database\GUCConnection` mixin (Octane pipeline), and
+  every Hatchet workflow / seeder / Dagster asset that needs to write
+  workspace-scoped silver rows.
+* **Read by**: All current RLS policies. The May-25 → May-29 sweeps
+  ([[bronze-tenancy-rls-2026-05-25]], [[rls-coverage-audit-2026-05-25]],
+  [[legacy-guc-rls-third-sweep-2026-05-28]],
+  [[legacy-guc-writers-audit-2026-05-28]],
+  `2026_05_29_200000_replace_broken_guc_rls_policies_remaining_silver_tables.php`)
+  retired every legacy `georag.workspace_id` policy variant in favour
+  of `app.workspace_id`.
+* **Contract**: NULL or empty-string admits all (fail-open by design
+  for admin / migration paths); set admits matching `workspace_id`.
 
-### `app.workspace_id` (uuid, transaction-local) — Laravel-side alias
+#### Legacy `georag.workspace_id` (RETIRED — do NOT set)
 
-* **Set by**: Laravel's `App\Database\GUCConnection` mixin (Octane
-  pipeline) and Hatchet workflows that re-set both keys for
-  belt-and-suspenders coverage.
-* **Read by**: Newer migrations that landed via Laravel rather than the
-  raw-SQL phase 0 path:
-  * `2026_05_12_180008_enable_rls_phase3_silver_tables.php`
-  * `2026_05_13_090000_create_silver_saved_map_views.php`
-  * `2026_05_13_100000_create_targeting_schema.php` (and following)
-* **Why two keys exist**: The Phase 0 substrate used `georag.*` to
-  avoid collision with hypothetical `app.*` GUCs that PostgreSQL itself
-  or downstream extensions might claim. Laravel-side migrations later
-  picked `app.workspace_id` for symmetry with Laravel's `config('app.*')`
-  conventions. Both keys must be set whenever code spans both schools
-  of policy:
-  ```python
-  await conn.execute("SELECT set_config('app.workspace_id', $1, false)", ws_id)
-  await conn.execute("SELECT set_config('georag.workspace_id', $1, false)", ws_id)
-  ```
-  Consolidation onto a single key is tracked under the production-
-  readiness plan; until then **set both, always**.
+The Phase 0 substrate originally used `georag.*` to avoid collision
+with hypothetical `app.*` GUCs. Laravel-side migrations later picked
+`app.workspace_id` for symmetry with `config('app.*')`. The "set both,
+always" interim was sunsetted by the May-29 sweep — no live RLS
+policy reads `georag.workspace_id` anymore. Setting it has zero
+effect; setting it INSTEAD of `app.workspace_id` is a silent
+fail-closed bug (see the CgiVocabSeeder regression fixed in the
+2026-06-02 audit pass 4 — Theme B).
+
+The regression test
+`src/fastapi/tests/test_acquire_scoped.py::test_no_production_files_set_legacy_georag_gucs`
+fails CI if any Python file under `src/` calls
+`set_config('georag.workspace_id', …)`. PHP seeders / migrations are
+outside that test's scope today — author hygiene matters there.
 
 ### `app.audit_encryption_key` (text, transaction-local)
 

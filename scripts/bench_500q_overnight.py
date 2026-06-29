@@ -175,7 +175,7 @@ async def run_benchmark(passage_texts: dict[str, str]) -> dict:
     info = await qdrant.get_collection(COLLECTION)
     log.info("Qdrant: %d points in %s", info.points_count, COLLECTION)
 
-    with open(CSV_PATH, encoding="utf-8") as f:
+    with open(CSV_PATH, encoding="utf-8-sig") as f:
         questions = list(csv.DictReader(f))
     log.info("Questions: %d", len(questions))
 

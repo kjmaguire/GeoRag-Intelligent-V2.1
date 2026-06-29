@@ -250,8 +250,9 @@ class QdrantResource(ConfigurableResource):
     Wraps the qdrant-client and exposes a thin factory so assets can obtain a
     connected client without carrying host/port config themselves.
 
-    The georag_chunks collection (384-dim, cosine, all-MiniLM-L6-v2) is
-    assumed to already exist — provisioned by the FastAPI service on startup.
+    The georag_chunks collection (384-dim, cosine, BAAI/bge-small-en-v1.5
+    dense + SPLADE++ sparse per ADR-0010) is assumed to already exist —
+    provisioned by the FastAPI service on startup.
     """
 
     host: str = "qdrant"

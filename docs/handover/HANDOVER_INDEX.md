@@ -115,7 +115,7 @@ Datastore + docker stats CSVs, PG before/after tuning, image-digest snapshots, r
 | Pydantic AI agents (`@georag_agent`) | 42 | [`SAD.md`](SAD.md) §3 |
 | LangGraph subgraphs | 3 | [`SAD.md`](SAD.md) §3 |
 | Intent labels | 8 | [`SAD.md`](SAD.md) §3 |
-| Hatchet workflow modules | 46 (live; manifest §4 still says 45) | [`DFS.md`](DFS.md) §2 + [`CICD_PIPELINE.md`](CICD_PIPELINE.md) §6 |
+| Hatchet workflow modules | 52 (live verified 2026-06-02; manifest §4 still says 45) | [`DFS.md`](DFS.md) §2 + [`CICD_PIPELINE.md`](CICD_PIPELINE.md) §6 |
 | Hatchet cron-triggered workflows | 30 declarations | [`CICD_PIPELINE.md`](CICD_PIPELINE.md) §6 |
 | Dagster asset modules | 56 top-level + 5 `bronze_to_silver/` + 7 `silver_to_gold/` (live; manifest §5 still says 53 + 4 and omits silver_to_gold) | [`DFS.md`](DFS.md) §2 |
 | Dagster schedules + sensor | 6 + 1 | [`CICD_PIPELINE.md`](CICD_PIPELINE.md) §6 |
@@ -212,6 +212,10 @@ Items flagged by code inspection or by drift between code and canonical spec. No
 - **Reranker checkpoint bucket** — `reranker-checkpoints` referenced by SAD §3.3.5 but not declared in compose / not in DFS §5.1 bucket list. Provisioning path TBD.
 - **`MODEL_ROUTING_ENABLED` + `SYSTEM_PROMPT_ROUTING_ENABLED` rollout posture** — both gate routing in `app/agent/model_routing.py`. Production posture per workspace not documented.
 - **`workspace.prompt_versions` pinning UX** — `Admin/AgentConfig/Prompts` Inertia surface; per-workspace version-pin policy not specified.
+- **Retrieval-quality overhaul flags (2026-06-02)** — `MULTI_QUERY_EXPANSION_ENABLED`, `MULTI_PROJECT_DECOMPOSITION_ENABLED`, `CITATION_FIRST_ENABLED` default ON; `SENTENCE_GROUNDING_ENABLED`, `SENTENCE_GROUNDING_DROP_MODE`, `SUMMARIZER_ENABLED` default OFF. Promotion path for the 3 OFF flags + the production rollback procedure (`docker exec … >> /app/.env && restart`) need to land in the operator runbook. See SAD §3.3.7.
+- **`_KNOWN_PROPERTY_NICKNAMES` in `multi_project_decomposition.py`** — hardcoded parent-company → child-property aliases (WRLG, Battle North, etc.). Should move to `silver.project_aliases` table per-workspace before adding the next operator. Tech debt.
+- **`SUMMARIZER_ENABLED` wiring path** — `summarize_scope(...)` callable but no `IntentRoute.SUMMARIZE` dispatcher case yet. Operator needs to decide when to wire.
+- **`atomic_claim_extractor` composer prompt anti-refusal guard** — composer prompt forbids "I cannot"/"I don't have" openers because they trip `response_assembler._is_refusal` regex. Brittle coupling — flagged for cleanup.
 
 ### 5.8 Performance + scaling
 - **3-instance Redis rollout** status — `REDIS_QUEUE_HOST` env scaffolding present.
