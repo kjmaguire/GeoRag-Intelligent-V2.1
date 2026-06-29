@@ -19,8 +19,9 @@ Design notes
   instance stored on ``app.state``.  Kept as ``Any`` because the concrete
   SentenceTransformer type is not a hard import in production; tools that use
   it check for None and degrade gracefully.
-- ``reranker`` is a warm-loaded CrossEncoder (ms-marco-MiniLM-L-6-v2) that
-  re-scores (query, chunk) pairs with raw logits.  None if the model failed
+- ``reranker`` is a warm-loaded CrossEncoder (Qwen/Qwen3-Reranker-0.6B, score
+  is the yes-vs-no token logit delta — broader range than bge, ~[-15,+15] typical)
+  that re-scores (query, chunk) pairs.  None if model failed
   to load; search_documents degrades to returning raw Qdrant scores instead.
 """
 
@@ -59,9 +60,10 @@ class AgentDeps:
         query text at query time (search_documents) check for None and fall
         back gracefully.
     reranker:
-        Warm-loaded CrossEncoder instance (cross-encoder/ms-marco-MiniLM-L-6-v2)
-        for Layer 1 precision reranking.  None if the model failed to load;
-        search_documents falls back to raw Qdrant cosine ordering instead.
+        Warm-loaded CrossEncoder instance (Qwen/Qwen3-Reranker-0.6B, score is
+        yes-vs-no token logit delta, ~[-15,+15] typical) for Layer 1 precision
+        reranking.  None if the model failed to load; search_documents falls back
+        to raw Qdrant cosine ordering instead.
     """
 
     pg_pool: asyncpg.Pool
@@ -71,13 +73,13 @@ class AgentDeps:
     # Module 9 Chunk 9.3 — workspace_id GUC scoping. Optional because some
     # callers (single-tenant Dagster ingestion, admin scripts) intentionally
     # don't carry workspace context. When set, acquire_scoped() emits
-    # SET LOCAL georag.workspace_id alongside georag.project_id so the
+    # SET LOCAL app.workspace_id alongside app.project_id so the
     # workspace-scoped RLS policies on silver.evidence_items, answer_runs,
     # answer_retrieval_items, answer_citation_items, answer_citation_spans,
     # document_revisions, document_passages, and message_feedback fire.
     workspace_id: str | None = None
     embedding_model: Any = None  # SentenceTransformer (BAAI/bge-small-en-v1.5)
-    reranker: Any = None  # CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2)
+    reranker: Any = None  # CrossEncoder (Qwen/Qwen3-Reranker-0.6B; logit delta ~[-15,+15])
     # B2 — pooled clients; Any-typed so missing imports (non-anthropic deploys)
     # don't fail module load. Orchestrator falls back to lazy construction
     # when either is None (backward-compat path for tests and non-anthropic

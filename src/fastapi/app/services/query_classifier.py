@@ -226,6 +226,14 @@ _DOCUMENT_PHRASES: set[str] = {
     "according to the report",
     "geological setting",
     "geological study",
+    # 2026-06-01 — summarisation verbs route to the narrative profile so
+    # "summarise / summarize / summary of X" stops misclassifying as
+    # computation and hitting the refusal-happy NUMERIC prompt.
+    "summary of", "summarise", "summarize",
+    "give me a summary", "give a summary",
+    "describe the", "explain the", "tell me about",
+    "what does", "what is in", "what's in",
+    "section of", "article", "chapter",
 }
 
 # FACTUAL — knowledge-graph / entity questions not covered by DOCUMENT.
