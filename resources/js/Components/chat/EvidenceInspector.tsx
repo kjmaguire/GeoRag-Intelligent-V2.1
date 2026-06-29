@@ -91,16 +91,40 @@ interface Props {
 // Auth rides the Sanctum session cookie (same-origin); credentials: 'same-origin'
 // is set on each fetch call. No bearer token from localStorage —
 // localStorage is an XSS-exfiltration target (types.ts:11-12).
-function getAuthHeaders(): HeadersInit {
-    const serviceKey = import.meta.env.VITE_SERVICE_KEY ?? '';
-    const workspaceId =
-        localStorage.getItem('georag_workspace_id') ??
-        'a0000000-0000-0000-0000-000000000001';
-    return {
+function getAuthHeaders(workspaceId: string | null): HeadersInit {
+    // SECURITY (2026-06-03 audit) — VITE_SERVICE_KEY usage REMOVED.
+    //
+    // The previous version read `import.meta.env.VITE_SERVICE_KEY` and
+    // sent it as the `x-service-key` header. If anyone set that env var
+    // (it WAS supported by the code path), Vite would inline the value
+    // into the production JS bundle — meaning anyone who downloaded the
+    // SPA could extract the FastAPI service key and call any
+    // X-Service-Key-gated internal endpoint as a fully-privileged
+    // service. That's a textbook secret-in-bundle leak.
+    //
+    // Empty `VITE_SERVICE_KEY` (the documented `.env.example` state)
+    // means the header was never sent, so the downstream FastAPI
+    // `/v1/evidence/{id}` endpoint returns 401 because it requires
+    // X-Service-Key. The Evidence Inspector is therefore non-functional
+    // today UNLESS the operator set VITE_SERVICE_KEY (in which case the
+    // key is leaked into the bundle).
+    //
+    // Removing the VITE_SERVICE_KEY support closes the leak vector.
+    // The Evidence Inspector now needs a Laravel proxy
+    // (`/api/v1/evidence/{id}`) that injects the service key + a
+    // user-scoped JWT server-side — same pattern as TrustController +
+    // InterpretationWorkspaceController. Tracked as a follow-up in
+    // docs/handover/AUDIT_AND_FIX_REPORT.md Theme K.
+    //
+    // Workspace scoping: pass-through unchanged. The localStorage→prop
+    // migration is documented in the workspaceId parameter's name.
+    const headers: Record<string, string> = {
         Accept: 'application/json',
-        ...(serviceKey ? { 'x-service-key': serviceKey } : {}),
-        'X-Workspace-Id': workspaceId,
     };
+    if (workspaceId) {
+        headers['X-Workspace-Id'] = workspaceId;
+    }
+    return headers;
 }
 
 // ── Loading skeleton ──────────────────────────────────────────────────────
@@ -503,15 +527,16 @@ export function EvidenceInspector({ open, onOpenChange, evidenceId, legacyCitati
         setLoadState('loading');
         setEvidence(null);
         try {
-            // Default VITE_FASTAPI_URL='/fastapi' is same-origin (nginx proxy).
-            // If overridden to a full URL (e.g. http://fastapi:8000) this becomes
-            // cross-origin and credentials: 'same-origin' will not send the cookie.
-            // TODO(security): cross-origin call — needs service-to-service auth strategy
-            // if VITE_FASTAPI_URL is set to a non-same-origin host in production.
-            const fastApiBase = import.meta.env.VITE_FASTAPI_URL ?? '/fastapi';
-            const res = await fetch(`${fastApiBase}/v1/evidence/${encodeURIComponent(id)}`, {
+            // 2026-06-03 audit (Theme K): we now call the Laravel proxy
+            // at /api/v1/evidence/{id} (EvidenceController) instead of
+            // FastAPI directly. The proxy resolves the evidence's
+            // project, gates on hasProjectAccess, mints the FastAPI
+            // JWT, and injects the server-side X-Service-Key — closing
+            // the bundle-leak vector the previous VITE_SERVICE_KEY
+            // path created. Sanctum session cookie carries auth.
+            const res = await fetch(`/api/v1/evidence/${encodeURIComponent(id)}`, {
                 credentials: 'same-origin',
-                headers: getAuthHeaders(),
+                headers: getAuthHeaders(workspaceId ?? null),
             });
             if (res.status === 404) {
                 setErrorStatus(404);
@@ -530,7 +555,7 @@ export function EvidenceInspector({ open, onOpenChange, evidenceId, legacyCitati
             setErrorStatus('network');
             setLoadState('error');
         }
-    }, []);
+    }, [workspaceId]);
 
     // Fetch when sheet opens with an evidenceId, or when effectiveId changes.
     useEffect(() => {

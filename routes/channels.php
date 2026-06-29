@@ -55,12 +55,36 @@ Broadcast::channel('query.{queryId}', function ($user, string $queryId) {
 
 /**
  * Dashboard — workspace activity feed (spec §6).
- * User must have at least one project in the workspace.
+ *
+ * Authorization: user must have at least one project IN THE SPECIFIED
+ * WORKSPACE. The earlier "any-project-anywhere" gate was a cross-tenant
+ * leak — an authenticated tenant-A user could subscribe to tenant-B's
+ * activity stream just by knowing the workspace UUID (the channel name
+ * is what carries it). Caught by the 2026-06-02 audit pass 5+ Reverb
+ * sweep; see docs/handover/AUDIT_AND_FIX_REPORT.md Theme F.
+ *
+ * Returns false (deny + don't leak existence) on:
+ *   - unauthenticated subscribe
+ *   - malformed UUID
+ *   - user has no projects whose workspace_id matches the channel
+ *
+ * `silver.projects.workspace_id` is the source of truth — same join the
+ * Inertia ProjectController writes its membership against.
  */
 Broadcast::channel('workspace.{workspaceId}.activity', function ($user, string $workspaceId) {
-    // TODO: Validate $workspaceId when the Workspace model is introduced.
-    // Currently workspace = "all projects the user can access" (no workspace model yet).
-    return $user->projects()->exists();
+    if ($user === null) {
+        return false;
+    }
+    if (! preg_match(
+        '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i',
+        $workspaceId,
+    )) {
+        return false;
+    }
+
+    return $user->projects()
+        ->where('silver.projects.workspace_id', $workspaceId)
+        ->exists();
 });
 
 /**
