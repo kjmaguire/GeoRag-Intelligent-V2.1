@@ -558,6 +558,15 @@ class Settings(BaseSettings):
     # leave OFF — flipping it on requires restoring that module first.
     SENTENCE_GROUNDING_ENABLED: bool = False
 
+    # Audit 2026-06-27: prompt-injection hardening. When ON, untrusted document
+    # body text (NI 43-101 chunks, public-geoscience snippets) is wrapped in
+    # explicit data-fence delimiters in the LLM context, with a guard preamble
+    # instructing the model to treat fenced content as reference data only and
+    # never as instructions. Default OFF: it slightly changes the prompt shape,
+    # so flip it after a golden-eval pass confirms no answer-quality regression
+    # (the delimiting itself is safe; the gate is about prompt-format drift).
+    PROMPT_INJECTION_DELIMITING_ENABLED: bool = False
+
     # -------------------------------------------------------------------------
     # Phase 1 / Step 1.2 — OIUR answer schema rollout
     # -------------------------------------------------------------------------

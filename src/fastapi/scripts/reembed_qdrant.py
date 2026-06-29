@@ -58,7 +58,11 @@ def _load_model():  # type: ignore[return]
     try:
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-        model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+        # Audit 2026-06-29: device is env-tunable. CPU re-embed of 9k Qwen3
+        # vectors is impractically slow + memory-spiky; REEMBED_DEVICE=cuda runs
+        # it in minutes when GPU headroom is freed (e.g. vllm-vl paused).
+        _device = os.environ.get("REEMBED_DEVICE", "cpu")
+        model = SentenceTransformer(EMBEDDING_MODEL, device=_device)
         model.encode("warm-up", normalize_embeddings=True)
         elapsed = time.perf_counter() - t0
         dim = model.get_sentence_embedding_dimension()
@@ -123,14 +127,20 @@ def _reembed_collection(
         else:
             collection_dim = None
         if collection_dim is not None and collection_dim != EXPECTED_VECTOR_DIM:
-            logger.error(
-                "FATAL: Collection '%s' has vector dim=%d but loaded model "
-                "%s produces dim=%d. Run `python scripts/init_qdrant.py "
-                "--recreate` to drop + recreate the collection at the new "
-                "dim FIRST, then re-run this script.",
+            # Audit 2026-06-29: SKIP a dim-mismatched collection rather than
+            # aborting the whole run. georag_reports is a SEPARATE bge/384-dim
+            # corpus (per C1) — re-embedding it at 1024 would be wrong, and a
+            # hard sys.exit here would also abort the canonical georag_chunks
+            # pass if ordering ever changed. Skip + warn; the operator recreates
+            # explicitly (init_qdrant.py --recreate) only if a dim change is
+            # actually intended for that collection.
+            logger.warning(
+                "Collection '%s' has vector dim=%d but model %s produces "
+                "dim=%d — SKIPPING (separate-corpus dim mismatch). Recreate "
+                "explicitly via init_qdrant.py if a dim change is intended.",
                 collection_name, collection_dim, EMBEDDING_MODEL, EXPECTED_VECTOR_DIM,
             )
-            sys.exit(1)
+            return 0
     except SystemExit:
         raise
     except Exception:
@@ -203,10 +213,14 @@ def _reembed_collection(
 
         # Batch-encode all texts in this scroll page.
         t_encode = time.perf_counter()
+        # Audit 2026-06-29: batch_size is env-tunable. Qwen3-Embedding-0.6B on
+        # CPU with long (~400-token) chunks spikes activation memory at
+        # batch_size=32 and OOM-killed a 6 GiB container. Default 8 keeps the
+        # peak well under a modest container limit.
         vectors = model.encode(
             texts,
             normalize_embeddings=True,
-            batch_size=32,
+            batch_size=int(os.environ.get("REEMBED_BATCH_SIZE", "8")),
             show_progress_bar=False,
         )
         encode_elapsed = time.perf_counter() - t_encode
