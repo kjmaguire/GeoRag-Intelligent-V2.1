@@ -78,6 +78,37 @@ groups:
             vllm:gpu_prefix_cache_hits_total vs vllm:gpu_prefix_cache_queries_total
             for hit rate.
 
+      - alert: VllmDecodeLatencyHigh
+        # TPOT (time-per-output-token) — decode-side health, complementary
+        # to TTFT (prefix-cache / prefill health). High TPOT with healthy
+        # TTFT points at decode-side regressions: spec-decode accept-rate
+        # collapse, GPU thermal throttle, or excessive concurrency on a
+        # KV-saturated pool. Threshold: ~100ms/token at p95 — Qwen3-14B-AWQ
+        # on A4500 baselines ~30-40 ms/token single-stream with spec-decode.
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(vllm:time_per_output_token_seconds_bucket[5m])) by (le)
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: llm
+          backend: vllm
+        annotations:
+          summary: "vLLM p95 time-per-output-token > 100ms"
+          description: |
+            Decode-side latency is elevated for 10m. Common causes:
+              1. Speculative-decoding accept rate has collapsed — check
+                 vllm:spec_decode_num_accepted_tokens_total /
+                 vllm:spec_decode_num_draft_tokens_total. Below ~0.5
+                 means the n-gram cache is missing; consider lowering
+                 num_speculative_tokens or disabling spec-decode for the
+                 affected workload.
+              2. GPU thermal throttle — check nvidia_gpu_temperature_celsius.
+              3. KV pool saturated + heavy preemption — pair with
+                 VllmGpuKvCacheHigh; if both fire, reduce concurrency
+                 (VLLM_MAX_NUM_SEQS) or VLLM_MAX_MODEL_LEN.
+
       - alert: VllmPrefixCacheCold
         # Suppressed when no queries have been seen in the window so a
         # fresh-started instance with zero traffic doesn't immediately

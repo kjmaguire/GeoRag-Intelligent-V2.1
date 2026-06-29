@@ -1,0 +1,27 @@
+# Watchdog — always-firing alert that confirms the Prometheus →
+# Alertmanager → notification pipeline is alive end-to-end.
+#
+# Standard pattern: if a downstream notification channel goes silent
+# for longer than the Watchdog's repeat interval, the absence of the
+# Watchdog ping is itself the page (configured at the receiver layer).
+# Without Watchdog, "no alerts" is ambiguous — could mean nothing is
+# broken, or it could mean Alertmanager is dead.
+#
+# severity=none keeps the Watchdog out of the warn/critical routes
+# defined in docker/alertmanager/alertmanager.yml — receivers that
+# care about it can match on `alertname="Watchdog"` directly.
+#
+# Added 2026-06-02 per the P4-A audit finding (see
+# docs/handover/AUDIT_AND_FIX_REPORT.md).
+groups:
+  - name: watchdog
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: Alertmanager pipeline is alive
+          description: |
+            This alert is always firing. Receivers detect outages of the
+            Prometheus→Alertmanager pipeline by alerting on its absence.
