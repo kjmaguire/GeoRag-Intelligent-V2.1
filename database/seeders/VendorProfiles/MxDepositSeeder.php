@@ -47,8 +47,8 @@ class MxDepositSeeder extends Seeder
             [
                 'description' => (
                     'MX Deposit by Datamine — active drill logging tool used by some junior '
-                    'explorers. Column mappings below are placeholders pending a real sample '
-                    'file (CC-02 Item 6, 2026-05-23).'
+                    .'explorers. Column mappings below are placeholders pending a real sample '
+                    .'file (CC-02 Item 6, 2026-05-23).'
                 ),
                 'profile_type' => 'other',
                 'is_global'    => true,
