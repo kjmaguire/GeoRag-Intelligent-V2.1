@@ -17,7 +17,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.config import settings
+from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
+from app.hatchet_workflows.ingest_zip_archive import (
+    IngestZipArchiveInput,
+    ingest_zip_archive,
+)
 from app.hatchet_workflows.tiff_normalize import (
     TiffNormalizeInput,
     tiff_normalize,
@@ -79,19 +84,41 @@ async def trigger_ingest_pdf(
 
     # CC-03 Item 8 — lifecycle guard. Block ingest on non-active projects.
     # workspace_id GUC set so the RLS policy admits the silver.projects row.
+    # Parameter-bound — never f-string interpolate (audit pass 5+ caught the
+    # zip-archive sibling using `str` workspace_id without UUID validation,
+    # which is the textbook SQL-injection shape).
     if payload.project_id:
         _pg_pool = request.app.state.pg_pool
         async with _pg_pool.acquire() as _conn:
             async with _conn.transaction():
                 if payload.workspace_id:
                     await _conn.execute(
-                        f"SET LOCAL app.workspace_id = '{payload.workspace_id}'"
+                        "SELECT set_config('app.workspace_id', $1, true)",
+                        str(payload.workspace_id),
                     )
                 await require_active_project(
                     project_id=str(payload.project_id), conn=_conn
                 )
 
     ref = await ingest_pdf.aio_run_no_wait(payload)
+
+    # Cancellation observability — insert the silver.ingest_progress row at
+    # dispatch time (status='queued') so queue-saturation CANCELLED events,
+    # which fire BEFORE the preflight task runs, still leave a breadcrumb the
+    # IngestionRuns UI can render. The on_failure_task hook in ingest_pdf.py
+    # already resolves and transitions whatever row it finds via
+    # lookup_active_run_id; previously that lookup returned None for ~41% of
+    # failures because preflight's mark_started() never fired. See
+    # [[cameco-recovery-2026-06-02]] for the diagnosis.
+    if payload.workspace_id and payload.project_id:
+        await ingest_progress.start_run(
+            workspace_id=str(payload.workspace_id),
+            project_id=str(payload.project_id),
+            minio_key=payload.minio_key,
+            triggered_by="upload",
+            workflow_run_id=ref.workflow_run_id,
+        )
+
     return TriggerIngestPdfResponse(
         workflow_run_id=ref.workflow_run_id,
         correlation_token=payload.correlation_token,
@@ -125,13 +152,15 @@ async def trigger_tiff_normalize(
     )
 
     # CC-03 Item 8 — lifecycle guard. Block ingest on non-active projects.
+    # Parameter-bound; see ingest_pdf trigger above.
     if payload.project_id:
         _pg_pool = request.app.state.pg_pool
         async with _pg_pool.acquire() as _conn:
             async with _conn.transaction():
                 if payload.workspace_id:
                     await _conn.execute(
-                        f"SET LOCAL app.workspace_id = '{payload.workspace_id}'"
+                        "SELECT set_config('app.workspace_id', $1, true)",
+                        str(payload.workspace_id),
                     )
                 await require_active_project(
                     project_id=str(payload.project_id), conn=_conn
@@ -141,4 +170,62 @@ async def trigger_tiff_normalize(
     return TriggerIngestPdfResponse(
         workflow_run_id=ref.workflow_run_id,
         correlation_token=payload.correlation_token,
+    )
+
+
+class TriggerZipArchiveResponse(BaseModel):
+    workflow_run_id: str
+    run_id: str
+
+
+@router.post(
+    "/ingest_zip_archive/trigger",
+    response_model=TriggerZipArchiveResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_check_service_key)],
+)
+async def trigger_ingest_zip_archive(
+    payload: IngestZipArchiveInput,
+    request: Request,
+) -> TriggerZipArchiveResponse:
+    """Trigger the ingest_zip_archive Hatchet workflow.
+
+    The workflow downloads the ZIP from MinIO, extracts all entries, and
+    fans each file out to the appropriate ingester (LAS, LOG, TIFF, XLSX,
+    PDF). Individual file errors are swallowed so one corrupt file does
+    not abort the rest of the archive.
+
+    Returns 202 Accepted with the Hatchet workflow_run_id.
+    """
+    log.info(
+        "trigger_ingest_zip_archive: workspace_id=%s project_id=%s key=%s run_id=%s",
+        payload.workspace_id,
+        payload.project_id,
+        payload.minio_key,
+        payload.run_id,
+    )
+
+    # Lifecycle guard — block ingest on non-active projects.
+    # Parameter-bound; see ingest_pdf trigger above. Especially load-bearing
+    # here because IngestZipArchiveInput.workspace_id is typed `str` (not
+    # `UUID`) — Pydantic doesn't validate the shape, so an f-string interp
+    # would be a textbook SQL-injection vector if Laravel ever forwarded
+    # malformed input.
+    if payload.project_id:
+        _pg_pool = request.app.state.pg_pool
+        async with _pg_pool.acquire() as _conn:
+            async with _conn.transaction():
+                if payload.workspace_id:
+                    await _conn.execute(
+                        "SELECT set_config('app.workspace_id', $1, true)",
+                        str(payload.workspace_id),
+                    )
+                await require_active_project(
+                    project_id=str(payload.project_id), conn=_conn
+                )
+
+    ref = await ingest_zip_archive.aio_run_no_wait(payload)
+    return TriggerZipArchiveResponse(
+        workflow_run_id=ref.workflow_run_id,
+        run_id=payload.run_id,
     )
