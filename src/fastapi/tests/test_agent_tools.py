@@ -600,7 +600,11 @@ class TestSearchDocuments:
         )
         ctx = _MockRunContext(deps=deps)
 
-        with patch("app.agent.tools.settings") as mock_settings:
+        # Patch encode_sparse to avoid a real call to the SPLADE sidecar (which
+        # now requires X-Service-Key; the test env uses a dummy key). Matches
+        # the 4 sibling search_documents tests — this one was missed.
+        with patch("app.agent.tools.settings") as mock_settings, \
+                patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.RETRIEVAL_TOP_N = 20
             mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
