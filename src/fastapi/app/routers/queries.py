@@ -277,6 +277,13 @@ async def _agent_rag_stream(
         # user-level RBAC check deps.user_id and degrade gracefully when None.
         user_id=(user.user_id if user else None),
         user_roles=(user.roles if user else ()),
+        # Audit 2026-06-29: propagate the JWT workspace_id onto deps so the
+        # agentic graph (execute_node / persist_node WorkspaceContext.from_state)
+        # and search_documents (C3) bind the REAL tenant instead of falling back
+        # to the default tenant. Was missing → agentic path logged
+        # "workspace_id missing — falling back to default tenant" on every query
+        # (harmless single-tenant today; a cross-tenant leak once tenant #2 lands).
+        workspace_id=(getattr(user, "workspace_id", None) if user else None),
     )
 
     # B7 — defensive check that JWT project_id matches request body.
