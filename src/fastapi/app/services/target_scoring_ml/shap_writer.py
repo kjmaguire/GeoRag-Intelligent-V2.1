@@ -97,7 +97,8 @@ async def write_shap_factors(
         return 0
 
     # Make sure the session has the GUC set so the WITH CHECK passes.
-    await bind_workspace_scope(conn, workspace_id=str(workspace_id, site="shap_writer"),
+    await bind_workspace_scope(
+        conn, workspace_id=str(workspace_id), site="shap_writer",
     )
 
     rows_written = 0

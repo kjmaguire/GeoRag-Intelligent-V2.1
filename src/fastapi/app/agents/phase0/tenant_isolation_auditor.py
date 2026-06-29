@@ -96,7 +96,8 @@ async def tenant_isolation_audit(
                 async with conn.transaction():
                     # SET LOCAL doesn't accept $-parameter binding; use
                     # set_config(name, value, is_local=true) instead.
-                    await bind_workspace_scope(conn, workspace_id=str(ws_a, site="phase0.tenant_isolation_auditor"),
+                    await bind_workspace_scope(
+                        conn, workspace_id=str(ws_a), site="phase0.tenant_isolation_auditor",
                     )
                     rows = await conn.fetchval(
                         f'SELECT count(*) FROM "{schema}"."{table}" WHERE workspace_id = $1',

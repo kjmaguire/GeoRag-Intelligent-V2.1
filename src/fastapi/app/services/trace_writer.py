@@ -388,7 +388,10 @@ async def write_trace(pool: object, trace: RetrievalTrace) -> UUID | None:
             # requires being inside a tx; the explicit transaction also
             # gives us atomicity around the INSERT.
             async with conn.transaction():
-                await bind_workspace_scope(conn, workspace_id=str(trace.workspace_id, site="trace_writer"),
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id=str(trace.workspace_id),
+                    site="trace_writer",
                 )
                 row = await conn.fetchrow(_INSERT_SQL, *params)
             trace_id: UUID | None = row["trace_id"] if row else None

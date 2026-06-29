@@ -279,7 +279,8 @@ async def support_packet_assemble(
     # other agents that write to RLS tables should adopt the same pattern.
     async with rt.pg_pool.acquire() as conn:
         async with conn.transaction():
-            await bind_workspace_scope(conn, workspace_id=str(ctx.workspace_id, site="phase0.support_packet"),
+            await bind_workspace_scope(
+                conn, workspace_id=str(ctx.workspace_id), site="phase0.support_packet",
             )
             await conn.execute(
                 """
