@@ -45,7 +45,21 @@ class TrustController extends Controller
             return response()->json(['error' => 'fastapi service key missing'], 500);
         }
 
+        // Tenancy gate (Theme H extension — 2026-06-03 audit pass 5+++)
+        //
+        // Without this check, the controller minted a JWT with a caller-
+        // supplied project_id and forwarded to FastAPI, which would then
+        // resolve workspace_id from that project_id and serve the trust
+        // summary for any answer_run that belonged to that workspace.
+        // An attacker in workspace A could pass project_id=B (any project
+        // they could name) and answer_run_id from B → cross-tenant read.
+        //
+        // Gate the JWT mint behind hasProjectAccess so the claimed
+        // project_id always belongs to a project the caller can read.
         $projectId = (string) $request->query('project_id', '');
+        if ($projectId === '' || ! $user->hasProjectAccess($projectId)) {
+            return response()->json(['error' => 'not_found'], 404);
+        }
         $jwt = app(FastApiJwtMinter::class)->mint(
             (string) $user->id,
             $projectId,

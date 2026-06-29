@@ -69,7 +69,7 @@ class PortfolioController extends Controller
             ['label' => 'HOLES IN GROUND', 'value' => (string) $collarCount, 'sub' => 'across portfolio'],
             ['label' => 'QUERIES · 24H', 'value' => (string) $queries24h, 'sub' => "{$queries30d} in 30d", 'tone' => 'accent'],
             ['label' => 'CRS', 'value' => $projects->isNotEmpty() ? ('EPSG:'.(string) ($projects->first()['crs_epsg'] ?? '—')) : '—', 'sub' => 'primary projection'],
-            ['label' => 'WORKSPACE', 'value' => (string) ($user->workspace_id ?? 'default'), 'sub' => 'multi-tenant scope'],
+            ['label' => 'WORKSPACE', 'value' => (string) ($projects->first()['workspace_id'] ?? 'default'), 'sub' => 'multi-tenant scope'],
         ];
 
         $activity = QueryAuditLog::where('user_id', $user->id)
@@ -87,13 +87,23 @@ class PortfolioController extends Controller
             ])
             ->values();
 
+        // Top-level workspace_id for the Reverb activity subscription.
+        // Previously fell back to `$user->workspace_id ?? <hardcoded>`,
+        // but User has no workspace_id column — so the hardcoded
+        // default tenant fired for every user, and after the
+        // 2026-06-03 Theme F fix (workspace.{}.activity scoping) the
+        // subscription is denied for any tenant whose projects aren't
+        // in the default workspace. Derive from the first project the
+        // user actually owns; null when they have none (UI then
+        // skips the Reverb subscription rather than firing it at a
+        // foreign workspace). See AUDIT_AND_FIX_REPORT.md Theme H.
+        $resolvedWorkspaceId = $projects->isEmpty()
+            ? null
+            : (string) $projects->first()['workspace_id'];
+
         return Inertia::render('Foundry/Portfolio', [
             'org_name' => 'Workspace',
-            // Top-level workspace_id so the Reverb subscription has the
-            // channel target. Falls back to the seeded default workspace
-            // (matches QueryController's fallback) when the user row
-            // doesn't carry one (legacy accounts).
-            'workspace_id' => (string) ($user->workspace_id ?? 'a0000000-0000-0000-0000-000000000001'),
+            'workspace_id' => $resolvedWorkspaceId,
             'projects' => $projects,
             'kpis' => $kpis,
             'activity' => $activity,
