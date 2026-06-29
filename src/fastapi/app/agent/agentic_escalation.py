@@ -43,6 +43,7 @@ import asyncio
 import base64
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -151,20 +152,18 @@ class _WorkspaceRequiredError(Exception):
     """Raised when an agent PDF tool runs without a resolvable workspace_id."""
 
 
-def _require_workspace_uuid(ctx: RunContext[AgentDeps]) -> "uuid.UUID":
+def _require_workspace_uuid(ctx: RunContext[AgentDeps]) -> uuid.UUID:
     """Resolve ctx.deps.workspace_id to uuid.UUID or raise.
 
     Agent PDF tools persist into workspace-scoped silver.pdf_* tables, all of
     which have NOT NULL workspace_id. Refuse to run when the agent context
     cannot supply one — the caller surfaces this as a tool error.
     """
-    import uuid as _uuid  # noqa: PLC0415
-
     wid = getattr(ctx.deps, "workspace_id", None)
     if not wid:
         raise _WorkspaceRequiredError("workspace_id missing from AgentDeps")
     try:
-        return _uuid.UUID(str(wid))
+        return uuid.UUID(str(wid))
     except (ValueError, AttributeError) as exc:
         raise _WorkspaceRequiredError(
             f"workspace_id {wid!r} is not a valid UUID"
