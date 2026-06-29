@@ -1,7 +1,12 @@
 # Runbook — flip the live reranker to Qwen3-Reranker-0.6B
 
-**Status (2026-06-29):** VALIDATED CLEAR WIN, deployment **VRAM-gated**. Live
-reranker stays **bge-reranker-base** until VRAM is freed (see §3).
+**Status (2026-06-29): DEPLOYED + LIVE.** Qwen3-Reranker-0.6B runs on the GPU
+reranker sidecar (`RERANKER_BACKEND=qwen3_causal`, `RERANKER_DEVICE=cuda`).
+Verified: GPU 9.9 GB used / 10.3 GB free (no OOM, vllm healthy), warm rerank
+latency ~257–309 ms for 20 candidates (well under the 8 s budget), relevant ≫
+irrelevant. **Rollback** = set `RERANKER_BACKEND=cross_encoder` in `.env` +
+recreate the reranker sidecar (no compose edit needed). The §1–§3 notes below
+are the original pre-deploy analysis, kept for context.
 
 ## 1. The result (why flip)
 

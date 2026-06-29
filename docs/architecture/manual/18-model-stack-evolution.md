@@ -29,7 +29,7 @@ defaults.** Always read the model stack in two columns.
 | Slot | Production (live, env-driven) | Code/compose default (stale) |
 |---|---|---|
 | Dense embedder | `Qwen/Qwen3-Embedding-0.6B` **1024-dim** ([config.py:899,904](../../../src/fastapi/app/config.py)) | `BAAI/bge-small-en-v1.5` 384-dim ([embedding_service.py:41](../../../src/fastapi/app/embedding_service.py); [docker-compose.yml:959,1298,2694](../../../docker-compose.yml)) |
-| Reranker | **`BAAI/bge-reranker-base` is LIVE** (verified 2026-06-28). Qwen3-Reranker is a **validated +13.9% NDCG win** (eval 2026-06-29) with the CausalLM backend now built, but is **not yet deployed** — VRAM-gated (see ⚠️ below + runbook). | `BAAI/bge-reranker-base@2cfc18c9` ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) |
+| Reranker | **`Qwen/Qwen3-Reranker-0.6B` is LIVE on GPU** (deployed 2026-06-29, `RERANKER_BACKEND=qwen3_causal`) — validated **+13.9% NDCG@10 over bge** (0.7048 vs 0.6188), warm latency ~300 ms/20-cand. Rollback to bge = `RERANKER_BACKEND=cross_encoder`. | `Qwen/Qwen3-Reranker-0.6B` via `_Qwen3CausalReranker` ([reranker.py](../../../src/fastapi/app/services/reranker.py)) |
 | VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` (V2 default; V3=Qwen3-VL-8B gated) ([pdf_vl.py:109,117,118](../../../src/fastapi/app/services/pdf_vl.py)) | same |
 | Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` (**unchanged**) ([.env.example:492,612](../../../.env.example)) | same |
 | Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | same |
