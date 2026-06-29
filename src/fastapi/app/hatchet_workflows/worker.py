@@ -62,6 +62,7 @@ from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-p
 from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
 from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
 from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
+from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
 from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
 from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
 from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
@@ -74,6 +75,7 @@ from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
+from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
 
 
 # Pool → workflow list. Phase 1 Step 4 added `ingest_pdf` to the ingestion
@@ -151,6 +153,10 @@ POOLS = {
         # sync. Runs BGE + SPLADE++ embeddings + upserts to the
         # georag_reports collection.
         embed_pending_passages_wf,
+        # Contextual retrieval — daily 04:30 UTC, before embed at 05:45 UTC.
+        # Generates Qwen3 context headers (contextualized_content) so
+        # passage_embedder uses enriched text for better recall.
+        enrich_passage_context_wf,
         # Doc-phase 98 / Master-plan §10.10 — support_replay re-
         # executes failed workflows in dry-run mode for diagnosis.
         # Skeleton.
@@ -188,6 +194,10 @@ POOLS = {
         # per-workspace threshold. Cron every 5 min; idempotent within
         # the window so operators see one alert per breach, not 12.
         cost_burn_watcher,
+        # Answer quality eval — Qwen3-as-judge faithfulness + context
+        # precision scoring. Nightly catch-up at 06:00 UTC; scores
+        # audit.query_audit_log rows where faithfulness_score IS NULL.
+        score_answer_quality_wf,
         # bc_minfile_pull (§6.2) + nrcan_geo_pull (§6.3) retired 2026-05-25 —
         # superseded by Dagster Bronze→Silver pipeline. Stale cron entries on
         # the Hatchet engine side were cleared via the de-registration sweep

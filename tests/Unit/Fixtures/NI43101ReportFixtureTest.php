@@ -9,18 +9,34 @@ class NI43101ReportFixtureTest extends TestCase
     /**
      * Path to the generated NI 43-101 technical report fixture.
      */
-    protected const FIXTURE_PATH = __DIR__ . '/../../fixtures/reports/PLS-2024-Technical-Report.pdf';
+    protected const FIXTURE_PATH = __DIR__.'/../../fixtures/reports/PLS-2024-Technical-Report.pdf';
+
+    /**
+     * The fixture under tests/fixtures/reports/ is a generated artifact and is
+     * deliberately gitignored (.gitignore: tests/fixtures/reports/*.pdf), so it
+     * is absent on fresh clones and in CI until generated. Skip the whole class
+     * when it is missing — mirroring the Python consumers
+     * (tests/fixtures/ocr → pytest.skip / skipif) and the skipIfSqlite house
+     * style — rather than reporting a hard failure for an optional fixture.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        if (! file_exists(self::FIXTURE_PATH)) {
+            $this->markTestSkipped(
+                'NI 43-101 fixture not generated. Create it with: '
+                .'python tests/fixtures/reports/generate_test_report.py',
+            );
+        }
+    }
 
     /**
      * Check that the NI 43-101 fixture file exists.
      */
     public function test_ni43101_fixture_file_exists(): void
     {
-        $this->assertFileExists(
-            self::FIXTURE_PATH,
-            'NI 43-101 fixture not found. Generate it with: '
-            . 'python tests/fixtures/reports/generate_test_report.py'
-        );
+        $this->assertFileExists(self::FIXTURE_PATH);
     }
 
     /**
@@ -36,14 +52,14 @@ class NI43101ReportFixtureTest extends TestCase
         $this->assertStringStartsWith(
             '%PDF',
             $content,
-            'Fixture file does not have valid PDF signature'
+            'Fixture file does not have valid PDF signature',
         );
 
         // Check for EOF marker
         $this->assertStringEndsWith(
             '%%EOF',
             trim($content),
-            'Fixture file does not have valid PDF EOF marker'
+            'Fixture file does not have valid PDF EOF marker',
         );
     }
 
@@ -72,13 +88,13 @@ class NI43101ReportFixtureTest extends TestCase
         $this->assertStringContainsString(
             '/Catalog',
             $content,
-            'Fixture is missing PDF /Catalog object — generator output is malformed'
+            'Fixture is missing PDF /Catalog object — generator output is malformed',
         );
 
         $this->assertStringContainsString(
             'FlateDecode',
             $content,
-            'Fixture has no FlateDecode streams — generator appears to have produced an empty PDF'
+            'Fixture has no FlateDecode streams — generator appears to have produced an empty PDF',
         );
     }
 
@@ -99,13 +115,13 @@ class NI43101ReportFixtureTest extends TestCase
         $this->assertGreaterThan(
             5 * 1024,
             $fileSize,
-            'Fixture file is unexpectedly small — did the generator produce only a title page?'
+            'Fixture file is unexpectedly small — did the generator produce only a title page?',
         );
 
         $this->assertLessThan(
             500 * 1024,
             $fileSize,
-            'Fixture file is unexpectedly large — check the generator is not embedding unintended assets'
+            'Fixture file is unexpectedly large — check the generator is not embedding unintended assets',
         );
     }
 }

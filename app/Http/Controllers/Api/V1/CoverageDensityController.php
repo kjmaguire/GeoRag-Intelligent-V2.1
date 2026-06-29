@@ -55,10 +55,10 @@ class CoverageDensityController extends Controller
 
         $fastApiBase = rtrim(
             (string) (config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000')),
+                ?? config('services.fastapi.internal_url')),
             '/',
         );
-        $serviceKey = config('services.fastapi.service_key') ?? env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['message' => 'FastAPI service key not configured.'], 503);
         }

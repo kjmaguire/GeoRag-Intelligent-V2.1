@@ -73,6 +73,31 @@ bundling.
 | Target Recommendation | [Dashboards/TargetRecommendation.tsx](../../../resources/js/Pages/Dashboards/TargetRecommendation.tsx) |
 | Visual Readiness | [Dashboards/VisualReadiness.tsx](../../../resources/js/Pages/Dashboards/VisualReadiness.tsx) |
 
+### 2a. Admin / operator surface (`resources/js/Pages/Admin/` — 41 pages)
+
+The operator console — the entire `/admin/*` route family. This is where
+the master-plan §7/§8/§10/§12 deliverables surface for operators. It was
+under-documented before this pass; full catalog:
+
+| Group | Pages | Backs |
+|---|---|---|
+| **Agent config** | `AgentConfig/Pins`, `AgentConfig/Prompts`, `AgentConfig/Timeouts`, `AgentConfig/Workspaces` | `workspace.prompt_versions`, `workspace.agent_timeouts`, prompt registry (Appendix N §5) |
+| **Eval harness (§10)** | `EvalDashboard`, `EvalCompare`, `EvalQuestions`, `EvalQuestionEditor` | `eval.golden_questions`, `eval.eval_runs` — golden-query authoring + regression view |
+| **ML training (§12)** | `MlTrainingRuns`, `SourceTrust` | `train_target_model` / `train_source_trust` workflows ([Appendix M §10](../appendix/M-agents-and-ml-catalog.md)) |
+| **Targeting (§8)** | `TargetRecommendationCockpit`, `TargetRecommendationRuns`, `Recommendations` | TRG LangGraph ([Appendix N §1.2](../appendix/N-agentic-and-retrieval-catalog.md)) |
+| **Shadow / repair (ADR-0009)** | `ShadowRuns/Index`, `ShadowRuns/Show` | `gold.repair_shadow_daily`, `silver.shadow_runs` |
+| **Orchestration ops** | `HatchetWorkers`, `WorkflowRuns`, `Integrations` (Kestra) | `pgsql_hatchet` / `pgsql_kestra` read views ([Ch 07](07-orchestration.md)) |
+| **Support (§10-B)** | `SupportCockpit`, `AlertsInbox`, `Conflicts` | `ops.*` tables, Phase 10 agents |
+| **Audit / observability** | `AuditExplorer`, `AuditFindings`, `CacheTelemetry`, `LoadTest`, `Dashboards` | `audit.audit_ledger`, Pulse, k6 |
+| **Backups / DR (§11)** | `BackupsDashboard` | backup-agent + `restore_workspace` |
+| **Ingest ops** | `IngestionReview`, `ClusterIngest` | `silver.review_queue`, cluster ingest |
+| **Reporting (§7)** | `ReportBuild`, `ReportBuilder`, `ExportGate` | Phase 7 report agents |
+| **Decisions / hypothesis (§9)** | `DecisionHistory`, `DecisionNew`, `HypothesisWorkspace`, `WhatChanged` | decision-intelligence + `what_changed_*` workflows |
+| **Workspace admin** | `WorkspaceMembers`, `WorkspaceSettings`, `QpCredentials`, `PhaseH4Health`, `SavedMaps` | `workspace.memberships`, `silver.qp_credentials` |
+
+All gated by the Laravel admin `Gate::define` checks; routed under
+`routes/web.php` `/admin/*`.
+
 ## 3. Reverb broadcast channels
 
 Authentication for private channels goes through `routes/channels.php`

@@ -68,18 +68,50 @@ class RetrievalProfile(BaseModel):
         default_factory=list,
         description="Tools invoked only when secondary signals warrant it.",
     )
+    # ── Wired into the execute/assemble path ──────────────────────────────
+    adversarial_pass_enabled: bool = False  # nodes.execute_node:565
+    surface_qa_qc_fields: bool = False       # nodes.assemble_node:903
+    answer_emphasis: AnswerEmphasis = "synthesis_with_conflicts"  # :883
+
+    # ── NOT YET WIRED (audit 2026-06-28) ──────────────────────────────────
+    # These fields are declared + set per-intent but the execute path does not
+    # consume them yet. They are kept (not deleted) because applying each one
+    # changes retrieval breadth / ranking / output and therefore needs a
+    # golden-eval pass before flipping — blind-wiring would shift answer quality
+    # untested (same gating as the Qwen3 query-prefix item). Documented here so
+    # the profile does not misrepresent itself as tuning the pipeline.
     bm25_weight: float = Field(
         default=0.5,
         ge=0.0,
         le=1.0,
-        description="Sparse vs dense mix for document search.",
+        description=(
+            "Intended sparse-vs-dense mix for document search. NOT YET WIRED — "
+            "search_documents currently reads a global sparse_boost setting, "
+            "not this per-intent value. Wiring is eval-gated."
+        ),
     )
-    conflict_detection_enabled: bool = False
-    adversarial_pass_enabled: bool = False
-    surface_qa_qc_fields: bool = False
-    require_regulatory_constraints: bool = False
-    answer_emphasis: AnswerEmphasis = "synthesis_with_conflicts"
-    max_chunks: int = Field(default=12, ge=1, le=50)
+    conflict_detection_enabled: bool = Field(
+        default=False,
+        description=(
+            "Intended to make assemble inspect chunks for contradictions. NOT "
+            "YET WIRED — currently only logged in route_node, not acted on."
+        ),
+    )
+    require_regulatory_constraints: bool = Field(
+        default=False,
+        description=(
+            "Intended to force Layer-6 regulatory constraint checks for "
+            "decision_support. NOT YET WIRED — currently only logged."
+        ),
+    )
+    max_chunks: int = Field(
+        default=12, ge=1, le=50,
+        description=(
+            "Intended soft cap on chunks passed to the assembler. NOT YET "
+            "WIRED — the secondary-tool coverage heuristic uses a hardcoded "
+            "threshold, not this value. Wiring is eval-gated."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

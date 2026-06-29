@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DrillTrace3D.test.tsx
  *

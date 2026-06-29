@@ -22,7 +22,9 @@ Pool storage on app.state
   app.state.anthropic_client — anthropic.AsyncAnthropic | None (B2 — pooled
                                to avoid TLS handshake + pool churn per request;
                                None if LLM_BACKEND != "anthropic" or key unset)
-  app.state.embedding_model  — SentenceTransformer (BAAI/bge-small-en-v1.5, CPU)
+  app.state.embedding_model  — embedding model (EMBEDDING_MODEL_NAME); a shared-
+                               sidecar proxy when EMBEDDING_SERVICE_URL is set
+                               (default), else a local SentenceTransformer (CPU)
   app.state.reranker         — CrossEncoder (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
 
 Timeout constants are imported from app.config.settings so every module
@@ -138,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
       2. AsyncQdrantClient → Qdrant vector store
       3. Neo4j AsyncDriver → knowledge graph
       4. redis.asyncio client → caching / session store
-      5. SentenceTransformer embedding model (BAAI/bge-small-en-v1.5, CPU)
+      5. Embedding model — shared sidecar proxy (EMBEDDING_SERVICE_URL) or local
       6. CrossEncoder reranker (cross-encoder/ms-marco-MiniLM-L-6-v2, CPU)
 
     Teardown is the mirror: each client is closed in reverse order so
@@ -562,20 +564,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL_NAME)
     _t0 = time.perf_counter()
     try:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        # Shared embedding sidecar when EMBEDDING_SERVICE_URL is set (one model
+        # for all workers over a localhost hop); else a local CPU model as
+        # before. See app.services.embedding.
+        from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME, device="cpu")
+        embedding_model = get_embedding_model(settings.EMBEDDING_MODEL_NAME)
         # Warm up: encode a dummy string so the first real request does not
-        # pay the JIT/model-init penalty.
+        # pay the JIT/model-init penalty (a no-op round-trip for the sidecar
+        # proxy, which also validates connectivity at startup).
         embedding_model.encode("warm-up", normalize_embeddings=True)
         _elapsed = time.perf_counter() - _t0
         app.state.embedding_model = embedding_model
+        _loaded_dim = embedding_model.get_sentence_embedding_dimension()
         logger.info(
             "Embedding model ready: %s (dim=%d) loaded in %.2fs",
             settings.EMBEDDING_MODEL_NAME,
-            embedding_model.get_sentence_embedding_dimension(),
+            _loaded_dim,
             _elapsed,
         )
+        # Audit 2026-06-27 (C1): the fail-fast dimension-parity check the
+        # comment on settings.EMBEDDING_DIMENSION claims exists. A model whose
+        # dim disagrees with EMBEDDING_DIMENSION (and thus the live Qdrant
+        # collection) would silently break retrieval. Disable the model so
+        # search_documents returns empty (safe refusal) instead of querying a
+        # mismatched vector space.
+        if _loaded_dim is not None and _loaded_dim != settings.EMBEDDING_DIMENSION:
+            logger.critical(
+                "Embedding dim mismatch: model %s reports dim=%d but "
+                "EMBEDDING_DIMENSION=%d. Disabling embedding model to avoid "
+                "querying a mismatched Qdrant collection. Fix "
+                "EMBEDDING_MODEL_NAME/EMBEDDING_DIMENSION or re-embed the corpus.",
+                settings.EMBEDDING_MODEL_NAME,
+                _loaded_dim,
+                settings.EMBEDDING_DIMENSION,
+            )
+            app.state.embedding_model = None
     except Exception:
         logger.exception(
             "Failed to load embedding model — search_documents will return empty results"
@@ -597,22 +621,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # log + continue with RRF order. Do not fail the query.
     _t1 = time.perf_counter()
     try:
-        from app.services.reranker import RERANKER_VERSION, _get_reranker  # noqa: PLC0415
+        import os as _os  # noqa: PLC0415
+        from app.services.reranker import (  # noqa: PLC0415
+            RERANKER_VERSION,
+            _RemoteReranker,
+            _get_reranker,
+        )
 
-        logger.info(
-            "Loading cross-encoder reranker: %s version=%s",
-            "BAAI/bge-reranker-base",
-            RERANKER_VERSION,
-        )
-        reranker = _get_reranker()  # warms the lru_cache singleton
-        _elapsed_r = time.perf_counter() - _t1
-        app.state.reranker = reranker
-        app.state.reranker_version = RERANKER_VERSION
-        logger.info(
-            "Reranker model ready: %s loaded in %.2fs",
-            RERANKER_VERSION,
-            _elapsed_r,
-        )
+        # 2026-06-24: when the shared reranker sidecar is configured
+        # (RERANKER_SERVICE_URL), point app.state.reranker at an HTTP proxy
+        # instead of loading a per-worker CrossEncoder copy. 6 uvicorn workers
+        # each loading a ~1 GiB model was the OOM driver; the proxy keeps the
+        # identical .predict() interface the query path already uses.
+        _svc_url = (_os.environ.get("RERANKER_SERVICE_URL") or "").strip()
+        if _svc_url:
+            _timeout = float(_os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
+            app.state.reranker = _RemoteReranker(_svc_url, _timeout)
+            app.state.reranker_version = RERANKER_VERSION
+            logger.info(
+                "Reranker via shared sidecar %s (%s) — no local model loaded",
+                _svc_url, RERANKER_VERSION,
+            )
+        else:
+            logger.info(
+                "Loading cross-encoder reranker: %s version=%s",
+                "BAAI/bge-reranker-base",
+                RERANKER_VERSION,
+            )
+            reranker = _get_reranker()  # warms the lru_cache singleton
+            _elapsed_r = time.perf_counter() - _t1
+            app.state.reranker = reranker
+            app.state.reranker_version = RERANKER_VERSION
+            logger.info(
+                "Reranker model ready: %s loaded in %.2fs",
+                RERANKER_VERSION,
+                _elapsed_r,
+            )
     except Exception:
         logger.exception(
             "Failed to load reranker model — reranker step will be skipped (RRF order used)"

@@ -109,6 +109,10 @@ window.Echo = new Echo({
     wsHost: window.location.hostname,
     wsPort: import.meta.env.VITE_REVERB_PORT ?? 8085,
     wssPort: import.meta.env.VITE_REVERB_PORT ?? 8085,
-    forceTLS: (import.meta.env.VITE_REVERB_SCHEME ?? 'http') === 'https',
+    // Audit 2026-06-28: follow the PAGE protocol when VITE_REVERB_SCHEME is
+    // unset — defaulting to 'http' on an https page yields ws:// and the browser
+    // blocks it as mixed content. https page -> wss (forceTLS true).
+    forceTLS: (import.meta.env.VITE_REVERB_SCHEME
+        ?? (window.location.protocol === 'https:' ? 'https' : 'http')) === 'https',
     enabledTransports: ['ws', 'wss'],
 });

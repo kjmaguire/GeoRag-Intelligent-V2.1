@@ -14,13 +14,15 @@ Tier 2 (TIFFs requiring OCR) is deferred.
 
 Per file:
   - Wraps each ingest in its own asyncpg transaction
-  - Sets RLS GUCs (app.workspace_id + georag.project_id + georag.workspace_id)
+  - Sets RLS GUCs (app.workspace_id + app.project_id)
   - Collects per-file result for the summary
 
 Per cluster (overall run):
   - Returns ClusterIngestSummary with counts by file_type + per-type results
 """
 from __future__ import annotations
+
+from app.db import bind_workspace_scope
 
 import asyncio
 import logging
@@ -72,11 +74,11 @@ async def _set_rls_gucs(
     project_id: str | None = None,
 ) -> None:
     """Apply the GUCs that the RLS policies check."""
-    await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
+    await bind_workspace_scope(
+        conn, workspace_id=workspace_id, site="ingest.cluster_runner"
     )
-    await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, true)", workspace_id,
+    await bind_workspace_scope(
+        conn, workspace_id=workspace_id, site="ingest.cluster_runner"
     )
     if project_id:
         await conn.execute(
@@ -144,7 +146,7 @@ async def ingest_cluster(
 
     try:
         # ── Pass 0 — Pre-create project so every subsequent INSERT has
-        # a valid georag.project_id GUC value. silver.collars has an
+        # a valid app.project_id GUC value. silver.collars has an
         # RLS policy that requires the GUC to be NULL OR a valid uuid;
         # leaving it as empty-string ("" from a prior session) breaks
         # the ::uuid cast.

@@ -26,6 +26,7 @@ caller is responsible for not triaging closed tickets.
 """
 
 from __future__ import annotations
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import logging
 import os
@@ -35,6 +36,7 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import lookup_and_rescope
 
 log = logging.getLogger("georag.support_cockpit.ticket_triage")
 
@@ -155,91 +157,81 @@ async def triage_ticket(
         )
 
     try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                # Block-3 RLS — see customer_response_drafting pattern.
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    "a0000000-0000-0000-0000-000000000001",
-                )
-                # 1. Lock + read the ticket.
-                row = await conn.fetchrow(
-                    """
-                    SELECT ticket_id, workspace_id, description,
-                           severity, category, status
-                      FROM ops.support_tickets
-                     WHERE ticket_id = $1::uuid
-                       FOR UPDATE
-                    """,
-                    ticket_str,
-                )
-                if row is None:
-                    raise ValueError(f"ticket not found: {ticket_str}")
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    str(row["workspace_id"]),
-                )
-                if row["status"] in ("resolved", "closed"):
-                    raise ValueError(
-                        f"ticket {ticket_str} is {row['status']} — not triageable"
-                    )
-
-                prior_severity = row["severity"]
-                prior_category = row["category"]
-
-                # 2. Classify.
-                new_severity, new_category = _synthetic_classifier(
-                    row["description"]
-                )
-                new_status = "investigating"
-
-                # 3. Apply.
-                await conn.execute(
-                    """
-                    UPDATE ops.support_tickets
-                       SET severity = $1,
-                           category = $2,
-                           status = $3
-                     WHERE ticket_id = $4::uuid
-                    """,
-                    new_severity, new_category, new_status, ticket_str,
+        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py.
+        async with lookup_and_rescope(
+            pool,
+            lookup_sql="""
+                SELECT ticket_id, workspace_id, description,
+                       severity, category, status
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                   FOR UPDATE
+                """,
+            lookup_args=(ticket_str,),
+            site="support_cockpit.ticket_triage",
+            bootstrap_reason="support_cockpit.elevated_lookup",
+        ) as (conn, row):
+            if row["status"] in ("resolved", "closed"):
+                raise ValueError(
+                    f"ticket {ticket_str} is {row['status']} — not triageable"
                 )
 
-                # 4. Audit anchor.
-                await emit_audit(
-                    conn,
-                    action_type="support.ticket.triaged",
-                    workspace_id=row["workspace_id"],
-                    actor_kind="agent",
-                    target_schema="ops",
-                    target_table="support_tickets",
-                    target_id=ticket_str,
-                    payload={
-                        "evaluator": "synthetic_stub",
-                        "doc_phase": 136,
-                        "prior_severity": prior_severity,
-                        "prior_category": prior_category,
-                        "new_severity": new_severity,
-                        "new_category": new_category,
-                        "new_status": new_status,
-                    },
-                )
+            prior_severity = row["severity"]
+            prior_category = row["category"]
 
-                log.info(
-                    "ticket_triage.completed ticket=%s sev=%s→%s cat=%s→%s",
-                    ticket_str, prior_severity, new_severity,
-                    prior_category, new_category,
-                )
+            # 2. Classify.
+            new_severity, new_category = _synthetic_classifier(
+                row["description"]
+            )
+            new_status = "investigating"
 
-                return TriageOutcome(
-                    ticket_id=UUID(ticket_str),
-                    prior_severity=prior_severity,
-                    prior_category=prior_category,
-                    new_severity=new_severity,
-                    new_category=new_category,
-                    new_status=new_status,
-                    triage_method="synthetic_stub",
-                )
+            # 3. Apply.
+            await conn.execute(
+                """
+                UPDATE ops.support_tickets
+                   SET severity = $1,
+                       category = $2,
+                       status = $3
+                 WHERE ticket_id = $4::uuid
+                """,
+                new_severity, new_category, new_status, ticket_str,
+            )
+
+            # 4. Audit anchor.
+            await emit_audit(
+                conn,
+                action_type="support.ticket.triaged",
+                workspace_id=row["workspace_id"],
+                actor_kind="agent",
+                target_schema="ops",
+                target_table="support_tickets",
+                target_id=ticket_str,
+                payload={
+                    "evaluator": "synthetic_stub",
+                    "doc_phase": 136,
+                    "prior_severity": prior_severity,
+                    "prior_category": prior_category,
+                    "new_severity": new_severity,
+                    "new_category": new_category,
+                    "new_status": new_status,
+                },
+            )
+
+            log.info(
+                "ticket_triage.completed ticket=%s sev=%s→%s cat=%s→%s",
+                ticket_str, prior_severity, new_severity,
+                prior_category, new_category,
+            )
+
+            return TriageOutcome(
+                ticket_id=UUID(ticket_str),
+                prior_severity=prior_severity,
+                prior_category=prior_category,
+                new_severity=new_severity,
+                new_category=new_category,
+                new_status=new_status,
+                triage_method="synthetic_stub",
+            )
     finally:
         if owns_pool and pool is not None:
             await pool.close()
@@ -269,7 +261,7 @@ async def triage_unclassified_tickets(
             # Workspace by default.
             await conn.execute(
                 "SELECT set_config('app.workspace_id', $1, false)",
-                "a0000000-0000-0000-0000-000000000001",
+                LEGACY_DEFAULT_TENANT_UUID,
             )
             ids = await conn.fetch(
                 """

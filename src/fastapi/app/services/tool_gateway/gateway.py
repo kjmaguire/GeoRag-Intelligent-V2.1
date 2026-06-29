@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import scoped_connection
 from app.services.tool_gateway.policies import (
     RiskTier, has_approval, is_workspace_allowed, resolve_effective_tier,
 )
@@ -180,20 +181,18 @@ async def invoke_tool(
     input_hash = _canonical_hash(inputs)
 
     # 1. Resolve risk tier
-    async with ctx.pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-        )
+    async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
         tier = await resolve_effective_tier(
             conn, workspace_id=workspace_id_str, tool_name=tool_name,
         )
 
     if tier is None:
         # Unregistered tool
-        async with ctx.pg_pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-            )
+        async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
             invocation_id = await _record_invocation(
                 conn, workspace_id=workspace_id_str,
                 actor_user_id=ctx.actor_user_id, actor_kind=ctx.actor_kind,
@@ -210,19 +209,17 @@ async def invoke_tool(
         )
 
     # 2. Per-workspace permission check
-    async with ctx.pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-        )
+    async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
         allowed, deny_reason = await is_workspace_allowed(
             conn, workspace_id=workspace_id_str, tool_name=tool_name,
         )
 
     if not allowed:
-        async with ctx.pg_pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-            )
+        async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
             invocation_id = await _record_invocation(
                 conn, workspace_id=workspace_id_str,
                 actor_user_id=ctx.actor_user_id, actor_kind=ctx.actor_kind,
@@ -239,20 +236,18 @@ async def invoke_tool(
 
     # 3. R4+ approval check
     if tier.requires_approval:
-        async with ctx.pg_pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-            )
+        async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
             approved, approval_reason = await has_approval(
                 conn, workspace_id=workspace_id_str, tool_name=tool_name,
                 actor_user_id=ctx.actor_user_id,
                 actor_metadata=ctx.actor_metadata,
             )
         if not approved and not ctx.dry_run:
-            async with ctx.pg_pool.acquire() as conn:
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-                )
+            async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
                 invocation_id = await _record_invocation(
                     conn, workspace_id=workspace_id_str,
                     actor_user_id=ctx.actor_user_id, actor_kind=ctx.actor_kind,
@@ -279,10 +274,9 @@ async def invoke_tool(
         # (better to capture intent than to silently no-op).
         outcome_str = "dry_run"
         # Generate the invocation_id up front so dry_run_outputs can point at it
-        async with ctx.pg_pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-            )
+        async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
             invocation_id = str(uuid4())
             await conn.execute(
                 """
@@ -316,10 +310,9 @@ async def invoke_tool(
     if impl is None:
         # Non-audited tier with no registered impl is a programmer error.
         log.error("tool_gateway: tool '%s' registered in DB but no impl bound", tool_name)
-        async with ctx.pg_pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-            )
+        async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
             invocation_id = await _record_invocation(
                 conn, workspace_id=workspace_id_str,
                 actor_user_id=ctx.actor_user_id, actor_kind=ctx.actor_kind,
@@ -343,10 +336,9 @@ async def invoke_tool(
     except Exception as exc:  # noqa: BLE001
         log.exception("tool_gateway: tool %s impl raised", tool_name)
         duration_ms = int((time.monotonic() - start) * 1000)
-        async with ctx.pg_pool.acquire() as conn:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-            )
+        async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
             invocation_id = await _record_invocation(
                 conn, workspace_id=workspace_id_str,
                 actor_user_id=ctx.actor_user_id, actor_kind=ctx.actor_kind,
@@ -363,10 +355,9 @@ async def invoke_tool(
 
     # 5. Record invocation + emit audit row for R3+
     duration_ms = int((time.monotonic() - start) * 1000)
-    async with ctx.pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
-        )
+    async with scoped_connection(
+            ctx.pg_pool, workspace_id=workspace_id_str, site="tool_gateway"
+        ) as conn:
         invocation_id = await _record_invocation(
             conn, workspace_id=workspace_id_str,
             actor_user_id=ctx.actor_user_id, actor_kind=ctx.actor_kind,

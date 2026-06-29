@@ -78,7 +78,12 @@ from georag_dagster.resources import PostgresResource, QdrantResource
 # Constants
 # ---------------------------------------------------------------------------
 
-EMBED_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+# Audit 2026-06-27 (C1): the public-geoscience pg_* collections are a SEPARATE
+# 384-dim bge-small vector space — NOT migrated to Qwen3 (only georag_chunks was,
+# on 2026-06-03). Do NOT wire this to the shared EMBEDDING_MODEL_NAME /
+# EMBEDDING_DIMENSION env (those now resolve to Qwen3/1024 on FastAPI) or it
+# would collide 1024-dim vectors into these 384-dim collections. Pin bge here.
+EMBED_MODEL_NAME = os.environ.get("PUBLIC_GEO_EMBED_MODEL_NAME", "BAAI/bge-small-en-v1.5")
 EMBED_DIMENSIONS = 384
 EMBED_BATCH_SIZE = 32
 UPSERT_BATCH_SIZE = 100
@@ -195,6 +200,19 @@ def _ensure_collection(client, collection_name: str, context: AssetExecutionCont
     )
 
     existing = {c.name for c in client.get_collections().collections}
+    # Audit 2026-06-27 (C1) dim-parity guard: refuse to embed into a collection
+    # whose dense size disagrees with EMBED_DIMENSIONS (here, 384/bge). Backstop
+    # against a model/dim swap silently corrupting these public-geo collections.
+    if collection_name in existing:
+        _info = client.get_collection(collection_name)
+        _vp = _info.config.params.vectors
+        _dim = _vp[""].size if isinstance(_vp, dict) else getattr(_vp, "size", None)
+        if _dim is not None and _dim != EMBED_DIMENSIONS:
+            raise RuntimeError(
+                f"{collection_name} dense dim={_dim} != EMBED_DIMENSIONS="
+                f"{EMBED_DIMENSIONS} (model {EMBED_MODEL_NAME}); refusing to embed "
+                "at a mismatched dimension."
+            )
     if collection_name not in existing:
         # Module 4 Chunk 2 cleanup: create with named dense "" + sparse "text"
         # slots so hybrid_query() Prefetch branches can address each slot by name.

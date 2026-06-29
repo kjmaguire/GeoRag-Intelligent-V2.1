@@ -87,7 +87,7 @@ class MlTrainingRunsController extends Controller
 
     private function fastapi()
     {
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             abort(500, 'FASTAPI_SERVICE_KEY not configured');
         }
@@ -98,7 +98,7 @@ class MlTrainingRunsController extends Controller
     {
         return rtrim(
             config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                ?? config('services.fastapi.internal_url'),
             '/',
         );
     }

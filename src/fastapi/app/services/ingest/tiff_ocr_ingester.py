@@ -25,6 +25,8 @@ Garbage filters:
 """
 from __future__ import annotations
 
+from app.db import bind_workspace_scope
+
 import asyncio
 import hashlib
 import io
@@ -371,8 +373,8 @@ async def ocr_cluster_tiffs(
 
     try:
         # Session-level GUCs
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="ingest.tiff_ocr_ingester"
         )
         await conn.execute(
             "SELECT set_config('app.project_id', $1, false)", project_id,

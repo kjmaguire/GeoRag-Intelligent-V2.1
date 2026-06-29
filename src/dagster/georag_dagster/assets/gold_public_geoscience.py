@@ -764,6 +764,17 @@ def gold_public_geoscience_neo4j(
             # the old `smdi_id` column (if it was created on a previous
             # run). The replacement `occ_external_id` is created above.
             session.run("DROP INDEX occ_smdi IF EXISTS")
+            # 2026-06-24: drop a legacy UNIQUENESS constraint on
+            # MineralOccurrence.name. An earlier schema version made `name`
+            # unique, but occurrence names are NOT unique (217k rows / ~19.6k
+            # distinct names — e.g. "Cluff Lake Radioactive Boulder Train"
+            # repeats). The canonical key is `pg_id` (occ_pg_id, created above).
+            # While the stale constraint lingers, the MERGE fails with
+            # "22N80: Index entry conflict" the moment a duplicate name is
+            # written — blocking the whole asset (and its gold_cross_corpus_linker
+            # dependent). CREATE CONSTRAINT IF NOT EXISTS never removes it, so
+            # drop it explicitly here, idempotently.
+            session.run("DROP CONSTRAINT mineral_occurrence_name_unique IF EXISTS")
             context.log.info("Constraints + indexes ensured")
 
             # ── Vocabulary / registry (must land before entities) ──────

@@ -20,7 +20,7 @@
  * Amber ⚠ badge — distinct from red (refusal) and gray (info).
  */
 
-import type { ReactNode } from "react";
+import type { JSX, ReactNode } from "react";
 
 export interface PartialAnswerCardProps {
     /**

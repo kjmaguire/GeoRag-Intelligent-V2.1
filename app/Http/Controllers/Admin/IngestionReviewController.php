@@ -501,10 +501,10 @@ class IngestionReviewController extends Controller
 
         $fastapiBase = rtrim(
             config('services.fastapi.url')
-                ?? env('FASTAPI_BASE_URL', 'http://fastapi:8000'),
+                ?? config('services.fastapi.base_url'),
             '/',
         );
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             throw new \RuntimeException('FASTAPI_SERVICE_KEY not configured');
         }
@@ -554,10 +554,10 @@ class IngestionReviewController extends Controller
 
         $fastapiBase = rtrim(
             config('services.fastapi.url')
-                ?? env('FASTAPI_BASE_URL', 'http://fastapi:8000'),
+                ?? config('services.fastapi.base_url'),
             '/',
         );
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             abort(500, 'FASTAPI_SERVICE_KEY not configured');
         }

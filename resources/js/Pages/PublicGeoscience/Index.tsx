@@ -339,7 +339,7 @@ export default function PublicGeoscienceIndex() {
                                 <div className="flex items-start gap-2">
                                     {selectedJurisdiction && (
                                         <div className="text-right max-w-[360px]">
-                                            <div className="text-xs font-medium truncate" style={{ color: 'var(--fg-0)' }} title={selectedJurisdiction.primary_authority}>
+                                            <div className="text-xs font-medium truncate" style={{ color: 'var(--fg-0)' }} title={selectedJurisdiction.primary_authority ?? undefined}>
                                                 {selectedJurisdiction.primary_authority}
                                             </div>
                                             <div className="text-[10px] font-mono mt-0.5 flex items-center justify-end gap-1.5 flex-wrap" style={{ color: 'var(--fg-3)' }}>

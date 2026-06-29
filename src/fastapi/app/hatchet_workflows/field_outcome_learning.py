@@ -30,6 +30,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 
@@ -89,11 +90,11 @@ async def execute(
     conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
         # Set RLS GUCs
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="hatchet.field_outcome_learning"
         )
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="hatchet.field_outcome_learning"
         )
         await conn.execute(
             "SELECT set_config('app.project_id', $1, false)", project_id,

@@ -37,7 +37,7 @@ plus [`init-postgis.sql`](../../../docker/postgresql/init/init-postgis.sql):
 | `pg_partman` | `partman` | Declarative monthly partitions on `audit.audit_ledger`, `workflow.workflow_runs` |
 | `pg_repack` | `public` | Online table reorg without exclusive locks |
 | `pg_ivm` | `public` | Incrementally-maintained materialised views (ready, not yet used) |
-| `vector` | `public` | Optional — only present for embedding-comparison sandboxes; production embeddings live in Qdrant |
+| ~~`vector` (pgvector)~~ | — | **NOT installed — deliberate.** [ADR-0013](../../adr/0013-no-pgvector-postgres-extension.md) (Accepted 2026-06-23) makes this an explicit decision: all vector retrieval stays in Qdrant; pgvector is intentionally absent. The 2026-06 stack audit flagged the gap and the ADR closes it. Cross-store "rows near this embedding" needs app-side stitching (Qdrant → IDs → SQL by PK). |
 
 Verification block at the end of
 [10-phase0-extensions-and-schemas.sql:104-120](../../../docker/postgresql/init/10-phase0-extensions-and-schemas.sql)

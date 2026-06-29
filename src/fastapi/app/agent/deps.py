@@ -151,7 +151,7 @@ class AgentDeps:
                     f"SET LOCAL statement_timeout = '{stmt_timeout_ms}ms'"
                 )
 
-                if settings.MULTI_TENANT_ENFORCEMENT_ENABLED and self.project_id:
+                if settings.MULTI_TENANT_ENFORCEMENT_ENABLED:
                     # SET LOCAL is scoped to the surrounding transaction —
                     # safe under PgBouncer transaction pooling because the
                     # backend connection isn't returned to the pool until
@@ -160,20 +160,24 @@ class AgentDeps:
                     # name isn't a placeholder. Quote the value defensively
                     # — UUIDs only contain [0-9a-f-] so this is safe; we
                     # also guard with a regex.
-                    pid = str(self.project_id).strip()
-                    if not _UUID_RE.match(pid):
-                        raise ValueError(
-                            f"acquire_scoped: refusing to set non-UUID project_id={pid!r}"
-                        )
-                    await conn.execute(f"SET LOCAL app.project_id = '{pid}'")
+                    if self.project_id:
+                        pid = str(self.project_id).strip()
+                        if not _UUID_RE.match(pid):
+                            raise ValueError(
+                                f"acquire_scoped: refusing to set non-UUID project_id={pid!r}"
+                            )
+                        await conn.execute(f"SET LOCAL app.project_id = '{pid}'")
 
-                    # Module 9 Chunk 9.3 — workspace_id GUC. Set when the
-                    # caller carries workspace context so RLS policies on
-                    # workspace-scoped silver tables (evidence_items,
-                    # answer_runs, document_revisions, etc.) admit only
-                    # matching rows. When workspace_id is None the GUC
-                    # stays unset and the IS NULL escape-hatch keeps the
-                    # single-tenant / admin path unchanged.
+                    # Audit 2026-06-27 (IND-1): bind the workspace_id GUC
+                    # whenever a workspace is present, INDEPENDENT of
+                    # project_id. Previously this lived inside `if
+                    # self.project_id`, so a workspace-scoped but project-less
+                    # query (e.g. cross-project chat, where project_id is None)
+                    # skipped the bind entirely and fell through the RLS
+                    # `IS NULL` fail-open escape hatch — seeing every
+                    # workspace's rows. RLS policies on workspace-scoped silver
+                    # tables (evidence_items, answer_runs, document_revisions,
+                    # …) now always receive the tenant fence.
                     if self.workspace_id:
                         wid = str(self.workspace_id).strip()
                         if not _UUID_RE.match(wid):

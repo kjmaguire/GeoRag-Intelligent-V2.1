@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * LifecycleVisuals.test.tsx
  *
@@ -259,7 +258,7 @@ describe('ChatMessage lifecycle — backward compat', () => {
       // no lifecycle_state field
       confidence: 0.85,
     });
-    delete msg.lifecycle_state;
+    delete (msg as Record<string, unknown>).lifecycle_state;
     render(<ChatMessage message={msg} {...defaultProps} />);
     // Should render as committed — feedback section visible (Chunk 4: live buttons).
     const feedbackDiv = screen.getByTestId('feedback-buttons');
@@ -268,7 +267,7 @@ describe('ChatMessage lifecycle — backward compat', () => {
 
   it('shows follow-up chips for legacy messages (no lifecycle_state) with confidence', () => {
     const msg = makeMsg({ confidence: 0.8, followups: ['Legacy chip'] });
-    delete msg.lifecycle_state;
+    delete (msg as Record<string, unknown>).lifecycle_state;
     render(<ChatMessage message={msg} {...defaultProps} />);
     expect(screen.getByText('Legacy chip')).toBeTruthy();
   });

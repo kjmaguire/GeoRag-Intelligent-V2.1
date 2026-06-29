@@ -636,9 +636,54 @@ async def test_call_tool_safely_matches_real_tool_signatures(monkeypatch) -> Non
     for name in legacy_tools_skipped:
         mock = AsyncMock()
         monkeypatch.setattr(_tools_mod, name, mock, raising=False)
+        # "anything" carries no hole_id and no TitleCase/quoted entity, so both
+        # query_downhole_logs (needs hole_id) and traverse_knowledge_graph
+        # (needs entity_name) correctly skip on this input.
         result = await _call_tool_safely(name, "anything", deps)
-        assert result is None, f"{name} should be skipped (NER unwired)"
+        assert result is None, f"{name} should be skipped (no entity in query)"
         assert mock.await_count == 0, f"{name} must not be invoked"
+
+
+def test_entity_names_from_query_extracts_titlecase_and_quoted() -> None:
+    """Audit 2026-06-28: lightweight entity extraction for the graph tool."""
+    from app.agent.agentic_retrieval.nodes import _entity_names_from_query
+
+    # TitleCase run — leading stopwords ("Tell", "the") dropped.
+    assert "Triple R Deposit" in _entity_names_from_query(
+        "Tell me about the Triple R Deposit"
+    )
+    # Quoted entity name.
+    assert "Athabasca Group" in _entity_names_from_query(
+        "What links 'Athabasca Group' to mineralization?"
+    )
+    # Pure-lowercase question → no entity.
+    assert _entity_names_from_query("what is the average grade here") == []
+
+
+@pytest.mark.asyncio
+async def test_call_tool_safely_fires_traverse_when_entity_named(monkeypatch) -> None:
+    """Audit 2026-06-28: traverse_knowledge_graph now fires when the query
+    names an entity (previously skipped unconditionally → Neo4j never consulted
+    in agentic chat despite three intent profiles listing it as primary)."""
+    import inspect
+    from unittest.mock import AsyncMock
+
+    import app.agent.tools as _tools_mod
+    from app.agent.agentic_retrieval.nodes import _call_tool_safely
+
+    real_sig = inspect.signature(_tools_mod.traverse_knowledge_graph)
+    mock = AsyncMock(return_value={"entities": [], "count": 0})
+    mock.__signature__ = real_sig  # type: ignore[attr-defined]
+    monkeypatch.setattr(_tools_mod, "traverse_knowledge_graph", mock, raising=False)
+
+    deps = _FakeDeps(project_id="00000000-0000-0000-0000-000000000001")
+    await _call_tool_safely(
+        "traverse_knowledge_graph", "Tell me about the Triple R Deposit", deps
+    )
+    assert mock.await_count == 1, "traverse must fire when an entity is named"
+    call_args, _ = mock.await_args
+    # Dispatch is fn(ctx, entity_name, project_id) — entity_name is 2nd positional.
+    assert call_args[1] == "Triple R Deposit"
 
 
 # ---------------------------------------------------------------------------

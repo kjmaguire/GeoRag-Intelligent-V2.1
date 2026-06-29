@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\Services\Dagster;
 
 use App\Services\Dagster\DrillAssetSelector;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -15,7 +16,7 @@ use PHPUnit\Framework\TestCase;
  */
 class DrillAssetSelectorTest extends TestCase
 {
-    /** @dataProvider csvCases */
+    #[DataProvider('csvCases')]
     public function test_csv_filename_dispatch(string $name, ?string $expectedAsset, string $expectedRoute): void
     {
         $result = DrillAssetSelector::select('csv', $name);

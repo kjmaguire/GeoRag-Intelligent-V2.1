@@ -5,6 +5,13 @@ Everything runs inside the `hatchet-worker-ingestion` (and occasionally the
 `fastapi`) container — no separate parsing process to deploy or scale.
 
 > All file paths in this chapter are relative to the repo root.
+>
+> **⚠️ OCR/VL engines upgraded 2026-06.** The Stage-4 OCR and Stage-6 VL
+> tiers changed: PaddleOCR 2.10 → **3.7** (new `.predict()` API),
+> Tesseract → **5.5.2 from source**, VL → **Qwen3-VL-8B** (gated; default
+> still Qwen2.5-VL-7B). The pipeline *shape* below is unchanged; for the
+> engine versions + call-site API see
+> [Ch 18 §3](18-model-stack-evolution.md) (ADRs 0015/0016/0017).
 
 ## 1. Entry point
 

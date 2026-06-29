@@ -25,6 +25,7 @@ Run via:
     python -m app.services.ingest.derive_intervals --project-id <uuid>
 """
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import argparse
 import asyncio
@@ -338,8 +339,8 @@ async def derive_project(project_id: str) -> dict:
         if not workspace_id:
             raise RuntimeError(f"project_id {project_id} not found")
 
-        await conn.execute("SELECT set_config('app.workspace_id', $1, false)", workspace_id)
-        await conn.execute("SELECT set_config('app.workspace_id', $1, false)", workspace_id)
+        await bind_workspace_scope(conn, workspace_id=workspace_id, site="ingest.derive_intervals")
+        await bind_workspace_scope(conn, workspace_id=workspace_id, site="ingest.derive_intervals")
         await conn.execute("SELECT set_config('app.project_id', $1, false)", project_id)
 
         collars = await conn.fetch(

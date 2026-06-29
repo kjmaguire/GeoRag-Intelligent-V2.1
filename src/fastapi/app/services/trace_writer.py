@@ -35,6 +35,7 @@ Wiring TODO (NOT in this commit — depends on Kyle's WIP):
 """
 
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import asyncio
 import json
@@ -382,14 +383,15 @@ async def write_trace(pool: object, trace: RetrievalTrace) -> UUID | None:
 
         async with pool.acquire() as conn:  # type: ignore[union-attr]
             # silver.query_traces enables FORCE ROW LEVEL SECURITY with the
-            # canonical georag.workspace_id GUC policy. Bind it for this
+            # canonical app.workspace_id GUC policy. Bind it for this
             # transaction before the INSERT so the policy passes. SET LOCAL
             # requires being inside a tx; the explicit transaction also
             # gives us atomicity around the INSERT.
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    str(trace.workspace_id),
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id=str(trace.workspace_id),
+                    site="trace_writer",
                 )
                 row = await conn.fetchrow(_INSERT_SQL, *params)
             trace_id: UUID | None = row["trace_id"] if row else None

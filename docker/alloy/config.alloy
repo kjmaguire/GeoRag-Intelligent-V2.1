@@ -1,0 +1,158 @@
+// =============================================================================
+// Grafana Alloy configuration — Promtail successor (2026-06-23 sweep)
+// =============================================================================
+//
+// This is the Phase-1 scaffold for the Promtail -> Alloy migration plan
+// at ops/runbooks/promtail-to-alloy-migration.md. The Alloy service runs
+// IN PARALLEL with Promtail (different Loki tenant) during the shadow
+// window so per-stream line counts + label cardinality can be diffed
+// before cutover.
+//
+// Translation lineage of docker/promtail/promtail-config.yaml:
+//   - clients[]                  -> loki.write.default
+//   - scrape_configs[authz_audit] -> local.file_match + loki.source.file
+//                                    + loki.process pipeline stages
+//   - scrape_configs[docker]      -> discovery.docker
+//                                    + loki.source.docker
+//                                    + loki.process pipeline stages
+//
+// Promtail's pipeline_stages.json + .labels + .timestamp map to
+// loki.process stages here. Promtail's relabel_configs map to
+// discovery.relabel components.
+//
+// Cutover decision (deferred to operator session):
+//   - Minimal: replace Promtail with Alloy 1:1 for logs only.
+//   - Full consolidation: also fold the OTel collector into this same
+//     Alloy instance via otelcol.* components. See runbook §"Step 5
+//     — Optional consolidation."
+
+// -----------------------------------------------------------------------------
+// Logging output endpoint — Loki. Cutover complete (2026-06-24): Alloy is
+// the primary log shipper and writes to the default tenant (no X-Scope-OrgID
+// header). The former shadow-window tenant_id ("alloy-shadow") has been
+// removed. Promtail is parked in the `promtail-legacy` compose profile for
+// rollback. See docs/runbooks/promtail-to-alloy-migration.md.
+// -----------------------------------------------------------------------------
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 1. Laravel authz_audit log file (Module 9 Chunk 9.8 channel)
+// -----------------------------------------------------------------------------
+local.file_match "authz_audit" {
+  path_targets = [
+    {
+      __path__ = "/laravel-logs/authz_audit-*.log",
+      job      = "authz_audit",
+      channel  = "authz_audit",
+      service  = "laravel",
+    },
+  ]
+}
+
+loki.source.file "authz_audit" {
+  targets    = local.file_match.authz_audit.targets
+  forward_to = [loki.process.authz_audit.receiver]
+}
+
+loki.process "authz_audit" {
+  forward_to = [loki.write.default.receiver]
+
+  // Parse the JSON-shaped Monolog payload into structured fields.
+  stage.json {
+    expressions = {
+      level               = "level_name",
+      message             = "message",
+      event               = "\"context\".event",
+      actor_user_id       = "\"context\".actor_user_id",
+      target_workspace_id = "\"context\".target_workspace_id",
+      target_resource     = "\"context\".target_resource",
+      reason              = "\"context\".reason",
+      datetime            = "datetime",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level               = "",
+      event               = "",
+      reason              = "",
+      target_workspace_id = "",
+    }
+  }
+
+  stage.timestamp {
+    source = "datetime"
+    format = "RFC3339Nano"
+    fallback_formats = [
+      "2006-01-02T15:04:05.999999Z",
+      "2006-01-02 15:04:05",
+    ]
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 2. Docker container stdout/stderr — FastAPI + Octane + Horizon + Reverb
+// -----------------------------------------------------------------------------
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "30s"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Promote container name (sans leading slash) to `container` label.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    target_label  = "container"
+    regex         = "/(.*)"
+    replacement   = "$1"
+  }
+
+  // Use compose service label as `service`.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  // Drop monitoring noise (loki, promtail, alloy, prometheus, alertmanager,
+  // grafana log themselves; including alloy itself so it doesn't tail its
+  // own log stream and create a feedback loop).
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "(loki|promtail|alloy|prometheus|alertmanager|grafana)"
+    action        = "drop"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.docker.receiver]
+}
+
+loki.process "docker" {
+  forward_to = [loki.write.default.receiver]
+
+  // Best-effort JSON parse to promote tracing fields when emitted.
+  // Lines that aren't JSON pass through untouched.
+  stage.json {
+    expressions = {
+      traceparent = "",
+      request_id  = "",
+      level       = "",
+    }
+  }
+
+  stage.labels {
+    values = {
+      traceparent = "",
+      request_id  = "",
+      level       = "",
+    }
+  }
+}

@@ -18,7 +18,7 @@ Three-step algorithm:
      rank is inherited from the child (parents share the same
      document, so they share authority).
 
-Pure-async; sets ``georag.workspace_id`` GUC for RLS. Best-effort:
+Pure-async; sets ``app.workspace_id`` GUC for RLS. Best-effort:
 DB failure logs + returns the packet unchanged.
 
 Cap: ``max_parents_per_packet`` (default 5) bounds the extra evidence
@@ -36,6 +36,7 @@ from app.agent.evidence import (
     DocumentEvidence,
     EvidencePacket,
 )
+from app.db import bind_workspace_scope
 
 
 logger = logging.getLogger(__name__)
@@ -84,11 +85,11 @@ async def fetch_parent_chunks(
     Missing chunk_ids are silently absent from the output — the
     expander treats them as "no parent available" and skips.
 
-    Workspace tenancy: sets ``georag.workspace_id`` GUC so RLS
+    Workspace tenancy: sets ``app.workspace_id`` GUC so RLS
     applies on silver.document_passages.
     """
     if not workspace_id:
-        raise ValueError("workspace_id is required (sets georag.workspace_id)")
+        raise ValueError("workspace_id is required (sets app.workspace_id)")
     if not parent_chunk_ids:
         return {}
 
@@ -100,10 +101,9 @@ async def fetch_parent_chunks(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    workspace_id,
-                )
+                await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.parent_expansion"
+            )
                 rows = await conn.fetch(_FETCH_PARENTS_SQL, unique_ids)
     except Exception:
         logger.warning(

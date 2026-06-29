@@ -43,6 +43,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 
@@ -161,8 +162,8 @@ async def execute(
     )
     conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws,
+        await bind_workspace_scope(
+            conn, workspace_id=ws, site="hatchet.train_source_trust"
         )
 
         # Aggregate per source_document_id from

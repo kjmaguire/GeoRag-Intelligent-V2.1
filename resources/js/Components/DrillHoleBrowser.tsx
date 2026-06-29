@@ -1,5 +1,5 @@
-// @ts-nocheck — migration in progress, will add full type annotations incrementally
 import { useState, useEffect, useCallback } from 'react';
+import type { CollarRecord } from '@/types';
 import { cn } from '../lib/utils';
 
 /**
@@ -54,9 +54,9 @@ function SortIcon({ direction }) {
 }
 
 export default function DrillHoleBrowser({ projectId, onHoleClick, selectedHoleId }) {
-    const [collars, setCollars]       = useState([]);
+    const [collars, setCollars]       = useState<CollarRecord[]>([]);
     const [loading, setLoading]       = useState(false);
-    const [error, setError]           = useState(null);
+    const [error, setError]           = useState<string | null>(null);
 
     // Filter state
     const [holeTypeFilter, setHoleTypeFilter] = useState('All');
@@ -95,7 +95,7 @@ export default function DrillHoleBrowser({ projectId, onHoleClick, selectedHoleI
             const body = await res.json();
             setCollars(body.data ?? body);
         } catch (err) {
-            setError(err.message);
+            setError(err instanceof Error ? err.message : String(err));
         } finally {
             setLoading(false);
         }
@@ -304,7 +304,7 @@ export default function DrillHoleBrowser({ projectId, onHoleClick, selectedHoleI
                                         </td>
                                         <td className="px-3 py-2 text-right text-gray-300 font-mono tabular-nums">
                                             {collar.total_depth != null
-                                                ? `${parseFloat(collar.total_depth).toFixed(1)} m`
+                                                ? `${collar.total_depth.toFixed(1)} m`
                                                 : '—'}
                                         </td>
                                         <td className="px-3 py-2">

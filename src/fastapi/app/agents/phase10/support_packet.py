@@ -7,6 +7,7 @@ workflow_runs scoped to the ticket's workspace. SeaweedFS upload of
 the bundle is deferred to §15.4 follow-up.
 """
 from __future__ import annotations
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 from datetime import datetime
@@ -68,24 +69,27 @@ async def support_packet(
     try:
         # Block-3 RLS — ops.support_tickets is workspace_id-scoped.
         ws = str(ctx.workspace_id) if ctx and ctx.workspace_id \
-             else "a0000000-0000-0000-0000-000000000001"
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws,
-        )
-        ticket = await conn.fetchrow(
-            """
-            SELECT ticket_id::text AS id,
-                   workspace_id::text AS workspace_id,
-                   reported_by_user_id, assigned_to_user_id,
-                   channel, category, severity, status,
-                   description,
-                   reported_at::text AS reported_at,
-                   resolved_at::text AS resolved_at
-              FROM ops.support_tickets
-             WHERE ticket_id = $1::uuid
-            """,
-            str(ticket_id),
-        )
+             else LEGACY_DEFAULT_TENANT_UUID
+        # Audit 2026-06-28: SET LOCAL in a transaction (PgBouncer tx-mode: a
+        # session-scoped set_config leaks the workspace GUC to the next client).
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.workspace_id', $1, true)", ws,
+            )
+            ticket = await conn.fetchrow(
+                """
+                SELECT ticket_id::text AS id,
+                       workspace_id::text AS workspace_id,
+                       reported_by_user_id, assigned_to_user_id,
+                       channel, category, severity, status,
+                       description,
+                       reported_at::text AS reported_at,
+                       resolved_at::text AS resolved_at
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                """,
+                str(ticket_id),
+            )
         if ticket is None:
             return {
                 "ticket_id": str(ticket_id),

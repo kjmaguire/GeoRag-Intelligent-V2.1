@@ -34,6 +34,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import lookup_and_rescope, scoped_connection
 from app.hatchet_workflows import hatchet
 from app.services.support_cockpit.customer_response_drafting import (
     draft_customer_response,
@@ -115,24 +116,24 @@ async def execute(input: SupportReplayInput, ctx: Context) -> SupportReplayOutpu
     )
     try:
         # 1. Insert the replay run with status='running'.
-        async with pool.acquire() as conn:
-            # Block-3 RLS: ops.support_replay_runs is workspace_id-scoped.
-            # Set GUC to Default Workspace first so the support_tickets
-            # lookup succeeds; then realign to the ticket's workspace.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                "a0000000-0000-0000-0000-000000000001",
-            )
-            ticket_ws = await conn.fetchval(
-                """
-                SELECT workspace_id::text FROM ops.support_tickets
+        # ADR-0014 lookup_and_rescope: bootstrap → fetch ticket's
+        # workspace → pivot GUC to that workspace, all inside one
+        # transaction. Removes the bare bootstrap-set-realign pattern
+        # the B4 audit flagged (also pinned by
+        # tests/test_lookup_and_rescope.py + tests/test_scoped_connection.py).
+        async with lookup_and_rescope(
+            pool,
+            lookup_sql="""
+                SELECT ticket_id::text AS ticket_id,
+                       workspace_id::text AS workspace_id
+                  FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
                 """,
-                str(input.ticket_id),
-            ) or "a0000000-0000-0000-0000-000000000001"
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", ticket_ws,
-            )
+            lookup_args=(str(input.ticket_id),),
+            site="support_replay.ticket_lookup",
+            bootstrap_reason="support_replay.bootstrap_lookup",
+        ) as (conn, ticket_row):
+            ticket_ws = ticket_row["workspace_id"]
             replay_row = await conn.fetchrow(
                 """
                 INSERT INTO ops.support_replay_runs (
@@ -224,11 +225,14 @@ async def execute(input: SupportReplayInput, ctx: Context) -> SupportReplayOutpu
 
         # 3. Mark the replay completed.
         replay_workflow_run_id = f"replay_{replay_id.hex[:16]}"
-        async with pool.acquire() as conn:
-            # Block-3 RLS: realign GUC to the ticket's workspace.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", ticket_ws,
-            )
+        # Re-acquire conn scoped to the ticket's workspace (the prior
+        # lookup_and_rescope tx already closed). REC#2 scoped_connection
+        # handles the GUC bind atomically + parameterises the UUID.
+        async with scoped_connection(
+            pool,
+            workspace_id=ticket_ws,
+            site="support_replay.completion",
+        ) as conn:
             await conn.execute(
                 """
                 UPDATE ops.support_replay_runs

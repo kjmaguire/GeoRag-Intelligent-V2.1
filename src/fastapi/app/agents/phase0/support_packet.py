@@ -37,6 +37,7 @@ import httpx
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 
 
 logger = logging.getLogger(__name__)
@@ -278,9 +279,8 @@ async def support_packet_assemble(
     # other agents that write to RLS tables should adopt the same pattern.
     async with rt.pg_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                str(ctx.workspace_id),
+            await bind_workspace_scope(
+                conn, workspace_id=str(ctx.workspace_id), site="phase0.support_packet",
             )
             await conn.execute(
                 """

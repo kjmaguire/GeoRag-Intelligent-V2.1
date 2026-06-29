@@ -11,18 +11,26 @@ exists so it is safe to re-run without destroying live data.
 Collections
 -----------
 georag_chunks
-    Primary store for document chunk embeddings (drill reports, assay logs, etc.).
-    Vector size 384 matches the all-MiniLM-L6-v2 placeholder model used for
-    Milestone 1.  Milestone 2 benchmarking will determine the production model;
-    if the vector size changes at that point this script must be re-run against
-    a clean instance.
+    Canonical chunked-content corpus (ADR-0010). Hybrid dense + sparse:
+      - named dense "" slot, size = EMBEDDING_DIMENSION (1024, Qwen3-Embedding-0.6B
+        as of the 2026-06-03 swap) — read from env so a fresh bootstrap always
+        matches the live runtime writer.
+      - named sparse "text" slot (SPLADE++) — REQUIRED. The 2026-06-01 incident
+        was caused by bootstrapping this collection WITHOUT the sparse slot, so
+        every canonical hybrid writer 400'd. Do not remove it.
 
 georag_reports
-    NI 43-101 report section embeddings.  Same vector size and distance metric
-    as georag_chunks.
+    Legacy NI 43-101 section embeddings — a SEPARATE 384-dim bge-small vector
+    space that was NOT migrated to Qwen3. Same named dense "" + sparse "text"
+    shape as georag_chunks but at 384 dim. Production retrieval reads
+    georag_chunks (RETRIEVAL_USE_DOCUMENT_PASSAGES=true); georag_reports is
+    retained for the legacy path.
 
-Payload indices are created on the fields most likely to appear in filtered
-vector searches so Qdrant can skip full collection scans.
+Payload indices match the fields the runtime writer actually emits
+(index_document_passages._build_payload / index_reports), so filtered vector
+searches skip full collection scans. (Audit 2026-06-27 C1/IND-3: the previous
+version hardcoded 384 for both collections, omitted the sparse slot, and indexed
+document_type/source_id/chunk_index — fields no live point carries.)
 """
 
 from __future__ import annotations
@@ -45,11 +53,11 @@ QDRANT_BASE_URL = (
     or f"http://{os.environ.get('QDRANT_HOST', 'localhost')}:{os.environ.get('QDRANT_PORT', '6333')}"
 )
 
-# Vector space shared by both Milestone-1 collections.
-# NOTE: all-MiniLM-L6-v2 is a placeholder; Milestone 2 benchmarking decides
-# the production model.  If the model changes and the vector size differs,
-# drop and recreate the affected collection.
-VECTOR_SIZE = 384
+# georag_chunks tracks the live runtime embedding dimension (Qwen3 = 1024).
+# Read from env so a fresh bootstrap can never drift from the FastAPI writer.
+CHUNKS_VECTOR_SIZE = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
+# georag_reports is the frozen legacy bge-small 384 space (not swapped).
+REPORTS_VECTOR_SIZE = 384
 DISTANCE = "Cosine"
 
 # HTTP timeouts (seconds).  Qdrant collection creation and index builds are
@@ -74,42 +82,43 @@ class CollectionSpec:
     vector_size: int
     distance: str
     on_disk_payload: bool
+    # Every GeoRAG hybrid collection uses a named dense "" slot + named sparse
+    # "text" slot. Kept configurable only so a future dense-only collection can
+    # opt out explicitly rather than by omission.
+    sparse: bool = True
     payload_indices: list[PayloadIndex] = field(default_factory=list)
 
 
 COLLECTIONS: list[CollectionSpec] = [
     CollectionSpec(
         name="georag_chunks",
-        vector_size=VECTOR_SIZE,
+        vector_size=CHUNKS_VECTOR_SIZE,
         distance=DISTANCE,
         # On-disk payload avoids RAM exhaustion when the collection grows to
         # millions of chunk records (drill hole assays, geological logs, etc.)
         on_disk_payload=True,
         payload_indices=[
-            # Eval 15 follow-up (2026-05-20) — workspace_id MUST be the
-            # first filter on every query (multi-tenancy contract). Without
-            # this payload index, every workspace-scoped Prefetch ran a
-            # full collection scan + post-filter, which got progressively
-            # worse as the corpus grew. Adding the keyword index gives
-            # Qdrant an O(log n) lookup per workspace.
-            PayloadIndex("workspace_id", "keyword"),
-            PayloadIndex("project_id",    "keyword"),
-            PayloadIndex("document_type", "keyword"),
-            PayloadIndex("source_id",     "keyword"),
-            PayloadIndex("chunk_index",   "integer"),
+            # workspace_id MUST be the first filter on every query (GI-9
+            # multi-tenancy contract). project_id scopes within a tenant.
+            # report_id + section_number match what _build_payload emits and
+            # back citation lookups. (document_type/source_id/chunk_index were
+            # removed: no live point carries them — audit IND-3.)
+            PayloadIndex("workspace_id",   "keyword"),
+            PayloadIndex("project_id",     "keyword"),
+            PayloadIndex("report_id",      "keyword"),
+            PayloadIndex("section_number", "keyword"),
         ],
     ),
     CollectionSpec(
         name="georag_reports",
-        vector_size=VECTOR_SIZE,
+        vector_size=REPORTS_VECTOR_SIZE,
         distance=DISTANCE,
         on_disk_payload=False,
         payload_indices=[
-            # Eval 15 follow-up — same rationale as georag_chunks above.
-            PayloadIndex("workspace_id",    "keyword"),
-            PayloadIndex("report_id",       "keyword"),
-            PayloadIndex("section_number",  "integer"),
-            PayloadIndex("commodity",       "keyword"),
+            PayloadIndex("workspace_id",   "keyword"),
+            PayloadIndex("report_id",      "keyword"),
+            PayloadIndex("section_number", "integer"),
+            PayloadIndex("commodity",      "keyword"),
         ],
     ),
 ]
@@ -134,14 +143,22 @@ async def _collection_exists(client: httpx.AsyncClient, name: str) -> bool:
 
 
 async def _create_collection(client: httpx.AsyncClient, spec: CollectionSpec) -> None:
-    """Issue a PUT /collections/{name} request to create the collection."""
-    body = {
+    """Issue a PUT /collections/{name} request to create the collection.
+
+    Uses the NAMED dense "" slot + named sparse "text" slot shape that the
+    Dagster index assets and the FastAPI hybrid_query path both rely on.
+    """
+    body: dict = {
         "vectors": {
-            "size": spec.vector_size,
-            "distance": spec.distance,
+            "": {
+                "size": spec.vector_size,
+                "distance": spec.distance,
+            },
         },
         "on_disk_payload": spec.on_disk_payload,
     }
+    if spec.sparse:
+        body["sparse_vectors"] = {"text": {}}
     resp = await client.put(f"/collections/{spec.name}", json=body)
     _ok(resp, f"Create collection '{spec.name}'")
 
@@ -167,6 +184,10 @@ async def _create_payload_index(
 async def bootstrap() -> None:
     """Create all collections and their payload indices."""
     print(f"Connecting to Qdrant at {QDRANT_BASE_URL} …")
+    print(
+        f"  georag_chunks dense size = {CHUNKS_VECTOR_SIZE} "
+        f"(from EMBEDDING_DIMENSION); georag_reports = {REPORTS_VECTOR_SIZE}"
+    )
 
     async with httpx.AsyncClient(
         base_url=QDRANT_BASE_URL,
@@ -191,12 +212,12 @@ async def bootstrap() -> None:
             print(f"--- Collection: {spec.name} ---")
 
             if await _collection_exists(client, spec.name):
-                print(f"  Already exists — skipping creation.")
+                print("  Already exists — skipping creation.")
             else:
                 await _create_collection(client, spec)
                 print(
-                    f"  Created  (vectors: size={spec.vector_size}, "
-                    f"distance={spec.distance}, "
+                    f"  Created  (dense: size={spec.vector_size}, "
+                    f"distance={spec.distance}, sparse={spec.sparse}, "
                     f"on_disk_payload={spec.on_disk_payload})"
                 )
 

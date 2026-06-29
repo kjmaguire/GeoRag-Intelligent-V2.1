@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.db import scoped_connection
 from app.services.auth import verify_service_key
 
 
@@ -84,10 +85,13 @@ async def post_feedback(req: FeedbackRequest) -> FeedbackResponse:
         "recorded_at":         recorded_at.isoformat(),
     }
 
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws,
-        )
+    # REC#2 Phase-2 migration (2026-06-03). Replaces the bespoke
+    # acquire+set_config dance with the canonical helper. Same RLS
+    # behaviour; explicit UUID validation; parameter-bound GUC; ONE
+    # transaction wraps the INSERT + the count query + the audit anchor.
+    async with scoped_connection(
+        pool, workspace_id=ws, site="citation_feedback.record"
+    ) as conn:
         # silver.source_trust_features schema: (feature_id, workspace_id,
         # source_document_id, payload jsonb, recorded_at). The trust_score_id
         # FK is populated later when train_source_trust runs and creates a

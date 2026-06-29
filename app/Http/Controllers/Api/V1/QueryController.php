@@ -8,6 +8,7 @@ use App\Events\WorkspaceDataUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreQueryRequest;
 use App\Jobs\StreamQueryFromFastApi;
+use App\Models\ChatConversation;
 use App\Models\QueryAuditLog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -197,6 +198,24 @@ class QueryController extends Controller
         $conversationId = $request->input('conversation_id');
         if ($conversationId !== null && ! is_string($conversationId)) {
             $conversationId = null; // tolerate bad input; multi-turn is opt-in
+        }
+        // Audit 2026-06-27: IDOR guard. conversation_id is client-supplied and
+        // chat_conversations are scoped to user_id (NOT shared). Without this
+        // check a user could pass another user's conversation_id and exfil that
+        // thread's history into the LLM prompt. Fail closed — drop an unowned
+        // id back to single-shot rather than leaking.
+        if ($conversationId !== null) {
+            $ownsConversation = ChatConversation::query()
+                ->where('conversation_id', $conversationId)
+                ->where('user_id', $request->user()?->id)
+                ->exists();
+            if (! $ownsConversation) {
+                Log::warning('QueryController: dropping unowned conversation_id', [
+                    'query_id' => $queryId,
+                    'user_id' => $request->user()?->id,
+                ]);
+                $conversationId = null;
+            }
         }
         StreamQueryFromFastApi::dispatch(
             $queryId,

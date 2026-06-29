@@ -46,73 +46,74 @@ class DrillholeDetailController extends Controller
         $workspaceId = (string) DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
-        $this->setWorkspaceRlsContext($workspaceId);
 
-        $collar = DB::table('silver.collars')
-            ->where('collar_id', $collarId)
-            ->where('project_id', $project->project_id)
-            ->first();
-
-        if ($collar === null) {
-            abort(404);
-        }
-
-        $intervals = $this->safeQuery(
-            fn () => DB::table('gold.drillhole_intervals_visual')
+        return $this->withWorkspaceRls($workspaceId, function () use ($request, $project, $collarId) {
+            $collar = DB::table('silver.collars')
                 ->where('collar_id', $collarId)
-                ->orderBy('depth_from')
-                ->get(),
-        );
-
-        $assayHighlights = $this->safeQuery(
-            fn () => DB::table('silver.assays_v2')
-                ->where('collar_id', $collarId)
-                ->orderByDesc('value_ppm')
-                ->limit(20)
-                ->get(),
-        );
-
-        $structures = $this->safeQuery(
-            fn () => DB::table('gold.structure_measurements_visual')
-                ->where('collar_id', $collarId)
-                ->orderBy('depth')
-                ->get(),
-        );
-
-        // JSONB containment via the holes[] array — index-friendly under a
-        // GIN(panel_payload jsonb_path_ops) once large enough to matter.
-        // Beats `panel_payload::text ILIKE '%uuid%'` which forces a full
-        // sequential scan + stringification on every row.
-        $crossSections = $this->safeQuery(
-            fn () => DB::table('gold.cross_section_panels')
                 ->where('project_id', $project->project_id)
-                ->whereRaw(
-                    "panel_payload -> 'holes' @> ?::jsonb",
-                    [json_encode([['collar_id' => $collarId]])],
-                )
-                ->orderBy('section_name')
-                ->get(),
-        );
+                ->first();
 
-        $qa = $this->fetchVisualQa($request, $project->project_id, $collarId);
-        $lithologyQuality = $this->lithologyQualityCounters($collarId);
-        $dqFlags = $this->dataQualityFlagSummary($collarId);
+            if ($collar === null) {
+                abort(404);
+            }
 
-        return Inertia::render('Foundry/DrillholeDetail', [
-            'project' => [
-                'project_id' => $project->project_id,
-                'project_name' => $project->project_name,
-                'slug' => $project->slug,
-            ],
-            'collar' => $collar,
-            'intervals' => $intervals,
-            'assays' => $assayHighlights,
-            'structures' => $structures,
-            'cross_sections' => $crossSections,
-            'qa' => $qa,
-            'lithology_quality' => $lithologyQuality,
-            'data_quality_flags' => $dqFlags,
-        ]);
+            $intervals = $this->safeQuery(
+                fn () => DB::table('gold.drillhole_intervals_visual')
+                    ->where('collar_id', $collarId)
+                    ->orderBy('depth_from')
+                    ->get(),
+            );
+
+            $assayHighlights = $this->safeQuery(
+                fn () => DB::table('silver.assays_v2')
+                    ->where('collar_id', $collarId)
+                    ->orderByDesc('value_ppm')
+                    ->limit(20)
+                    ->get(),
+            );
+
+            $structures = $this->safeQuery(
+                fn () => DB::table('gold.structure_measurements_visual')
+                    ->where('collar_id', $collarId)
+                    ->orderBy('depth')
+                    ->get(),
+            );
+
+            // JSONB containment via the holes[] array — index-friendly under a
+            // GIN(panel_payload jsonb_path_ops) once large enough to matter.
+            // Beats `panel_payload::text ILIKE '%uuid%'` which forces a full
+            // sequential scan + stringification on every row.
+            $crossSections = $this->safeQuery(
+                fn () => DB::table('gold.cross_section_panels')
+                    ->where('project_id', $project->project_id)
+                    ->whereRaw(
+                        "panel_payload -> 'holes' @> ?::jsonb",
+                        [json_encode([['collar_id' => $collarId]])],
+                    )
+                    ->orderBy('section_name')
+                    ->get(),
+            );
+
+            $qa = $this->fetchVisualQa($request, $project->project_id, $collarId);
+            $lithologyQuality = $this->lithologyQualityCounters($collarId);
+            $dqFlags = $this->dataQualityFlagSummary($collarId);
+
+            return Inertia::render('Foundry/DrillholeDetail', [
+                'project' => [
+                    'project_id' => $project->project_id,
+                    'project_name' => $project->project_name,
+                    'slug' => $project->slug,
+                ],
+                'collar' => $collar,
+                'intervals' => $intervals,
+                'assays' => $assayHighlights,
+                'structures' => $structures,
+                'cross_sections' => $crossSections,
+                'qa' => $qa,
+                'lithology_quality' => $lithologyQuality,
+                'data_quality_flags' => $dqFlags,
+            ]);
+        });
     }
 
     /**
@@ -253,10 +254,10 @@ class DrillholeDetailController extends Controller
         try {
             $fastApiBase = rtrim(
                 (string) (config('services.fastapi.internal_url')
-                    ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000')),
+                    ?? config('services.fastapi.internal_url')),
                 '/',
             );
-            $serviceKey = config('services.fastapi.service_key') ?? env('FASTAPI_SERVICE_KEY');
+            $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
             if (! $serviceKey) {
                 return null;
             }

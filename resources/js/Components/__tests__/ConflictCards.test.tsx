@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * ConflictCards.test.tsx
  *
@@ -136,7 +135,7 @@ describe('ConflictCards — aria roles', () => {
         const region = document.querySelector('[role="region"]');
         const headingId = region?.getAttribute('aria-labelledby');
         expect(headingId).toBeTruthy();
-        expect(document.getElementById(headingId)).toBeTruthy();
+        expect(document.getElementById(headingId!)).toBeTruthy();
     });
 
     it('each conflict is wrapped in a <figure>', () => {

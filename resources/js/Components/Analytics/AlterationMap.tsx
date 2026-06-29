@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useBasemapStyleUrl } from '@/lib/basemap';
+import { escapeHtml } from '@/lib/escapeHtml';
 
 interface Collar {
     collar_id: string;
@@ -208,9 +209,9 @@ export default function AlterationMap({ collars, geochem }: Props) {
                     .setLngLat((f.geometry as any).coordinates)
                     .setHTML(
                         `<div style="font-family:ui-sans-serif;font-size:11px;color:#111">
-                            <div style="font-weight:600">${props.hole_id}</div>
+                            <div style="font-weight:600">${escapeHtml(props.hole_id)}</div>
                             <div>Mean CIA: <b>${cia}</b></div>
-                            <div style="color:#64748b">${props.sample_count} samples</div>
+                            <div style="color:#64748b">${escapeHtml(props.sample_count)} samples</div>
                          </div>`,
                     )
                     .addTo(map);

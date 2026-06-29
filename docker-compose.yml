@@ -111,6 +111,12 @@ volumes:
   # Module 10 Chunk 10.6 — Promtail tail-position cursor (resume after restart).
   promtail_positions:
     driver: local
+  # 2026-06-23 sweep — Alloy data dir (component state + file positions).
+  # Promtail-to-Alloy migration runs both in parallel during the shadow
+  # window per ops/runbooks/promtail-to-alloy-migration.md; this volume
+  # is the Alloy equivalent of promtail_positions plus component cache.
+  alloy_data:
+    driver: local
   dagster_home:
     driver: local
   # Backup staging volume — writable scratch space for backup artifacts in transit.
@@ -203,6 +209,17 @@ services:
       dockerfile: docker/postgresql/Dockerfile
     container_name: georag-postgresql
     restart: unless-stopped
+    # Audit 2026-06-27 (T5): schedule pg_partman maintenance. The 3 partitioned
+    # tables (audit.audit_ledger, workflow.workflow_runs, usage.usage_events) are
+    # automatic_maintenance=on, but nothing ever CALLED run_maintenance_proc(),
+    # so premake partitions stopped being created (~Aug 2026) and inserts would
+    # silently fall to the _default partition. Ofelia execs it daily at 04:15 UTC
+    # (after the 02:30-03:00 backup window). NOTE: labels take effect on the next
+    # container (re)create of postgresql.
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.partman-maintenance.schedule: "0 15 4 * * *"
+      ofelia.job-exec.partman-maintenance.command: 'psql -U georag -d georag -c "CALL partman.run_maintenance_proc()"'
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-georag}
       POSTGRES_USER: ${POSTGRES_USER:-georag}
@@ -426,7 +443,12 @@ services:
   # ---------------------------------------------------------------------------
   redis:
     # B8 — digest pinned 2026-04-19
-    image: redis:8.6.3-alpine@sha256:b9646e7cdf8165d985b88bb3e61b3f2f7625db7f6c98af79def91997d04f26b9
+    # 2026-06-23 sweep: 8.6.3 -> 8.6.4 (latest 8.6.x alpine on Docker Hub).
+    # Operator: the audit also flagged 8.8.0 as available, but the alpine
+    # variant Docker Hub publishes for the 8.x line currently caps at
+    # 8.6.4. Stay on the alpine track for image-size + image-attack-surface
+    # parity with the rest of the stack.
+    image: redis:8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763
     container_name: georag-redis
     restart: unless-stopped
     # Redis review — full config notes:
@@ -802,7 +824,11 @@ services:
     # process_*, http_requests_total). Unlocks the 4 alert rules in
     # docker/prometheus/rules/martin-alerts.yml previously DORMANT per
     # feedback_martin_tile_gotchas.md gotcha 3.
-    image: ghcr.io/maplibre/martin:1.7.0@sha256:077329dbde8d791f030b9eab63f4681772480be2f6ceebab0108cb79cebb4aa3
+    # 2026-06-23 sweep: 1.7.0 -> 1.11.0. Brings PMTiles improvements +
+    # query plan caching + composite source enhancements. The 1.x line
+    # has been API-stable through this range; martin.yaml schema is
+    # unchanged. PostGIS 3.6 fully supported.
+    image: ghcr.io/maplibre/martin:1.11.0@sha256:0650e9025f5fcffdc686358114679421b5e6b0ca37b374ad8a66f14709d59d2b
     container_name: georag-martin
     restart: unless-stopped
     command: --config /config/martin.yaml
@@ -859,16 +885,33 @@ services:
     image: georag/fastapi:latest
     container_name: georag-fastapi
     restart: unless-stopped
+    # 2026-06-24: bump /dev/shm from Docker's 64 MB default. The §04p PDF
+    # services (render/extract/layout) open ProcessPoolExecutors whose SemLocks
+    # live in /dev/shm, and library process pools (loky/joblib via
+    # sentence-transformers etc.) leak `sem.loky-*` semaphores there over long
+    # uptimes. At 64 MB they fill /dev/shm and new pools fail with
+    # `OSError: [Errno 28] No space left on device`, 503-ing /pdf/* and marking
+    # the container unhealthy. 1 GB matches the precedent set elsewhere in this
+    # file. (The loky leak itself is a separate, deeper fix.)
+    shm_size: 1gb
     # 2026-05-22: explicit command — `docker commit` from the worker
     # container baked the worker CMD into georag/fastapi:latest, so this
     # service was accidentally running the Hatchet worker instead of
     # uvicorn. Pinning the command here so future image changes can't
     # silently swap the chat service to a background worker again.
+    # 2026-06-24: UVICORN_WORKERS default 6 → 3. The worker count multiplies
+    # EVERY per-worker model (dense embedding + SPLADE encoder + §04p process
+    # pools) — the real root of the memory bloat that OOM-killed this container
+    # (the reranker, now in its own sidecar, was a smaller slice). 3 workers
+    # halve that footprint; ample for dev concurrency. Override via the env.
+    # NB: comments must live HERE, not inside the `command: >` folded scalar —
+    # `#` lines there become literal argv and break compose ("invalid command
+    # line string").
     command: >
       uvicorn app.main:app
         --host 0.0.0.0
         --port 8000
-        --workers ${UVICORN_WORKERS:-6}
+        --workers ${UVICORN_WORKERS:-3}
         --no-access-log
         --proxy-headers
         --forwarded-allow-ips *
@@ -904,6 +947,24 @@ services:
       # instead. Used for A/B benches comparing fine-tuned candidates
       # against the stock baseline without rebuilding the image.
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # 2026-06-24 — share ONE reranker model via the `reranker` sidecar
+      # instead of each of the 6 uvicorn workers loading its own CrossEncoder
+      # copy (that was the OOM driver). app/services/reranker.py returns an
+      # HTTP proxy when this is set. Unset to fall back to per-worker load.
+      RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
+      # 2026-06-24 — share ONE embedding model via the `embedding` sidecar
+      # instead of one ~2.4 GiB Qwen3-Embedding copy per uvicorn worker (a PSS
+      # measurement showed it duplicated per worker — the dominant host-RAM
+      # term). app/services/embedding.get_embedding_model() returns an HTTP
+      # proxy when this is set; empty → each worker loads its own (legacy).
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embedding:8000}
+      # 2026-06-24 — share ONE SPLADE++ model via the `sparse` sidecar. SPLADE
+      # was the last GPU user in the workers; routing it to a CPU sidecar lets
+      # the workers drop their CUDA contexts and frees the model's A4500 VRAM.
+      # app/services/sparse_encoder.encode_sparse{,_batch} proxy when this is
+      # set; empty → each worker loads its own (legacy). NOT set on Dagster
+      # (bulk indexing keeps its local model) or the sidecar itself.
+      SPARSE_SERVICE_URL: ${SPARSE_SERVICE_URL:-http://sparse:8000}
       # ADR-0008 — embedding model path. Default = stock BAAI/bge-small-en-v1.5.
       # Set to /app/models/bge-small-domain-ft after promoting the domain FT model.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
@@ -980,18 +1041,24 @@ services:
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
       VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
+      # §04p VL parser (ADR-0015). Default v2 (Qwen2.5-VL) + main vllm URL is
+      # conservative; .env sets version=3 + PDF_VL_BACKEND_URL=http://vllm-vl...
+      # to route figure requests to the Qwen3-VL-8B sidecar.
+      PDF_VL_MODEL_VERSION: ${PDF_VL_MODEL_VERSION:-2}
+      PDF_VL_MODEL_ID_V3: ${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}
+      PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-http://vllm:8000/v1}
       VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEM_UTIL:-0.92}
       # Anthropic — set ANTHROPIC_API_KEY in .env + flip LLM_BACKEND
       # to "anthropic" to activate. See docs/RUNBOOK.md "LLM backend
       # selection" for the full flip procedure.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-7}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-8}
       ANTHROPIC_MAX_OUTPUT_TOKENS: ${ANTHROPIC_MAX_OUTPUT_TOKENS:-4096}
       ANTHROPIC_ENABLE_PROMPT_CACHING: ${ANTHROPIC_ENABLE_PROMPT_CACHING:-true}
       ANTHROPIC_USE_PRIORITY_TIER: ${ANTHROPIC_USE_PRIORITY_TIER:-false}
       MODEL_TIER_FAST: ${MODEL_TIER_FAST:-claude-haiku-4-5}
-      MODEL_TIER_STANDARD: ${MODEL_TIER_STANDARD:-claude-sonnet-4-5}
-      MODEL_TIER_DEEP: ${MODEL_TIER_DEEP:-claude-opus-4-7}
+      MODEL_TIER_STANDARD: ${MODEL_TIER_STANDARD:-claude-sonnet-4-6}
+      MODEL_TIER_DEEP: ${MODEL_TIER_DEEP:-claude-opus-4-8}
       # Cross-database timeouts (Section 06e)
       TIMEOUT_POSTGIS_S: ${TIMEOUT_POSTGIS_S:-5}
       TIMEOUT_NEO4J_S: ${TIMEOUT_NEO4J_S:-3}
@@ -1039,6 +1106,13 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
+      # 2026-06-23 sweep — PaddleOCR 3.x (ADR-0016) calls Path.mkdir on
+      # $HOME/.paddlex/temp at IMPORT time (not first-use). www-data's
+      # default HOME (/var/www) doesn't exist in this image, so the
+      # mkdir explodes with PermissionError before any startup code
+      # runs. Redirect HOME to /tmp so the cache dir lands somewhere
+      # writable. Matches the hatchet-worker-ingestion HOME=/tmp pin.
+      HOME: /tmp
       # Sentry observability — same project as Laravel side. Blank DSN
       # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
       SENTRY_DSN: ${SENTRY_DSN:-}
@@ -1092,6 +1166,15 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      # Shared embedding sidecar: fastapi warms the embedding model at startup
+      # through the proxy (EMBEDDING_SERVICE_URL), so the sidecar must be loaded
+      # first. /health is 200 only once its model is ready.
+      embedding:
+        condition: service_healthy
+      # Shared SPLADE sidecar: fastapi pre-warms SPLADE at startup through the
+      # proxy (SPARSE_SERVICE_URL), so the sidecar must be loaded first.
+      sparse:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -1111,7 +1194,16 @@ services:
           # existing dense embedding cache (~2.4 GiB idle baseline per Module 2 C4).
           # 4 uvicorn workers × ~500 MB SPLADE = ~2 GiB SPLADE + ~2.4 GiB dense baseline = ~4.4 GiB.
           # 6G provides ~1.6 GiB headroom for concurrent RAG request spikes.
-          memory: 10g
+          # 2026-06-24: bumped 10g → 16g. The service actually runs 6 workers
+          # (UVICORN_WORKERS default), NOT the 4 the comment above assumed, and
+          # each worker lazily loads its OWN copy of the cross-encoder reranker
+          # (bge-reranker-base, CPU) on first query — on top of the dense
+          # embedding + SPLADE caches. A real /internal/queries call drove the
+          # container to the 10g ceiling and it was OOM-killed mid-stream
+          # (OOMKilled=true), dropping the SSE connection. 16g gives the 6×
+          # reranker + caches steady state real headroom. (Deeper fix: load the
+          # reranker once and share it, or drop worker count — separate follow-up.)
+          memory: 16g
         reservations:
           memory: 5g
           # 2026-05-19: GPU passthrough added for in-process LoRA fine-tuning
@@ -1124,6 +1216,195 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # RERANKER SIDECAR — single shared cross-encoder (2026-06-24)
+  # Hosts ONE bge-reranker-base copy so the 6 fastapi uvicorn workers don't each
+  # load their own (the OOM driver — see the fastapi memory-limit comment). The
+  # workers reach it via RERANKER_SERVICE_URL; app/reranker_service.py is the
+  # app. Reuses the fastapi image + the shared fastapi_hf_cache volume so the
+  # model isn't re-downloaded. Fail-soft: if this is down, the orchestrator
+  # degrades to RRF order, so fastapi does NOT hard-depend on it.
+  # ---------------------------------------------------------------------------
+  reranker:
+    image: georag/fastapi:latest
+    container_name: georag-reranker
+    restart: unless-stopped
+    command: >
+      uvicorn app.reranker_service:app
+        --host 0.0.0.0
+        --port 8000
+        --workers ${RERANKER_WORKERS:-1}
+        --no-access-log
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      OMP_NUM_THREADS: "10"
+      TOKENIZERS_PARALLELISM: "false"
+      # Honour the same LoRA-candidate override as fastapi for A/B parity.
+      RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # Audit 2026-06-27: service-to-service auth — /rerank checks X-Service-Key.
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # 2026-06-29: Qwen3-Reranker on GPU — validated +13.9% NDCG@10 vs bge
+      # (docs/runbooks/reranker-qwen3-flip.md). Causal-LM yes/no-logit path on
+      # GPU (CPU blows the 8s timeout). ROLLBACK to bge with zero compose edits:
+      #   set RERANKER_BACKEND=cross_encoder in .env + recreate this service.
+      RERANKER_BACKEND: ${RERANKER_BACKEND:-qwen3_causal}
+      RERANKER_DEVICE: ${RERANKER_DEVICE:-cuda}
+      QWEN3_RERANKER_MODEL: ${QWEN3_RERANKER_MODEL:-Qwen/Qwen3-Reranker-0.6B}
+      # IMPORTANT: do NOT set RERANKER_SERVICE_URL here — this service IS the
+      # model host; setting it would make the sidecar proxy to itself.
+    user: "33:33"
+    volumes:
+      - ./src/fastapi:/app:cached
+      - fastapi_hf_cache:/tmp/hf_cache
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 15s
+    shm_size: 512m
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 5g
+        reservations:
+          memory: 2g
+          # 2026-06-29: GPU for the Qwen3-Reranker causal-LM path (~1.3 GB;
+          # ~11.7 GB stable-free on the A4500). Drop this block + set
+          # RERANKER_BACKEND=cross_encoder to revert to CPU bge.
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # EMBEDDING SIDECAR (2026-06-24) — shared SentenceTransformer host.
+  # Hosts ONE embedding model (EMBEDDING_MODEL_NAME, CPU) for all fastapi
+  # workers, which proxy to it via EMBEDDING_SERVICE_URL. A PSS measurement
+  # showed each worker held its own ~2.4 GiB Qwen3-Embedding copy with no
+  # cross-worker sharing; consolidating to one copy frees ~2× that host RAM.
+  # Same pattern as the `reranker` sidecar. Must NOT set EMBEDDING_SERVICE_URL.
+  # ---------------------------------------------------------------------------
+  embedding:
+    image: georag/fastapi:latest
+    container_name: georag-embedding
+    restart: unless-stopped
+    command: >
+      uvicorn app.embedding_service:app
+        --host 0.0.0.0
+        --port 8000
+        --workers 1
+        --no-access-log
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      OMP_NUM_THREADS: "10"
+      TOKENIZERS_PARALLELISM: "false"
+      # Must match the fastapi service so the shared model has the dimension
+      # the query path expects.
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
+      # Audit 2026-06-27: service-to-service auth — /embed checks X-Service-Key
+      # against this shared secret (app.sidecar_auth). Same key the main fastapi
+      # + Laravel bridge use; the embedding proxy in the workers sends it.
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # IMPORTANT: do NOT set EMBEDDING_SERVICE_URL here — this service IS the
+      # model host; setting it would make the sidecar proxy to itself.
+    user: "33:33"
+    volumes:
+      - ./src/fastapi:/app:cached
+      - fastapi_hf_cache:/tmp/hf_cache
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4g
+        reservations:
+          memory: 2g
+    profiles: ["dev-data", "dev-full"]
+
+  # ---------------------------------------------------------------------------
+  # SPARSE (SPLADE++) SIDECAR (2026-06-24) — shared sparse-encoder host.
+  # Hosts ONE SPLADE++ model for all fastapi workers, which proxy to it via
+  # SPARSE_SERVICE_URL. Runs on CPU (no GPU device mapped → torch sees no CUDA →
+  # fp32 CPU), which frees the model's VRAM on the A4500 AND lets the fastapi
+  # workers — for whom SPLADE was the last GPU user — drop their CUDA contexts.
+  # Same pattern as the reranker + embedding sidecars. Must NOT set
+  # SPARSE_SERVICE_URL (it is the model host; the service self-checks and exits).
+  # ---------------------------------------------------------------------------
+  sparse:
+    image: georag/fastapi:latest
+    container_name: georag-sparse
+    restart: unless-stopped
+    command: >
+      uvicorn app.sparse_service:app
+        --host 0.0.0.0
+        --port 8000
+        --workers 1
+        --no-access-log
+    environment:
+      PYTHONPATH: /app
+      HOME: /tmp
+      HF_HOME: /tmp/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
+      TRANSFORMERS_CACHE: /tmp/hf_cache
+      XDG_CACHE_HOME: /tmp/xdg_cache
+      NUMBA_CACHE_DIR: /tmp/numba_cache
+      MPLCONFIGDIR: /tmp/mpl_cache
+      OMP_NUM_THREADS: "10"
+      TOKENIZERS_PARALLELISM: "false"
+      # Audit 2026-06-27: service-to-service auth — /sparse checks X-Service-Key.
+      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
+      # IMPORTANT: do NOT set SPARSE_SERVICE_URL — this service IS the model
+      # host; setting it would make the encode functions recurse over HTTP.
+    user: "33:33"
+    volumes:
+      - ./src/fastapi:/app:cached
+      - fastapi_hf_cache:/tmp/hf_cache
+    networks:
+      - georag
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    stop_grace_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 3g
+        reservations:
+          memory: 1g
     profiles: ["dev-data", "dev-full"]
 
   # ===========================================================================
@@ -1203,6 +1484,24 @@ services:
       # path expansion, and merge.node — the standard graph toolkit.
       # Restricted to apoc.* so we don't enable APOC Extended (CSV/JSON
       # loaders that talk to the public internet) by accident.
+      #
+      # 2026-06-23 sweep: APOC version pinning is implicit — the
+      # NEO4J_PLUGINS mechanism fetches the APOC jar matching the
+      # running Neo4j version. Since the Neo4j image above is SHA-pinned
+      # (image: neo4j:2026-community@sha256:a5feb81d...), the APOC
+      # version that gets downloaded is also implicitly version-locked.
+      # The neo4j_plugins named volume persists the jar across container
+      # restarts so re-downloads don't happen on every up.
+      #
+      # If you bump the Neo4j SHA, also delete the neo4j_plugins volume
+      # so the matching APOC version gets re-fetched:
+      #   docker volume rm georagintelligencev10_neo4j_plugins
+      # then `docker compose up neo4j` to re-trigger plugin download.
+      #
+      # For air-gapped deploys: mount the APOC jar manually into /plugins
+      # and drop the NEO4J_PLUGINS env (auto-download requires HTTPS to
+      # GitHub releases). See ops/runbooks/neo4j-backup.md for the
+      # offline jar-acquisition procedure.
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_dbms_security_procedures_allowlist: "apoc.*"
@@ -1288,7 +1587,11 @@ services:
   qdrant:
     # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
     # B8 — digest pinned 2026-04-19 (v1.17 is a floating minor tag)
-    image: qdrant/qdrant:v1.17@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+    # 2026-06-23 sweep: v1.17 (floating minor) -> v1.17.1 (patch).
+    # Digest is identical — the floating v1.17 tag had already been
+    # promoted to v1.17.1's content upstream — but the explicit tag-text
+    # update makes the "we're on the patched release" intent visible.
+    image: qdrant/qdrant:v1.17.1@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
     container_name: georag-qdrant
     restart: unless-stopped
     ports:
@@ -1391,7 +1694,12 @@ services:
     # free-licensing rule (MinIO went AGPL v3 in 2024, then archived its repo
     # Feb 2026 \u2014 see ADR for full reasoning).
     # B8 — digest pinned 2026-04-19
-    image: chrislusf/seaweedfs:4.20@sha256:cea8339d21dad1b200adce581dd7434d254b8f5975f142c3b4c930ba78647eef
+    # 2026-06-23 sweep: 4.20 -> 4.35 (15 minor releases caught up).
+    # Brings POSIX advisory locks, in-memory POSIX lock manager, and the
+    # SetAttr/GetAttr crash fixes under writebackCache — directly relevant
+    # to the concurrent Hatchet worker writes that exercise this service.
+    # Filer is backward-compatible across this range.
+    image: chrislusf/seaweedfs:4.35@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
     container_name: georag-minio
     restart: unless-stopped
     # `sh script` instead of direct exec so a missing executable bit on the
@@ -1440,7 +1748,7 @@ services:
     # Re-using minio/mc as the S3 admin client \u2014 it speaks generic S3 and
     # works fine against SeaweedFS's S3 endpoint.
     # B8 — digest pinned 2026-04-19
-    image: minio/mc:RELEASE.2025-04-08T15-39-49Z@sha256:7e3efb09c22c0882fbf341b9d99f61f94ae6c4c20a06f2f1a2b20ea8993d8952
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     container_name: georag-minio-init
     entrypoint: >
       sh -c "
@@ -1517,7 +1825,19 @@ services:
     # Larger GPUs (L40S 48 GB, A100 80 GB) unlock BF16 and longer context.
     # 2026-05-18 — bumped v0.19.1 → v0.21.0 for MoE scheduler + speculative
     # decoding improvements. Digest pinned post-pull-and-validate.
-    image: vllm/vllm-openai:v0.21.0@sha256:a230095847e93bd4df9888b33dab956fa9504537b828a23657d2b26fed57b5c9
+    # 2026-06-26 — bumped v0.21.0 → v0.23.0. ~29% E2E latency win (0.22
+    # CUTLASS FP8 batch-invariant path). VALIDATED on the live A4500:
+    # all tuned flags accepted unchanged (speculative-config ngram +
+    # compilation-config cudagraph_capture_sizes/max_cudagraph_capture_size
+    # both honored), engine init OK, no OOM (KV cache 3.28 GiB / 43k
+    # tokens at the .env mem-util 0.72), health green, smoke chat
+    # completion served. Two 0.23 behaviors noted: (1) Qwen3 dense now
+    # runs Model Runner V2 by default (since 0.22) — re-validate KV
+    # headroom if VLLM_GPU_MEM_UTIL is raised back toward 0.93; (2) vLLM
+    # auto-downgrades cudagraph_mode FULL_AND_PIECEWISE -> PIECEWISE under
+    # spec-decode+FlashInfer (handled internally, non-fatal). Image ships
+    # CUDA 13.0/torch 2.11 — host driver is CUDA 13.2, compatible.
+    image: vllm/vllm-openai:v0.23.0@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
     container_name: georag-vllm
     restart: unless-stopped
     ports:
@@ -1647,6 +1967,87 @@ services:
     profiles: ["gpu-llm", "gpu-llm-prod"]
 
   # ---------------------------------------------------------------------------
+  # vllm-vl (2026-06-24) — second vLLM for the §04p VL parser (ADR-0015 v3).
+  # ---------------------------------------------------------------------------
+  # Serves Qwen3-VL for figure/diagram understanding. No official AWQ of
+  # Qwen3-VL-8B exists; the 8B community quants (~6-7 GB) also do NOT fit the
+  # 20 GB A4500 alongside the main 14B text LLM (vLLM OOM'd — verified), so this
+  # defaults to the community Qwen3-VL-*4B* 8-bit quant (~6.2 GB weights, the
+  # largest that fits). Vet the community quant before any production use.
+  # Shares the A4500 with the main vLLM: VLLM_GPU_MEM_UTIL is lowered to 0.72
+  # (see .env) to free room — trades the main LLM's KV headroom for VL (demo).
+  # --enforce-eager (skip cudagraph) + max-model-len 4096 keep the VL footprint
+  # inside the tight GPU share. fastapi/pdf_vl.py reaches it via
+  # PDF_VL_BACKEND_URL=http://vllm-vl:8000/v1 + PDF_VL_MODEL_VERSION=3. The
+  # compressed-tensors quant is auto-detected by vLLM (no --quantization flag).
+  vllm-vl:
+    image: vllm/vllm-openai:v0.23.0@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
+    container_name: georag-vllm-vl
+    restart: unless-stopped
+    ports:
+      - "${VLLM_VL_PORT:-8002}:8000"
+    ipc: host
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /root/.cache/huggingface
+      TOKENIZERS_PARALLELISM: "false"
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+    command:
+      - '--model'
+      - '${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}'
+      - '--served-model-name'
+      - '${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}'
+      - '--port'
+      - '8000'
+      - '--host'
+      - '0.0.0.0'
+      - '--max-model-len'
+      - '${VLLM_VL_MAX_MODEL_LEN:-4096}'
+      - '--gpu-memory-utilization'
+      - '${VLLM_VL_GPU_MEM_UTIL:-0.46}'
+      - '--kv-cache-dtype'
+      - '${VLLM_VL_KV_CACHE_DTYPE:-fp8}'
+      - '--max-num-seqs'
+      - '${VLLM_VL_MAX_NUM_SEQS:-4}'
+      - '--enable-prefix-caching'
+      # Low-volume VL sidecar: skip CUDA-graph capture. With the cudagraph
+      # profiler disabled (env above, inherited from the main vLLM tuning) the
+      # graphs aren't memory-accounted and OOM during capture at this tight GPU
+      # share. Eager mode frees that ~1-2 GB; latency impact is negligible at
+      # ingest-rate (figure-extraction) concurrency.
+      - '--enforce-eager'
+    shm_size: "4gb"
+    volumes:
+      - vllm_hf_cache:/root/.cache/huggingface
+    networks:
+      - georag
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${VLLM_GPU_COUNT:-1}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health -o /dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # First start downloads the ~6 GB quant from HF + loads it.
+      start_period: 900s
+    stop_grace_period: 30s
+    # 2026-06-29: moved OFF the default gpu-llm profile to its own opt-in
+    # "vl-ingest" profile. The A4500 (20 GB) cannot comfortably host
+    # vllm(14B) + vllm-vl(4B) + the GPU reranker simultaneously; the reranker
+    # (+13.9% NDCG, serves every chat query) takes priority over figure VL
+    # captioning (FIGURE_VL_DESCRIPTIONS is off by default). To run figure
+    # ingest, start with `--profile gpu-llm --profile vl-ingest` AND set
+    # FIGURE_VL_DESCRIPTIONS=true — then either accept the tight VRAM or trim
+    # vllm --gpu-memory-utilization (0.72→~0.62). See
+    # docs/runbooks/reranker-qwen3-flip.md.
+    profiles: ["vl-ingest"]
+
+  # ---------------------------------------------------------------------------
   # vllm-warmup — one-shot sidecar.
   # ---------------------------------------------------------------------------
   # The first request after a vLLM container start pays a 3-5× FlashInfer
@@ -1656,7 +2057,11 @@ services:
   # real user never sees the cold path. Exits 0 when done; `restart: "no"`
   # prevents looping. Profile-gated to track the vllm service.
   vllm-warmup:
-    image: curlimages/curl:8.10.1
+    # 2026-06-24 re-audit: 8.10.1 -> 8.21.0 + digest. 8.10.1 was ~10
+    # releases stale with credential-leak CVEs (CVE-2024-11053 .netrc,
+    # CVE-2026-8927 cross-proxy Digest leak). Non-critical sidecar but
+    # easy to keep current.
+    image: curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
     container_name: georag-vllm-warmup
     profiles: ["gpu-llm", "gpu-llm-prod"]
     depends_on:
@@ -1769,10 +2174,16 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "dagster-daemon liveness-check || exit 1"]
-      interval: 30s
-      timeout: 10s
+      # 2026-06-24: the daemon is live (liveness-check returns rc=0) but the
+      # check itself takes ~21s — `dagster-daemon liveness-check` is a fresh CLI
+      # invocation that re-imports dagster + the georag_dagster code location
+      # every time. At the old 10s timeout it ALWAYS exceeded → false-unhealthy
+      # for 25h. Raised timeout 10s → 35s to fit the real cost, and interval
+      # 30s → 60s so consecutive ~21s checks don't run nose-to-tail.
+      interval: 60s
+      timeout: 35s
       retries: 3
-      start_period: 60s
+      start_period: 90s
     # SG-01 fix (CRITICAL): Dagster run workers can be mid-pipeline for up to 120s.
     # Without this, docker stop SIGKILLs after 10s and in-progress ingestion runs
     # are lost with no checkpoint.
@@ -1888,7 +2299,14 @@ services:
   #        7077 → 7077 gRPC (workers connect here).
   # ---------------------------------------------------------------------------
   hatchet-lite:
-    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest
+    # 2026-06-03 sweep: floating :latest pinned to a concrete tag aligned
+    # with `hatchet-sdk>=1.33` in pyproject.toml. The Cameco-recovery
+    # incident (2026-06-02, project_cameco_recovery memory) was the exact
+    # failure mode this prevents: a silent engine bump invalidating the
+    # SDK contract. Operator: pin to digest after pull —
+    #   docker pull ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12
+    #   docker images ghcr.io/hatchet-dev/hatchet/hatchet-lite --digests
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.86.12
     container_name: georag-hatchet
     restart: unless-stopped
     depends_on:
@@ -1902,13 +2320,20 @@ services:
       SERVER_MSGQUEUE_KIND: postgres
       SERVER_DEFAULT_ENGINE_VERSION: V1
       SERVER_AUTH_COOKIE_DOMAIN: localhost
-      SERVER_AUTH_COOKIE_INSECURE: "t"
+      # 2026-06-23 sweep: 3 INSECURE flags were hardcoded to "t" (dev
+      # default). Promoted to env-driven so .env.production can flip
+      # them to "f" before any public exposure WITHOUT a compose change.
+      # Defaults preserve current dev behaviour. See
+      # .env.production.example for the production-safe values + the
+      # operator pre-flight check that asserts they're flipped before
+      # the cd.yml deploy proceeds.
+      SERVER_AUTH_COOKIE_INSECURE: "${HATCHET_AUTH_COOKIE_INSECURE:-t}"
       SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
-      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_INSECURE: "${HATCHET_GRPC_INSECURE:-t}"
       SERVER_GRPC_BROADCAST_ADDRESS: "localhost:${HATCHET_GRPC_PORT:-7077}"
       SERVER_GRPC_PORT: "7077"
       SERVER_URL: "http://localhost:${HATCHET_API_PORT:-8889}"
-      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "${HATCHET_AUTH_SET_EMAIL_VERIFIED:-t}"
       SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: "hatchet-lite:7077"
     volumes:
       - hatchet_config:/config
@@ -1968,16 +2393,21 @@ services:
     # Phase 10 (2026-05-22): unstructured[pdf] dropped from the
     # bootstrap. The fitz-first dispatch in pdf_report.py never calls
     # it; Phase 2.1 made that path unreachable.
+    # 2026-06-23 sweep: polars + pytesseract bootstrap removed (now in
+    # pyproject.toml so the image ships with both). The paddlepaddle-gpu
+    # conditional install is RETAINED — the GPU wheel lives on the
+    # Paddle private index (https://www.paddlepaddle.org.cn/packages/
+    # stable/cu126/) which isn't on PyPI, so pyproject can only declare
+    # the CPU build. The GPU swap remains opt-in via PADDLEOCR_USE_GPU=true
+    # for hosts with NVIDIA passthrough.
     command: >
-      sh -c "(pip show polars >/dev/null 2>&1 || pip install --no-cache-dir polars) &&
-             (pip show pytesseract >/dev/null 2>&1 || pip install --no-cache-dir pytesseract) &&
-             (if [ \"$$PADDLEOCR_USE_GPU\" = \"true\" ] && ! python -c 'import paddle; assert paddle.device.is_compiled_with_cuda()' 2>/dev/null; then
-                pip uninstall -y paddlepaddle 2>/dev/null || true;
-                pip install --no-cache-dir 'paddlepaddle-gpu==3.3.1' --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ --extra-index-url https://pypi.org/simple/;
-                # paddle-gpu pins nccl 2.25.1 which breaks torch's nccl 2.30 ABI.
-                # Re-pin afterward so torch.cuda still works.
-                pip install --no-cache-dir 'nvidia-nccl-cu12>=2.30' || true;
-              fi) &&
+      sh -c "if [ \"$$PADDLEOCR_USE_GPU\" = \"true\" ] && ! python -c 'import paddle; assert paddle.device.is_compiled_with_cuda()' 2>/dev/null; then
+               pip uninstall -y paddlepaddle 2>/dev/null || true;
+               pip install --no-cache-dir 'paddlepaddle-gpu==3.3.1' --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ --extra-index-url https://pypi.org/simple/;
+               # paddle-gpu pins nccl 2.25.1 which breaks torch's nccl 2.30 ABI.
+               # Re-pin afterward so torch.cuda still works.
+               pip install --no-cache-dir 'nvidia-nccl-cu12>=2.30' || true;
+             fi &&
              exec python3 -m app.hatchet_workflows.worker"
     depends_on:
       hatchet-lite:
@@ -2174,13 +2604,14 @@ services:
     image: georag/fastapi:latest
     container_name: georag-hatchet-worker-ai
     restart: unless-stopped
-    # Same startup-install bootstrap as the ingestion worker so the AI
-    # pool worker (which runs embed_pending_passages_wf) survives a
-    # force-recreate without losing polars/pytesseract.
-    command: >
-      sh -c "(pip show polars >/dev/null 2>&1 || pip install --no-cache-dir polars) &&
-             (pip show pytesseract >/dev/null 2>&1 || pip install --no-cache-dir pytesseract) &&
-             exec python3 -m app.hatchet_workflows.worker"
+    # 2026-06-23 sweep: bootstrap pip installs removed. polars + pytesseract
+    # are now declared in src/fastapi/pyproject.toml (Phase 5 / Phase 10
+    # baked them in), so a freshly built georag/fastapi:latest image
+    # already has both. The defensive `pip show ... || pip install` block
+    # was a holdover from the period when the image was rebuilt less
+    # often than pyproject changed; it cost 30s on every cold restart and
+    # broke airgap deploys that can't reach PyPI.
+    command: ["python3", "-m", "app.hatchet_workflows.worker"]
     depends_on:
       hatchet-lite:
         condition: service_healthy
@@ -2259,6 +2690,11 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
+      # 2026-06-23 sweep — PaddleOCR 3.x calls Path.mkdir on
+      # $HOME/.paddlex/temp at IMPORT time; redirect HOME to /tmp so
+      # the AI worker can import pdf_ocr.py without crashing (matches
+      # the ingestion worker's HOME pin).
+      HOME: /tmp
       # Phase 2.0 + 2.1 (2026-05-22) — same docling + rapidocr envs as
       # the ingestion worker. The AI pool worker doesn't currently
       # parse PDFs end-to-end, but it can import the parser transitively
@@ -2298,6 +2734,13 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # ADR-0008 — embedding model path. Must match the fastapi service.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-BAAI/bge-small-en-v1.5}
+      # CPU thread budget for PyTorch ops that fall back to CPU (reranker,
+      # SPLADE++). OMP/MKL defaults to all host threads which causes
+      # oversubscription when vLLM also runs CPU work. 6 threads matches
+      # the 6-vCPU ceiling below and avoids fighting vLLM.
+      # Dense embedding runs on GPU (CUDA auto-detected).
+      OMP_NUM_THREADS: "6"
+      TOKENIZERS_PARALLELISM: "false"
     volumes:
       - ./src/fastapi:/app:cached
       - ./src/dagster/georag_dagster:/app/georag_dagster:cached
@@ -2319,9 +2762,16 @@ services:
     # chunks/sec. With the A4500 the same models do thousands/sec, so
     # large ingests (V3 = 2,496 chunks, was ~20 min on CPU) finish in
     # seconds. Requires VLLM_GPU_MEM_UTIL ≤ 0.80 to leave headroom.
+    # 2026-05-30 — explicit CPU+RAM ceiling added (was unlimited).
+    # 6 vCPUs (host limit) / 24G allows full-corpus contextual enrichment
+    # + re-embed in parallel with normal operations. GPU shared with vLLM.
     deploy:
       resources:
+        limits:
+          cpus: "6.0"
+          memory: 24G
         reservations:
+          memory: 8G
           devices:
             - driver: nvidia
               count: 1
@@ -2353,7 +2803,9 @@ services:
   # YAML files are the source of truth.
   # ---------------------------------------------------------------------------
   kestra:
-    image: kestra/kestra:v1.2.18
+    # v1.3.25 (2026-06, SHA-pinned). Bumped from v1.2.18 in the 2026-06-26
+    # version sweep; minor within the v1 line — flows + plugin API stable.
+    image: kestra/kestra:v1.3.25@sha256:2289a0cd123e4b7a76661b486cdaaada42c1759502d09746b7930d1c8ca6d402
     container_name: georag-kestra
     restart: unless-stopped
     # Kestra base image runs without root, but standalone mode needs root
@@ -2427,7 +2879,13 @@ services:
   # users keep that path; PAT + WS operators use this edge.
   # ---------------------------------------------------------------------------
   caddy:
-    image: caddy:2.8-alpine
+    # 2026-06-03 sweep: 2.8-alpine -> 2.11.3-alpine to pick up CVE patches
+    # in 2.9/2.10/2.11 (admin API, HTTP matchers, TLS auth — CVE-2026-27585
+    # through 27589). Drop-in upgrade, no config breakage expected on the
+    # forward_auth + reverse-proxy block below. Operator: pin to digest
+    # after a successful pull via `docker images caddy:2.11.3-alpine
+    # --digests`. Caddyfile + container env are unchanged.
+    image: caddy:2.11.3-alpine
     container_name: georag-caddy
     restart: unless-stopped
     ports:
@@ -2474,7 +2932,9 @@ services:
   # Prometheus to scrape on internal :8895/metrics.
   # ---------------------------------------------------------------------------
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.151.0
+    # 2026-06-23 sweep: 0.151.0 -> 0.154.0 + SHA pin. Weekly cadence
+    # release line; bug fixes + new receivers/exporters in each minor.
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
     container_name: georag-otel-collector
     restart: unless-stopped
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -2509,7 +2969,11 @@ services:
   # workflow_runs.trace_id to http://${TEMPO_HOST_PORT}:3200/api/traces/<id>.
   # ---------------------------------------------------------------------------
   tempo:
-    image: grafana/tempo:2.6.1
+    # 2026-06-23 sweep: 2.6.1 -> 2.10.7 + SHA pin. TraceQL improvements +
+    # metrics-generator perf gains across the 2.7/2.8/2.9/2.10 line.
+    # Block format is backward-compatible — existing /var/tempo/blocks
+    # data reads fine.
+    image: grafana/tempo:2.10.7@sha256:032b3acb51ed02c4b801473d54bb63e9e9f13738d215126d9843c30283794f4b
     container_name: georag-tempo
     restart: unless-stopped
     command: ["-config.file=/etc/tempo.yaml"]
@@ -2520,7 +2984,12 @@ services:
       - ./docker/tempo/tempo-config.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:3200/ready >/dev/null 2>&1 || exit 1"]
+      # 2026-06-23 sweep: Tempo 2.7+ ships a distroless image — no shell,
+      # no wget. Replaced the HTTP probe on /ready with the binary's own
+      # -version check (binary integrity + execution, not service-ready).
+      # Prometheus scrapes catch true outage. Same pattern as the
+      # promtail healthcheck.
+      test: ["CMD", "/tempo", "-version"]
       interval: 15s
       timeout: 5s
       retries: 6
@@ -2605,7 +3074,7 @@ services:
   # redis_memory_used_bytes, slowlog depth on :9121/metrics.
   # ---------------------------------------------------------------------------
   redis_exporter:
-    image: oliver006/redis_exporter:v1.74.0-alpine
+    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
     container_name: georag-redis-exporter
     restart: unless-stopped
     environment:
@@ -2713,7 +3182,10 @@ services:
   # transition from PromQL counter to LogQL count_over_time per the panel TODO.
   # ---------------------------------------------------------------------------
   loki:
-    image: grafana/loki:3.4.2
+    # 2026-06-23 sweep: 3.4.2 -> 3.7.2 + SHA pin. Bloom-filter improvements
+    # + structured-metadata querying. BoltDB shipper format is
+    # forward/backward compatible across 3.x; existing chunks read fine.
+    image: grafana/loki:3.7.2@sha256:191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86
     container_name: georag-loki
     restart: unless-stopped
     command: -config.file=/etc/loki/loki-config.yaml
@@ -2725,7 +3197,12 @@ services:
     networks:
       - georag
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      # 2026-06-23 sweep: Loki 3.5+ ships a distroless image — no shell,
+      # no wget. Replaced the HTTP probe on /ready with the binary's own
+      # -version check (binary integrity + execution, not service-ready).
+      # Prometheus scrapes catch true outage. Same pattern as the
+      # promtail healthcheck.
+      test: ["CMD", "/usr/bin/loki", "-version"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -2740,7 +3217,14 @@ services:
   # to Loki with channel/service labels.
   # ---------------------------------------------------------------------------
   promtail:
-    image: grafana/promtail:3.4.2
+    # 2026-06-23 sweep: 3.4.2 -> 3.5.5 + SHA pin. Promtail tagging is
+    # FROZEN at the 3.5.x line by Grafana — they've publicly deprecated
+    # Promtail in favour of Grafana Alloy. 3.5.5 is the terminal Promtail
+    # release; future log-pipeline work should target the Alloy migration
+    # (see docs/runbooks/promtail-to-alloy-migration.md once landed).
+    # Until then, Promtail 3.5.5 + Loki 3.7.2 are still wire-compatible
+    # (Promtail's push API is forward-compatible against Loki 3.x).
+    image: grafana/promtail:3.5.5@sha256:784743d283f71f644e290d7b9fadf5e1edff405d2756974c6e13fa7978c08b64
     container_name: georag-promtail
     restart: unless-stopped
     command: -config.file=/etc/promtail/promtail-config.yaml
@@ -2763,6 +3247,50 @@ services:
       retries: 3
       start_period: 15s
     stop_grace_period: 10s
+    # 2026-06-24: Promtail→Alloy cutover complete. Grafana Alloy (below) is now
+    # the active log shipper (dev-monitor); it tails the same Laravel logs, so
+    # leaving Promtail in dev-monitor would double-ship every line into Loki.
+    # Parked in a non-active `promtail-legacy` profile: it no longer auto-starts
+    # but stays defined for rollback (`--profile promtail-legacy up -d promtail`,
+    # and stop Alloy). See docs/runbooks/promtail-to-alloy-migration.md.
+    profiles: ["promtail-legacy"]
+
+  # ---------------------------------------------------------------------------
+  # GRAFANA ALLOY (2026-06-23 sweep) — Promtail successor. PRIMARY log shipper
+  # as of the 2026-06-24 cutover: Promtail is parked in the `promtail-legacy`
+  # profile (no longer auto-starts) and Alloy writes to Loki's default tenant
+  # (the shadow-window tenant_id was removed from docker/alloy/config.alloy).
+  # Config lives at docker/alloy/config.alloy. Rollback + history:
+  # docs/runbooks/promtail-to-alloy-migration.md.
+  # ---------------------------------------------------------------------------
+  alloy:
+    image: grafana/alloy:v1.10.0@sha256:1bc130e909116a4bf950eb5187a346007d3b796f96832b529acb14a64e41230f
+    container_name: georag-alloy
+    restart: unless-stopped
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    volumes:
+      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./storage/logs:/laravel-logs:ro
+      - alloy_data:/var/lib/alloy/data
+    networks:
+      - georag
+    depends_on:
+      loki:
+        condition: service_healthy
+    # 2026-06-24: no container healthcheck. The grafana/alloy image is
+    # distroless — no wget/curl/shell HTTP client — so an in-container probe of
+    # /-/ready cannot run. The old `CMD-SHELL wget …` always exited 1 and
+    # reported a FALSE "unhealthy" while Alloy was in fact ready (GET
+    # :12345/-/ready returns 200, "Alloy is ready"). Health is observable
+    # externally via that endpoint; nothing depends_on Alloy's health gate.
+    stop_grace_period: 10s
+    # Active log shipper after the Promtail→Alloy cutover (promtail parked in the
+    # promtail-legacy profile above).
     profiles: ["dev-monitor", "dev-full"]
 
   # ---------------------------------------------------------------------------
@@ -2774,7 +3302,13 @@ services:
   grafana:
     # Task 1: pinned to current stable release.
     # B8 — digest pinned 2026-04-19
-    image: grafana/grafana:11.6.1@sha256:52c3e20686b860c6dc1f623811565773cf51eefa378817a4896dfc863c3c82c8
+    # 2026-06-23 sweep: 11.6.1 -> 12.4.5. Scenes-based dashboards GA,
+    # dashboard schemas v2, interactive learning UX. Dashboards are
+    # generally portable across the 11 -> 12 jump; data-source plugins
+    # we use (Prometheus, Loki, Tempo) are first-party. After deploy,
+    # spot-check the 14 system + 3 product dashboards for layout drift
+    # — Scenes engine occasionally re-renders panels slightly differently.
+    image: grafana/grafana:12.4.5@sha256:26b8f35a9e4e4431995cf64c3f396505a4faf17bcfc19f9ed84943ec6bfd5ecd
     container_name: georag-grafana
     restart: unless-stopped
     ports:

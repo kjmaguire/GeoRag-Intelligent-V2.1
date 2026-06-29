@@ -61,6 +61,7 @@ string import RERANKER_VERSION directly without loading the model.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -79,6 +80,33 @@ RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 # for context.
 RERANKER_REVISION = "2cfc18c9415c912f9d8155881c133215df768a70"
 RERANKER_VERSION = f"bge-reranker-base@{RERANKER_REVISION[:8]}"
+
+# ---------------------------------------------------------------------------
+# Qwen3-Reranker causal-LM backend (audit 2026-06-28, OPT-IN, NOT deployed)
+# ---------------------------------------------------------------------------
+# bge-reranker-base is a sequence-classification CrossEncoder. Qwen3-Reranker
+# is a CAUSAL LM: each (query, doc) pair is formatted with an instruction chat
+# template and scored from the next-token logits of the "yes"/"no" tokens
+# (relevance = softmax([no, yes])[yes]). It is NOT loadable via
+# sentence_transformers.CrossEncoder, so it gets its own backend selected by
+# RERANKER_BACKEND=qwen3_causal. Default stays "cross_encoder" (bge) — this code
+# path does nothing until explicitly enabled.
+#
+# ⚠️ NOT DEPLOYED: a 0.6B causal LM doing one forward pass per pair is far
+# slower than bge on CPU and will blow RERANKER_TIMEOUT_S. Run on GPU
+# (RERANKER_DEVICE=cuda, needs VRAM headroom) and validate against the golden
+# eval before enabling. See manual Ch18 §2 reranker note.
+RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "cross_encoder").strip().lower()
+QWEN3_RERANKER_MODEL = (
+    os.environ.get("QWEN3_RERANKER_MODEL") or "Qwen/Qwen3-Reranker-0.6B"
+).strip()
+RERANKER_DEVICE = (os.environ.get("RERANKER_DEVICE") or "cpu").strip()
+QWEN3_RERANKER_INSTRUCTION = (
+    os.environ.get("QWEN3_RERANKER_INSTRUCTION")
+    or "Given a geological search query, retrieve relevant passages that answer the query"
+)
+QWEN3_RERANKER_MAX_LEN = int(os.environ.get("QWEN3_RERANKER_MAX_LEN", "2048"))
+QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
 
 # ---------------------------------------------------------------------------
 # Per-query-class top-k defaults (spec B6)
@@ -103,8 +131,144 @@ RERANKER_TOP_K_DEFAULT = 20
 RERANKER_TIMEOUT_S = 2.0
 
 
+# ---------------------------------------------------------------------------
+# Shared reranker sidecar (2026-06-24)
+# ---------------------------------------------------------------------------
+# Each uvicorn worker used to load its OWN CrossEncoder copy (6 workers → 6×
+# ~1-1.5 GiB → OOM-killed the container under the 10 GiB limit). When
+# RERANKER_SERVICE_URL is set, get_reranker_or_none() instead returns a thin
+# HTTP proxy to the dedicated single-process `reranker` sidecar that hosts ONE
+# model copy — the workers share it. Unset (the default) keeps the in-process
+# load, so tests and the sidecar itself behave exactly as before.
+RERANKER_SERVICE_URL = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
+# Outer budget for the sidecar HTTP round-trip. Generous on purpose: the
+# orchestrator already wraps the predict() call in its own RERANKER_TIMEOUT_S
+# wait_for, so that fires first and this only guards a wedged sidecar.
+RERANKER_SERVICE_TIMEOUT_S = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
+
+
+class _RemoteReranker:
+    """HTTP proxy with the only CrossEncoder method callers use: ``predict``.
+
+    Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` by
+    POSTing the pairs to the reranker sidecar. Kept deliberately minimal so it
+    is a drop-in for ``get_reranker_or_none()`` consumers (orchestrator +
+    eval Layer 5). A wedged/absent sidecar raises here; callers already treat a
+    reranker failure as a soft-degrade to RRF order (spec B6 fallback).
+    """
+
+    def __init__(self, base_url: str, timeout_s: float) -> None:
+        self._url = base_url.rstrip("/") + "/rerank"
+        self._timeout_s = timeout_s
+
+    def predict(self, pairs: "list[tuple[str, str]]") -> list[float]:
+        import httpx  # noqa: PLC0415
+
+        from app.sidecar_auth import SERVICE_KEY_HEADERS  # noqa: PLC0415
+
+        payload = {"pairs": [[str(q), str(p)] for q, p in pairs]}
+        resp = httpx.post(
+            self._url, json=payload, timeout=self._timeout_s,
+            headers=SERVICE_KEY_HEADERS,
+        )
+        resp.raise_for_status()
+        return [float(s) for s in resp.json()["scores"]]
+
+
+class _Qwen3CausalReranker:
+    """Qwen3-Reranker (causal-LM) behind the CrossEncoder ``.predict()`` API.
+
+    Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` so it
+    is a drop-in for ``get_reranker_or_none()`` consumers. Each pair is scored as
+    P(yes) from the model's next-token logits over the "yes"/"no" tokens, per the
+    official Qwen3-Reranker model-card usage. Left-padding keeps the final
+    position (-1) aligned to the real last token across a batch.
+    """
+
+    # Chat-template scaffolding from the official Qwen3-Reranker model card.
+    _PREFIX = (
+        "<|im_start|>system\nJudge whether the Document meets the requirements "
+        "based on the Query and the Instruct provided. Note that the answer can "
+        'only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
+    )
+    _SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+    def __init__(
+        self,
+        model_name_or_path: str,
+        *,
+        device: str = "cpu",
+        instruction: str = QWEN3_RERANKER_INSTRUCTION,
+        max_length: int = QWEN3_RERANKER_MAX_LEN,
+        batch_size: int = QWEN3_RERANKER_BATCH,
+    ) -> None:
+        import torch  # noqa: PLC0415
+        from transformers import (  # noqa: PLC0415
+            AutoModelForCausalLM,
+            AutoTokenizer,
+        )
+
+        self._torch = torch
+        self._device = device
+        self._instruction = instruction
+        self._max_length = max_length
+        self._batch_size = batch_size
+
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        # Left padding so the final position (-1) is the real last token for
+        # every sequence in a batch (required for next-token scoring).
+        self._tokenizer.padding_side = "left"
+        self._model = (
+            AutoModelForCausalLM.from_pretrained(
+                model_name_or_path,
+                torch_dtype=(
+                    torch.float16 if device.startswith("cuda") else torch.float32
+                ),
+            )
+            .to(device)
+            .eval()
+        )
+
+        self._token_true = self._tokenizer.convert_tokens_to_ids("yes")
+        self._token_false = self._tokenizer.convert_tokens_to_ids("no")
+        if self._token_true is None or self._token_false is None:
+            raise RuntimeError(
+                "Qwen3-Reranker: tokenizer lacks single 'yes'/'no' tokens"
+            )
+
+    def _format(self, query: str, passage: str) -> str:
+        return (
+            f"{self._PREFIX}<Instruct>: {self._instruction}\n"
+            f"<Query>: {query}\n<Document>: {passage}{self._SUFFIX}"
+        )
+
+    def predict(self, pairs: "list[tuple[str, str]]") -> list[float]:
+        torch = self._torch
+        scores: list[float] = []
+        with torch.no_grad():
+            for start in range(0, len(pairs), self._batch_size):
+                batch = pairs[start : start + self._batch_size]
+                texts = [self._format(str(q), str(p)) for q, p in batch]
+                enc = self._tokenizer(
+                    texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=self._max_length,
+                    return_tensors="pt",
+                ).to(self._device)
+                # Next-token logits at the final position; compare yes vs no.
+                last_logits = self._model(**enc).logits[:, -1, :]
+                pair_logits = torch.stack(
+                    [last_logits[:, self._token_false], last_logits[:, self._token_true]],
+                    dim=1,
+                )
+                probs = torch.softmax(pair_logits.float(), dim=1)
+                scores.extend(probs[:, 1].tolist())
+        return scores
+
+
 @lru_cache(maxsize=1)
-def _get_reranker() -> "CrossEncoder":
+def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
     """Load and return the BGE reranker singleton (cached per worker process).
 
     Raises:
@@ -137,6 +301,26 @@ def _get_reranker() -> "CrossEncoder":
         torch.get_num_threads(),
         torch.get_num_interop_threads(),
     )
+
+    # Audit 2026-06-28 — opt-in Qwen3-Reranker causal-LM backend. Default
+    # (RERANKER_BACKEND=cross_encoder) skips this and loads the bge CrossEncoder
+    # below; this path only runs when explicitly enabled.
+    if RERANKER_BACKEND == "qwen3_causal":
+        model_id = (
+            os.environ.get("RERANKER_MODEL_PATH") or ""
+        ).strip() or QWEN3_RERANKER_MODEL
+        logger.warning(
+            "Loading Qwen3-Reranker CAUSAL-LM backend: %s device=%s. NOTE: slow "
+            "on CPU — intended for GPU + golden-eval validation, not yet a "
+            "validated production swap.",
+            model_id, RERANKER_DEVICE,
+        )
+        qwen_reranker = _Qwen3CausalReranker(model_id, device=RERANKER_DEVICE)
+        qwen_reranker.predict(
+            [("warm up query", "warm up geological document passage")]
+        )
+        logger.info("Reranker ready: qwen3-causal:%s", model_id)
+        return qwen_reranker
 
     # ADR-0010 §5e — RERANKER_MODEL_PATH override lets the operator A/B test
     # a LoRA-tuned candidate against the stock baseline without rebuilding
@@ -171,12 +355,20 @@ def _get_reranker() -> "CrossEncoder":
     return model
 
 
-def get_reranker_or_none() -> "CrossEncoder | None":
-    """Return the singleton reranker, or None if it failed to load.
+def get_reranker_or_none() -> "CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | None":
+    """Return the reranker (local singleton, remote proxy, or None).
 
-    This wrapper catches all exceptions so callers can handle the absent-
-    reranker path (RRF order fallback) without try/except boilerplate.
+    When RERANKER_SERVICE_URL is set, returns an HTTP proxy to the shared
+    `reranker` sidecar — no local model is loaded in this process. Otherwise
+    loads the in-process CrossEncoder singleton. All exceptions are caught so
+    callers can handle the absent-reranker path (RRF order fallback) without
+    try/except boilerplate. Env is read fresh each call so it stays
+    monkeypatchable in tests.
     """
+    service_url = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
+    if service_url:
+        timeout_s = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
+        return _RemoteReranker(service_url, timeout_s)
     try:
         return _get_reranker()
     except Exception:

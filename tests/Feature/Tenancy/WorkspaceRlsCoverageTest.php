@@ -51,6 +51,13 @@ final class WorkspaceRlsCoverageTest extends TestCase
         // The workspaces registry itself — RLS would block reading the
         // very rows used to evaluate workspace membership.
         'silver.workspaces',
+        // Platform-wide tenant-isolation audit LOG — RLS intentionally NOT
+        // enabled (see 2026_05_30_000000_create_silver_tenant_isolation_audit
+        // docstring): workspace_id is nullable for system-wide sweeps and the
+        // table is admin-Gate-scoped, same pattern as workflow.flow_jwt_keys.
+        // Verified 2026-06-28: only RLS-off workspace_id table across ALL
+        // tenant schemas in production.
+        'silver.tenant_isolation_audit',
     ];
 
     /**
@@ -88,7 +95,15 @@ final class WorkspaceRlsCoverageTest extends TestCase
                    ) AS has_policy
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname IN ('silver','gold','bronze','audit','public_geo','index')
+            -- Audit 2026-06-28: cover EVERY tenant schema by EXCLUDING only the
+            -- system / Laravel-managed ones, rather than an allowlist that
+            -- silently omitted workspace.*, interpretation, ops, outbox,
+            -- targeting, usage and workflow (all carry workspace_id tables).
+            -- A new tenant schema is now covered automatically.
+            WHERE n.nspname NOT IN (
+                'pg_catalog', 'information_schema', 'public',
+                'partman', 'pgivm', 'topology', 'backups'
+            )
               AND c.relkind = 'r'
               AND NOT EXISTS (
                 SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid

@@ -46,6 +46,7 @@ marker. The exhaustive matrix is in
 | 16 | [Algorithmic Spines + Canonical Chunked Corpus](manual/16-algorithmic-spines.md) | Live | ADR-0009 Spines A (context-prep) + B (repair loop) + ADR-0010 `silver.document_passages` canonical + new Qdrant `georag_chunks`. New silver tables (query_traces, data_quality_flags, document_versions, entity_aliases/gaps). New Hatchet workflow `repair_shadow_aggregate`. |
 | 17 | [Strategic Context (Master Plan + Phase Timeline)](manual/17-strategic-context.md) | Live | **The "why"** — master plan §§5–12 scope proposals with one-paragraph intent each + completion %; phase 0 + doc-phase 100–105 handoffs; cumulative master-plan completion table; reading order for new contributors; the 9 hard rules as strategic non-negotiables. |
 | **17b** | [**Master Plan Deep Dive (§§5–12)**](manual/17b-master-plan-deep-dive.md) | **Live (new)** | Per-§ deep summary of all 8 scope proposals: **goal** (verbatim SME pitch) + **deliverables** (master-plan-numbered list) + **done test** (acceptance criterion) + **status as of Pass 4** + **where to look** (manual cross-refs) + a cross-section showing exactly where each section's code lives in the repo. The "why what got built, got built" reference. |
+| **18** | [**Model Stack Evolution + the 2026-06 Audit Wave**](manual/18-model-stack-evolution.md) | **Live (new)** | The recent-changes chapter. **Qwen3 model swap** (embedding → Qwen3-Embedding-0.6B 1024-dim, reranker → Qwen3-Reranker-0.6B) with the **config/runtime split** + the **🔴 live Dagster 384-dim re-index hazard**. ADRs 0011–0017 roll-up. §04p OCR/VL upgrades (PaddleOCR 3.7, Tesseract 5.5.2 from source, Qwen3-VL-8B gated). ADR-0012 structured-to-NL retrieval corpus. Contextual retrieval (`contextualized_content`). Answer-quality LLM-as-judge scoring. **Project lifecycle states** (CC-03 Item 8 landed: active/hibernated/archived/past_due). New tenancy/observability schema. RLS sentinel third+fourth sweeps. |
 
 ## Appendices
 
@@ -56,7 +57,7 @@ marker. The exhaustive matrix is in
 | C | [Security Posture](appendix/C-security-posture.md) | Draft (open items tracked) | Trust boundaries, threat model, tenant isolation, prompt injection, tool abuse, LLM egress, rotation, RPO/RTO |
 | D | [API Contract](appendix/D-api-contract.md) | Draft | Laravel + FastAPI endpoint inventory; OpenAPI generator design |
 | E | [Ingestion Format Matrix](appendix/E-ingestion-format-matrix.md) | Draft | 19-row per-format end-to-end contract |
-| F | [Data Dictionary + ERD](appendix/F-data-dictionary.md) | Draft | Per-table template + ERD groupings + generator design + CI drift guard |
+| F | [Data Dictionary + ERD](appendix/F-data-dictionary.md) | **Live** | Generator **shipped** — `data_dictionary_dump` Dagster asset walks all 14 schemas → single `data_dictionary.json` in MinIO; `data_dictionary_drift_check` asset_check; `eralchemy2` ERD. Per-schema `data_dict/*.md` are now a hand-reading aid. |
 | G | [RAG Retrieval Contract](appendix/G-rag-retrieval-contract.md) | Draft | Chunking, embedding, Qdrant payload, fusion, reranker, citation binding, numeric verification, confidence formula; ADR-0010 `georag_chunks` callout |
 | H | [Knowledge Graph Schema](appendix/H-knowledge-graph-schema.md) | Draft | Neo4j node labels + relationships + workspace fence + upsert / conflict / deletion rules |
 | I | [Frontend Workflow Specs](appendix/I-frontend-specs.md) | Draft | Per-page acceptance specs for the 9 highest-value pages + cross-cutting rules |
@@ -102,6 +103,40 @@ Four review passes shipped:
   learning loop, `@georag_agent` runtime contract (idempotency,
   circuit breaker, audit ledger emit order), model registry. Closes
   the "have you got every agent + LoRA?" gap.
+- **Pass 6 — consistency + completeness audit (on-demand, Opus 4.8).**
+  No new code since Pass 5 (still 202 migrations, 17 ADRs), so this pass
+  was accuracy + gap-closure. **Closed the biggest residual gap: the
+  41-page Admin/operator surface** (`AgentConfig`, full Eval suite, ML
+  training, Shadow runs, Source trust, Target cockpit, Backups, Workflow
+  runs, Decisions, Reporting) — now cataloged in [Ch 10 §2a](manual/10-frontend.md),
+  mapped to the master-plan §7/§8/§10/§12 deliverables they back.
+  **Ran a full broken-link scan** of all 68 files: found + fixed 2
+  (`CLAUDE.md` path depth in Ch 00); **0 broken links remain**.
+  Reconciled the **data-dictionary reality** — the generator shipped and
+  emits a single MinIO JSON (not per-schema `.md`); `data_dict/INDEX.md`
+  + the MANUAL appendix-F row updated from Draft → Live. Corrected
+  verified counts in [Ch 18 §11](manual/18-model-stack-evolution.md)
+  (48 Hatchet workflows, 98 pages, 64 compose services).
+- **Pass 5 — 2026-06 audit wave + model swap (on-demand, Opus 4.8).**
+  Caught up the manual to the state of the repo as of 2026-06-26 after
+  a real wave of work landed. **7 new ADRs (0011–0017)** integrated.
+  New **[Ch 18 — Model Stack Evolution](manual/18-model-stack-evolution.md)**.
+  Corrected two pieces of now-wrong documentation: **Ch 02** (pgvector
+  is NOT installed per ADR-0013 — was listed as optional) and **Ch 08**
+  (embedding + reranker swapped to **Qwen3-Embedding-0.6B 1024-dim** +
+  **Qwen3-Reranker-0.6B** on 2026-06-03 — the chapter still said
+  bge-small/bge-reranker). Documented the **config/runtime split**
+  (production env-driven vs stale code defaults) and the **🔴 live
+  Dagster 384-dim re-index hazard**. Added §04p OCR/VL upgrades
+  (PaddleOCR 3.7, Tesseract 5.5.2 from source, Qwen3-VL-8B gated), the
+  ADR-0012 structured-to-NL retrieval corpus (4 new Dagster assets),
+  contextual retrieval, answer-quality LLM-as-judge scoring,
+  **project lifecycle states** (CC-03 Item 8 finally landed), new
+  tenancy/observability tables (`silver.tenant_isolation_audit`,
+  `silver.archive_ingest_runs`), and the third+fourth RLS sentinel
+  sweeps. Updated Ch 14, Appendix M model registry. **Appendix F
+  generator actually shipped** (was Draft, now Live). Verified the
+  main synthesizer LLM is unchanged (Qwen3-14B-AWQ).
 - **Pass 4f — Master plan deep dive (on-demand 2026-05-29).** Added
   **Ch 17b — Master Plan Deep Dive (§§5–12)** with per-section deep
   summaries: §5 spatial pipeline + drillhole visuals (~90 %), §6
@@ -170,7 +205,7 @@ is the canonical TODO; 9 items done as of Pass 4.
 
 | Topic | Primary source |
 |---|---|
-| Architecture decisions | [docs/adr/](../adr/) — 10 ADRs (`0001-seaweedfs-replaces-minio`, `0002-04p-stack-replaces-ragflow`, `0003-defer-v2m3-gpu-reranker`, `0004-orchestrator-definition-short-circuit`, `0005-tiff-normalize-to-pdf-stack`, `0006-agentic-retrieval-single-graph`, `0007-chat-cards-and-intent-expansion`, `0008-embedding-model-evaluation`, `0009-algorithmic-spines-rollout`, `0010-document-passages-canonical-chunked-corpus`) |
+| Architecture decisions | [docs/adr/](../adr/) — **17 ADRs**. 0001-0010 (foundational; see [Ch 16](manual/16-algorithmic-spines.md)) + **0011** reranker domain adaptation (Proposed/dormant), **0012** structured-to-NL summary corpus (Proposed), **0013** no-pgvector (Accepted), **0014** two-phase workspace scoping (Proposed), **0015** Qwen3-VL-8B migration (Proposed/gated), **0016** PaddleOCR 3.x migration (Accepted Ph1), **0017** Tesseract 5.5 from source (Accepted). 0011-0017 rolled up in [Ch 18](manual/18-model-stack-evolution.md). |
 | Long-form spec | [`georag-architecture.html`](../../georag-architecture.html) |
 | Operator procedures | [`docs/RUNBOOK.md`](../RUNBOOK.md) + 37 runbooks under [`ops/runbooks/`](../../ops/runbooks/) (indexed in Appendix L §9) |
 | On-call quick-ref | [`docs/SERVICE_INVENTORY.md`](../SERVICE_INVENTORY.md) |

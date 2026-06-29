@@ -84,6 +84,29 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # -------------------------------------------------------------------------
+    # §04p PDF doc-parser backend — ADR-0016 Phase 2 (PaddleOCR-VL)
+    # -------------------------------------------------------------------------
+    # Selects the full-page, layout-aware parser used by the §04p stack's
+    # "Stage-6-style" parse slot. `docling` is the production default
+    # (parse_mixed / parse_table_heavy via Docling). `paddleocr-vl` routes that
+    # slot through app.ocr.parse_docparser_vl (PaddleOCR-VL-1.6). Additive +
+    # flag-gated per ADR-0016 — the default keeps current behaviour; promotion
+    # is gated on the Phase 2 shadow-run eval (ADR-0016 step 4).
+    PDF_DOCPARSER_BACKEND: str = "docling"
+
+    @field_validator("PDF_DOCPARSER_BACKEND")
+    @classmethod
+    def _validate_docparser_backend(cls, v: str) -> str:
+        allowed = {"docling", "paddleocr-vl"}
+        normalized = v.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"PDF_DOCPARSER_BACKEND must be one of {sorted(allowed)}, "
+                f"got {v!r}."
+            )
+        return normalized
+
+    # -------------------------------------------------------------------------
     # Sentry — error tracking, traces, profiling, logs
     # -------------------------------------------------------------------------
     # Same Sentry project as the Laravel side ("georag"). Leave blank to
@@ -235,10 +258,10 @@ class Settings(BaseSettings):
 
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
-    # Default to Opus 4.7 (strongest agentic coding, 1M ctx). Swap to
+    # Default to Opus 4.8 (strongest agentic coding, 1M ctx). Swap to
     # claude-sonnet-4-6 for cheaper/faster synthesis, or claude-haiku-4-5
     # for the fast-path LLM summary when the classifier is confident.
-    ANTHROPIC_MODEL: str = "claude-opus-4-7"
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
     ANTHROPIC_MAX_OUTPUT_TOKENS: int = 4096
 
     # Ollama review #5 — `num_predict` cap for the OpenAI-compatible
@@ -393,8 +416,8 @@ class Settings(BaseSettings):
     # pre-B1 behaviour) for A/B comparison against the golden set.
     MODEL_ROUTING_ENABLED: bool = True
     MODEL_TIER_FAST: str = "claude-haiku-4-5"
-    MODEL_TIER_STANDARD: str = "claude-sonnet-4-5"
-    MODEL_TIER_DEEP: str = "claude-opus-4-7"
+    MODEL_TIER_STANDARD: str = "claude-sonnet-4-6"
+    MODEL_TIER_DEEP: str = "claude-opus-4-8"
     # R11 — hard-fail when the orchestrator is asked to run on Anthropic but
     # the pooled AsyncAnthropic client wasn't attached at startup. Set to
     # False only during bootstrapping (tests, mid-migration deploys) when
@@ -516,6 +539,33 @@ class Settings(BaseSettings):
     # Default false — Chunk 2 is staged; senior-reviewer approval required
     # before flipping. See docs/module-6-chunk-2-design.md.
     CITATION_SPAN_RESOLVER_ENABLED: bool = False
+
+    # 2026-06-24: defensive flag for the citation-first salvage path. The
+    # orchestrator (run_deterministic_rag) gates a salvage block on
+    # `settings.CITATION_FIRST_ENABLED`, but the flag, its 3 companion timeout/
+    # concurrency settings, AND the app.services.atomic_claim_extractor service
+    # were never committed (lost uncommitted work — the live pieces are on the
+    # pr/w01 slice, and even there the config is missing). Without this field the
+    # reference is a latent AttributeError if that path is ever reached. Pinned
+    # OFF so the block is skipped cleanly and the absent service is never
+    # imported. To actually enable citation-first, restore the service + the
+    # CITATION_FIRST_{EXTRACTOR_TIMEOUT_S,EXTRACTOR_CONCURRENCY,COMPOSER_TIMEOUT_S}
+    # settings as a deliberate unit (or deploy pr/w01 whole).
+    CITATION_FIRST_ENABLED: bool = False
+    # Audit 2026-06-28: defined explicitly (default off) so the orchestrator's
+    # `settings.SENTENCE_GROUNDING_ENABLED` access can't raise AttributeError.
+    # The sentence_grounding service source is not committed (pr/w01 slice), so
+    # leave OFF — flipping it on requires restoring that module first.
+    SENTENCE_GROUNDING_ENABLED: bool = False
+
+    # Audit 2026-06-27: prompt-injection hardening. When ON, untrusted document
+    # body text (NI 43-101 chunks, public-geoscience snippets) is wrapped in
+    # explicit data-fence delimiters in the LLM context, with a guard preamble
+    # instructing the model to treat fenced content as reference data only and
+    # never as instructions. Default OFF: it slightly changes the prompt shape,
+    # so flip it after a golden-eval pass confirms no answer-quality regression
+    # (the delimiting itself is safe; the gate is about prompt-format drift).
+    PROMPT_INJECTION_DELIMITING_ENABLED: bool = False
 
     # -------------------------------------------------------------------------
     # Phase 1 / Step 1.2 — OIUR answer schema rollout
@@ -847,16 +897,50 @@ class Settings(BaseSettings):
     # Embedding and reranker model selection
     # -------------------------------------------------------------------------
 
-    # bge-small-en-v1.5 replaces all-MiniLM-L6-v2 — same 384 dim, cosine, but
-    # scores 10-15% higher on mineral/geological queries.  No Qdrant collection
-    # recreation is needed; run scripts/reembed_qdrant.py to re-encode existing
-    # points with the new model.
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
+    # Qwen/Qwen3-Embedding-0.6B (1024-dim, cosine) replaces BAAI/bge-small-en-v1.5
+    # (384-dim) per the 2026-06-03 dual model swap. Dim change required full
+    # Qdrant collection recreation (see scripts/reembed_qdrant.py + the
+    # qdrant-snapshot runbook). Family-aligned with the Qwen3-14B-AWQ
+    # synthesizer + Qwen3-Reranker-0.6B (shared tokenizer + training data
+    # distribution). Until the re-embed runs against a fresh collection,
+    # queries return HTTP 400 (collection dim mismatch).
+    #
+    # NOTE: this setting documents the model identity. The actual class
+    # loader lives in app/main.py lifespan — settings.EMBEDDING_MODEL_NAME
+    # is read by smoke/diagnostic scripts to assert parity vs the loaded
+    # model. Updating this setting alone does NOT change the runtime
+    # model; production code path uses the constant in main.py.
+    EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
 
-    # ms-marco-MiniLM-L-6-v2 is a cross-encoder that re-scores (query, chunk) pairs
-    # and produces raw logits.  Positive logits indicate a good match; the threshold
-    # is set to 0.0 (any positive score) to avoid over-filtering.
-    RERANKER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Vector dim of the embedding model. main.py asserts the loaded model
+    # matches this at startup (fail-fast); also referenced by init_qdrant.py
+    # via GEORAG_VECTOR_SIZE. Drift = silent 400 on every UPSERT.
+    EMBEDDING_DIMENSION: int = 1024
+
+    # Qwen3-Embedding supports an instruction prompt prepended at encode
+    # time. main.py passes settings.EMBEDDING_QUERY_PROMPT_NAME or None
+    # to SentenceTransformer.encode(prompt_name=...). Empty string keeps
+    # the bge-era no-prompt behavior on a forward-compatible setting; set
+    # to "query" to enable Qwen3's instruction prefix per its model card.
+    EMBEDDING_QUERY_PROMPT_NAME: str = ""
+
+    # Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB) replaces
+    # BAAI/bge-reranker-base per the 2026-06-03 swap. Architecturally a
+    # CausalLM that returns a yes-token-logit minus no-token-logit ratio,
+    # wrapped transparently by sentence-transformers CrossEncoder. Score
+    # scale is REAL-VALUED, sign-preserved — but the magnitude band
+    # differs:
+    #
+    #     bge-reranker-base:   typical [-10, +10]
+    #     Qwen3-Reranker-0.6B: typical [-15, +15]
+    #
+    # The RERANKER_SCORE_THRESHOLD default (0.0 — sign-only filter)
+    # carries over unchanged because the sign convention is preserved.
+    # Operators using non-zero thresholds must re-tune against the
+    # golden_queries set (see scripts/run_eval_120.py) after the swap.
+    # See app/services/reranker.py for the loader; this setting is the
+    # parity check, not the runtime model selector.
+    RERANKER_MODEL_NAME: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # Number of chunks fetched from Qdrant before reranking (coarse retrieval).
     # Latency-fix follow-up — was 20; cold queries blew the search_documents
@@ -948,6 +1032,18 @@ class Settings(BaseSettings):
     # full recall; precision degrades but the LLM weights citations by
     # score internally and the cascade-fix is to fine-tune the reranker
     # (see [[reranker-v1]]) rather than fight the threshold.
+    #
+    # 2026-06-04 — Qwen3-Reranker swap.
+    # Qwen/Qwen3-Reranker-0.6B replaces BAAI/bge-reranker-base. SIGN
+    # CONVENTION IS PRESERVED (positive logit = relevant) but magnitudes
+    # differ: Qwen3 emits ~[-15, +15] vs bge's ~[-10, +10]. The 0.0
+    # default still means "any positive logit passes" and works
+    # unchanged for the sign-only filter case. Operators on non-zero
+    # thresholds must re-tune — a bge 1.0 threshold corresponds roughly
+    # to a Qwen3 1.5 threshold (proportional to the wider band) but the
+    # only honest answer is to re-baseline via scripts/run_eval_120.py
+    # after the swap. Re-baseline output committed under
+    # ops/baselines/qwen3-reranker-2026-06-04.md.
     RERANKER_SCORE_THRESHOLD: float = 0.0
 
     # -------------------------------------------------------------------------

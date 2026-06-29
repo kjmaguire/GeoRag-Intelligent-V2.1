@@ -37,16 +37,22 @@ final class DrillAssetSelector
         if ($ext === 'csv') {
             // First-match wins; ordering matters because 'samples' shows up
             // in some collar filenames as 'sampling_locations.csv'.
-            if (preg_match('/\b(collar|hole|drillhole)s?\b/', $base) === 1) {
+            //
+            // Boundaries use letter-only lookarounds `(?<![a-z])…(?![a-z])`
+            // rather than `\b`: PCRE treats `_` as a word character, so `\b`
+            // would NOT fire between a keyword and a trailing `_` (e.g.
+            // `collars_2024`, `deviation_shots`, `samples_2024`). Digits,
+            // underscores, and string ends must all count as separators.
+            if (preg_match('/(?<![a-z])(collar|hole|drillhole)s?(?![a-z])/', $base) === 1) {
                 return ['asset_key' => 'silver_collars', 'route' => 'dagster'];
             }
-            if (preg_match('/\b(litho|geology|rock)/', $base) === 1) {
+            if (preg_match('/(?<![a-z])(litho|geology|rock)/', $base) === 1) {
                 return ['asset_key' => 'silver_lithology', 'route' => 'dagster'];
             }
-            if (preg_match('/\b(survey|deviation)s?\b/', $base) === 1) {
+            if (preg_match('/(?<![a-z])(survey|deviation)s?(?![a-z])/', $base) === 1) {
                 return ['asset_key' => 'silver_surveys', 'route' => 'dagster'];
             }
-            if (preg_match('/\b(sample|assay|geochem)s?\b/', $base) === 1) {
+            if (preg_match('/(?<![a-z])(sample|assay|geochem)s?(?![a-z])/', $base) === 1) {
                 return ['asset_key' => 'silver_samples', 'route' => 'dagster'];
             }
 

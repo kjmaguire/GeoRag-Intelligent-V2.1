@@ -26,11 +26,67 @@
 # =============================================================================
 
 # =============================================================================
+# Stage 0 — tesseract-builder (2026-06-23 sweep)
+# =============================================================================
+# Compile Tesseract 5.5 from source. Debian trixie's apt-shipped
+# tesseract-ocr caps at 5.4.x; the 5.5.x line ships speed + layout
+# improvements that benefit Stage-5 fallback OCR (per ADR-0017).
+# Source build is gated to this stage — runtime image only receives
+# the resulting /opt/tesseract binaries + tessdata, NOT the toolchain.
+#
+# To bump: change TESSERACT_VERSION below + rebuild + run
+# ops/validation/ocr_cpu_smoke.py against a golden NI 43-101 crop to
+# confirm no confidence-distribution regression.
+FROM python:3.13-slim@sha256:c33f0bc4364a6881bed1ec0cc2665e6c53c87a43e774aaeab88e6f17af105e4f AS tesseract-builder
+
+ARG TESSERACT_VERSION=5.5.2
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        libleptonica-dev \
+        libpng-dev \
+        libjpeg62-turbo-dev \
+        libtiff-dev \
+        zlib1g-dev \
+        libicu-dev \
+        libpango1.0-dev \
+        libcairo2-dev \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/tesseract-ocr/tesseract/archive/refs/tags/${TESSERACT_VERSION}.tar.gz" \
+        | tar xz -C /tmp \
+    && cd "/tmp/tesseract-${TESSERACT_VERSION}" \
+    && ./autogen.sh \
+    && ./configure --prefix=/opt/tesseract --disable-debug --disable-doc --disable-graphics \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf "/tmp/tesseract-${TESSERACT_VERSION}"
+
+# English language data (fast variant — smaller weights, comparable accuracy
+# on printed text in NI 43-101 reports). Bump traineddata source to the
+# full LSTM variant under `tessdata` (not `tessdata_fast`) if accuracy
+# on degraded scans becomes the bottleneck.
+RUN mkdir -p /opt/tesseract/share/tessdata \
+    && curl -fsSL https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata \
+        -o /opt/tesseract/share/tessdata/eng.traineddata
+
+
+# =============================================================================
 # Stage 1 — builder
 # Compile every C extension against full -dev headers.
 # Nothing from this layer ends up in the final image except site-packages.
 # =============================================================================
-FROM python:3.13-slim AS builder
+# 2026-06-03 sweep: digest captured from `docker pull python:3.13-slim`.
+# Re-pin via the same after a Python patch release (3.13.x bumps the
+# slim base periodically). Both builder + runtime stages MUST use the
+# same digest so site-packages copied across stages have matching ABI.
+FROM python:3.13-slim@sha256:c33f0bc4364a6881bed1ec0cc2665e6c53c87a43e774aaeab88e6f17af105e4f AS builder
 
 # ---------------------------------------------------------------------------
 # Build-time system dependencies
@@ -80,17 +136,37 @@ COPY uv.lock* ./
 # extra by name. The §7 / §8 / §9 / §12 graphs all need LangGraph in
 # the runtime image; opt-in via --extra langgraph keeps the install
 # story consistent across consumers (Dagster, dev sandboxes can pick).
+# 2026-06-23 deps-rot fix complete. The historical workaround here
+# (a second `uv pip install` that hardcoded `langgraph>=0.2.50,<0.3`)
+# silently DOWNGRADED langgraph from pyproject's `>=1.0.10,<2.0` pin
+# after every clean install — the runtime image was shipping
+# langgraph 0.2.76 while every "tested on langgraph 1.x" claim
+# assumed otherwise. The overlay also installed three other packages
+# (langgraph-checkpoint-postgres, langchain-mcp-adapters, langfuse)
+# that turned out to be entirely unused — grep across src/fastapi
+# returns zero imports for any of them. Removed in lockstep.
+#
+# Three pyproject changes unblocked the removal:
+#   1. pydantic-ai -> pydantic-ai-slim[anthropic,openai]   (6df4726)
+#      Closes the meta-package's transitive [bedrock] dep that
+#      conflicted with aioboto3>=13.0.
+#   2. Top-level llvmlite>=0.43 + numba>=0.60 pins.        (next commit)
+#      Stops the resolver backtracking through shap -> numba ->
+#      llvmlite==0.36.0 (a 2021 release with no Py 3.13 wheel).
+#   3. transformers<5.0 cap stays — optimum-onnx (transitive via
+#      sentence-transformers[onnx]) hard-caps it there, so the
+#      audit's "lift the cap" finding is moot.
+# Pip fallback: emit deps to a requirements.txt file (one per line) rather
+# than space-joining into a shell command. PEP 508 markers like
+# `onnxruntime-gpu>=1.20; platform_system == 'Linux'` contain semicolons
+# and equals that get mangled when the shell re-tokenizes a space-joined
+# string. Writing to a file preserves each marker intact for `pip -r`.
 RUN uv pip install --system --no-cache -r pyproject.toml \
-    && uv pip install --system --no-cache \
-        "langgraph>=0.2.50,<0.3" \
-        "langgraph-checkpoint-postgres>=2.0,<3.0" \
-        "langchain-mcp-adapters>=0.2,<0.3" \
-        "langfuse>=3.0,<4.0" \
-    || pip install --no-cache-dir $(python3 -c "\
+    || ( python3 -c "\
 import tomllib, pathlib; \
-d = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); \
-print(' '.join(d['project']['dependencies']))") \
-        langgraph langgraph-checkpoint-postgres langchain-mcp-adapters langfuse
+deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']; \
+pathlib.Path('/tmp/reqs.txt').write_text('\n'.join(deps) + '\n')" \
+    && pip install --no-cache-dir -r /tmp/reqs.txt )
 
 # Dev tools — pytest + pytest-asyncio. Image carries them so test runs
 # work after a fresh `docker compose up -d --force-recreate fastapi`
@@ -115,7 +191,7 @@ RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true
 # Stage 2 — runtime
 # Lean image: runtime shared libraries only, no compiler toolchain.
 # =============================================================================
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim@sha256:c33f0bc4364a6881bed1ec0cc2665e6c53c87a43e774aaeab88e6f17af105e4f AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG FastAPI"
 LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Python 3.13"
@@ -130,7 +206,20 @@ LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Py
 # libgeos-c1t64    → GEOS geometry runtime (Shapely, GeoPandas)
 # libproj25        → PROJ cartographic projection runtime (pyproj)
 # curl             → Docker HEALTHCHECK probe
-# tesseract-ocr + poppler-utils → OCR + PDF tooling (existing)
+# poppler-utils    → PDF tooling (used by pdfminer.six / pdfplumber)
+#
+# 2026-06-23 sweep — Tesseract 5.5 from source (ADR-0017):
+# Removed trixie's `tesseract-ocr` + `tesseract-ocr-eng` apt packages
+# (they cap at 5.4.x). Tesseract 5.5.2 binaries now copied from the
+# tesseract-builder stage below; runtime needs the matching shared
+# libraries to dynamically link:
+#   libleptonica6     → Leptonica image-processing runtime (linked by tesseract)
+#   libpng16-16       → PNG runtime
+#   libjpeg62-turbo   → JPEG runtime
+#   libtiff6          → TIFF runtime
+#   libicu76          → ICU runtime (Tesseract's Unicode support)
+# Pango / Cairo / GLib are already in the runtime list for WeasyPrint
+# so Tesseract gets those for free.
 #
 # Doc-phase 122-fix — OpenCV system libs for paddleocr (which transitively
 # loads cv2):
@@ -155,9 +244,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgeos-c1t64 \
     libproj25 \
     curl \
-    tesseract-ocr \
-    tesseract-ocr-eng \
     poppler-utils \
+    libleptonica6 \
+    libpng16-16 \
+    libjpeg62-turbo \
+    libtiff6 \
+    libicu76 \
+    libgomp1 \
     libgl1 \
     libglib2.0-0 \
     libpango-1.0-0 \
@@ -170,6 +263,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Tesseract 5.5 from the tesseract-builder stage (ADR-0017)
+# ---------------------------------------------------------------------------
+COPY --from=tesseract-builder /opt/tesseract /opt/tesseract
+ENV PATH=/opt/tesseract/bin:$PATH \
+    TESSDATA_PREFIX=/opt/tesseract/share/tessdata
 
 # ---------------------------------------------------------------------------
 # Copy compiled Python environment from builder.

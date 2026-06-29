@@ -597,16 +597,28 @@ def silver_xlsx(
     )
 
     # Branch: auto-dispatch vs single-sheet.
-    if config.sheet_type == "":
-        return _silver_xlsx_auto_dispatch(
+    # Audit 2026-06-28: tmp was created with delete=False and never removed on
+    # any path → each XLSX ingest leaked a full workbook copy into the Dagster
+    # temp dir (slow unbounded disk growth). Clean up in a finally so both the
+    # success and exception paths remove it.
+    try:
+        if config.sheet_type == "":
+            return _silver_xlsx_auto_dispatch(
+                context=context, config=config, tmp_path=tmp_path,
+                postgres=postgres,
+            )
+        return _silver_xlsx_single_sheet(
             context=context, config=config, tmp_path=tmp_path,
+            sheet_name=config.sheet_name, sheet_type=config.sheet_type,
             postgres=postgres,
         )
-    return _silver_xlsx_single_sheet(
-        context=context, config=config, tmp_path=tmp_path,
-        sheet_name=config.sheet_name, sheet_type=config.sheet_type,
-        postgres=postgres,
-    )
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except OSError:
+            context.log.warning(
+                "Silver XLSX: temp cleanup failed for '%s' (already gone?)", tmp_path
+            )
 
 
 def _silver_xlsx_single_sheet(

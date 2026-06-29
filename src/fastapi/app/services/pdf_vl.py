@@ -37,9 +37,14 @@ be served by vLLM:
   with multipart image content.
 
 Config env vars (all optional — defaults work for the in-network vllm service):
-  PDF_VL_MODEL_ID        — model identifier (default: "Qwen/Qwen2.5-VL-7B-Instruct")
+  PDF_VL_MODEL_VERSION   — "2" (default) for Qwen2.5-VL-7B, "3" for Qwen3-VL-8B (ADR-0015)
+  PDF_VL_MODEL_ID        — explicit override (wins over PDF_VL_MODEL_VERSION)
+  PDF_VL_MODEL_ID_V2     — model id when PDF_VL_MODEL_VERSION=2 (default Qwen2.5-VL-7B-Instruct)
+  PDF_VL_MODEL_ID_V3     — model id when PDF_VL_MODEL_VERSION=3 (default Qwen3-VL-8B-Instruct;
+                           no official AWQ exists — set a community W4A16 quant here for low VRAM)
   PDF_VL_BACKEND         — "vllm" | "anthropic" (default: "vllm")
-  PDF_VL_BACKEND_URL     — full base URL (default: "http://vllm:8000/v1")
+  PDF_VL_BACKEND_URL     — full base URL (default: "http://vllm-vl:8000/v1", the
+                           VL sidecar — the main "vllm" endpoint is text-only)
   PDF_VL_TIMEOUT_S       — seconds to wait for VL inference (default: 120)
   PDF_VL_MAX_PAGES       — maximum pages per summarize request (default: 4)
 
@@ -74,6 +79,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -93,11 +99,50 @@ logger = logging.getLogger(__name__)
 # Configuration (read from environment at construction time)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
+# 2026-06-23 sweep — Qwen3-VL-8B migration scaffolding (ADR-0015).
+# Two-version model registry, gated by PDF_VL_MODEL_VERSION:
+#   PDF_VL_MODEL_VERSION=2 (default) -> use PDF_VL_MODEL_ID_V2 / PDF_VL_MODEL_ID
+#   PDF_VL_MODEL_VERSION=3           -> use PDF_VL_MODEL_ID_V3
+# Default remains 2.5-VL until the operator runs the shadow-eval gate
+# per ADR-0015 step 3. Flip with `PDF_VL_MODEL_VERSION=3` (no rebuild
+# needed) once shadow run + golden-question pass-rate ≥ baseline.
+_DEFAULT_MODEL_VERSION = "2"
+_DEFAULT_MODEL_ID_V2 = "Qwen/Qwen2.5-VL-7B-Instruct"
+# 2026-06-24: ADR-0015 named "Qwen/Qwen3-VL-8B-Instruct-AWQ" — but Qwen never
+# published an official AWQ of Qwen3-VL-8B (verified on HF: 404). The canonical
+# id is the BF16 base below (~17.5 GB — needs ~18 GB VRAM, i.e. its own GPU or a
+# big util cut on the main LLM). For constrained VRAM, point PDF_VL_MODEL_ID_V3
+# at a community W4A16/AWQ quant (~5-6 GB), e.g. cyankiwi/Qwen3-VL-8B-Instruct-
+# AWQ-4bit or MLliu6/Qwen3-VL-8B-Instruct-AWQ-W4A16 (unofficial — vet before
+# promoting). See ADR-0015 + docs/runbooks for the serving decision.
+_DEFAULT_MODEL_ID_V3 = "Qwen/Qwen3-VL-8B-Instruct"
+_DEFAULT_MODEL_ID = _DEFAULT_MODEL_ID_V2  # back-compat alias
 _DEFAULT_BACKEND = "vllm"
-_DEFAULT_BACKEND_URL = "http://vllm:8000/v1"
+# Audit 2026-06-28: default to the VL sidecar (vllm-vl), NOT the main text-only
+# vLLM (vllm). The main endpoint serves the 14B TEXT model, which cannot do
+# image input — figure captioning silently degraded when PDF_VL_BACKEND_URL was
+# unset. Live .env already overrides this to the sidecar; this fixes the
+# fresh-deploy default so figure requests reach a VL-capable endpoint.
+_DEFAULT_BACKEND_URL = "http://vllm-vl:8000/v1"
 _DEFAULT_TIMEOUT_S = 120.0
 _DEFAULT_MAX_PAGES = 4
+
+
+def _resolve_model_id() -> str:
+    """Pick the VL model identifier honoring PDF_VL_MODEL_VERSION.
+
+    Precedence (highest first):
+      1. PDF_VL_MODEL_ID — explicit override (operator/runbook)
+      2. PDF_VL_MODEL_VERSION=3 + PDF_VL_MODEL_ID_V3
+      3. PDF_VL_MODEL_VERSION=2 (or unset) + PDF_VL_MODEL_ID_V2
+    """
+    explicit = os.environ.get("PDF_VL_MODEL_ID")
+    if explicit:
+        return explicit
+    version = os.environ.get("PDF_VL_MODEL_VERSION", _DEFAULT_MODEL_VERSION).strip()
+    if version == "3":
+        return os.environ.get("PDF_VL_MODEL_ID_V3", _DEFAULT_MODEL_ID_V3)
+    return os.environ.get("PDF_VL_MODEL_ID_V2", _DEFAULT_MODEL_ID_V2)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +361,7 @@ class PdfVlService:
         self._http_client = http_client  # may be None in test paths
 
         # Read config from environment (same pattern as pdf_ocr.py).
-        self._model_id = os.environ.get("PDF_VL_MODEL_ID", _DEFAULT_MODEL_ID)
+        self._model_id = _resolve_model_id()
         self._backend = os.environ.get("PDF_VL_BACKEND", _DEFAULT_BACKEND)
         self._backend_url = os.environ.get("PDF_VL_BACKEND_URL", _DEFAULT_BACKEND_URL).rstrip("/")
         self._timeout_s = float(os.environ.get("PDF_VL_TIMEOUT_S", str(_DEFAULT_TIMEOUT_S)))
@@ -453,6 +498,91 @@ class PdfVlService:
         )
         return result, False
 
+    async def shadow_observe_section(
+        self,
+        pdf_bytes: bytes,
+        pdf_id: str,
+        section_ref: dict[str, Any],
+        *,
+        v2_model_id: str | None = None,
+        v3_model_id: str | None = None,
+    ) -> "VlShadowObservation":
+        """Run BOTH VL model versions on the same pages — ADR-0015 step-3 dual-write.
+
+        Renders the section ONCE and feeds the identical images to each model so
+        the comparison isolates the model, not the input. Returns a paired
+        ``VlShadowObservation`` for ``services.eval.pdf_vl_shadow.assess_vl_shadow``.
+
+        This is a read-only probe — neither result is persisted to
+        silver.pdf_vl_summaries (the shadow window must not pollute the
+        production cache). A version that errors or whose output fails
+        VlSummaryShape is recorded as schema-invalid for that version (never
+        raised) so the gate can measure the schema-valid *rate*.
+
+        Defaults: V2 ← ``PDF_VL_MODEL_ID_V2``, V3 ← ``PDF_VL_MODEL_ID_V3``.
+        """
+        from app.services.eval.pdf_vl_shadow import VlShadowObservation
+
+        v2 = v2_model_id or os.environ.get("PDF_VL_MODEL_ID_V2", _DEFAULT_MODEL_ID_V2)
+        v3 = v3_model_id or os.environ.get("PDF_VL_MODEL_ID_V3", _DEFAULT_MODEL_ID_V3)
+
+        section_ref_hash = _hash_section_ref(section_ref)
+        pages = await self._resolve_pages(section_ref)
+        if len(pages) > self._max_pages:
+            raise VlSectionTooLargeError(page_count=len(pages), max_pages=self._max_pages)
+
+        # Render once; both models score the same pixels.
+        png_list: list[bytes] = []
+        for page_num in pages:
+            png_list.append(
+                await self._render_service.render_page(
+                    pdf_bytes=pdf_bytes, pdf_id=pdf_id, page=page_num, dpi=200,
+                )
+            )
+
+        v2_summary, v2_ms = await self._timed_summarize_for_model(png_list, pages, v2)
+        v3_summary, v3_ms = await self._timed_summarize_for_model(png_list, pages, v3)
+
+        logger.info(
+            "shadow_observe_section pdf_id=%s pages=%r v2_valid=%s v3_valid=%s "
+            "v2_ms=%.0f v3_ms=%.0f",
+            pdf_id[:16], pages, v2_summary is not None, v3_summary is not None,
+            v2_ms, v3_ms,
+        )
+        return VlShadowObservation.from_summaries(
+            pdf_id=pdf_id,
+            section_ref_hash=section_ref_hash,
+            page_count=len(pages),
+            v2_summary=v2_summary,
+            v3_summary=v3_summary,
+            v2_latency_ms=v2_ms,
+            v3_latency_ms=v3_ms,
+        )
+
+    async def _timed_summarize_for_model(
+        self,
+        png_list: list[bytes],
+        pages: list[int],
+        model_id: str,
+    ) -> tuple["VlSummaryShape | None", float]:
+        """Call the VL backend for one model, time it, validate the output.
+
+        Returns ``(VlSummaryShape | None, latency_ms)`` — ``None`` when the
+        backend errors or the output fails schema validation. The failure is
+        logged and swallowed, never raised: a shadow run measures the
+        schema-valid rate, so an invalid response is a data point, not a crash.
+        """
+        start = time.perf_counter()
+        summary: VlSummaryShape | None
+        try:
+            raw_content, _usage = await self._call_vl_backend(png_list, pages, model_id=model_id)
+            summary = _parse_and_validate(raw_content)
+        except (VlBackendError, VlOutputShapeError) as exc:
+            logger.warning("shadow: model=%s produced no valid output: %s", model_id, exc)
+            summary = None
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        return summary, latency_ms
+
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
@@ -487,6 +617,7 @@ class PdfVlService:
         self,
         png_list: list[bytes],
         pages: list[int],
+        model_id: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """POST multipart chat-completions request to the VL backend.
 
@@ -528,7 +659,7 @@ class PdfVlService:
             )
 
         chat_body: dict[str, Any] = {
-            "model": self._model_id,
+            "model": model_id or self._model_id,
             "messages": [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -538,6 +669,14 @@ class PdfVlService:
             "temperature": 0.1,  # low — we want deterministic structured output
             "max_tokens": 2048,
         }
+        # Schema-constrained decoding on vLLM (no-op on backends that don't
+        # support `guided_json`). VlSummaryShape IS the §04i citation
+        # completeness contract; forwarding its JSON Schema means xgrammar
+        # refuses to emit a `summary` without a matching `claims[].bbox`.
+        # The downstream Pydantic validation becomes a defence-in-depth check
+        # rather than the primary enforcement.
+        if self._backend == "vllm":
+            chat_body["guided_json"] = VlSummaryShape.model_json_schema()
 
         endpoint = f"{self._backend_url}/chat/completions"
 

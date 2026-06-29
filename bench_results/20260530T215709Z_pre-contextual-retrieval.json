@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "label": "pre-contextual-retrieval",
+    "timestamp": "20260530T215709Z",
+    "total_points_in_collection": 158233,
+    "queries_run": 15,
+    "top_k": 10,
+    "elapsed_s": 3.1
+  },
+  "summary": {
+    "ndcg_at_10_mean": 0.4482,
+    "queries_with_any_hit": 7,
+    "queries_zero_hit": 8
+  },
+  "per_query": [
+    {
+      "id": "gq-001-count-holes",
+      "query": "How many drill holes are in this project?",
+      "ndcg_at_10": 0.8212,
+      "hits_returned": 10,
+      "hits_with_any_match": 5,
+      "latency_ms": 1718
+    },
+    {
+      "id": "gq-002-deepest-hole",
+      "query": "What is the deepest drillhole in the project?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 179
+    },
+    {
+      "id": "gq-003-shallowest-hole",
+      "query": "What is the shallowest drillhole in the project?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 101
+    },
+    {
+      "id": "gq-004-diamond-drill",
+      "query": "What drill type was used for the holes?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 166
+    },
+    {
+      "id": "gq-005-hole-status",
+      "query": "Which drillholes are completed and which are in progress?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 104
+    },
+    {
+      "id": "gq-006-drill-years",
+      "query": "What years were the drillholes drilled?",
+      "ndcg_at_10": 0.9325,
+      "hits_returned": 10,
+      "hits_with_any_match": 3,
+      "latency_ms": 135
+    },
+    {
+      "id": "gq-007-assay-grade",
+      "query": "What was the top assay grade in PLS-22-08?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 151
+    },
+    {
+      "id": "gq-008-uranium-grade",
+      "query": "What are the highest uranium grades in the project?",
+      "ndcg_at_10": 1.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 10,
+      "latency_ms": 63
+    },
+    {
+      "id": "gq-009-geology",
+      "query": "Describe the geological setting of this uranium property",
+      "ndcg_at_10": 1.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 10,
+      "latency_ms": 50
+    },
+    {
+      "id": "gq-010-mineralisation",
+      "query": "What is the mineralisation style at this project?",
+      "ndcg_at_10": 0.9801,
+      "hits_returned": 10,
+      "hits_with_any_match": 7,
+      "latency_ms": 78
+    },
+    {
+      "id": "gq-011-easting",
+      "query": "What is the easternmost drillhole location?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 35
+    },
+    {
+      "id": "gq-012-lithology",
+      "query": "What rock types were logged in the drillholes?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 59
+    },
+    {
+      "id": "gq-013-alteration",
+      "query": "What alteration types are present near mineralisation?",
+      "ndcg_at_10": 0.9896,
+      "hits_returned": 10,
+      "hits_with_any_match": 9,
+      "latency_ms": 64
+    },
+    {
+      "id": "gq-014-report-sections",
+      "query": "What does the NI 43-101 technical report cover?",
+      "ndcg_at_10": 1.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 10,
+      "latency_ms": 49
+    },
+    {
+      "id": "gq-015-qualified-person",
+      "query": "Who is the qualified person for the NI 43-101 report?",
+      "ndcg_at_10": 0.0,
+      "hits_returned": 10,
+      "hits_with_any_match": 0,
+      "latency_ms": 130
+    }
+  ]
+}

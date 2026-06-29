@@ -36,6 +36,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID, WorkspaceContext
+from app.agent.workspace_dependency import OptionalWorkspace
+from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.auth import verify_service_key
 from app.services.visualizations import (
     CrossSectionPanel,
@@ -782,6 +785,7 @@ async def list_chart_kinds() -> dict[str, list[str]]:
 async def render_chart_endpoint(
     request: Request,
     body: ChartRequest,
+    ws: WorkspaceContext | None = OptionalWorkspace,
 ) -> dict[str, Any]:
     if body.chart_kind not in KNOWN_CHARTS:
         raise HTTPException(
@@ -793,9 +797,22 @@ async def render_chart_endpoint(
     # for target_heatmap) is provided. Falls back to params/demo otherwise.
     params = body.params
     pg_pool = getattr(request.app.state, "pg_pool", None)
-    workspace_id_str = "a0000000-0000-0000-0000-000000000001"  # default; resolved properly when JWT carries it
-    if hasattr(request.state, "workspace_id"):
-        workspace_id_str = str(request.state.workspace_id)
+    # REC#1 (2026-06-03) — typed Depends. `ws` is None ONLY when the
+    # request had no workspace claim on auth context; the synthetic
+    # demo path is the right fallback for chart rendering specifically
+    # (this endpoint genuinely serves anonymous gallery previews, so
+    # OptionalWorkspace is correct here vs RequiredWorkspace). The B4
+    # metric still fires so ops can see anonymous render rate.
+    if ws is not None:
+        workspace_id_str = ws.workspace_id
+    else:
+        workspace_id_str = LEGACY_DEFAULT_TENANT_UUID
+        try:
+            WORKSPACE_RESOLUTION_FAILURES.labels(
+                site="visualizations.render"
+            ).inc()
+        except Exception:
+            pass
 
     try:
         if body.chart_kind == "long_section" and body.project_id and pg_pool:

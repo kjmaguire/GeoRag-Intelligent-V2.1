@@ -58,22 +58,23 @@ class LakehouseController extends Controller
         $workspaceId = (string) DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
-        $this->setWorkspaceRlsContext($workspaceId);
 
-        $bronze = $this->bronzeSummary($project->project_id, $workspaceId);
-        $silver = $this->silverSummary($project->project_id);
-        $gold = $this->goldSummary($project->project_id);
+        return $this->withWorkspaceRls($workspaceId, function () use ($project, $workspaceId) {
+            $bronze = $this->bronzeSummary($project->project_id, $workspaceId);
+            $silver = $this->silverSummary($project->project_id);
+            $gold = $this->goldSummary($project->project_id);
 
-        return Inertia::render('Foundry/Lakehouse', [
-            'project' => [
-                'project_id' => $project->project_id,
-                'project_name' => $project->project_name,
-                'slug' => $project->slug,
-            ],
-            'bronze' => $bronze,
-            'silver' => $silver,
-            'gold' => $gold,
-        ]);
+            return Inertia::render('Foundry/Lakehouse', [
+                'project' => [
+                    'project_id' => $project->project_id,
+                    'project_name' => $project->project_name,
+                    'slug' => $project->slug,
+                ],
+                'bronze' => $bronze,
+                'silver' => $silver,
+                'gold' => $gold,
+            ]);
+        });
     }
 
     /**

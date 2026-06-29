@@ -1,11 +1,14 @@
 -- =============================================================================
 -- GeoRAG Phase 0 — Step 1 extensions and Step 2 schema namespaces
 --
--- This script runs after init-postgis.sql on first DB init (alphabetic order
--- in /docker-entrypoint-initdb.d/: '1' comes before 'i'). On an already-
--- initialized DB the postgres entrypoint skips initdb scripts entirely; for
--- existing dev databases the same statements are applied via psql one-shot
--- (see scripts/phase0_apply_extensions.sh).
+-- IMPORTANT (audit 2026-06-27 T5): this script runs BEFORE init-postgis.sql on
+-- first DB init. In /docker-entrypoint-initdb.d/ lexical order, '1' sorts before
+-- 'i', so 10-* runs first. (The previous comment claimed the opposite — it was
+-- backwards.) Therefore this script must NOT assume postgis already exists; it
+-- creates postgis itself idempotently before any postgis-dependent extension
+-- (postgis_raster, h3_postgis) below. On an already-initialized DB the postgres
+-- entrypoint skips initdb scripts entirely; for existing dev databases the same
+-- statements are applied via psql one-shot (see scripts/phase0_apply_extensions.sh).
 --
 -- All statements are idempotent (CREATE ... IF NOT EXISTS / DO blocks).
 --
@@ -25,6 +28,11 @@
 -- registers the (small) catalog metadata. Without preload, "extension" still
 -- works but the auto-logging behavior is inactive.
 CREATE EXTENSION IF NOT EXISTS auto_explain;
+
+-- postgis core — REQUIRED by postgis_raster + h3_postgis below. Created here
+-- idempotently because this script runs BEFORE init-postgis.sql on a fresh
+-- volume (see header). No-op if init-postgis.sql already created it.
+CREATE EXTENSION IF NOT EXISTS postgis;
 
 -- h3: geospatial hex indexing. Used by gold-tier aggregation and (Phase 5+)
 -- target scoring grid math. h3_postgis requires postgis_raster, which has a

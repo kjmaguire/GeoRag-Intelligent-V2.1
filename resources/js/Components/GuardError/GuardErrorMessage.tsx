@@ -22,6 +22,7 @@
  * foundation; it does NOT render any visual chrome.
  */
 
+import type { JSX } from "react";
 import { usePage } from "@inertiajs/react";
 
 /**
@@ -83,9 +84,9 @@ export type GuardPlaceholders = Record<string, GuardPlaceholderValue>;
  * middleware now includes `guard_errors` on every response (lazy
  * closure). Other shared props are reserved by the rest of the app.
  */
-interface PageProps {
+type PageProps = {
     guard_errors?: Record<string, string>;
-}
+};
 
 /**
  * Apply the canonical degradation rule. Mirrors the Laravel-side

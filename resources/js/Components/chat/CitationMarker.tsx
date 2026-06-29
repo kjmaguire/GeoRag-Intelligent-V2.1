@@ -1,4 +1,3 @@
-// @ts-nocheck — migration in progress
 import { BookOpen, Table2, Network, MapPin } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Citation } from '@/types';

@@ -110,3 +110,22 @@ public/hot
 .github/
 .gitlab-ci.yml
 Jenkinsfile
+
+# ── FastAPI build-context bloat / stray Windows-path leak (2026-06-03) ──────
+# A `uv` invocation that ran under Git Bash on Windows stripped the drive
+# colon and produced a literal `src/fastapi/C:/Users/.../uv-cache/...`
+# subtree. Buildkit can't enumerate that path shape ("invalid file request
+# ... C/Users/...") and the whole build cancels. Exclude defensively.
+#
+# Also exclude the 1.8 GB downloaded HF model checkpoints + benchmark
+# artefacts — models live in HF_HOME at runtime, never baked in.
+# (`src/fastapi/app/models/` is Pydantic source code and is NOT excluded
+# because we target the top-level `models/` dir under src/fastapi/.)
+src/fastapi/C:
+src/fastapi/models/
+src/fastapi/bench_results/
+src/fastapi/retrieval_threshold_sweep.csv
+src/fastapi/run_eval*.py
+
+# Worktrees from parallel Claude Code agents — never part of a build
+.claude/worktrees/

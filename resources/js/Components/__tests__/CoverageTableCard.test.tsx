@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * CoverageTableCard.test.tsx
  *

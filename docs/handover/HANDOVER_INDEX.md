@@ -203,7 +203,7 @@ Items flagged by code inspection or by drift between code and canonical spec. No
 - **vLLM `--max-num-seqs` ceiling** on prod GPU.
 - **vLLM `VLLM_GPU_MEM_UTIL` cohort policy** — compose default 0.93, but ≤ 0.80 required when hatchet-worker-ai co-tenants the dev A4500 (compose comment + memory note). Production GPU sizing decision needed.
 - **`P04P_DUAL_WRITE_ENABLED`** live state per environment.
-- **`ANTHROPIC_MODEL=claude-opus-4-7`** — internal capability-tier vs literal Anthropic id?
+- **`ANTHROPIC_MODEL=claude-opus-4-8`** — internal capability-tier vs literal Anthropic id? (Model ID swept 4-7→4-8 and sonnet 4-5→4-6 in the 2026-06 version audit; this item is about the *naming convention*, not the concrete value.)
 - **Anthropic prompt-cache** prod TTL.
 - **ADR-0008 bge-small fine-tune** — accepted 2026-05-27; synthetic-MLM corpus + contrastive triplets approach. Promotion gate via `services/eval/promotion_gate.py`. Checkpoint storage location for *bge-small* not yet pinned (reranker uses `s3://reranker-checkpoints/`).
 - **ADR-0011 reranker fine-tune** — Proposed but **on HOLD** after 2026-05-29 double-verdict (full FT + LoRA both lost to stock on only 27 distinct production queries). Do NOT re-pitch until real user query volume arrives. MLM-adapted backbone preserved at `s3://reranker-checkpoints/v1/run_id=2026-05-29-mlm-extended/`.

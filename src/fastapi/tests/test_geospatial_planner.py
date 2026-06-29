@@ -409,7 +409,7 @@ class _MockPool:
 
 @pytest.mark.asyncio
 async def test_executor_sets_workspace_id_GUC_before_query():
-    """The executor must call ``set_config('georag.workspace_id', ...)``
+    """The executor must call ``set_config('app.workspace_id', ...)``
     inside the same transaction as the SELECT — RLS depends on it."""
     conn = _MockConn(rows=[{"collar_id": "c1"}])
     pool = _MockPool(conn)

@@ -44,6 +44,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.restore_workspace")
@@ -120,9 +121,8 @@ async def _count_postgres_rows(
     try:
         async with pool.acquire() as conn:
             # Block-3 RLS: scope reads to the workspace being restored.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                workspace_str,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_str, site="hatchet.restore_workspace"
             )
             for output_key, qualified_table, workspace_col in _PG_BASELINE_TABLES:
                 try:

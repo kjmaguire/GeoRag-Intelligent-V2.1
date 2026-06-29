@@ -72,26 +72,18 @@ DEFAULT_SCANNED_SETTINGS: dict[str, Any] = {
 }
 
 
-def _model_dir(category: str, lang: str) -> str:
-    """Build the explicit PaddleOCR model dir path for a category.
+def _ocr_field(result: Any, key: str, default: Any) -> Any:
+    """Read a field from a PaddleOCR ``predict()`` result element.
 
-    PaddleOCR's path convention is:
-        {root}/whl/{category}/{lang_or_global}/{model_name}/
-    where:
-      - det → per-language
-      - rec → per-language
-      - cls → global (no lang subdir; PaddleOCR uses a fixed name)
+    PaddleOCR 3.7's ``OCRResult`` is a ``dict`` subclass — ``rec_texts`` /
+    ``rec_scores`` / ``rec_boxes`` are dict KEYS, not attributes. Plain
+    ``getattr()`` therefore silently returned the default, so a successful OCR
+    pass yielded 0 passages. Prefer key access; fall back to attribute access
+    for any build that exposes them as attributes instead.
     """
-    base = f"{_PADDLEOCR_HOME}/whl/{category}"
-    if category == "cls":
-        return f"{base}/ch_ppocr_mobile_v2.0_cls_infer"
-    # Per-language det + rec
-    name_lang = "en" if lang == "en" else lang
-    if category == "det":
-        return f"{base}/{name_lang}/en_PP-OCRv3_det_infer"
-    if category == "rec":
-        return f"{base}/{name_lang}/en_PP-OCRv4_rec_infer"
-    return base
+    if isinstance(result, dict) and key in result:
+        return result[key]
+    return getattr(result, key, default)
 
 
 async def parse_scanned(
@@ -144,15 +136,47 @@ def _parse_scanned_sync(
     # used by services/pdf_ocr.py so routing is consistent across both
     # PaddleOCR call sites.
     from app.ocr._paddleocr_gpu import paddleocr_use_gpu  # noqa: PLC0415
+    import logging as _logging  # noqa: PLC0415
     use_gpu = paddleocr_use_gpu()
+    # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
+    #   use_angle_cls   -> use_textline_orientation
+    #   use_gpu         -> device="gpu:0" | "cpu"
+    #   show_log        -> dropped (logging module instead)
+    #   det_model_dir   -> text_detection_model_dir
+    #   rec_model_dir   -> text_recognition_model_dir
+    #   cls_model_dir   -> textline_orientation_model_dir
+    # The settings_used dict downstream still records `use_angle_cls`
+    # (key kept stable for the silver schema) — only the call surface
+    # changes here, not the persisted column name.
+    _logging.getLogger("paddleocr").setLevel(_logging.WARNING)
     ocr = PaddleOCR(
-        use_angle_cls=effective_settings["use_angle_cls"],
+        use_textline_orientation=effective_settings["use_angle_cls"],
         lang=lang,
-        use_gpu=use_gpu,
-        show_log=False,
-        det_model_dir=_model_dir("det", lang),
-        rec_model_dir=_model_dir("rec", lang),
-        cls_model_dir=_model_dir("cls", lang),
+        device="gpu:0" if use_gpu else "cpu",
+        # 2026-06-24: let PaddleOCR 3.7 auto-manage its PP-OCRv5/v6 models in the
+        # PaddleX cache (/tmp/.paddlex/official_models). The old explicit
+        # *_model_dir args pointed at legacy 2.x model names (ch_ppocr_mobile_
+        # v2.0_cls / PP-OCRv3_det / PP-OCRv4_rec) in the dead /tmp/.paddleocr/whl
+        # cache that 3.x never populates → FileNotFoundError on every scanned
+        # PDF. (Half-finished 2.x→3.x migration: param names + .predict() were
+        # updated, the model paths were not.)
+        #
+        # enable_mkldnn=True: the oneDNN fast path. It is ~2.6x faster than
+        # eager CPU kernels (~12 s vs ~31 s/page warm on the PLS-2024 fixture
+        # under a loaded host) with byte-identical output. The fast path is
+        # only safe because we pin paddlepaddle<3.3 (see pyproject.toml): on
+        # paddle 3.3.x the PIR-based oneDNN executor crashes on CPU with
+        # `ConvertPirAttribute2RuntimeAttribute not support
+        # ArrayAttribute<DoubleAttribute>` — a 3.3.x regression
+        # (PaddlePaddle/Paddle#77340) that no runtime flag dodges (the
+        # device-type setter force-sets FLAGS_enable_pir_api=1 and the CPU
+        # predictor always calls enable_new_executor(), so enable_new_ir=False
+        # does not avoid it). The upstream fix (Paddle PR #77430) is merged to
+        # `develop` and verified on nightly 3.5.0.dev, but no stable wheel
+        # carries it yet — see the pyproject.toml paddlepaddle pin for the
+        # un-pin trigger. If paddle is ever bumped to ≥3.3 before a fixed
+        # stable release, this MUST go back to enable_mkldnn=False.
+        enable_mkldnn=True,
     )
 
     pdf = pdfium.PdfDocument(str(pdf_path))
@@ -174,7 +198,9 @@ def _parse_scanned_sync(
             arr = np.asarray(bitmap.to_pil().convert("RGB"))
 
             try:
-                result = ocr.ocr(arr)
+                # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
+                # `ocr.ocr(arr)` -> `ocr.predict(arr)`.
+                result = ocr.predict(arr)
             except Exception as exc:  # PaddleOCR can throw on degenerate pages
                 # Record the failure as a zero-confidence page; the
                 # caller (quality_graph) will route to retry/review.
@@ -185,32 +211,47 @@ def _parse_scanned_sync(
                 per_page_retry_counts.append(0)
                 continue
 
-            page_lines = _flatten_paddleocr_result(result)
+            # PaddleOCR 3.x return shape: list[OCRResult]. Each result
+            # has rec_texts/rec_scores/rec_boxes (axis-aligned already
+            # in pixel coords). The _flatten_paddleocr_result helper that
+            # normalised the 2.x nested-tuple shape is no longer needed —
+            # kept in the module for reference + the smoke-test path.
+            page_result = result[0] if (result and result[0] is not None) else None
+            if page_result is None:
+                per_page_ocr_confidence.append(0.0)
+                per_page_text_line_counts.append(0)
+                per_page_deskew_applied.append(effective_settings["use_angle_cls"])
+                per_page_rotation_applied.append(0.0)
+                per_page_retry_counts.append(0)
+                continue
+
+            texts = _ocr_field(page_result, "rec_texts", []) or []
+            scores = _ocr_field(page_result, "rec_scores", []) or []
+            boxes = _ocr_field(page_result, "rec_boxes", None)
+
             confidences: list[float] = []
             region_idx = 0
-            for line in page_lines:
-                bbox_4pt, text_conf = line
-                if not text_conf or len(text_conf) < 2:
-                    continue
-                text, conf = text_conf[0], text_conf[1]
+            for idx, (text, conf) in enumerate(zip(texts, scores)):
                 if not text:
                     continue
-                # Convert the 4-corner-point box to a (x0,y0,x1,y1) bbox.
-                xs = [float(p[0]) for p in bbox_4pt]
-                ys = [float(p[1]) for p in bbox_4pt]
-                bbox = [
-                    round(min(xs), 3),
-                    round(min(ys), 3),
-                    round(max(xs), 3),
-                    round(max(ys), 3),
-                ]
+                # rec_boxes is already axis-aligned [x_min, y_min, x_max,
+                # y_max] in pixel coords — no min/max-over-corners needed.
+                if boxes is not None and idx < len(boxes):
+                    bbox = [
+                        round(float(boxes[idx][0]), 3),
+                        round(float(boxes[idx][1]), 3),
+                        round(float(boxes[idx][2]), 3),
+                        round(float(boxes[idx][3]), 3),
+                    ]
+                else:
+                    bbox = [0.0, 0.0, 0.0, 0.0]
                 passages.append({
                     "page": page_idx,
                     "region": region_idx,
                     "bbox": bbox,
                     "source_method": "paddleocr_pp_ocrv5",
                     "extraction_confidence": float(conf),
-                    "text_content": text,
+                    "text_content": str(text),
                 })
                 confidences.append(float(conf))
                 region_idx += 1
@@ -241,15 +282,23 @@ def _parse_scanned_sync(
 
 
 def _flatten_paddleocr_result(result: Any) -> list[tuple[Any, Any]]:
-    """Normalize PaddleOCR's nested result shape into a flat list of
-    ``(bbox_4pt, (text, confidence))`` tuples.
+    """LEGACY (PaddleOCR 2.x): normalize the nested ``[[bbox, (text, conf)], ...]``
+    return shape into a flat list. Retained for two reasons:
+      1. The ocr_cpu_smoke validation script (ops/validation/ocr_cpu_smoke.py)
+         still references it to assert the 2.x→3.x cutover happened.
+      2. Anyone hitting a 2.x model output (e.g. via a third-party PaddleOCR
+         build, or a stubbed test fixture) can still parse it.
 
-    PaddleOCR's `ocr()` return shape varies by version:
-    - 2.6+: ``[[ [bbox, (text, conf)], ... ]]`` (outer list = batch of 1 image)
-    - older: ``[ [bbox, (text, conf)], ... ]``
-    This helper handles both.
+    The main code path was rewritten in the 2026-06-23 PaddleOCR 3.x migration
+    (ADR-0016) to consume `result[0].rec_texts / rec_scores / rec_boxes`
+    directly — no flattening required.
     """
     if not result:
+        return []
+    # 3.x guard: if the first element looks like a PaddleOCR 3.x OCRResult
+    # (has rec_texts/rec_scores attributes), the legacy helper can't parse
+    # it and the caller should be using the attribute access pattern instead.
+    if result and hasattr(result[0], "rec_texts"):
         return []
     # Unwrap a one-element batch list if present
     if isinstance(result, list) and len(result) == 1 and isinstance(result[0], list):

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * FeedbackButtons.test.tsx
  *
@@ -26,7 +25,7 @@ import { FeedbackButtons } from '../chat/FeedbackButtons';
 
 const mockFetch = vi.fn();
 beforeEach(() => {
-    global.fetch = mockFetch;
+    globalThis.fetch = mockFetch;
     mockFetch.mockReset();
     // Default to success
     mockFetch.mockResolvedValue({
@@ -59,8 +58,8 @@ describe('FeedbackButtons — render conditions', () => {
         renderButtons('run-1', true);
         const upBtn = screen.getByRole('button', { name: /mark answer as helpful/i });
         const downBtn = screen.getByRole('button', { name: /report answer problem/i });
-        expect(upBtn.disabled).toBe(true);
-        expect(downBtn.disabled).toBe(true);
+        expect((upBtn as HTMLButtonElement).disabled).toBe(true);
+        expect((downBtn as HTMLButtonElement).disabled).toBe(true);
     });
 
     it('renders the container testid', () => {
@@ -142,7 +141,7 @@ describe('FeedbackButtons — thumbs-down opens popover', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Report answer problem' }));
         await waitFor(() => {
             const submitBtn = screen.getByRole('button', { name: /submit feedback/i });
-            expect(submitBtn.disabled).toBe(true);
+            expect((submitBtn as HTMLButtonElement).disabled).toBe(true);
         });
     });
 });
@@ -175,7 +174,7 @@ describe.each(CATEGORIES)('FeedbackButtons — category "%s" submission', (categ
         // Select the radio
         const radio = document.getElementById(`feedback-cat-${category}`);
         expect(radio).toBeTruthy();
-        fireEvent.click(radio);
+        fireEvent.click(radio!);
 
         // Submit
         const submitBtn = screen.getByRole('button', { name: /submit feedback/i });
@@ -205,7 +204,7 @@ describe('FeedbackButtons — comment length guard', () => {
         fireEvent.change(textarea, { target: { value: longNote } });
 
         // Textarea value should be capped at 1000 via slice in onChange
-        expect(textarea.value.length).toBeLessThanOrEqual(1000);
+        expect((textarea as HTMLTextAreaElement).value.length).toBeLessThanOrEqual(1000);
     });
 
     it('shows character count remaining via aria-live region', async () => {
@@ -214,7 +213,7 @@ describe('FeedbackButtons — comment length guard', () => {
         await waitFor(() => {
             const counter = document.getElementById('feedback-note-count');
             expect(counter).toBeTruthy();
-            expect(counter.textContent).toContain('1000');
+            expect(counter!.textContent).toContain('1000');
         });
     });
 });
@@ -233,7 +232,7 @@ describe('FeedbackButtons — optimistic state', () => {
 
         // After a successful response, the button should be disabled with pressed state
         await waitFor(() => {
-            expect(upBtn.disabled).toBe(true);
+            expect((upBtn as HTMLButtonElement).disabled).toBe(true);
         });
         // The submitted-up state sets aria-pressed
         const pressed = upBtn.getAttribute('aria-pressed');
@@ -261,7 +260,7 @@ describe('FeedbackButtons — error rollback', () => {
 
         // Button should be enabled again (idle state)
         const upBtn = screen.getByRole('button', { name: 'Mark answer as helpful' });
-        expect(upBtn.disabled).toBe(false);
+        expect((upBtn as HTMLButtonElement).disabled).toBe(false);
     });
 });
 
@@ -275,7 +274,7 @@ describe('FeedbackButtons — post-submit disabled', () => {
 
         await waitFor(() => {
             // After success, buttons should be disabled
-            expect(upBtn.disabled).toBe(true);
+            expect((upBtn as HTMLButtonElement).disabled).toBe(true);
         });
     });
 });

@@ -1562,16 +1562,22 @@ async def search_documents(
     Retrieval uses a two-stage pipeline for Layer 1 hallucination prevention:
 
     Stage 1 — Coarse vector search:
-      The query_text is embedded with BAAI/bge-small-en-v1.5 and used to
-      retrieve up to RETRIEVAL_TOP_N (20) candidates from Qdrant with a
-      permissive cosine threshold (RETRIEVAL_QUALITY_THRESHOLD = 0.3).
+      The query_text is embedded with the configured dense embedder
+      (settings.EMBEDDING_MODEL_NAME — live default Qwen/Qwen3-Embedding-0.6B,
+      1024-dim, swapped from bge-small 2026-06-03) and used to retrieve up to
+      RETRIEVAL_TOP_N (20) candidates from Qdrant with a permissive cosine
+      threshold (RETRIEVAL_QUALITY_THRESHOLD = 0.3). NOTE (audit 2026-06-27,
+      T1 open): the query-side instruction prefix below is still the bge-era
+      string — a known query/corpus asymmetry pending an eval-gated fix.
 
     Stage 2 — Cross-encoder reranking (when reranker is available):
-      Each (query, chunk.text) pair is scored by the ms-marco-MiniLM-L-6-v2
-      cross-encoder, which produces raw logits.  Candidates are sorted by
-      logit descending; only the top RERANKER_TOP_K (5) with logit >=
-      RERANKER_SCORE_THRESHOLD (0.0) are returned.  The reranker score
-      replaces the raw Qdrant cosine in the returned relevance_score field.
+      Each (query, chunk.text) pair is scored by the configured cross-encoder
+      (settings.RERANKER_MODEL_PATH — live default bge-reranker-base; set the
+      env to Qwen/Qwen3-Reranker-0.6B to use the Qwen3 reranker), which
+      produces raw logits.  Candidates are sorted by logit descending; only the
+      top RERANKER_TOP_K (5) with logit >= RERANKER_SCORE_THRESHOLD (0.0) are
+      returned.  The reranker score replaces the raw Qdrant cosine in the
+      returned relevance_score field.
 
     When no reranker is available the tool falls back to Layer 1 quality gate
     filtering via filter_by_quality using RETRIEVAL_QUALITY_THRESHOLD.
@@ -1628,6 +1634,43 @@ async def search_documents(
     else:
         initial_limit = min(limit, 50)
 
+    # Resolve workspace_id for the mandatory GI-9 tenant filter BEFORE running
+    # the search. Audit 2026-06-27 (C3): prefer the authenticated workspace on
+    # the agent deps (JWT-sourced, Module 9); else derive it from the project
+    # row. CRITICALLY never fall back to a hardcoded default tenant — a
+    # failed/missing resolution FAILS CLOSED (returns no documents) rather than
+    # serving the default workspace's chunks. Hoisted to search_documents scope
+    # (NOT the _run_search helper) so the refusal returns from the tool — a
+    # return from _run_search would make `chunks` a DocumentSearchResult and
+    # break the reranker / quality-gate path (len() on a non-list).
+    _workspace_id = getattr(ctx.deps, "workspace_id", None)
+    if not _workspace_id:
+        try:
+            if ctx.deps.pg_pool is not None:
+                async with ctx.deps.pg_pool.acquire() as _conn:
+                    _wid_row = await _conn.fetchrow(
+                        "SELECT workspace_id::text FROM silver.projects WHERE project_id = $1::uuid",
+                        project_id,
+                    )
+                if _wid_row and _wid_row["workspace_id"]:
+                    _workspace_id = _wid_row["workspace_id"]
+        except Exception as _wid_exc:
+            logger.warning(
+                "search_documents: workspace_id lookup failed: %s", _wid_exc
+            )
+    if not _workspace_id:
+        logger.error(
+            "search_documents: could not resolve workspace_id for project "
+            "%s — failing closed (returning no documents) rather than "
+            "querying a default tenant.",
+            project_id,
+        )
+        return DocumentSearchResult(
+            chunks=[], count=0,
+            data_source="Qdrant (workspace unresolved — refused)",
+        )
+    _workspace_id = str(_workspace_id)
+
     async def _run_search() -> list[DocumentChunk]:
         loop = asyncio.get_event_loop()
         # Eval 15 R3 — geological query expansion. Annotate symbols
@@ -1640,22 +1683,16 @@ async def search_documents(
         )
         _expanded_query = _expand_geo_query(query_text)
 
-        # Eval 04 P3 — bge-small geological instruction prefix.
-        # bge-small-en-v1.5 was trained to interpret a short instruction
-        # prefix on QUERY inputs ("Represent this sentence for searching
-        # relevant passages: …"). The corpus side does NOT use the
-        # prefix. Without the prefix, geological queries score 4–7%
-        # lower nDCG on our golden test set (validated 2026-05-19) —
-        # the model treats the query like a passage and degrades
-        # query/passage symmetry.
-        #
-        # We use the geological-tilted variant (mentions "geological
-        # context") because the offline ablation showed +1.8 pts nDCG
-        # on the 200-query golden set vs the generic prompt.
-        _embed_input = (
-            "Represent this geological query for searching relevant "
-            "passages: " + _expanded_query
-        )
+        # Audit 2026-06-28 (T1): Qwen3-Embedding-0.6B is the live dense embedder
+        # (swapped from bge-small 2026-06-03). The bge-era instruction prefix
+        # ("Represent this geological query …") is WRONG for Qwen3 — the model
+        # was not trained on it, so it embeds the prefix words as query noise and
+        # degrades query/passage symmetry. Embed the raw expanded query instead.
+        # (Optimal Qwen3 query-instruction wiring via EMBEDDING_QUERY_PROMPT_NAME
+        # is a follow-up that needs a golden-eval pass.)
+        # NOTE: applied WITHOUT a golden-eval pass — flag for eval validation
+        # before treating retrieval-quality numbers as final.
+        _embed_input = _expanded_query
         # Dense query embedding (sync inference, off the event loop).
         query_vector: list[float] = await loop.run_in_executor(
             None,
@@ -1672,23 +1709,9 @@ async def search_documents(
             lambda: encode_sparse(query_text),
         )
 
-        # Resolve workspace_id for mandatory GI-9 filter.
-        # Module 9 will provide workspace_id via JWT claims; until then we
-        # derive it from the project row (same approach as orchestrator).
-        _workspace_id = "a0000000-0000-0000-0000-000000000001"  # default
-        try:
-            if ctx.deps.pg_pool is not None:
-                async with ctx.deps.pg_pool.acquire() as _conn:
-                    _wid_row = await _conn.fetchrow(
-                        "SELECT workspace_id::text FROM silver.projects WHERE project_id = $1::uuid",
-                        project_id,
-                    )
-                if _wid_row and _wid_row["workspace_id"]:
-                    _workspace_id = _wid_row["workspace_id"]
-        except Exception as _wid_exc:
-            logger.debug(
-                "search_documents: workspace_id lookup failed (using default): %s", _wid_exc
-            )
+        # _workspace_id was resolved (and the fail-closed refusal returned) in
+        # search_documents scope above — see the C3 note. It is captured here by
+        # closure and passed to hybrid_query as the mandatory tenant filter.
 
         # Query the active document collection via the Qdrant 1.17 Query API.
         # ADR-0010 flip — RETRIEVAL_USE_DOCUMENT_PASSAGES selects between the

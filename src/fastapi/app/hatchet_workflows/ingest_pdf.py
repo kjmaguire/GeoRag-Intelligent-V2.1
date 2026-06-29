@@ -41,9 +41,12 @@ from hatchet_sdk import (
 )
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows import _progress as ingest_progress
+from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 
 
 log = logging.getLogger("georag.hatchet.ingest_pdf")
@@ -205,6 +208,14 @@ def _reset_parse_pool() -> None:
 # explicit cleanup hook below.
 _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
+# Phase 2 (2026-06-24): when set, persist captions each docling figure with the
+# Qwen3-VL sidecar (an S3 GET + a VL call per figure) and folds the description
+# into the figure's ReportSection text before embedding. Off by default — shares
+# the FIGURE_VL_DESCRIPTIONS switch with the standalone figure_extractor path.
+_FIGURE_VL_CAPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 
 def _cached_pdf_path(sha256: str) -> str:
     """Return the path where a PDF body lives in the local body cache."""
@@ -303,7 +314,17 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
 # Input + per-step output models
 # =============================================================================
 class IngestPdfInput(BaseModel):
-    """The Laravel ShadowRouter (Step 5) sends this when dual-writing."""
+    """The Laravel ShadowRouter (Step 5) sends this when dual-writing.
+
+    `project_id` is typed `str` (not `UUID`) so the many downstream
+    `str(input.project_id)` call sites stay no-ops, but a Pydantic
+    field_validator rejects non-UUID input at the boundary —
+    defence in depth against the SQL-injection shape the
+    2026-06-02/03 audit caught on the sibling ingest_zip_archive
+    trigger. The shadow_trigger router uses parameter binding so a
+    malformed string can't actually inject, but this guard prevents
+    malformed rows from ever landing in silver.ingest_progress.
+    """
 
     workspace_id: UUID = Field(..., description="Workspace context for RLS.")
     project_id: str = Field(..., description="Project the upload belongs to.")
@@ -314,6 +335,23 @@ class IngestPdfInput(BaseModel):
         ..., description="Shared token for shadow_runs row pairing — also the dedupe key."
     )
     actor_id: int | None = Field(default=None, description="public.users.id of uploader.")
+
+    # Defence-in-depth UUID guard; see class docstring.
+    from pydantic import field_validator as _fv
+
+    @_fv("project_id")
+    @classmethod
+    def _validate_project_id_uuid(cls, v: str) -> str:
+        import re as _re
+        if not _re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            v,
+            _re.IGNORECASE,
+        ):
+            raise ValueError(
+                "IngestPdfInput.project_id must be a UUID (canonical 8-4-4-4-12 form)."
+            )
+        return v
 
 
 class PreflightOut(BaseModel):
@@ -489,6 +527,62 @@ ingest_pdf = hatchet.workflow(
 async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
     """Download from S3, compute sha256, validate magic bytes + size + encryption."""
     log.info("ingest_pdf.preflight start key=%s", input.minio_key)
+
+    # CC-03 Item 8 — lifecycle guard. If the project is not active, skip
+    # the whole workflow by returning a synthetic PreflightOut that marks
+    # the run as invalid. We don't raise — Hatchet would retry a raise,
+    # burning retries for something that won't change until the project
+    # is reactivated. Returning early with valid=False causes parse() to
+    # short-circuit and persist() to produce an empty report with a
+    # descriptive warning; the operator can see the skip_reason in the
+    # Hatchet run record.
+    if input.project_id:
+        _skip_reason: str | None = None
+        try:
+            _lc_pool = await asyncpg.create_pool(
+                _dsn(), min_size=1, max_size=1, statement_cache_size=0
+            )
+            try:
+                async with _lc_pool.acquire() as _lc_conn:
+                    async with _lc_conn.transaction():
+                        if input.workspace_id:
+                            await bind_workspace_scope(
+                                _lc_conn, workspace_id=str(input.workspace_id), site="hatchet.ingest_pdf"
+                            )
+                        _lc_row = await _lc_conn.fetchrow(
+                            "SELECT lifecycle_state FROM silver.projects "
+                            "WHERE project_id = $1::uuid",
+                            str(input.project_id),
+                        )
+                        if _lc_row is not None:
+                            _state = _lc_row["lifecycle_state"]
+                            if _state != "active":
+                                _skip_reason = f"project_not_active:{_state}"
+            finally:
+                await _lc_pool.close()
+        except Exception as _lc_err:
+            # Connection failure or table-not-found (e.g. first-run before
+            # migration). Log and proceed — fail open is safer than silently
+            # dropping every ingest on startup errors.
+            log.warning(
+                "ingest_pdf.preflight: lifecycle check failed (non-fatal): %s", _lc_err
+            )
+
+        if _skip_reason:
+            log.info(
+                "ingest_pdf.preflight: skipping workflow — project=%s reason=%s",
+                input.project_id,
+                _skip_reason,
+            )
+            return PreflightOut(
+                sha256="",
+                page_count=0,
+                file_size=0,
+                encrypted=False,
+                valid=False,
+                error=_skip_reason,
+            )
+
     if input.project_id and input.workspace_id:
         await ingest_progress.mark_started(
             workspace_id=str(input.workspace_id),
@@ -805,7 +899,13 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         f"figure_{int(idx):04d}_page_{page_no}.png"
                     )
                     try:
-                        s3.copy_object(
+                        # Audit 2026-06-27 (T4, hard rule 2): boto3 is sync; this
+                        # persist step runs on the Hatchet worker's asyncio loop,
+                        # so the S3 round-trips must go off-loop via to_thread or
+                        # they block heartbeats + other tasks. (The download path
+                        # at the top of this file already uses aioboto3.)
+                        await asyncio.to_thread(
+                            s3.copy_object,
                             Bucket=bucket,
                             Key=final_key,
                             CopySource={"Bucket": bucket, "Key": pending_key},
@@ -821,7 +921,9 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                             },
                         )
                         try:
-                            s3.delete_object(Bucket=bucket, Key=pending_key)
+                            await asyncio.to_thread(
+                                s3.delete_object, Bucket=bucket, Key=pending_key
+                            )
                         except Exception as del_exc:  # noqa: BLE001
                             log.warning(
                                 "ingest_pdf.persist: pending figure delete "
@@ -836,9 +938,30 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         )
                         final_key = None
 
+                # Phase 2: content-aware caption from the Qwen3-VL sidecar,
+                # folded into the section text so it's embedded with the figure.
+                # Flag-gated + best-effort: any failure keeps the docling caption.
+                vl_desc: str | None = None
+                if _FIGURE_VL_CAPTIONS and final_key:
+                    try:
+                        from app.agent.figure_extractor import caption_image_with_vl
+                        _img = await asyncio.to_thread(
+                            lambda: s3.get_object(Bucket=bucket, Key=final_key)["Body"].read()
+                        )
+                        vl_desc = await caption_image_with_vl(
+                            _img, context=parsed.get("title"),
+                        )
+                    except Exception as vl_exc:  # noqa: BLE001 — never block persist
+                        log.warning(
+                            "ingest_pdf.persist: figure VL caption failed (key=%s): %s",
+                            final_key, vl_exc,
+                        )
+
                 section_lines = [f"Figure on page {page_no}."]
                 if caption:
                     section_lines.append(f"Caption: {caption}")
+                if vl_desc:
+                    section_lines.append(f"Description: {vl_desc}")
                 if final_key:
                     section_lines.append(f"Image: s3://{bucket}/{final_key}")
                 figure_sections_out.append({
@@ -911,7 +1034,15 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         workspace_id_str = str(input.workspace_id)
     else:
         # Recover from the bronze manifest or default workspace.
-        workspace_id_str = "a0000000-0000-0000-0000-000000000001"
+        # Audit item B4 — centralised legacy default + metric so Phase-2
+        # cutover (raise instead of fallback) sees this as a single search.
+        workspace_id_str = LEGACY_DEFAULT_TENANT_UUID
+        try:
+            WORKSPACE_RESOLUTION_FAILURES.labels(
+                site="ingest_pdf.persist"
+            ).inc()
+        except Exception:
+            pass
         log.warning(
             "ingest_pdf.persist: input.workspace_id was null; "
             "falling back to default workspace. minio_key=%s",
@@ -931,9 +1062,8 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # passages land together, or neither does and Hatchet retries.
             passages_written = 0
             async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, true)",
-                    workspace_id_str,
+                await bind_workspace_scope(
+                    conn, workspace_id=workspace_id_str, site="hatchet.ingest_pdf"
                 )
                 await conn.execute(
                     INSERT_REPORT_SQL,
@@ -1273,8 +1403,16 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                 EmbedPendingPassagesInput,
                 embed_pending_passages_wf,
             )
-            wsid = str(input.workspace_id) if input.workspace_id \
-                else "a0000000-0000-0000-0000-000000000001"
+            if input.workspace_id:
+                wsid = str(input.workspace_id)
+            else:
+                wsid = LEGACY_DEFAULT_TENANT_UUID
+                try:
+                    WORKSPACE_RESOLUTION_FAILURES.labels(
+                        site="ingest_pdf.dispatch_embed"
+                    ).inc()
+                except Exception:
+                    pass
             embed_input = EmbedPendingPassagesInput(
                 workspace_id=wsid,
                 project_id=str(input.project_id),

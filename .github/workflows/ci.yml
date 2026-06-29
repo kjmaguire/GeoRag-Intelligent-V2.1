@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PHP_VERSION: "8.4"
-  NODE_VERSION: "22"
+  PHP_VERSION: "8.5"
+  NODE_VERSION: "24"
   PYTHON_VERSION: "3.13"
 
 jobs:
@@ -46,7 +46,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -100,10 +100,10 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -145,9 +145,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install PyYAML
@@ -163,10 +163,10 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -201,10 +201,10 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -253,7 +253,7 @@ jobs:
           --health-retries=3
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -301,7 +301,7 @@ jobs:
           sudo apt-get install -y -qq "postgresql-server-dev-${PG_VERSION}" 2>/dev/null || \
             sudo apt-get install -y -qq postgresql-server-dev-all
           cd /tmp
-          curl -fsSL https://github.com/theory/pgtap/archive/refs/tags/v1.3.3.tar.gz | tar xz
+          curl -fsSL https://github.com/theory/pgtap/archive/refs/tags/v1.3.4.tar.gz | tar xz
           cd pgtap-1.3.3
           make
           sudo make install
@@ -361,22 +361,22 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Lint docker/fastapi.Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/fastapi.Dockerfile
           failure-threshold: warning
 
       - name: Lint docker/laravel.Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/laravel.Dockerfile
           failure-threshold: warning
 
       - name: Lint docker/dagster.Dockerfile
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/dagster.Dockerfile
           failure-threshold: warning
@@ -429,15 +429,15 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Login to GHCR only on main branch pushes (PRs build without pushing).
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -453,7 +453,7 @@ jobs:
       # On main: push=true, load=false (image in GHCR, Trivy pulls from there).
       - name: Build${{ github.ref == 'refs/heads/main' && ' and push' || '' }} ${{ matrix.service }} image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -475,7 +475,10 @@ jobs:
       # base images are updated to non-EOL OS versions.
       # ignore-unfixed: true skips CVEs with no upstream fix (noise reduction).
       - name: Trivy scan — ${{ matrix.service }}
-        uses: aquasecurity/trivy-action@master
+        # 2026-06-24 re-audit: was @master — a floating branch ref on a
+        # repo that suffered a tag-hijack supply-chain incident in March
+        # 2026 (GHSA-69fq-xp46-6x23). Pinned to a release tag.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
           format: table
@@ -495,8 +498,36 @@ jobs:
           output-file: /tmp/sbom-${{ matrix.service }}.spdx.json
 
       - name: Upload SBOM artifact — ${{ matrix.service }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}
           path: /tmp/sbom-${{ matrix.service }}.spdx.json
           retention-days: 90
+
+      # ---------------------------------------------------------------------
+      # Cosign keyless image signing (2026-06-23 sweep).
+      # Sigstore keyless signing via GitHub OIDC — no private key to
+      # manage. Each pushed image gets a Rekor transparency-log entry
+      # binding the digest to the workflow + commit SHA + branch ref.
+      # Verify downstream with:
+      #   cosign verify \
+      #     --certificate-identity-regexp "https://github\.com/${OWNER}/" \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     ghcr.io/${OWNER}/georag-${SERVICE}@sha256:<digest>
+      # PR builds are not signed (no push happens, no digest to sign).
+      # ---------------------------------------------------------------------
+      - name: Install Cosign — ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        # 2026-06-24 re-audit: installer v3 cannot install Cosign v3.x;
+        # bumped to v4 + cosign-release to the current v3.1.1.
+        uses: sigstore/cosign-installer@v4
+        with:
+          cosign-release: 'v3.1.1'
+
+      - name: Cosign sign image — ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}@${{ steps.build.outputs.digest }}"

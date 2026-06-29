@@ -87,7 +87,11 @@ services:
       interval: 10s
       retries: 5
       start_period: 10s
-    image: redis:8.6.2-alpine
+    # 2026-06-24 re-audit: 8.6.2 -> 8.6.4 (sync with the main stack).
+    # 8.6.3 was a SECURITY release (5 RCE-class CVEs: CVE-2026-23479 et al);
+    # 8.6.4 adds a UAF + Sentinel config-injection fix. The staging overlay
+    # was left on the vulnerable 8.6.2 when the main compose was bumped.
+    image: redis:8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763
     networks:
       georag: null
     restart: unless-stopped
@@ -157,7 +161,11 @@ services:
       interval: 10s
       retries: 5
       start_period: 10s
-    image: redis:8.6.2-alpine
+    # 2026-06-24 re-audit: 8.6.2 -> 8.6.4 (sync with the main stack).
+    # 8.6.3 was a SECURITY release (5 RCE-class CVEs: CVE-2026-23479 et al);
+    # 8.6.4 adds a UAF + Sentinel config-injection fix. The staging overlay
+    # was left on the vulnerable 8.6.2 when the main compose was bumped.
+    image: redis:8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763
     networks:
       georag: null
     restart: unless-stopped
@@ -222,7 +230,11 @@ services:
       interval: 10s
       retries: 5
       start_period: 10s
-    image: redis:8.6.2-alpine
+    # 2026-06-24 re-audit: 8.6.2 -> 8.6.4 (sync with the main stack).
+    # 8.6.3 was a SECURITY release (5 RCE-class CVEs: CVE-2026-23479 et al);
+    # 8.6.4 adds a UAF + Sentinel config-injection fix. The staging overlay
+    # was left on the vulnerable 8.6.2 when the main compose was bumped.
+    image: redis:8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763
     networks:
       georag: null
     restart: unless-stopped
@@ -240,7 +252,7 @@ services:
     profiles:
       - staging
       - prod
-    image: oliver006/redis_exporter:v1.74.0-alpine
+    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
     container_name: georag-redis-exporter-cache
     command:
       - --redis.addr=redis://redis-cache:6379
@@ -257,7 +269,7 @@ services:
     profiles:
       - staging
       - prod
-    image: oliver006/redis_exporter:v1.74.0-alpine
+    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
     container_name: georag-redis-exporter-queue
     command:
       - --redis.addr=redis://redis-queue:6379
@@ -274,7 +286,7 @@ services:
     profiles:
       - staging
       - prod
-    image: oliver006/redis_exporter:v1.74.0-alpine
+    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
     container_name: georag-redis-exporter-sessions
     command:
       - --redis.addr=redis://redis-sessions:6379

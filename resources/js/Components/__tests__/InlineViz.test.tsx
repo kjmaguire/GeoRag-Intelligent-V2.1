@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * InlineViz.test.tsx — §6b P3
  *
@@ -71,7 +70,7 @@ import InlineViz from '../InlineViz';
 // ---------------------------------------------------------------------------
 
 
-const MAP_PAYLOAD = {
+const MAP_PAYLOAD: any = {
     geojson: {
         type: 'FeatureCollection' as const,
         features: [

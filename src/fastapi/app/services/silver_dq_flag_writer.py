@@ -9,7 +9,7 @@ Key contract from the design (§ "Where flags are written"):
   * Idempotent by `(workspace_id, record_type, record_id, flag_type,
     rule_version)` — re-running the same rule against the same row
     must NOT create a duplicate flag.
-  * Workspace-scoped via the RLS GUC `georag.workspace_id`; the helper
+  * Workspace-scoped via the RLS GUC `app.workspace_id`; the helper
     sets the GUC inside its own transaction.
   * Optional fields (project_id, source_document_id, source_page,
     source_row_range, rule_id, threshold_payload) all flow through.
@@ -26,6 +26,7 @@ block the data pipeline).
 """
 
 from __future__ import annotations
+from app.db import bind_workspace_scope
 
 import logging
 from dataclasses import dataclass
@@ -177,7 +178,7 @@ async def upsert_flag(
     Args:
         conn: live asyncpg connection. Caller is responsible for
             connection lifecycle. The helper sets the
-            ``georag.workspace_id`` GUC inside this call so RLS lets
+            ``app.workspace_id`` GUC inside this call so RLS lets
             the write through; the caller doesn't need to set it
             separately.
         flag: the flag to write.
@@ -193,9 +194,8 @@ async def upsert_flag(
         # policy lets the INSERT/UPDATE through. Using set_config with
         # is_local=true (3rd arg) so the setting auto-resets when the
         # tx closes — no cross-request leakage on a pooled connection.
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, true)",
-            flag.workspace_id,
+        await bind_workspace_scope(
+            conn, workspace_id=flag.workspace_id, site="silver_dq_flag_writer"
         )
         await conn.execute(
             _UPSERT_SQL,

@@ -45,6 +45,7 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.support_cockpit.escalation_routing")
 
@@ -169,11 +170,17 @@ async def route_escalation(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                # Block-3 RLS — see customer_response_drafting for the
-                # default-workspace-then-realign pattern.
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    "a0000000-0000-0000-0000-000000000001",
+                # Block-3 RLS — default-workspace-then-realign pattern.
+                # Audit 2026-06-28: use SET LOCAL (bind_workspace_scope,
+                # transaction-scoped) NOT session set_config(is_local=false).
+                # This often runs on a CALLER-SUPPLIED pool connection (owns_pool
+                # False), so a session GUC would leak back to the pool after
+                # COMMIT and bleed this tenant into the next pooled client (C2
+                # class). SET LOCAL is discarded at COMMIT.
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id="a0000000-0000-0000-0000-000000000001",
+                    site="support_cockpit.escalation_routing.bootstrap",
                 )
                 # 1. Load ticket.
                 ticket = await conn.fetchrow(
@@ -190,9 +197,10 @@ async def route_escalation(
                 )
                 if ticket is None:
                     raise ValueError(f"ticket not found: {ticket_str}")
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    ticket["workspace_id"],
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id=ticket["workspace_id"],
+                    site="support_cockpit.escalation_routing.rescope",
                 )
 
                 # 2. Detect prior chain state from audit ledger.

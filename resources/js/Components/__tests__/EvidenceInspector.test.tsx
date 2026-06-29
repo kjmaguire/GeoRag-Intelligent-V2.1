@@ -1,14 +1,13 @@
-// @ts-nocheck — test file, type safety enforced at component level
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { EvidenceInspector } from '../chat/EvidenceInspector';
 
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+globalThis.fetch = mockFetch;
 
 vi.mock("radix-ui", async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal() as any;
   return {
     ...actual,
     Dialog: {
@@ -32,7 +31,7 @@ vi.mock("radix-ui", async (importOriginal) => {
   };
 });
 
-function makeLeg(ov) { return { citation_id: "[DATA:1]", citation_type: "DATA", source_chunk_id: "chunk-abc", document_title: "Test Doc", relevance_score: 0.85, section: "S3", page: 42, ...ov }; }
+function makeLeg(ov = {}) { return { citation_id: "[DATA:1]", citation_type: "DATA", source_chunk_id: "chunk-abc", document_title: "Test Doc", relevance_score: 0.85, section: "S3", page: 42, ...ov } as any; }
 
 describe("EvidenceInspector legacy path", () => {
   afterEach(() => vi.clearAllMocks());

@@ -33,16 +33,27 @@ END $$;
 GRANT USAGE ON SCHEMA silver TO georag_read, georag_write;
 GRANT USAGE ON SCHEMA public TO georag_read, georag_write, georag_audit;
 GRANT USAGE ON SCHEMA bronze TO georag_read, georag_write;
+-- Audit 2026-06-28: georag_read exists for "reports, dashboards" but dashboards
+-- read the GOLD analytics layer + PUBLIC_GEO reference data, which were never
+-- granted (read could only see silver/bronze). Add USAGE here + SELECT below.
+-- gold rows still carry RLS, so georag_read remains tenant-filtered. gold is
+-- Dagster-materialised (not app-written), so no INSERT/UPDATE for georag_write.
+GRANT USAGE ON SCHEMA gold TO georag_read, georag_write;
+GRANT USAGE ON SCHEMA public_geo TO georag_read, georag_write;
 -- audit schema (created in init-postgis.sql) — all three roles can see it.
 -- Future tables get role-appropriate grants via the ALTER DEFAULT PRIVILEGES
 -- block at the bottom of this file (idempotent on re-run).
 GRANT USAGE ON SCHEMA audit TO georag_read, georag_write, georag_audit;
 
--- Read role: SELECT on all silver + bronze tables
+-- Read role: SELECT on all silver + bronze + gold + public_geo tables
 GRANT SELECT ON ALL TABLES IN SCHEMA silver TO georag_read;
 GRANT SELECT ON ALL TABLES IN SCHEMA bronze TO georag_read;
+GRANT SELECT ON ALL TABLES IN SCHEMA gold TO georag_read;
+GRANT SELECT ON ALL TABLES IN SCHEMA public_geo TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT SELECT ON TABLES TO georag_read;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gold GRANT SELECT ON TABLES TO georag_read;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo GRANT SELECT ON TABLES TO georag_read;
 
 -- Write role: inherits read + INSERT/UPDATE on silver
 GRANT georag_read TO georag_write;
@@ -56,7 +67,18 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT INSERT, UPDATE ON TABLES TO geor
 -- Once that migration runs, the table lives in `audit.query_audit_log` and
 -- the migration re-issues the grant on its new location. This block stays
 -- defensive so init-roles.sql is correct before AND after the move.
-GRANT INSERT ON public.query_audit_log TO georag_audit;
+-- Guard: public.query_audit_log is created by Laravel migration
+-- 2026_04_12_000000_create_query_audit_log_table and does NOT exist at
+-- Docker init time on fresh clusters. Skip this grant if the table is
+-- absent — it will be re-issued by the 2026_05_07 migration when it runs.
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'query_audit_log'
+    ) THEN
+        EXECUTE 'GRANT INSERT ON public.query_audit_log TO georag_audit';
+    END IF;
+END $$;
 ALTER DEFAULT PRIVILEGES IN SCHEMA audit
     GRANT INSERT ON TABLES TO georag_audit;
 ALTER DEFAULT PRIVILEGES IN SCHEMA audit

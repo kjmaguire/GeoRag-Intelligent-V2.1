@@ -25,6 +25,8 @@ verification_status to verified / failed / insufficient.
 """
 from __future__ import annotations
 
+from app.db import bind_workspace_scope
+
 import json
 import logging
 from enum import Enum
@@ -75,8 +77,8 @@ async def record_claim(
     """Insert a single claim. Returns claim_id."""
     workspace_id_str = str(workspace_id)
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id_str, site="claim_ledger"
         )
         row = await conn.fetchrow(
             """
@@ -118,8 +120,8 @@ async def record_claims_bulk(
         for c in claims
     ]
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id_str, site="claim_ledger"
         )
         await conn.executemany(
             """
@@ -146,8 +148,8 @@ async def update_verification(
     """Flip a pending claim to verified/failed/skipped/insufficient."""
     workspace_id_str = str(workspace_id)
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id_str, site="claim_ledger"
         )
         result = await conn.execute(
             """
@@ -175,8 +177,8 @@ async def list_claims_for_run(
     """Read all claims for one answer_run (Trust Inspector consumer)."""
     workspace_id_str = str(workspace_id)
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id_str, site="claim_ledger"
         )
         rows = await conn.fetch(
             """
@@ -202,8 +204,8 @@ async def summary_for_run(
     """Aggregate stats for the Trust Inspector summary block."""
     workspace_id_str = str(workspace_id)
     async with pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id_str,
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id_str, site="claim_ledger"
         )
         row = await conn.fetchrow(
             """

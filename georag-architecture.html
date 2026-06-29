@@ -791,7 +791,7 @@ ingest_pdf workflow (5 tasks):
 <tr><td>MapLibre GL JS</td><td>5.x</td><td>5.x</td><td class="responsibilities">On-prem-friendly licensing (vs Mapbox).</td></tr>
 <tr><td>react-map-gl</td><td>8.x</td><td>8.x</td><td class="responsibilities">v8 supports MapLibre 5 peer dep range.</td></tr>
 <tr><td>Martin</td><td>1.x</td><td>1.7.0 (ghcr.io/maplibre/martin)</td><td class="responsibilities">PostGIS-to-MVT tile server. Direct PG connection. Prometheus endpoint at <code>/_/metrics</code>.</td></tr>
-<tr><td>Caddy</td><td>2.8</td><td>caddy:2.8-alpine</td><td class="responsibilities">Reverse proxy + automatic TLS.</td></tr>
+<tr><td>Caddy</td><td>2.11</td><td>caddy:2.11.3-alpine</td><td class="responsibilities">Reverse proxy + automatic TLS. Bumped from 2.8 in 2026-06-03 sweep for CVE-2026-27585–27589 patches.</td></tr>
 <tr><td>Prometheus</td><td>3.x</td><td>prom/prometheus:v3.11.3</td><td class="responsibilities">Metrics scrape from FastAPI, Octane, Hatchet, Dagster, PG, Redis, Neo4j, Qdrant, vLLM, Martin.</td></tr>
 <tr><td>Alertmanager</td><td>0.32</td><td>prom/alertmanager:v0.32.1</td><td class="responsibilities">Dev config in <code>docker/alertmanager/</code>; prod template with Slack + PagerDuty receivers.</td></tr>
 <tr><td>Loki / Promtail</td><td>3.4</td><td>grafana/loki:3.4.2 / promtail:3.4.2</td><td class="responsibilities">Log aggregation. Promtail's <code>json</code> stage consumes Laravel Monolog + FastAPI JsonFormatter output.</td></tr>

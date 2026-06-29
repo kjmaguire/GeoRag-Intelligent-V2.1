@@ -75,6 +75,11 @@ the rest of the manual mentions.
 | `silver.document_versions` | Live (2026-05-26) — closes document_versioning_design |
 | `silver.entity_aliases`, `silver.entity_gaps` | Live (2026-05-26) — backs Spine A entity_resolver |
 | `gold.repair_shadow_daily` | Partial — `repair_shadow_aggregate` workflow writes rows; Grafana dashboard owed |
+| `silver.tenant_isolation_audit` | Live (2026-05-30) — Z.9 nightly verifier run log; RLS off (admin-gated); see [Ch 18 §8](18-model-stack-evolution.md) |
+| `silver.archive_ingest_runs` | Live (2026-06-03) — ZIP-archive upload parent row; RLS-scoped; closes `ingest_zip_archive` silent-failure gap |
+| `silver.projects.lifecycle_state` | Live (2026-05-30) — **CC-03 Item 8 LANDED** (was deferred); active/hibernated/archived/past_due; billing still unbuilt; [Ch 18 §7](18-model-stack-evolution.md) |
+| `silver.document_passages.contextualized_content` | Live (2026-05-30) — Anthropic contextual-retrieval header; written by `enrich_passage_context` workflow |
+| `audit.query_audit_log` quality cols | Live (2026-05-30) — `faithfulness_score` + `context_precision_score` (Qwen3-as-judge) |
 | `silver.answer_runs`, `silver.answer_citation_items`, `silver.answer_citation_spans`, `silver.message_feedback`, `silver.evidence_items`, `silver.document_passages` | Live |
 | `silver.hypotheses`, `silver.decision_records` (+ children) | Live |
 | `silver.report_pages`, `silver.report_figures`, `silver.report_tables` | Partial — created by `ingest_pdf.persist` but column set still drifts; see appendix A |
@@ -114,6 +119,9 @@ the rest of the manual mentions.
 | `continuous_learning_loop`, `field_outcome_learning` | Experimental |
 | `tiff_ocr_cluster` | Deprecated (replaced by `tiff_normalize` per ADR-0005) |
 | `repair_shadow_aggregate` | Live (added 2026-05-27 per ADR-0009 / [Ch 16 §2](16-algorithmic-spines.md)) — cron `15 2 * * *` UTC |
+| `enrich_passage_context` | Live (2026-05-30) — contextual-retrieval header generation; daily 04:30 UTC; [Ch 18 §5](18-model-stack-evolution.md) |
+| `score_answer_quality` | Live (2026-05-30) — LLM-as-judge faithfulness + context-precision; [Ch 18 §6](18-model-stack-evolution.md) |
+| `ingest_zip_archive` | Live (2026-06-03) — ZIP fan-out with parent-run observability; [Ch 18 §8](18-model-stack-evolution.md) |
 | `tiff_normalize` | Live (ADR-0005 — normalises TIFFs to PDF then routes through `ingest_pdf`) |
 | `train_source_trust` | Experimental (writes `silver.source_trust_scores`) |
 | `train_target_model` | Experimental (target-scoring model refresh) |

@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DataQualityBadge.test.tsx — CC-02 Item 3.
  *

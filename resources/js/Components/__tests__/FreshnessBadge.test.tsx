@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * FreshnessBadge.test.tsx
  *

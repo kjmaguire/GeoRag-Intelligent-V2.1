@@ -4,6 +4,7 @@ import maplibregl, { LngLatBoundsLike, StyleSpecification, VectorTileSource } fr
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { BboxGeoJson } from '@/Types/PublicGeoscience';
 import { useBasemapStyleUrl } from '@/lib/basemap';
+import { escapeHtml } from '@/lib/escapeHtml';
 // Phase G.4 follow-up — subscribe to Evidence Map Mode so chat
 // citations of type pg_feature highlight here.
 import { useEvidenceMapPin } from '@/Hooks/useEvidenceMapPin';
@@ -448,7 +449,7 @@ const PublicGeoscienceMap = forwardRef<
                 .setLngLat([lon, lat])
                 .setHTML(
                     `<div style="font-size:11px"><strong>Evidence pin</strong><br>`
-                    + `${targetFeatureId}</div>`,
+                    + `${escapeHtml(targetFeatureId)}</div>`,
                 )
                 .addTo(map);
         }
@@ -527,6 +528,7 @@ const PublicGeoscienceMap = forwardRef<
 
             const points: Array<[number, number]> = [];
             function redraw() {
+                if (!map) return;
                 let cumulative = 0;
                 const pointFeatures = points.map((p, i) => {
                     if (i > 0) cumulative += haversineM(points[i - 1], p);
@@ -534,8 +536,8 @@ const PublicGeoscienceMap = forwardRef<
                     return { type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: p }, properties: { label } };
                 });
                 const lineFeature = points.length >= 2 ? [{ type: 'Feature' as const, geometry: { type: 'LineString' as const, coordinates: points.slice() }, properties: {} }] : [];
-                (map.getSource('measure-points') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: pointFeatures });
-                (map.getSource('measure-line') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: lineFeature });
+                (map.getSource('measure-points') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: pointFeatures });
+                (map.getSource('measure-line') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: lineFeature });
             }
             function onClick(e: maplibregl.MapMouseEvent) { points.push([e.lngLat.lng, e.lngLat.lat]); redraw(); }
             function onDbl(e: maplibregl.MapMouseEvent) { e.preventDefault(); points.length = 0; redraw(); }
@@ -571,16 +573,17 @@ const PublicGeoscienceMap = forwardRef<
             }
             const ring: Array<[number, number]> = [];
             function redrawDraw() {
+                if (!map) return;
                 const vtx = ring.map((p) => ({ type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: p }, properties: {} }));
-                (map.getSource('draw-vertices') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: vtx });
+                (map.getSource('draw-vertices') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: vtx });
                 if (ring.length >= 3) {
                     const closed = [...ring, ring[0]];
-                    (map.getSource('draw-polygon') as { setData: (d: unknown) => void }).setData({
+                    (map.getSource('draw-polygon') as unknown as { setData: (d: unknown) => void }).setData({
                         type: 'FeatureCollection',
                         features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [closed] }, properties: {} }],
                     });
                 } else {
-                    (map.getSource('draw-polygon') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: [] });
+                    (map.getSource('draw-polygon') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: [] });
                 }
             }
             function onClick(e: maplibregl.MapMouseEvent) { ring.push([e.lngLat.lng, e.lngLat.lat]); redrawDraw(); }
@@ -642,6 +645,7 @@ const PublicGeoscienceMap = forwardRef<
             }
             function onUp(e: maplibregl.MapMouseEvent) {
                 if (!down) return;
+                if (!map) return;
                 const b = bbox(down, e.point);
                 down = null;
                 if (b.maxX - b.minX < 4 || b.maxY - b.minY < 4) {
@@ -662,11 +666,11 @@ const PublicGeoscienceMap = forwardRef<
                     seen.add(id);
                     ids.push(id);
                     if (f.geometry?.type === 'Point' && Array.isArray((f.geometry as { coordinates: unknown }).coordinates)) {
-                        points.push((f.geometry as { coordinates: [number, number] }).coordinates);
+                        points.push((f.geometry as unknown as { coordinates: [number, number] }).coordinates);
                     }
                 }
                 setSelectedFeatureIds(ids);
-                (map.getSource('select-highlight') as { setData: (d: unknown) => void }).setData({
+                (map.getSource('select-highlight') as unknown as { setData: (d: unknown) => void }).setData({
                     type: 'FeatureCollection',
                     features: points.map((c) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: {} })),
                 });

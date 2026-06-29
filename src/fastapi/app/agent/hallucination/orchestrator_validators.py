@@ -115,7 +115,12 @@ async def _get_known_formations(
 # ---------------------------------------------------------------------------
 
 _NUMBER_RE = re.compile(r"[-+]?\d+\.?\d*")
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB)-\d+\]")
+# Audit 2026-06-27 (T3): this is the marker regex the AGENTIC path's
+# verify_numbers uses. Accept both the colon form ([DATA:1]) the prompts
+# instruct the model to emit (canonical, Kyle 2026-04-22) and the dash form
+# the assembler appends, plus the PGEO prefix — otherwise colon citation
+# indices (e.g. [PUB:23]) leak through as ungrounded "numbers" / false retries.
+_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)[:-]\d+\]")
 _SMALL_NUMBERS = {0.0, 1.0, 2.0, 3.0}  # too common to verify
 
 # ────────────────────────────────────────────────────────────────────────
@@ -390,7 +395,15 @@ def verify_numbers(text: str, tool_results: list[tuple[str, Any]]) -> list[str]:
     # it falls inside the [min, max] of grounded values at a comparable
     # scale. Numbers OUTSIDE the evidence range remain flagged
     # (that's the real fabrication failure mode).
-    grounded_finite = sorted(g for g in grounded if abs(g) < 1e6)
+    # Audit 2026-06-27: the range/count DERIVATION tolerance below must be based
+    # on the RAW grounded evidence values, NOT the unit-conversion-expanded set.
+    # A single grounded value (e.g. count=10) expands to ~[0, 100000] via
+    # conversions (10% -> 100000 ppm, 10 m -> 10000 mm, …), so using the expanded
+    # set as [min,max] made the "inside grounded range" tolerance swallow
+    # clearly-fabricated numbers (5000 vs count=10) — effectively disabling
+    # Layer 3 whenever any evidence number existed. The literal is_grounded check
+    # above still uses the expanded set, so genuine unit conversions still pass.
+    grounded_finite = sorted(g for g in raw_grounded if abs(g) < 1e6)
     g_min = grounded_finite[0] if grounded_finite else None
     g_max = grounded_finite[-1] if grounded_finite else None
     g_count = len(grounded_finite)
@@ -585,27 +598,58 @@ def _is_grounded_name(
     return False
 
 
+def _collect_value_strings(obj: Any) -> list[str]:
+    """Recursively collect stringified leaf VALUES from a tool-result object.
+
+    Deliberately skips dict KEYS — structural field names (``section_title``,
+    ``document_type``, ``hole_id``, ``relevance_score``, …) are part of the
+    response *schema*, not evidence the tools returned, and must not ground a
+    fabricated entity name. Only the values the tools actually produced count.
+    """
+    out: list[str] = []
+    if isinstance(obj, dict):
+        for v in obj.values():
+            out.extend(_collect_value_strings(v))
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for v in obj:
+            out.extend(_collect_value_strings(v))
+    elif isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, (int, float, bool)) or obj is None:
+        out.append(str(obj))
+    return out
+
+
 def _extract_entities_from_tool_results(
     tool_results: list[tuple[str, Any]],
 ) -> set[str]:
-    """Collect all entity-like tokens from tool results for grounding.
+    """Collect entity-like tokens from tool-result VALUES for grounding.
 
-    Walks tool results and returns a set of lower-cased strings that appear
-    anywhere in the tool output.  Used to verify that entities mentioned in
-    the answer came from the tools, not from the LLM's training data.
+    Returns a set of lower-cased tokens that appear in the *values* of the tool
+    output. Used to verify entities mentioned in the answer came from the tools,
+    not from the LLM's training data.
+
+    Audit 2026-06-28: previously this serialized the whole result with
+    ``json.dumps`` (KEYS INCLUDED) and tokenised that. Structural field names
+    leaked into the bag, so a fabricated compound entity grounded as long as
+    each constituent word coincided with some key or value anywhere in any
+    payload — a false sense of grounding (the formation/entity check would not
+    warn on plausible fabrications). Now we walk VALUES ONLY. The 2+ char floor
+    is kept on purpose: this same bag grounds 2-char commodity codes (Au, Ag,
+    Cu) in the commodity check, which a 3-char floor would break.
     """
     entity_tokens: set[str] = set()
     for _tool_name, result in tool_results:
         try:
             if hasattr(result, "model_dump"):
-                text = json.dumps(result.model_dump(), default=str)
+                payload: Any = result.model_dump()
             elif hasattr(result, "__dict__"):
-                text = json.dumps(result.__dict__, default=str)
+                payload = result.__dict__
             else:
-                text = str(result)
-            # Add all distinct 3-char+ tokens (lower-cased) from the result.
-            for tok in re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{1,}\b", text):
-                entity_tokens.add(tok.lower())
+                payload = result
+            for value in _collect_value_strings(payload):
+                for tok in re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{1,}\b", value):
+                    entity_tokens.add(tok.lower())
         except Exception:
             continue
     return entity_tokens

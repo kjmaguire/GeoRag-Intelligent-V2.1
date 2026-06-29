@@ -15,6 +15,7 @@ re-implementing them.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import asyncpg
@@ -232,6 +233,59 @@ def _hole_ids_from_query(query: str) -> list[str]:
         return []
 
 
+# Question / command / generic words that are TitleCase at a sentence start but
+# are never entity names. Lowercased for comparison.
+_QUERY_STOPWORDS: frozenset[str] = frozenset({
+    "what", "which", "where", "when", "who", "how", "why", "is", "are", "was",
+    "were", "the", "a", "an", "tell", "me", "about", "show", "list", "find",
+    "give", "does", "do", "did", "can", "could", "would", "should", "please",
+    "and", "or", "of", "in", "on", "for", "to", "with", "from", "by", "at",
+    "this", "that", "these", "those", "there", "here", "project", "data",
+    "report", "summary", "between", "any", "all",
+})
+
+# Runs of 1–4 TitleCase words ("Triple R Deposit", "Athabasca Group"). Single
+# capital letters are allowed WITHIN a run ("Triple R Deposit"); standalone
+# single-char candidates are dropped below by the len>=2 guard.
+_TITLECASE_RUN_RE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,3})\b")
+# Anything in single/double quotes (2–80 chars).
+_QUOTED_ENTITY_RE = re.compile(r"""['"]([^'"]{2,80})['"]""")
+
+
+def _entity_names_from_query(query: str) -> list[str]:
+    """Best-effort entity-name extraction for ``traverse_knowledge_graph``.
+
+    Lightweight (no NER model): quoted strings first, then runs of TitleCase
+    words minus question/stopwords. ``traverse_knowledge_graph`` fuzzy-matches
+    (exact → CONTAINS) and returns an empty result gracefully on a miss, so a
+    noisy extraction is harmless — it yields an empty graph result, never a
+    wrong one. Returns up to 3 candidates, longest (most specific) first.
+
+    Audit 2026-06-28: before this, the dispatcher unconditionally skipped
+    traverse_knowledge_graph ("NER unwired"), so Neo4j was never consulted in
+    agentic chat even though three intent profiles list it as a primary tool.
+    """
+    if not query:
+        return []
+    out: list[str] = []
+    for cand in _QUOTED_ENTITY_RE.findall(query):
+        cand = cand.strip()
+        if cand and cand.lower() not in _QUERY_STOPWORDS:
+            out.append(cand)
+    for run in _TITLECASE_RUN_RE.findall(query):
+        words = [w for w in run.split() if w.lower() not in _QUERY_STOPWORDS]
+        if not words:
+            continue
+        cleaned = " ".join(words)
+        # Drop single-char standalone candidates ("R", "I") — too noisy to be
+        # an entity on their own; multi-word runs that contain them are kept.
+        if len(cleaned) >= 2 and cleaned not in out:
+            out.append(cleaned)
+    deduped = list(dict.fromkeys(out))
+    deduped.sort(key=len, reverse=True)
+    return deduped[:3]
+
+
 async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None:
     """Dispatch into ``app.agent.tools`` using the real per-tool signatures.
 
@@ -289,11 +343,15 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
 
     # ADR-0007 PR-1 chat-card tools take ``(deps, workspace_id, project_id)``
     # directly — no RunContext wrapper. workspace_id is JWT-derived and
-    # MUST be supplied; we fall back to the default dev workspace so the
-    # graph keeps running in unit tests where deps.workspace_id isn't set.
-    workspace_id = getattr(deps, "workspace_id", None) or (
-        "a0000000-0000-0000-0000-000000000001"
-    )
+    # MUST be supplied; we used to silently fall back to the default
+    # tenant when deps.workspace_id wasn't set, which the 2026-06-03 audit
+    # established as a multi-tenant contamination bug. Now resolved via
+    # WorkspaceContext.from_state which emits a metric on every fallback
+    # (Phase 1 observe-only) and will hard-fail in Phase 2.
+    from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+    workspace_id = WorkspaceContext.from_state(
+        deps, site="agentic_retrieval.execute_node.chat_cards",
+    ).workspace_id
 
     # ToolContext is the same shim the deterministic orchestrator uses to
     # adapt AgentDeps into a RunContext-shaped object for the legacy tools.
@@ -351,12 +409,24 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
                 return None
             return await fn(deps, workspace_id, project_id, hole_ids[0])
         if real_name == "traverse_knowledge_graph":
-            # Same NER gap for entity_name. Skip until NER lands.
+            # Audit 2026-06-28: wire lightweight entity extraction so the
+            # graph store is actually consulted when the query names an entity
+            # (three intent profiles list this as a primary tool). The tool
+            # fuzzy-matches and returns empty gracefully, so a missed/noisy
+            # extraction is a clean no-op rather than a wrong answer.
+            entity_names = _entity_names_from_query(query)
+            if not entity_names:
+                logger.info(
+                    "agentic_retrieval.execute: %s no entity name extracted from "
+                    "query — graph traversal skipped (no entity)",
+                    real_name,
+                )
+                return None
             logger.info(
-                "agentic_retrieval.execute: %s needs entity_name (NER unwired) — skipped",
-                real_name,
+                "agentic_retrieval.execute: %s firing for entity=%r",
+                real_name, entity_names[0],
             )
-            return None
+            return await fn(ctx, entity_names[0], project_id)
         if real_name == "query_spatial_geometry":
             # Plan §2g — wired call. Needs caller to supply geometry
             # via the spatial intent system (or future spec extractor).
@@ -451,9 +521,10 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 "agentic_retrieval.execute: query_collar_details import failed"
             )
         else:
-            workspace_id = getattr(state.deps, "workspace_id", None) or (
-                "a0000000-0000-0000-0000-000000000001"
-            )
+            from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+            workspace_id = WorkspaceContext.from_state(
+                state.deps, site="agentic_retrieval.execute_node.collar_details",
+            ).workspace_id
             project_id = getattr(state.deps, "project_id", None)
             if project_id is not None:
                 for hid in hole_ids:
@@ -503,10 +574,14 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             )
 
     # Secondary tools — best-effort; failures don't block the pipeline.
-    # We invoke them only when the primary pass yielded fewer than
-    # profile.max_chunks's-worth of results, a cheap heuristic for "we
-    # need more coverage".
-    if len(results) < 3 and profile.secondary_tools:
+    # We invoke them only when the primary pass yielded fewer than a small
+    # hardcoded number of results, a cheap heuristic for "we need more
+    # coverage". NOTE (audit 2026-06-28): this threshold is a literal, NOT
+    # profile.max_chunks — that field is declared but not yet wired (see
+    # RetrievalProfile). Keep the comment honest so the config isn't assumed
+    # to drive this branch.
+    _SECONDARY_COVERAGE_THRESHOLD = 3
+    if len(results) < _SECONDARY_COVERAGE_THRESHOLD and profile.secondary_tools:
         for tool_name in profile.secondary_tools:
             if not _allowed(tool_name):
                 continue
@@ -1242,22 +1317,64 @@ def _attach_envelope_notes_to_uncertainty(
 
 
 async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
-    """Run the same Layer-3/4/6 post-assembly validation the legacy path uses."""
+    """Run the Layer-2/3/4/6 post-assembly validation the legacy path uses.
+
+    Audit 2026-06-27 (T3): two gaps fixed here.
+      1. Layer 2 (typed-output repair) was never run on the agentic path — it
+         is now invoked first (sync, never raises) so orphan markers, empty
+         text, out-of-range confidence and empty grounding are caught.
+      2. ``should_retry`` from the Layer 3/4/6 validator was previously
+         discarded (``_should_retry``). The agentic graph has no LLM
+         re-generation loop yet, so we cannot re-call the model here; instead
+         we FLOOR the answer's confidence and surface a loud warning so a
+         fabrication- or constraint-flagged answer can never ship at normal
+         confidence. (Follow-up: a real validate→execute retry edge.)
+    """
+    from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
+        validate_and_repair,
+    )
     from app.agent.hallucination.orchestrator_validators import (  # noqa: PLC0415
         run_post_assembly_validation,
     )
 
     assert state.response is not None, "assemble_node must run before validate_node"
+
+    # Layer 2 — typed-output repair (sync, never raises).
+    response = validate_and_repair(state.response)
+
     try:
-        response, warnings, _should_retry = await run_post_assembly_validation(
-            state.response, state.tool_results, state.deps
+        response, warnings, should_retry = await run_post_assembly_validation(
+            response, state.tool_results, state.deps
         )
     except Exception:
         logger.exception(
             "agentic_retrieval.validate: post-assembly validation failed; "
             "returning the un-validated response"
         )
-        return {"validation_warnings": []}
+        return {"response": response, "validation_warnings": []}
+
+    if should_retry:
+        warnings = [
+            *warnings,
+            "Layer 4/6: fabrication or constraint signal detected — answer "
+            "not re-generated (agentic path has no retry loop); confidence "
+            "floored.",
+        ]
+        try:
+            _floored = min(float(getattr(response, "confidence", 0.2) or 0.2), 0.2)
+            response = response.model_copy(update={"confidence": _floored})
+            logger.error(
+                "agentic_retrieval.validate: should_retry=True — confidence "
+                "floored to %.2f. warnings=%s",
+                _floored,
+                warnings,
+            )
+        except Exception:
+            logger.debug(
+                "agentic_retrieval.validate: confidence floor skipped",
+                exc_info=True,
+            )
+
     return {"response": response, "validation_warnings": warnings}
 
 
@@ -1931,7 +2048,10 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         return {}
 
     project_id = getattr(state.deps, "project_id", None)
-    workspace_id = getattr(state.deps, "workspace_id", None) or "a0000000-0000-0000-0000-000000000001"
+    from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+    workspace_id = WorkspaceContext.from_state(
+        state.deps, site="agentic_retrieval.persist_node",
+    ).workspace_id
 
     try:
         from app.agent.lineage import build_lineage_payload  # noqa: PLC0415

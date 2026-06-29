@@ -13,6 +13,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Psr\Http\Message\StreamInterface;
@@ -124,10 +125,18 @@ class StreamQueryFromFastApi implements ShouldQueue
             $auditRow = null;
         }
         $userId = $auditRow?->user_id ?? 'unknown';
+        // Audit 2026-06-27: carry workspace_id in the JWT so the FastAPI
+        // lifecycle/RLS guard on the MAIN query path is actually enforced.
+        // Previously this mint omitted workspace_id, so the guard was silently
+        // skipped on every chat/RAG query. Derived from the project row.
+        $workspaceId = DB::table('silver.projects')
+            ->where('project_id', $this->projectId)
+            ->value('workspace_id');
         $jwt = app(FastApiJwtMinter::class)->mint(
             $userId,
             $this->projectId,
             [], // roles — no role system yet (see B7 follow-up)
+            $workspaceId !== null ? (string) $workspaceId : null,
         );
 
         // Note: the previous 600 ms subscription-race guard is no longer

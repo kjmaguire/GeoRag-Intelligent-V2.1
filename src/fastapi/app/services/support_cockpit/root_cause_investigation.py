@@ -33,6 +33,7 @@ Pattern rules (synthetic):
 """
 
 from __future__ import annotations
+from app.db import lookup_and_rescope
 
 import hashlib
 import json
@@ -249,29 +250,20 @@ async def investigate_ticket(
         )
 
     try:
-        async with pool.acquire() as conn:
-            # Block-3 RLS — see customer_response_drafting pattern.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                "a0000000-0000-0000-0000-000000000001",
-            )
-            # 1. Load the ticket.
-            ticket = await conn.fetchrow(
-                """
+        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py
+        # for the reference migration.
+        async with lookup_and_rescope(
+            pool,
+            lookup_sql="""
                 SELECT ticket_id, workspace_id::text AS workspace_id,
                        description, severity, category, status
                   FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
                 """,
-                ticket_str,
-            )
-            if ticket is None:
-                raise ValueError(f"ticket not found: {ticket_str}")
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                ticket["workspace_id"],
-            )
-
+            lookup_args=(ticket_str,),
+            site="support_cockpit.root_cause_investigation",
+            bootstrap_reason="support_cockpit.elevated_lookup",
+        ) as (conn, ticket):
             # 2. Scan recent audit + decision signal.
             patterns = CATEGORY_AUDIT_PATTERNS.get(ticket["category"], [])
             audit_rows = await _scan_recent_audits(

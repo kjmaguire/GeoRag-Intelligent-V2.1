@@ -50,6 +50,7 @@ import httpx
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.services.mv_refresh import refresh_views_with_advisory_lock
@@ -361,10 +362,26 @@ async def _tier_2_qdrant_spotcheck(pool: asyncpg.Pool) -> dict[str, float]:
 
 
 async def _qdrant_count_misses(point_ids: list[str]) -> int:
-    """HEAD-equivalent — GET each point and count 404s. Uses the
-    georag_reports collection per the per-passage embedding pipeline."""
+    """HEAD-equivalent — GET each point and count 404s.
+
+    Collection selection: follows the canonical RAG corpus per ADR-0010.
+    When ``settings.RETRIEVAL_USE_DOCUMENT_PASSAGES`` is True (the
+    default since 2026-05-28), live writes go to ``georag_chunks``;
+    otherwise the legacy ``georag_reports`` collection is the source
+    of truth. Hardcoding the legacy name (the pre-2026-06-02 behavior)
+    made every new passage look like a miss because new points landed
+    in chunks while the sweep checked reports — see P1-B + the
+    dead-settings sweep in docs/handover/AUDIT_AND_FIX_REPORT.md.
+    """
+    from app.config import settings  # local import to avoid module cycle
+
+    collection = (
+        "georag_chunks"
+        if settings.RETRIEVAL_USE_DOCUMENT_PASSAGES
+        else "georag_reports"
+    )
     misses = 0
-    url_base = _qdrant_url() + "/collections/georag_reports/points/"
+    url_base = _qdrant_url() + f"/collections/{collection}/points/"
     async with httpx.AsyncClient(timeout=10.0) as client:
         for pid in point_ids:
             try:
@@ -566,15 +583,16 @@ async def _write_integrity_report_row(
                     error_text
                 ) VALUES (
                     gen_random_uuid(),
-                    'a0000000-0000-0000-0000-000000000001'::uuid,
+                    $1::uuid,
                     NULL,
-                    $1, $2,
+                    $2, $3,
                     'completed', 'integrity_sweep', 'completed',
                     5, 5,
                     'nightly_integrity_sweep', now(), now(), now(),
-                    $3
+                    $4
                 )
                 """,
+                LEGACY_DEFAULT_TENANT_UUID,
                 f"_integrity_sweep/pass_{pass_number}_{_uuid.uuid4()}",
                 f"integrity_sweep_pass_{pass_number}",
                 json.dumps(payload),

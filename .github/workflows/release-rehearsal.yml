@@ -50,7 +50,7 @@ concurrency:
   cancel-in-progress: false  # never cancel a release gate run mid-flight
 
 env:
-  PHP_VERSION: "8.4"
+  PHP_VERSION: "8.5"
   PYTHON_VERSION: "3.13"
   COMPOSE_PROJECT_NAME: georag
 
@@ -63,7 +63,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Log dispatch reason
         run: |
@@ -118,7 +118,7 @@ jobs:
 
       # ── Python test environment ────────────────────────────────────────────
       - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -192,7 +192,7 @@ jobs:
       # ── Upload test result artifacts ───────────────────────────────────────
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-test-results-${{ github.ref_name }}
           path: |

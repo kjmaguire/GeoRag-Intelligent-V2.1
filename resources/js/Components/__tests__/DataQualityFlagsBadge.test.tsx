@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * DataQualityFlagsBadge.test.tsx — Plan §6a badge UI.
  *

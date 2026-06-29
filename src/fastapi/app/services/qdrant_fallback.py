@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # Sentinel base class catch — qdrant_client's exception hierarchy. We
 # import lazily to avoid the dep at module-import time (the fallback
 # module is imported in the hot path; qdrant_client adds ~80ms cold).
+from app.db import bind_workspace_scope
 def _is_qdrant_unavailability(exc: BaseException) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, httpx.HTTPError, ConnectionError)):
         return True
@@ -165,9 +166,7 @@ async def _pg_trgm_search(
     try:
         async with pg_pool.acquire() as conn:
             # Mandatory GUC for the RLS policy on document_passages.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)", ws
-            )
+            await bind_workspace_scope(conn, workspace_id=ws, site="qdrant_fallback")
             rows = await conn.fetch(sql, query_text, ws, limit)
         return [
             {

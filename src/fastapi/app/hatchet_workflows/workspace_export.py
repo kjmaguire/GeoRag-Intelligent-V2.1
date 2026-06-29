@@ -57,6 +57,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.workspace_export")
@@ -99,6 +100,31 @@ class WorkspaceExportInput(BaseModel):
         default=True,
         description="§11.3-v2 — include Redis keys matching georag:ws:<uuid>:* prefix (cache only).",
     )
+
+    # Defence-in-depth UUID guard — the workspace_id is interpolated
+    # into f-string SQL at workspace_export.py:192 (`SELECT * FROM
+    # {qualified_table} WHERE workspace_id = $1::uuid`). $1 binding
+    # is safe for the value, but the qualified_table comes from a
+    # static allowlist and the workspace_id flows into other paths
+    # (S3 key prefix, Redis key prefix) that don't bind. A malformed
+    # workspace_id here could create arbitrarily-named SeaweedFS
+    # objects. 2026-06-03 audit — see AUDIT_AND_FIX_REPORT.md
+    # Theme G + workflow input sweep.
+    from pydantic import field_validator as _fv
+
+    @_fv("workspace_id")
+    @classmethod
+    def _validate_workspace_id_uuid(cls, v: str) -> str:
+        import re as _re
+        if not _re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            v,
+            _re.IGNORECASE,
+        ):
+            raise ValueError(
+                "WorkspaceExportInput.workspace_id must be a UUID (canonical 8-4-4-4-12 form)."
+            )
+        return v
 
 
 class WorkspaceExportOutput(BaseModel):
@@ -193,8 +219,8 @@ async def _export_one_table(
                 workspace_id,
             )
         except asyncpg.exceptions.UndefinedColumnError:
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="hatchet.workspace_export"
             )
             rows = await conn.fetch(f"SELECT * FROM {qualified_table}")
         except Exception as exc:  # noqa: BLE001

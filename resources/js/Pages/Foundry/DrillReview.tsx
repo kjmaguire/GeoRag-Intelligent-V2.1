@@ -1,5 +1,6 @@
 import { Head, Link, router } from '@inertiajs/react';
 import { useMemo, useState } from 'react';
+import type { JSX } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { Card, EmptyState, PageHeader, Pill, Stat } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';

@@ -6,46 +6,47 @@ deploying in any multi-customer or multi-project environment.
 
 ---
 
-## ⚠️  MULTI-TENANT RBAC — OFF BY DEFAULT
+## ✅ MULTI-TENANT RBAC — ON BY DEFAULT
 
 ```
-settings.MULTI_TENANT_ENFORCEMENT_ENABLED: bool = False   # DEFAULT
+settings.MULTI_TENANT_ENFORCEMENT_ENABLED: bool = True   # DEFAULT (config.py)
 ```
 
-The default build ships with **single-tenant / graceful-rollout** posture:
+> **Audit 2026-06-27 correction.** This section previously claimed the flag was
+> `False` / OFF by default. That was stale and asserted the **opposite** of the
+> live default. Enforcement is **ON out of the box**; the single-tenant posture
+> below is now an explicit, validated opt-out.
 
-- Requests authenticated with `X-Service-Key` alone are accepted.
-- JWT `project_id` mismatches against the request body are **logged as
-  warnings** but the request still proceeds using the body's project_id.
-- Requests without a JWT at all are accepted so long as `X-Service-Key`
-  validates.
+The default build ships **enforcing** tenant isolation:
 
-This is safe when:
-1. The deployment is single-customer. Every Laravel user shares the same
-   trust boundary and there is no business need to prevent a user on
-   project A from asking about project B — the Laravel front door
-   already enforces project membership before minting the JWT.
-2. You are in the middle of rolling out the `FastApiJwtMinter` to every
-   Laravel deploy and cannot tolerate 403s from callers that haven't
-   shipped the minter yet.
+- Requests where the JWT `project_id` does not equal the body `project_id` —
+  or where the JWT is missing a `project_id` — receive HTTP 403 and never
+  reach the retrieval pipeline.
+- `X-Service-Key` authenticates the service-to-service hop; the JWT carries the
+  per-request identity (`project_id`, and `workspace_id` as of the 2026-06
+  streaming-JWT fix) used by the RLS GUC binding.
 
-It is **NOT safe** when:
-1. The same FastAPI instance serves multiple customer organisations.
-2. A user on project A could in any way be induced to send a request
-   with `body.project_id = <project belonging to customer B>` — the
-   FastAPI service will happily retrieve project B's data because the
-   flag is off.
+### Explicit single-tenant / graceful-rollout opt-out
 
-### Turning it on
+For a single-customer deployment — or while rolling `FastApiJwtMinter` out to
+every Laravel deploy — you may relax enforcement, but config.py **requires you
+to acknowledge it explicitly** (`MULTI_TENANT_ENFORCEMENT_ENABLED=False`
+without `SINGLE_TENANT_MODE=True` raises at startup; you cannot silently
+disable isolation):
 
-When every Laravel deployment hitting the FastAPI service signs requests
-through `FastApiJwtMinter`:
+1. Set `MULTI_TENANT_ENFORCEMENT_ENABLED=false` AND `SINGLE_TENANT_MODE=true`
+   in the FastAPI env file.
+2. In that relaxed posture: `X-Service-Key`-only requests are accepted; JWT
+   `project_id` mismatches are logged as warnings but the request proceeds
+   using the body's `project_id`; requests without a JWT are accepted so long
+   as `X-Service-Key` validates.
 
-1. Set `MULTI_TENANT_ENFORCEMENT_ENABLED=true` in the FastAPI env file.
-2. Restart FastAPI. The startup log will print a confirmation banner.
-3. From that point on, requests where the JWT `project_id` doesn't equal
-   the body `project_id` — or where the JWT is missing a project_id —
-   will receive HTTP 403 and never hit the retrieval pipeline.
+The relaxed posture is safe **only** when the deployment is single-customer
+(every Laravel user shares one trust boundary and the Laravel front door
+already enforces project membership before minting the JWT). It is **NOT safe**
+when the same FastAPI instance serves multiple customer organisations — a user
+induced to send `body.project_id = <another customer's project>` would have it
+honoured. Leave the default (enforcement ON) for any multi-customer deployment.
 
 ### Defence-in-depth: row-level security in PostGIS
 

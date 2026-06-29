@@ -47,7 +47,13 @@ services:
   # Pinned to a specific minor; Langfuse v3 requires CH >= 24.3. Bump
   # deliberately on a feature branch.
   clickhouse:
-    image: clickhouse/clickhouse-server:24.10-alpine
+    # 2026-06-23 sweep: 24.10-alpine -> 26.3-alpine (LTS) + SHA pin.
+    # Async inserts on by default (cuts part churn under FastAPI trace
+    # bursts) + improved JOIN reordering + materialized CTEs. CH supports
+    # rolling upgrades across LTS lines so existing trace data carries
+    # forward. Stay on the LTS track — Langfuse v3 names 26.x in its
+    # tested matrix.
+    image: clickhouse/clickhouse-server:26.3-alpine@sha256:5760feb32c82d55a525920bbe4b5fb354e37d4fb95859a56814191c43394fc6f
     container_name: georag-clickhouse
     restart: unless-stopped
     networks:
@@ -88,7 +94,10 @@ services:
   # langfuse-init — one-shot database/role provisioning (matches n8n-init shape)
   # ---------------------------------------------------------------------------
   langfuse-init:
-    image: postgres:18-alpine
+    # 2026-06-24 re-audit: was unpinned `postgres:18-alpine`; pinned to
+    # 18.4-alpine + digest for reproducibility (this one-shot init ran a
+    # different PG client version on every fresh pull).
+    image: postgres:18.4-alpine@sha256:1b1689b20d16a014a3d195653381cf2caa75a41a92d93b255a9d6ea29fd353aa
     container_name: georag-langfuse-init
     restart: "no"
     depends_on:
@@ -135,7 +144,13 @@ services:
   # langfuse-web — UI + ingestion API
   # ---------------------------------------------------------------------------
   langfuse-web:
-    image: langfuse/langfuse:3
+    # 2026-06-03 sweep: pinned to digest captured from `docker pull
+    # langfuse/langfuse:3` on 2026-06-03. Self-host v3 is still the
+    # supported track (v4 is Cloud Preview only, not GA for self-host).
+    # Re-pin with `docker pull langfuse/langfuse:3 && docker inspect
+    # langfuse/langfuse:3 --format '{{index .RepoDigests 0}}'` after
+    # any version bump. MUST move in lockstep with langfuse-worker below.
+    image: langfuse/langfuse:3@sha256:571446cb16a5d66707f094e638bb156cb9cebaa992d76a7213d2150ce9e1ee18
     container_name: georag-langfuse-web
     restart: unless-stopped
     depends_on:
@@ -244,7 +259,10 @@ services:
   # langfuse-worker — background trace ingestion + scoring + alerting
   # ---------------------------------------------------------------------------
   langfuse-worker:
-    image: langfuse/langfuse-worker:3
+    # 2026-06-03 sweep: pinned in lockstep with langfuse-web above.
+    # Digest captured from `docker pull langfuse/langfuse-worker:3` on
+    # the same day so worker ABI matches web. Re-pin both together.
+    image: langfuse/langfuse-worker:3@sha256:90df7fbd475abd66b1a9a2e10c99f542a94670a6fc898ddd5809ac3147e601f8
     container_name: georag-langfuse-worker
     restart: unless-stopped
     depends_on:

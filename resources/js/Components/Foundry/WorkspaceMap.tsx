@@ -737,24 +737,24 @@ export function WorkspaceMap({
                             properties: leaves[i].properties,
                         });
                     }
-                    (map.getSource('spider-lines') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: lineFeatures });
-                    (map.getSource('spider-points') as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: pointFeatures });
+                    (map.getSource('spider-lines') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: lineFeatures });
+                    (map.getSource('spider-points') as unknown as { setData: (d: unknown) => void }).setData({ type: 'FeatureCollection', features: pointFeatures });
                     // eslint-disable-next-line no-console
                     console.log('[workspace-map] spiderfy populated', n, 'points at radius', radius);
                 }
 
                 map.on('click', 'cluster-circles', (e: {
-                    features?: Array<{ geometry: { coordinates: [number, number] }; properties: Record<string, unknown> }>;
+                    features?: Array<{ geometry: { type: string; coordinates?: unknown }; properties: Record<string, unknown> }>;
                 }) => {
                     // eslint-disable-next-line no-console
                     console.log('[workspace-map] cluster-circles click', e.features?.length ?? 0, 'features');
                     const f = e.features?.[0];
                     if (!f) return;
                     const clusterId = Number(f.properties.cluster_id);
-                    const center = f.geometry.coordinates;
+                    const center = f.geometry.coordinates as [number, number];
                     // eslint-disable-next-line no-console
                     console.log('[workspace-map] cluster_id', clusterId, 'point_count', f.properties.point_count, 'center', center);
-                    const src = map.getSource('collars') as {
+                    const src = map.getSource('collars') as unknown as {
                         getClusterLeaves: (id: number, limit: number, offset: number) => Promise<unknown[]>;
                     };
                     if (typeof src.getClusterLeaves !== 'function') {
@@ -818,7 +818,7 @@ export function WorkspaceMap({
                 //   - opening another cluster (its handler tears the old one
                 //     down by overwriting the source data)
                 map.on('click', (e: { point: { x: number; y: number } }) => {
-                    const hits = map.queryRenderedFeatures(e.point, {
+                    const hits = map.queryRenderedFeatures([e.point.x, e.point.y], {
                         layers: ['cluster-circles', 'collars-dot', 'spider-dot'],
                     });
                     if (!hits || hits.length === 0) {

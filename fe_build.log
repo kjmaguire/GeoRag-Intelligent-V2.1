@@ -1,0 +1,293 @@
+
+added 678 packages in 2m
+npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn allow-scripts   es5-ext@0.10.64 (postinstall:  node -e "try{require('./_postinstall')}catch(e){}" || exit 0)
+npm warn allow-scripts
+npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
+npm notice
+npm notice New minor version of npm available! 11.16.0 -> 11.17.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.17.0
+npm notice To update run: npm install -g npm@11.17.0
+npm notice
+vite v8.0.8 building client environment for production...
+[2Ktransforming...✓ 3254 modules transformed.
+rendering chunks...
+computing gzip size...
+public/build/assets/jetbrains-mono-cyrillic-ext-400-normal-C_uLvvQ5.woff2      1.16 kB
+public/build/assets/jetbrains-mono-cyrillic-ext-600-normal-Dj6eZy5f.woff2      1.16 kB
+public/build/assets/jetbrains-mono-cyrillic-ext-500-normal-C9ShMxGR.woff2      1.17 kB
+public/build/assets/jetbrains-mono-cyrillic-ext-600-normal-DVvC-yKp.woff       1.72 kB
+public/build/assets/jetbrains-mono-cyrillic-ext-500-normal-CEVyPk4Y.woff       1.74 kB
+public/build/assets/jetbrains-mono-cyrillic-ext-400-normal-Bh0R7Dhr.woff       1.74 kB
+public/build/assets/jetbrains-mono-vietnamese-400-normal-ByoDsISC.woff2        3.92 kB
+public/build/assets/jetbrains-mono-vietnamese-600-normal-Dtizs43-.woff2        3.99 kB
+public/build/assets/jetbrains-mono-vietnamese-500-normal-BvH7FW2L.woff2        4.04 kB
+public/build/assets/jetbrains-mono-greek-400-normal-C190GLew.woff2             4.22 kB
+public/build/assets/jetbrains-mono-greek-500-normal-JpySY46c.woff2             4.28 kB
+public/build/assets/jetbrains-mono-greek-600-normal-H7WoG9Et.woff2             4.30 kB
+public/build/assets/inter-tight-vietnamese-400-normal-CqzIqjuX.woff2           4.94 kB
+public/build/assets/inter-tight-vietnamese-300-normal-CYiRM3tK.woff2           4.98 kB
+public/build/assets/inter-tight-vietnamese-500-normal-C7jl9LDK.woff2           5.02 kB
+public/build/assets/inter-tight-vietnamese-600-normal-FGgebaLI.woff2           5.06 kB
+public/build/assets/inter-tight-vietnamese-700-normal-Cn_DV52A.woff2           5.15 kB
+public/build/assets/jetbrains-mono-cyrillic-400-normal-BEIGL1Tu.woff2          5.32 kB
+public/build/assets/inter-tight-greek-ext-400-normal-C3GMUg_S.woff2            5.33 kB
+public/build/assets/jetbrains-mono-cyrillic-500-normal-DmUKJPL_.woff2          5.35 kB
+public/build/assets/jetbrains-mono-vietnamese-400-normal-CqNFfHCs.woff         5.37 kB
+public/build/assets/jetbrains-mono-cyrillic-600-normal-EVf6-Yzo.woff2          5.38 kB
+public/build/assets/inter-tight-greek-ext-300-normal-B2sN05p_.woff2            5.44 kB
+public/build/assets/inter-tight-greek-ext-500-normal-Be7hKmpC.woff2            5.44 kB
+public/build/assets/jetbrains-mono-vietnamese-500-normal-DNRqzVM1.woff         5.47 kB
+public/build/assets/jetbrains-mono-vietnamese-600-normal-OWROknRo.woff         5.47 kB
+public/build/assets/inter-tight-greek-ext-700-normal-D0RkHJEE.woff2            5.48 kB
+public/build/assets/inter-tight-greek-ext-600-normal-CiDI6ET5.woff2            5.50 kB
+public/build/assets/jetbrains-mono-greek-400-normal-B9oWc5Lo.woff              5.66 kB
+public/build/assets/jetbrains-mono-greek-600-normal-mc2nkWzM.woff              5.70 kB
+public/build/assets/jetbrains-mono-greek-500-normal-D7SFKleX.woff              5.72 kB
+public/build/assets/inter-tight-vietnamese-400-normal-kSDs3Vd1.woff            6.57 kB
+public/build/assets/inter-tight-vietnamese-300-normal-NyGxASF1.woff            6.66 kB
+public/build/assets/inter-tight-vietnamese-500-normal-CO4EMNTO.woff            6.68 kB
+public/build/assets/inter-tight-vietnamese-600-normal-BCXZ1BbA.woff            6.73 kB
+public/build/assets/inter-tight-vietnamese-700-normal-DwHBAXeT.woff            6.76 kB
+public/build/assets/inter-tight-cyrillic-400-normal-G7BuwYWK.woff2             6.78 kB
+public/build/assets/inter-tight-cyrillic-300-normal-v85RudRx.woff2             6.84 kB
+public/build/assets/jetbrains-mono-cyrillic-400-normal-ugxPyKxw.woff           6.97 kB
+public/build/assets/inter-tight-cyrillic-600-normal-BERwQ0yl.woff2             6.98 kB
+public/build/assets/inter-tight-cyrillic-700-normal-DtWWjp29.woff2             6.99 kB
+public/build/assets/jetbrains-mono-cyrillic-600-normal-8K4wrrwR.woff           7.02 kB
+public/build/assets/jetbrains-mono-cyrillic-500-normal-DJqRU3vO.woff           7.02 kB
+public/build/assets/inter-tight-cyrillic-500-normal-5ykfyGeh.woff2             7.09 kB
+public/build/assets/inter-tight-greek-ext-400-normal-DMqR5RoS.woff             7.09 kB
+public/build/assets/inter-tight-greek-ext-500-normal-BEGGcu3x.woff             7.25 kB
+public/build/assets/inter-tight-greek-ext-600-normal-5gKW7MDU.woff             7.29 kB
+public/build/assets/inter-tight-greek-ext-700-normal-mW3dmpoD.woff             7.29 kB
+public/build/assets/inter-tight-greek-ext-300-normal-DGsdomI5.woff             7.31 kB
+public/build/assets/jetbrains-mono-latin-ext-400-normal-Bc8Ftmh3.woff2         7.33 kB
+public/build/assets/jetbrains-mono-latin-ext-600-normal-BfB_LPfz.woff2         7.51 kB
+public/build/assets/jetbrains-mono-latin-ext-500-normal-Cut-4mMH.woff2         7.52 kB
+public/build/assets/inter-tight-cyrillic-400-normal-DPRou3KO.woff              8.66 kB
+public/build/assets/inter-tight-greek-400-normal-Br_GQm5W.woff2                8.68 kB
+public/build/assets/inter-tight-cyrillic-300-normal-BDodsKhS.woff              8.80 kB
+public/build/assets/inter-tight-greek-300-normal-BQANonrC.woff2                8.86 kB
+public/build/assets/inter-tight-cyrillic-600-normal-BeTasGgk.woff              8.90 kB
+public/build/assets/inter-tight-cyrillic-500-normal-CRXauZSq.woff              8.91 kB
+public/build/assets/inter-tight-greek-700-normal-RgALSHS4.woff2                8.92 kB
+public/build/assets/inter-tight-cyrillic-700-normal-DDZiLR3d.woff              8.94 kB
+public/build/assets/inter-tight-greek-500-normal-kave9HZE.woff2                8.94 kB
+public/build/assets/inter-tight-greek-600-normal-BIqmcc-q.woff2                8.98 kB
+public/build/assets/jetbrains-mono-latin-ext-400-normal-fXTG6kC5.woff         10.12 kB
+public/build/assets/inter-tight-cyrillic-ext-400-normal-CKO3cWyd.woff2        10.14 kB
+public/build/assets/jetbrains-mono-latin-ext-600-normal-DObL3zCW.woff         10.31 kB
+public/build/assets/jetbrains-mono-latin-ext-500-normal-ckzbgY84.woff         10.33 kB
+public/build/assets/inter-tight-cyrillic-ext-300-normal-Q6N-kkEg.woff2        10.34 kB
+public/build/assets/inter-tight-cyrillic-ext-600-normal-B4SKDMEv.woff2        10.48 kB
+public/build/assets/inter-tight-cyrillic-ext-700-normal-D_7NT8eF.woff2        10.50 kB
+public/build/assets/inter-tight-cyrillic-ext-500-normal-BZAF-_VI.woff2        10.52 kB
+public/build/assets/inter-tight-greek-400-normal-BLLSFQTx.woff                10.92 kB
+public/build/assets/inter-tight-greek-500-normal-Ca-cFdRH.woff                11.13 kB
+public/build/assets/inter-tight-greek-600-normal-67HAlfW-.woff                11.17 kB
+public/build/assets/inter-tight-greek-300-normal-DMcMlZzP.woff                11.18 kB
+public/build/assets/inter-tight-greek-700-normal-DU8XoIeX.woff                11.21 kB
+public/build/assets/inter-tight-cyrillic-ext-400-normal-DiHHcP5k.woff         13.53 kB
+public/build/assets/inter-tight-cyrillic-ext-300-normal-B2VrT0JD.woff         13.72 kB
+public/build/assets/inter-tight-cyrillic-ext-500-normal-Dy1ZB9JY.woff         13.76 kB
+public/build/assets/inter-tight-cyrillic-ext-600-normal-_3ga77Eo.woff         13.84 kB
+public/build/assets/inter-tight-cyrillic-ext-700-normal-BFcoPt71.woff         13.86 kB
+public/build/assets/jetbrains-mono-latin-400-normal-V6pRDFza.woff2            21.16 kB
+public/build/assets/jetbrains-mono-latin-500-normal-BWZEU5yA.woff2            21.83 kB
+public/build/assets/jetbrains-mono-latin-600-normal-C8RAYTDA.woff2            21.86 kB
+public/build/assets/inter-tight-latin-400-normal-iW8qmuJY.woff2               22.01 kB
+public/build/assets/inter-tight-latin-300-normal-D984wGGM.woff2               22.48 kB
+public/build/assets/inter-tight-latin-500-normal-BFXNXuvF.woff2               22.61 kB
+public/build/assets/inter-tight-latin-600-normal-BgSTtRxb.woff2               22.66 kB
+public/build/assets/inter-tight-latin-700-normal-BZKd_v_8.woff2               22.74 kB
+public/build/assets/jetbrains-mono-latin-400-normal-6-qcROiO.woff             27.49 kB
+public/build/assets/jetbrains-mono-latin-600-normal-BfsvjouI.woff             28.18 kB
+public/build/assets/jetbrains-mono-latin-500-normal-CJOVTJB7.woff             28.20 kB
+public/build/assets/inter-tight-latin-400-normal-BLrFJfvD.woff                28.24 kB
+public/build/assets/inter-tight-latin-300-normal-Cb55kdq8.woff                28.85 kB
+public/build/assets/inter-tight-latin-500-normal-pobXraBK.woff                28.94 kB
+public/build/assets/inter-tight-latin-600-normal-D7bG6gX1.woff                29.05 kB
+public/build/assets/inter-tight-latin-700-normal-DvYAVZQd.woff                29.05 kB
+public/build/assets/inter-tight-latin-ext-400-normal-DN7wyBvd.woff2           36.22 kB
+public/build/assets/inter-tight-latin-ext-300-normal-C6q1igsZ.woff2           37.37 kB
+public/build/assets/inter-tight-latin-ext-500-normal-D3akd6m-.woff2           37.72 kB
+public/build/assets/inter-tight-latin-ext-600-normal-BgMgWFts.woff2           37.90 kB
+public/build/assets/inter-tight-latin-ext-700-normal-BpKPOkj3.woff2           37.90 kB
+public/build/assets/inter-tight-latin-ext-400-normal-BQQeeQrv.woff            49.18 kB
+public/build/assets/inter-tight-latin-ext-500-normal-_hLDZz_3.woff            50.89 kB
+public/build/assets/inter-tight-latin-ext-300-normal-DC3AoG2m.woff            51.08 kB
+public/build/assets/inter-tight-latin-ext-700-normal-CrlzIQ10.woff            51.14 kB
+public/build/assets/inter-tight-latin-ext-600-normal-BvYdOF2O.woff            51.18 kB
+public/build/manifest.json                                                    97.30 kB │ gzip:     9.67 kB
+public/build/assets/style-CHpVij2M.css                                        15.39 kB │ gzip:     2.55 kB
+public/build/assets/app-Coop-CT2.css                                          18.95 kB │ gzip:     1.91 kB
+public/build/assets/maplibre-gl-B2k4QVOw.css                                  69.80 kB │ gzip:    10.10 kB
+public/build/assets/app-Dhc1TQ45.css                                         128.04 kB │ gzip:    22.87 kB
+public/build/assets/GeoPlot-Dz8QzwYJ.js                                        0.06 kB │ gzip:     0.07 kB
+public/build/assets/escapeHtml-CdUrH_BD.js                                     0.16 kB │ gzip:     0.12 kB
+public/build/assets/basemap-0GvER_S_.js                                        0.30 kB │ gzip:     0.21 kB
+public/build/assets/useFullscreenToggle-BibW4hRz.js                            0.39 kB │ gzip:     0.28 kB
+public/build/assets/jsx-runtime-x70AGKtq.js                                    0.42 kB │ gzip:     0.29 kB
+public/build/assets/useEvidenceMapPin-BkK2jyrN.js                              0.47 kB │ gzip:     0.31 kB
+public/build/assets/layerVisibilityStorage-lCH1Mznq.js                         0.66 kB │ gzip:     0.35 kB
+public/build/assets/useWorkspaceActivity-BAUNPjoz.js                           0.66 kB │ gzip:     0.40 kB
+public/build/assets/useWorkspaceDataUpdated-C3nRS-6U.js                        0.67 kB │ gzip:     0.41 kB
+public/build/assets/useAdminSurfaceUpdated-BWjplqWA.js                         0.70 kB │ gzip:     0.42 kB
+public/build/assets/NewProject.test-Dr5vxdWD.js                                0.86 kB │ gzip:     0.56 kB
+public/build/assets/GeoPlot-DDtuLhvC.js                                        1.05 kB │ gzip:     0.61 kB
+public/build/assets/chunk-DF37yw5_.js                                          1.07 kB │ gzip:     0.61 kB
+public/build/assets/NotFound-VGJ4RCj6.js                                       1.10 kB │ gzip:     0.51 kB
+public/build/assets/preload-helper-DeSptEav.js                                 1.19 kB │ gzip:     0.68 kB
+public/build/assets/useTileInvalidation-DYkdJ_i5.js                            1.30 kB │ gzip:     0.57 kB
+public/build/assets/table-DkXQ3Ump.js                                          1.30 kB │ gzip:     0.53 kB
+public/build/assets/_shared-BVTp4182.js                                        1.68 kB │ gzip:     0.63 kB
+public/build/assets/Reporting-DcEzBZaN.js                                      1.80 kB │ gzip:     0.88 kB
+public/build/assets/Chat.test-CYorG4id.js                                      1.87 kB │ gzip:     0.86 kB
+public/build/assets/SavedMapViews-DqH5HDKJ.js                                  1.88 kB │ gzip:     0.82 kB
+public/build/assets/Investigations-DAg3seic.js                                 1.97 kB │ gzip:     0.93 kB
+public/build/assets/TimelineCard-B2Xa4T9z.js                                   2.03 kB │ gzip:     1.09 kB
+public/build/assets/TargetRecommendation-D64dOwDZ.js                           2.05 kB │ gzip:     0.98 kB
+public/build/assets/PublicGeoOverlay-DlYPJFos.js                               2.10 kB │ gzip:     0.96 kB
+public/build/assets/LoadTest-BunN2OwV.js                                       2.16 kB │ gzip:     1.02 kB
+public/build/assets/KnowledgeGraph-Drb_Fuar.js                                 2.31 kB │ gzip:     1.22 kB
+public/build/assets/WorkspaceMembers-B941H2W9.js                               2.50 kB │ gzip:     1.00 kB
+public/build/assets/ProjectAnalytics-yyt_vi3G.js                               2.55 kB │ gzip:     1.23 kB
+public/build/assets/LlmCost-W0ALfH9c.js                                        2.57 kB │ gzip:     1.25 kB
+public/build/assets/Dashboards-dbcf7_Vr.js                                     2.66 kB │ gzip:     0.98 kB
+public/build/assets/Projects-CAxwasGc.js                                       2.67 kB │ gzip:     1.09 kB
+public/build/assets/TargetRecommendationRuns-BMlICw2T.js                       2.69 kB │ gzip:     1.04 kB
+public/build/assets/ForgotPassword-B2aWCYqL.js                                 2.71 kB │ gzip:     1.20 kB
+public/build/assets/VisualReadiness-Bd-Q5Xax.js                                2.73 kB │ gzip:     1.23 kB
+public/build/assets/EvidenceQuality-Dm7JZ_iu.js                                2.75 kB │ gzip:     1.25 kB
+public/build/assets/MultiHole3DTrace-BZMMWDpg.js                               2.82 kB │ gzip:     1.32 kB
+public/build/assets/ExportGate-Ce8fpVZH.js                                     2.84 kB │ gzip:     1.15 kB
+public/build/assets/Inbox-Cx-xwbw-.js                                          2.85 kB │ gzip:     1.31 kB
+public/build/assets/AggregateStereonet-DvlkBwaU.js                             2.86 kB │ gzip:     1.29 kB
+public/build/assets/PhaseH4Health-DlFrRGfh.js                                  2.96 kB │ gzip:     1.19 kB
+public/build/assets/Report-DqVfyrzh.js                                         3.00 kB │ gzip:     1.29 kB
+public/build/assets/WhatChangedFeed-C8qrF5Nb.js                                3.05 kB │ gzip:     1.40 kB
+public/build/assets/CoverageTableCard-B4pLvdBx.js                              3.06 kB │ gzip:     1.12 kB
+public/build/assets/WorkspaceSettings-DBy1X-Uh.js                              3.13 kB │ gzip:     1.37 kB
+public/build/assets/WhatChanged-4yy--CM2.js                                    3.24 kB │ gzip:     1.07 kB
+public/build/assets/GeochemPlots-XdzCrNku.js                                   3.26 kB │ gzip:     1.46 kB
+public/build/assets/SourceTrust-DqR_OAii.js                                    3.48 kB │ gzip:     1.36 kB
+public/build/assets/react-dom-CHRVTVJX.js                                      3.56 kB │ gzip:     1.35 kB
+public/build/assets/StereonetCard-C5tmGc1V.js                                  3.59 kB │ gzip:     1.57 kB
+public/build/assets/DataQualityFlagsBadge-DKnYYzHt.js                          3.70 kB │ gzip:     1.45 kB
+public/build/assets/SavedMaps-CgMD8JRN.js                                      3.78 kB │ gzip:     1.53 kB
+public/build/assets/Pins-DQEy8emo.js                                           3.82 kB │ gzip:     1.41 kB
+public/build/assets/Workspaces-BuTpcJZV.js                                     3.83 kB │ gzip:     1.55 kB
+public/build/assets/AssayComposites3DView-DGdiDtao.js                          3.88 kB │ gzip:     1.62 kB
+public/build/assets/AzimuthDipVsDepth-4PzRTH-y.js                              3.88 kB │ gzip:     1.43 kB
+public/build/assets/CommoditySamples3DView-Bxicw9Sx.js                         3.91 kB │ gzip:     1.66 kB
+public/build/assets/PublicGeo-Dmlmhde8.js                                      4.00 kB │ gzip:     1.46 kB
+public/build/assets/AuditExplorer-Br33rnke.js                                  4.02 kB │ gzip:     1.38 kB
+public/build/assets/Hypothesis-fl84yYTZ.js                                     4.14 kB │ gzip:     1.31 kB
+public/build/assets/Stereonet-D4lDt2AB.js                                      4.39 kB │ gzip:     1.84 kB
+public/build/assets/AuditLog-Be5zYwcm.js                                       4.47 kB │ gzip:     1.65 kB
+public/build/assets/Prompts-D4JsUyMP.js                                        4.48 kB │ gzip:     1.54 kB
+public/build/assets/Conflicts-C7SIx8mB.js                                      4.53 kB │ gzip:     1.78 kB
+public/build/assets/StructureDiscs3DView-BF5d23sl.js                           4.54 kB │ gzip:     2.03 kB
+public/build/assets/SignificantIntersections3DView-pN9wl_dq.js                 4.56 kB │ gzip:     1.83 kB
+public/build/assets/Stereosphere-CjLdOjV2.js                                   4.57 kB │ gzip:     1.74 kB
+public/build/assets/QpCredentials-C51Zy5Y4.js                                  4.59 kB │ gzip:     1.56 kB
+public/build/assets/ChartsGallery-CE58SqDs.js                                  4.77 kB │ gzip:     2.26 kB
+public/build/assets/DrillTrace3D-D_CGVrgV.js                                   4.77 kB │ gzip:     2.06 kB
+public/build/assets/Rationale-TvLs-r5X.js                                      4.78 kB │ gzip:     1.47 kB
+public/build/assets/Recommendations-vyBuMLax.js                                4.82 kB │ gzip:     1.70 kB
+public/build/assets/HoleCompare-DuZbPsBZ.js                                    4.86 kB │ gzip:     1.77 kB
+public/build/assets/CacheTelemetry-BXXmqcPY.js                                 4.88 kB │ gzip:     1.76 kB
+public/build/assets/Timeouts-87SBvi51.js                                       5.05 kB │ gzip:     1.59 kB
+public/build/assets/Targets-DQaN7YA7.js                                        5.07 kB │ gzip:     1.77 kB
+public/build/assets/Tier3Unlock-BV-gNydB.js                                    5.18 kB │ gzip:     1.86 kB
+public/build/assets/SupportCockpit-C_EvUFGJ.js                                 5.21 kB │ gzip:     1.82 kB
+public/build/assets/Show-CbPRDHbR.js                                           5.22 kB │ gzip:     1.71 kB
+public/build/assets/Lakehouse-BRp0vZlv.js                                      5.26 kB │ gzip:     1.99 kB
+public/build/assets/MlTrainingRuns-Dm36cZYe.js                                 5.28 kB │ gzip:     1.87 kB
+public/build/assets/DrillReview-C3GUhbUa.js                                    5.35 kB │ gzip:     2.07 kB
+public/build/assets/IngestQuality-DJgt55pI.js                                  5.44 kB │ gzip:     1.79 kB
+public/build/assets/DataImportWizard-DErSzMhU.js                               5.51 kB │ gzip:     2.20 kB
+public/build/assets/Decisions-Lxy8Ee9I.js                                      5.52 kB │ gzip:     1.76 kB
+public/build/assets/EvalQuestions-B0uBjSzq.js                                  5.65 kB │ gzip:     1.73 kB
+public/build/assets/SourceGraph-BiuLgcVr.js                                    6.08 kB │ gzip:     2.41 kB
+public/build/assets/primitives-bIAWyolY.js                                     6.14 kB │ gzip:     2.03 kB
+public/build/assets/Settings-BtfkKKJ8.js                                       6.14 kB │ gzip:     2.24 kB
+public/build/assets/InlineViz-BfWc8_j8.js                                      6.24 kB │ gzip:     2.30 kB
+public/build/assets/ReportBuilder-D8NP5bPZ.js                                  6.45 kB │ gzip:     2.23 kB
+public/build/assets/BackupsDashboard-CYqCTnK1.js                               6.80 kB │ gzip:     2.14 kB
+public/build/assets/OrientationSpiral-C9_4Phlt.js                              6.87 kB │ gzip:     2.02 kB
+public/build/assets/AuditFindings-DFp8nmQd.js                                  6.90 kB │ gzip:     2.11 kB
+public/build/assets/SearchQuery-DfF9HlvI.js                                    7.22 kB │ gzip:     2.83 kB
+public/build/assets/ReportView-DowEcH6r.js                                     7.24 kB │ gzip:     2.72 kB
+public/build/assets/WorkflowRuns-C9Ran6uT.js                                   7.28 kB │ gzip:     2.33 kB
+public/build/assets/IngestionRuns-DpWdbtpZ.js                                  7.32 kB │ gzip:     2.44 kB
+public/build/assets/react-CeVW0wIv.js                                          7.52 kB │ gzip:     2.87 kB
+public/build/assets/Overview-DT24gUwA.js                                       7.69 kB │ gzip:     2.78 kB
+public/build/assets/EvalCompare-C8k7tdfj.js                                    7.79 kB │ gzip:     2.75 kB
+public/build/assets/HatchetWorkers-z0xwc7Md.js                                 7.86 kB │ gzip:     1.95 kB
+public/build/assets/Corpus-Bkle0HNc.js                                         8.11 kB │ gzip:     2.58 kB
+public/build/assets/DecisionNew-CVXPTDBw.js                                    8.80 kB │ gzip:     2.23 kB
+public/build/assets/AssessmentSummary-CJMvrGvg.js                              8.82 kB │ gzip:     3.12 kB
+public/build/assets/AlertsInbox-CtsRwzq-.js                                    8.83 kB │ gzip:     3.11 kB
+public/build/assets/Index-BEyFPHGF.js                                          9.59 kB │ gzip:     2.90 kB
+public/build/assets/EvalQuestionEditor-nhuhr52n.js                             9.64 kB │ gzip:     2.65 kB
+public/build/assets/ClusterIngest-EOS3TaCV.js                                  9.71 kB │ gzip:     2.26 kB
+public/build/assets/Explorer-Bfxnj9s1.js                                       9.81 kB │ gzip:     3.03 kB
+public/build/assets/TargetRecommendationCockpit-PHjtsWU4.js                   10.13 kB │ gzip:     3.66 kB
+public/build/assets/NewProject-B-XdUyI1.js                                    10.53 kB │ gzip:     3.32 kB
+public/build/assets/DrillholeDetail-DdmlB4SU.js                               10.67 kB │ gzip:     3.76 kB
+public/build/assets/dist-DT-VhUFc.js                                          10.74 kB │ gzip:     3.86 kB
+public/build/assets/Login-C5O6kvND.js                                         10.90 kB │ gzip:     3.26 kB
+public/build/assets/Charts-BlCHCvUD.js                                        11.47 kB │ gzip:     3.59 kB
+public/build/assets/ReportBuild-BpAUEzQy.js                                   12.21 kB │ gzip:     3.64 kB
+public/build/assets/HypothesisWorkspace-CG6jyc79.js                           12.26 kB │ gzip:     2.74 kB
+public/build/assets/Sources-DzUoLpUT.js                                       12.94 kB │ gzip:     3.46 kB
+public/build/assets/Login-BTTdmomp.js                                         13.21 kB │ gzip:     4.01 kB
+public/build/assets/DecisionHistory-D6-pomsR.js                               13.21 kB │ gzip:     2.85 kB
+public/build/assets/StripLogViewer-CLXB1NWl.js                                14.03 kB │ gzip:     4.67 kB
+public/build/assets/EvalDashboard-DLa9kbOG.js                                 14.17 kB │ gzip:     3.29 kB
+public/build/assets/Wizard-3TrbeNZ6.js                                        14.43 kB │ gzip:     4.60 kB
+public/build/assets/InterpretationWorkspace-vrEiNQB9.js                       15.15 kB │ gzip:     3.87 kB
+public/build/assets/Portfolio-CqJt1kI8.js                                     15.58 kB │ gzip:     4.39 kB
+public/build/assets/Reasoning-C8EaJmPm.js                                     16.35 kB │ gzip:     4.18 kB
+public/build/assets/SupportCockpit-Dpgo9zn8.js                                16.38 kB │ gzip:     4.12 kB
+public/build/assets/RetrievalInspector-Bwawolrw.js                            16.56 kB │ gzip:     4.09 kB
+public/build/assets/IngestionReview-C7F7hbGe.js                               16.77 kB │ gzip:     4.48 kB
+public/build/assets/magic-string.es-CecvCz9p.js                               17.67 kB │ gzip:     5.48 kB
+public/build/assets/Integrations-DL-WInfx.js                                  20.34 kB │ gzip:     4.40 kB
+public/build/assets/AppLayout-o_OVwUrg.js                                     21.86 kB │ gzip:     6.27 kB
+public/build/assets/utils-CEYE4pfa.js                                         26.41 kB │ gzip:     8.43 kB
+public/build/assets/Chat-Brfs-L6K.js                                          27.75 kB │ gzip:     7.90 kB
+public/build/assets/badge-CIDVbiF4.js                                         28.53 kB │ gzip:    11.02 kB
+public/build/assets/Explorer-Dqzi65dc.js                                      30.84 kB │ gzip:     8.41 kB
+public/build/assets/MapView-B_IT8vv9.js                                       34.07 kB │ gzip:     9.91 kB
+public/build/assets/EvidenceInspector-B4dETcOk.js                             56.28 kB │ gzip:    17.22 kB
+public/build/assets/Workspace-XszlKWO1.js                                     71.55 kB │ gzip:    18.43 kB
+public/build/assets/Index-BCo9f3Je.js                                         72.55 kB │ gzip:    18.98 kB
+public/build/assets/NewProject-BThgMRr8.js                                   112.10 kB │ gzip:    33.55 kB
+public/build/assets/lib-B1bEGPXz.js                                          129.18 kB │ gzip:    43.11 kB
+public/build/assets/app-CUxGI2yb.js                                          133.89 kB │ gzip:    42.37 kB
+public/build/assets/style-hWfOL7Fv.js                                        174.36 kB │ gzip:    56.31 kB
+public/build/assets/Chat-BNMdvlm1.js                                         208.57 kB │ gzip:    61.38 kB
+public/build/assets/dist-D09XKdQ0.js                                         302.05 kB │ gzip:    95.07 kB
+public/build/assets/react.esm-BORaMOx4.js                                    436.23 kB │ gzip:   111.77 kB
+public/build/assets/maplibre-gl-DsWO0ad3.js                                1,025.39 kB │ gzip:   272.11 kB
+public/build/assets/plotly.min-Ns3nReWY.js                                 4,597.89 kB │ gzip: 1,379.28 kB
+public/build/assets/dist-Dwm1b29f.js                                       4,647.23 kB │ gzip: 1,390.10 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[33m[PLUGIN_TIMINGS] Warning:[0m Your build spent significant time in plugins. Here is a breakdown:
+  - laravel (59%)
+  - @tailwindcss/vite:generate:build (20%)
+  - vite:worker (6%)
+  - vite:terser (4%)
+  - rolldown:vite-resolve (4%)
+See https://rolldown.rs/options/checks#plugintimings for more details.
+
+✓ built in 2m 56s
+FE_BUILD_OK

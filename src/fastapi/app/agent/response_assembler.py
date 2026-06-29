@@ -43,10 +43,15 @@ from app.models.rag import Citation, GeoRAGResponse, MapPayload, VizPayload
 
 logger = logging.getLogger(__name__)
 
-# Pattern to find existing citation markers ([DATA-X], [NI43-X], [PUB-X],
-# [PGEO-X]) in LLM output so we can detect whether the model placed inline
-# markers or not.
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)-\d+\]")
+# Pattern to find existing citation markers ([DATA-X]/[DATA:X], [NI43-X], etc.)
+# in LLM output so we can detect whether the model placed inline markers or not.
+# Audit 2026-06-27 (T3): tolerate BOTH the dash and colon separators. The
+# assembler + agentic prompt emit dash, but citation_binding/repair_apply +
+# parts of the prompt use colon (Kyle's 2026-04-22 canonical), and oiur_parser
+# already accepts both. A dash-only regex here MISSED colon markers → the
+# assembler wrongly concluded "no inline citations" and fell back/refused even
+# when the model DID cite. `[:\-]` unifies detection with oiur_parser/layer3.
+_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)[:\-]\d+\]")
 
 
 def assign_citation_ids(
@@ -241,6 +246,22 @@ def assemble_response(
     # emitted confidence Level with a rule-based Stage-1 computation from
     # retrieval signals. Stage 2 (guard demotion) runs later in the
     # orchestrator after run_post_assembly_validation.
+    # Audit 2026-06-28 (IND-6, Hard Rule 4): deterministic ungrounded-answer
+    # guard. If NO real evidence backs the answer — sources_used is empty or
+    # holds only the synthetic 'no-tool-call' placeholder — the answer is
+    # ungrounded and must NOT ship at normal confidence, regardless of whether
+    # the LLM happened to phrase it as a refusal. Floor confidence hard so the
+    # downstream demotion/UI surfaces it as untrusted (the citation-first
+    # generator, when restored, is the proper salvage path).
+    _real_sources = [s for s in sources_used if s and s != "no-tool-call"]
+    if not _real_sources and not _is_refusal(text):
+        logger.warning(
+            "assemble_response: ungrounded answer (no real sources_used; "
+            "citations=%d) — flooring confidence (IND-6 guard).",
+            len(citations),
+        )
+        confidence = min(confidence, 0.05)
+
     geo_answer = _maybe_parse_geo_answer(
         text, citations=citations, refusal=_is_refusal(text)
     )

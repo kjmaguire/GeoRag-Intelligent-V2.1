@@ -8,7 +8,7 @@ node + integration with the agentic_retrieval LangGraph is downstream.
 Why a planner (not just SQL inline):
 
   1. **Workspace tenancy is non-negotiable.** Every plan emits the
-     `workspace_id = current_setting('georag.workspace_id')::uuid`
+     `workspace_id = current_setting('app.workspace_id')::uuid`
      predicate so RLS can't be silently bypassed. The planner pins
      this into every emitted query; ad-hoc SQL elsewhere can't.
 
@@ -97,7 +97,7 @@ class SpatialTarget:
         geom_column: Name of the geometry column on that table.
         crs_epsg: CRS EPSG code the geometry is stored in.
         workspace_scoped: When True, the planner adds a
-            ``workspace_id = current_setting('georag.workspace_id')::uuid``
+            ``workspace_id = current_setting('app.workspace_id')::uuid``
             predicate. When False, the planner ASSUMES the schema
             (e.g. ``public.smdi_deposits``) is intentionally not
             workspace-scoped and emits a comment in the SQL noting why.
@@ -362,7 +362,7 @@ async def execute_spatial_query(
 ) -> list[dict[str, Any]]:
     """Run the plan against ``pool`` and return rows as list[dict].
 
-    The function sets ``georag.workspace_id`` via ``set_config`` inside
+    The function sets ``app.workspace_id`` via ``set_config`` inside
     a transaction so the WHERE predicate emitted by the planner has the
     tenant context. Workspace boundary: workspace_id is REQUIRED — the
     function never executes without it, even for ``workspace_scoped=False``
@@ -373,20 +373,19 @@ async def execute_spatial_query(
             ``acquire()`` context manager that yields a connection).
         plan: From :func:`plan_spatial_query`.
         workspace_id: Caller's workspace UUID. Set as the local GUC
-            ``georag.workspace_id`` inside the transaction.
+            ``app.workspace_id`` inside the transaction.
 
     Returns:
         List of row dicts. Empty list when no matches. asyncpg.Records
         get coerced to plain dicts so the result is JSON-serialisable.
     """
     if not workspace_id:
-        raise ValueError("workspace_id is required (sets georag.workspace_id)")
+        raise ValueError("workspace_id is required (sets app.workspace_id)")
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, true)",
-                workspace_id,
+            await bind_workspace_scope(
+                conn, workspace_id=workspace_id, site="agent.geospatial_planner"
             )
             rows = await conn.fetch(plan.sql, *plan.params)
     return [dict(row) for row in rows]

@@ -1,14 +1,20 @@
-"""Re-embed all Qdrant points with BAAI/bge-small-en-v1.5.
+"""Re-embed all Qdrant points with Qwen/Qwen3-Embedding-0.6B.
 
-This script is a one-shot migration tool that replaces the all-MiniLM-L6-v2
-vectors already stored in the ``georag_chunks`` and ``georag_reports``
-collections with vectors produced by BAAI/bge-small-en-v1.5.
+2026-06-04 — UPDATED for the bge-small → Qwen3-Embedding swap.
+The 1024-dim Qwen3 vector does NOT fit in the old 384-dim bge collection,
+so this script now ASSERTS the collection's configured vector dim matches
+the loaded model before encoding. Mismatch = fatal exit with a pointer to
+init_qdrant.py (which recreates the collection at the new dim).
 
-Both models produce 384-dimensional cosine-normalized vectors so no collection
-recreation is required — we simply UPSERT each point with the same ID, same
-payload, and a new vector.
+Migration sequence
+------------------
+    # 1. Snapshot the existing collection (rollback insurance):
+    curl -X POST "http://localhost:6333/collections/georag_chunks/snapshots"
 
-Usage (from inside the container):
+    # 2. Recreate the collection at 1024-dim:
+    docker exec georag-fastapi python /app/scripts/init_qdrant.py --recreate
+
+    # 3. Re-embed all points (this script):
     docker exec georag-fastapi python /app/scripts/reembed_qdrant.py
 
 Environment variables (read from the running container's environment):
@@ -36,7 +42,10 @@ logger = logging.getLogger("reembed_qdrant")
 
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+# Qwen/Qwen3-Embedding-0.6B per the 2026-06-04 dual model swap. Family-
+# aligned with Qwen3-14B-AWQ synthesizer + Qwen3-Reranker-0.6B.
+EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+EXPECTED_VECTOR_DIM = 1024  # Qwen3-Embedding-0.6B dim. Assert on first load.
 COLLECTIONS = ["georag_chunks", "georag_reports"]
 SCROLL_LIMIT = 100  # points per scroll page
 UPSERT_BATCH = 50   # points per upsert call
@@ -49,7 +58,11 @@ def _load_model():  # type: ignore[return]
     try:
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-        model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+        # Audit 2026-06-29: device is env-tunable. CPU re-embed of 9k Qwen3
+        # vectors is impractically slow + memory-spiky; REEMBED_DEVICE=cuda runs
+        # it in minutes when GPU headroom is freed (e.g. vllm-vl paused).
+        _device = os.environ.get("REEMBED_DEVICE", "cpu")
+        model = SentenceTransformer(EMBEDDING_MODEL, device=_device)
         model.encode("warm-up", normalize_embeddings=True)
         elapsed = time.perf_counter() - t0
         dim = model.get_sentence_embedding_dimension()
@@ -94,6 +107,47 @@ def _reembed_collection(
     except Exception:
         logger.warning("Collection '%s' not found — skipping", collection_name)
         return 0
+
+    # 2026-06-04 guard — verify collection vector dim matches the loaded
+    # model. The Qwen3-Embedding swap changed dim 384→1024, and an in-place
+    # UPSERT into a 384-dim collection with a 1024-dim vector returns HTTP
+    # 400 from Qdrant ("Wrong vector size"). Catch it here with a clear
+    # operator action message rather than failing mid-batch.
+    try:
+        # Qdrant client surface: info.config.params.vectors.size for
+        # single-vector collections; .vectors[name].size for multi-vector.
+        params = info.config.params
+        vectors_cfg = params.vectors
+        if hasattr(vectors_cfg, "size"):
+            collection_dim = vectors_cfg.size
+        elif isinstance(vectors_cfg, dict):
+            # Named vectors — assume single 'default' or take first.
+            first_named = next(iter(vectors_cfg.values()))
+            collection_dim = first_named.size
+        else:
+            collection_dim = None
+        if collection_dim is not None and collection_dim != EXPECTED_VECTOR_DIM:
+            # Audit 2026-06-29: SKIP a dim-mismatched collection rather than
+            # aborting the whole run. georag_reports is a SEPARATE bge/384-dim
+            # corpus (per C1) — re-embedding it at 1024 would be wrong, and a
+            # hard sys.exit here would also abort the canonical georag_chunks
+            # pass if ordering ever changed. Skip + warn; the operator recreates
+            # explicitly (init_qdrant.py --recreate) only if a dim change is
+            # actually intended for that collection.
+            logger.warning(
+                "Collection '%s' has vector dim=%d but model %s produces "
+                "dim=%d — SKIPPING (separate-corpus dim mismatch). Recreate "
+                "explicitly via init_qdrant.py if a dim change is intended.",
+                collection_name, collection_dim, EMBEDDING_MODEL, EXPECTED_VECTOR_DIM,
+            )
+            return 0
+    except SystemExit:
+        raise
+    except Exception:
+        logger.warning(
+            "Could not verify vector dim on '%s'; proceeding (may fail on UPSERT)",
+            collection_name,
+        )
 
     logger.info(
         "Collection '%s' — %d points to re-embed",
@@ -159,10 +213,14 @@ def _reembed_collection(
 
         # Batch-encode all texts in this scroll page.
         t_encode = time.perf_counter()
+        # Audit 2026-06-29: batch_size is env-tunable. Qwen3-Embedding-0.6B on
+        # CPU with long (~400-token) chunks spikes activation memory at
+        # batch_size=32 and OOM-killed a 6 GiB container. Default 8 keeps the
+        # peak well under a modest container limit.
         vectors = model.encode(
             texts,
             normalize_embeddings=True,
-            batch_size=32,
+            batch_size=int(os.environ.get("REEMBED_BATCH_SIZE", "8")),
             show_progress_bar=False,
         )
         encode_elapsed = time.perf_counter() - t_encode

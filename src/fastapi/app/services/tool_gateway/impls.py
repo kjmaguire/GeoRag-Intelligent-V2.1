@@ -16,6 +16,9 @@ import logging
 import os
 from typing import Any
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
+from app.db import scoped_connection
+from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.tool_gateway.gateway import register_tool
 
 log = logging.getLogger("georag.tool_gateway.impls")
@@ -51,12 +54,26 @@ async def _query_postgis_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
         return {"error": "only SELECT statements allowed"}
     if any(banned in sql.lower() for banned in (";", "insert ", "update ", "delete ", "drop ", "alter ", "create ", "grant ", "revoke ")):
         return {"error": "potentially-mutating clause rejected"}
-    workspace_id = inputs.get("workspace_id") or "a0000000-0000-0000-0000-000000000001"
+    workspace_id = inputs.get("workspace_id")
+    if not workspace_id:
+        workspace_id = LEGACY_DEFAULT_TENANT_UUID
+        try:
+            WORKSPACE_RESOLUTION_FAILURES.labels(
+                site="tool_gateway.query_pg_readonly"
+            ).inc()
+        except Exception:
+            pass
     args = inputs.get("args", [])
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    # REC#2 (2026-06-03) — canonical workspace-scoped connection. The
+    # helper opens a transaction, sets `app.workspace_id` via the
+    # parameter-bound `set_config(..., true)` form, and yields a
+    # connection ready for the query. Replaces 3 lines of bespoke GUC
+    # plumbing that this file repeated for years.
+    async with scoped_connection(
+        pg_pool,
+        workspace_id=str(workspace_id),
+        site="tool_gateway.query_pg_readonly",
+    ) as conn:
         rows = await conn.fetch(sql, *args)
     return {"rows": [dict(r) for r in rows], "count": len(rows)}
 

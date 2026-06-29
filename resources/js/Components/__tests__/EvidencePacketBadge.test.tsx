@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * EvidencePacketBadge.test.tsx — plan §3a/§3b typed-evidence summary strip.
  *

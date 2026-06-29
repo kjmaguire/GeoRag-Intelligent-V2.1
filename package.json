@@ -14,7 +14,7 @@
     "dependencies": {
         "@fontsource/inter-tight": "^5.2.7",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@inertiajs/react": "^2.0.0",
+        "@inertiajs/react": "^3.5.0",
         "@xyflow/react": "^12.10.2",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -30,7 +30,7 @@
         "react-dom": "^19.0.0",
         "react-map-gl": "^8.1.0",
         "react-markdown": "^10.1.0",
-        "react-plotly.js": "^2.6.0",
+        "react-plotly.js": "^4.0.0",
         "tailwind-merge": "^3.5.0"
     },
     "devDependencies": {
@@ -42,7 +42,7 @@
         "@types/react-dom": "^19.0.0",
         "@vitejs/plugin-react": "^6.0.0",
         "axios": ">=1.16.1 <2.0.0",
-        "concurrently": "^9.0.1",
+        "concurrently": "^10.0.3",
         "jsdom": "^29.0.2",
         "laravel-vite-plugin": "^3.0.0",
         "tailwindcss": "^4.3.0",

@@ -51,8 +51,15 @@ def _make_deps(
     project_id: str = "proj-test-uuid",
     embedding_model: object = None,
     reranker: object = None,
+    workspace_id: str | None = None,
 ) -> AgentDeps:
-    """Build a minimal AgentDeps for testing."""
+    """Build a minimal AgentDeps for testing.
+
+    ``workspace_id`` mirrors the JWT-sourced tenant carried in production. Pass
+    it for retrieval-path tests: audit C3 makes search_documents FAIL CLOSED
+    when no workspace can be resolved (no JWT and no pg_pool lookup), so the
+    reranker/quality-gate tests must supply one to exercise the happy path.
+    """
     return AgentDeps(
         pg_pool=pg_pool,  # type: ignore[arg-type]
         qdrant_client=qdrant_client,  # type: ignore[arg-type]
@@ -60,6 +67,7 @@ def _make_deps(
         project_id=project_id,
         embedding_model=embedding_model,
         reranker=reranker,
+        workspace_id=workspace_id,
     )
 
 
@@ -269,7 +277,11 @@ class TestSearchDocuments:
                 return_value=np.array([0.1] * 384, dtype="float32")
             )
 
-            deps = _make_deps(qdrant_client=mock_qdrant, embedding_model=mock_model)
+            deps = _make_deps(
+                qdrant_client=mock_qdrant,
+                embedding_model=mock_model,
+                workspace_id="a0000000-0000-0000-0000-000000000001",
+            )
             ctx = _MockRunContext(deps=deps)
 
             # Patch encode_sparse to avoid loading SPLADE in this unit test.
@@ -312,7 +324,11 @@ class TestSearchDocuments:
         mock_model = MagicMock()
         mock_model.encode = MagicMock(return_value=MagicMock(tolist=lambda: [0.1] * 768))
 
-        deps = _make_deps(qdrant_client=mock_qdrant, embedding_model=mock_model)
+        deps = _make_deps(
+            qdrant_client=mock_qdrant,
+            embedding_model=mock_model,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
+        )
         ctx = _MockRunContext(deps=deps)
 
         with patch("app.agent.tools.settings") as mock_settings:
@@ -374,6 +390,7 @@ class TestSearchDocuments:
             qdrant_client=mock_qdrant,
             embedding_model=mock_model,
             reranker=mock_reranker,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
         )
         ctx = _MockRunContext(deps=deps)
 
@@ -449,6 +466,7 @@ class TestSearchDocuments:
             qdrant_client=mock_qdrant,
             embedding_model=mock_model,
             reranker=mock_reranker,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
         )
         ctx = _MockRunContext(deps=deps)
 
@@ -512,6 +530,7 @@ class TestSearchDocuments:
             qdrant_client=mock_qdrant,
             embedding_model=mock_model,
             reranker=mock_reranker,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
         )
         ctx = _MockRunContext(deps=deps)
 
@@ -577,10 +596,15 @@ class TestSearchDocuments:
             qdrant_client=mock_qdrant,
             embedding_model=mock_model,
             reranker=None,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
         )
         ctx = _MockRunContext(deps=deps)
 
-        with patch("app.agent.tools.settings") as mock_settings:
+        # Patch encode_sparse to avoid a real call to the SPLADE sidecar (which
+        # now requires X-Service-Key; the test env uses a dummy key). Matches
+        # the 4 sibling search_documents tests — this one was missed.
+        with patch("app.agent.tools.settings") as mock_settings, \
+                patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.RETRIEVAL_TOP_N = 20
             mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3

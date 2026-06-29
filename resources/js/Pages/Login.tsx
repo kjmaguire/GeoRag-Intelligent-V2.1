@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { useState } from 'react';
+import { useState, type JSX } from 'react';
 import { Head, router, usePage } from '@inertiajs/react';
 import type { PageProps } from '@/types';
 

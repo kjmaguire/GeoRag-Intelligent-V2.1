@@ -22,7 +22,7 @@ class VerifyServiceKey
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $expected = env('FASTAPI_SERVICE_KEY', '');
+        $expected = config('services.fastapi.service_key', '');
         $supplied = (string) $request->header('X-Service-Key', '');
 
         if ($expected === '' || $supplied === '' || ! hash_equals($expected, $supplied)) {
