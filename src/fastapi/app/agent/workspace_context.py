@@ -38,6 +38,7 @@ is currently a smoke; sharpen once Phase 2 lands.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,9 +61,18 @@ log = logging.getLogger(__name__)
 LEGACY_DEFAULT_TENANT_UUID = "a0000000-0000-0000-0000-000000000001"
 _LEGACY_DEFAULT_TENANT_UUID = LEGACY_DEFAULT_TENANT_UUID  # backward-compat alias
 
-# Phase 1 of the rollout: fallback still applies, but we count it.
-# Flip to False when ready to enforce.
-_ALLOW_DEFAULT_TENANT_FALLBACK = True
+# Phase-2 strict tenancy is now a FLAG (audit 2026-06-29). Default OFF =
+# Phase-1 observe-only (fallback to default tenant + counter). Set
+# WORKSPACE_STRICT_TENANCY=true to make from_state RAISE WorkspaceResolutionError
+# on a missing workspace_id instead of falling back — flip it AFTER the
+# cross-tenant smoke test passes AND metrics.WORKSPACE_RESOLUTION_FAILURES shows
+# zero fallbacks for a sustained window, and BEFORE onboarding a 2nd workspace
+# (every tenancy fix is latent until then). No code change to flip — env only.
+_STRICT_TENANCY = (
+    os.environ.get("WORKSPACE_STRICT_TENANCY", "false").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+_ALLOW_DEFAULT_TENANT_FALLBACK = not _STRICT_TENANCY
 
 
 class WorkspaceResolutionError(RuntimeError):
