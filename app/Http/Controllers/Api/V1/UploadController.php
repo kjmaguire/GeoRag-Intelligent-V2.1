@@ -304,11 +304,11 @@ class UploadController extends Controller
 
             $fastApiBase = rtrim(
                 config('services.fastapi.internal_url')
-                    ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                    ?? config('services.fastapi.internal_url'),
                 '/',
             );
             $serviceKey = config('services.fastapi.service_key')
-                ?? env('FASTAPI_SERVICE_KEY');
+                ?? config('services.fastapi.service_key');
             if (! $serviceKey) {
                 Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — ingest not dispatched');
 

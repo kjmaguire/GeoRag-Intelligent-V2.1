@@ -34,7 +34,7 @@ class WhatChangedController extends Controller
 
     private function fastapi()
     {
-        $key = env('FASTAPI_SERVICE_KEY');
+        $key = config('services.fastapi.service_key');
         if (! $key) abort(500, 'FASTAPI_SERVICE_KEY not configured');
         return Http::withHeaders(['X-Service-Key' => $key])->timeout(30);
     }
@@ -43,7 +43,7 @@ class WhatChangedController extends Controller
     {
         return rtrim(
             config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                ?? config('services.fastapi.internal_url'),
             '/',
         );
     }

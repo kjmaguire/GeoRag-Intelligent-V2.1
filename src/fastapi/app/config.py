@@ -552,6 +552,11 @@ class Settings(BaseSettings):
     # CITATION_FIRST_{EXTRACTOR_TIMEOUT_S,EXTRACTOR_CONCURRENCY,COMPOSER_TIMEOUT_S}
     # settings as a deliberate unit (or deploy pr/w01 whole).
     CITATION_FIRST_ENABLED: bool = False
+    # Audit 2026-06-28: defined explicitly (default off) so the orchestrator's
+    # `settings.SENTENCE_GROUNDING_ENABLED` access can't raise AttributeError.
+    # The sentence_grounding service source is not committed (pr/w01 slice), so
+    # leave OFF — flipping it on requires restoring that module first.
+    SENTENCE_GROUNDING_ENABLED: bool = False
 
     # -------------------------------------------------------------------------
     # Phase 1 / Step 1.2 — OIUR answer schema rollout

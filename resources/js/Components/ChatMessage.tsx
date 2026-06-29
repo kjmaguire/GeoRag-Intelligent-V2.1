@@ -1,4 +1,3 @@
-// @ts-nocheck — migration in progress, will add full type annotations incrementally
 import { memo, useEffect, useRef, useState } from "react";
 import { useState as useLocalState } from 'react';
 import { createPortal } from 'react-dom';
@@ -69,7 +68,7 @@ export const CITATION_RE = /\[(NI43|PUB|DATA|PGEO|ev)[-:]([A-Za-z0-9-]+)\]/g;
  * Returns {type, raw, kind, id} for each citation match.
  */
 function parseSegments(text) {
-    const segments = [];
+    const segments: Array<string | { type: 'citation'; raw: string; kind: string; id: string }> = [];
     let lastIndex = 0;
     let match;
 
@@ -104,7 +103,7 @@ function parseSegments(text) {
  * CITE-02/03/04: delegates icon selection to CitationMarker per kind + evidence_type.
  */
 function CitationChip({ raw, kind, id, onCitationClick, citations }) {
-    const buttonRef = useRef(null);
+    const buttonRef = useRef<HTMLSpanElement>(null);
     const [hoverState, setHoverState] = useState({ open: false, top: 0, left: 0 });
 
     // Resolve citation metadata from the per-message SSE cache.

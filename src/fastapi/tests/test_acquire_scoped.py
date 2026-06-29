@@ -161,6 +161,39 @@ async def test_flag_on_with_empty_project_id_skips_guc(_flag):
     assert not any("app.project_id" in s for s in sqls)
 
 
+@pytest.mark.asyncio
+async def test_flag_on_binds_workspace_without_project(_flag):
+    """Audit 2026-06-27 (IND-1): the workspace GUC binds even when project_id
+    is None.
+
+    A workspace-scoped but project-less query (cross-project chat — nodes.py
+    sets project_id=None) previously skipped the workspace SET LOCAL entirely
+    (it lived inside the `if project_id` block) and fell through the RLS
+    `IS NULL` fail-open escape hatch, seeing every workspace's rows. The bind
+    is now independent of project_id.
+    """
+    _flag(True)
+    execute = AsyncMock()
+    pool, _conn = _make_pool(execute)
+    wid = "a0000000-0000-0000-0000-000000000001"
+    deps = AgentDeps(
+        pg_pool=pool,
+        qdrant_client=None,
+        neo4j_driver=None,
+        project_id=None,  # type: ignore[arg-type]  # real cross-project chat shape
+        workspace_id=wid,
+    )
+
+    async with deps.acquire_scoped() as conn:
+        assert conn is not None
+
+    sqls = _calls(execute)
+    assert any("SET LOCAL statement_timeout" in s for s in sqls)
+    assert any(f"SET LOCAL app.workspace_id = '{wid}'" == s for s in sqls), \
+        "workspace GUC must bind even when project_id is None (IND-1)"
+    assert not any("app.project_id" in s for s in sqls)
+
+
 def test_no_production_files_set_legacy_georag_gucs():
     """Regression: no .py file in src/ may call set_config with the legacy
     'georag.workspace_id' or 'georag.project_id' GUC names.

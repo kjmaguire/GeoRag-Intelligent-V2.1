@@ -1,5 +1,5 @@
-// @ts-nocheck — migration in progress, will add full type annotations incrementally
 import { useState, useEffect, useRef, useCallback } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 
 /**
  * HoleDetailSheet — slide-over panel showing full drill hole data
@@ -18,8 +18,48 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  *   onNavigate  {function}     - Optional callback(holeId) to navigate to another hole
  */
 
+interface ChatMessage {
+    role: 'user' | 'assistant';
+    content: string;
+    ts: number;
+    confidence?: number;
+}
+
+interface LithologyLog {
+    from_depth: number;
+    to_depth: number;
+    lithology_code: string;
+    lithology_description?: string | null;
+}
+
+// Numeric collar fields arrive as strings from the Laravel API (PG numeric
+// columns serialise as strings), hence the parseFloat() call sites below.
+interface Collar {
+    collar_id: string;
+    hole_id: string;
+    hole_type?: string | null;
+    status?: string | null;
+    total_depth?: string | null;
+    elevation?: string | null;
+    easting?: string | null;
+    northing?: string | null;
+    azimuth?: string | null;
+    dip?: string | null;
+    drill_date?: string | null;
+    lithology_logs?: LithologyLog[];
+    surveys?: unknown[];
+    samples?: unknown[];
+}
+
+interface HoleDetailSheetProps {
+    holeId: string | null;
+    projectId: string;
+    onClose: () => void;
+    onNavigate?: (holeId: string) => void;
+}
+
 // Per-hole chat history stored in localStorage
-function getHoleHistory(holeId) {
+function getHoleHistory(holeId: string): ChatMessage[] {
     try {
         const raw = localStorage.getItem(`georag_hole_chat_${holeId}`);
         return raw ? JSON.parse(raw) : [];
@@ -28,7 +68,7 @@ function getHoleHistory(holeId) {
     }
 }
 
-function saveHoleHistory(holeId, messages) {
+function saveHoleHistory(holeId: string, messages: ChatMessage[]): void {
     try {
         localStorage.setItem(
             `georag_hole_chat_${holeId}`,
@@ -37,16 +77,16 @@ function saveHoleHistory(holeId, messages) {
     } catch { /* quota */ }
 }
 
-export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate }) {
-    const [collar, setCollar] = useState(null);
+export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate }: HoleDetailSheetProps) {
+    const [collar, setCollar] = useState<Collar | null>(null);
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
+    const [error, setError] = useState<string | null>(null);
 
     // Inline chat state — scoped to this hole
-    const [chatMessages, setChatMessages] = useState([]);
+    const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
     const [chatInput, setChatInput] = useState('');
     const [chatLoading, setChatLoading] = useState(false);
-    const chatEndRef = useRef(null);
+    const chatEndRef = useRef<HTMLDivElement>(null);
 
     // Load collar data
     useEffect(() => {
@@ -107,12 +147,12 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
     }, [chatMessages]);
 
     // Send a chat message scoped to this hole
-    const handleChatSubmit = useCallback(async (e) => {
+    const handleChatSubmit = useCallback(async (e?: FormEvent<HTMLFormElement>) => {
         e?.preventDefault();
         const query = chatInput.trim();
         if (!query || chatLoading) return;
 
-        const userMsg = { role: 'user', content: query, ts: Date.now() };
+        const userMsg: ChatMessage = { role: 'user', content: query, ts: Date.now() };
         const updated = [...chatMessages, userMsg];
         setChatMessages(updated);
         setChatInput('');
@@ -173,7 +213,7 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
                             });
                         }
                         // Persist
-                        saveHoleHistory(holeId, msgs);
+                        if (holeId) saveHoleHistory(holeId, msgs);
                         return msgs;
                     });
                     echoChannel.stopListening('.QueryStreamEvent');
@@ -192,11 +232,14 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
 
             // Phase 2 — dispatch the job now that the listener is attached.
             // See QueryController::start() for the idempotency contract.
+            // Auth via Sanctum session cookie (same-origin), matching the
+            // /api/v1/queries POST above and Foundry/Chat.tsx's /start call.
+            // No bearer token — localStorage is an XSS-exfiltration target.
             const startRes = await fetch(`/api/v1/queries/${query_id}/start`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: {
                     Accept: 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
                     ...(csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {}),
                 },
             });
@@ -206,9 +249,10 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
                 throw new Error(`Failed to start query (${startRes.status})`);
             }
         } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
             setChatMessages((prev) => [
                 ...prev,
-                { role: 'assistant', content: `Error: ${err.message}`, ts: Date.now() },
+                { role: 'assistant', content: `Error: ${msg}`, ts: Date.now() },
             ]);
             setChatLoading(false);
         }
@@ -427,7 +471,13 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
     );
 }
 
-function MetaRow({ label, value, mono = false }) {
+interface MetaRowProps {
+    label: string;
+    value: ReactNode;
+    mono?: boolean;
+}
+
+function MetaRow({ label, value, mono = false }: MetaRowProps) {
     return (
         <div>
             <dt className="text-gray-500">{label}</dt>

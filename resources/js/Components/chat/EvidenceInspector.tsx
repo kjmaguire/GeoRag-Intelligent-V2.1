@@ -1,4 +1,3 @@
-// @ts-nocheck — migration in progress
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BookOpen, Table2, Network, MapPin, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
 import { CitationFeedbackButtons } from './CitationFeedbackButtons';

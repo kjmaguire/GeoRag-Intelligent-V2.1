@@ -1,12 +1,11 @@
-// @ts-nocheck — test file, type safety enforced at component level
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
-import { CitationMarker } from '../chat/CitationMarker';
+import { CitationMarker, type MarkerKind } from '../chat/CitationMarker';
 import { CITATION_RE } from '../ChatMessage';
 
-function makeCitation(overrides) {
-  return { citation_id: '[DATA:1]', citation_type: 'DATA', source_chunk_id: 'chunk-abc', document_title: 'Test Document', relevance_score: 0.85, ...overrides };
+function makeCitation(overrides = {}) {
+  return { citation_id: '[DATA:1]', citation_type: 'DATA', source_chunk_id: 'chunk-abc', document_title: 'Test Document', relevance_score: 0.85, ...overrides } as any;
 }
 // Kind -> icon rendering
 describe('CitationMarker kind-based icon variants', () => {
@@ -42,12 +41,12 @@ describe('CitationMarker color palettes per kind', () => {
     ];
     for (const [kind, bgClass, textClass] of cases) {
         it(kind + ' has correct bg class', () => {
-            const { container } = render(<CitationMarker kind={kind} id="1" onClick={vi.fn()} />);
+            const { container } = render(<CitationMarker kind={kind as MarkerKind} id="1" onClick={vi.fn()} />);
             const btn = container.querySelector('button');
             expect(btn?.className).toContain(bgClass);
         });
         it(kind + ' has correct text class', () => {
-            const { container } = render(<CitationMarker kind={kind} id="1" onClick={vi.fn()} />);
+            const { container } = render(<CitationMarker kind={kind as MarkerKind} id="1" onClick={vi.fn()} />);
             const btn = container.querySelector('button');
             expect(btn?.className).toContain(textClass);
         });
@@ -118,8 +117,8 @@ describe('CITATION_RE regex coverage', () => {
             CITATION_RE.lastIndex = 0;
             const m = CITATION_RE.exec(raw);
             expect(m).not.toBeNull();
-            expect(m[1]).toBe(kind);
-            expect(m[2]).toBe(id);
+            expect(m![1]).toBe(kind);
+            expect(m![2]).toBe(id);
         });
     }
     const dashForms = [['[NI43-1]','NI43','1'],['[PUB-42]','PUB','42'],['[DATA-7]','DATA','7'],['[PGEO-3]','PGEO','3']];
@@ -128,22 +127,22 @@ describe('CITATION_RE regex coverage', () => {
             CITATION_RE.lastIndex = 0;
             const m = CITATION_RE.exec(raw);
             expect(m).not.toBeNull();
-            expect(m[1]).toBe(kind);
-            expect(m[2]).toBe(id);
+            expect(m![1]).toBe(kind);
+            expect(m![2]).toBe(id);
         });
     }
     it('matches ev:uuid evidence id', () => {
         CITATION_RE.lastIndex = 0;
         const m = CITATION_RE.exec('[ev:abc123-def456]');
         expect(m).not.toBeNull();
-        expect(m[1]).toBe('ev');
-        expect(m[2]).toBe('abc123-def456');
+        expect(m![1]).toBe('ev');
+        expect(m![2]).toBe('abc123-def456');
     });
     it('matches ev:short-id', () => {
         CITATION_RE.lastIndex = 0;
         const m = CITATION_RE.exec('[ev:1234]');
         expect(m).not.toBeNull();
-        expect(m[1]).toBe('ev');
+        expect(m![1]).toBe('ev');
     });
     it('does not match unknown prefix', () => {
         CITATION_RE.lastIndex = 0;
@@ -156,7 +155,7 @@ describe('CITATION_RE regex coverage', () => {
     it('matches multiple citations', () => {
         CITATION_RE.lastIndex = 0;
         const text = 'See [NI43:1] and [DATA-7] and [ev:abc]';
-        const matches = [];
+        const matches: RegExpExecArray[] = [];
         let m;
         while ((m = CITATION_RE.exec(text)) !== null) { matches.push(m); }
         expect(matches).toHaveLength(3);

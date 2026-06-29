@@ -1,5 +1,5 @@
-// @ts-nocheck
 import { useState, useCallback } from 'react';
+import type { JSX } from 'react';
 import { Head, router } from '@inertiajs/react';
 import AppLayout from '../Layouts/AppLayout';
 
@@ -96,16 +96,15 @@ function StepIndicator({ current, total }: StepIndicatorProps): JSX.Element {
 interface FileUploadCardProps {
     category: FileCategory;
     projectId: string | null;
-    token: string | null;
 }
 
-function FileUploadCard({ category, projectId, token }: FileUploadCardProps): JSX.Element {
+function FileUploadCard({ category, projectId }: FileUploadCardProps): JSX.Element {
     const [status, setStatus] = useState<'idle' | 'uploading' | 'done' | 'error'>('idle');
     const [fileName, setFileName] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     const handleFile = useCallback(async (file: File): Promise<void> => {
-        if (!file || !projectId || !token) return;
+        if (!file || !projectId) return;
         setStatus('uploading');
         setFileName(file.name);
         setError(null);
@@ -115,11 +114,16 @@ function FileUploadCard({ category, projectId, token }: FileUploadCardProps): JS
         formData.append('category', category.key);
 
         try {
+            // Auth via Sanctum session cookie (same-origin), matching
+            // handleCreateProject above. No bearer token from localStorage —
+            // localStorage is an XSS-exfiltration target (types.ts:11-12).
+            const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
             const res = await fetch(`/api/v1/projects/${projectId}/upload`, {
                 method: 'POST',
+                credentials: 'same-origin',
                 headers: {
-                    Authorization: `Bearer ${token}`,
                     Accept: 'application/json',
+                    ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}),
                 },
                 body: formData,
             });
@@ -130,9 +134,9 @@ function FileUploadCard({ category, projectId, token }: FileUploadCardProps): JS
             setStatus('done');
         } catch (err) {
             setStatus('error');
-            setError(err.message);
+            setError(err instanceof Error ? err.message : String(err));
         }
-    }, [category.key, projectId, token]);
+    }, [category.key, projectId]);
 
     const handleDrop = (e: React.DragEvent<HTMLLabelElement>): void => {
         e.preventDefault();
@@ -168,7 +172,7 @@ function FileUploadCard({ category, projectId, token }: FileUploadCardProps): JS
                     {status === 'idle' && <span className="text-xs text-gray-500">Drop or click</span>}
                     {status === 'uploading' && <div className="w-4 h-4 rounded-full border-2 border-gray-600 border-t-amber-400 animate-spin" />}
                     {status === 'done' && <span className="text-xs text-green-400">Uploaded</span>}
-                    {status === 'error' && <span className="text-xs text-red-400" title={error}>Failed</span>}
+                    {status === 'error' && <span className="text-xs text-red-400" title={error ?? undefined}>Failed</span>}
                 </div>
             </div>
             {fileName && status !== 'idle' && (
@@ -237,10 +241,10 @@ export default function NewProject(_props: NewProjectProps): JSX.Element {
             if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
 
             const pid = data.data?.project_id || data.project_id;
-            setCreatedProjectId(pid);
+            setCreatedProjectId(pid ?? null);
             setStep(1);
         } catch (err) {
-            setError(err.message);
+            setError(err instanceof Error ? err.message : String(err));
         } finally {
             setLoading(false);
         }
@@ -392,7 +396,6 @@ export default function NewProject(_props: NewProjectProps): JSX.Element {
                                         key={cat.key}
                                         category={cat}
                                         projectId={createdProjectId}
-                                        token={token}
                                     />
                                 ))}
                             </div>

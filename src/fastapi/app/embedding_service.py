@@ -28,10 +28,17 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from app.sidecar_auth import enforce_batch_limits, require_service_key
+
 logger = logging.getLogger(__name__)
+
+# Generous caps for the per-query embedding path (the bulk Dagster path uses its
+# own in-process model, not this sidecar). Audit 2026-06-27: bound the body.
+_MAX_SENTENCES = int(os.environ.get("EMBED_MAX_SENTENCES", "1024"))
+_MAX_TOTAL_CHARS = int(os.environ.get("EMBED_MAX_TOTAL_CHARS", "1000000"))
 
 # Read the model name straight from the environment rather than app.config —
 # importing the full Settings would demand FASTAPI_SERVICE_KEY / POSTGRES_PASSWORD
@@ -82,8 +89,12 @@ class EmbedRequest(BaseModel):
     normalize: bool = False
 
 
-@app.post("/embed")
+@app.post("/embed", dependencies=[Depends(require_service_key)])
 async def embed(req: EmbedRequest) -> dict:
+    enforce_batch_limits(
+        req.sentences, max_items=_MAX_SENTENCES,
+        max_total_chars=_MAX_TOTAL_CHARS, label="embed",
+    )
     if _model is None:
         # One lazy retry in case startup load failed transiently.
         try:

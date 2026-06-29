@@ -21,10 +21,10 @@ industry modelling tools.
 
 The repo is a single monorepo at `C:\Users\GeoRAG\Herd\georag` containing:
 
-- A **Laravel 13** application on **Octane/Swoole** ([CLAUDE.md:64](../../CLAUDE.md))
+- A **Laravel 13** application on **Octane/Swoole** ([CLAUDE.md:64](../../../CLAUDE.md))
   for everything user-facing: authentication, project CRUD, uploads, broadcast
   of WebSocket events, server-side rendering of Inertia/React pages.
-- A **FastAPI 0.135** Python 3.13 domain service ([CLAUDE.md:66](../../CLAUDE.md))
+- A **FastAPI 0.135** Python 3.13 domain service ([CLAUDE.md:66](../../../CLAUDE.md))
   for the RAG pipeline, all asynchronous database I/O, Pydantic AI agents,
   hallucination prevention, citation enforcement, and SSE streaming back to
   Laravel.

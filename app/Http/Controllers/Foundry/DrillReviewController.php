@@ -62,41 +62,42 @@ class DrillReviewController extends Controller
         $workspaceId = (string) DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
-        $this->setWorkspaceRlsContext($workspaceId);
 
-        $rows = DB::table('silver.review_queue')
-            ->where('project_id', $project->project_id)
-            ->whereIn('target_table', self::DRILL_TARGET_TABLES)
-            ->whereIn('lifecycle', ['pending', 'in_review', 'decided'])
-            ->orderBy('bronze_uri')
-            ->orderBy('created_at')
-            ->limit(500)
-            ->get();
+        return $this->withWorkspaceRls($workspaceId, function () use ($project) {
+            $rows = DB::table('silver.review_queue')
+                ->where('project_id', $project->project_id)
+                ->whereIn('target_table', self::DRILL_TARGET_TABLES)
+                ->whereIn('lifecycle', ['pending', 'in_review', 'decided'])
+                ->orderBy('bronze_uri')
+                ->orderBy('created_at')
+                ->limit(500)
+                ->get();
 
-        $batches = $this->groupByBatch($rows);
+            $batches = $this->groupByBatch($rows);
 
-        $counters = [
-            'pending' => 0,
-            'in_review' => 0,
-            'decided' => 0,
-        ];
-        foreach ($rows as $r) {
-            if (isset($counters[$r->lifecycle])) {
-                $counters[$r->lifecycle]++;
+            $counters = [
+                'pending' => 0,
+                'in_review' => 0,
+                'decided' => 0,
+            ];
+            foreach ($rows as $r) {
+                if (isset($counters[$r->lifecycle])) {
+                    $counters[$r->lifecycle]++;
+                }
             }
-        }
 
-        return Inertia::render('Foundry/DrillReview', [
-            'project' => [
-                'project_id' => $project->project_id,
-                'project_name' => $project->project_name,
-                'slug' => $project->slug,
-            ],
-            'batches' => $batches,
-            'counters' => $counters,
-            'decisions' => self::VALID_DECISIONS,
-            'csrf_token' => csrf_token(),
-        ]);
+            return Inertia::render('Foundry/DrillReview', [
+                'project' => [
+                    'project_id' => $project->project_id,
+                    'project_name' => $project->project_name,
+                    'slug' => $project->slug,
+                ],
+                'batches' => $batches,
+                'counters' => $counters,
+                'decisions' => self::VALID_DECISIONS,
+                'csrf_token' => csrf_token(),
+            ]);
+        });
     }
 
     public function decide(Request $request, string $slug, string $queueId): RedirectResponse
@@ -122,43 +123,44 @@ class DrillReviewController extends Controller
         $workspaceId = (string) DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
-        $this->setWorkspaceRlsContext($workspaceId);
 
-        $row = DB::table('silver.review_queue')
-            ->where('queue_id', $queueId)
-            ->where('project_id', $project->project_id)
-            ->first();
+        return $this->withWorkspaceRls($workspaceId, function () use ($request, $project, $queueId, $validated) {
+            $row = DB::table('silver.review_queue')
+                ->where('queue_id', $queueId)
+                ->where('project_id', $project->project_id)
+                ->first();
 
-        if ($row === null) {
-            abort(404, 'queue row not found');
-        }
+            if ($row === null) {
+                abort(404, 'queue row not found');
+            }
 
-        if (! in_array($row->lifecycle, ['pending', 'in_review'], true)) {
-            return back()->withErrors([
-                'lifecycle' => "Row is already '{$row->lifecycle}' — cannot decide again.",
-            ]);
-        }
+            if (! in_array($row->lifecycle, ['pending', 'in_review'], true)) {
+                return back()->withErrors([
+                    'lifecycle' => "Row is already '{$row->lifecycle}' — cannot decide again.",
+                ]);
+            }
 
-        DB::table('silver.review_queue')
-            ->where('queue_id', $queueId)
-            ->update([
-                'lifecycle' => 'decided',
-                'decided_by_user_id' => $request->user()->id,
-                'decision_kind' => $validated['decision_kind'],
-                'decision_payload' => $validated['decision_payload'] === null
-                    ? null
-                    : json_encode($validated['decision_payload']),
-                'decision_rationale' => $validated['decision_rationale'] ?? null,
-                'decided_at' => now(),
-                'updated_at' => now(),
-            ]);
+            DB::table('silver.review_queue')
+                ->where('queue_id', $queueId)
+                ->update([
+                    'lifecycle' => 'decided',
+                    'decided_by_user_id' => $request->user()->id,
+                    'decision_kind' => $validated['decision_kind'],
+                    'decision_payload' => $validated['decision_payload'] === null
+                        ? null
+                        : json_encode($validated['decision_payload']),
+                    'decision_rationale' => $validated['decision_rationale'] ?? null,
+                    'decided_at' => now(),
+                    'updated_at' => now(),
+                ]);
 
-        // Phase 5 of the SRQ plan adds a separate "commit" job that promotes
-        // decided rows into silver.*. For v1 we leave that to a follow-up
-        // — the decision is captured + auditable, the silver write happens
-        // when the commit job runs.
+            // Phase 5 of the SRQ plan adds a separate "commit" job that promotes
+            // decided rows into silver.*. For v1 we leave that to a follow-up
+            // — the decision is captured + auditable, the silver write happens
+            // when the commit job runs.
 
-        return back()->with('status', "Decision '{$validated['decision_kind']}' recorded.");
+            return back()->with('status', "Decision '{$validated['decision_kind']}' recorded.");
+        });
     }
 
     /**

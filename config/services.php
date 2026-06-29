@@ -51,6 +51,9 @@ return [
     */
     'fastapi' => [
         'internal_url' => env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+        // Audit 2026-06-28: base_url alias so controllers read it via config()
+        // (config:cache-safe) instead of a bare env('FASTAPI_BASE_URL').
+        'base_url' => env('FASTAPI_BASE_URL', env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000')),
         'service_key' => env('FASTAPI_SERVICE_KEY'),
         // V1.5-03 — `kid` (key id) header on every minted JWT. FastAPI uses it
         // to pick the matching secret from a kid→key map, enabling

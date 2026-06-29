@@ -13,6 +13,7 @@
  * docs/architecture/repair_loop_spec.md §2 (terminal strategies).
  */
 
+import type { JSX } from "react";
 import type { GuardPlaceholders } from "./GuardErrorMessage";
 import { GuardErrorMessage } from "./GuardErrorMessage";
 

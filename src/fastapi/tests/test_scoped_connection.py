@@ -225,7 +225,9 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # visualizations.py migrated REC#1 to typed Depends; the GUC
         # ref left here is in legacy comments only.
         "routers/interpretation.py",
-        "routers/shadow_trigger.py",
+        # routers/shadow_trigger.py — removed 2026-06-28: no longer contains a
+        # bespoke set_config('app.workspace_id', ...) (migrated away); the guard
+        # requires this list to shrink, so dead entries must be deleted.
         "routers/target_recommendation_cockpit.py",
         "routers/visualizations.py",
         # services/ — most of the ingest pipeline migrated 2026-06-03

@@ -945,6 +945,25 @@ class TestLayer4OrchestratorExpanded:
             )
         assert any("FAKE-99-01" in w for w in warnings)
 
+    def test_extract_entities_excludes_json_keys(self) -> None:
+        """Audit 2026-06-28: the grounding bag is built from tool-result VALUES
+        only — structural field NAMES (keys) must NOT ground a fabricated entity.
+        """
+        from app.agent.hallucination.orchestrator_validators import (
+            _extract_entities_from_tool_results,
+        )
+
+        tool_results = [
+            ("search_documents", {"section_title": "Athabasca", "document_type": "NI43"}),
+        ]
+        bag = _extract_entities_from_tool_results(tool_results)
+        # Values are grounded.
+        assert "athabasca" in bag
+        assert "ni43" in bag
+        # Structural KEYS are NOT grounded (the old json.dumps bypass).
+        assert "section_title" not in bag
+        assert "document_type" not in bag
+
     @pytest.mark.asyncio
     async def test_commodity_in_tool_results_no_warning(self) -> None:
         """Commodity mentioned in answer AND present in tool results: no warning."""

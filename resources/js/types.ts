@@ -115,6 +115,11 @@ export interface Citation {
     section_title?: string | null;
     section?: string | null;
     page?: number | null;
+    // Optional evidence-type discriminator used by the chat CitationMarker to
+    // pick an icon; populated by the FastAPI assembler on some citations.
+    evidence_type?: string;
+    // Optional evidence id (ev:<uuid>) for evidence-packet citations.
+    evidence_id?: string;
 
     // ── Public Geoscience extensions (plan §08) ────────────────────────
     // Present only on PGEO citations; populated by the FastAPI response
@@ -335,11 +340,11 @@ export interface FreshnessData {
 
 export interface ChatMessage {
     id: string;
-    role: 'user' | 'assistant';
+    role: 'user' | 'assistant' | 'system';
     content: string;
     timestamp: string;
     citations?: Citation[];
-    confidence?: number;
+    confidence?: number | null;
     sources_used?: string[];
     mapPayload?: MapPayload | null;
     vizPayload?: VizPayload | null;
@@ -353,6 +358,14 @@ export interface ChatMessage {
     freshness?: FreshnessData | null;
     /** Module 7 §B6 — answer_run_id from completed SSE event; used for feedback POST. */
     answer_run_id?: string | null;
+    /** Audit 2026-06-28: client-side message fields the Chat page accumulates
+     *  from SSE events / optimistic updates (previously hidden by @ts-nocheck). */
+    phases?: any[];
+    originalQuery?: string;
+    status?: string | null;
+    error?: string | null;
+    degradedSources?: unknown;
+    followups?: string[];
 }
 
 export interface ChatThread {
@@ -360,6 +373,8 @@ export interface ChatThread {
     title: string;
     createdAt: string | number;
     updatedAt: string | number;
+    /** Audit 2026-06-28: client-side per-thread search/filter text. */
+    search?: string;
 }
 
 // ── Source viewer types ────────────────────────────────────────────────────

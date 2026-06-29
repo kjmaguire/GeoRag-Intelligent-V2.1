@@ -1,10 +1,19 @@
 # Data Dictionary — Index
 
-Status: **Skeleton.** Per-schema files below are placeholders awaiting
-the `data_dictionary_dump` Dagster asset described in
-[Appendix F §1](../appendix/F-data-dictionary.md#1-generator-design).
-Until the generator lands, [Ch 03 — Schemas and Tables](../manual/03-schemas.md)
-is the human-curated reference.
+Status: **Hand-reading aid.** The `data_dictionary_dump` Dagster asset
+**shipped** ([Appendix F](../appendix/F-data-dictionary.md)) and is now
+the canonical machine-generated dictionary — but it emits a **single
+`data_dictionary.json` array to `s3://catalogs/data_dictionary/<UTC-date>/`**,
+NOT the per-schema `.md` files originally envisaged. So:
+
+- **Canonical (machine, full 14 schemas):** the MinIO JSON, drift-checked
+  by the `data_dictionary_drift_check` asset_check.
+- **Hand-reading aid (this directory):** the per-schema `.md` skeletons
+  below + the full-column [`_core_tables.md`](_core_tables.md) for the 5
+  highest-traffic tables. These give a navigable starting point without
+  pulling the JSON from MinIO.
+- [Ch 03 — Schemas and Tables](../manual/03-schemas.md) is the prose
+  reference.
 
 ## Core tables (full column data, hand-curated)
 

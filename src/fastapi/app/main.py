@@ -576,12 +576,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         embedding_model.encode("warm-up", normalize_embeddings=True)
         _elapsed = time.perf_counter() - _t0
         app.state.embedding_model = embedding_model
+        _loaded_dim = embedding_model.get_sentence_embedding_dimension()
         logger.info(
             "Embedding model ready: %s (dim=%d) loaded in %.2fs",
             settings.EMBEDDING_MODEL_NAME,
-            embedding_model.get_sentence_embedding_dimension(),
+            _loaded_dim,
             _elapsed,
         )
+        # Audit 2026-06-27 (C1): the fail-fast dimension-parity check the
+        # comment on settings.EMBEDDING_DIMENSION claims exists. A model whose
+        # dim disagrees with EMBEDDING_DIMENSION (and thus the live Qdrant
+        # collection) would silently break retrieval. Disable the model so
+        # search_documents returns empty (safe refusal) instead of querying a
+        # mismatched vector space.
+        if _loaded_dim is not None and _loaded_dim != settings.EMBEDDING_DIMENSION:
+            logger.critical(
+                "Embedding dim mismatch: model %s reports dim=%d but "
+                "EMBEDDING_DIMENSION=%d. Disabling embedding model to avoid "
+                "querying a mismatched Qdrant collection. Fix "
+                "EMBEDDING_MODEL_NAME/EMBEDDING_DIMENSION or re-embed the corpus.",
+                settings.EMBEDDING_MODEL_NAME,
+                _loaded_dim,
+                settings.EMBEDDING_DIMENSION,
+            )
+            app.state.embedding_model = None
     except Exception:
         logger.exception(
             "Failed to load embedding model — search_documents will return empty results"

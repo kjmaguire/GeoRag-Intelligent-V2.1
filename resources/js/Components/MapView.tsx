@@ -21,6 +21,7 @@ import {
 } from '../lib/layerVisibilityStorage';
 import { buildSilverTileUrl } from '../lib/tileUrl';
 import { createTileFailureWatchdog } from '../lib/tileFailureWatchdog';
+import { escapeHtml } from '../lib/escapeHtml';
 import { useBasemapStyleUrl } from '@/lib/basemap';
 import { useEvidenceMapPin } from '@/Hooks/useEvidenceMapPin';
 import { useSilverTileInvalidation } from '@/Hooks/useTileInvalidation';
@@ -926,13 +927,13 @@ export default function MapView({
                         ? JSON.parse(props.assay_element_codes) as unknown
                         : props.assay_element_codes;
                     if (Array.isArray(parsed) && parsed.length > 0) {
-                        elementList = (parsed as string[]).join(', ');
+                        elementList = (parsed as string[]).map(escapeHtml).join(', ');
                     }
                 } catch { /* ignore — display fallback */ }
                 return wrap(`
                     <div style="font-weight: 700; font-size: 13px; color: #84cc16; margin-bottom: 3px;">Geochem Sample</div>
-                    <div style="color: #d1d5db;">${String(props.sample_id ?? '—')}</div>
-                    ${props.sample_type ? `<div style="color: #9ca3af; margin-top: 2px;">${String(props.sample_type)}</div>` : ''}
+                    <div style="color: #d1d5db;">${escapeHtml(props.sample_id ?? '—')}</div>
+                    ${props.sample_type ? `<div style="color: #9ca3af; margin-top: 2px;">${escapeHtml(props.sample_type)}</div>` : ''}
                     <div style="color: #9ca3af; margin-top: 3px; font-size: 10px;">Elements: ${elementList}</div>
                 `);
             }
@@ -940,20 +941,20 @@ export default function MapView({
             // Seismic survey popup: survey_name, survey_year, survey_type, line_count
             if (sourceLayer === 'seismic') {
                 return wrap(`
-                    <div style="font-weight: 700; font-size: 13px; color: #0ea5e9; margin-bottom: 3px;">${String(props.survey_name ?? 'Seismic Survey')}</div>
-                    <div style="color: #9ca3af;">${String(props.survey_type ?? '—')}${props.survey_year ? ` · ${String(props.survey_year)}` : ''}</div>
-                    ${props.line_count != null ? `<div style="color: #9ca3af; margin-top: 2px;">${String(props.line_count)} lines/traces</div>` : ''}
+                    <div style="font-weight: 700; font-size: 13px; color: #0ea5e9; margin-bottom: 3px;">${escapeHtml(props.survey_name ?? 'Seismic Survey')}</div>
+                    <div style="color: #9ca3af;">${escapeHtml(props.survey_type ?? '—')}${props.survey_year ? ` · ${escapeHtml(props.survey_year)}` : ''}</div>
+                    ${props.line_count != null ? `<div style="color: #9ca3af; margin-top: 2px;">${escapeHtml(props.line_count)} lines/traces</div>` : ''}
                 `);
             }
 
             // Default collar/working popup
             const totalDepth = props.total_depth != null ? parseFloat(String(props.total_depth)).toFixed(0) + ' m TD' : '—';
             return wrap(`
-                <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 3px;">${String(props.hole_id ?? props.working_name ?? props.feature_name ?? '—')}</div>
-                ${props.hole_type ? `<div style="color: #9ca3af;">${String(props.hole_type)} · ${totalDepth}</div>` : ''}
-                ${props.working_type ? `<div style="color: #a855f7; margin-top: 2px;">${String(props.working_type)}</div>` : ''}
-                ${props.status ? `<div style="color: ${markerColor(String(props.status), false)}; margin-top: 2px;">${String(props.status)}</div>` : ''}
-                ${props.source ? `<div style="color: #9ca3af; margin-top: 2px;">${String(props.source)}</div>` : ''}
+                <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 3px;">${escapeHtml(props.hole_id ?? props.working_name ?? props.feature_name ?? '—')}</div>
+                ${props.hole_type ? `<div style="color: #9ca3af;">${escapeHtml(props.hole_type)} · ${totalDepth}</div>` : ''}
+                ${props.working_type ? `<div style="color: #a855f7; margin-top: 2px;">${escapeHtml(props.working_type)}</div>` : ''}
+                ${props.status ? `<div style="color: ${markerColor(String(props.status), false)}; margin-top: 2px;">${escapeHtml(props.status)}</div>` : ''}
+                ${props.source ? `<div style="color: #9ca3af; margin-top: 2px;">${escapeHtml(props.source)}</div>` : ''}
             `);
         };
 
@@ -1342,9 +1343,9 @@ export default function MapView({
                     .setLngLat([collar._lon, collar._lat])
                     .setHTML(`
                         <div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 8px;">
-                            <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 3px;">${String(collar.hole_id ?? '')}</div>
-                            <div style="color: #9ca3af;">${String(collar.hole_type ?? '—')} · ${totalDepth}</div>
-                            <div style="color: ${color}; margin-top: 2px;">${collar.status ?? '—'}</div>
+                            <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 3px;">${escapeHtml(collar.hole_id ?? '')}</div>
+                            <div style="color: #9ca3af;">${escapeHtml(collar.hole_type ?? '—')} · ${totalDepth}</div>
+                            <div style="color: ${color}; margin-top: 2px;">${escapeHtml(collar.status ?? '—')}</div>
                         </div>
                     `)
                     .addTo(map);
@@ -1367,9 +1368,9 @@ export default function MapView({
                     .setLngLat([collar._lon, collar._lat])
                     .setHTML(`
                         <div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 2px;">
-                            <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 4px;">${String(collar.hole_id ?? '')}</div>
-                            <div style="color: #9ca3af;">${String(collar.hole_type ?? '—')} · ${totalDepth}</div>
-                            <div style="color: ${color}; margin-top: 2px;">${collar.status ?? '—'}</div>
+                            <div style="font-weight: 700; font-size: 13px; color: #f9fafb; margin-bottom: 4px;">${escapeHtml(collar.hole_id ?? '')}</div>
+                            <div style="color: #9ca3af;">${escapeHtml(collar.hole_type ?? '—')} · ${totalDepth}</div>
+                            <div style="color: ${color}; margin-top: 2px;">${escapeHtml(collar.status ?? '—')}</div>
                         </div>
                     `)
                     .addTo(map);

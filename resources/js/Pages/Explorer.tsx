@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, type JSX } from 'react';
 import { Head, router } from '@inertiajs/react';
 import AppLayout from '../Layouts/AppLayout';
 import DrillHoleBrowser from '../Components/DrillHoleBrowser';
@@ -235,9 +234,9 @@ export default function Explorer(_props: ExplorerProps): JSX.Element {
                             )}
                         >
                             <MapView
-                                projectId={projectId}
+                                projectId={projectId ?? undefined}
                                 onCollarClick={handleHoleSelect}
-                                selectedHoleId={selectedHoleId}
+                                selectedHoleId={selectedHoleId ?? undefined}
                             />
                         </div>
 
@@ -312,7 +311,7 @@ export default function Explorer(_props: ExplorerProps): JSX.Element {
             {/* ── Hole detail sheet (slide-over with inline chat) ── */}
             <HoleDetailSheet
                 holeId={sheetHoleId}
-                projectId={projectId}
+                projectId={projectId ?? ''}
                 onClose={() => setSheetHoleId(null)}
                 onNavigate={(holeId: string) => {
                     setSelectedHoleId(holeId);

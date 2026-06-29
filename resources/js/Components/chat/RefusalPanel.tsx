@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * RefusalPanel — structured refusal UX (REF-01)
  *

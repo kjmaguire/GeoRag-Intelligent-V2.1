@@ -1,4 +1,3 @@
-// @ts-nocheck — test file, type safety enforced at component level
 import { describe, it, expect } from "vitest";
 import { surfaceFor } from "../GuardErrorDispatcher";
 

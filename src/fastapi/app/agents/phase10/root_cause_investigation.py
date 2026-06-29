@@ -64,20 +64,23 @@ async def root_cause_investigation(
         # workspace_id-scoped.
         ws = str(ctx.workspace_id) if ctx and ctx.workspace_id \
              else LEGACY_DEFAULT_TENANT_UUID
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws,
-        )
-        ticket = await conn.fetchrow(
-            """
-            SELECT ticket_id::text AS id,
-                   workspace_id::text AS workspace_id,
-                   category, severity, description,
-                   reported_at
-              FROM ops.support_tickets
-             WHERE ticket_id = $1::uuid
-            """,
-            str(ticket_id),
-        )
+        # Audit 2026-06-28: SET LOCAL in a transaction (PgBouncer tx-mode: a
+        # session-scoped set_config leaks the workspace GUC to the next client).
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.workspace_id', $1, true)", ws,
+            )
+            ticket = await conn.fetchrow(
+                """
+                SELECT ticket_id::text AS id,
+                       workspace_id::text AS workspace_id,
+                       category, severity, description,
+                       reported_at
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                """,
+                str(ticket_id),
+            )
         if ticket is None:
             return {
                 "ticket_id": str(ticket_id),

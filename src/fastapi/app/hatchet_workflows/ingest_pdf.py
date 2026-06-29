@@ -899,7 +899,13 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         f"figure_{int(idx):04d}_page_{page_no}.png"
                     )
                     try:
-                        s3.copy_object(
+                        # Audit 2026-06-27 (T4, hard rule 2): boto3 is sync; this
+                        # persist step runs on the Hatchet worker's asyncio loop,
+                        # so the S3 round-trips must go off-loop via to_thread or
+                        # they block heartbeats + other tasks. (The download path
+                        # at the top of this file already uses aioboto3.)
+                        await asyncio.to_thread(
+                            s3.copy_object,
                             Bucket=bucket,
                             Key=final_key,
                             CopySource={"Bucket": bucket, "Key": pending_key},
@@ -915,7 +921,9 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                             },
                         )
                         try:
-                            s3.delete_object(Bucket=bucket, Key=pending_key)
+                            await asyncio.to_thread(
+                                s3.delete_object, Bucket=bucket, Key=pending_key
+                            )
                         except Exception as del_exc:  # noqa: BLE001
                             log.warning(
                                 "ingest_pdf.persist: pending figure delete "
@@ -937,7 +945,9 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 if _FIGURE_VL_CAPTIONS and final_key:
                     try:
                         from app.agent.figure_extractor import caption_image_with_vl
-                        _img = s3.get_object(Bucket=bucket, Key=final_key)["Body"].read()
+                        _img = await asyncio.to_thread(
+                            lambda: s3.get_object(Bucket=bucket, Key=final_key)["Body"].read()
+                        )
                         vl_desc = await caption_image_with_vl(
                             _img, context=parsed.get("title"),
                         )

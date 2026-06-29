@@ -25,7 +25,7 @@ def test_remote_encode_restores_int_keys(monkeypatch):
 
     captured = {}
 
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(url, json=None, timeout=None, headers=None):
         captured["url"] = url
         captured["json"] = json
         # The sidecar returns JSON, which stringifies the int token-id keys.

@@ -29,7 +29,7 @@ def test_remote_encode_single_returns_1d(monkeypatch):
 
     captured = {}
 
-    def fake_post(url, json=None, timeout=None):
+    def fake_post(url, json=None, timeout=None, headers=None):
         captured["url"] = url
         captured["json"] = json
         return _Resp({"vectors": [[0.1, 0.2, 0.3]], "dimension": 3})
@@ -50,7 +50,7 @@ def test_remote_encode_list_returns_2d(monkeypatch):
 
     monkeypatch.setattr(
         httpx, "post",
-        lambda url, json=None, timeout=None: _Resp({"vectors": [[1.0, 2.0], [3.0, 4.0]], "dimension": 2}),
+        lambda url, json=None, timeout=None, headers=None: _Resp({"vectors": [[1.0, 2.0], [3.0, 4.0]], "dimension": 2}),
     )
     r = emb._RemoteEmbedding("http://enc:8000")
     out = r.encode(["a", "b"])  # no normalize kwarg → defaults False

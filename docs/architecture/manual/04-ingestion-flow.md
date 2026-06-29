@@ -11,7 +11,12 @@ Browser ── multipart upload ──▶ laravel-octane
                                      ├─ insert bronze.upload_files row
                                      ├─ PUT to SeaweedFS  bronze/<workspace>/<project>/<sha>/<file>
                                      ├─ insert bronze.ingest_runs (status=running)
-                                     └─ dispatch Hatchet workflow (ingest_pdf | ingest_csv | …)
+                                     └─ dispatch Hatchet workflow (ingest_pdf | ingest_zip_archive)
+                                        NOTE: only PDFs + ZIP archives have a
+                                        dedicated Hatchet workflow. CSV/LAS/XLSX/
+                                        SEGY/GIS are ingested by DAGSTER assets,
+                                        NOT Hatchet (audit 2026-06-28 — there is
+                                        no ingest_csv/ingest_las/… Hatchet flow).
                                                               │
                                                               ▼
                               ┌──────────────────────────────────────────┐

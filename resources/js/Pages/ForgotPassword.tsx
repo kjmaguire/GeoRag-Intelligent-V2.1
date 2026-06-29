@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { useState } from 'react';
+import { useState, type JSX } from 'react';
 import { Head, Link } from '@inertiajs/react';
 
 /**

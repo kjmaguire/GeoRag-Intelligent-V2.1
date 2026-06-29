@@ -92,17 +92,24 @@ async def customer_response_drafting(
         # Block-3 RLS — ops.support_tickets is workspace_id-scoped.
         ws = str(ctx.workspace_id) if ctx and ctx.workspace_id \
              else LEGACY_DEFAULT_TENANT_UUID
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws,
-        )
-        ticket = await conn.fetchrow(
-            """
-            SELECT ticket_id::text AS id, category, status
-              FROM ops.support_tickets
-             WHERE ticket_id = $1::uuid
-            """,
-            str(ticket_id),
-        )
+        # Audit 2026-06-28: SET LOCAL inside a transaction. FastAPI connects
+        # via PgBouncer (transaction mode), so a session-scoped set_config
+        # (is_local=false) both fails to reliably apply to the next statement
+        # (different backend) AND leaks the workspace GUC to the next pooled
+        # client. Bind it transaction-scoped so it covers the query and is
+        # discarded at COMMIT.
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.workspace_id', $1, true)", ws,
+            )
+            ticket = await conn.fetchrow(
+                """
+                SELECT ticket_id::text AS id, category, status
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                """,
+                str(ticket_id),
+            )
     finally:
         await conn.close()
 

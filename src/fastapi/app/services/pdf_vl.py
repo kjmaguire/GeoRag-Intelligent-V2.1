@@ -43,7 +43,8 @@ Config env vars (all optional — defaults work for the in-network vllm service)
   PDF_VL_MODEL_ID_V3     — model id when PDF_VL_MODEL_VERSION=3 (default Qwen3-VL-8B-Instruct;
                            no official AWQ exists — set a community W4A16 quant here for low VRAM)
   PDF_VL_BACKEND         — "vllm" | "anthropic" (default: "vllm")
-  PDF_VL_BACKEND_URL     — full base URL (default: "http://vllm:8000/v1")
+  PDF_VL_BACKEND_URL     — full base URL (default: "http://vllm-vl:8000/v1", the
+                           VL sidecar — the main "vllm" endpoint is text-only)
   PDF_VL_TIMEOUT_S       — seconds to wait for VL inference (default: 120)
   PDF_VL_MAX_PAGES       — maximum pages per summarize request (default: 4)
 
@@ -117,7 +118,12 @@ _DEFAULT_MODEL_ID_V2 = "Qwen/Qwen2.5-VL-7B-Instruct"
 _DEFAULT_MODEL_ID_V3 = "Qwen/Qwen3-VL-8B-Instruct"
 _DEFAULT_MODEL_ID = _DEFAULT_MODEL_ID_V2  # back-compat alias
 _DEFAULT_BACKEND = "vllm"
-_DEFAULT_BACKEND_URL = "http://vllm:8000/v1"
+# Audit 2026-06-28: default to the VL sidecar (vllm-vl), NOT the main text-only
+# vLLM (vllm). The main endpoint serves the 14B TEXT model, which cannot do
+# image input — figure captioning silently degraded when PDF_VL_BACKEND_URL was
+# unset. Live .env already overrides this to the sidecar; this fixes the
+# fresh-deploy default so figure requests reach a VL-capable endpoint.
+_DEFAULT_BACKEND_URL = "http://vllm-vl:8000/v1"
 _DEFAULT_TIMEOUT_S = 120.0
 _DEFAULT_MAX_PAGES = 4
 

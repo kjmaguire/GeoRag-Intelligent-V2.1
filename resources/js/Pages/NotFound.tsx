@@ -1,4 +1,4 @@
-// @ts-nocheck
+import type { JSX } from 'react';
 import { Head, Link } from '@inertiajs/react';
 
 /**

@@ -143,7 +143,7 @@ typed `EvidenceItem` lists. All workspace-scoped.
 | `query_collar_details` | Postgres `silver.collars` + Neo4j neighbours | Rule-based SQL | services/dispatchers/structured_query.py |
 | `query_project_summary` | Postgres aggregate query + Neo4j entity rollup | Rule-based | dispatchers (ADR-0007 PR-1) |
 | `query_coverage_gap` | Postgres set-difference vs golden-corpus catalogue | Rule-based | dispatchers (ADR-0007 PR-1) |
-| `vector_search` | Qdrant only | ML (bge-small encoder) | services/fusion.py |
+| `vector_search` | Qdrant only | ML (Qwen3-Embedding-0.6B encoder, 1024-dim — swapped from bge-small 2026-06-03) | services/fusion.py |
 | `splade_search` | Qdrant sparse vectors | ML (SPLADE++ encoder) | services/fusion.py |
 | `bm25_search` | Postgres tsvector `silver.document_passages` | Rule-based | services/fusion.py |
 | `graph_traversal` | Neo4j Cypher | Rule-based | agent/graph_entities.py |

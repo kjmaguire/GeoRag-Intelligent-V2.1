@@ -36,57 +36,67 @@ class AssessmentSummaryController extends Controller
 
     public function show(Request $request, string $slug, string $reportId): Response
     {
-        [$project, $report, $workspaceId] = $this->resolveContext($request, $slug, $reportId);
+        // Audit 2026-06-27 (C2): the whole read runs in one transaction so the
+        // workspace GUC set by resolveContext (SET LOCAL) stays bound across
+        // every tenant-scoped query under PgBouncer transaction pooling.
+        return DB::transaction(function () use ($request, $slug, $reportId) {
+            [$project, $report, $workspaceId] = $this->resolveContext($request, $slug, $reportId);
 
-        $pdfId = $this->resolvePdfIdForReport((string) $report->report_id);
+            $pdfId = $this->resolvePdfIdForReport((string) $report->report_id);
 
-        $summary = $pdfId !== null
-            ? DB::table('silver.assessment_report_summaries')
-                ->where('workspace_id', $workspaceId)
-                ->where('pdf_id', $pdfId)
-                ->orderByDesc('generated_at')
-                ->first()
-            : null;
+            $summary = $pdfId !== null
+                ? DB::table('silver.assessment_report_summaries')
+                    ->where('workspace_id', $workspaceId)
+                    ->where('pdf_id', $pdfId)
+                    ->orderByDesc('generated_at')
+                    ->first()
+                : null;
 
-        $completenessAudit = $pdfId !== null
-            ? $this->loadLatestCompletenessAudit($workspaceId, $pdfId)
-            : null;
+            $completenessAudit = $pdfId !== null
+                ? $this->loadLatestCompletenessAudit($workspaceId, $pdfId)
+                : null;
 
-        return Inertia::render('Foundry/AssessmentSummary', [
-            'project' => [
-                'project_id' => (string) $project->project_id,
-                'project_name' => (string) $project->project_name,
-                'slug' => (string) $project->slug,
-            ],
-            'report' => [
-                'report_id' => (string) $report->report_id,
-                'title' => (string) ($report->title ?? 'Untitled report'),
-                'company' => (string) ($report->company ?? ''),
-                'filing_date' => (string) ($report->filing_date ?? ''),
-                'commodity' => (string) ($report->commodity ?? ''),
-                'pdf_id' => $pdfId,
-            ],
-            'summary' => $summary === null ? null : [
-                'summary_id' => (string) $summary->summary_id,
-                'sections' => $this->decodeJsonb($summary->sections),
-                'completeness_checklist' => $this->decodeJsonb($summary->completeness_checklist),
-                'mean_claim_confidence' => $summary->mean_claim_confidence !== null
-                    ? (float) $summary->mean_claim_confidence
-                    : null,
-                'model_id' => (string) $summary->model_id,
-                'model_backend' => (string) $summary->model_backend,
-                'generated_at' => (string) $summary->generated_at,
-            ],
-            'can_regenerate' => $pdfId !== null,
-            'completeness_audit' => $completenessAudit,
-        ]);
+            return Inertia::render('Foundry/AssessmentSummary', [
+                'project' => [
+                    'project_id' => (string) $project->project_id,
+                    'project_name' => (string) $project->project_name,
+                    'slug' => (string) $project->slug,
+                ],
+                'report' => [
+                    'report_id' => (string) $report->report_id,
+                    'title' => (string) ($report->title ?? 'Untitled report'),
+                    'company' => (string) ($report->company ?? ''),
+                    'filing_date' => (string) ($report->filing_date ?? ''),
+                    'commodity' => (string) ($report->commodity ?? ''),
+                    'pdf_id' => $pdfId,
+                ],
+                'summary' => $summary === null ? null : [
+                    'summary_id' => (string) $summary->summary_id,
+                    'sections' => $this->decodeJsonb($summary->sections),
+                    'completeness_checklist' => $this->decodeJsonb($summary->completeness_checklist),
+                    'mean_claim_confidence' => $summary->mean_claim_confidence !== null
+                        ? (float) $summary->mean_claim_confidence
+                        : null,
+                    'model_id' => (string) $summary->model_id,
+                    'model_backend' => (string) $summary->model_backend,
+                    'generated_at' => (string) $summary->generated_at,
+                ],
+                'can_regenerate' => $pdfId !== null,
+                'completeness_audit' => $completenessAudit,
+            ]);
+        });
     }
 
     public function regenerate(Request $request, string $slug, string $reportId): JsonResponse
     {
-        [$project, $report, $workspaceId] = $this->resolveContext($request, $slug, $reportId);
+        // Audit 2026-06-27 (C2): bind the workspace GUC + do the tenant-scoped
+        // lookups in a SHORT transaction, then drop it BEFORE the long FastAPI
+        // HTTP call — never hold a DB transaction open across a 300s round-trip.
+        [$project, $report, $workspaceId, $pdfId] = DB::transaction(function () use ($request, $slug, $reportId) {
+            [$p, $r, $w] = $this->resolveContext($request, $slug, $reportId);
 
-        $pdfId = $this->resolvePdfIdForReport((string) $report->report_id);
+            return [$p, $r, $w, $this->resolvePdfIdForReport((string) $r->report_id)];
+        });
         if ($pdfId === null) {
             return response()->json(
                 ['error' => 'No bronze PDF linked to this report — cannot regenerate.'],
@@ -96,10 +106,10 @@ class AssessmentSummaryController extends Controller
 
         $fastApiBase = rtrim(
             (string) (config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000')),
+                ?? config('services.fastapi.internal_url')),
             '/',
         );
-        $serviceKey = config('services.fastapi.service_key') ?? env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'FastAPI service key not configured.'], 503);
         }
@@ -132,9 +142,14 @@ class AssessmentSummaryController extends Controller
 
     public function runCompletenessAudit(Request $request, string $slug, string $reportId): JsonResponse
     {
-        [$project, $report, $workspaceId] = $this->resolveContext($request, $slug, $reportId);
+        // Audit 2026-06-27 (C2): bind the workspace GUC + do the tenant-scoped
+        // lookups in a SHORT transaction, then drop it BEFORE the long FastAPI
+        // HTTP call — never hold a DB transaction open across the round-trip.
+        [$project, $report, $workspaceId, $pdfId] = DB::transaction(function () use ($request, $slug, $reportId) {
+            [$p, $r, $w] = $this->resolveContext($request, $slug, $reportId);
 
-        $pdfId = $this->resolvePdfIdForReport((string) $report->report_id);
+            return [$p, $r, $w, $this->resolvePdfIdForReport((string) $r->report_id)];
+        });
         if ($pdfId === null) {
             return response()->json(
                 ['error' => 'No bronze PDF linked to this report — cannot run audit.'],
@@ -144,10 +159,10 @@ class AssessmentSummaryController extends Controller
 
         $fastApiBase = rtrim(
             (string) (config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000')),
+                ?? config('services.fastapi.internal_url')),
             '/',
         );
-        $serviceKey = config('services.fastapi.service_key') ?? env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'FastAPI service key not configured.'], 503);
         }

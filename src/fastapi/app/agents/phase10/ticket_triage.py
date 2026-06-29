@@ -137,17 +137,20 @@ async def ticket_triage(
         # the default scope per the support fixtures).
         ws = str(ctx.workspace_id) if ctx and ctx.workspace_id \
              else LEGACY_DEFAULT_TENANT_UUID
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws,
-        )
-        row = await conn.fetchrow(
-            """
-            SELECT ticket_id::text AS id, severity, category, description
-              FROM ops.support_tickets
-             WHERE ticket_id = $1::uuid
-            """,
-            str(ticket_id),
-        )
+        # Audit 2026-06-28: SET LOCAL in a transaction (PgBouncer tx-mode: a
+        # session-scoped set_config leaks the workspace GUC to the next client).
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.workspace_id', $1, true)", ws,
+            )
+            row = await conn.fetchrow(
+                """
+                SELECT ticket_id::text AS id, severity, category, description
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                """,
+                str(ticket_id),
+            )
     finally:
         await conn.close()
 

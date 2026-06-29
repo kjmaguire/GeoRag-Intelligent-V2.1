@@ -27,20 +27,52 @@ use Illuminate\Support\Facades\DB;
 trait SetsWorkspaceRlsContext
 {
     /**
-     * Pin the Postgres session-level workspace GUC for the current request.
+     * Run $callback inside a DB transaction with `app.workspace_id` bound via
+     * SET LOCAL, so RLS policies on silver/gold tables filter to this tenant.
      *
-     * Callers MUST be inside a transaction or this will silently no-op
-     * under PgBouncer transaction-mode. Wrap the controller body in a
-     * transaction if you depend on this for RLS isolation.
+     * SET LOCAL (`set_config(..., true)`) inside an explicit transaction is
+     * REQUIRED under PgBouncer transaction-mode pooling: only within one
+     * transaction are all statements guaranteed the same backend connection,
+     * and the GUC is auto-discarded at COMMIT/ROLLBACK so it can never leak to
+     * the next request that reuses the pooled connection.
+     *
+     * Audit 2026-06-27 (C2): the previous `set_config(..., false)` form was
+     * session-scoped — under transaction pooling it both failed to apply
+     * reliably (each autocommit statement could land on a different backend)
+     * and leaked the workspace GUC across requests. Always use this wrapper.
+     *
+     * @template T
+     *
+     * @param \Closure():T $callback
+     *
+     * @return T
+     */
+    protected function withWorkspaceRls(string $workspaceId, \Closure $callback): mixed
+    {
+        return DB::transaction(function () use ($workspaceId, $callback) {
+            DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
+
+            return $callback();
+        });
+    }
+
+    /**
+     * Imperatively bind the workspace GUC for the CURRENT transaction.
+     *
+     * @deprecated Unsafe outside a transaction under PgBouncer transaction
+     * pooling — prefer {@see withWorkspaceRls()}. Retained only for callers
+     * that already manage their own transaction; throws if none is active so
+     * the fail-open footgun can never recur silently.
      */
     protected function setWorkspaceRlsContext(string $workspaceId): void
     {
-        // SET LOCAL only applies inside an explicit transaction. To remain
-        // useful in Laravel's default auto-commit mode (one statement per
-        // transaction), we use the function-call form which works outside
-        // explicit BEGIN/COMMIT as well — set_config(..., false) is session-
-        // scoped (not transaction-scoped), persisting across the request's
-        // queries on the same connection.
-        DB::statement("SELECT set_config('app.workspace_id', ?, false)", [$workspaceId]);
+        if (DB::transactionLevel() < 1) {
+            throw new \RuntimeException(
+                'setWorkspaceRlsContext() requires an active transaction under '
+                .'PgBouncer transaction pooling. Use withWorkspaceRls() instead.',
+            );
+        }
+
+        DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
     }
 }

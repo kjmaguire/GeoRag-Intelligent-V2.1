@@ -11,6 +11,7 @@
  * filter.
  */
 
+import type { JSX } from "react";
 import { GuardErrorMessage } from "./GuardErrorMessage";
 
 export interface ConflictSideBySideProps {

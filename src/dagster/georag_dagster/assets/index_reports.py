@@ -58,9 +58,13 @@ QDRANT_COLLECTION = "georag_reports"
 # Default workspace UUID for legacy data (pre-Module 9 ingestion paths).
 # For new ingestion, the workspace_id is read from silver.projects.workspace_id.
 DEFAULT_WORKSPACE_UUID = "a0000000-0000-0000-0000-000000000001"
-# Read from env so Dagster uses the same model as FastAPI query-time embedding.
-# Prevents vector space collision when new documents are indexed after a model upgrade.
-EMBED_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+# Audit 2026-06-27 (C1): the legacy georag_reports collection is a SEPARATE
+# 384-dim bge-small vector space — it was NOT migrated to Qwen3 (only the
+# canonical georag_chunks corpus was, on 2026-06-03). Do NOT wire this to the
+# shared EMBEDDING_MODEL_NAME / EMBEDDING_DIMENSION env: those now resolve to
+# Qwen3 / 1024 on the FastAPI side and would silently collide 1024-dim vectors
+# into this 384-dim space. Pin bge here; override only via the dedicated var.
+EMBED_MODEL_NAME = os.environ.get("REPORTS_EMBED_MODEL_NAME", "BAAI/bge-small-en-v1.5")
 EMBED_DIMENSIONS = 384
 EMBED_BATCH_SIZE = 32
 UPSERT_BATCH_SIZE = 100
@@ -301,6 +305,19 @@ def _ensure_collection(client: Any, context: AssetExecutionContext) -> None:
     )
 
     existing = {c.name for c in client.get_collections().collections}
+    # Audit 2026-06-27 (C1) dim-parity guard: refuse to embed into a collection
+    # whose dense size disagrees with EMBED_DIMENSIONS (here, 384/bge). Backstop
+    # against a model/dim swap silently corrupting this legacy vector space.
+    if QDRANT_COLLECTION in existing:
+        _info = client.get_collection(QDRANT_COLLECTION)
+        _vp = _info.config.params.vectors
+        _dim = _vp[""].size if isinstance(_vp, dict) else getattr(_vp, "size", None)
+        if _dim is not None and _dim != EMBED_DIMENSIONS:
+            raise RuntimeError(
+                f"{QDRANT_COLLECTION} dense dim={_dim} != EMBED_DIMENSIONS="
+                f"{EMBED_DIMENSIONS} (model {EMBED_MODEL_NAME}); refusing to embed "
+                "at a mismatched dimension."
+            )
     if QDRANT_COLLECTION not in existing:
         # Create with named dense "" + sparse "text" slots.
         client.create_collection(

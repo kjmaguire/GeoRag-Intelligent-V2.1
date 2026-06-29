@@ -56,12 +56,17 @@ class _RemoteEmbedding:
     def encode(self, sentences: "str | list[str]", normalize_embeddings: bool = False, **_kwargs: Any) -> "np.ndarray":
         import httpx  # noqa: PLC0415
 
+        from app.sidecar_auth import SERVICE_KEY_HEADERS  # noqa: PLC0415
+
         single = isinstance(sentences, str)
         payload = {
             "sentences": [sentences] if single else list(sentences),
             "normalize": bool(normalize_embeddings),
         }
-        resp = httpx.post(f"{self._url}/embed", json=payload, timeout=self._timeout_s)
+        resp = httpx.post(
+            f"{self._url}/embed", json=payload, timeout=self._timeout_s,
+            headers=SERVICE_KEY_HEADERS,
+        )
         resp.raise_for_status()
         vectors = resp.json()["vectors"]
         arr = np.asarray(vectors, dtype=np.float32)

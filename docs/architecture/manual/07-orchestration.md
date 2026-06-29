@@ -61,6 +61,10 @@ reads `WORKER_POOL` and registers a different subset.
 `ingestion` pool registers:
 
 - `ingest_pdf` ([ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py))
+- `ingest_zip_archive` ([ingest_zip_archive.py](../../../src/fastapi/app/hatchet_workflows/ingest_zip_archive.py)) —
+  fans a ZIP out by extension (PDF/TIFF → Hatchet; LAS/LOG/XLSX → inline SQL ingesters).
+  NOTE: PDFs + ZIPs are the ONLY upload formats with a dedicated Hatchet workflow;
+  CSV/LAS/XLSX/SEGY/GIS uploaded directly are ingested by Dagster assets, not Hatchet.
 - `outbox_dispatcher` (cron `* * * * *`)
 - `stale_run_detector`
 - `nightly_ingestion_integrity`

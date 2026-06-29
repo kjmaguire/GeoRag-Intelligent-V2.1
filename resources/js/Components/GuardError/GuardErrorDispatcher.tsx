@@ -25,6 +25,7 @@
  * own components by surface kind rather than by code.
  */
 
+import type { JSX } from "react";
 import { AmbiguityPicker } from "./AmbiguityPicker";
 import { ConflictSideBySide } from "./ConflictSideBySide";
 import { DepthPickerCard } from "./DepthPickerCard";

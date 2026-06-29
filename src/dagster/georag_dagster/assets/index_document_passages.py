@@ -63,8 +63,14 @@ from georag_dagster.resources import PostgresResource, QdrantResource
 
 QDRANT_COLLECTION = "georag_chunks"
 
-EMBED_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
-EMBED_DIMENSIONS = 384
+EMBED_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B")
+# Audit 2026-06-27 (C1): dimension MUST track the live georag_chunks collection
+# (1024-dim, Qwen3-Embedding-0.6B, swapped 2026-06-03). Read from env so this
+# stays in lockstep with the FastAPI runtime writer; default 1024 (NOT 384/bge —
+# the canonical chat corpus was migrated off bge-small). The parity guard in
+# _ensure_collection refuses to embed into / recreate the collection at a
+# mismatched dimension so a stale value can never silently break retrieval.
+EMBED_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
 EMBED_BATCH_SIZE = 32
 UPSERT_BATCH_SIZE = 100
 
@@ -228,6 +234,25 @@ def _ensure_collection(client: Any, context: AssetExecutionContext) -> None:
 
     if not needs_create:
         info = client.get_collection(QDRANT_COLLECTION)
+        # Dimension-parity guard (audit 2026-06-27 C1). Never embed into — or
+        # recreate — a collection whose dense vector size disagrees with the
+        # configured embedding dimension. This is the backstop against the
+        # 384-vs-1024 regression: a stale EMBED_DIMENSIONS (or a Dagster
+        # container missing EMBEDDING_DIMENSION env) would otherwise either
+        # 400 every upsert or silently recreate the collection at the wrong
+        # size and break live retrieval.
+        _vparams = info.config.params.vectors
+        _existing_dim = (
+            _vparams[""].size if isinstance(_vparams, dict) else getattr(_vparams, "size", None)
+        )
+        if _existing_dim is not None and _existing_dim != EMBED_DIMENSIONS:
+            raise RuntimeError(
+                f"{QDRANT_COLLECTION} dense dim={_existing_dim} but configured "
+                f"EMBED_DIMENSIONS={EMBED_DIMENSIONS} (model {EMBED_MODEL_NAME}). "
+                "Refusing to embed/recreate at a mismatched dimension. Set the "
+                "EMBEDDING_DIMENSION / EMBEDDING_MODEL_NAME env on the Dagster "
+                "worker to match the live collection, or migrate deliberately."
+            )
         # Detect wrong-schema state: no sparse vectors configured, OR
         # zero points (= empty / never used).
         has_sparse = bool(info.config.params.sparse_vectors)

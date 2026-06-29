@@ -108,3 +108,6 @@ src/fastapi/data/
 src/fastapi/scripts/
 /tmp/
 /bronze/
+
+# Claude Code agent scratch worktrees (never commit)
+.claude/worktrees/

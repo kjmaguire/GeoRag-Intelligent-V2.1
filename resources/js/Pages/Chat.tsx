@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, type JSX } from 'react';
 import { Head } from '@inertiajs/react';
 import AppLayout from '../Layouts/AppLayout';
 import type { SourceData, ChatMessage as ChatMessageType, ChatThread, Citation, RefusalPayload } from '@/types';
@@ -14,10 +13,9 @@ import { useEventDedup } from '../Hooks/useEventDedup';
 // Extend window with Laravel Echo instance (set in bootstrap.js)
 declare global {
     interface Window {
-        Echo: {
-            channel: (name: string) => EchoChannel;
-            leave: (name: string) => void;
-        };
+        // Audit 2026-06-28: typed `any` to match the other global Window.Echo
+        // declaration (laravel-echo bootstrap) — conflicting shapes otherwise.
+        Echo: any;
     }
 }
 
@@ -532,7 +530,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
             echoChannelRef.current = { echoChannel, channel };
 
             let accumulatedText = '';
-            let finalCitations = [];
+            let finalCitations: Citation[] = [];
             let finalConfidence = null;
 
             // WS-01: reset dedup state for this fresh run
@@ -813,7 +811,6 @@ export default function Chat(_props: ChatProps): JSX.Element {
                         'Accept': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                         ...(csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {}),
-                        ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
                     },
                 });
                 if (!startResp.ok && startResp.status !== 409) {
@@ -932,14 +929,14 @@ export default function Chat(_props: ChatProps): JSX.Element {
             (window as any).__georag_reconnect_cleanup = _cleanupReconnect;
 
         } catch (err) {
-            const errorMsg = err.message ?? 'An unexpected error occurred.';
+            const errorMsg = (err instanceof Error ? err.message : null) ?? 'An unexpected error occurred.';
             setError(errorMsg);
             setMessages((prev) =>
                 prev.map((msg) =>
                     msg.id === assistantId
                         ? {
                               ...msg,
-                              content: `Sorry, I was unable to process that request. (${err.message})`,
+                              content: `Sorry, I was unable to process that request. (${errorMsg})`,
                               error: errorMsg,
                               status: null,
                           }
@@ -956,7 +953,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
         const trimmed = inputValue.trim();
         if (!trimmed || loading) return;
 
-        const userMessage = {
+        const userMessage: ChatMessageType = {
             id: nextId(),
             role: 'user',
             content: trimmed,
@@ -968,7 +965,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
         // Regenerate can recover the prompt even if the thread was loaded from
         // the server-synced shape where the user message is trimmed.
         const assistantId = nextId();
-        const assistantMessage = {
+        const assistantMessage: ChatMessageType = {
             id: assistantId,
             role: 'assistant',
             content: '',
@@ -1057,7 +1054,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
         // Submit on Enter; allow Shift+Enter for newlines
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            handleSubmit(e);
+            handleSubmit(e as unknown as import('react').FormEvent<HTMLFormElement>);
         }
     }
 
@@ -1132,7 +1129,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
     }
 
     function handleClearConversation(): void {
-        if (window.confirm('Delete this conversation? This cannot be undone.')) {
+        if (activeThreadId && window.confirm('Delete this conversation? This cannot be undone.')) {
             handleDeleteThread(activeThreadId);
         }
     }
@@ -1220,7 +1217,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
                                     };
                                 })
                                 .filter((x) => x !== null)
-                                .sort((a, b) => (b.thread.updatedAt || 0) - (a.thread.updatedAt || 0))
+                                .sort((a, b) => (Number(b.thread.updatedAt) || 0) - (Number(a.thread.updatedAt) || 0))
                                 .map(({ thread, bodyOnly }) => (
                                     <div
                                         key={thread.id}

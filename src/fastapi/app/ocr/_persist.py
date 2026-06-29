@@ -54,7 +54,12 @@ async def transactional_workspace_session(
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await bind_workspace_scope(conn, workspace_id=str(workspace_id, site="ocr._persist"),
+            # Audit 2026-06-27 (T4): the `site=` kwarg belongs to
+            # bind_workspace_scope, not str(). The previous misplaced paren
+            # —  str(workspace_id, site=...) — raised TypeError on every call,
+            # silently disabling all §04p dual-write persistence.
+            await bind_workspace_scope(
+                conn, workspace_id=str(workspace_id), site="ocr._persist"
             )
             yield conn
 

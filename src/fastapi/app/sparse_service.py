@@ -35,10 +35,16 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from app.sidecar_auth import enforce_batch_limits, require_service_key
+
 logger = logging.getLogger(__name__)
+
+# Audit 2026-06-27: bound the sparse batch (query path encodes a handful).
+_MAX_TEXTS = int(os.environ.get("SPARSE_MAX_TEXTS", "1024"))
+_MAX_TOTAL_CHARS = int(os.environ.get("SPARSE_MAX_TOTAL_CHARS", "2000000"))
 
 # Fail fast on the self-proxy misconfiguration: if SPARSE_SERVICE_URL were set
 # here, encode_sparse would POST to this very service and recurse over HTTP.
@@ -70,8 +76,12 @@ class SparseRequest(BaseModel):
     texts: list[str]
 
 
-@app.post("/sparse")
+@app.post("/sparse", dependencies=[Depends(require_service_key)])
 async def sparse(req: SparseRequest) -> dict:
+    enforce_batch_limits(
+        req.texts, max_items=_MAX_TEXTS,
+        max_total_chars=_MAX_TOTAL_CHARS, label="sparse",
+    )
     if not req.texts:
         return {"sparse": []}
     from app.services.sparse_encoder import encode_sparse_batch  # noqa: PLC0415

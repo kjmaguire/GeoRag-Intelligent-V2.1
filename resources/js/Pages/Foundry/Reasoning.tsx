@@ -417,7 +417,7 @@ function EvidenceStage({
                                                         ? `Source chunk: ${e.source_chunk_id}`
                                                         : 'No chunk attached')}
                                             </div>
-                                            {e.payload?.evaluator && (
+                                            {!!e.payload?.evaluator && (
                                                 <div
                                                     className="text-[10px] font-mono mt-1"
                                                     style={{ color: 'var(--fg-3)' }}

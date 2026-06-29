@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -176,14 +177,52 @@ async def run_zip_ingest(
             log.info("ingest_zip_archive: downloading %s from %s", input.minio_key, _BRONZE_BUCKET)
             if archive_run_id:
                 await _archive_progress.mark_extracting(archive_run_id=archive_run_id)
-            s3.download_file(_BRONZE_BUCKET, input.minio_key, str(zip_path))
+            # Hard rule 2 — boto3 is sync; keep it off the asyncio event loop.
+            await asyncio.to_thread(
+                s3.download_file, _BRONZE_BUCKET, input.minio_key, str(zip_path)
+            )
 
             # ── 2. Extract all entries ────────────────────────────────────────
             extract_dir = Path(tmpdir) / "extracted"
             extract_dir.mkdir()
 
+            # Audit 2026-06-28: safe extraction. A bare zf.extractall() is
+            # vulnerable to (a) zip-bombs (unbounded decompressed size / entry
+            # count exhausts disk) and (b) zip-slip path traversal (an entry
+            # named '../../etc/x' escapes extract_dir). Guard both: cap entry
+            # count + total declared uncompressed size, and verify every
+            # resolved destination stays inside extract_dir before writing.
+            _MAX_ENTRIES = 50_000
+            _MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
+            extract_root = extract_dir.resolve()
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
+                infos = zf.infolist()
+                if len(infos) > _MAX_ENTRIES:
+                    raise ValueError(
+                        f"ingest_zip_archive: {len(infos)} entries exceeds "
+                        f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
+                    )
+                total_uncompressed = sum(i.file_size for i in infos)
+                if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+                    raise ValueError(
+                        f"ingest_zip_archive: uncompressed size "
+                        f"{total_uncompressed} B exceeds {_MAX_TOTAL_UNCOMPRESSED} B "
+                        "(zip-bomb guard); refusing."
+                    )
+                for info in infos:
+                    if info.is_dir():
+                        continue
+                    dest = (extract_dir / info.filename).resolve()
+                    if dest != extract_root and not str(dest).startswith(
+                        str(extract_root) + os.sep
+                    ):
+                        raise ValueError(
+                            f"ingest_zip_archive: unsafe path {info.filename!r} "
+                            "escapes extract dir (zip-slip guard); refusing."
+                        )
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info) as src, open(dest, "wb") as out:
+                        shutil.copyfileobj(src, out)
 
             all_files = [p for p in extract_dir.rglob("*") if p.is_file()]
             total = len(all_files)
@@ -203,11 +242,23 @@ async def run_zip_ingest(
                 statement_cache_size=0,
             )
             try:
+                # Audit 2026-06-28: session-scoped GUCs. This is a dedicated,
+                # DIRECT (POSTGRES_DIRECT_HOST, non-PgBouncer) connection used
+                # across all per-file ingesters with per-file error recovery —
+                # a single wrapping transaction is impossible (one bad file
+                # would abort it). SET LOCAL (is_local=true) outside a txn is
+                # discarded immediately, leaving RLS GUCs unset for the ingester
+                # queries. Session scope persists across the autocommit
+                # statements; the conn is closed in the finally below so there
+                # is no cross-tenant leak.
                 await bind_workspace_scope(
-                    conn, workspace_id=input.workspace_id, site="hatchet.ingest_zip_archive"
+                    conn,
+                    workspace_id=input.workspace_id,
+                    site="hatchet.ingest_zip_archive",
+                    is_local=False,
                 )
                 await conn.execute(
-                    "SELECT set_config('app.project_id', $1, true)",
+                    "SELECT set_config('app.project_id', $1, false)",
                     input.project_id,
                 )
 
@@ -357,7 +408,9 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         tiff_key = f"tiff/{input.project_id}/{ts}_{safe_name}"
         file_bytes = file_path.read_bytes()
-        s3.put_object(Bucket=_BRONZE_BUCKET, Key=tiff_key, Body=file_bytes)
+        await asyncio.to_thread(
+            s3.put_object, Bucket=_BRONZE_BUCKET, Key=tiff_key, Body=file_bytes
+        )
         await tiff_normalize.aio_run_no_wait(
             TiffNormalizeInput(
                 workspace_id=input.workspace_id,  # type: ignore[arg-type]
@@ -391,7 +444,9 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         pdf_key = f"reports/{input.project_id}/{ts}_{safe_name}"
         file_bytes = file_path.read_bytes()
-        s3.put_object(Bucket=_BRONZE_BUCKET, Key=pdf_key, Body=file_bytes)
+        await asyncio.to_thread(
+            s3.put_object, Bucket=_BRONZE_BUCKET, Key=pdf_key, Body=file_bytes
+        )
         await ingest_pdf.aio_run_no_wait(
             IngestPdfInput(
                 workspace_id=input.workspace_id,

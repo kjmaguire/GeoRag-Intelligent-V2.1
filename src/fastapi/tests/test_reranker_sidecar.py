@@ -63,10 +63,11 @@ def test_returns_none_when_local_load_fails(monkeypatch: pytest.MonkeyPatch) -> 
 def test_remote_predict_posts_pairs_and_parses_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, headers=None):
         captured["url"] = url
         captured["json"] = json
         captured["timeout"] = timeout
+        captured["headers"] = headers
         return _FakeResp({"scores": [0.9, 0.1]})
 
     import httpx
@@ -79,6 +80,9 @@ def test_remote_predict_posts_pairs_and_parses_scores(monkeypatch: pytest.Monkey
     assert captured["url"] == "http://reranker:8000/rerank"
     assert captured["json"] == {"pairs": [["q", "passage one"], ["q", "passage two"]]}
     assert captured["timeout"] == 7.0
+    # Audit 2026-06-27: proxy now forwards the service-key header (empty dict
+    # when FASTAPI_SERVICE_KEY is unset).
+    assert captured["headers"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -88,9 +92,14 @@ def test_remote_predict_posts_pairs_and_parses_scores(monkeypatch: pytest.Monkey
 def test_sidecar_rerank_returns_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.reranker_service as svc
 
+    from app.sidecar_auth import SERVICE_KEY_HEADERS
+
     monkeypatch.setattr(svc, "_get_reranker", lambda: _FakeModel())
     with TestClient(svc.app) as client:
-        resp = client.post("/rerank", json={"pairs": [["q", "p1"], ["q", "p2"]]})
+        resp = client.post(
+            "/rerank", json={"pairs": [["q", "p1"], ["q", "p2"]]},
+            headers=SERVICE_KEY_HEADERS,
+        )
     assert resp.status_code == 200
     assert resp.json()["scores"] == [0.5, 0.6]
 
@@ -98,9 +107,13 @@ def test_sidecar_rerank_returns_scores(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_sidecar_rerank_empty_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.reranker_service as svc
 
+    from app.sidecar_auth import SERVICE_KEY_HEADERS
+
     monkeypatch.setattr(svc, "_get_reranker", lambda: _FakeModel())
     with TestClient(svc.app) as client:
-        resp = client.post("/rerank", json={"pairs": []})
+        resp = client.post(
+            "/rerank", json={"pairs": []}, headers=SERVICE_KEY_HEADERS,
+        )
     assert resp.status_code == 200
     assert resp.json()["scores"] == []
 

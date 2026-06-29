@@ -104,11 +104,14 @@ def _remote_encode_sparse(texts: list[str]) -> list[dict[int, float]]:
     the int token-ids round-trip as strings and are restored to int here."""
     import httpx  # noqa: PLC0415
 
+    from app.sidecar_auth import SERVICE_KEY_HEADERS  # noqa: PLC0415
+
     timeout_s = float(os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30")
     resp = httpx.post(
         f"{SPARSE_SERVICE_URL.rstrip('/')}/sparse",
         json={"texts": texts},
         timeout=timeout_s,
+        headers=SERVICE_KEY_HEADERS,
     )
     resp.raise_for_status()
     return [{int(k): v for k, v in d.items()} for d in resp.json()["sparse"]]

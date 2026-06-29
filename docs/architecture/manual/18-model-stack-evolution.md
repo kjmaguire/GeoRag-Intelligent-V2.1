@@ -29,10 +29,24 @@ defaults.** Always read the model stack in two columns.
 | Slot | Production (live, env-driven) | Code/compose default (stale) |
 |---|---|---|
 | Dense embedder | `Qwen/Qwen3-Embedding-0.6B` **1024-dim** ([config.py:899,904](../../../src/fastapi/app/config.py)) | `BAAI/bge-small-en-v1.5` 384-dim ([embedding_service.py:41](../../../src/fastapi/app/embedding_service.py); [docker-compose.yml:959,1298,2694](../../../docker-compose.yml)) |
-| Reranker | `Qwen/Qwen3-Reranker-0.6B` (via `RERANKER_MODEL_PATH`) ([config.py:929](../../../src/fastapi/app/config.py)) | `BAAI/bge-reranker-base@2cfc18c9` ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) |
+| Reranker | **`BAAI/bge-reranker-base` is LIVE** — `RERANKER_MODEL_PATH` is empty in the running container (verified 2026-06-28). The Qwen3-Reranker swap did NOT happen and is **not a config flip** (see ⚠️ below). | `BAAI/bge-reranker-base@2cfc18c9` ([reranker.py:77-82](../../../src/fastapi/app/services/reranker.py)) |
 | VL (figures) | `Qwen/Qwen2.5-VL-7B-Instruct` (V2 default; V3=Qwen3-VL-8B gated) ([pdf_vl.py:109,117,118](../../../src/fastapi/app/services/pdf_vl.py)) | same |
 | Synthesizer LLM | `Qwen/Qwen3-14B-AWQ` (**unchanged**) ([.env.example:492,612](../../../.env.example)) | same |
 | Sparse | SPLADE++ (`naver/splade-cocondenser-ensembledistil`) | same |
+
+> ⚠️ **Reranker swap is NOT a config flip (audit 2026-06-28).** Setting
+> `RERANKER_MODEL_PATH=Qwen/Qwen3-Reranker-0.6B` will **break** the reranker.
+> The service loads the path via `sentence_transformers.CrossEncoder(path,
+> device="cpu")` ([reranker.py:188-194](../../../src/fastapi/app/services/reranker.py)),
+> but Qwen3-Reranker is a **causal-LM** reranker (scored via yes/no token
+> logits with an instruction template) — NOT a sequence-classification
+> CrossEncoder, so it won't load that way. A real swap requires: (1) a
+> CausalLM inference path in `reranker.py` (load `AutoModelForCausalLM`, format
+> query+doc with the Qwen3-Reranker prompt, score from the yes/no logits),
+> (2) **GPU** — a 0.6B causal LM doing ~20 forward passes/query on CPU blows
+> the 8s rerank timeout (current reranker is CPU-only), and (3) a golden-eval
+> pass. Until then bge-reranker-base stays live. (ADR-0011's "superseded by the
+> Qwen3-Reranker swap" note is aspirational — the swap has not shipped.)
 
 ### 2.1 The live re-index hazard 🔴
 
@@ -245,12 +259,16 @@ ADR proposes a `lookup_and_pivot` helper for this shape. See
 
 ## 11. Updated workflow + asset counts (Pass 5)
 
-| Surface | Pass 4 count | Now |
+| Surface | Pass 4 count | Now (verified 2026-06-26) |
 |---|---|---|
-| Hatchet workflow files (excl. `worker.py` + 6 `_`-helpers) | 45 | **~50** (+ `enrich_passage_context`, `score_answer_quality`, `ingest_zip_archive`, `embed_pending_passages_smoke`, `graph_tenant_auditor`-adjacent) |
+| Hatchet workflow files (excl. `worker.py` + `_`-helpers) | 45 | **48** (+ `enrich_passage_context`, `score_answer_quality`, `ingest_zip_archive`) |
 | Dagster asset files | 52 | **55** (+ `silver_nl_summaries`, `silver_samples_nl_summary`, `data_dictionary_dump`) |
+| FastAPI routers | 31 | **31** (unchanged) |
+| Inertia pages (Pages/**/*.tsx) | 96 | **98** |
+| Admin pages (Pages/Admin/) | (uncataloged) | **41** — now in [Ch 10 §2a](10-frontend.md) |
 | ADRs | 10 | **17** |
 | Migrations | ~188 | **202** |
+| Compose service blocks | ~60 | **64** |
 
 ## 12. What this chapter patches
 

@@ -12,6 +12,7 @@
  * dismiss without sending if they want.
  */
 
+import type { JSX } from "react";
 import { GuardErrorMessage } from "./GuardErrorMessage";
 
 export interface IncidentReportBannerProps {

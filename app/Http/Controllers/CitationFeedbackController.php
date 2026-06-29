@@ -34,13 +34,13 @@ class CitationFeedbackController extends Controller
         ]);
         $payload['submitted_by_user_id'] = $user->id;
 
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'FASTAPI_SERVICE_KEY not configured'], 500);
         }
         $base = rtrim(
             config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                ?? config('services.fastapi.internal_url'),
             '/',
         );
 

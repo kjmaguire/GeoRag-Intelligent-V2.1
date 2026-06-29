@@ -1,4 +1,3 @@
-// @ts-nocheck — migration in progress
 /**
  * FeedbackButtons — B6
  *

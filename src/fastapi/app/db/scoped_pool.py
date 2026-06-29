@@ -91,6 +91,7 @@ async def bind_workspace_scope(
     *,
     workspace_id: str,
     site: str = "unknown",
+    is_local: bool = True,
 ) -> None:
     """Bind ``app.workspace_id`` on an already-acquired connection.
 
@@ -118,6 +119,19 @@ async def bind_workspace_scope(
     Loop callers typically already have one transaction wrapping the
     entire iteration; opening a per-rebind transaction would defeat
     the batching that's the whole reason for the loop pattern.
+
+    ``is_local`` (default True / ``SET LOCAL``) is correct for the common
+    case where the caller owns the surrounding transaction. Pass
+    ``is_local=False`` (session-scoped) ONLY for a dedicated, direct
+    (non-PgBouncer) connection that runs autocommit statements with no
+    wrapping transaction and is closed when done — e.g.
+    ``ingest_zip_archive`` opens one direct ``POSTGRES_DIRECT_HOST``
+    connection, fans out per-file ingesters with per-file error recovery
+    (so a single wrapping txn is impossible), and closes it at the end.
+    Session scope persists across the autocommit statements; the
+    dedicated+closed connection means there is no cross-tenant leak.
+    NEVER pass ``is_local=False`` on a pooled/PgBouncer-transaction
+    connection — that reintroduces the GUC leak this module exists to prevent.
     """
     if workspace_id is None or str(workspace_id).strip() == "":
         raise BareConnectionError(
@@ -133,8 +147,9 @@ async def bind_workspace_scope(
             f"workspace_id={wid!r}. SQL injection class (Theme G)."
         )
     await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, true)",
+        "SELECT set_config('app.workspace_id', $1, $2)",
         wid,
+        is_local,
     )
 
 

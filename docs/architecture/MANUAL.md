@@ -57,7 +57,7 @@ marker. The exhaustive matrix is in
 | C | [Security Posture](appendix/C-security-posture.md) | Draft (open items tracked) | Trust boundaries, threat model, tenant isolation, prompt injection, tool abuse, LLM egress, rotation, RPO/RTO |
 | D | [API Contract](appendix/D-api-contract.md) | Draft | Laravel + FastAPI endpoint inventory; OpenAPI generator design |
 | E | [Ingestion Format Matrix](appendix/E-ingestion-format-matrix.md) | Draft | 19-row per-format end-to-end contract |
-| F | [Data Dictionary + ERD](appendix/F-data-dictionary.md) | Draft | Per-table template + ERD groupings + generator design + CI drift guard |
+| F | [Data Dictionary + ERD](appendix/F-data-dictionary.md) | **Live** | Generator **shipped** — `data_dictionary_dump` Dagster asset walks all 14 schemas → single `data_dictionary.json` in MinIO; `data_dictionary_drift_check` asset_check; `eralchemy2` ERD. Per-schema `data_dict/*.md` are now a hand-reading aid. |
 | G | [RAG Retrieval Contract](appendix/G-rag-retrieval-contract.md) | Draft | Chunking, embedding, Qdrant payload, fusion, reranker, citation binding, numeric verification, confidence formula; ADR-0010 `georag_chunks` callout |
 | H | [Knowledge Graph Schema](appendix/H-knowledge-graph-schema.md) | Draft | Neo4j node labels + relationships + workspace fence + upsert / conflict / deletion rules |
 | I | [Frontend Workflow Specs](appendix/I-frontend-specs.md) | Draft | Per-page acceptance specs for the 9 highest-value pages + cross-cutting rules |
@@ -103,6 +103,20 @@ Four review passes shipped:
   learning loop, `@georag_agent` runtime contract (idempotency,
   circuit breaker, audit ledger emit order), model registry. Closes
   the "have you got every agent + LoRA?" gap.
+- **Pass 6 — consistency + completeness audit (on-demand, Opus 4.8).**
+  No new code since Pass 5 (still 202 migrations, 17 ADRs), so this pass
+  was accuracy + gap-closure. **Closed the biggest residual gap: the
+  41-page Admin/operator surface** (`AgentConfig`, full Eval suite, ML
+  training, Shadow runs, Source trust, Target cockpit, Backups, Workflow
+  runs, Decisions, Reporting) — now cataloged in [Ch 10 §2a](manual/10-frontend.md),
+  mapped to the master-plan §7/§8/§10/§12 deliverables they back.
+  **Ran a full broken-link scan** of all 68 files: found + fixed 2
+  (`CLAUDE.md` path depth in Ch 00); **0 broken links remain**.
+  Reconciled the **data-dictionary reality** — the generator shipped and
+  emits a single MinIO JSON (not per-schema `.md`); `data_dict/INDEX.md`
+  + the MANUAL appendix-F row updated from Draft → Live. Corrected
+  verified counts in [Ch 18 §11](manual/18-model-stack-evolution.md)
+  (48 Hatchet workflows, 98 pages, 64 compose services).
 - **Pass 5 — 2026-06 audit wave + model swap (on-demand, Opus 4.8).**
   Caught up the manual to the state of the repo as of 2026-06-26 after
   a real wave of work landed. **7 new ADRs (0011–0017)** integrated.

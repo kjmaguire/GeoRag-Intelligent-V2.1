@@ -210,7 +210,7 @@ function FiguresTab({ figures }: { figures: Figure[] }) {
         return (
             <EmptyState
                 title="No figures extracted from this report yet."
-                body={
+                detail={
                     "Figures are pulled when the §04p ingest pipeline runs with " +
                     "PDF_PARSER_DOCLING_ENABLED=true. Once it has, each figure's " +
                     "PNG + caption + page reference will appear here with a 1-hour " +

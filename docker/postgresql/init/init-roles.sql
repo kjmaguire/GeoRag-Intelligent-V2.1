@@ -33,16 +33,27 @@ END $$;
 GRANT USAGE ON SCHEMA silver TO georag_read, georag_write;
 GRANT USAGE ON SCHEMA public TO georag_read, georag_write, georag_audit;
 GRANT USAGE ON SCHEMA bronze TO georag_read, georag_write;
+-- Audit 2026-06-28: georag_read exists for "reports, dashboards" but dashboards
+-- read the GOLD analytics layer + PUBLIC_GEO reference data, which were never
+-- granted (read could only see silver/bronze). Add USAGE here + SELECT below.
+-- gold rows still carry RLS, so georag_read remains tenant-filtered. gold is
+-- Dagster-materialised (not app-written), so no INSERT/UPDATE for georag_write.
+GRANT USAGE ON SCHEMA gold TO georag_read, georag_write;
+GRANT USAGE ON SCHEMA public_geo TO georag_read, georag_write;
 -- audit schema (created in init-postgis.sql) — all three roles can see it.
 -- Future tables get role-appropriate grants via the ALTER DEFAULT PRIVILEGES
 -- block at the bottom of this file (idempotent on re-run).
 GRANT USAGE ON SCHEMA audit TO georag_read, georag_write, georag_audit;
 
--- Read role: SELECT on all silver + bronze tables
+-- Read role: SELECT on all silver + bronze + gold + public_geo tables
 GRANT SELECT ON ALL TABLES IN SCHEMA silver TO georag_read;
 GRANT SELECT ON ALL TABLES IN SCHEMA bronze TO georag_read;
+GRANT SELECT ON ALL TABLES IN SCHEMA gold TO georag_read;
+GRANT SELECT ON ALL TABLES IN SCHEMA public_geo TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT SELECT ON TABLES TO georag_read;
+ALTER DEFAULT PRIVILEGES IN SCHEMA gold GRANT SELECT ON TABLES TO georag_read;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo GRANT SELECT ON TABLES TO georag_read;
 
 -- Write role: inherits read + INSERT/UPDATE on silver
 GRANT georag_read TO georag_write;

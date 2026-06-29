@@ -100,8 +100,8 @@ class PublicApiController extends Controller
         if (! $user) {
             return response()->json(['error' => 'unauthenticated'], 401);
         }
-        $fastApi = rtrim(env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'), '/');
-        $svc = env('FASTAPI_SERVICE_KEY');
+        $fastApi = rtrim(config('services.fastapi.internal_url'), '/');
+        $svc = config('services.fastapi.service_key');
         $jwt = app(FastApiJwtMinter::class)->mint((string) $user->id, $projectId, []);
 
         $allNotes = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
