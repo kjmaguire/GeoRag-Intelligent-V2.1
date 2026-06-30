@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+nfrom app.models.retrieval_cache import CachedRetrievalContext
 
 from app.agent.orchestrator.run_cache import (
     build_cached_candidates,
