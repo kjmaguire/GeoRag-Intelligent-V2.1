@@ -174,7 +174,7 @@ pathlib.Path('/tmp/reqs.txt').write_text('\n'.join(deps) + '\n')" \
 # Production deploys can strip these by adding a separate runtime stage
 # that omits the dev install; for now they're <5 MB so not worth the
 # extra Dockerfile complexity.
-RUN pip install --no-cache-dir pytest>=8.0 pytest-asyncio>=0.25
+RUN pip install --no-cache-dir "pytest>=8.0" "pytest-asyncio>=0.25"
 
 # FastAPI review #9 — slowapi for the optional rate limiter. Dormant
 # unless RATE_LIMIT_ENABLED=true; baked in so flipping the flag at
