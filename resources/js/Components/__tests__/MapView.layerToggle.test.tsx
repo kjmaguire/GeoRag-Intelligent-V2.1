@@ -75,6 +75,15 @@ vi.mock('maplibre-gl', () => {
         this.fitBounds         = vi.fn();
         this.panTo             = vi.fn();
         this.easeTo            = vi.fn();
+        this.flyTo             = vi.fn();
+        // Added 2026-06-29: the coverage-density layer (CC-03 Item 5) tears down
+        // via removeLayer/removeSource and restyles via setPaintProperty; other
+        // map features query features. The mock must provide them or the
+        // component's effect teardown throws and the panel never mounts.
+        this.removeLayer           = vi.fn();
+        this.removeSource          = vi.fn();
+        this.setPaintProperty      = vi.fn();
+        this.queryRenderedFeatures = vi.fn().mockReturnValue([]);
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function NavCtrl(this: any) { void this; }
@@ -163,7 +172,12 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         triggerMapLoad();
 
         const checkboxes = await screen.findAllByRole('checkbox');
-        expect(checkboxes).toHaveLength(MVT_LAYERS.length);
+        // The panel also renders the coverage-density toggle (CC-03 Item 5),
+        // so filter to the per-layer checkboxes (id="layer-toggle-{layer.id}").
+        const layerCheckboxes = checkboxes.filter((cb) =>
+            MVT_LAYERS.some((l) => cb.id === `layer-toggle-${l.id}`),
+        );
+        expect(layerCheckboxes).toHaveLength(MVT_LAYERS.length);
         expect(MVT_LAYERS.length).toBe(7);
     });
 
@@ -172,9 +186,12 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         render(<MapView projectId="proj-1" useMartinTiles={true} />);
         triggerMapLoad();
 
+        // Each layer checkbox's accessible name is its <label> text; the color
+        // swatch <span> is aria-hidden, so findByRole(name) is swatch-proof
+        // (findByText breaks now that the text is split by the swatch element).
         for (const layer of MVT_LAYERS) {
-            const label = await screen.findByText(layer.label);
-            expect(label).toBeTruthy();
+            const cb = await screen.findByRole('checkbox', { name: layer.label });
+            expect(cb).toBeTruthy();
         }
     });
 
@@ -183,11 +200,13 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         render(<MapView projectId="proj-1" useMartinTiles={true} />);
         triggerMapLoad();
 
-        const checkboxes = await screen.findAllByRole('checkbox') as HTMLInputElement[];
-        // Map checkboxes by position to layer IDs (same order as MVT_LAYERS)
-        MVT_LAYERS.forEach((layer, idx) => {
+        // Query each layer's checkbox by stable id (positional indexing is no
+        // longer reliable now that the coverage-density toggle is also present).
+        await screen.findAllByRole('checkbox');
+        MVT_LAYERS.forEach((layer) => {
+            const cb = document.getElementById(`layer-toggle-${layer.id}`) as HTMLInputElement;
             const expectedChecked = MVT_DEFAULT_VISIBILITY[layer.id] ?? true;
-            expect(checkboxes[idx].checked).toBe(expectedChecked);
+            expect(cb.checked).toBe(expectedChecked);
         });
     });
 
@@ -203,11 +222,10 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         // After map is ready, layers get added. Now simulate getLayer returning true.
         mockGetLayer.mockReturnValue(true);
 
-        // Find the collars checkbox (last item) and toggle it
+        // Find the collars checkbox by accessible name and toggle it (label
+        // text is split by the color-swatch span, so findByText no longer matches).
         const collarsLayer = MVT_LAYERS.find((l) => l.id === 'collars')!;
-        const collarsLabel = await screen.findByText(collarsLayer.label);
-        const checkboxWrapper = collarsLabel.closest('div');
-        const checkbox = checkboxWrapper?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+        const checkbox = await screen.findByRole('checkbox', { name: collarsLayer.label }) as HTMLInputElement;
         expect(checkbox).toBeTruthy();
 
         // Uncheck it — should call setLayoutProperty with 'none'
@@ -231,9 +249,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         mockGetLayer.mockReturnValue(true);
 
         const boundariesLayer = MVT_LAYERS.find((l) => l.id === 'boundaries')!;
-        const label = await screen.findByText(boundariesLayer.label);
-        const checkboxWrapper = label.closest('div');
-        const checkbox = checkboxWrapper?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+        const checkbox = await screen.findByRole('checkbox', { name: boundariesLayer.label }) as HTMLInputElement;
 
         fireEvent.click(checkbox); // toggle to hidden
 
@@ -255,9 +271,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         mockGetLayer.mockReturnValue(true);
 
         const formationsLayer = MVT_LAYERS.find((l) => l.id === 'formations')!;
-        const label = await screen.findByText(formationsLayer.label);
-        const checkboxWrapper = label.closest('div');
-        const checkbox = checkboxWrapper?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+        const checkbox = await screen.findByRole('checkbox', { name: formationsLayer.label }) as HTMLInputElement;
 
         fireEvent.click(checkbox);
 
@@ -279,9 +293,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         mockGetLayer.mockReturnValue(true);
 
         const seismicLayer = MVT_LAYERS.find((l) => l.id === 'seismic')!;
-        const label = await screen.findByText(seismicLayer.label);
-        const checkboxWrapper = label.closest('div');
-        const checkbox = checkboxWrapper?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+        const checkbox = await screen.findByRole('checkbox', { name: seismicLayer.label }) as HTMLInputElement;
 
         fireEvent.click(checkbox);
 
