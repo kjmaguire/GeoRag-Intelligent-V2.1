@@ -520,7 +520,9 @@ jobs:
         if: github.event_name != 'pull_request'
         # 2026-06-24 re-audit: installer v3 cannot install Cosign v3.x;
         # bumped to v4 + cosign-release to the current v3.1.1.
-        uses: sigstore/cosign-installer@v4
+        # 2026-06-29: pin to v4.1.2 — sigstore/cosign-installer does not
+        # publish a floating `v4` major tag, so `@v4` failed to resolve.
+        uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: 'v3.1.1'
 
