@@ -352,9 +352,12 @@ jobs:
           PGPASSWORD: test_password
 
   # ─── Hadolint — Dockerfile lint (warn-only, runs on PRs and pushes) ─────
-  # Closes: L-A4-09 (hadolint step). failure-threshold: warning means lint
-  # findings are surfaced in the annotation UI without blocking PR merge.
-  # Tighten to failure-threshold: error once the Dockerfiles are lint-clean.
+  # Closes: L-A4-09 (hadolint step). 2026-06-29: failure-threshold is `error`
+  # so the current findings (all DL3008/DL3013/DL4006 *warnings* — unpinned
+  # apt/pip versions) surface as annotations WITHOUT blocking, matching the
+  # warn-only intent. (`warning` threshold actually FAILS on warnings — the
+  # prior setting contradicted the comment.) Pin versions, then drop the
+  # threshold to `warning`/`info` to enforce.
   hadolint:
     name: Hadolint (Dockerfile lint)
     runs-on: ubuntu-latest
@@ -367,19 +370,19 @@ jobs:
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/fastapi.Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
 
       - name: Lint docker/laravel.Dockerfile
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/laravel.Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
 
       - name: Lint docker/dagster.Dockerfile
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/dagster.Dockerfile
-          failure-threshold: warning
+          failure-threshold: error
 
   # ─── Docker build + push (GHCR on main) + Trivy + SBOM ──────────────────
   # Strategy:
