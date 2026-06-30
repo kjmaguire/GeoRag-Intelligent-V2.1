@@ -50,8 +50,7 @@ final class CitationController extends Controller
 {
     public function __construct(
         private readonly CitationResolverRegistry $registry,
-    ) {
-    }
+    ) {}
 
     /**
      * Resolve a source_chunk_id to its original content.
@@ -82,10 +81,10 @@ final class CitationController extends Controller
         // Unknown prefix — return a structured "not recognised" payload so
         // the citation viewer can render a helpful empty state.
         return response()->json([
-            'source_type'     => 'unknown',
+            'source_type' => 'unknown',
             'source_chunk_id' => $sourceId,
-            'text'            => 'Source type not recognized.',
-            'metadata'        => [],
+            'text' => 'Source type not recognized.',
+            'metadata' => [],
         ]);
     }
 }

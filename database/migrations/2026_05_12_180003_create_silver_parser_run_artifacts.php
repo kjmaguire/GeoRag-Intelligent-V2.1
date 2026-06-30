@@ -66,21 +66,21 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_parser_run_artifacts_report
-             ON silver.parser_run_artifacts (report_id);'
+             ON silver.parser_run_artifacts (report_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_parser_run_artifacts_workspace
-             ON silver.parser_run_artifacts (workspace_id);'
+             ON silver.parser_run_artifacts (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_parser_run_artifacts_parser
-             ON silver.parser_run_artifacts (parser_used);'
+             ON silver.parser_run_artifacts (parser_used);',
         );
         // Partial index for Step 7 shadow comparison (only RAGFlow shadow rows).
         DB::statement(
             "CREATE INDEX IF NOT EXISTS idx_parser_run_artifacts_shadow
              ON silver.parser_run_artifacts (report_id)
-             WHERE parser_used = 'ragflow_shadow';"
+             WHERE parser_used = 'ragflow_shadow';",
         );
     }
 

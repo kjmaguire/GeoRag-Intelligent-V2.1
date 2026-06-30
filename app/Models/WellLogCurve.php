@@ -13,8 +13,11 @@ class WellLogCurve extends Model
     use HasUuids;
 
     protected $table = 'silver.well_log_curves';
+
     protected $primaryKey = 'curve_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -34,13 +37,13 @@ class WellLogCurve extends Model
     ];
 
     protected $casts = [
-        'min_depth'    => 'float',
-        'max_depth'    => 'float',
-        'step'         => 'float',
-        'null_value'   => 'float',
+        'min_depth' => 'float',
+        'max_depth' => 'float',
+        'step' => 'float',
+        'null_value' => 'float',
         'sample_count' => 'integer',
-        'created_at'   => 'datetime',
-        'updated_at'   => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     /**

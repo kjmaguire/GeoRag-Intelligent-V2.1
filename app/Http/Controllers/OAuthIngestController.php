@@ -49,29 +49,29 @@ class OAuthIngestController extends Controller
 
     private const PROVIDER_CONFIG = [
         'sharepoint' => [
-            'auth_url_env'     => 'OAUTH_SHAREPOINT_AUTH_URL',
-            'token_url_env'    => 'OAUTH_SHAREPOINT_TOKEN_URL',
-            'client_id_env'    => 'OAUTH_SHAREPOINT_CLIENT_ID',
+            'auth_url_env' => 'OAUTH_SHAREPOINT_AUTH_URL',
+            'token_url_env' => 'OAUTH_SHAREPOINT_TOKEN_URL',
+            'client_id_env' => 'OAUTH_SHAREPOINT_CLIENT_ID',
             'client_secret_env' => 'OAUTH_SHAREPOINT_CLIENT_SECRET',
-            'scope'            => 'offline_access Sites.Read.All Files.Read.All',
+            'scope' => 'offline_access Sites.Read.All Files.Read.All',
             'default_auth_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
             'default_token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
         ],
         'onedrive' => [
-            'auth_url_env'     => 'OAUTH_ONEDRIVE_AUTH_URL',
-            'token_url_env'    => 'OAUTH_ONEDRIVE_TOKEN_URL',
-            'client_id_env'    => 'OAUTH_ONEDRIVE_CLIENT_ID',
+            'auth_url_env' => 'OAUTH_ONEDRIVE_AUTH_URL',
+            'token_url_env' => 'OAUTH_ONEDRIVE_TOKEN_URL',
+            'client_id_env' => 'OAUTH_ONEDRIVE_CLIENT_ID',
             'client_secret_env' => 'OAUTH_ONEDRIVE_CLIENT_SECRET',
-            'scope'            => 'offline_access Files.Read.All',
+            'scope' => 'offline_access Files.Read.All',
             'default_auth_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
             'default_token_url' => 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
         ],
         'googledrive' => [
-            'auth_url_env'     => 'OAUTH_GOOGLEDRIVE_AUTH_URL',
-            'token_url_env'    => 'OAUTH_GOOGLEDRIVE_TOKEN_URL',
-            'client_id_env'    => 'OAUTH_GOOGLEDRIVE_CLIENT_ID',
+            'auth_url_env' => 'OAUTH_GOOGLEDRIVE_AUTH_URL',
+            'token_url_env' => 'OAUTH_GOOGLEDRIVE_TOKEN_URL',
+            'client_id_env' => 'OAUTH_GOOGLEDRIVE_CLIENT_ID',
             'client_secret_env' => 'OAUTH_GOOGLEDRIVE_CLIENT_SECRET',
-            'scope'            => 'https://www.googleapis.com/auth/drive.readonly',
+            'scope' => 'https://www.googleapis.com/auth/drive.readonly',
             'default_auth_url' => 'https://accounts.google.com/o/oauth2/v2/auth',
             'default_token_url' => 'https://oauth2.googleapis.com/token',
         ],
@@ -85,16 +85,16 @@ class OAuthIngestController extends Controller
         $cfg = self::PROVIDER_CONFIG[$provider];
         $clientId = env($cfg['client_id_env']);
         if (! $clientId) {
-            abort(500, "OAuth provider '{$provider}' not configured: set ".$cfg['client_id_env']." (and ".$cfg['client_secret_env'].")");
+            abort(500, "OAuth provider '{$provider}' not configured: set ".$cfg['client_id_env'].' (and '.$cfg['client_secret_env'].')');
         }
 
         // State: signed payload {user_id, ts, project_id?} with 10-min TTL
         $state = base64_encode(json_encode([
-            'user_id'    => $request->user()?->id,
+            'user_id' => $request->user()?->id,
             'project_id' => (string) $request->query('project_id', ''),
-            'provider'   => $provider,
-            'ts'         => time(),
-            'nonce'      => Str::random(16),
+            'provider' => $provider,
+            'ts' => time(),
+            'nonce' => Str::random(16),
         ]));
         $signature = hash_hmac('sha256', $state, config('app.key'));
         $signedState = "{$state}.{$signature}";
@@ -102,13 +102,13 @@ class OAuthIngestController extends Controller
 
         $authUrl = env($cfg['auth_url_env'], $cfg['default_auth_url']);
         $params = http_build_query([
-            'client_id'     => $clientId,
+            'client_id' => $clientId,
             'response_type' => 'code',
-            'redirect_uri'  => route('oauth.callback', ['provider' => $provider]),
-            'scope'         => $cfg['scope'],
-            'state'         => $signedState,
-            'access_type'   => 'offline',
-            'prompt'        => 'consent',
+            'redirect_uri' => route('oauth.callback', ['provider' => $provider]),
+            'scope' => $cfg['scope'],
+            'state' => $signedState,
+            'access_type' => 'offline',
+            'prompt' => 'consent',
         ]);
 
         return redirect("{$authUrl}?{$params}");
@@ -138,14 +138,15 @@ class OAuthIngestController extends Controller
         $cfg = self::PROVIDER_CONFIG[$provider];
         try {
             $resp = Http::asForm()->post(env($cfg['token_url_env'], $cfg['default_token_url']), [
-                'client_id'     => env($cfg['client_id_env']),
+                'client_id' => env($cfg['client_id_env']),
                 'client_secret' => env($cfg['client_secret_env']),
-                'code'          => $code,
-                'redirect_uri'  => route('oauth.callback', ['provider' => $provider]),
-                'grant_type'    => 'authorization_code',
+                'code' => $code,
+                'redirect_uri' => route('oauth.callback', ['provider' => $provider]),
+                'grant_type' => 'authorization_code',
             ]);
         } catch (\Throwable $exc) {
             Log::error("OAuth token exchange failed for {$provider}", ['exc' => $exc->getMessage()]);
+
             return response()->json(['error' => 'token exchange failed', 'reason' => $exc->getMessage()], 502);
         }
         if (! $resp->ok()) {
@@ -158,20 +159,21 @@ class OAuthIngestController extends Controller
             $this->ensureConnectionsTable();
             DB::table('silver.cloud_ingest_connections')->updateOrInsert(
                 [
-                    'user_id'  => $payload['user_id'],
+                    'user_id' => $payload['user_id'],
                     'provider' => $provider,
                 ],
                 [
-                    'access_token_enc'  => encrypt($tokens['access_token'] ?? ''),
+                    'access_token_enc' => encrypt($tokens['access_token'] ?? ''),
                     'refresh_token_enc' => encrypt($tokens['refresh_token'] ?? ''),
-                    'expires_at'        => now()->addSeconds((int) ($tokens['expires_in'] ?? 3600)),
-                    'scopes'            => $tokens['scope'] ?? $cfg['scope'],
-                    'updated_at'        => now(),
-                    'created_at'        => now(),
+                    'expires_at' => now()->addSeconds((int) ($tokens['expires_in'] ?? 3600)),
+                    'scopes' => $tokens['scope'] ?? $cfg['scope'],
+                    'updated_at' => now(),
+                    'created_at' => now(),
                 ],
             );
         } catch (\Throwable $exc) {
-            Log::error("OAuth connection persist failed", ['exc' => $exc->getMessage()]);
+            Log::error('OAuth connection persist failed', ['exc' => $exc->getMessage()]);
+
             return response()->json(['error' => 'connection persist failed', 'reason' => $exc->getMessage()], 500);
         }
 
@@ -182,11 +184,14 @@ class OAuthIngestController extends Controller
     {
         $this->ensureConnectionsTable();
         $user = $request->user();
-        if (! $user) return response()->json(['error' => 'unauthenticated'], 401);
+        if (! $user) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
         $rows = DB::table('silver.cloud_ingest_connections')
             ->where('user_id', $user->id)
             ->select('provider', 'scopes', 'expires_at', 'created_at')
             ->get();
+
         return response()->json(['items' => $rows]);
     }
 

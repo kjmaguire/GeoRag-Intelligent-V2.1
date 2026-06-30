@@ -35,7 +35,10 @@ class WhatChangedController extends Controller
     private function fastapi()
     {
         $key = config('services.fastapi.service_key');
-        if (! $key) abort(500, 'FASTAPI_SERVICE_KEY not configured');
+        if (! $key) {
+            abort(500, 'FASTAPI_SERVICE_KEY not configured');
+        }
+
         return Http::withHeaders(['X-Service-Key' => $key])->timeout(30);
     }
 

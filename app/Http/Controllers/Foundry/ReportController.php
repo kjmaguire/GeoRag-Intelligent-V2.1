@@ -42,9 +42,9 @@ class ReportController extends Controller
 
         return Inertia::render('Foundry/Report', [
             'project' => [
-                'project_id'   => $project->project_id,
+                'project_id' => $project->project_id,
                 'project_name' => $project->project_name,
-                'slug'         => $project->slug,
+                'slug' => $project->slug,
             ],
             'reports' => $reports->map(function ($r) {
                 $sectionsRaw = $r->sections_text ?? null;
@@ -54,21 +54,22 @@ class ReportController extends Controller
                 $sectionsCount = is_array($sections)
                     ? count($sections)
                     : (is_object($sections) ? count(get_object_vars($sections)) : 0);
+
                 return [
-                    'report_id'         => (string) ($r->report_id ?? ''),
-                    'title'             => (string) ($r->title ?? 'Untitled report'),
-                    'company'           => (string) ($r->company ?? ''),
-                    'filing_date'       => (string) ($r->filing_date ?? ''),
-                    'commodity'         => (string) ($r->commodity ?? ''),
+                    'report_id' => (string) ($r->report_id ?? ''),
+                    'title' => (string) ($r->title ?? 'Untitled report'),
+                    'company' => (string) ($r->company ?? ''),
+                    'filing_date' => (string) ($r->filing_date ?? ''),
+                    'commodity' => (string) ($r->commodity ?? ''),
                     'parse_quality_pct' => isset($r->parse_quality_pct) ? (float) $r->parse_quality_pct : null,
-                    'version'           => (int) ($r->version ?? 1),
-                    'is_scanned'        => (bool) ($r->is_scanned ?? false),
-                    'sections_count'    => $sectionsCount,
-                    'has_content'       => $sectionsCount > 0,
+                    'version' => (int) ($r->version ?? 1),
+                    'is_scanned' => (bool) ($r->is_scanned ?? false),
+                    'sections_count' => $sectionsCount,
+                    'has_content' => $sectionsCount > 0,
                 ];
             })->values(),
             'is_admin' => (bool) ($request->user()->is_admin ?? false),
-            'empty'    => $reports->isEmpty(),
+            'empty' => $reports->isEmpty(),
         ]);
     }
 
@@ -124,11 +125,11 @@ class ReportController extends Controller
             $passages = DB::table('silver.document_passages AS dp')
                 ->join('bronze.provenance AS bp', function ($j) {
                     $j->on(DB::raw('bp.target_id::text'), '=', DB::raw('dp.passage_id::text'))
-                      ->where('bp.target_table', '=', 'document_passages');
+                        ->where('bp.target_table', '=', 'document_passages');
                 })
                 ->join('bronze.provenance AS bp2', function ($j) {
                     $j->on(DB::raw('bp2.source_file'), '=', DB::raw('bp.source_file'))
-                      ->where('bp2.target_table', '=', 'reports');
+                        ->where('bp2.target_table', '=', 'reports');
                 })
                 ->where('bp2.target_id', $report_id)
                 ->select('dp.passage_id', 'dp.text', 'dp.page_first', 'dp.page_last', 'dp.ordinal', 'dp.chunk_kind')
@@ -160,35 +161,35 @@ class ReportController extends Controller
 
         return Inertia::render('Foundry/ReportView', [
             'project' => [
-                'project_id'   => $project->project_id,
+                'project_id' => $project->project_id,
                 'project_name' => $project->project_name,
-                'slug'         => $project->slug,
+                'slug' => $project->slug,
             ],
             'figures' => $figures,
             'report' => [
-                'report_id'   => (string) $row->report_id,
-                'title'       => (string) ($row->title ?? 'Untitled report'),
-                'company'     => (string) ($row->company ?? ''),
+                'report_id' => (string) $row->report_id,
+                'title' => (string) ($row->title ?? 'Untitled report'),
+                'company' => (string) ($row->company ?? ''),
                 'filing_date' => (string) ($row->filing_date ?? ''),
-                'commodity'   => (string) ($row->commodity ?? ''),
-                'version'     => (int) ($row->version ?? 1),
-                'region'      => (string) ($row->region ?? ''),
-                'project_name'=> (string) ($row->project_name ?? ''),
-                'created_at'  => (string) ($row->created_at ?? ''),
-                'updated_at'  => (string) ($row->updated_at ?? ''),
+                'commodity' => (string) ($row->commodity ?? ''),
+                'version' => (int) ($row->version ?? 1),
+                'region' => (string) ($row->region ?? ''),
+                'project_name' => (string) ($row->project_name ?? ''),
+                'created_at' => (string) ($row->created_at ?? ''),
+                'updated_at' => (string) ($row->updated_at ?? ''),
             ],
             'sections' => $sections,
             'passages' => $passages->map(fn ($p) => [
-                'id'         => (string) $p->passage_id,
-                'text'       => (string) $p->text,
-                'ordinal'    => (int) ($p->ordinal ?? 0),
+                'id' => (string) $p->passage_id,
+                'text' => (string) $p->text,
+                'ordinal' => (int) ($p->ordinal ?? 0),
                 'page_first' => $p->page_first !== null ? (int) $p->page_first : null,
-                'page_last'  => $p->page_last !== null ? (int) $p->page_last : null,
+                'page_last' => $p->page_last !== null ? (int) $p->page_last : null,
                 'chunk_kind' => (string) ($p->chunk_kind ?? ''),
             ])->values(),
             'data_quality_flags' => $dqFlags,
             'is_admin' => (bool) ($request->user()->is_admin ?? false),
-            'empty'    => empty($sections) && $passages->isEmpty(),
+            'empty' => empty($sections) && $passages->isEmpty(),
         ]);
     }
 
@@ -256,20 +257,20 @@ class ReportController extends Controller
             )
             ->get()
             ->map(fn ($f) => [
-                'flag_id'      => $f->flag_id,
-                'flag_type'    => $f->flag_type,
-                'severity'     => $f->severity,
-                'description'  => $f->description,
-                'rule_id'      => $f->rule_id,
+                'flag_id' => $f->flag_id,
+                'flag_type' => $f->flag_type,
+                'severity' => $f->severity,
+                'description' => $f->description,
+                'rule_id' => $f->rule_id,
                 'rule_version' => $f->rule_version,
-                'flagged_at'   => $f->flagged_at,
+                'flagged_at' => $f->flagged_at,
             ])
             ->all();
 
         return [
-            'counts'     => $counts,
+            'counts' => $counts,
             'open_total' => array_sum($counts),
-            'flags'      => $flags,
+            'flags' => $flags,
         ];
     }
 
@@ -306,12 +307,13 @@ class ReportController extends Controller
 
         return response()->json([
             'report_id' => $report_id,
-            'figures'   => $figures,
+            'figures' => $figures,
         ]);
     }
 
     /**
-     * @param  mixed  $raw
+     * @param mixed $raw
+     *
      * @return array{heading:string,body:string,kind:string,index:int}
      */
     private function normaliseSection($raw, int $index): array
@@ -326,8 +328,10 @@ class ReportController extends Controller
                 $body = json_encode($body, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
             }
             $kind = (string) ($raw['kind'] ?? $raw['type'] ?? 'para');
+
             return ['heading' => $heading, 'body' => (string) $body, 'kind' => $kind, 'index' => $index];
         }
+
         return ['heading' => '', 'body' => (string) $raw, 'kind' => 'para', 'index' => $index];
     }
 }

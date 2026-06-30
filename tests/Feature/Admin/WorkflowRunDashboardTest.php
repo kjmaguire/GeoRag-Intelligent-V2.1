@@ -69,7 +69,7 @@ class WorkflowRunDashboardTest extends TestCase
             ->where('tempo_url', config('services.tempo.url'))
             ->where('workflow_runs.0.workflow_kind', 'phase0_smoke')
             ->where('workflow_runs.0.trace_id', $traceId)
-            ->where('workflow_runs.0.status', 'success')
+            ->where('workflow_runs.0.status', 'success'),
         );
     }
 
@@ -104,7 +104,7 @@ class WorkflowRunDashboardTest extends TestCase
             ->component('Admin/WorkflowRuns')
             ->where('filters.status', 'failure')
             ->has('workflow_runs', 1)
-            ->where('workflow_runs.0.status', 'failure')
+            ->where('workflow_runs.0.status', 'failure'),
         );
     }
 }

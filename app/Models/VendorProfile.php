@@ -24,7 +24,7 @@ class VendorProfile extends Model
     ];
 
     protected $casts = [
-        'is_global'  => 'boolean',
+        'is_global' => 'boolean',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];

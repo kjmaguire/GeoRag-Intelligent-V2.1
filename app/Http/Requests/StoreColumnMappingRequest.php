@@ -31,10 +31,10 @@ class StoreColumnMappingRequest extends FormRequest
         // UniqueConstraintViolationException as a DB-level belt-and-suspenders
         // safety net and returns 409 on real Postgres.
         $vendorProfileId = $this->route('vendor_profile')?->id;
-        $parserType      = $this->input('parser_type');
+        $parserType = $this->input('parser_type');
 
         return [
-            'parser_type'     => ['required', Rule::in(ColumnMapping::PARSER_TYPES)],
+            'parser_type' => ['required', Rule::in(ColumnMapping::PARSER_TYPES)],
             'canonical_field' => [
                 'required',
                 'string',
@@ -43,7 +43,7 @@ class StoreColumnMappingRequest extends FormRequest
                     ->where('vendor_profile_id', $vendorProfileId)
                     ->where('parser_type', $parserType),
             ],
-            'source_column'   => [
+            'source_column' => [
                 'required',
                 'string',
                 'max:255',
@@ -51,18 +51,18 @@ class StoreColumnMappingRequest extends FormRequest
                     ->where('vendor_profile_id', $vendorProfileId)
                     ->where('parser_type', $parserType),
             ],
-            'source_unit'     => ['nullable', 'string', 'max:32'],
-            'target_unit'     => ['nullable', 'string', 'max:32'],
-            'notes'           => ['nullable', 'string'],
+            'source_unit' => ['nullable', 'string', 'max:32'],
+            'target_unit' => ['nullable', 'string', 'max:32'],
+            'notes' => ['nullable', 'string'],
         ];
     }
 
     public function messages(): array
     {
         return [
-            'parser_type.in'          => 'parser_type must be one of: ' . implode(', ', ColumnMapping::PARSER_TYPES) . '.',
-            'canonical_field.unique'  => 'A mapping for this (vendor_profile, parser_type, canonical_field) combination already exists.',
-            'source_column.unique'    => 'A mapping for this (vendor_profile, parser_type, source_column) combination already exists.',
+            'parser_type.in' => 'parser_type must be one of: '.implode(', ', ColumnMapping::PARSER_TYPES).'.',
+            'canonical_field.unique' => 'A mapping for this (vendor_profile, parser_type, canonical_field) combination already exists.',
+            'source_column.unique' => 'A mapping for this (vendor_profile, parser_type, source_column) combination already exists.',
         ];
     }
 }

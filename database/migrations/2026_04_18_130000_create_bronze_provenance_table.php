@@ -18,7 +18,7 @@ return new class extends Migration
         // Create bronze schema if not already present
         DB::statement('CREATE SCHEMA IF NOT EXISTS bronze');
 
-        DB::statement(<<<SQL
+        DB::statement(<<<'SQL'
             CREATE TABLE IF NOT EXISTS bronze.provenance (
                 provenance_id       UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
                 target_schema       VARCHAR(32)  NOT NULL,
@@ -39,29 +39,29 @@ return new class extends Migration
 
         // ── Indexes ──────────────────────────────────────────────────────
         // Primary lookup: find all provenance for a given silver row.
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_provenance_target
                 ON bronze.provenance (target_schema, target_table, target_id)
-        ");
+        ');
 
         // Deduplication: have we seen this file before?
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_provenance_sha256
                 ON bronze.provenance (source_file_sha256)
-        ");
+        ');
 
         // Recent-activity queries.
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_provenance_ingested_at
                 ON bronze.provenance (ingested_at DESC)
-        ");
+        ');
 
         // Partial index: what did this Dagster run ingest?
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_provenance_ingest_run
                 ON bronze.provenance (ingest_run_id)
                 WHERE ingest_run_id IS NOT NULL
-        ");
+        ');
     }
 
     public function down(): void

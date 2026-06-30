@@ -40,11 +40,11 @@ class EvalDashboardController extends Controller
         $this->authorize('admin');
 
         return Inertia::render('Admin/EvalDashboard', [
-            'kpis'           => $this->kpis(),
+            'kpis' => $this->kpis(),
             'questions_by_set' => $this->questionsByQuestionSet(),
             'questions_by_difficulty' => $this->questionsByDifficulty(),
             'ontology_progress' => $this->ontologyProgress(),
-            'recent_runs'    => $this->recentRuns(),
+            'recent_runs' => $this->recentRuns(),
             // Doc-phase 171 — §04i failure-layer breakdown. With all 6
             // §04i validators graduated (doc-phase 168) plus the nightly
             // real_rag_v1 cron (doc-phase 170), per-layer fail counts
@@ -384,7 +384,7 @@ class EvalDashboardController extends Controller
         // Any non-canonical buckets (forward-compat — future validators)
         // surface at the end so they don't get silently dropped.
         foreach ($byLayer as $layer => $bucket) {
-            if (!in_array($layer, $canonical, true)) {
+            if (! in_array($layer, $canonical, true)) {
                 $out[] = [
                     'failure_layer' => $layer,
                     'fail_count' => $bucket['fail_count'],

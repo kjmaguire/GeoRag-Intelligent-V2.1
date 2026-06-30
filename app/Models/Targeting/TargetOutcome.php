@@ -49,7 +49,7 @@ class TargetOutcome extends Model
         return $this->belongsTo(
             TargetRecommendation::class,
             'recommendation_id',
-            'recommendation_id'
+            'recommendation_id',
         );
     }
 }

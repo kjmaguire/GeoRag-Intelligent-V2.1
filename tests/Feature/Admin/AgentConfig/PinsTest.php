@@ -106,8 +106,8 @@ class PinsTest extends TestCase
             ->has('available_versions')
             ->where(
                 'pins',
-                fn ($pins) => collect($pins)->contains(fn ($r) => $r['agent_name'] === self::AGENT)
-            )
+                fn ($pins) => collect($pins)->contains(fn ($r) => $r['agent_name'] === self::AGENT),
+            ),
         );
     }
 

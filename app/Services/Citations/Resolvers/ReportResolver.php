@@ -40,7 +40,7 @@ final class ReportResolver extends AbstractCitationResolver
         if (! $reportId) {
             return response()->json([
                 'source_type' => 'report',
-                'text'        => 'Report ID not found in source_chunk_id',
+                'text' => 'Report ID not found in source_chunk_id',
             ]);
         }
 
@@ -51,35 +51,35 @@ final class ReportResolver extends AbstractCitationResolver
         if (! $report) {
             return response()->json([
                 'source_type' => 'report',
-                'text'        => 'Report not found in database',
+                'text' => 'Report not found in database',
             ]);
         }
 
-        $sections     = json_decode((string) $report->sections_text, true) ?? [];
-        $sectionText  = '';
+        $sections = json_decode((string) $report->sections_text, true) ?? [];
+        $sectionText = '';
         $sectionTitle = '';
 
         if ($sectionNum !== null && isset($sections[$sectionNum])) {
-            $sectionText  = (string) $sections[$sectionNum];
+            $sectionText = (string) $sections[$sectionNum];
             $sectionTitle = "Section {$sectionNum}";
         } else {
             // Fallback excerpt — first 1–2 sections.
-            $sectionText  = implode("\n\n", array_slice($sections, 0, 2));
+            $sectionText = implode("\n\n", array_slice($sections, 0, 2));
             $sectionTitle = 'Report excerpt';
         }
 
         return response()->json([
-            'source_type'     => 'report',
+            'source_type' => 'report',
             'source_chunk_id' => $sourceId,
-            'title'           => $report->title,
-            'section_title'   => $sectionTitle,
-            'section_number'  => $sectionNum,
-            'text'            => $sectionText,
-            'metadata'        => [
-                'report_id'   => $report->report_id,
-                'company'     => $report->company,
+            'title' => $report->title,
+            'section_title' => $sectionTitle,
+            'section_number' => $sectionNum,
+            'text' => $sectionText,
+            'metadata' => [
+                'report_id' => $report->report_id,
+                'company' => $report->company,
                 'filing_date' => $report->filing_date,
-                'commodity'   => $report->commodity,
+                'commodity' => $report->commodity,
             ],
             // Cross-corpus linker — inverse view (plan §07d). Empty state
             // stays clean when no SMAD-style references have been extracted.
@@ -99,11 +99,11 @@ final class ReportResolver extends AbstractCitationResolver
     private function loadDocumentReferencesSummary(?string $reportId): array
     {
         $zero = [
-            'total'             => 0,
+            'total' => 0,
             'by_canonical_type' => [
-                'mine'                    => 0,
-                'mineral_occurrence'      => 0,
-                'drillhole_collar'        => 0,
+                'mine' => 0,
+                'mineral_occurrence' => 0,
+                'drillhole_collar' => 0,
                 'resource_potential_zone' => 0,
             ],
             'entities' => [],
@@ -124,12 +124,12 @@ final class ReportResolver extends AbstractCitationResolver
             return $zero;
         }
 
-        $by    = $zero['by_canonical_type'];
+        $by = $zero['by_canonical_type'];
         $total = 0;
         foreach ($rows as $row) {
-            $c                       = (int) $row->count;
+            $c = (int) $row->count;
             $by[$row->canonical_type] = $c;
-            $total                   += $c;
+            $total += $c;
         }
 
         // Preview: up to 10 top-scoring entities, oldest established first
@@ -144,13 +144,13 @@ final class ReportResolver extends AbstractCitationResolver
             ->get(['l.canonical_type', 'l.entity_id', 'l.confidence', 'l.signals']);
 
         return [
-            'total'             => $total,
+            'total' => $total,
             'by_canonical_type' => $by,
-            'entities'          => $preview->map(fn ($r) => [
+            'entities' => $preview->map(fn ($r) => [
                 'canonical_type' => $r->canonical_type,
-                'entity_id'      => $r->entity_id,
-                'confidence'     => (float) $r->confidence,
-                'signals'        => $this->decodeSignals($r->signals),
+                'entity_id' => $r->entity_id,
+                'confidence' => (float) $r->confidence,
+                'signals' => $this->decodeSignals($r->signals),
             ])->all(),
         ];
     }

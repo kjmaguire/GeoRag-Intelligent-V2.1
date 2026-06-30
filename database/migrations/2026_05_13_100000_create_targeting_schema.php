@@ -303,7 +303,7 @@ return new class extends Migration
         // target_candidate_zones, target_recommendations, target_review_decisions,
         // target_outcomes have direct workspace_id columns.
         foreach (['target_candidate_zones', 'target_recommendations',
-                  'target_review_decisions', 'target_outcomes'] as $tbl) {
+            'target_review_decisions', 'target_outcomes'] as $tbl) {
             DB::statement("DROP POLICY IF EXISTS {$tbl}_workspace_isolation ON targeting.{$tbl};");
             DB::statement(<<<SQL
                 CREATE POLICY {$tbl}_workspace_isolation

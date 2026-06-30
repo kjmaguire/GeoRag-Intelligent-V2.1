@@ -76,8 +76,8 @@ class WorkspacesTest extends TestCase
             ->has('workspace_agent_configs')
             ->where(
                 'workspace_agent_configs',
-                fn ($rows) => collect($rows)->contains(fn ($r) => $r['id'] === $ids['config_id'])
-            )
+                fn ($rows) => collect($rows)->contains(fn ($r) => $r['id'] === $ids['config_id']),
+            ),
         );
     }
 

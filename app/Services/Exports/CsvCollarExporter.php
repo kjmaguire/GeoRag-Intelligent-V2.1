@@ -20,15 +20,16 @@ use Illuminate\Support\Collection;
 class CsvCollarExporter
 {
     /**
-     * @param  string     $projectId  UUID of the parent project.
-     * @param  array      $filters    Optional row-level filters.
+     * @param string $projectId UUID of the parent project.
+     * @param array $filters Optional row-level filters.
+     *
      * @return array{path: string, size: int}
      */
     public function export(string $projectId, array $filters = []): array
     {
         $collars = $this->fetchCollars($projectId, $filters);
 
-        $tmpPath = sys_get_temp_dir() . '/georag_collars_' . uniqid() . '.csv';
+        $tmpPath = sys_get_temp_dir().'/georag_collars_'.uniqid().'.csv';
 
         $handle = fopen($tmpPath, 'w');
         if ($handle === false) {
@@ -80,19 +81,19 @@ class CsvCollarExporter
     {
         $query = Collar::where('project_id', $projectId);
 
-        if (!empty($filters['hole_type'])) {
+        if (! empty($filters['hole_type'])) {
             $query->where('hole_type', $filters['hole_type']);
         }
 
-        if (!empty($filters['status'])) {
+        if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         }
 
-        if (!empty($filters['drill_date_from'])) {
+        if (! empty($filters['drill_date_from'])) {
             $query->where('drill_date', '>=', $filters['drill_date_from']);
         }
 
-        if (!empty($filters['drill_date_to'])) {
+        if (! empty($filters['drill_date_to'])) {
             $query->where('drill_date', '<=', $filters['drill_date_to']);
         }
 

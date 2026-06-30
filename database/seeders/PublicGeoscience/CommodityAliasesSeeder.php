@@ -141,16 +141,16 @@ class CommodityAliasesSeeder extends Seeder
             DB::table('public_geo.commodity_aliases')->updateOrInsert(
                 ['alias_lower' => mb_strtolower($alias)],
                 [
-                    'alias'              => $alias,
-                    'canonical_code'     => $code,
-                    'canonical_name'     => $name,
+                    'alias' => $alias,
+                    'canonical_code' => $code,
+                    'canonical_name' => $name,
                     'commodity_grouping' => $grouping,
-                    'updated_at'         => $now,
-                    'created_at'         => $now,
-                ]
+                    'updated_at' => $now,
+                    'created_at' => $now,
+                ],
             );
         }
 
-        $this->command?->info('Seeded ' . count(self::ROWS) . ' commodity aliases.');
+        $this->command?->info('Seeded '.count(self::ROWS).' commodity aliases.');
     }
-};
+}

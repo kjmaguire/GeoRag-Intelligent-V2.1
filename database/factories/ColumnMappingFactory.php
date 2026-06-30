@@ -27,12 +27,12 @@ class ColumnMappingFactory extends Factory
 
         return [
             'vendor_profile_id' => VendorProfile::factory(),
-            'parser_type'       => $this->faker->randomElement(ColumnMapping::PARSER_TYPES),
-            'canonical_field'   => $this->faker->unique()->randomElement($canonicalFields),
-            'source_column'     => $this->faker->word() . '_' . $this->faker->numberBetween(1, 99),
-            'source_unit'       => $this->faker->optional()->randomElement(['m', 'ft', 'ppm', 'ppb', '%', 'g/t']),
-            'target_unit'       => $this->faker->optional()->randomElement(['m', 'ppm', 'g/t', '%']),
-            'notes'             => $this->faker->optional()->sentence(),
+            'parser_type' => $this->faker->randomElement(ColumnMapping::PARSER_TYPES),
+            'canonical_field' => $this->faker->unique()->randomElement($canonicalFields),
+            'source_column' => $this->faker->word().'_'.$this->faker->numberBetween(1, 99),
+            'source_unit' => $this->faker->optional()->randomElement(['m', 'ft', 'ppm', 'ppb', '%', 'g/t']),
+            'target_unit' => $this->faker->optional()->randomElement(['m', 'ppm', 'g/t', '%']),
+            'notes' => $this->faker->optional()->sentence(),
         ];
     }
 

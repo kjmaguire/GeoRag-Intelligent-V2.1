@@ -22,19 +22,19 @@ class StoreVendorProfileRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'name'         => ['required', 'string', 'max:100', 'unique:vendor_profiles,name'],
-            'description'  => ['nullable', 'string'],
+            'name' => ['required', 'string', 'max:100', 'unique:vendor_profiles,name'],
+            'description' => ['nullable', 'string'],
             'profile_type' => ['required', Rule::in(VendorProfile::PROFILE_TYPES)],
-            'is_global'    => ['required', 'boolean'],
+            'is_global' => ['required', 'boolean'],
         ];
     }
 
     public function messages(): array
     {
         return [
-            'name.unique'          => 'A vendor profile with this name already exists.',
-            'profile_type.in'      => 'profile_type must be one of: ' . implode(', ', VendorProfile::PROFILE_TYPES) . '.',
-            'is_global.required'   => 'is_global is required (true or false).',
+            'name.unique' => 'A vendor profile with this name already exists.',
+            'profile_type.in' => 'profile_type must be one of: '.implode(', ', VendorProfile::PROFILE_TYPES).'.',
+            'is_global.required' => 'is_global is required (true or false).',
         ];
     }
 }

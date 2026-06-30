@@ -9,6 +9,7 @@ use App\Http\Requests\StoreExportRequest;
 use App\Jobs\GenerateExportJob;
 use App\Models\Export;
 use App\Models\Project;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -49,7 +50,7 @@ class ExportController extends Controller
                 ->paginate($request->integer('per_page', 20));
 
             return response()->json($exports);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Project not found.'], 404);
         } catch (Throwable $e) {
             report($e);
@@ -78,23 +79,23 @@ class ExportController extends Controller
             $project = Project::findOrFail($projectId);
 
             $export = Export::create([
-                'project_id'  => $project->project_id,
+                'project_id' => $project->project_id,
                 'export_type' => $request->validated('export_type'),
-                'status'      => 'pending',
-                'filters'     => $request->validated('filters') ?? [],
+                'status' => 'pending',
+                'filters' => $request->validated('filters') ?? [],
             ]);
 
             GenerateExportJob::dispatch($export->export_id);
 
             return response()->json([
-                'data'        => $export,
-                'status_url'  => route('api.projects.exports.show', [
+                'data' => $export,
+                'status_url' => route('api.projects.exports.show', [
                     'project' => $project->project_id,
-                    'export'  => $export->export_id,
+                    'export' => $export->export_id,
                 ]),
-                'message'     => 'Export job queued. Poll status_url until status is completed.',
+                'message' => 'Export job queued. Poll status_url until status is completed.',
             ], 202);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Project not found.'], 404);
         } catch (Throwable $e) {
             report($e);
@@ -131,7 +132,7 @@ class ExportController extends Controller
             }
 
             return response()->json(['data' => $export]);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Export not found.'], 404);
         } catch (Throwable $e) {
             report($e);
@@ -174,7 +175,7 @@ class ExportController extends Controller
             }
 
             return redirect()->away($export->download_url);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Export not found.'], 404);
         } catch (Throwable $e) {
             report($e);
@@ -197,12 +198,13 @@ class ExportController extends Controller
     private function denyIfNoProjectAccess(Request $request, string $projectId): ?JsonResponse
     {
         $user = $request->user();
-        if ($user === null || !$user->hasProjectAccess($projectId)) {
+        if ($user === null || ! $user->hasProjectAccess($projectId)) {
             return response()->json([
-                'error'   => 'forbidden',
+                'error' => 'forbidden',
                 'message' => 'You do not have access to this project.',
             ], 403);
         }
+
         return null;
     }
 
@@ -218,12 +220,13 @@ class ExportController extends Controller
         if (config('app.debug')) {
             $body['error'] = $e->getMessage();
         }
+
         return response()->json($body, 500);
     }
 
     private function urlExpired(Export $export): bool
     {
-        if (!$export->download_url || !$export->download_url_expires_at) {
+        if (! $export->download_url || ! $export->download_url_expires_at) {
             return true;
         }
 
@@ -237,7 +240,7 @@ class ExportController extends Controller
         $signedUrl = Storage::disk('s3-exports')->temporaryUrl($export->minio_path, $expiresAt);
 
         $export->update([
-            'download_url'            => $signedUrl,
+            'download_url' => $signedUrl,
             'download_url_expires_at' => $expiresAt,
         ]);
 

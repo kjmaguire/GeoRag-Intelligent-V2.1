@@ -32,14 +32,16 @@ class ColumnMappingApiTest extends TestCase
     use RefreshDatabase;
 
     private User $user;
+
     private User $admin;
+
     private VendorProfile $profile;
 
     protected function setUp(): void
     {
         parent::setUp();
-        $this->user    = User::factory()->create();
-        $this->admin   = User::factory()->admin()->create();
+        $this->user = User::factory()->create();
+        $this->admin = User::factory()->admin()->create();
         $this->profile = VendorProfile::factory()->create();
     }
 
@@ -80,19 +82,19 @@ class ColumnMappingApiTest extends TestCase
     {
         ColumnMapping::factory()->create([
             'vendor_profile_id' => $this->profile->id,
-            'parser_type'       => 'csv_sample',
-            'canonical_field'   => 'au_ppm',
-            'source_column'     => 'Au_ppm',
+            'parser_type' => 'csv_sample',
+            'canonical_field' => 'au_ppm',
+            'source_column' => 'Au_ppm',
         ]);
         ColumnMapping::factory()->create([
             'vendor_profile_id' => $this->profile->id,
-            'parser_type'       => 'csv_collar',
-            'canonical_field'   => 'hole_id',
-            'source_column'     => 'HoleID',
+            'parser_type' => 'csv_collar',
+            'canonical_field' => 'hole_id',
+            'source_column' => 'HoleID',
         ]);
 
         $response = $this->actingAs($this->user)
-            ->getJson($this->baseUrl() . '?parser_type=csv_sample');
+            ->getJson($this->baseUrl().'?parser_type=csv_sample');
 
         $response->assertOk();
         $this->assertCount(1, $response->json());
@@ -107,9 +109,9 @@ class ColumnMappingApiTest extends TestCase
     {
         $response = $this->actingAs($this->user)
             ->postJson($this->baseUrl(), [
-                'parser_type'     => 'csv_sample',
+                'parser_type' => 'csv_sample',
                 'canonical_field' => 'au_ppm',
-                'source_column'   => 'Gold_ppm',
+                'source_column' => 'Gold_ppm',
             ]);
 
         $response->assertForbidden();
@@ -119,12 +121,12 @@ class ColumnMappingApiTest extends TestCase
     public function test_admin_store_creates_mapping_and_returns_201(): void
     {
         $payload = [
-            'parser_type'     => 'csv_sample',
+            'parser_type' => 'csv_sample',
             'canonical_field' => 'au_ppm',
-            'source_column'   => 'Gold_ppm',
-            'source_unit'     => 'ppm',
-            'target_unit'     => 'g/t',
-            'notes'           => 'ALS standard Au assay column',
+            'source_column' => 'Gold_ppm',
+            'source_unit' => 'ppm',
+            'target_unit' => 'g/t',
+            'notes' => 'ALS standard Au assay column',
         ];
 
         $response = $this->actingAs($this->admin)
@@ -137,7 +139,7 @@ class ColumnMappingApiTest extends TestCase
 
         $this->assertDatabaseHas('column_mappings', [
             'vendor_profile_id' => $this->profile->id,
-            'canonical_field'   => 'au_ppm',
+            'canonical_field' => 'au_ppm',
         ]);
     }
 
@@ -145,9 +147,9 @@ class ColumnMappingApiTest extends TestCase
     {
         $response = $this->actingAs($this->admin)
             ->postJson($this->baseUrl(), [
-                'parser_type'     => 'not_a_real_type',
+                'parser_type' => 'not_a_real_type',
                 'canonical_field' => 'au_ppm',
-                'source_column'   => 'Au',
+                'source_column' => 'Au',
             ]);
 
         $response->assertUnprocessable()
@@ -159,9 +161,9 @@ class ColumnMappingApiTest extends TestCase
         // Seed a mapping with the same (profile, parser_type, canonical_field).
         ColumnMapping::factory()->create([
             'vendor_profile_id' => $this->profile->id,
-            'parser_type'       => 'csv_sample',
-            'canonical_field'   => 'au_ppm',
-            'source_column'     => 'Au_existing',
+            'parser_type' => 'csv_sample',
+            'canonical_field' => 'au_ppm',
+            'source_column' => 'Au_existing',
         ]);
 
         // Application-layer validation detects the duplicate and returns 422.
@@ -170,9 +172,9 @@ class ColumnMappingApiTest extends TestCase
         // UniqueConstraintViolationException as a belt-and-suspenders guard.
         $response = $this->actingAs($this->admin)
             ->postJson($this->baseUrl(), [
-                'parser_type'     => 'csv_sample',
+                'parser_type' => 'csv_sample',
                 'canonical_field' => 'au_ppm',   // duplicate canonical_field
-                'source_column'   => 'Gold_new', // different source column
+                'source_column' => 'Gold_new', // different source column
             ]);
 
         $response->assertUnprocessable()
@@ -184,16 +186,16 @@ class ColumnMappingApiTest extends TestCase
         // Seed a mapping with the same (profile, parser_type, source_column).
         ColumnMapping::factory()->create([
             'vendor_profile_id' => $this->profile->id,
-            'parser_type'       => 'csv_sample',
-            'canonical_field'   => 'au_ppm',
-            'source_column'     => 'Gold_ppm',
+            'parser_type' => 'csv_sample',
+            'canonical_field' => 'au_ppm',
+            'source_column' => 'Gold_ppm',
         ]);
 
         $response = $this->actingAs($this->admin)
             ->postJson($this->baseUrl(), [
-                'parser_type'     => 'csv_sample',
+                'parser_type' => 'csv_sample',
                 'canonical_field' => 'cu_pct',   // different canonical field
-                'source_column'   => 'Gold_ppm', // duplicate source_column
+                'source_column' => 'Gold_ppm', // duplicate source_column
             ]);
 
         $response->assertUnprocessable()
@@ -208,9 +210,9 @@ class ColumnMappingApiTest extends TestCase
     {
         $mapping = ColumnMapping::factory()->create([
             'vendor_profile_id' => $this->profile->id,
-            'parser_type'       => 'csv_sample',
-            'canonical_field'   => 'au_ppm',
-            'source_column'     => 'Au_orig',
+            'parser_type' => 'csv_sample',
+            'canonical_field' => 'au_ppm',
+            'source_column' => 'Au_orig',
         ]);
 
         $this->actingAs($this->user)
@@ -224,9 +226,9 @@ class ColumnMappingApiTest extends TestCase
     {
         $mapping = ColumnMapping::factory()->create([
             'vendor_profile_id' => $this->profile->id,
-            'parser_type'       => 'csv_sample',
-            'canonical_field'   => 'au_ppm',
-            'source_column'     => 'Au_orig',
+            'parser_type' => 'csv_sample',
+            'canonical_field' => 'au_ppm',
+            'source_column' => 'Au_orig',
         ]);
 
         $response = $this->actingAs($this->admin)
@@ -243,7 +245,7 @@ class ColumnMappingApiTest extends TestCase
     public function test_update_with_wrong_profile_prefix_returns_404(): void
     {
         $otherProfile = VendorProfile::factory()->create();
-        $mapping      = ColumnMapping::factory()->create(['vendor_profile_id' => $otherProfile->id]);
+        $mapping = ColumnMapping::factory()->create(['vendor_profile_id' => $otherProfile->id]);
 
         // Attempt to update via THIS profile's URL — mapping belongs elsewhere.
         $response = $this->actingAs($this->admin)
@@ -283,7 +285,7 @@ class ColumnMappingApiTest extends TestCase
     public function test_destroy_with_wrong_profile_prefix_returns_404(): void
     {
         $otherProfile = VendorProfile::factory()->create();
-        $mapping      = ColumnMapping::factory()->create(['vendor_profile_id' => $otherProfile->id]);
+        $mapping = ColumnMapping::factory()->create(['vendor_profile_id' => $otherProfile->id]);
 
         $response = $this->actingAs($this->admin)
             ->deleteJson("{$this->baseUrl()}/{$mapping->id}");

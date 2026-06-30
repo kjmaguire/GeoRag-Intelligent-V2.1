@@ -20,7 +20,9 @@ use Laravel\Sanctum\HasApiTokens;
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, Notifiable;
+    use HasApiTokens;
+    use HasFactory;
+    use Notifiable;
 
     /**
      * The projects this user has access to.
@@ -28,8 +30,8 @@ class User extends Authenticatable
     public function projects(): BelongsToMany
     {
         return $this->belongsToMany(Project::class, 'project_user', 'user_id', 'project_id')
-                    ->withPivot('role')
-                    ->withTimestamps();
+            ->withPivot('role')
+            ->withTimestamps();
     }
 
     /**
@@ -48,15 +50,16 @@ class User extends Authenticatable
     {
         try {
             return $this->projects()
-                        ->where('silver.projects.project_id', $projectId)
-                        ->exists();
+                ->where('silver.projects.project_id', $projectId)
+                ->exists();
         } catch (QueryException $e) {
             if (self::isMissingProjectUserPivot($e)) {
                 Log::critical('hasProjectAccess: project_user pivot table missing or unreadable — denying access (fail-CLOSED). Run `php artisan migrate`.', [
-                    'user_id'    => $this->getKey(),
+                    'user_id' => $this->getKey(),
                     'project_id' => $projectId,
-                    'exception'  => $e->getMessage(),
+                    'exception' => $e->getMessage(),
                 ]);
+
                 return false;  // fail-CLOSED
             }
             throw $e;
@@ -71,9 +74,9 @@ class User extends Authenticatable
     {
         try {
             return $this->projects()
-                        ->where('silver.projects.project_id', $projectId)
-                        ->wherePivot('role', 'owner')
-                        ->exists();
+                ->where('silver.projects.project_id', $projectId)
+                ->wherePivot('role', 'owner')
+                ->exists();
         } catch (QueryException $e) {
             if (self::isMissingProjectUserPivot($e)) {
                 return false; // Safer default for "ownership" checks.
@@ -93,6 +96,7 @@ class User extends Authenticatable
         if ($sqlstate !== '42P01' && (int) $sqlstate !== 1146) {
             return false;
         }
+
         return str_contains($e->getMessage(), 'project_user');
     }
 
@@ -105,8 +109,8 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
-            'password'          => 'hashed',
-            'is_admin'          => 'boolean',
+            'password' => 'hashed',
+            'is_admin' => 'boolean',
         ];
     }
 }

@@ -34,7 +34,7 @@ final class RockSampleResolver extends AbstractPgeoResolver
             ?? 'Rock sample (unlabelled)';
 
         $envelope['title'] = "{$displayName} — Rock Sample";
-        $envelope['text']  = sprintf(
+        $envelope['text'] = sprintf(
             "Government rock sample '%s' collected in %s (NTS %s). Geologist: %s. Report: %s.",
             $displayName,
             $entity->geographic_area ?? 'unspecified area',
@@ -43,20 +43,20 @@ final class RockSampleResolver extends AbstractPgeoResolver
             $entity->report_number ?? 'not linked',
         );
         $envelope['entity'] = $entity ? [
-            'id'                => $entity->id,
-            'sample_number'     => $entity->sample_number,
-            'station'           => $entity->station,
-            'geologist'         => $entity->geologist,
-            'geographic_area'   => $entity->geographic_area,
-            'report_number'     => $entity->report_number,
-            'map_number'        => $entity->map_number,
-            'map_scale'         => $entity->map_scale,
-            'nts_250k'          => $entity->nts_250k,
-            'nts_50k'           => $entity->nts_50k,
-            'date_collected'    => $entity->date_collected,
-            'source_url'        => $entity->source_url,
+            'id' => $entity->id,
+            'sample_number' => $entity->sample_number,
+            'station' => $entity->station,
+            'geologist' => $entity->geologist,
+            'geographic_area' => $entity->geographic_area,
+            'report_number' => $entity->report_number,
+            'map_number' => $entity->map_number,
+            'map_scale' => $entity->map_scale,
+            'nts_250k' => $entity->nts_250k,
+            'nts_50k' => $entity->nts_50k,
+            'date_collected' => $entity->date_collected,
+            'source_url' => $entity->source_url,
             'source_feature_id' => $entity->source_feature_id,
-            'last_seen_at'      => $entity->last_seen_at,
+            'last_seen_at' => $entity->last_seen_at,
         ] : null;
 
         return $envelope;

@@ -20,8 +20,11 @@ class ChatConversation extends Model
     use HasUuids;
 
     protected $table = 'chat_conversations';
+
     protected $primaryKey = 'conversation_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [

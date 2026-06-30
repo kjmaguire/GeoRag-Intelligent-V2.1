@@ -29,7 +29,9 @@ class CollarControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private Project $projectB;
 
     protected function setUp(): void
@@ -56,7 +58,7 @@ class CollarControllerIDORTest extends TestCase
     public function test_user_a_cannot_list_collars_of_user_b_project(): void
     {
         $response = $this->getJson(
-            "/api/v1/projects/{$this->projectB->project_id}/collars"
+            "/api/v1/projects/{$this->projectB->project_id}/collars",
         );
 
         // Gate fires before PostGIS query so this is safe under SQLite too.
@@ -73,13 +75,13 @@ class CollarControllerIDORTest extends TestCase
         $response = $this->postJson(
             "/api/v1/projects/{$this->projectB->project_id}/collars",
             [
-                'hole_id'     => 'STOLEN-001',
-                'easting'     => 425000.5,
-                'northing'    => 6790000.0,
+                'hole_id' => 'STOLEN-001',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
                 'total_depth' => 100.0,
-                'hole_type'   => 'RC',
-                'status'      => 'Active',
-            ]
+                'hole_type' => 'RC',
+                'status' => 'Active',
+            ],
         );
 
         // Gate fires before PostGIS / validation so this is safe under SQLite.
@@ -100,7 +102,7 @@ class CollarControllerIDORTest extends TestCase
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->projectB->project_id}/collars/{$collar->collar_id}"
+            "/api/v1/projects/{$this->projectB->project_id}/collars/{$collar->collar_id}",
         );
 
         $response->assertNotFound();
@@ -119,7 +121,7 @@ class CollarControllerIDORTest extends TestCase
         ]);
 
         $response = $this->deleteJson(
-            "/api/v1/projects/{$this->projectB->project_id}/collars/{$collar->collar_id}"
+            "/api/v1/projects/{$this->projectB->project_id}/collars/{$collar->collar_id}",
         );
 
         $response->assertNotFound();
@@ -142,7 +144,7 @@ class CollarControllerIDORTest extends TestCase
         Collar::factory()->count(2)->create(['project_id' => $projectA->project_id]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$projectA->project_id}/collars"
+            "/api/v1/projects/{$projectA->project_id}/collars",
         );
 
         $response->assertOk();

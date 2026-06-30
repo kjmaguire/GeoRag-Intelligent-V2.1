@@ -13,6 +13,5 @@ class AgentResult
         public int $durationMs,
         public bool $deduped = false,
         public ?string $error = null,
-    ) {
-    }
+    ) {}
 }

@@ -27,13 +27,13 @@ return new class extends Migration
         DB::statement(
             'ALTER TABLE silver.answer_runs
              ADD COLUMN cache_hit_of_run_id UUID NULL
-             REFERENCES silver.answer_runs(answer_run_id) ON DELETE SET NULL'
+             REFERENCES silver.answer_runs(answer_run_id) ON DELETE SET NULL',
         );
 
         DB::statement(
             'CREATE INDEX idx_answer_runs_cache_hit
              ON silver.answer_runs(cache_hit_of_run_id)
-             WHERE cache_hit_of_run_id IS NOT NULL'
+             WHERE cache_hit_of_run_id IS NOT NULL',
         );
     }
 
@@ -41,7 +41,7 @@ return new class extends Migration
     {
         DB::statement('DROP INDEX IF EXISTS silver.idx_answer_runs_cache_hit');
         DB::statement(
-            'ALTER TABLE silver.answer_runs DROP COLUMN IF EXISTS cache_hit_of_run_id'
+            'ALTER TABLE silver.answer_runs DROP COLUMN IF EXISTS cache_hit_of_run_id',
         );
     }
 };

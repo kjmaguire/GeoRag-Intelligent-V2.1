@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\DB;
  * primitives. Anchors comments/mentions/review-requests to one of three
  * target kinds: answer_run | map_feature | document.
  */
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         DB::statement('SET search_path TO silver, public;');

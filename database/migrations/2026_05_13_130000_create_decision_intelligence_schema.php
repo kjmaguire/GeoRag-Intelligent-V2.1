@@ -157,7 +157,7 @@ return new class extends Migration
         SQL);
 
         foreach (['decision_evidence_links', 'decision_options',
-                  'decision_outcomes', 'decision_lessons_learned'] as $tbl) {
+            'decision_outcomes', 'decision_lessons_learned'] as $tbl) {
             DB::statement("ALTER TABLE silver.{$tbl} ENABLE ROW LEVEL SECURITY;");
             DB::statement("DROP POLICY IF EXISTS {$tbl}_workspace_isolation ON silver.{$tbl};");
             DB::statement(<<<SQL

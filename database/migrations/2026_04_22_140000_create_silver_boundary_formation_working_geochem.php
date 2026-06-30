@@ -325,9 +325,9 @@ return new class extends Migration
                         \'till\',\'drillhole_pulp\',\'drillhole_reject\',\'other\'
                     )
                 );');
-        DB::statement("ALTER TABLE silver.geochemistry
+        DB::statement('ALTER TABLE silver.geochemistry
             ADD COLUMN IF NOT EXISTS assay_element_codes text[]
-                NOT NULL DEFAULT ARRAY[]::text[];");
+                NOT NULL DEFAULT ARRAY[]::text[];');
         DB::statement("ALTER TABLE silver.geochemistry
             ADD COLUMN IF NOT EXISTS assay_values_ppm    jsonb
                 NOT NULL DEFAULT '{}'::jsonb;");

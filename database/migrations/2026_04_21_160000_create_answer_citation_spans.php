@@ -60,7 +60,7 @@ return new class extends Migration
                 -- span_end must be strictly after span_start; span_start must be non-negative.
                 CONSTRAINT answer_citation_spans_range_valid
                     CHECK (span_end > span_start AND span_start >= 0)
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -68,18 +68,18 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_spans_run
-                 ON silver.answer_citation_spans (answer_run_id)'
+                 ON silver.answer_citation_spans (answer_run_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_spans_item
-                 ON silver.answer_citation_spans (answer_citation_item_id)'
+                 ON silver.answer_citation_spans (answer_citation_item_id)',
         );
 
         // Composite: supports ordered rendering of citation chips by position.
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_spans_run_start
-                 ON silver.answer_citation_spans (answer_run_id, span_start)'
+                 ON silver.answer_citation_spans (answer_run_id, span_start)',
         );
     }
 

@@ -26,7 +26,9 @@ class ProjectControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private Project $projectB;
 
     protected function setUp(): void
@@ -106,7 +108,7 @@ class ProjectControllerIDORTest extends TestCase
         // returned when a project simply doesn't exist.
         $nonExistentUuid = '00000000-0000-0000-0000-000000000000';
 
-        $deniedResponse  = $this->getJson("/api/v1/projects/{$this->projectB->project_id}");
+        $deniedResponse = $this->getJson("/api/v1/projects/{$this->projectB->project_id}");
         $notFoundResponse = $this->getJson("/api/v1/projects/{$nonExistentUuid}");
 
         // Both must be 404.

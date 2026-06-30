@@ -61,6 +61,7 @@ class GoldenSetReport extends Command
             $since = $this->parseLookback((string) $this->option('since'));
         } catch (RuntimeException $e) {
             $this->error($e->getMessage());
+
             return self::FAILURE;
         }
         $limit = max(1, (int) $this->option('limit'));
@@ -83,7 +84,7 @@ class GoldenSetReport extends Command
                  {$maxExpr} AS sample_id,
                  {$minExpr} AS first_id,
                  MAX(created_at) AS last_seen_at",
-                [$maxConfidence]
+                [$maxConfidence],
             )
             ->whereNotNull('query_text_hash')
             ->where('created_at', '>=', $since)
@@ -93,8 +94,9 @@ class GoldenSetReport extends Command
 
         if ($rows->isEmpty()) {
             $msg = "No qualifying queries in the window (since={$this->option('since')}, "
-                . "min_count={$minCount}). Try a wider lookback or lower thresholds.";
+                ."min_count={$minCount}). Try a wider lookback or lower thresholds.";
             $this->writeOut($output, $this->formatEmptyReport($msg, $since));
+
             return self::SUCCESS;
         }
 
@@ -104,6 +106,7 @@ class GoldenSetReport extends Command
             $avg = $r->avg_confidence === null ? 0.0 : (float) $r->avg_confidence;
             $weight = (int) $r->total_count * max(0.0, 1.0 - $avg);
             $r->weight = $weight;
+
             return $r;
         })->sortByDesc('weight')->take($limit);
 
@@ -122,6 +125,7 @@ class GoldenSetReport extends Command
             $scored->count(), $scored->count() === 1 ? '' : 's',
             $rows->count(), $rows->count() === 1 ? '' : 's',
         ));
+
         return self::SUCCESS;
     }
 
@@ -130,12 +134,13 @@ class GoldenSetReport extends Command
      */
     private function parseLookback(string $raw): CarbonImmutable
     {
-        if (!preg_match('/^(\d+)([dh])$/', $raw, $m)) {
+        if (! preg_match('/^(\d+)([dh])$/', $raw, $m)) {
             throw new RuntimeException(
-                "Invalid --since format: {$raw}. Expected Nd (days) or Nh (hours)."
+                "Invalid --since format: {$raw}. Expected Nd (days) or Nh (hours).",
             );
         }
         $n = (int) $m[1];
+
         return $m[2] === 'd'
             ? CarbonImmutable::now()->subDays($n)
             : CarbonImmutable::now()->subHours($n);
@@ -190,14 +195,15 @@ class GoldenSetReport extends Command
                 '- **weight**: %d (count × (1 − avg_confidence))',
                 (int) $row->weight,
             );
-            $lines[] = sprintf('- **hash**: `%s`', substr((string) $row->h, 0, 16) . '…');
+            $lines[] = sprintf('- **hash**: `%s`', substr((string) $row->h, 0, 16).'…');
             $lines[] = '';
-            $lines[] = '_Suggested action_: ' . $this->suggestAction($row);
+            $lines[] = '_Suggested action_: '.$this->suggestAction($row);
             $lines[] = '';
             $lines[] = '---';
             $lines[] = '';
             $i++;
         }
+
         return implode(PHP_EOL, $lines);
     }
 
@@ -226,17 +232,19 @@ class GoldenSetReport extends Command
         if ($count >= 5) {
             return 'High-traffic query. Verify the confidence scorer isn\'t under-reading — maybe the retrieval is good but citations are thin.';
         }
+
         return 'Investigate retrieval — check the classifier_escalation_signal in logs for this query.';
     }
 
     private function writeOut(?string $path, string $content): void
     {
         if ($path === null || $path === '' || $path === '-') {
-            echo $content . PHP_EOL;
+            echo $content.PHP_EOL;
+
             return;
         }
         $dir = dirname($path);
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             @mkdir($dir, 0o755, true);
         }
         file_put_contents($path, $content);

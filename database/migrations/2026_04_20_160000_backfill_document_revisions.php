@@ -70,6 +70,7 @@ return new class extends Migration
         if ((int) $reportCount === 0) {
             // No documents exist — backfill is a no-op.  Note in migration log.
             DB::statement("DO $$ BEGIN RAISE NOTICE 'B8.4 backfill: silver.reports is empty — no document_revisions rows seeded.'; END $$");
+
             return;
         }
 
@@ -126,16 +127,16 @@ return new class extends Migration
             )
             ON CONFLICT (document_id, revision_number) DO NOTHING",
             [
-                ':ws'  => $this->defaultWorkspaceId,
+                ':ws' => $this->defaultWorkspaceId,
                 ':sha' => $this->legacySentinelSha256,
-            ]
+            ],
         );
 
         $seededCount = DB::selectOne(
             'SELECT COUNT(*) AS cnt
              FROM silver.document_revisions
              WHERE source_sha256 = :sha',
-            [':sha' => $this->legacySentinelSha256]
+            [':sha' => $this->legacySentinelSha256],
         )->cnt;
 
         DB::statement("DO \$\$ BEGIN RAISE NOTICE 'B8.4 backfill: seeded % document_revisions rows from silver.reports.', {$seededCount}; END \$\$");
@@ -150,9 +151,9 @@ return new class extends Migration
               WHERE source_sha256 = :sha
                 AND parser_name   = :name',
             [
-                ':sha'  => $this->legacySentinelSha256,
+                ':sha' => $this->legacySentinelSha256,
                 ':name' => 'legacy-pre-2026-04-20',
-            ]
+            ],
         );
     }
 };

@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\Project;
 use App\Models\QueryAuditLog;
+use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Encryption\Encrypter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -27,8 +29,10 @@ class RotateAuditKeyTest extends TestCase
     use RefreshDatabase;
 
     private ?string $originalAppKey = null;
-    private ?string $envPath        = null;
-    private ?string $originalEnv    = null;
+
+    private ?string $envPath = null;
+
+    private ?string $originalEnv = null;
 
     protected function setUp(): void
     {
@@ -69,7 +73,7 @@ class RotateAuditKeyTest extends TestCase
         if ($this->originalEnv !== null) {
             $patched = preg_replace(
                 '/^APP_KEY=.*$/m',
-                'APP_KEY=' . $this->originalAppKey,
+                'APP_KEY='.$this->originalAppKey,
                 $this->originalEnv,
             );
             if (is_string($patched) && $patched !== $this->originalEnv) {
@@ -92,7 +96,7 @@ class RotateAuditKeyTest extends TestCase
             $keyBytes = str_starts_with($this->originalAppKey, 'base64:')
                 ? base64_decode(substr($this->originalAppKey, 7))
                 : $this->originalAppKey;
-            $fresh = new \Illuminate\Encryption\Encrypter(
+            $fresh = new Encrypter(
                 $keyBytes,
                 config('app.cipher', 'AES-256-CBC'),
             );
@@ -107,15 +111,16 @@ class RotateAuditKeyTest extends TestCase
     private function seedRow(string $queryText, string $responseText): QueryAuditLog
     {
         $row = QueryAuditLog::create([
-            'user_id'    => null,
+            'user_id' => null,
             'project_id' => (string) Str::uuid(),
-            'query_id'   => (string) Str::uuid(),
+            'query_id' => (string) Str::uuid(),
             'query_text' => $queryText,
             'ip_address' => '127.0.0.1',
-            'llm_model'  => 'test-model',
+            'llm_model' => 'test-model',
         ]);
         $row->response_text = $responseText;
         $row->save();
+
         return $row->fresh();
     }
 
@@ -133,9 +138,9 @@ class RotateAuditKeyTest extends TestCase
         // Run the orchestrator — skip maintenance mode (there's no HTTP
         // layer to park in a test) and don't keep the dump.
         $this->artisan('audit:rotate-key', [
-            '--force'          => true,
+            '--force' => true,
             '--no-maintenance' => true,
-            '--dump-dir'       => sys_get_temp_dir(),
+            '--dump-dir' => sys_get_temp_dir(),
         ])
             ->expectsOutputToContain('Rotation complete.')
             ->assertSuccessful();
@@ -175,11 +180,11 @@ class RotateAuditKeyTest extends TestCase
         $oldKeyBytes = str_starts_with($originalKey, 'base64:')
             ? base64_decode(substr($originalKey, 7))
             : $originalKey;
-        $oldEncrypter = new \Illuminate\Encryption\Encrypter(
+        $oldEncrypter = new Encrypter(
             $oldKeyBytes,
             config('app.cipher', 'AES-256-CBC'),
         );
-        $this->expectException(\Illuminate\Contracts\Encryption\DecryptException::class);
+        $this->expectException(DecryptException::class);
         $oldEncrypter->decryptString($newCipherA);
     }
 
@@ -190,19 +195,19 @@ class RotateAuditKeyTest extends TestCase
         $tmpDir = sys_get_temp_dir();
         // Snapshot which files exist in /tmp before the run so we can
         // detect any rotation-dump leftover.
-        $before = glob($tmpDir . '/audit-pii-rotation-*.jsonl') ?: [];
+        $before = glob($tmpDir.'/audit-pii-rotation-*.jsonl') ?: [];
 
         $this->artisan('audit:rotate-key', [
-            '--force'          => true,
+            '--force' => true,
             '--no-maintenance' => true,
-            '--dump-dir'       => $tmpDir,
+            '--dump-dir' => $tmpDir,
         ])->assertSuccessful();
 
-        $after = glob($tmpDir . '/audit-pii-rotation-*.jsonl') ?: [];
+        $after = glob($tmpDir.'/audit-pii-rotation-*.jsonl') ?: [];
         $leftover = array_diff($after, $before);
         $this->assertEmpty(
             $leftover,
-            'default rotation should shred dump; leftovers: ' . implode(',', $leftover),
+            'default rotation should shred dump; leftovers: '.implode(',', $leftover),
         );
     }
 
@@ -211,18 +216,18 @@ class RotateAuditKeyTest extends TestCase
         $this->seedRow('kept plaintext', 'resp');
 
         $tmpDir = sys_get_temp_dir();
-        $before = glob($tmpDir . '/audit-pii-rotation-*.jsonl') ?: [];
+        $before = glob($tmpDir.'/audit-pii-rotation-*.jsonl') ?: [];
 
         $this->artisan('audit:rotate-key', [
-            '--force'          => true,
-            '--keep-dump'      => true,
+            '--force' => true,
+            '--keep-dump' => true,
             '--no-maintenance' => true,
-            '--dump-dir'       => $tmpDir,
+            '--dump-dir' => $tmpDir,
         ])
             ->expectsOutputToContain('Keeping dump')
             ->assertSuccessful();
 
-        $after = glob($tmpDir . '/audit-pii-rotation-*.jsonl') ?: [];
+        $after = glob($tmpDir.'/audit-pii-rotation-*.jsonl') ?: [];
         $leftover = array_values(array_diff($after, $before));
         $this->assertCount(1, $leftover, 'expected exactly one preserved dump');
 

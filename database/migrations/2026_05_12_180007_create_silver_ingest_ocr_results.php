@@ -73,18 +73,18 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_ocr_results_workspace
-             ON silver.ingest_ocr_results (workspace_id);'
+             ON silver.ingest_ocr_results (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_ocr_results_report_page
-             ON silver.ingest_ocr_results (report_id, page);'
+             ON silver.ingest_ocr_results (report_id, page);',
         );
         // pg_trgm GIN index on ocr_text for fuzzy-search debugging during Step 4
         // tuning. Cheap to add now; useful when investigating which scanned
         // pages an OCR pass mis-recognized.
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_ocr_results_text_trgm
-             ON silver.ingest_ocr_results USING GIN (ocr_text gin_trgm_ops);'
+             ON silver.ingest_ocr_results USING GIN (ocr_text gin_trgm_ops);',
         );
     }
 

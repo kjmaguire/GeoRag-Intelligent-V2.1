@@ -32,7 +32,7 @@ final class CollarsResolver extends AbstractCitationResolver
         if (! $collarId) {
             return response()->json([
                 'source_type' => 'collars',
-                'text'        => 'Collar data query result',
+                'text' => 'Collar data query result',
             ]);
         }
 
@@ -43,15 +43,15 @@ final class CollarsResolver extends AbstractCitationResolver
         if (! $collar) {
             return response()->json([
                 'source_type' => 'collars',
-                'text'        => 'Collar not found',
+                'text' => 'Collar not found',
             ]);
         }
 
         return response()->json([
-            'source_type'     => 'collars',
+            'source_type' => 'collars',
             'source_chunk_id' => $sourceId,
-            'title'           => "Drill Collar: {$collar->hole_id}",
-            'text'            => sprintf(
+            'title' => "Drill Collar: {$collar->hole_id}",
+            'text' => sprintf(
                 '%s — %s, %s m TD, Status: %s, Drilled: %s',
                 $collar->hole_id,
                 $collar->hole_type,

@@ -23,21 +23,21 @@ class DecisionRecordFactory extends Factory
     public function definition(): array
     {
         return [
-            'decision_id'         => (string) Str::uuid(),
-            'workspace_id'        => (string) Str::uuid(),
-            'decision_type'       => $this->faker->randomElement([
+            'decision_id' => (string) Str::uuid(),
+            'workspace_id' => (string) Str::uuid(),
+            'decision_type' => $this->faker->randomElement([
                 'target_recommendation', 'crs_decision', 'schema_mapping',
                 'public_data_import', 'export_approval', 'workflow_enablement',
                 'conflict_resolution', 'report_signoff',
             ]),
-            'recommendation'      => $this->faker->paragraph(),
-            'human_decision'      => $this->faker->randomElement(['accepted', 'modified', 'rejected']),
-            'reason'              => $this->faker->sentence(),
-            'uncertainty'         => $this->faker->randomFloat(3, 0, 1),
-            'decided_by_user_id'  => User::factory(),
-            'decided_at'          => now(),
-            'hash'                => null,
-            'audit_ledger_id'     => null,
+            'recommendation' => $this->faker->paragraph(),
+            'human_decision' => $this->faker->randomElement(['accepted', 'modified', 'rejected']),
+            'reason' => $this->faker->sentence(),
+            'uncertainty' => $this->faker->randomFloat(3, 0, 1),
+            'decided_by_user_id' => User::factory(),
+            'decided_at' => now(),
+            'hash' => null,
+            'audit_ledger_id' => null,
         ];
     }
 

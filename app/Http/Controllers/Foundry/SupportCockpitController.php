@@ -6,7 +6,6 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\QueryAuditLog;
-use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;

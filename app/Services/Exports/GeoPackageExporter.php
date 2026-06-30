@@ -19,23 +19,23 @@ class GeoPackageExporter
         $serviceKey = config('services.fastapi.service_key');
 
         $response = Http::withHeaders([
-                'X-Service-Key' => $serviceKey,
-                'Accept'        => 'application/geopackage+sqlite3',
-            ])
+            'X-Service-Key' => $serviceKey,
+            'Accept' => 'application/geopackage+sqlite3',
+        ])
             ->timeout(60)
             ->post("{$fastApiUrl}/internal/exports/geopackage", [
                 'project_id' => $projectId,
-                'format'     => 'geopackage',
+                'format' => 'geopackage',
             ]);
 
         if (! $response->successful()) {
             throw new \RuntimeException(
                 "FastAPI geopackage export failed: HTTP {$response->status()} — "
-                . substr($response->body(), 0, 200)
+                .substr($response->body(), 0, 200),
             );
         }
 
-        $tmpPath = sys_get_temp_dir() . '/georag_collars_' . uniqid() . '.gpkg';
+        $tmpPath = sys_get_temp_dir().'/georag_collars_'.uniqid().'.gpkg';
         file_put_contents($tmpPath, $response->body());
 
         return [

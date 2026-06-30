@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
-use App\Models\ColumnMapping;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 
 class UpdateColumnMappingRequest extends FormRequest
 {
@@ -27,10 +25,10 @@ class UpdateColumnMappingRequest extends FormRequest
         // truly needed the caller should delete and recreate the mapping.
         return [
             'canonical_field' => ['sometimes', 'required', 'string', 'max:64'],
-            'source_column'   => ['sometimes', 'required', 'string', 'max:255'],
-            'source_unit'     => ['sometimes', 'nullable', 'string', 'max:32'],
-            'target_unit'     => ['sometimes', 'nullable', 'string', 'max:32'],
-            'notes'           => ['sometimes', 'nullable', 'string'],
+            'source_column' => ['sometimes', 'required', 'string', 'max:255'],
+            'source_unit' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'target_unit' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'notes' => ['sometimes', 'nullable', 'string'],
         ];
     }
 }

@@ -3,7 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -63,7 +66,7 @@ class TileProxyTest extends TestCase
     {
         $this->skipIfSqlite(
             'TileProxyTest requires PostgreSQL. Use phpunit.pgsql.xml for this suite. '
-            . 'The silver.workspaces / answer_runs migrations cannot run on SQLite.'
+            .'The silver.workspaces / answer_runs migrations cannot run on SQLite.',
         );
     }
 
@@ -122,7 +125,7 @@ class TileProxyTest extends TestCase
     {
         $this->resetHttpStubs();
         Http::fake(['*' => static function () use ($message) {
-            throw new \Illuminate\Http\Client\ConnectionException($message);
+            throw new ConnectionException($message);
         }]);
     }
 
@@ -136,8 +139,8 @@ class TileProxyTest extends TestCase
      */
     private function resetHttpStubs(): void
     {
-        /** @var \Illuminate\Http\Client\Factory $factory */
-        $factory = $this->app->make(\Illuminate\Http\Client\Factory::class);
+        /** @var Factory $factory */
+        $factory = $this->app->make(Factory::class);
 
         try {
             $prop = new \ReflectionProperty($factory, 'stubCallbacks');
@@ -178,9 +181,9 @@ class TileProxyTest extends TestCase
         // Grant the test user access.
         try {
             DB::table('project_user')->insertOrIgnore([
-                'user_id'    => $this->user->id,
+                'user_id' => $this->user->id,
                 'project_id' => $projectId,
-                'role'       => 'member',
+                'role' => 'member',
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
@@ -196,7 +199,7 @@ class TileProxyTest extends TestCase
     public function test_pgeo_tile_cache_miss_returns_200_with_etag_header(): void
     {
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/100/200.pbf', [
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/100/200.pbf', [
                 'If-None-Match' => '"stale-hash-that-will-not-match"',
             ]);
 
@@ -207,11 +210,11 @@ class TileProxyTest extends TestCase
         $this->assertMatchesRegularExpression(
             '/^"[0-9a-f]{32}"$/',
             $etag,
-            'ETag must be a quoted 32-char hex MD5.'
+            'ETag must be a quoted 32-char hex MD5.',
         );
 
         // Assert the value matches what the controller should derive.
-        $expectedTag = md5(self::PGEO_EPOCH . '|10|100|200');
+        $expectedTag = md5(self::PGEO_EPOCH.'|10|100|200');
         $this->assertSame("\"{$expectedTag}\"", $etag);
     }
 
@@ -221,10 +224,10 @@ class TileProxyTest extends TestCase
 
     public function test_pgeo_tile_cache_hit_returns_304_with_empty_body(): void
     {
-        $expectedTag = md5(self::PGEO_EPOCH . '|10|100|200');
+        $expectedTag = md5(self::PGEO_EPOCH.'|10|100|200');
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/100/200.pbf', [
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/100/200.pbf', [
                 'If-None-Match' => "\"{$expectedTag}\"",
             ]);
 
@@ -233,7 +236,7 @@ class TileProxyTest extends TestCase
         $this->assertSame(
             "\"{$expectedTag}\"",
             $response->headers->get('ETag'),
-            'ETag must be echoed back on a 304 response.'
+            'ETag must be echoed back on a 304 response.',
         );
     }
 
@@ -247,7 +250,7 @@ class TileProxyTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->get(
-                '/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID,
+                '/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID,
                 ['If-None-Match' => '"wrong-etag"'],
             );
 
@@ -256,7 +259,7 @@ class TileProxyTest extends TestCase
         $etag = $response->headers->get('ETag');
         $this->assertNotNull($etag);
 
-        $expectedTag = md5('42|10|100|200|' . self::PROJECT_ID);
+        $expectedTag = md5('42|10|100|200|'.self::PROJECT_ID);
         $this->assertSame("\"{$expectedTag}\"", $etag);
     }
 
@@ -268,11 +271,11 @@ class TileProxyTest extends TestCase
     {
         $this->seedSilverProject(self::PROJECT_ID, 42);
 
-        $expectedTag = md5('42|10|100|200|' . self::PROJECT_ID);
+        $expectedTag = md5('42|10|100|200|'.self::PROJECT_ID);
 
         $response = $this->actingAs($this->user)
             ->get(
-                '/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID,
+                '/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID,
                 ['If-None-Match' => "\"{$expectedTag}\""],
             );
 
@@ -299,7 +302,7 @@ class TileProxyTest extends TestCase
     public function test_unknown_silver_source_returns_404(): void
     {
         $this->actingAs($this->user)
-            ->get('/tiles/silver/pg_internal_secret/10/100/200.pbf?project_id=' . self::PROJECT_ID)
+            ->get('/tiles/silver/pg_internal_secret/10/100/200.pbf?project_id='.self::PROJECT_ID)
             ->assertNotFound();
     }
 
@@ -310,7 +313,7 @@ class TileProxyTest extends TestCase
     public function test_silver_tile_missing_project_id_returns_400(): void
     {
         $this->actingAs($this->user)
-            ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf')
+            ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf')
             ->assertStatus(400);
     }
 
@@ -321,7 +324,7 @@ class TileProxyTest extends TestCase
     public function test_silver_tile_malformed_project_id_returns_400(): void
     {
         $this->actingAs($this->user)
-            ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=not-a-uuid')
+            ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id=not-a-uuid')
             ->assertStatus(400);
     }
 
@@ -342,14 +345,14 @@ class TileProxyTest extends TestCase
                 ->delete();
 
             $response = $this->actingAs($this->user)
-                ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID);
+                ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID);
 
             $response->assertStatus(403);
-        } catch (\Illuminate\Database\QueryException $e) {
+        } catch (QueryException $e) {
             // project_user table absent in this DB → hasProjectAccess() fails open.
             $this->markTestSkipped(
                 'project_user pivot table absent; workspace scope gate is degraded '
-                . '(fails open). Run `php artisan migrate` to activate enforcement.'
+                .'(fails open). Run `php artisan migrate` to activate enforcement.',
             );
         }
     }
@@ -361,7 +364,7 @@ class TileProxyTest extends TestCase
     public function test_pgeo_tile_cache_control_contains_max_age_3600(): void
     {
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/100/200.pbf');
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/100/200.pbf');
 
         $response->assertOk();
         $cc = (string) $response->headers->get('Cache-Control');
@@ -375,7 +378,7 @@ class TileProxyTest extends TestCase
         $this->seedSilverProject(self::PROJECT_ID, 1);
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID);
+            ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID);
 
         $response->assertOk();
         $cc = (string) $response->headers->get('Cache-Control');
@@ -391,7 +394,7 @@ class TileProxyTest extends TestCase
     public function test_pgeo_tile_server_timing_present_on_200(): void
     {
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/100/200.pbf');
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/100/200.pbf');
 
         $response->assertOk();
         $st = $response->headers->get('Server-Timing');
@@ -404,7 +407,7 @@ class TileProxyTest extends TestCase
             $this->assertLessThan(
                 50.0,
                 (float) $m[1],
-                'db;dur must be < 50 ms (Cache::remember is a no-op in tests).'
+                'db;dur must be < 50 ms (Cache::remember is a no-op in tests).',
             );
         }
     }
@@ -414,7 +417,7 @@ class TileProxyTest extends TestCase
         $this->seedSilverProject(self::PROJECT_ID, 5);
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID);
+            ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID);
 
         $response->assertOk();
         $st = $response->headers->get('Server-Timing');
@@ -431,7 +434,7 @@ class TileProxyTest extends TestCase
         $this->fakeMartin204();
 
         $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/100/200.pbf')
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/100/200.pbf')
             ->assertNoContent();
     }
 
@@ -441,7 +444,7 @@ class TileProxyTest extends TestCase
         $this->seedSilverProject(self::PROJECT_ID, 0);
 
         $this->actingAs($this->user)
-            ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID)
+            ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID)
             ->assertNoContent();
     }
 
@@ -451,17 +454,17 @@ class TileProxyTest extends TestCase
 
     public function test_pgeo_304_has_server_timing_header(): void
     {
-        $expectedTag = md5(self::PGEO_EPOCH . '|5|10|15');
+        $expectedTag = md5(self::PGEO_EPOCH.'|5|10|15');
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/5/10/15.pbf', [
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/5/10/15.pbf', [
                 'If-None-Match' => "\"{$expectedTag}\"",
             ]);
 
         $response->assertStatus(304);
         $this->assertNotNull(
             $response->headers->get('Server-Timing'),
-            'Server-Timing must be present on 304 (db lookup still ran to derive the ETag).'
+            'Server-Timing must be present on 304 (db lookup still ran to derive the ETag).',
         );
     }
 
@@ -471,10 +474,10 @@ class TileProxyTest extends TestCase
 
     public function test_weak_etag_in_if_none_match_triggers_304(): void
     {
-        $expectedTag = md5(self::PGEO_EPOCH . '|10|100|200');
+        $expectedTag = md5(self::PGEO_EPOCH.'|10|100|200');
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/100/200.pbf', [
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/100/200.pbf', [
                 // W/ prefix — proxy must strip and still match.
                 'If-None-Match' => "W/\"{$expectedTag}\"",
             ]);
@@ -488,7 +491,7 @@ class TileProxyTest extends TestCase
 
     public function test_unauthenticated_request_returns_401(): void
     {
-        $this->getJson('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/123/456.pbf')
+        $this->getJson('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/123/456.pbf')
             ->assertUnauthorized();
     }
 
@@ -501,7 +504,7 @@ class TileProxyTest extends TestCase
         $this->fakeMartinThrow('Martin is down');
 
         $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::PGEO_SOURCE . '/10/123/456.pbf')
+            ->get('/tiles/public-geoscience/'.self::PGEO_SOURCE.'/10/123/456.pbf')
             ->assertStatus(502);
     }
 }

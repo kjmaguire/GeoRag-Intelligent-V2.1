@@ -2,8 +2,8 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
@@ -31,12 +31,12 @@ return new class extends Migration
         });
 
         // PostgreSQL DOUBLE PRECISION[] array columns (not supported by Laravel Schema Builder)
-        DB::statement("ALTER TABLE silver.well_log_curves ADD COLUMN depths DOUBLE PRECISION[] NOT NULL");
-        DB::statement("ALTER TABLE silver.well_log_curves ADD COLUMN values DOUBLE PRECISION[] NOT NULL");
+        DB::statement('ALTER TABLE silver.well_log_curves ADD COLUMN depths DOUBLE PRECISION[] NOT NULL');
+        DB::statement('ALTER TABLE silver.well_log_curves ADD COLUMN values DOUBLE PRECISION[] NOT NULL');
 
         // Indexes
-        DB::statement("CREATE INDEX idx_well_log_curves_collar_curve ON silver.well_log_curves (collar_id, curve_name)");
-        DB::statement("CREATE INDEX idx_well_log_curves_name ON silver.well_log_curves (curve_name)");
+        DB::statement('CREATE INDEX idx_well_log_curves_collar_curve ON silver.well_log_curves (collar_id, curve_name)');
+        DB::statement('CREATE INDEX idx_well_log_curves_name ON silver.well_log_curves (curve_name)');
     }
 
     /**

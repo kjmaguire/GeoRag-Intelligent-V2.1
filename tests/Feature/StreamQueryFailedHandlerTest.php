@@ -32,12 +32,12 @@ class StreamQueryFailedHandlerTest extends TestCase
     private function makeRow(array $overrides = []): QueryAuditLog
     {
         return QueryAuditLog::create(array_merge([
-            'user_id'       => null,
-            'project_id'    => (string) Str::uuid(),
-            'query_id'      => (string) Str::uuid(),
-            'query_text'    => 'Tell me about the project.',
-            'ip_address'    => '127.0.0.1',
-            'llm_model'     => 'qwen2.5:14b',
+            'user_id' => null,
+            'project_id' => (string) Str::uuid(),
+            'query_id' => (string) Str::uuid(),
+            'query_text' => 'Tell me about the project.',
+            'ip_address' => '127.0.0.1',
+            'llm_model' => 'qwen2.5:14b',
             'dispatched_at' => now()->subSeconds(4),
         ], $overrides));
     }
@@ -49,10 +49,10 @@ class StreamQueryFailedHandlerTest extends TestCase
         $row = $this->makeRow();
 
         $job = new StreamQueryFromFastApi(
-            queryId:   $row->query_id,
+            queryId: $row->query_id,
             projectId: $row->project_id,
             queryText: 'unused',
-            channel:   'query.' . $row->query_id,
+            channel: 'query.'.$row->query_id,
         );
 
         $job->failed(new \RuntimeException('fastapi stream vanished'));
@@ -74,10 +74,10 @@ class StreamQueryFailedHandlerTest extends TestCase
         $row = $this->makeRow();
 
         $job = new StreamQueryFromFastApi(
-            queryId:   $row->query_id,
+            queryId: $row->query_id,
             projectId: $row->project_id,
             queryText: 'unused',
-            channel:   'query.' . $row->query_id,
+            channel: 'query.'.$row->query_id,
         );
 
         $job->failed(new \RuntimeException('boom'));
@@ -89,6 +89,7 @@ class StreamQueryFailedHandlerTest extends TestCase
             QueryStreamEvent::class,
             function (QueryStreamEvent $e) use ($row) {
                 $payload = $this->readEventData($e);
+
                 return ($payload['event'] ?? null) === 'failed'
                     && ($payload['query_id'] ?? null) === $row->query_id;
             },
@@ -102,10 +103,10 @@ class StreamQueryFailedHandlerTest extends TestCase
         $row = $this->makeRow();
 
         $job = new StreamQueryFromFastApi(
-            queryId:   $row->query_id,
+            queryId: $row->query_id,
             projectId: $row->project_id,
             queryText: 'unused',
-            channel:   'query.' . $row->query_id,
+            channel: 'query.'.$row->query_id,
         );
 
         $job->failed(new \RuntimeException('first'));
@@ -126,10 +127,10 @@ class StreamQueryFailedHandlerTest extends TestCase
         Event::fake([QueryStreamEvent::class]);
 
         $job = new StreamQueryFromFastApi(
-            queryId:   (string) Str::uuid(), // no matching row exists
+            queryId: (string) Str::uuid(), // no matching row exists
             projectId: (string) Str::uuid(),
             queryText: 'unused',
-            channel:   'query.orphaned',
+            channel: 'query.orphaned',
         );
 
         // Must not raise — audit-row absence is a warning, not a crash.
@@ -156,6 +157,7 @@ class StreamQueryFailedHandlerTest extends TestCase
                 }
             }
         }
+
         // Fallback: let broadcastWith do the work.
         return method_exists($event, 'broadcastWith') ? $event->broadcastWith() : [];
     }

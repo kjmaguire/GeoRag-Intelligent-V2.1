@@ -93,15 +93,16 @@ class CustomerDashboardsController extends Controller
 
         // strip_log / cross_section / stereonet — driven by drillhole intervals
         $stripLog = (int) DB::scalar(
-            "SELECT count(DISTINCT project_id) FROM silver.collars WHERE total_depth > 0",
+            'SELECT count(DISTINCT project_id) FROM silver.collars WHERE total_depth > 0',
         );
         // target_heatmap — driven by gold.h3_density_mineral
         $heatmap = 0;
         try {
             $heatmap = (int) DB::scalar(
-                "SELECT count(DISTINCT workspace_id) FROM gold.h3_density_mineral",
+                'SELECT count(DISTINCT workspace_id) FROM gold.h3_density_mineral',
             );
-        } catch (\Throwable $e) { /* table optional */ }
+        } catch (\Throwable $e) { /* table optional */
+        }
         // anomaly_map / long_section — driven by collars + assays
         // grade_tonnage — driven by assays (synthetic for now)
         $totalProjects = (int) DB::scalar("SELECT count(*) FROM silver.projects WHERE status='active'");
@@ -131,20 +132,20 @@ class CustomerDashboardsController extends Controller
     {
         // Public-geoscience inventory + freshness.
         $counts = DB::selectOne(
-            "SELECT
+            'SELECT
                 (SELECT count(*) FROM public_geo.pg_mineral_occurrence)::int AS occurrences,
                 (SELECT count(*) FROM public_geo.pg_drillhole_collar)::int AS drillholes,
                 (SELECT count(*) FROM public_geo.pg_mine)::int AS mines,
                 (SELECT count(*) FROM public_geo.pg_bedrock_geology)::int AS bedrock_polygons,
-                (SELECT count(*) FROM public_geo.pg_assessment_survey)::int AS assessment_surveys",
+                (SELECT count(*) FROM public_geo.pg_assessment_survey)::int AS assessment_surveys',
         );
 
         // Sources + last refresh
         $sources = DB::select(
-            "SELECT source_id, jurisdiction_code, name, canonical_type, license_summary,
+            'SELECT source_id, jurisdiction_code, name, canonical_type, license_summary,
                     last_refreshed_at
                FROM public_geo.sources
-              ORDER BY jurisdiction_code, name",
+              ORDER BY jurisdiction_code, name',
         );
 
         // By jurisdiction
@@ -179,25 +180,25 @@ class CustomerDashboardsController extends Controller
 
         // Recent recommendations
         $recent = DB::select(
-            "SELECT recommendation_id::text, project_id::text, run_id::text,
+            'SELECT recommendation_id::text, project_id::text, run_id::text,
                     rank, created_at,
                     LEFT(explanation_markdown, 200) AS explanation_preview
                FROM targeting.target_recommendations
               WHERE (? = 0 OR project_id::text = ANY(?))
               ORDER BY created_at DESC
-              LIMIT 25",
+              LIMIT 25',
             [count($projectIds), $projectIds],
         );
 
         $byProject = DB::select(
-            "SELECT p.project_name,
+            'SELECT p.project_name,
                     count(tr.recommendation_id)::int AS rec_count,
                     max(tr.created_at) AS last_run
                FROM silver.projects p
                LEFT JOIN targeting.target_recommendations tr ON tr.project_id = p.project_id
               WHERE (? = 0 OR p.project_id::text = ANY(?))
               GROUP BY p.project_name
-              ORDER BY rec_count DESC",
+              ORDER BY rec_count DESC',
             [count($projectIds), $projectIds],
         );
 
@@ -211,11 +212,11 @@ class CustomerDashboardsController extends Controller
     public function reporting(Request $request): Response
     {
         $reports = DB::select(
-            "SELECT report_id::text, title, company, filing_date, commodity,
+            'SELECT report_id::text, title, company, filing_date, commodity,
                     project_name, region, created_at
                FROM silver.reports
               ORDER BY created_at DESC NULLS LAST, filing_date DESC NULLS LAST
-              LIMIT 50",
+              LIMIT 50',
         );
 
         $byCommodity = DB::select(
@@ -228,9 +229,9 @@ class CustomerDashboardsController extends Controller
         );
 
         $totals = DB::selectOne(
-            "SELECT count(*)::int AS total,
+            'SELECT count(*)::int AS total,
                     count(*) FILTER (WHERE filing_date IS NOT NULL)::int AS with_filing_date
-               FROM silver.reports",
+               FROM silver.reports',
         );
 
         return Inertia::render('Dashboards/Reporting', [
@@ -247,7 +248,7 @@ class CustomerDashboardsController extends Controller
 
         // Daily totals
         $byDay = DB::select(
-            "SELECT rollup_date,
+            'SELECT rollup_date,
                     sum(invocations_total)::int AS invocations,
                     sum(tokens_prompt_total)::bigint AS prompt_tokens,
                     sum(tokens_completion_total)::bigint AS completion_tokens,
@@ -255,13 +256,13 @@ class CustomerDashboardsController extends Controller
                FROM usage.usage_aggregates_daily
               WHERE rollup_date >= ?
               GROUP BY rollup_date
-              ORDER BY rollup_date",
+              ORDER BY rollup_date',
             [$since->toDateString()],
         );
 
         // By agent
         $byAgent = DB::select(
-            "SELECT agent_name,
+            'SELECT agent_name,
                     sum(invocations_total)::int AS invocations,
                     sum(tokens_prompt_total + tokens_completion_total)::bigint AS total_tokens,
                     round(sum(cost_usd_total)::numeric, 4) AS cost_usd
@@ -269,16 +270,16 @@ class CustomerDashboardsController extends Controller
               WHERE rollup_date >= ?
               GROUP BY agent_name
               ORDER BY cost_usd DESC NULLS LAST
-              LIMIT 15",
+              LIMIT 15',
             [$since->toDateString()],
         );
 
         $totals = DB::selectOne(
-            "SELECT sum(invocations_total)::int AS invocations,
+            'SELECT sum(invocations_total)::int AS invocations,
                     sum(tokens_prompt_total + tokens_completion_total)::bigint AS total_tokens,
                     round(sum(cost_usd_total)::numeric, 4) AS cost_usd
                FROM usage.usage_aggregates_daily
-              WHERE rollup_date >= ?",
+              WHERE rollup_date >= ?',
             [$since->toDateString()],
         );
 

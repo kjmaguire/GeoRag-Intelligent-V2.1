@@ -83,7 +83,7 @@ return new class extends Migration
                 -- revision_number starts at 1.
                 CONSTRAINT document_revisions_revision_positive
                     CHECK (revision_number >= 1)
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -97,7 +97,7 @@ return new class extends Migration
                 ADD CONSTRAINT document_revisions_superseded_by_fkey
                     FOREIGN KEY (superseded_by_revision_id)
                     REFERENCES silver.document_revisions(document_revision_id)
-                    ON DELETE SET NULL'
+                    ON DELETE SET NULL',
         );
 
         // -----------------------------------------------------------------------
@@ -105,17 +105,17 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_doc_revisions_document_id
-                 ON silver.document_revisions (document_id)'
+                 ON silver.document_revisions (document_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_doc_revisions_workspace_id
-                 ON silver.document_revisions (workspace_id)'
+                 ON silver.document_revisions (workspace_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_doc_revisions_source_sha256
-                 ON silver.document_revisions (source_sha256)'
+                 ON silver.document_revisions (source_sha256)',
         );
     }
 
@@ -125,7 +125,7 @@ return new class extends Migration
         // though CASCADE handles it — explicit is safer in CI).
         DB::statement(
             'ALTER TABLE IF EXISTS silver.document_revisions
-                DROP CONSTRAINT IF EXISTS document_revisions_superseded_by_fkey'
+                DROP CONSTRAINT IF EXISTS document_revisions_superseded_by_fkey',
         );
 
         DB::statement('DROP TABLE IF EXISTS silver.document_revisions');

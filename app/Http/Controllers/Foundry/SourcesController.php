@@ -58,7 +58,7 @@ class SourcesController extends Controller
             $fileTypesQuery->whereRaw('1=0'); // no project sections → no rows
         }
         $fileTypes = $fileTypesQuery->get()->map(fn ($r) => [
-            'kind'  => (string) $r->file_type,
+            'kind' => (string) $r->file_type,
             'count' => (int) $r->n,
             'bytes' => (int) ($r->bytes ?? 0),
         ])->values();
@@ -66,7 +66,7 @@ class SourcesController extends Controller
         // ── 2. Recent ingestion runs that touched this project's sections ──
         $recentRuns = collect();
         if (! empty($sections)) {
-            $likes = array_map(fn ($s) => '%' . $s . '%', $sections);
+            $likes = array_map(fn ($s) => '%'.$s.'%', $sections);
             $runsQuery = DB::table('bronze.ingest_runs')->orderByDesc('started_at')->limit(20);
             $runsQuery->where(function ($q) use ($likes) {
                 foreach ($likes as $like) {
@@ -74,16 +74,16 @@ class SourcesController extends Controller
                 }
             });
             $recentRuns = $runsQuery->get()->map(fn ($r) => [
-                'id'           => (string) $r->run_id,
-                'source_path'  => (string) ($r->source_path ?? ''),
-                'started_at'   => (string) ($r->started_at ?? ''),
+                'id' => (string) $r->run_id,
+                'source_path' => (string) ($r->source_path ?? ''),
+                'started_at' => (string) ($r->started_at ?? ''),
                 'completed_at' => (string) ($r->completed_at ?? ''),
-                'status'       => (string) ($r->status ?? 'unknown'),
-                'files_seen'   => (int) ($r->files_seen ?? 0),
-                'files_indexed'=> (int) ($r->files_indexed ?? 0),
-                'files_skipped'=> (int) ($r->files_skipped ?? 0),
-                'bytes_seen'   => (int) ($r->bytes_seen ?? 0),
-                'error_text'   => (string) ($r->error_text ?? ''),
+                'status' => (string) ($r->status ?? 'unknown'),
+                'files_seen' => (int) ($r->files_seen ?? 0),
+                'files_indexed' => (int) ($r->files_indexed ?? 0),
+                'files_skipped' => (int) ($r->files_skipped ?? 0),
+                'bytes_seen' => (int) ($r->bytes_seen ?? 0),
+                'error_text' => (string) ($r->error_text ?? ''),
             ])->values();
         }
 
@@ -104,11 +104,11 @@ class SourcesController extends Controller
             [$project->project_id, $project->project_id],
         );
         $parserActivity = collect($parserActivity)->map(fn ($p) => [
-            'parser'          => (string) $p->parser_name,
-            'version'         => (string) $p->parser_version,
-            'rows_written'    => (int) $p->rows_written,
-            'last_run'        => (string) $p->last_run,
-            'tables_touched'  => (int) $p->tables_touched,
+            'parser' => (string) $p->parser_name,
+            'version' => (string) $p->parser_version,
+            'rows_written' => (int) $p->rows_written,
+            'last_run' => (string) $p->last_run,
+            'tables_touched' => (int) $p->tables_touched,
         ])->values();
 
         // ── 4. Project-scoped reports ────────────────────────────────
@@ -119,24 +119,24 @@ class SourcesController extends Controller
             ->limit(30)
             ->get()
             ->map(fn ($r) => [
-                'id'          => (string) $r->report_id,
-                'title'       => (string) ($r->title ?? '—'),
-                'company'     => (string) ($r->company ?? '—'),
+                'id' => (string) $r->report_id,
+                'title' => (string) ($r->title ?? '—'),
+                'company' => (string) ($r->company ?? '—'),
                 'filing_date' => (string) ($r->filing_date ?? ''),
-                'commodity'   => (string) ($r->commodity ?? ''),
-                'version'     => (int) ($r->version ?? 1),
-                'created_at'  => (string) ($r->created_at ?? ''),
+                'commodity' => (string) ($r->commodity ?? ''),
+                'version' => (int) ($r->version ?? 1),
+                'created_at' => (string) ($r->created_at ?? ''),
             ])->values();
 
         // ── 5. Workspace passages + project-scoped quality rollup ──
         $passagesInProject = (int) DB::table('silver.document_passages AS dp')
             ->join('bronze.provenance AS bp', function ($j) {
                 $j->on(DB::raw('bp.target_id::text'), '=', DB::raw('dp.passage_id::text'))
-                  ->where('bp.target_table', '=', 'document_passages');
+                    ->where('bp.target_table', '=', 'document_passages');
             })
             ->join('silver.reports AS r', function ($j) {
                 $j->on('r.report_id', '=', 'bp.target_id')
-                  ->where('bp.target_table', '=', 'reports');
+                    ->where('bp.target_table', '=', 'reports');
             })
             ->where('r.project_id', $project->project_id)
             ->count();
@@ -159,35 +159,35 @@ class SourcesController extends Controller
         $totalRunsTouchingProject = (int) $recentRuns->count();
 
         $stats = [
-            'sections'                 => $sections,
-            'total_files_in_project'   => $totalFilesProject,
-            'total_bytes_in_project'   => $totalBytesProject,
-            'reports_in_project'       => $reportsCountProject,
-            'passages_in_project'      => $passagesInProject,
-            'collars_in_project'       => $collarsCount,
-            'parsers_active'           => $parserActivity->count(),
-            'ingest_runs_in_project'   => $totalRunsTouchingProject,
-            'avg_quality_score'        => $qualityRollup && $qualityRollup->avg_score !== null
+            'sections' => $sections,
+            'total_files_in_project' => $totalFilesProject,
+            'total_bytes_in_project' => $totalBytesProject,
+            'reports_in_project' => $reportsCountProject,
+            'passages_in_project' => $passagesInProject,
+            'collars_in_project' => $collarsCount,
+            'parsers_active' => $parserActivity->count(),
+            'ingest_runs_in_project' => $totalRunsTouchingProject,
+            'avg_quality_score' => $qualityRollup && $qualityRollup->avg_score !== null
                 ? round((float) $qualityRollup->avg_score, 3) : null,
-            'low_confidence_pages'     => $qualityRollup ? (int) ($qualityRollup->low_conf_pages ?? 0) : 0,
-            'total_pages_reviewed'     => $qualityRollup ? (int) ($qualityRollup->total_pages ?? 0) : 0,
+            'low_confidence_pages' => $qualityRollup ? (int) ($qualityRollup->low_conf_pages ?? 0) : 0,
+            'total_pages_reviewed' => $qualityRollup ? (int) ($qualityRollup->total_pages ?? 0) : 0,
         ];
 
         return Inertia::render('Foundry/Sources', [
-            'project'         => [
-                'project_id'   => $project->project_id,
+            'project' => [
+                'project_id' => $project->project_id,
                 'project_name' => $project->project_name,
-                'slug'         => $project->slug,
+                'slug' => $project->slug,
             ],
-            'stats'           => $stats,
-            'file_types'      => $fileTypes,
-            'recent_runs'     => $recentRuns,
+            'stats' => $stats,
+            'file_types' => $fileTypes,
+            'recent_runs' => $recentRuns,
             'parser_activity' => $parserActivity,
-            'reports'         => $reports,
-            'empty'           => $totalFilesProject === 0 && $reportsCountProject === 0,
-            'scope_note'      => empty($sections)
+            'reports' => $reports,
+            'empty' => $totalFilesProject === 0 && $reportsCountProject === 0,
+            'scope_note' => empty($sections)
                 ? 'No bronze data has been ingested into this project yet — Connect Source to start.'
-                : 'All panels are scoped to this project (PLSS section ' . implode(', ', $sections) . '). Workspace-wide views live under /workspace/data.',
+                : 'All panels are scoped to this project (PLSS section '.implode(', ', $sections).'). Workspace-wide views live under /workspace/data.',
         ]);
     }
 

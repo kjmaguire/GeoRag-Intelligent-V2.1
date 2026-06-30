@@ -86,7 +86,7 @@ class ReasoningController extends Controller
                 ->get();
         } catch (\Throwable $e) {
             Log::warning('Foundry/Reasoning evidence_links query failed', [
-                'slug'  => $slug,
+                'slug' => $slug,
                 'error' => $e->getMessage(),
             ]);
         }
@@ -109,55 +109,55 @@ class ReasoningController extends Controller
                 ->map(fn ($r) => (int) $r->n);
 
             return [
-                'id'                => (string) $h->hypothesis_id,
-                'title'             => (string) ($h->parent_question ?? ''),
-                'label'             => (string) ($h->label ?? ''),
-                'description'       => (string) ($h->description ?? ''),
-                'rationale'         => (string) ($h->rationale ?? ''),
-                'status'            => (string) ($h->review_status ?? 'ai_suggested'),
-                'confidence'        => isset($h->confidence) ? (float) $h->confidence : null,
+                'id' => (string) $h->hypothesis_id,
+                'title' => (string) ($h->parent_question ?? ''),
+                'label' => (string) ($h->label ?? ''),
+                'description' => (string) ($h->description ?? ''),
+                'rationale' => (string) ($h->rationale ?? ''),
+                'status' => (string) ($h->review_status ?? 'ai_suggested'),
+                'confidence' => isset($h->confidence) ? (float) $h->confidence : null,
                 'confidence_method' => (string) ($h->confidence_method ?? ''),
-                'support_count'     => $byRole->get('supporting', 0),
-                'contradict_count'  => $byRole->get('contradicting', 0),
-                'missing_count'     => $byRole->get('missing', 0),
-                'tests_count'       => $byRole->get('recommended_test', 0),
-                'updated'           => (string) ($h->created_at ?? ''),
+                'support_count' => $byRole->get('supporting', 0),
+                'contradict_count' => $byRole->get('contradicting', 0),
+                'missing_count' => $byRole->get('missing', 0),
+                'tests_count' => $byRole->get('recommended_test', 0),
+                'updated' => (string) ($h->created_at ?? ''),
             ];
         })->values();
 
         $evidence = $evidenceRaw->map(fn ($e) => [
-            'id'              => (string) $e->link_id,
-            'hypothesis_id'   => (string) $e->hypothesis_id,
-            'role'            => (string) $e->role,
-            'weight'          => isset($e->weight) ? (float) $e->weight : null,
+            'id' => (string) $e->link_id,
+            'hypothesis_id' => (string) $e->hypothesis_id,
+            'role' => (string) $e->role,
+            'weight' => isset($e->weight) ? (float) $e->weight : null,
             'source_chunk_id' => (string) ($e->source_chunk_id ?? ''),
             'passage_excerpt' => $e->passage_text ? mb_substr((string) $e->passage_text, 0, 220) : null,
-            'document_id'     => isset($e->document_id) ? (string) $e->document_id : null,
-            'payload'         => is_string($e->payload) ? json_decode($e->payload, true) : $e->payload,
+            'document_id' => isset($e->document_id) ? (string) $e->document_id : null,
+            'payload' => is_string($e->payload) ? json_decode($e->payload, true) : $e->payload,
         ])->values();
 
         $stats = [
-            'total_hypotheses'   => $hypotheses->count(),
-            'total_evidence'     => $totalLinks,
-            'supporting'         => $evidence->where('role', 'supporting')->count(),
-            'contradicting'      => $evidence->where('role', 'contradicting')->count(),
-            'missing'            => $evidence->where('role', 'missing')->count(),
-            'recommended_tests'  => $evidence->where('role', 'recommended_test')->count(),
-            'passages_indexed'   => $passagesIndexed,
-            'reports_indexed'    => $reportsCount,
+            'total_hypotheses' => $hypotheses->count(),
+            'total_evidence' => $totalLinks,
+            'supporting' => $evidence->where('role', 'supporting')->count(),
+            'contradicting' => $evidence->where('role', 'contradicting')->count(),
+            'missing' => $evidence->where('role', 'missing')->count(),
+            'recommended_tests' => $evidence->where('role', 'recommended_test')->count(),
+            'passages_indexed' => $passagesIndexed,
+            'reports_indexed' => $reportsCount,
             'collars_in_project' => $collarsCount,
         ];
 
         return Inertia::render('Foundry/Reasoning', [
-            'project'    => [
-                'project_id'   => $project->project_id,
+            'project' => [
+                'project_id' => $project->project_id,
                 'project_name' => $project->project_name,
-                'slug'         => $project->slug,
+                'slug' => $project->slug,
             ],
             'hypotheses' => $hypotheses,
-            'evidence'   => $evidence,
-            'stats'      => $stats,
-            'empty'      => $hypotheses->isEmpty() && $evidence->isEmpty(),
+            'evidence' => $evidence,
+            'stats' => $stats,
+            'empty' => $hypotheses->isEmpty() && $evidence->isEmpty(),
             'scope_note' => 'Reasoning is workspace-scoped — every project in this workspace surfaces the same hypothesis set until per-project linkage lands in the schema.',
         ]);
     }

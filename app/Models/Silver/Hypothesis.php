@@ -71,7 +71,7 @@ class Hypothesis extends Model
         return $this->hasMany(
             HypothesisEvidenceLink::class,
             'hypothesis_id',
-            'hypothesis_id'
+            'hypothesis_id',
         );
     }
 }

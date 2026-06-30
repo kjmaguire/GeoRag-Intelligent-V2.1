@@ -20,17 +20,17 @@ return new class extends Migration
 
         // Unique constraint per project: same project + same canonical form = collision.
         // Partial unique index allows historical NULLs to coexist.
-        DB::statement("
+        DB::statement('
             CREATE UNIQUE INDEX IF NOT EXISTS uq_collars_project_hole_canonical
                 ON silver.collars (project_id, hole_id_canonical)
                 WHERE hole_id_canonical IS NOT NULL
-        ");
+        ');
 
         // Btree index for canonical lookups.
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_collars_hole_canonical
                 ON silver.collars (hole_id_canonical)
-        ");
+        ');
     }
 
     public function down(): void

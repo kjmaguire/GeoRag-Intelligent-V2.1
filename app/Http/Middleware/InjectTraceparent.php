@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Services\FastApiHttpClient;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -30,7 +31,7 @@ use Symfony\Component\HttpFoundation\Response;
  * trace-id for the duration of the request happens via the request itself.
  *
  * Forwarding policy: when Laravel makes an internal HTTP call to FastAPI
- * (see {@see \App\Services\FastApiHttpClient} or wherever the outbound
+ * (see {@see FastApiHttpClient} or wherever the outbound
  * client lives), the caller pulls the trace-id from
  * `$request->attributes->get('traceparent')` and includes it as a header on
  * the outbound request. This is application code, not middleware — the
@@ -39,7 +40,8 @@ use Symfony\Component\HttpFoundation\Response;
 final class InjectTraceparent
 {
     public const ATTRIBUTE_KEY = 'traceparent';
-    public const HEADER_NAME   = 'traceparent';
+
+    public const HEADER_NAME = 'traceparent';
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -67,6 +69,7 @@ final class InjectTraceparent
         if ($traceparent === null) {
             return false;
         }
+
         // 00-<32 hex>-<16 hex>-<2 hex>
         return (bool) preg_match(
             '/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/',
@@ -97,6 +100,7 @@ final class InjectTraceparent
         if (! self::isValid($traceparent)) {
             return null;
         }
+
         return substr((string) $traceparent, 3, 32);
     }
 }

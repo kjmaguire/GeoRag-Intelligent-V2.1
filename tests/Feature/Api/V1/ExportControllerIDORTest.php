@@ -6,6 +6,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -34,7 +35,9 @@ class ExportControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private Project $projectB;
 
     protected function setUp(): void
@@ -89,7 +92,7 @@ class ExportControllerIDORTest extends TestCase
         $exportId = $this->seedExport($this->projectB->project_id);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->projectB->project_id}/exports/{$exportId}"
+            "/api/v1/projects/{$this->projectB->project_id}/exports/{$exportId}",
         );
 
         // Gate fires before the model lookup — returns 403.
@@ -155,14 +158,14 @@ class ExportControllerIDORTest extends TestCase
      */
     private function seedExport(string $projectId, string $status = 'pending'): string
     {
-        $exportId = (string) \Illuminate\Support\Str::uuid();
+        $exportId = (string) Str::uuid();
 
         DB::statement(
             "INSERT INTO silver.exports
                  (export_id, project_id, export_type, status, filters, created_at, updated_at)
              VALUES
                  (?, ?, 'csv', ?, '[]', NOW(), NOW())",
-            [$exportId, $projectId, $status]
+            [$exportId, $projectId, $status],
         );
 
         return $exportId;

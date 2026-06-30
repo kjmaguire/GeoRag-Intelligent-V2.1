@@ -19,11 +19,11 @@ class SurveyFactory extends Factory
     public function definition(): array
     {
         return [
-            'survey_id'     => (string) Str::uuid(),
-            'collar_id'     => Collar::factory(),
-            'depth'         => $this->faker->randomFloat(2, 0, 1500),
-            'azimuth'       => $this->faker->randomFloat(2, 0, 360),
-            'dip'           => $this->faker->randomFloat(2, -90, 0),
+            'survey_id' => (string) Str::uuid(),
+            'collar_id' => Collar::factory(),
+            'depth' => $this->faker->randomFloat(2, 0, 1500),
+            'azimuth' => $this->faker->randomFloat(2, 0, 360),
+            'dip' => $this->faker->randomFloat(2, -90, 0),
             'survey_method' => $this->faker->randomElement(['Gyro', 'Magnetic', 'Multishot']),
         ];
     }

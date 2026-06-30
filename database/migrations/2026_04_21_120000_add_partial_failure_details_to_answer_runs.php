@@ -24,25 +24,25 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE silver.answer_runs
-             ADD COLUMN IF NOT EXISTS partial_failure_details JSONB NULL'
+             ADD COLUMN IF NOT EXISTS partial_failure_details JSONB NULL',
         );
 
         // Partial index for observability queries: "show me runs that had failures".
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_runs_partial_failures
              ON silver.answer_runs (workspace_id)
-             WHERE partial_failure_details IS NOT NULL'
+             WHERE partial_failure_details IS NOT NULL',
         );
     }
 
     public function down(): void
     {
         DB::statement(
-            'DROP INDEX IF EXISTS silver.idx_answer_runs_partial_failures'
+            'DROP INDEX IF EXISTS silver.idx_answer_runs_partial_failures',
         );
         DB::statement(
             'ALTER TABLE silver.answer_runs
-             DROP COLUMN IF EXISTS partial_failure_details'
+             DROP COLUMN IF EXISTS partial_failure_details',
         );
     }
 };

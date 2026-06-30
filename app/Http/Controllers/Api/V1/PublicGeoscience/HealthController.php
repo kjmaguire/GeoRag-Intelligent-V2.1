@@ -36,10 +36,12 @@ use Throwable;
 class HealthController extends Controller
 {
     private const CACHE_KEY = 'public-geoscience:health:v1';
+
     private const CACHE_TTL = 60;
 
     // Staleness thresholds (seconds). Configurable if needed via config/services.php.
     private const STALENESS_WARN_SECONDS = 86_400 * 3;   // 3 days
+
     private const STALENESS_CRIT_SECONDS = 86_400 * 10;  // 10 days
 
     public function __invoke(): JsonResponse
@@ -178,7 +180,7 @@ class HealthController extends Controller
                     ->all();
                 $checks['qdrant'] = [
                     'status' => count($collections) >= 4 ? 'green' : 'warn',
-                    'message' => count($collections) . ' PG collections found',
+                    'message' => count($collections).' PG collections found',
                     'collections' => $collections,
                 ];
             } else {
@@ -205,8 +207,8 @@ class HealthController extends Controller
             $pong = Redis::connection()->ping();
             $latencyMs = (int) round((microtime(true) - $start) * 1000);
             $checks['redis'] = [
-                'status'     => $pong ? 'green' : 'warn',
-                'message'    => $pong
+                'status' => $pong ? 'green' : 'warn',
+                'message' => $pong
                     ? "PONG in {$latencyMs}ms"
                     : 'PING returned falsy — Redis responded but not as expected',
                 'latency_ms' => $latencyMs,
@@ -229,9 +231,16 @@ class HealthController extends Controller
 
     private function humanAge(int $seconds): string
     {
-        if ($seconds < 60) return 'just now';
-        if ($seconds < 3600) return round($seconds / 60) . ' min ago';
-        if ($seconds < 86_400) return round($seconds / 3600) . ' hours ago';
-        return round($seconds / 86_400) . ' days ago';
+        if ($seconds < 60) {
+            return 'just now';
+        }
+        if ($seconds < 3600) {
+            return round($seconds / 60).' min ago';
+        }
+        if ($seconds < 86_400) {
+            return round($seconds / 3600).' hours ago';
+        }
+
+        return round($seconds / 86_400).' days ago';
     }
 }

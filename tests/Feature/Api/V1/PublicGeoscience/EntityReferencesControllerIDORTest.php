@@ -61,7 +61,7 @@ class EntityReferencesControllerIDORTest extends TestCase
         $validUuid = '00000000-0000-0000-0000-000000000001';
 
         $response = $this->getJson(
-            "/api/v1/public-geoscience/entities/mine/{$validUuid}/references"
+            "/api/v1/public-geoscience/entities/mine/{$validUuid}/references",
         );
 
         $response->assertUnauthorized();
@@ -72,7 +72,7 @@ class EntityReferencesControllerIDORTest extends TestCase
         $validUuid = '00000000-0000-0000-0000-000000000001';
 
         $response = $this->getJson(
-            "/api/v1/public-geoscience/documents/{$validUuid}/references"
+            "/api/v1/public-geoscience/documents/{$validUuid}/references",
         );
 
         $response->assertUnauthorized();
@@ -89,7 +89,7 @@ class EntityReferencesControllerIDORTest extends TestCase
         $validUuid = '00000000-0000-0000-0000-000000000001';
 
         $response = $this->getJson(
-            "/api/v1/public-geoscience/entities/nonexistent_type/{$validUuid}/references"
+            "/api/v1/public-geoscience/entities/nonexistent_type/{$validUuid}/references",
         );
 
         // Route constraint `where('canonical_type', 'mine|...')` blocks unknown values
@@ -106,7 +106,7 @@ class EntityReferencesControllerIDORTest extends TestCase
         $this->actingAs($this->userA, 'sanctum');
 
         $response = $this->getJson(
-            '/api/v1/public-geoscience/entities/mine/NOT-A-UUID/references'
+            '/api/v1/public-geoscience/entities/mine/NOT-A-UUID/references',
         );
 
         $response->assertStatus(400)
@@ -118,7 +118,7 @@ class EntityReferencesControllerIDORTest extends TestCase
         $this->actingAs($this->userA, 'sanctum');
 
         $response = $this->getJson(
-            '/api/v1/public-geoscience/documents/NOT-A-UUID/references'
+            '/api/v1/public-geoscience/documents/NOT-A-UUID/references',
         );
 
         $response->assertStatus(400)
@@ -139,7 +139,7 @@ class EntityReferencesControllerIDORTest extends TestCase
         $absentUuid = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
 
         $response = $this->getJson(
-            "/api/v1/public-geoscience/entities/mine/{$absentUuid}/references"
+            "/api/v1/public-geoscience/entities/mine/{$absentUuid}/references",
         );
 
         $response->assertOk()

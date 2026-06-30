@@ -1,7 +1,6 @@
 <?php
 
 return [
-
     /*
     |--------------------------------------------------------------------------
     | Cross-Origin Resource Sharing (CORS) Configuration
@@ -19,7 +18,7 @@ return [
     'allowed_methods' => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 
     'allowed_origins' => explode(',', env('CORS_ALLOWED_ORIGINS',
-        'http://localhost:3000,http://localhost:5173,http://localhost:8888,http://127.0.0.1:8000,http://127.0.0.1:8888,http://georag.local,http://georag.local:8000'
+        'http://localhost:3000,http://localhost:5173,http://localhost:8888,http://127.0.0.1:8000,http://127.0.0.1:8888,http://georag.local,http://georag.local:8000',
     )),
 
     'allowed_origins_patterns' => [],

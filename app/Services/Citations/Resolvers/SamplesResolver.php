@@ -26,11 +26,11 @@ final class SamplesResolver extends AbstractCitationResolver
         $count = $countMatch[1] ?? '?';
 
         return response()->json([
-            'source_type'     => 'samples',
+            'source_type' => 'samples',
             'source_chunk_id' => $sourceId,
-            'title'           => "Assay Data: {$element}",
-            'text'            => "{$count} assay samples for element {$element}.",
-            'metadata'        => ['element' => $element, 'count' => $count],
+            'title' => "Assay Data: {$element}",
+            'text' => "{$count} assay samples for element {$element}.",
+            'metadata' => ['element' => $element, 'count' => $count],
         ]);
     }
 }

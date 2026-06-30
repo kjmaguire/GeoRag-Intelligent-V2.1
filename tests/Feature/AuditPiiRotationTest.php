@@ -4,7 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Project;
 use App\Models\QueryAuditLog;
-use App\Models\User;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -39,15 +39,16 @@ class AuditPiiRotationTest extends TestCase
     private function seedRow(string $queryText, string $responseText): QueryAuditLog
     {
         $row = QueryAuditLog::create([
-            'user_id'    => null,
+            'user_id' => null,
             'project_id' => (string) Str::uuid(),
-            'query_id'   => (string) Str::uuid(),
+            'query_id' => (string) Str::uuid(),
             'query_text' => $queryText,
             'ip_address' => '127.0.0.1',
-            'llm_model'  => 'test-model',
+            'llm_model' => 'test-model',
         ]);
         $row->response_text = $responseText;
         $row->save();
+
         return $row->fresh();
     }
 
@@ -61,7 +62,7 @@ class AuditPiiRotationTest extends TestCase
         try {
             $callback();
             $this->fail('Expected a decryption exception; none thrown.');
-        } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+        } catch (DecryptException) {
             // expected
         } catch (\Throwable $t) {
             // Any other crypto-adjacent error is also acceptable —
@@ -72,12 +73,13 @@ class AuditPiiRotationTest extends TestCase
 
     private function dumpPath(): string
     {
-        $path = sys_get_temp_dir() . '/audit-pii-test-' . Str::uuid() . '.jsonl';
+        $path = sys_get_temp_dir().'/audit-pii-test-'.Str::uuid().'.jsonl';
         register_shutdown_function(function () use ($path) {
             if (file_exists($path)) {
                 @unlink($path);
             }
         });
+
         return $path;
     }
 
@@ -115,8 +117,8 @@ class AuditPiiRotationTest extends TestCase
         DB::table('query_audit_log')
             ->where('audit_id', $row->audit_id)
             ->update([
-                'query_text'      => 'CORRUPTED_CIPHERTEXT_SIMULATION',
-                'response_text'   => 'CORRUPTED_CIPHERTEXT_SIMULATION',
+                'query_text' => 'CORRUPTED_CIPHERTEXT_SIMULATION',
+                'response_text' => 'CORRUPTED_CIPHERTEXT_SIMULATION',
                 'query_text_hash' => null,
             ]);
 
@@ -174,7 +176,7 @@ class AuditPiiRotationTest extends TestCase
         $lines = array_values(array_filter(explode("\n", file_get_contents($dumpPath))));
         $this->assertGreaterThanOrEqual(3, count($lines), 'dump should have 2 rows + trailer');
         // Keep only the first data row — drop the second + trailer.
-        file_put_contents($dumpPath, $lines[0] . PHP_EOL);
+        file_put_contents($dumpPath, $lines[0].PHP_EOL);
 
         // Restore must FAIL because the trailer is missing and the
         // "proceed without trailer" warning is a degraded-mode signal,
@@ -197,13 +199,13 @@ class AuditPiiRotationTest extends TestCase
         // Inject a fake row BETWEEN the two data rows. The trailer's
         // ids_sha256 won't match because the order + id set changed.
         $fake = json_encode([
-            'audit_id'      => (string) Str::uuid(),
-            'query_text'    => 'injected',
+            'audit_id' => (string) Str::uuid(),
+            'query_text' => 'injected',
             'response_text' => 'injected',
         ]);
         // Preserve: [row1, injected, row2, trailer]
         $reordered = [$lines[0], $fake, $lines[1], $lines[2]];
-        file_put_contents($dumpPath, implode(PHP_EOL, $reordered) . PHP_EOL);
+        file_put_contents($dumpPath, implode(PHP_EOL, $reordered).PHP_EOL);
 
         $this->artisan('audit:restore-pii', ['--input' => $dumpPath])
             ->expectsOutputToContain('integrity check FAILED')
@@ -216,7 +218,7 @@ class AuditPiiRotationTest extends TestCase
         // This reproduces the realistic case of retention-purged rows
         // between dump and restore — integrity trailer stays valid because
         // the dump itself wasn't tampered with.
-        $kept    = $this->seedRow('kept row', 'r1');
+        $kept = $this->seedRow('kept row', 'r1');
         $deleted = $this->seedRow('to-be-deleted row', 'r2');
         $dumpPath = $this->dumpPath();
 

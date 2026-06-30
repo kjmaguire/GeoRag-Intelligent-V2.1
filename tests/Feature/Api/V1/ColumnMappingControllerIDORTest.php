@@ -39,7 +39,9 @@ class ColumnMappingControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $adminUser;
+
     private User $regularUser;
+
     private VendorProfile $profile;
 
     protected function setUp(): void
@@ -47,7 +49,7 @@ class ColumnMappingControllerIDORTest extends TestCase
         parent::setUp();
 
         // Admin user (is_admin = true).
-        $this->adminUser   = User::factory()->create(['is_admin' => true]);
+        $this->adminUser = User::factory()->create(['is_admin' => true]);
         // Regular non-admin user.
         $this->regularUser = User::factory()->create(['is_admin' => false]);
 
@@ -65,10 +67,10 @@ class ColumnMappingControllerIDORTest extends TestCase
         $response = $this->postJson(
             "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings",
             [
-                'parser_type'     => 'csv_collar',
-                'source_column'   => 'DrillHoleID',
+                'parser_type' => 'csv_collar',
+                'source_column' => 'DrillHoleID',
                 'canonical_field' => 'hole_id',
-            ]
+            ],
         );
 
         $response->assertForbidden();
@@ -92,7 +94,7 @@ class ColumnMappingControllerIDORTest extends TestCase
 
         $response = $this->patchJson(
             "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings/{$mapping->id}",
-            ['confidence_weight' => 0.5]
+            ['confidence_weight' => 0.5],
         );
 
         $response->assertForbidden();
@@ -113,7 +115,7 @@ class ColumnMappingControllerIDORTest extends TestCase
         $this->actingAs($this->regularUser, 'sanctum');
 
         $response = $this->deleteJson(
-            "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings/{$mapping->id}"
+            "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings/{$mapping->id}",
         );
 
         $response->assertForbidden();
@@ -139,7 +141,7 @@ class ColumnMappingControllerIDORTest extends TestCase
         // Pass profile A in the URL but mapping belonging to profile B.
         $response = $this->patchJson(
             "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings/{$mappingOnOtherProfile->id}",
-            ['confidence_weight' => 0.9]
+            ['confidence_weight' => 0.9],
         );
 
         $response->assertNotFound()
@@ -155,7 +157,7 @@ class ColumnMappingControllerIDORTest extends TestCase
         $this->actingAs($this->regularUser, 'sanctum');
 
         $response = $this->getJson(
-            "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings"
+            "/api/v1/vendor-profiles/{$this->profile->id}/column-mappings",
         );
 
         $response->assertOk();

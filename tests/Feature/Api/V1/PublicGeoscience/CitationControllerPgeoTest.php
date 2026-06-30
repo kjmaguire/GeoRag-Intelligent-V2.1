@@ -4,6 +4,7 @@ namespace Tests\Feature\Api\V1\PublicGeoscience;
 
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Database\Query\Expression;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -62,10 +63,10 @@ class CitationControllerPgeoTest extends TestCase
             canonicalType: 'mine',
         );
 
-        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('source_type', 'public_geoscience')
             ->assertJsonPath('corpus', 'public_geoscience')
@@ -73,9 +74,9 @@ class CitationControllerPgeoTest extends TestCase
             ->assertJsonStructure([
                 'source_type', 'corpus', 'canonical_type', 'source_chunk_id',
                 'jurisdiction' => ['code', 'name', 'authority'],
-                'source'       => ['source_id', 'name', 'service_url'],
-                'license'      => ['summary', 'url'],
-                'refresh'      => ['last_refreshed_at', 'staleness_seconds'],
+                'source' => ['source_id', 'name', 'service_url'],
+                'license' => ['summary', 'url'],
+                'refresh' => ['last_refreshed_at', 'staleness_seconds'],
                 'references_summary' => ['count', 'documents'],
                 'title', 'text', 'entity', 'metadata',
             ]);
@@ -86,22 +87,22 @@ class CitationControllerPgeoTest extends TestCase
     public function test_pg_mineral_occurrence_resolver_returns_pgeo_envelope(): void
     {
         $entityRow = [
-            'id'                     => self::PG_ID,
-            'jurisdiction_code'      => 'CA-SK',
-            'source_id'              => 'CA-SK-SMDI',
-            'source_feature_id'      => '7788',
-            'external_id'            => 'SK-1234',
-            'name'                   => 'North Lake Showing',
-            'historic_names'         => '{}',
-            'status'                 => 'showing',
-            'primary_commodities'    => '{uranium}',
+            'id' => self::PG_ID,
+            'jurisdiction_code' => 'CA-SK',
+            'source_id' => 'CA-SK-SMDI',
+            'source_feature_id' => '7788',
+            'external_id' => 'SK-1234',
+            'name' => 'North Lake Showing',
+            'historic_names' => '{}',
+            'status' => 'showing',
+            'primary_commodities' => '{uranium}',
             'associated_commodities' => '{}',
-            'commodity_grouping'     => 'uranium',
-            'discovery_type'         => 'outcrop',
-            'production_flag'        => false,
-            'reserves_resources'     => null,
-            'source_url'             => 'https://example.com/smdi/7788',
-            'last_seen_at'           => '2026-01-01 00:00:00',
+            'commodity_grouping' => 'uranium',
+            'discovery_type' => 'outcrop',
+            'production_flag' => false,
+            'reserves_resources' => null,
+            'source_url' => 'https://example.com/smdi/7788',
+            'last_seen_at' => '2026-01-01 00:00:00',
         ];
 
         $this->mockPgeoResolverCall(
@@ -110,10 +111,10 @@ class CitationControllerPgeoTest extends TestCase
             canonicalType: 'mineral_occurrence',
         );
 
-        $chunkId = 'pg_mineral_occurrence:CA-SK-SMDI:feature=7788:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_mineral_occurrence:CA-SK-SMDI:feature=7788:pg_id='.self::PG_ID;
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('source_type', 'public_geoscience')
             ->assertJsonPath('canonical_type', 'mineral_occurrence')
@@ -129,25 +130,25 @@ class CitationControllerPgeoTest extends TestCase
     public function test_pg_drillhole_collar_resolver_returns_pgeo_envelope(): void
     {
         $entityRow = [
-            'id'                    => self::PG_ID,
-            'jurisdiction_code'     => 'CA-SK',
-            'source_id'             => 'CA-SK-DRILLHOLE',
-            'source_feature_id'     => '9001',
-            'drillhole_id'          => 'GOS-9001',
-            'drillhole_name'        => 'PLS-20-001',
-            'company'               => 'TestDrill Inc.',
-            'project_name'          => 'Patterson Lake South',
-            'date_drilled'          => '2020-06-15',
-            'drill_type'            => 'core',
+            'id' => self::PG_ID,
+            'jurisdiction_code' => 'CA-SK',
+            'source_id' => 'CA-SK-DRILLHOLE',
+            'source_feature_id' => '9001',
+            'drillhole_id' => 'GOS-9001',
+            'drillhole_name' => 'PLS-20-001',
+            'company' => 'TestDrill Inc.',
+            'project_name' => 'Patterson Lake South',
+            'date_drilled' => '2020-06-15',
+            'drill_type' => 'core',
             'commodity_of_interest' => '{uranium}',
-            'total_length_m'        => '350.5',
-            'collar_elevation_m'    => '420.0',
-            'stratigraphic_depths'  => null,
-            'core_availability'     => 'available',
-            'core_storage'          => 'SMRF',
-            'disposition'           => null,
-            'source_url'            => null,
-            'last_seen_at'          => null,
+            'total_length_m' => '350.5',
+            'collar_elevation_m' => '420.0',
+            'stratigraphic_depths' => null,
+            'core_availability' => 'available',
+            'core_storage' => 'SMRF',
+            'disposition' => null,
+            'source_url' => null,
+            'last_seen_at' => null,
         ];
 
         $this->mockPgeoResolverCall(
@@ -156,10 +157,10 @@ class CitationControllerPgeoTest extends TestCase
             canonicalType: 'drillhole_collar',
         );
 
-        $chunkId = 'pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id='.self::PG_ID;
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('source_type', 'public_geoscience')
             ->assertJsonPath('canonical_type', 'drillhole_collar')
@@ -175,15 +176,15 @@ class CitationControllerPgeoTest extends TestCase
     public function test_pg_resource_potential_zone_resolver_returns_pgeo_envelope(): void
     {
         $entityRow = [
-            'id'                 => self::PG_ID,
-            'jurisdiction_code'  => 'CA-SK',
-            'source_id'          => 'CA-SK-RESOURCE-POTENTIAL-GOLD',
-            'source_feature_id'  => '42',
-            'commodity'          => 'gold',
+            'id' => self::PG_ID,
+            'jurisdiction_code' => 'CA-SK',
+            'source_id' => 'CA-SK-RESOURCE-POTENTIAL-GOLD',
+            'source_feature_id' => '42',
+            'commodity' => 'gold',
             'commodity_grouping' => 'precious_metals',
-            'potential_rank'     => 4,
-            'methodology_ref'    => 'GSC-OF-7x',
-            'last_seen_at'       => null,
+            'potential_rank' => 4,
+            'methodology_ref' => 'GSC-OF-7x',
+            'last_seen_at' => null,
         ];
 
         $this->mockPgeoResolverCall(
@@ -192,10 +193,10 @@ class CitationControllerPgeoTest extends TestCase
             canonicalType: 'resource_potential_zone',
         );
 
-        $chunkId = 'pg_resource_potential_zone:CA-SK-RESOURCE-POTENTIAL-GOLD:feature=42:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_resource_potential_zone:CA-SK-RESOURCE-POTENTIAL-GOLD:feature=42:pg_id='.self::PG_ID;
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('source_type', 'public_geoscience')
             ->assertJsonPath('canonical_type', 'resource_potential_zone')
@@ -222,10 +223,10 @@ class CitationControllerPgeoTest extends TestCase
             lastRefreshedAt: $thirtyMinsAgo,
         );
 
-        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
 
         $response = $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk();
 
         $staleness = $response->json('refresh.staleness_seconds');
@@ -248,10 +249,10 @@ class CitationControllerPgeoTest extends TestCase
             canonicalType: 'mine',
         );
 
-        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('references_summary.count', 0)
             ->assertJsonPath('references_summary.documents', []);
@@ -268,10 +269,10 @@ class CitationControllerPgeoTest extends TestCase
             linkCount: 3,
         );
 
-        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('references_summary.count', 3);
     }
@@ -285,11 +286,11 @@ class CitationControllerPgeoTest extends TestCase
         $reportBuilder = \Mockery::mock('query_builder_report');
         $reportBuilder->shouldReceive('where')->withAnyArgs()->andReturn($reportBuilder);
         $reportBuilder->shouldReceive('first')->once()->andReturn((object) [
-            'report_id'     => $reportId,
-            'title'         => 'NI 43-101 Test Report',
-            'company'       => 'TestCo',
-            'filing_date'   => '2025-01-01',
-            'commodity'     => 'uranium',
+            'report_id' => $reportId,
+            'title' => 'NI 43-101 Test Report',
+            'company' => 'TestCo',
+            'filing_date' => '2025-01-01',
+            'commodity' => 'uranium',
             'sections_text' => json_encode(['1' => 'Section one text.']),
         ]);
 
@@ -304,7 +305,7 @@ class CitationControllerPgeoTest extends TestCase
         // to build the COUNT(*) expression passed to select().
         DB::shouldReceive('raw')
             ->withAnyArgs()
-            ->andReturnUsing(fn ($expr) => new \Illuminate\Database\Query\Expression($expr));
+            ->andReturnUsing(fn ($expr) => new Expression($expr));
 
         DB::shouldReceive('table')->with('silver.reports')->once()->andReturn($reportBuilder);
         DB::shouldReceive('table')->with('public_geoscience.document_entity_links')->andReturn($linksBuilder);
@@ -312,7 +313,7 @@ class CitationControllerPgeoTest extends TestCase
         $chunkId = "georag_reports:{$reportId}:section=1:chunk=abc";
 
         $response = $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk();
 
         $refs = $response->json('references_to_entities');
@@ -330,10 +331,10 @@ class CitationControllerPgeoTest extends TestCase
 
     public function test_parse_accepts_digits_and_underscores_in_canonical_type(): void
     {
-        $chunkId = 'pg_resource_potential_v2:CA-SK-RES:feature=99:pg_id=' . self::PG_ID;
+        $chunkId = 'pg_resource_potential_v2:CA-SK-RES:feature=99:pg_id='.self::PG_ID;
 
         $response = $this->actingAs($this->user)
-            ->getJson('/api/v1/citations/resolve?source_chunk_id=' . urlencode($chunkId))
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('source_type', 'unknown');
 
@@ -349,17 +350,17 @@ class CitationControllerPgeoTest extends TestCase
     private function fakeMineRow(): array
     {
         return [
-            'id'                 => self::PG_ID,
-            'jurisdiction_code'  => 'CA-SK',
-            'source_id'          => 'CA-SK-MINE-LOC',
-            'source_feature_id'  => '12345',
-            'name'               => 'Athabasca Test Mine',
-            'status'             => 'producing',
-            'commodities'        => '{uranium}',
+            'id' => self::PG_ID,
+            'jurisdiction_code' => 'CA-SK',
+            'source_id' => 'CA-SK-MINE-LOC',
+            'source_feature_id' => '12345',
+            'name' => 'Athabasca Test Mine',
+            'status' => 'producing',
+            'commodities' => '{uranium}',
             'commodity_grouping' => 'uranium',
-            'operator'           => 'TestCo Inc.',
-            'source_url'         => null,
-            'last_seen_at'       => null,
+            'operator' => 'TestCo Inc.',
+            'source_url' => null,
+            'last_seen_at' => null,
         ];
     }
 
@@ -383,12 +384,12 @@ class CitationControllerPgeoTest extends TestCase
         int $linkCount = 0,
     ): void {
         $sourceObj = (object) [
-            'source_id'         => 'CA-SK-' . strtoupper(str_replace('_', '-', $canonicalType)),
-            'source_name'       => 'Test Source',
-            'canonical_type'    => $canonicalType,
-            'service_url'       => 'https://example.com/service',
-            'license_summary'   => 'Open Government Licence',
-            'license_url'       => 'https://example.com/license',
+            'source_id' => 'CA-SK-'.strtoupper(str_replace('_', '-', $canonicalType)),
+            'source_name' => 'Test Source',
+            'canonical_type' => $canonicalType,
+            'service_url' => 'https://example.com/service',
+            'license_summary' => 'Open Government Licence',
+            'license_url' => 'https://example.com/license',
             'last_refreshed_at' => $lastRefreshedAt,
             'jurisdiction_code' => 'CA-SK',
             'jurisdiction_name' => 'Saskatchewan',

@@ -12,7 +12,8 @@ use Illuminate\Support\Facades\DB;
  *
  * Joined to targeting.target_recommendations via recommendation_id.
  */
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         // Lives in silver.* (not targeting.*) because `georag_app` can't

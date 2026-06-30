@@ -58,7 +58,7 @@ class ColumnMappingController extends Controller
         } catch (UniqueConstraintViolationException) {
             return response()->json([
                 'message' => 'A mapping with this (profile, parser_type, canonical_field) or '
-                    . '(profile, parser_type, source_column) combination already exists.',
+                    .'(profile, parser_type, source_column) combination already exists.',
             ], 409);
         }
     }
@@ -91,7 +91,7 @@ class ColumnMappingController extends Controller
         } catch (UniqueConstraintViolationException) {
             return response()->json([
                 'message' => 'A mapping with this (profile, parser_type, canonical_field) or '
-                    . '(profile, parser_type, source_column) combination already exists.',
+                    .'(profile, parser_type, source_column) combination already exists.',
             ], 409);
         }
     }

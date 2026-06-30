@@ -4,22 +4,24 @@ declare(strict_types=1);
 
 require '/app/vendor/autoload.php';
 $app = require '/app/bootstrap/app.php';
-$app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+$app->make(Kernel::class)->bootstrap();
 
 use App\Http\Controllers\Admin\IntegrationsController;
 use App\Models\User;
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 $mode = $argv[1] ?? 'admin';
 
 if ($mode === 'admin') {
-    $user = new User();
+    $user = new User;
     $user->id = 999992;
     $user->email = 'phase9-step2-admin@local.test';
     $user->is_admin = true;
 } elseif ($mode === 'nonadmin') {
-    $user = new User();
+    $user = new User;
     $user->id = 999993;
     $user->email = 'phase9-step2-other@local.test';
     $user->is_admin = false;
@@ -36,20 +38,20 @@ $req = Request::create(
 );
 $req->headers->set('X-Requested-With', 'XMLHttpRequest');
 
-$controller = new IntegrationsController();
+$controller = new IntegrationsController;
 
 try {
     $response = $controller->rotateFlowKey($req);
-    echo "STATUS=" . $response->getStatusCode() . PHP_EOL;
+    echo 'STATUS='.$response->getStatusCode().PHP_EOL;
     // flash bag is on the session; pull from there
     $flash = session('flash');
-    echo "FLASH=" . ($flash ?? '') . PHP_EOL;
+    echo 'FLASH='.($flash ?? '').PHP_EOL;
     exit(0);
-} catch (\Illuminate\Auth\Access\AuthorizationException $e) {
-    echo "AUTH_DENIED" . PHP_EOL;
+} catch (AuthorizationException $e) {
+    echo 'AUTH_DENIED'.PHP_EOL;
     exit(0);
-} catch (\Throwable $e) {
-    echo "ERR: " . get_class($e) . ": " . $e->getMessage() . PHP_EOL;
-    echo $e->getFile() . ":" . $e->getLine() . PHP_EOL;
+} catch (Throwable $e) {
+    echo 'ERR: '.get_class($e).': '.$e->getMessage().PHP_EOL;
+    echo $e->getFile().':'.$e->getLine().PHP_EOL;
     exit(1);
 }

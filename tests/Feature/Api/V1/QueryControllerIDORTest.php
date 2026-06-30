@@ -30,7 +30,9 @@ class QueryControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private Project $projectB;
 
     protected function setUp(): void
@@ -59,7 +61,7 @@ class QueryControllerIDORTest extends TestCase
         $this->actingAs($this->userA, 'sanctum');
 
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => 'How many drill holes are in this project?',
+            'query' => 'How many drill holes are in this project?',
             'project_id' => $this->projectB->project_id,
         ]);
 
@@ -79,14 +81,14 @@ class QueryControllerIDORTest extends TestCase
         $this->actingAs($this->userB, 'sanctum');
 
         $reserveResponse = $this->postJson('/api/v1/queries', [
-            'query'      => 'List all drill holes.',
+            'query' => 'List all drill holes.',
             'project_id' => $this->projectB->project_id,
         ]);
 
         // User B must have access so we can get a real query_id.
         if ($reserveResponse->status() !== 202) {
             $this->markTestSkipped(
-                'Unable to reserve a query as User B (may need full stack). Skipping.'
+                'Unable to reserve a query as User B (may need full stack). Skipping.',
             );
         }
 
@@ -110,7 +112,7 @@ class QueryControllerIDORTest extends TestCase
     {
         // Reset acting-as so we are fully unauthenticated.
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => 'How many holes?',
+            'query' => 'How many holes?',
             'project_id' => $this->projectB->project_id,
         ]);
 
@@ -126,7 +128,7 @@ class QueryControllerIDORTest extends TestCase
         $this->actingAs($this->userA, 'sanctum');
 
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => 'How many drill holes are in this project?',
+            'query' => 'How many drill holes are in this project?',
             'project_id' => $this->projectB->project_id,
         ]);
 

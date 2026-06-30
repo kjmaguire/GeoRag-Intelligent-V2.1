@@ -75,11 +75,11 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_extractions_workspace
-             ON silver.ingest_extractions (workspace_id);'
+             ON silver.ingest_extractions (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_extractions_report_page
-             ON silver.ingest_extractions (report_id, page);'
+             ON silver.ingest_extractions (report_id, page);',
         );
     }
 

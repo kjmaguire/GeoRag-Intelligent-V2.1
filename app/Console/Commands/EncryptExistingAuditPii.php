@@ -40,8 +40,9 @@ class EncryptExistingAuditPii extends Command
         $dryRun = (bool) $this->option('dry-run');
         $chunk = max(1, (int) $this->option('chunk'));
 
-        if (!$dryRun && !$this->confirm('This will rewrite every query_audit_log row. Continue?', false)) {
+        if (! $dryRun && ! $this->confirm('This will rewrite every query_audit_log row. Continue?', false)) {
             $this->warn('Aborted.');
+
             return self::SUCCESS;
         }
 
@@ -81,11 +82,13 @@ class EncryptExistingAuditPii extends Command
 
                     if ($queryAlreadyEncrypted && $responseAlreadyEncrypted && $hashAlreadyPresent) {
                         $skipped++;
+
                         continue;
                     }
 
                     if ($dryRun) {
                         $rewrote++;
+
                         continue;
                     }
 
@@ -110,21 +113,22 @@ class EncryptExistingAuditPii extends Command
                     // entirely and matches the outputs the mutator would
                     // have produced.
                     $update = [];
-                    if (!$queryAlreadyEncrypted) {
+                    if (! $queryAlreadyEncrypted) {
                         // Match the model mutator: use encryptString (no
                         // serialize wrapper) so the `encrypted` cast's
                         // decryptString can round-trip cleanly.
                         $update['query_text'] = $queryPlain === null ? null : Crypt::encryptString($queryPlain);
                     }
-                    if (!$responseAlreadyEncrypted) {
+                    if (! $responseAlreadyEncrypted) {
                         $update['response_text'] = $responsePlain === null ? null : Crypt::encryptString($responsePlain);
                     }
-                    if (!$hashAlreadyPresent && $queryPlain !== null) {
+                    if (! $hashAlreadyPresent && $queryPlain !== null) {
                         $update['query_text_hash'] = QueryAuditLog::hashQueryText($queryPlain);
                     }
 
                     if ($update === []) {
                         $skipped++;
+
                         continue;
                     }
 
@@ -141,7 +145,7 @@ class EncryptExistingAuditPii extends Command
             $dryRun ? 'Would rewrite' : 'Rewrote',
             $rewrote,
             $total,
-            $skipped
+            $skipped,
         ));
 
         return self::SUCCESS;
@@ -161,12 +165,13 @@ class EncryptExistingAuditPii extends Command
             return false;
         }
 
-        if (!str_starts_with($value, 'eyJ')) {
+        if (! str_starts_with($value, 'eyJ')) {
             return false;
         }
 
         try {
             Crypt::decryptString($value);
+
             return true;
         } catch (DecryptException) {
             return false;
@@ -189,6 +194,7 @@ class EncryptExistingAuditPii extends Command
         } catch (DecryptException) {
             return false;
         }
+
         return is_string($plain) && preg_match('/^s:\d+:"/', $plain) === 1;
     }
 
@@ -206,6 +212,7 @@ class EncryptExistingAuditPii extends Command
                     return $unserialized;
                 }
             }
+
             return $decrypted;
         } catch (DecryptException) {
             // Shouldn't reach here because looksEncrypted() verified first,

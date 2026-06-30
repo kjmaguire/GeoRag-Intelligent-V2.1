@@ -54,19 +54,19 @@ return new class extends Migration
 
         // Add PostGIS geometry column for bounding polygon (EPSG:4326)
         DB::statement(
-            "SELECT AddGeometryColumn('silver', 'seismic_surveys', 'bbox', 4326, 'POLYGON', 2)"
+            "SELECT AddGeometryColumn('silver', 'seismic_surveys', 'bbox', 4326, 'POLYGON', 2)",
         );
 
         // Indexes: survey_type for fast 2D/3D filtering; project_id for project scoping
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_seismic_surveys_type
                 ON silver.seismic_surveys (survey_type)
-        ");
+        ');
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_seismic_surveys_project
                 ON silver.seismic_surveys (project_id)
-        ");
+        ');
     }
 
     /**

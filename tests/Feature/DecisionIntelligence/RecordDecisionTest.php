@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\DecisionIntelligence;
 
-use App\Services\DecisionIntelligence\RecordDecision;
 use App\Models\User;
+use App\Services\DecisionIntelligence\RecordDecision;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\Concerns\RequiresPostgres;
@@ -34,7 +34,7 @@ class RecordDecisionTest extends TestCase
         // CASCADE drops evidence_links / options / outcomes via FK.
         DB::connection('pgsql')->statement(
             'DELETE FROM silver.decision_records WHERE decision_id = ?::uuid',
-            [$decisionId]
+            [$decisionId],
         );
     }
 
@@ -57,7 +57,7 @@ class RecordDecisionTest extends TestCase
         $row = DB::connection('pgsql')->selectOne(
             'SELECT decision_type, human_decision, reason, audit_ledger_id::text AS audit_id, length(hash) AS h
                FROM silver.decision_records WHERE decision_id = ?::uuid',
-            [$decisionId]
+            [$decisionId],
         );
         $this->assertNotNull($row);
         $this->assertSame('workflow_enablement', $row->decision_type);
@@ -69,7 +69,7 @@ class RecordDecisionTest extends TestCase
         // Audit ledger row exists with the right action_type.
         $audit = DB::connection('pgsql')->selectOne(
             'SELECT action_type, actor_id FROM audit.audit_ledger WHERE id = ?::uuid',
-            [$row->audit_id]
+            [$row->audit_id],
         );
         $this->assertSame('decision.workflow_enablement', $audit->action_type);
         $this->assertSame($user->id, (int) $audit->actor_id);
@@ -96,18 +96,18 @@ class RecordDecisionTest extends TestCase
         );
 
         $links = DB::connection('pgsql')->select(
-            "SELECT source_chunk_id FROM silver.decision_evidence_links
-              WHERE decision_id = ?::uuid ORDER BY source_chunk_id",
-            [$decisionId]
+            'SELECT source_chunk_id FROM silver.decision_evidence_links
+              WHERE decision_id = ?::uuid ORDER BY source_chunk_id',
+            [$decisionId],
         );
         $this->assertCount(2, $links);
         $this->assertSame('chunk_a', $links[0]->source_chunk_id);
         $this->assertSame('chunk_b', $links[1]->source_chunk_id);
 
         $opts = DB::connection('pgsql')->select(
-            "SELECT label, was_chosen FROM silver.decision_options
-              WHERE decision_id = ?::uuid ORDER BY label",
-            [$decisionId]
+            'SELECT label, was_chosen FROM silver.decision_options
+              WHERE decision_id = ?::uuid ORDER BY label',
+            [$decisionId],
         );
         $this->assertCount(2, $opts);
         $this->assertSame('disable', $opts[0]->label);
@@ -134,9 +134,9 @@ class RecordDecisionTest extends TestCase
         );
 
         $outcome = DB::connection('pgsql')->selectOne(
-            "SELECT outcome_kind, outcome_payload::text AS payload
-               FROM silver.decision_outcomes WHERE decision_id = ?::uuid",
-            [$decisionId]
+            'SELECT outcome_kind, outcome_payload::text AS payload
+               FROM silver.decision_outcomes WHERE decision_id = ?::uuid',
+            [$decisionId],
         );
         $this->assertNotNull($outcome);
         $this->assertSame('enabled', $outcome->outcome_kind);

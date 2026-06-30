@@ -48,7 +48,7 @@ class ClusterIngestTest extends TestCase
             ->has('kpis.passages_pending_embed')
             ->has('recent_runs')
             ->has('top_clusters')
-            ->has('per_project')
+            ->has('per_project'),
         );
     }
 
@@ -62,7 +62,7 @@ class ClusterIngestTest extends TestCase
             ->where('kpis.total_ingest_runs', fn ($v) => is_int($v))
             ->where('kpis.total_files_indexed', fn ($v) => is_int($v))
             ->where('kpis.total_collars', fn ($v) => is_int($v))
-            ->where('kpis.passages_embedded', fn ($v) => is_int($v))
+            ->where('kpis.passages_embedded', fn ($v) => is_int($v)),
         );
     }
 }

@@ -22,7 +22,7 @@ return new class extends Migration
         // Add the new crs_epsg column (INTEGER, nullable — existing rows are unknown)
         DB::statement(
             'ALTER TABLE silver.projects
-                ADD COLUMN IF NOT EXISTS crs_epsg INTEGER NULL'
+                ADD COLUMN IF NOT EXISTS crs_epsg INTEGER NULL',
         );
 
         // Mark crs_datum as deprecated via PostgreSQL column comment.
@@ -32,7 +32,7 @@ return new class extends Migration
              'DEPRECATED 2026-04-20: use crs_epsg (INTEGER) instead.
               crs_datum stores a free-text string (e.g. ''EPSG:32613'') and predates
               the typed crs_epsg column added in Module 3 Phase B.
-              Migration to crs_epsg and eventual DROP of this column is Module 10 doc-sweep scope.'"
+              Migration to crs_epsg and eventual DROP of this column is Module 10 doc-sweep scope.'",
         );
     }
 

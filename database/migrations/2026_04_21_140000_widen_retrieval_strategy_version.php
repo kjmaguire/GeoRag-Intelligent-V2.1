@@ -25,7 +25,7 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE silver.answer_runs
-             ALTER COLUMN retrieval_strategy_version TYPE VARCHAR(64)'
+             ALTER COLUMN retrieval_strategy_version TYPE VARCHAR(64)',
         );
     }
 
@@ -35,7 +35,7 @@ return new class extends Migration
         // Since current live values are ≤25 chars, truncation is a no-op today.
         DB::statement(
             'ALTER TABLE silver.answer_runs
-             ALTER COLUMN retrieval_strategy_version TYPE VARCHAR(32)'
+             ALTER COLUMN retrieval_strategy_version TYPE VARCHAR(32)',
         );
     }
 };

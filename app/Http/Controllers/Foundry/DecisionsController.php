@@ -85,7 +85,7 @@ class DecisionsController extends Controller
                 'updated_at' => now(),
             ]);
         } catch (\Throwable $e) {
-            return back()->with('flash', 'Decision could not be saved: ' . $e->getMessage());
+            return back()->with('flash', 'Decision could not be saved: '.$e->getMessage());
         }
 
         return back()->with('flash', 'Decision recorded.');

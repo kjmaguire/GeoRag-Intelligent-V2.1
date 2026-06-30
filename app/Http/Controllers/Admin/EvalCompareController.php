@@ -100,11 +100,13 @@ class EvalCompareController extends Controller
         if ($key === '') {
             abort(500, 'FASTAPI_SERVICE_KEY not configured');
         }
+
         return $key;
     }
 
     /**
-     * @param  array<string, mixed>  $query
+     * @param array<string, mixed> $query
+     *
      * @return array<string, mixed>
      */
     private function fastapiGet(string $path, array $query = []): array
@@ -115,11 +117,13 @@ class EvalCompareController extends Controller
         if (! $resp->ok()) {
             abort($resp->status(), $resp->body());
         }
+
         return $resp->json() ?? [];
     }
 
     /**
-     * @param  array<string, mixed>  $body
+     * @param array<string, mixed> $body
+     *
      * @return array<string, mixed>
      */
     private function fastapiPost(string $path, array $body): array
@@ -130,6 +134,7 @@ class EvalCompareController extends Controller
         if (! $resp->ok()) {
             abort($resp->status(), $resp->body());
         }
+
         return $resp->json() ?? [];
     }
 }

@@ -47,6 +47,7 @@ class HorizonServiceProvider extends HorizonApplicationServiceProvider
             if ($email === null) {
                 return false;
             }
+
             return in_array(strtolower($email), $allowed, true);
         });
     }

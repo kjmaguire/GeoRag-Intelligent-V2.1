@@ -27,9 +27,9 @@ class AuditFindingsController extends Controller
         $this->authorize('admin');
 
         $base = $this->base();
-        $tenant  = $this->fastapi()->get($base.'/api/v1/admin/audit/tenant-isolation-findings');
+        $tenant = $this->fastapi()->get($base.'/api/v1/admin/audit/tenant-isolation-findings');
         $archive = $this->fastapi()->get($base.'/api/v1/admin/audit/cold-tier-archive-runs', ['limit' => 25]);
-        $bound   = $this->fastapi()->get($base.'/api/v1/admin/audit/boundary-violations', ['limit' => 25]);
+        $bound = $this->fastapi()->get($base.'/api/v1/admin/audit/boundary-violations', ['limit' => 25]);
 
         return Inertia::render('Admin/AuditFindings', [
             'tenant_isolation' => $tenant->ok() ? $tenant->json() : null,
@@ -59,13 +59,17 @@ class AuditFindingsController extends Controller
                 502,
             );
         }
+
         return response()->json($response->json());
     }
 
     private function fastapi()
     {
         $key = config('services.fastapi.service_key');
-        if (! $key) abort(500, 'FASTAPI_SERVICE_KEY not configured');
+        if (! $key) {
+            abort(500, 'FASTAPI_SERVICE_KEY not configured');
+        }
+
         return Http::withHeaders(['X-Service-Key' => $key])->timeout(60);
     }
 

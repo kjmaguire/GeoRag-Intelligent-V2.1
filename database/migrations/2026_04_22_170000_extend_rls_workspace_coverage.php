@@ -42,24 +42,24 @@ use Illuminate\Support\Facades\DB;
 return new class extends Migration
 {
     /**
-     * @var array<string,string>  table => GUC key
+     * @var array<string,string> table => GUC key
      */
     private array $project_scoped = [
         'drill_traces' => 'project_id',
     ];
 
     /**
-     * @var array<string,string>  table => GUC key
+     * @var array<string,string> table => GUC key
      */
     private array $workspace_scoped = [
-        'evidence_items'         => 'workspace_id',
-        'answer_runs'            => 'workspace_id',
+        'evidence_items' => 'workspace_id',
+        'answer_runs' => 'workspace_id',
         'answer_retrieval_items' => 'workspace_id',
-        'answer_citation_items'  => 'workspace_id',
-        'answer_citation_spans'  => 'workspace_id',
-        'document_revisions'     => 'workspace_id',
-        'document_passages'      => 'workspace_id',
-        'message_feedback'       => 'workspace_id',
+        'answer_citation_items' => 'workspace_id',
+        'answer_citation_spans' => 'workspace_id',
+        'document_revisions' => 'workspace_id',
+        'document_passages' => 'workspace_id',
+        'message_feedback' => 'workspace_id',
     ];
 
     public function up(): void
@@ -94,9 +94,9 @@ return new class extends Migration
     /**
      * Idempotent — drop+recreate so re-runs are safe.
      *
-     * @param string $table  Bare table name in the silver schema.
-     * @param string $col    Column on the table that holds the tenant key.
-     * @param string $guc    GUC name suffix — 'project_id' or 'workspace_id'.
+     * @param string $table Bare table name in the silver schema.
+     * @param string $col Column on the table that holds the tenant key.
+     * @param string $guc GUC name suffix — 'project_id' or 'workspace_id'.
      */
     private function applyPolicy(string $table, string $col, string $guc): void
     {
@@ -105,7 +105,7 @@ return new class extends Migration
         DB::statement("DROP POLICY IF EXISTS {$table}_tenant_scope ON silver.{$table}");
 
         $qual = "current_setting('georag.{$guc}', true) IS NULL "
-              . "OR {$col} = current_setting('georag.{$guc}', true)::uuid";
+              ."OR {$col} = current_setting('georag.{$guc}', true)::uuid";
 
         DB::statement("
             CREATE POLICY {$table}_tenant_scope

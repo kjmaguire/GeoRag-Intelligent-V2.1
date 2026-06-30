@@ -35,17 +35,17 @@ class ProjectDashboardController extends Controller
 
         return response()->json([
             'data' => [
-                'slug'                 => $project->slug ?? $slug,
-                'name'                 => $project->project_name,
-                'commodity'            => $project->primary_commodity ?? '—',
-                'region'               => $project->region ?? '—',
-                'operator'             => $project->operator ?? '—',
-                'coordinate_system'    => $project->coordinate_system ?? 'unknown',
-                'aoi_area_km2'         => (float) ($project->aoi_area_km2 ?? 0),
-                'status'               => $project->status?->value ?? $project->status ?? 'active',
-                'last_ingestion_at'    => optional($project->updated_at)?->toIso8601String(),
+                'slug' => $project->slug ?? $slug,
+                'name' => $project->project_name,
+                'commodity' => $project->primary_commodity ?? '—',
+                'region' => $project->region ?? '—',
+                'operator' => $project->operator ?? '—',
+                'coordinate_system' => $project->coordinate_system ?? 'unknown',
+                'aoi_area_km2' => (float) ($project->aoi_area_km2 ?? 0),
+                'status' => $project->status?->value ?? $project->status ?? 'active',
+                'last_ingestion_at' => optional($project->updated_at)?->toIso8601String(),
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -81,14 +81,14 @@ class ProjectDashboardController extends Controller
             ->where('created_at', '>=', $since7);
         $answeredCount = (clone $answered)->count();
         $citedCount = (clone $answered)
-            ->whereRaw("citations IS NOT NULL AND jsonb_array_length(citations) > 0")
+            ->whereRaw('citations IS NOT NULL AND jsonb_array_length(citations) > 0')
             ->count();
         $citationRate = $answeredCount > 0 ? $citedCount / $answeredCount : 0.0;
 
         // Latency — average and P95 from the audit log.
         $latencyStats = QueryAuditLog::selectRaw(
-            "AVG(response_time_ms) AS avg_ms, "
-            . "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY response_time_ms) AS p95_ms"
+            'AVG(response_time_ms) AS avg_ms, '
+            .'PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY response_time_ms) AS p95_ms',
         )
             ->where('project_id', $pid)
             ->whereNotNull('response_time_ms')
@@ -97,22 +97,22 @@ class ProjectDashboardController extends Controller
 
         return response()->json([
             'data' => [
-                'documents'                  => $documents,
-                'kg_entities'                => $kgEntities,
-                'queries_7d'                 => $queries7d,
-                'citation_resolution_rate'   => round($citationRate, 3),
-                'avg_query_latency_ms'       => (int) round($latencyStats?->avg_ms ?? 0),
-                'p95_query_latency_ms'       => (int) round($latencyStats?->p95_ms ?? 0),
+                'documents' => $documents,
+                'kg_entities' => $kgEntities,
+                'queries_7d' => $queries7d,
+                'citation_resolution_rate' => round($citationRate, 3),
+                'avg_query_latency_ms' => (int) round($latencyStats?->avg_ms ?? 0),
+                'p95_query_latency_ms' => (int) round($latencyStats?->p95_ms ?? 0),
                 'trends' => [
                     // Rolling baselines live in M2; return 0 / 0 rather than fabricate
                     // deltas that don't correspond to a real baseline.
-                    'documents_today_delta'        => 0,
-                    'kg_entities_7d_delta'         => 0,
-                    'queries_7d_delta_pct'         => 0,
+                    'documents_today_delta' => 0,
+                    'kg_entities_7d_delta' => 0,
+                    'queries_7d_delta_pct' => 0,
                     'citation_resolution_7d_delta_pp' => 0.0,
                 ],
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 60,
         ]);
     }
@@ -130,29 +130,29 @@ class ProjectDashboardController extends Controller
         // separate per-project AOI geometry (M2 §10p), so the convex hull
         // padded by ~10 % is the most honest answer we can give.
         $bounds = DB::selectOne(
-            "SELECT ST_XMin(env) AS minx, ST_YMin(env) AS miny, "
-            . "ST_XMax(env) AS maxx, ST_YMax(env) AS maxy "
-            . "FROM (SELECT ST_Extent(geom_4326) AS env "
-            . "      FROM silver.collars WHERE project_id = ? AND geom_4326 IS NOT NULL) t",
-            [$pid]
+            'SELECT ST_XMin(env) AS minx, ST_YMin(env) AS miny, '
+            .'ST_XMax(env) AS maxx, ST_YMax(env) AS maxy '
+            .'FROM (SELECT ST_Extent(geom_4326) AS env '
+            .'      FROM silver.collars WHERE project_id = ? AND geom_4326 IS NOT NULL) t',
+            [$pid],
         );
 
         $collars = DB::select(
-            "SELECT hole_id, total_depth, "
-            . "ST_X(geom_4326::geometry) AS lon, ST_Y(geom_4326::geometry) AS lat "
-            . "FROM silver.collars "
-            . "WHERE project_id = ? AND geom_4326 IS NOT NULL",
-            [$pid]
+            'SELECT hole_id, total_depth, '
+            .'ST_X(geom_4326::geometry) AS lon, ST_Y(geom_4326::geometry) AS lat '
+            .'FROM silver.collars '
+            .'WHERE project_id = ? AND geom_4326 IS NOT NULL',
+            [$pid],
         );
 
         $collarFeatures = array_map(fn ($c) => [
-            'type'       => 'Feature',
+            'type' => 'Feature',
             'properties' => [
-                'hole_id'     => $c->hole_id,
+                'hole_id' => $c->hole_id,
                 'total_depth' => (float) ($c->total_depth ?? 0),
             ],
-            'geometry'   => [
-                'type'        => 'Point',
+            'geometry' => [
+                'type' => 'Point',
                 'coordinates' => [(float) $c->lon, (float) $c->lat],
             ],
         ], $collars);
@@ -163,15 +163,15 @@ class ProjectDashboardController extends Controller
             return response()->json([
                 'data' => [
                     'display_crs' => 'EPSG:3857',
-                    'source_crs'  => 'EPSG:4326',
-                    'aoi'         => null,
-                    'features'    => [
-                        'drill_collars'     => ['type' => 'FeatureCollection', 'features' => []],
+                    'source_crs' => 'EPSG:4326',
+                    'aoi' => null,
+                    'features' => [
+                        'drill_collars' => ['type' => 'FeatureCollection', 'features' => []],
                         'mineralized_zones' => ['type' => 'FeatureCollection', 'features' => []],
                     ],
                     'bounds' => null,
                 ],
-                'generated_at'      => now()->toIso8601String(),
+                'generated_at' => now()->toIso8601String(),
                 'cache_ttl_seconds' => 300,
             ]);
         }
@@ -188,12 +188,12 @@ class ProjectDashboardController extends Controller
         return response()->json([
             'data' => [
                 'display_crs' => 'EPSG:3857',
-                'source_crs'  => 'EPSG:4326',
+                'source_crs' => 'EPSG:4326',
                 'aoi' => [
-                    'type'       => 'Feature',
-                    'properties' => ['name' => ($project->project_name ?? $slug) . ' AOI'],
-                    'geometry'   => [
-                        'type'        => 'Polygon',
+                    'type' => 'Feature',
+                    'properties' => ['name' => ($project->project_name ?? $slug).' AOI'],
+                    'geometry' => [
+                        'type' => 'Polygon',
                         'coordinates' => [[
                             [$minx, $miny],
                             [$maxx, $miny],
@@ -205,20 +205,20 @@ class ProjectDashboardController extends Controller
                 ],
                 'features' => [
                     'drill_collars' => [
-                        'type'     => 'FeatureCollection',
+                        'type' => 'FeatureCollection',
                         'features' => $collarFeatures,
                     ],
                     // Mineralized-zone polygons are M2 §10p (interpretation
                     // workspace output). Return an empty FC so the AoiMap
                     // component's MapLibre source still binds cleanly.
                     'mineralized_zones' => [
-                        'type'     => 'FeatureCollection',
+                        'type' => 'FeatureCollection',
                         'features' => [],
                     ],
                 ],
                 'bounds' => [$minx, $miny, $maxx, $maxy],
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -235,19 +235,19 @@ class ProjectDashboardController extends Controller
         $collarIds = (clone $collarsQ)->pluck('collar_id');
 
         $counts = [
-            'DrillHole'        => $collarsQ->count(),
-            'LithologyInterval'=> DB::table('silver.lithology_logs')->whereIn('collar_id', $collarIds)->count(),
-            'Sample'           => DB::table('silver.samples')->whereIn('collar_id', $collarIds)->count(),
-            'Structure'        => DB::table('silver.structures')->whereIn('collar_id', $collarIds)->count(),
-            'Geochem'          => DB::table('silver.geochemistry')->whereIn('collar_id', $collarIds)->count(),
+            'DrillHole' => $collarsQ->count(),
+            'LithologyInterval' => DB::table('silver.lithology_logs')->whereIn('collar_id', $collarIds)->count(),
+            'Sample' => DB::table('silver.samples')->whereIn('collar_id', $collarIds)->count(),
+            'Structure' => DB::table('silver.structures')->whereIn('collar_id', $collarIds)->count(),
+            'Geochem' => DB::table('silver.geochemistry')->whereIn('collar_id', $collarIds)->count(),
         ];
 
         return response()->json([
             'data' => [
                 'counts' => $counts,
-                'total'  => array_sum($counts),
+                'total' => array_sum($counts),
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -265,17 +265,17 @@ class ProjectDashboardController extends Controller
             ->get();
 
         $data = $rows->map(fn ($r) => [
-            'query_id'          => $r->query_id,
-            'asked_at'          => $r->created_at?->toIso8601String(),
-            'query_text'        => $r->query_text,
-            'citation_count'    => is_array($r->citations) ? count($r->citations) : 0,
-            'confidence'        => $r->confidence,
-            'response_time_ms'  => $r->response_time_ms,
+            'query_id' => $r->query_id,
+            'asked_at' => $r->created_at?->toIso8601String(),
+            'query_text' => $r->query_text,
+            'citation_count' => is_array($r->citations) ? count($r->citations) : 0,
+            'confidence' => $r->confidence,
+            'response_time_ms' => $r->response_time_ms,
         ]);
 
         return response()->json([
-            'data'              => $data,
-            'generated_at'      => now()->toIso8601String(),
+            'data' => $data,
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 60,
         ]);
     }
@@ -288,16 +288,17 @@ class ProjectDashboardController extends Controller
         if (config('dashboard.use_fixtures', true)) {
             return $this->fixtureOrQuery('project-feedback', $slug);
         }
+
         return response()->json([
             'data' => [
-                'total'            => 0,
-                'helpful'          => 0,
-                'citation_issue'   => 0,
+                'total' => 0,
+                'helpful' => 0,
+                'citation_issue' => 0,
                 'wrong_irrelevant' => 0,
-                'positive_rate'    => null,
-                'top_issue'        => null,
+                'positive_rate' => null,
+                'top_issue' => null,
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 900,
         ]);
     }
@@ -315,15 +316,15 @@ class ProjectDashboardController extends Controller
         // quality from the silver-stage ingestion pipeline. Chunk count
         // comes from silver.document_passages (one passage = one chunk).
         $rows = DB::select(
-            "SELECT r.report_id, r.title, r.company, r.filing_date, "
-            . "       r.parse_quality_pct, r.parser_used, r.is_scanned, "
-            . "       r.source_file_sha256, r.created_at, "
-            . "       (SELECT COUNT(*) FROM silver.document_passages p "
-            . "         WHERE p.document_id = r.report_id) AS chunk_count "
-            . "  FROM silver.reports r "
-            . " WHERE r.project_id = ? "
-            . " ORDER BY r.created_at DESC NULLS LAST, r.filing_date DESC NULLS LAST",
-            [$pid]
+            'SELECT r.report_id, r.title, r.company, r.filing_date, '
+            .'       r.parse_quality_pct, r.parser_used, r.is_scanned, '
+            .'       r.source_file_sha256, r.created_at, '
+            .'       (SELECT COUNT(*) FROM silver.document_passages p '
+            .'         WHERE p.document_id = r.report_id) AS chunk_count '
+            .'  FROM silver.reports r '
+            .' WHERE r.project_id = ? '
+            .' ORDER BY r.created_at DESC NULLS LAST, r.filing_date DESC NULLS LAST',
+            [$pid],
         );
 
         $data = array_map(function ($r) {
@@ -331,23 +332,23 @@ class ProjectDashboardController extends Controller
             $crsResolved = ($r->parse_quality_pct ?? 0) > 0 || $chunkCount > 0;
 
             return [
-                'id'              => $r->report_id,
-                'filename'        => $r->title ?: ('report-' . substr((string) $r->report_id, 0, 8)),
-                'doc_type'        => $this->inferDocType($r->parser_used, $r->is_scanned),
-                'source'          => $r->company ?: 'Uploaded',
-                'stage'           => $chunkCount > 0 ? 'index' : 'silver',
-                'chunk_count'     => $chunkCount > 0 ? $chunkCount : null,
-                'crs_detected'    => null,
-                'crs_status'      => $crsResolved ? 'resolved' : 'unresolved',
-                'parse_quality'   => $r->parse_quality_pct !== null ? round((float) $r->parse_quality_pct, 2) : null,
-                'parser_used'     => $r->parser_used,
-                'ingested_at'     => $r->created_at,
+                'id' => $r->report_id,
+                'filename' => $r->title ?: ('report-'.substr((string) $r->report_id, 0, 8)),
+                'doc_type' => $this->inferDocType($r->parser_used, $r->is_scanned),
+                'source' => $r->company ?: 'Uploaded',
+                'stage' => $chunkCount > 0 ? 'index' : 'silver',
+                'chunk_count' => $chunkCount > 0 ? $chunkCount : null,
+                'crs_detected' => null,
+                'crs_status' => $crsResolved ? 'resolved' : 'unresolved',
+                'parse_quality' => $r->parse_quality_pct !== null ? round((float) $r->parse_quality_pct, 2) : null,
+                'parser_used' => $r->parser_used,
+                'ingested_at' => $r->created_at,
             ];
         }, $rows);
 
         return response()->json([
-            'data'              => $data,
-            'generated_at'      => now()->toIso8601String(),
+            'data' => $data,
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -362,13 +363,14 @@ class ProjectDashboardController extends Controller
         if ($isScanned === true) {
             return 'Historical';
         }
+
         return match ($parser) {
             'pdfplumber', 'pdfminer.six' => 'Tech report',
-            'openpyxl', 'xlsx'           => 'Drill log',
-            'tesseract-tiff', 'ocr'      => 'Historical',
-            'csv'                        => 'Assay',
-            'docx'                       => 'Memo',
-            default                      => 'Document',
+            'openpyxl', 'xlsx' => 'Drill log',
+            'tesseract-tiff', 'ocr' => 'Historical',
+            'csv' => 'Assay',
+            'docx' => 'Memo',
+            default => 'Document',
         };
     }
 
@@ -399,18 +401,18 @@ class ProjectDashboardController extends Controller
 
         return response()->json([
             'data' => [
-                'total_holes'      => $total,
-                'total_meters'     => round($totalMeters, 1),
-                'avg_depth_m'      => $total > 0 ? round($totalMeters / $total, 1) : 0,
-                'deepest_hole'     => $deepest ? [
-                    'hole_id'     => $deepest->hole_id,
+                'total_holes' => $total,
+                'total_meters' => round($totalMeters, 1),
+                'avg_depth_m' => $total > 0 ? round($totalMeters / $total, 1) : 0,
+                'deepest_hole' => $deepest ? [
+                    'hole_id' => $deepest->hole_id,
                     'total_depth' => (float) $deepest->total_depth,
                 ] : null,
                 'latest_drill_date' => $latest?->drill_date,
                 'by_status' => $byStatus->map(fn ($n, $k) => ['label' => $k ?: 'unknown', 'count' => $n])->values(),
-                'by_type'   => $byType->map(fn ($n, $k) => ['label' => $k ?: 'unknown', 'count' => $n])->values(),
+                'by_type' => $byType->map(fn ($n, $k) => ['label' => $k ?: 'unknown', 'count' => $n])->values(),
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -444,7 +446,7 @@ class ProjectDashboardController extends Controller
         $user = $request->user();
         if ($user && method_exists($user, 'projects')) {
             $allowed = $user->projects()->where('silver.projects.project_id', $project->project_id)->exists();
-            if (!$allowed) {
+            if (! $allowed) {
                 return response()->json(['error' => 'project_not_found'], 404);
             }
         }
@@ -457,14 +459,14 @@ class ProjectDashboardController extends Controller
 
         return response()->json([
             'data' => [
-                'slug'       => $project->slug,
-                'name'       => $project->project_name ?? '—',
-                'commodity'  => $project->commodity ?? null,
-                'region'     => $project->region ?? null,
-                'crs_datum'  => $project->crs_datum ?? 'EPSG:32613',
+                'slug' => $project->slug,
+                'name' => $project->project_name ?? '—',
+                'commodity' => $project->commodity ?? null,
+                'region' => $project->region ?? null,
+                'crs_datum' => $project->crs_datum ?? 'EPSG:32613',
                 'hole_count' => (int) $holeCount,
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -481,14 +483,14 @@ class ProjectDashboardController extends Controller
             return $project ?? new Project(['slug' => $slug]);
         }
 
-        if (!$project) {
+        if (! $project) {
             abort(404);
         }
 
         $user = $request->user();
         if ($user && method_exists($user, 'projects')) {
             $allowed = $user->projects()->where('silver.projects.project_id', $project->project_id)->exists();
-            if (!$allowed) {
+            if (! $allowed) {
                 abort(404);
             }
         }

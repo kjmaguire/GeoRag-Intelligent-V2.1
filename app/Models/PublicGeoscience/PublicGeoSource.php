@@ -18,8 +18,11 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class PublicGeoSource extends Model
 {
     protected $table = 'public_geo.sources';
+
     protected $primaryKey = 'source_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -38,11 +41,11 @@ class PublicGeoSource extends Model
     ];
 
     protected $casts = [
-        'layer_index'       => 'integer',
-        'source_crs'        => 'integer',
+        'layer_index' => 'integer',
+        'source_crs' => 'integer',
         'last_refreshed_at' => 'datetime',
-        'created_at'        => 'datetime',
-        'updated_at'        => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     public function jurisdiction(): BelongsTo
@@ -50,7 +53,7 @@ class PublicGeoSource extends Model
         return $this->belongsTo(
             Jurisdiction::class,
             'jurisdiction_code',
-            'jurisdiction_code'
+            'jurisdiction_code',
         );
     }
 }

@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\Project;
 use App\Models\QueryAuditLog;
 use App\Models\User;
-use Illuminate\Broadcasting\Broadcasters\Broadcaster;
 use Illuminate\Contracts\Broadcasting\Broadcaster as BroadcasterContract;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -35,8 +34,8 @@ class QueryChannelAuthorizationTest extends TestCase
     {
         DB::table('project_user')->insert([
             'project_id' => $project->project_id,
-            'user_id'    => $user->id,
-            'role'       => $role,
+            'user_id' => $user->id,
+            'role' => $role,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -45,12 +44,12 @@ class QueryChannelAuthorizationTest extends TestCase
     private function seedQuery(User $owner, Project $project): QueryAuditLog
     {
         return QueryAuditLog::create([
-            'user_id'    => $owner->id,
+            'user_id' => $owner->id,
             'project_id' => $project->project_id,
-            'query_id'   => (string) Str::uuid(),
+            'query_id' => (string) Str::uuid(),
             'query_text' => 'What is the average gold grade?',
             'ip_address' => '127.0.0.1',
-            'llm_model'  => 'qwen2.5:14b',
+            'llm_model' => 'qwen2.5:14b',
         ]);
     }
 

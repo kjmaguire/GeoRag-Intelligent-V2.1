@@ -40,7 +40,9 @@ class ChatConversationControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private ChatConversation $conversationB;
 
     protected function setUp(): void
@@ -58,9 +60,9 @@ class ChatConversationControllerIDORTest extends TestCase
         // Create a conversation belonging to User B.
         $this->conversationB = ChatConversation::create([
             'conversation_id' => 'bb000000-0000-0000-0000-000000000001',
-            'user_id'         => $this->userB->id,
-            'title'           => 'User B private conversation',
-            'project_id'      => null,
+            'user_id' => $this->userB->id,
+            'title' => 'User B private conversation',
+            'project_id' => null,
         ]);
 
         $this->actingAs($this->userA, 'sanctum');
@@ -104,15 +106,15 @@ class ChatConversationControllerIDORTest extends TestCase
     public function test_user_a_upsert_with_user_b_conversation_id_creates_new_row(): void
     {
         $response = $this->putJson("/api/v1/conversations/{$this->conversationB->conversation_id}", [
-            'title'    => 'Hijacked',
+            'title' => 'Hijacked',
             'messages' => [],
         ]);
 
         // User B's title must be unchanged.
         $this->assertDatabaseHas('chat_conversations', [
             'conversation_id' => $this->conversationB->conversation_id,
-            'user_id'         => $this->userB->id,
-            'title'           => 'User B private conversation',
+            'user_id' => $this->userB->id,
+            'title' => 'User B private conversation',
         ]);
 
         // Either a 200 (new row created under User A) or 403 is acceptable.
@@ -120,7 +122,7 @@ class ChatConversationControllerIDORTest extends TestCase
         $this->assertNotSame(
             $this->userA->id,
             $this->conversationB->fresh()->user_id,
-            'User B conversation ownership must not be transferred to User A.'
+            'User B conversation ownership must not be transferred to User A.',
         );
     }
 
@@ -132,7 +134,7 @@ class ChatConversationControllerIDORTest extends TestCase
     {
         $nonExistentId = '00000000-0000-0000-0000-000000000000';
 
-        $deniedResponse   = $this->getJson("/api/v1/conversations/{$this->conversationB->conversation_id}");
+        $deniedResponse = $this->getJson("/api/v1/conversations/{$this->conversationB->conversation_id}");
         $notFoundResponse = $this->getJson("/api/v1/conversations/{$nonExistentId}");
 
         $deniedResponse->assertNotFound();
@@ -152,9 +154,9 @@ class ChatConversationControllerIDORTest extends TestCase
     {
         $conversationA = ChatConversation::create([
             'conversation_id' => 'aa000000-0000-0000-0000-000000000001',
-            'user_id'         => $this->userA->id,
-            'title'           => 'User A conversation',
-            'project_id'      => null,
+            'user_id' => $this->userA->id,
+            'title' => 'User A conversation',
+            'project_id' => null,
         ]);
 
         $response = $this->getJson("/api/v1/conversations/{$conversationA->conversation_id}");

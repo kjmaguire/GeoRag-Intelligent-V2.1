@@ -78,21 +78,21 @@ return new class extends Migration
         // GIST index for spatial queries (Martin tile consumption, Module 8).
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drill_traces_geom
-             ON silver.drill_traces USING GIST (geom);'
+             ON silver.drill_traces USING GIST (geom);',
         );
 
         // Supporting indices for filtering by project / workspace / hash.
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drill_traces_project
-             ON silver.drill_traces (project_id);'
+             ON silver.drill_traces (project_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drill_traces_workspace
-             ON silver.drill_traces (workspace_id);'
+             ON silver.drill_traces (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drill_traces_survey_hash
-             ON silver.drill_traces (survey_hash);'
+             ON silver.drill_traces (survey_hash);',
         );
     }
 

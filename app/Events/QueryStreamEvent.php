@@ -22,12 +22,14 @@ use Illuminate\Queue\SerializesModels;
  */
 class QueryStreamEvent implements ShouldBroadcastNow
 {
-    use Dispatchable, InteractsWithSockets, SerializesModels;
+    use Dispatchable;
+    use InteractsWithSockets;
+    use SerializesModels;
 
     public function __construct(
         private readonly string $channelName,
-        public readonly string  $eventType,
-        public readonly array   $payload,
+        public readonly string $eventType,
+        public readonly array $payload,
     ) {}
 
     public function broadcastOn(): array

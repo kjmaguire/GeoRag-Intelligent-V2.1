@@ -38,12 +38,12 @@ final class MineralOccurrenceResolver extends AbstractPgeoResolver
     protected function mergePayload(array $envelope, ?object $entity, array $parts): array
     {
         $jurisdictionLabel = ($entity?->jurisdiction_code === 'CA-SK') ? 'SMDI' : 'ID';
-        $displayName       = $entity->name
+        $displayName = $entity->name
             ?? ($entity && $entity->external_id
                 ? "{$jurisdictionLabel} {$entity->external_id}"
                 : 'Unnamed occurrence');
         $primary = $this->parsePgArray($entity->primary_commodities ?? null);
-        $assoc   = $this->parsePgArray($entity->associated_commodities ?? null);
+        $assoc = $this->parsePgArray($entity->associated_commodities ?? null);
 
         $envelope['title'] = ($entity?->external_id)
             ? "{$jurisdictionLabel} {$entity->external_id} · {$displayName}"
@@ -53,24 +53,24 @@ final class MineralOccurrenceResolver extends AbstractPgeoResolver
             $displayName,
             $entity->status ?? 'unknown',
             $primary ? implode(', ', $primary) : 'not listed',
-            $assoc ? '; associated ' . implode(', ', $assoc) : '',
+            $assoc ? '; associated '.implode(', ', $assoc) : '',
             ($entity?->production_flag) ? 'yes' : 'none recorded',
         );
         $envelope['entity'] = $entity ? [
-            'id'                     => $entity->id,
-            'external_id'            => $entity->external_id,
-            'name'                   => $entity->name,
-            'historic_names'         => $this->parsePgArray($entity->historic_names),
-            'status'                 => $entity->status,
-            'primary_commodities'    => $primary,
+            'id' => $entity->id,
+            'external_id' => $entity->external_id,
+            'name' => $entity->name,
+            'historic_names' => $this->parsePgArray($entity->historic_names),
+            'status' => $entity->status,
+            'primary_commodities' => $primary,
             'associated_commodities' => $assoc,
-            'commodity_grouping'     => $entity->commodity_grouping,
-            'discovery_type'         => $entity->discovery_type,
-            'production_flag'        => (bool) $entity->production_flag,
-            'reserves_resources'     => $entity->reserves_resources,
-            'source_url'             => $entity->source_url,
-            'source_feature_id'      => $entity->source_feature_id,
-            'last_seen_at'           => $entity->last_seen_at,
+            'commodity_grouping' => $entity->commodity_grouping,
+            'discovery_type' => $entity->discovery_type,
+            'production_flag' => (bool) $entity->production_flag,
+            'reserves_resources' => $entity->reserves_resources,
+            'source_url' => $entity->source_url,
+            'source_feature_id' => $entity->source_feature_id,
+            'last_seen_at' => $entity->last_seen_at,
         ] : null;
 
         return $envelope;

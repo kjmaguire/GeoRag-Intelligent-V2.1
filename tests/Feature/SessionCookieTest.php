@@ -20,7 +20,7 @@ final class SessionCookieTest extends TestCase
         $this->assertTrue(
             (bool) config('session.secure'),
             'session.secure must default to true outside local env (current env: '
-            . app()->environment() . ')',
+            .app()->environment().')',
         );
     }
 
@@ -46,7 +46,7 @@ final class SessionCookieTest extends TestCase
                 putenv('SESSION_SECURE_COOKIE');
             } else {
                 $_ENV['SESSION_SECURE_COOKIE'] = $previous;
-                putenv('SESSION_SECURE_COOKIE=' . $previous);
+                putenv('SESSION_SECURE_COOKIE='.$previous);
             }
         }
     }

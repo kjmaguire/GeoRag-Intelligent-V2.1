@@ -6,9 +6,9 @@ namespace App\Console\Commands;
 
 use App\Models\QueryAuditLog;
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 /**
  * Re-encrypts audit rows from a plaintext JSONL dump, using the CURRENT
@@ -46,25 +46,28 @@ class RestoreAuditPii extends Command
         $input = $this->option('input');
         $dryRun = (bool) $this->option('dry-run');
 
-        if (!$input) {
+        if (! $input) {
             $this->error('audit:restore-pii requires --input=<path>');
+
             return self::FAILURE;
         }
-        if (!is_readable($input)) {
+        if (! is_readable($input)) {
             $this->error("Cannot read input file: {$input}");
+
             return self::FAILURE;
         }
 
         $fh = fopen($input, 'r');
         if ($fh === false) {
             $this->error("Cannot open input file: {$input}");
+
             return self::FAILURE;
         }
 
         $restored = 0;
-        $skipped  = 0;
-        $missing  = 0;
-        $errors   = 0;
+        $skipped = 0;
+        $missing = 0;
+        $errors = 0;
         // Running SHA-256 of data-row audit_ids, computed in input order.
         // Compared against the trailer's `ids_sha256` for integrity (#2).
         $hashCtx = hash_init('sha256');
@@ -81,7 +84,8 @@ class RestoreAuditPii extends Command
                     $row = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
                 } catch (\JsonException $je) {
                     $errors++;
-                    $this->warn("Malformed JSONL line (skipping): " . substr($line, 0, 120));
+                    $this->warn('Malformed JSONL line (skipping): '.substr($line, 0, 120));
+
                     continue;
                 }
 
@@ -89,13 +93,15 @@ class RestoreAuditPii extends Command
                 // produced by audit:dump-pii. Capture and validate at EOF.
                 if (($row['__meta__'] ?? null) === 'audit-pii-dump') {
                     $trailer = $row;
+
                     continue;
                 }
 
                 $auditId = $row['audit_id'] ?? null;
-                if (!$auditId) {
+                if (! $auditId) {
                     $errors++;
                     $this->warn('Row has no audit_id; skipping.');
+
                     continue;
                 }
                 hash_update($hashCtx, (string) $auditId);
@@ -104,6 +110,7 @@ class RestoreAuditPii extends Command
                 $model = QueryAuditLog::find($auditId);
                 if ($model === null) {
                     $missing++;
+
                     continue;
                 }
 
@@ -112,26 +119,28 @@ class RestoreAuditPii extends Command
                 // post-rotation row will have UNREADABLE ciphertext; the
                 // cast throws DecryptException on read. That's precisely
                 // the case where we NEED to write, so catch + force-write.
-                $incomingQuery    = $row['query_text']    ?? null;
+                $incomingQuery = $row['query_text'] ?? null;
                 $incomingResponse = $row['response_text'] ?? null;
                 try {
-                    $currentQuery    = $model->query_text;
+                    $currentQuery = $model->query_text;
                     $currentResponse = $model->response_text;
                     $needsWrite = ($incomingQuery !== $currentQuery)
                         || ($incomingResponse !== $currentResponse);
-                } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+                } catch (DecryptException) {
                     // Current ciphertext unreadable under this APP_KEY —
                     // this is the post-rotation recovery path. Always write.
                     $needsWrite = true;
                 }
 
-                if (!$needsWrite) {
+                if (! $needsWrite) {
                     $skipped++;
+
                     continue;
                 }
 
                 if ($dryRun) {
                     $restored++;
+
                     continue;
                 }
 
@@ -142,7 +151,7 @@ class RestoreAuditPii extends Command
                 // DecryptException. Same trap Phase 1 hit in the
                 // audit:encrypt-pii backfill; same fix.
                 $update = [
-                    'query_text'    => $incomingQuery === null ? null : Crypt::encryptString($incomingQuery),
+                    'query_text' => $incomingQuery === null ? null : Crypt::encryptString($incomingQuery),
                     'response_text' => $incomingResponse === null ? null : Crypt::encryptString($incomingResponse),
                 ];
                 if ($incomingQuery !== null) {
@@ -165,44 +174,46 @@ class RestoreAuditPii extends Command
         if ($trailer === null) {
             $this->warn(
                 'Dump has no integrity trailer. Either it was produced by a '
-                    . 'pre-integrity-check version of audit:dump-pii, or it was '
-                    . 'truncated in transit. Proceeding, but cannot guarantee completeness.'
+                    .'pre-integrity-check version of audit:dump-pii, or it was '
+                    .'truncated in transit. Proceeding, but cannot guarantee completeness.',
             );
         } else {
             $expectedRows = (int) ($trailer['row_count'] ?? -1);
-            $expectedSha  = (string) ($trailer['ids_sha256'] ?? '');
+            $expectedSha = (string) ($trailer['ids_sha256'] ?? '');
             if ($expectedRows !== $dataRowCount) {
                 $this->error(sprintf(
                     'Dump integrity check FAILED: trailer says %d rows, read %d. '
-                        . 'Refusing to consider this restore successful.',
+                        .'Refusing to consider this restore successful.',
                     $expectedRows,
                     $dataRowCount,
                 ));
+
                 return self::FAILURE;
             }
             if ($expectedSha !== '' && $expectedSha !== $idsSha) {
                 $this->error(
                     'Dump integrity check FAILED: audit_id SHA-256 mismatch. '
-                        . "Expected {$expectedSha}, computed {$idsSha}. "
-                        . 'Restore may have reordered rows or seen a corrupt dump.'
+                        ."Expected {$expectedSha}, computed {$idsSha}. "
+                        .'Restore may have reordered rows or seen a corrupt dump.',
                 );
+
                 return self::FAILURE;
             }
             $hintExpected = (string) ($trailer['app_key_hint'] ?? '');
-            $hintCurrent  = substr(hash_hmac('sha256', 'audit-pii', config('app.key')), 0, 16);
+            $hintCurrent = substr(hash_hmac('sha256', 'audit-pii', config('app.key')), 0, 16);
             if ($hintExpected !== '' && $hintExpected === $hintCurrent) {
                 // Same key on both sides — unusual for a rotation workflow.
                 // Not an error (could be a drill / integrity-check restore
                 // onto the same install) but worth surfacing.
                 $this->warn(
                     'Dump and current APP_KEY look identical. This is typical for '
-                        . 'integrity-rehearsal restores; during a real key rotation '
-                        . 'the hints should differ.'
+                        .'integrity-rehearsal restores; during a real key rotation '
+                        .'the hints should differ.',
                 );
             }
             $this->info(
                 "Integrity check passed: {$dataRowCount} rows match trailer "
-                    . "(schema v{$trailer['schema_version']})."
+                    ."(schema v{$trailer['schema_version']}).",
             );
         }
 
@@ -215,10 +226,10 @@ class RestoreAuditPii extends Command
             $errors,
         ));
 
-        if (!$dryRun && $missing > 0) {
+        if (! $dryRun && $missing > 0) {
             $this->warn(
                 "{$missing} rows from the dump have no matching DB row. "
-                . 'Investigate before shredding the dump.'
+                .'Investigate before shredding the dump.',
             );
         }
 

@@ -21,18 +21,18 @@ class HypothesisFactory extends Factory
     public function definition(): array
     {
         return [
-            'hypothesis_id'        => (string) Str::uuid(),
-            'workspace_id'         => (string) Str::uuid(),
-            'parent_question'      => $this->faker->sentence(10) . '?',
-            'label'                => $this->faker->randomElement(['A', 'B', 'C', 'D']),
-            'description'          => $this->faker->paragraph(),
-            'confidence'           => $this->faker->randomFloat(3, 0.1, 0.95),
-            'confidence_method'    => $this->faker->randomElement(['bayesian', 'heuristic']),
-            'review_status'        => 'ai_suggested',
-            'reviewed_by_user_id'  => null,
-            'reviewed_at'          => null,
-            'rationale'            => null,
-            'created_at'           => now(),
+            'hypothesis_id' => (string) Str::uuid(),
+            'workspace_id' => (string) Str::uuid(),
+            'parent_question' => $this->faker->sentence(10).'?',
+            'label' => $this->faker->randomElement(['A', 'B', 'C', 'D']),
+            'description' => $this->faker->paragraph(),
+            'confidence' => $this->faker->randomFloat(3, 0.1, 0.95),
+            'confidence_method' => $this->faker->randomElement(['bayesian', 'heuristic']),
+            'review_status' => 'ai_suggested',
+            'reviewed_by_user_id' => null,
+            'reviewed_at' => null,
+            'rationale' => null,
+            'created_at' => now(),
         ];
     }
 

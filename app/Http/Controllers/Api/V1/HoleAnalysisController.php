@@ -41,7 +41,7 @@ class HoleAnalysisController extends Controller
     {
         // Auth + project scoping: only the caller's own projects.
         $userProjectIds = $request->user()->projects()->pluck('silver.projects.project_id');
-        if (!$userProjectIds->contains($projectId)) {
+        if (! $userProjectIds->contains($projectId)) {
             return response()->json(['error' => 'project_not_found'], 404);
         }
 
@@ -51,7 +51,7 @@ class HoleAnalysisController extends Controller
 
         if ($isUuid) {
             $collar = Collar::selectRaw(
-                '*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude'
+                '*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude',
             )
                 ->where('project_id', $projectId)
                 ->where('collar_id', $holeIdOrCollarId)
@@ -59,7 +59,7 @@ class HoleAnalysisController extends Controller
         }
         if ($collar === null) {
             $collar = Collar::selectRaw(
-                '*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude'
+                '*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude',
             )
                 ->where('project_id', $projectId)
                 ->where('hole_id', $holeIdOrCollarId)
@@ -125,23 +125,23 @@ class HoleAnalysisController extends Controller
 
         return response()->json([
             'collar' => [
-                'collar_id'   => $collar->collar_id,
-                'hole_id'     => $collar->hole_id,
-                'hole_type'   => $collar->hole_type,
-                'status'      => $collar->status,
+                'collar_id' => $collar->collar_id,
+                'hole_id' => $collar->hole_id,
+                'hole_type' => $collar->hole_type,
+                'status' => $collar->status,
                 'total_depth' => $collar->total_depth,
-                'azimuth'     => $collar->azimuth,
-                'dip'         => $collar->dip,
-                'elevation'   => $collar->elevation,
-                'easting'     => $collar->easting,
-                'northing'    => $collar->northing,
-                'longitude'   => $collar->longitude,
-                'latitude'    => $collar->latitude,
-                'drill_date'  => $collar->drill_date,
+                'azimuth' => $collar->azimuth,
+                'dip' => $collar->dip,
+                'elevation' => $collar->elevation,
+                'easting' => $collar->easting,
+                'northing' => $collar->northing,
+                'longitude' => $collar->longitude,
+                'latitude' => $collar->latitude,
+                'drill_date' => $collar->drill_date,
             ],
-            'surveys'    => $surveys,
+            'surveys' => $surveys,
             'structures' => $structures,
-            'geochem'    => $geochem,
+            'geochem' => $geochem,
         ]);
     }
 }

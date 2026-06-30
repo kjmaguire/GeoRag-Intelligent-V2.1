@@ -24,6 +24,7 @@ class CollarControllerTest extends TestCase
     use RefreshDatabase;
 
     private Project $project;
+
     private User $user;
 
     protected function setUp(): void
@@ -40,7 +41,7 @@ class CollarControllerTest extends TestCase
         Collar::getModel()->setTable('collars');
         Survey::getModel()->setTable('surveys');
 
-        $this->user    = User::factory()->create();
+        $this->user = User::factory()->create();
         $this->project = Project::factory()->create();
 
         // Attach the user to the project so the hasProjectAccess gate (A2-02 fix)
@@ -75,15 +76,15 @@ class CollarControllerTest extends TestCase
     {
         Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'hole_type'  => 'Diamond',
+            'hole_type' => 'Diamond',
         ]);
         Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'hole_type'  => 'RC',
+            'hole_type' => 'RC',
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/collars?hole_type=Diamond"
+            "/api/v1/projects/{$this->project->project_id}/collars?hole_type=Diamond",
         );
 
         $response->assertOk();
@@ -95,15 +96,15 @@ class CollarControllerTest extends TestCase
     {
         Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'status'     => 'Active',
+            'status' => 'Active',
         ]);
         Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'status'     => 'Completed',
+            'status' => 'Completed',
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/collars?status=Completed"
+            "/api/v1/projects/{$this->project->project_id}/collars?status=Completed",
         );
 
         $response->assertOk();
@@ -124,21 +125,21 @@ class CollarControllerTest extends TestCase
     public function test_store_creates_collar_and_returns_201(): void
     {
         $payload = [
-            'hole_id'     => 'DH-001',
-            'easting'     => 425000.5,
-            'northing'    => 6790000.0,
-            'elevation'   => 510.0,
+            'hole_id' => 'DH-001',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'elevation' => 510.0,
             'total_depth' => 350.0,
-            'hole_type'   => 'Diamond',
-            'azimuth'     => 135.0,
-            'dip'         => -60.0,
-            'drill_date'  => '2024-03-15',
-            'status'      => 'Completed',
+            'hole_type' => 'Diamond',
+            'azimuth' => 135.0,
+            'dip' => -60.0,
+            'drill_date' => '2024-03-15',
+            'status' => 'Completed',
         ];
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/collars",
-            $payload
+            $payload,
         );
 
         $response->assertCreated()
@@ -150,18 +151,18 @@ class CollarControllerTest extends TestCase
     {
         Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'hole_id'    => 'DH-001',
+            'hole_id' => 'DH-001',
         ]);
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/collars",
             [
-                'hole_id'     => 'DH-001',
-                'easting'     => 425000.5,
-                'northing'    => 6790000.0,
+                'hole_id' => 'DH-001',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
                 'total_depth' => 350.0,
-                'hole_type'   => 'RC',
-            ]
+                'hole_type' => 'RC',
+            ],
         );
 
         $response->assertUnprocessable()
@@ -173,19 +174,19 @@ class CollarControllerTest extends TestCase
         $other = Project::factory()->create();
         Collar::factory()->create([
             'project_id' => $other->project_id,
-            'hole_id'    => 'DH-001',
+            'hole_id' => 'DH-001',
         ]);
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/collars",
             [
-                'hole_id'     => 'DH-001',
-                'easting'     => 425000.5,
-                'northing'    => 6790000.0,
+                'hole_id' => 'DH-001',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
                 'total_depth' => 350.0,
-                'hole_type'   => 'RC',
-                'status'      => 'Active',
-            ]
+                'hole_type' => 'RC',
+                'status' => 'Active',
+            ],
         );
 
         $response->assertCreated();
@@ -196,13 +197,13 @@ class CollarControllerTest extends TestCase
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/collars",
             [
-                'hole_id'     => 'DH-002',
-                'easting'     => 425000.5,
-                'northing'    => 6790000.0,
+                'hole_id' => 'DH-002',
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
                 'total_depth' => 100.0,
-                'hole_type'   => 'RC',
-                'dip'         => 45.0, // positive — invalid, must be -90 to 0
-            ]
+                'hole_type' => 'RC',
+                'dip' => 45.0, // positive — invalid, must be -90 to 0
+            ],
         );
 
         $response->assertUnprocessable()
@@ -221,7 +222,7 @@ class CollarControllerTest extends TestCase
         Survey::factory()->count(2)->create(['collar_id' => $collar->collar_id]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}"
+            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}",
         );
 
         $response->assertOk()
@@ -241,11 +242,11 @@ class CollarControllerTest extends TestCase
 
     public function test_show_returns_404_for_collar_in_wrong_project(): void
     {
-        $other  = Project::factory()->create();
+        $other = Project::factory()->create();
         $collar = Collar::factory()->create(['project_id' => $other->project_id]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}"
+            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}",
         );
 
         $response->assertNotFound();
@@ -262,7 +263,7 @@ class CollarControllerTest extends TestCase
         ]);
 
         $response = $this->deleteJson(
-            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}"
+            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}",
         );
 
         $response->assertNoContent();
@@ -272,7 +273,7 @@ class CollarControllerTest extends TestCase
     public function test_destroy_returns_404_for_nonexistent_collar(): void
     {
         $response = $this->deleteJson(
-            "/api/v1/projects/{$this->project->project_id}/collars/00000000-0000-0000-0000-000000000000"
+            "/api/v1/projects/{$this->project->project_id}/collars/00000000-0000-0000-0000-000000000000",
         );
 
         $response->assertNotFound();

@@ -24,11 +24,11 @@ final class LithologyResolver extends AbstractCitationResolver
         $holeId = $matches[1] ?? 'unknown';
 
         return response()->json([
-            'source_type'     => 'lithology',
+            'source_type' => 'lithology',
             'source_chunk_id' => $sourceId,
-            'title'           => "Lithology Log: {$holeId}",
-            'text'            => "Lithology interval data for drill hole {$holeId}.",
-            'metadata'        => ['hole_id' => $holeId],
+            'title' => "Lithology Log: {$holeId}",
+            'text' => "Lithology interval data for drill hole {$holeId}.",
+            'metadata' => ['hole_id' => $holeId],
         ]);
     }
 }

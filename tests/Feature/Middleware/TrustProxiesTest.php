@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Middleware;
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
@@ -21,7 +22,7 @@ final class TrustProxiesTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Route::get('/_test/proxy/echo', fn (\Illuminate\Http\Request $r) => [
+        Route::get('/_test/proxy/echo', fn (Request $r) => [
             'ip' => $r->ip(),
             'is_secure' => $r->isSecure(),
             'host' => $r->getHost(),

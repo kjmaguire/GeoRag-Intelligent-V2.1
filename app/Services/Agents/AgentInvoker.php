@@ -44,14 +44,12 @@ class AgentInvoker
 
     private const CACHE_TTL_SECONDS = 60;
 
-    public function __construct(private readonly AuditEmitter $auditEmitter)
-    {
-    }
+    public function __construct(private readonly AuditEmitter $auditEmitter) {}
 
     /**
      * Invoke an agent under the operational contract.
      *
-     * @param  Closure(AgentContext): mixed  $handler
+     * @param Closure(AgentContext): mixed $handler
      */
     public function invoke(
         string $name,
@@ -163,7 +161,7 @@ class AgentInvoker
 
         $row = DB::selectOne(
             'SELECT * FROM workspace.agent_timeouts WHERE agent_name = ?',
-            [$name]
+            [$name],
         );
 
         $policy = $row !== null ? (array) $row : [
@@ -192,7 +190,7 @@ class AgentInvoker
     }
 
     /**
-     * @param  array<string, mixed>  $policy
+     * @param array<string, mixed> $policy
      */
     private function circuitCheck(string $name, ?string $workspaceId, array $policy): void
     {
@@ -203,13 +201,13 @@ class AgentInvoker
         $val = Redis::get($key);
         if ($val !== null && (int) $val >= $policy['failure_threshold']) {
             throw new RuntimeException(
-                "circuit open for {$name} (failures={$val}, threshold={$policy['failure_threshold']})"
+                "circuit open for {$name} (failures={$val}, threshold={$policy['failure_threshold']})",
             );
         }
     }
 
     /**
-     * @param  array<string, mixed>  $policy
+     * @param array<string, mixed> $policy
      */
     private function circuitRecord(string $name, ?string $workspaceId, array $policy, bool $success): void
     {
@@ -226,7 +224,7 @@ class AgentInvoker
     }
 
     /**
-     * @return array{string, array<string, mixed>}|null  [hash_hex, components]
+     * @return array{string, array<string, mixed>}|null [hash_hex, components]
      */
     private function computeIdempotencyKey(AgentContext $ctx): ?array
     {
@@ -262,7 +260,7 @@ class AgentInvoker
         foreach ($components as $key => $value) {
             if ($value === null) {
                 throw new InvalidArgumentException(
-                    "{$ctx->riskTier} idempotency requires non-null '{$key}' on AgentContext"
+                    "{$ctx->riskTier} idempotency requires non-null '{$key}' on AgentContext",
                 );
             }
         }
@@ -282,15 +280,15 @@ class AgentInvoker
         $row = DB::selectOne(
             "SELECT id::text AS id, result_summary, outcome, created_at::text AS created_at
              FROM workspace.idempotency_keys WHERE key_hash = decode(?, 'hex')",
-            [$hashHex]
+            [$hashHex],
         );
 
         return $row !== null ? (array) $row : null;
     }
 
     /**
-     * @param  array<string, mixed>  $components
-     * @param  array<string, mixed>  $resultSummary
+     * @param array<string, mixed> $components
+     * @param array<string, mixed> $resultSummary
      */
     private function idempotencyStore(
         string $hashHex,
@@ -315,7 +313,7 @@ class AgentInvoker
                 $ctx->invocationId,
                 json_encode($resultSummary, JSON_THROW_ON_ERROR),
                 $outcome,
-            ]
+            ],
         );
     }
 }

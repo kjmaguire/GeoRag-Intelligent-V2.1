@@ -9,7 +9,10 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Schema;
+use Laravel\Horizon\Contracts\MetricsRepository;
 use Throwable;
 
 /**
@@ -54,37 +57,37 @@ final class MetricsController extends Controller
         try {
             $lines = array_merge($lines, $this->horizonQueueDepth());
         } catch (Throwable $e) {
-            $lines[] = '# warning: horizon_queue_depth unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: horizon_queue_depth unavailable: '.$e->getMessage();
         }
 
         try {
             $lines = array_merge($lines, $this->octaneWorkers());
         } catch (Throwable $e) {
-            $lines[] = '# warning: octane_workers unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: octane_workers unavailable: '.$e->getMessage();
         }
 
         try {
             $lines = array_merge($lines, $this->pulseExceptions());
         } catch (Throwable $e) {
-            $lines[] = '# warning: pulse_exception_total unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: pulse_exception_total unavailable: '.$e->getMessage();
         }
 
         try {
             $lines = array_merge($lines, $this->pulseSlowQueries());
         } catch (Throwable $e) {
-            $lines[] = '# warning: slow_queries_total unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: slow_queries_total unavailable: '.$e->getMessage();
         }
 
         try {
             $lines = array_merge($lines, $this->pulseCacheHitRatio());
         } catch (Throwable $e) {
-            $lines[] = '# warning: cache_hit_ratio unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: cache_hit_ratio unavailable: '.$e->getMessage();
         }
 
         try {
             $lines = array_merge($lines, $this->authzAuditCounter());
         } catch (Throwable $e) {
-            $lines[] = '# warning: laravel_authz_deny_total unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: laravel_authz_deny_total unavailable: '.$e->getMessage();
         }
 
         // V1.5-08 — Dagster run state surfaced through Laravel's /metrics so
@@ -93,7 +96,7 @@ final class MetricsController extends Controller
         try {
             $lines = array_merge($lines, $this->dagsterRunsByStatus());
         } catch (Throwable $e) {
-            $lines[] = '# warning: dagster_runs_total unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: dagster_runs_total unavailable: '.$e->getMessage();
         }
 
         // V1.5-08 — Reverb broadcast volume via Pulse aggregates (cache_set
@@ -103,13 +106,13 @@ final class MetricsController extends Controller
         try {
             $lines = array_merge($lines, $this->reverbBroadcastCounter());
         } catch (Throwable $e) {
-            $lines[] = '# warning: reverb_broadcasts_total unavailable: ' . $e->getMessage();
+            $lines[] = '# warning: reverb_broadcasts_total unavailable: '.$e->getMessage();
         }
 
         $lines[] = '# EOF';
 
         return new Response(
-            implode("\n", $lines) . "\n",
+            implode("\n", $lines)."\n",
             200,
             ['Content-Type' => 'text/plain; version=0.0.4; charset=utf-8'],
         );
@@ -130,17 +133,26 @@ final class MetricsController extends Controller
             return true;
         }
         // Match IPv4 RFC 1918 + loopback. IPv6 ULA (fc00::/7) accepted via str-prefix.
-        if (preg_match('/^10\./', $ip)) return true;
-        if (preg_match('/^192\.168\./', $ip)) return true;
-        if (preg_match('/^172\.(1[6-9]|2[0-9]|3[0-1])\./', $ip)) return true;
-        if (str_starts_with($ip, 'fc') || str_starts_with($ip, 'fd')) return true;
+        if (preg_match('/^10\./', $ip)) {
+            return true;
+        }
+        if (preg_match('/^192\.168\./', $ip)) {
+            return true;
+        }
+        if (preg_match('/^172\.(1[6-9]|2[0-9]|3[0-1])\./', $ip)) {
+            return true;
+        }
+        if (str_starts_with($ip, 'fc') || str_starts_with($ip, 'fd')) {
+            return true;
+        }
+
         return false;
     }
 
     /** @return list<string> */
     private function horizonQueueDepth(): array
     {
-        if (! class_exists(\Laravel\Horizon\Contracts\MetricsRepository::class)) {
+        if (! class_exists(MetricsRepository::class)) {
             return ['# horizon_queue_depth: Horizon not installed'];
         }
 
@@ -162,6 +174,7 @@ final class MetricsController extends Controller
             }
             $lines[] = sprintf('horizon_queue_depth{queue="%s"} %d', $queue, $depth);
         }
+
         return $lines;
     }
 
@@ -203,6 +216,7 @@ final class MetricsController extends Controller
         if (count($rows) === 0) {
             $lines[] = 'pulse_exception_total{class="none"} 0';
         }
+
         return $lines;
     }
 
@@ -224,6 +238,7 @@ final class MetricsController extends Controller
         if (count($rows) === 0) {
             $lines[] = 'slow_queries_total{connection="none"} 0';
         }
+
         return $lines;
     }
 
@@ -259,6 +274,7 @@ final class MetricsController extends Controller
         if (! $emitted) {
             $lines[] = 'cache_hit_ratio{store="none"} 0';
         }
+
         return $lines;
     }
 
@@ -289,6 +305,7 @@ final class MetricsController extends Controller
         if (! $emitted) {
             $lines[] = 'laravel_authz_deny_total{reason="none"} 0';
         }
+
         return $lines;
     }
 
@@ -327,6 +344,7 @@ final class MetricsController extends Controller
         if (count($rows) === 0) {
             $lines[] = 'dagster_runs_total{status="none"} 0';
         }
+
         return $lines;
     }
 
@@ -355,14 +373,16 @@ final class MetricsController extends Controller
                 \PDO::ATTR_TIMEOUT => 2,
                 \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
             ]);
-            $stmt = $pdo->query("SELECT status, COUNT(*) AS count FROM runs GROUP BY status");
+            $stmt = $pdo->query('SELECT status, COUNT(*) AS count FROM runs GROUP BY status');
+
             return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
         } catch (Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('dagster_metrics_query_failed', [
+            Log::warning('dagster_metrics_query_failed', [
                 'dsn_host' => $host,
                 'dsn_db' => $dbName,
                 'error' => $e->getMessage(),
             ]);
+
             return [];
         }
     }
@@ -398,6 +418,7 @@ final class MetricsController extends Controller
         }
 
         $lines[] = sprintf('reverb_broadcasts_total %d', $total);
+
         return $lines;
     }
 
@@ -408,11 +429,12 @@ final class MetricsController extends Controller
      */
     private function pulseAggregateRollup(string $type, int $windowSeconds): array
     {
-        if (! \Illuminate\Support\Facades\Schema::hasTable('pulse_aggregates')) {
+        if (! Schema::hasTable('pulse_aggregates')) {
             return [];
         }
 
         $since = now()->subSeconds($windowSeconds);
+
         return DB::connection(config('pulse.storage.database.connection', config('database.default')))
             ->table('pulse_aggregates')
             ->where('type', $type)
@@ -431,7 +453,7 @@ final class MetricsController extends Controller
     {
         return strtr($value, [
             '\\' => '\\\\',
-            '"'  => '\\"',
+            '"' => '\\"',
             "\n" => '\\n',
         ]);
     }

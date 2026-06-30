@@ -23,13 +23,11 @@ use ZipArchive;
 class LasBundleExporter
 {
     /**
-     * @param  string  $projectId
-     * @param  array   $filters
      * @return array{path: string, size: int}
      */
     public function export(string $projectId, array $filters = []): array
     {
-        $collars   = $this->fetchCollars($projectId, $filters);
+        $collars = $this->fetchCollars($projectId, $filters);
         $collarIds = $collars->pluck('collar_id')->all();
 
         // Eager-load all curves grouped by collar_id.
@@ -39,37 +37,37 @@ class LasBundleExporter
             ->get()
             ->groupBy('collar_id');
 
-        $tmpDir  = sys_get_temp_dir();
-        $zipPath = $tmpDir . '/georag_las_bundle_' . uniqid() . '.zip';
+        $tmpDir = sys_get_temp_dir();
+        $zipPath = $tmpDir.'/georag_las_bundle_'.uniqid().'.zip';
 
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             throw new \RuntimeException("Cannot create ZIP archive at: {$zipPath}");
         }
 
-        $lasFiles   = [];
+        $lasFiles = [];
         $collarCount = 0;
 
         try {
             foreach ($collars as $collar) {
                 $curves = $curvesByCollar->get($collar->collar_id);
 
-                if (!$curves || $curves->isEmpty()) {
+                if (! $curves || $curves->isEmpty()) {
                     continue;
                 }
 
                 $lasContent = $this->buildLas2($collar, $curves);
-                $lasPath    = $tmpDir . '/georag_' . $collar->hole_id . '_' . uniqid() . '.las';
+                $lasPath = $tmpDir.'/georag_'.$collar->hole_id.'_'.uniqid().'.las';
                 file_put_contents($lasPath, $lasContent);
 
                 $lasFiles[] = $lasPath;
-                $zip->addFile($lasPath, $collar->hole_id . '.las');
+                $zip->addFile($lasPath, $collar->hole_id.'.las');
                 $collarCount++;
             }
 
             // If no curves were found for any collar, add a notice file.
             if ($collarCount === 0) {
-                $noticePath = $tmpDir . '/georag_las_no_curves_' . uniqid() . '.txt';
+                $noticePath = $tmpDir.'/georag_las_no_curves_'.uniqid().'.txt';
                 file_put_contents($noticePath, $this->noCurvesNotice($projectId));
                 $lasFiles[] = $noticePath;
                 $zip->addFile($noticePath, 'README.txt');
@@ -95,15 +93,14 @@ class LasBundleExporter
     /**
      * Build the text content of a LAS 2.0 file for a single collar.
      *
-     * @param  Collar      $collar
-     * @param  Collection  $curves  All WellLogCurve rows for this collar.
+     * @param Collection $curves All WellLogCurve rows for this collar.
      */
     private function buildLas2(Collar $collar, Collection $curves): string
     {
         // Use the first curve's metadata for the file-level section.
         $firstCurve = $curves->first();
-        $step       = $firstCurve->step ?? 0.1;
-        $nullValue  = $firstCurve->null_value ?? -999.25;
+        $step = $firstCurve->step ?? 0.1;
+        $nullValue = $firstCurve->null_value ?? -999.25;
         $lasVersion = $firstCurve->las_version ?? '2.0';
 
         $lines = [];
@@ -135,7 +132,7 @@ class LasBundleExporter
         foreach ($curves as $curve) {
             $unit = $curve->curve_unit ?? '';
             $desc = $curve->curve_description ?? $curve->curve_name;
-            $lines[] = sprintf('%-20s%-20s: %s', $curve->curve_name . '.' . $unit, '', $desc);
+            $lines[] = sprintf('%-20s%-20s: %s', $curve->curve_name.'.'.$unit, '', $desc);
         }
 
         $lines[] = '';
@@ -163,14 +160,15 @@ class LasBundleExporter
             $lines[] = implode('    ', $row);
         }
 
-        return implode("\n", $lines) . "\n";
+        return implode("\n", $lines)."\n";
     }
 
     /**
      * Parse a PostgreSQL array literal like "{1.0,2.5,3.0}" into a PHP array.
      * If already a PHP array (e.g. when Eloquent casting is active), pass it through.
      *
-     * @param  string|array  $value
+     * @param string|array $value
+     *
      * @return array<int, float>
      */
     private function parsePostgresArray(mixed $value): array
@@ -179,7 +177,7 @@ class LasBundleExporter
             return array_map('floatval', $value);
         }
 
-        if (!is_string($value)) {
+        if (! is_string($value)) {
             return [];
         }
 
@@ -201,16 +199,16 @@ class LasBundleExporter
     {
         $query = Collar::where('project_id', $projectId);
 
-        if (!empty($filters['hole_type'])) {
+        if (! empty($filters['hole_type'])) {
             $query->where('hole_type', $filters['hole_type']);
         }
-        if (!empty($filters['status'])) {
+        if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         }
-        if (!empty($filters['drill_date_from'])) {
+        if (! empty($filters['drill_date_from'])) {
             $query->where('drill_date', '>=', $filters['drill_date_from']);
         }
-        if (!empty($filters['drill_date_to'])) {
+        if (! empty($filters['drill_date_to'])) {
             $query->where('drill_date', '<=', $filters['drill_date_to']);
         }
         if (isset($filters['min_depth'])) {

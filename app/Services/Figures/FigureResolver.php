@@ -42,8 +42,9 @@ final class FigureResolver
     /**
      * Return the figure manifest for a report with presigned PNG URLs.
      *
-     * @param  string  $reportId  UUID of the silver.reports row
-     * @param  int  $ttlSeconds  presigned URL lifetime
+     * @param string $reportId UUID of the silver.reports row
+     * @param int $ttlSeconds presigned URL lifetime
+     *
      * @return list<array{
      *     idx:int,
      *     page:?int,
@@ -95,13 +96,13 @@ final class FigureResolver
             }
 
             $out[] = [
-                'idx'        => (int) ($f['idx'] ?? 0),
-                'page'       => isset($f['page']) ? (int) $f['page'] : null,
-                'bbox'       => is_array($f['bbox'] ?? null) ? $f['bbox'] : null,
-                'caption'    => (string) ($f['caption'] ?? ''),
-                'key'        => $key,
-                'sha256'     => isset($f['sha256']) ? (string) $f['sha256'] : null,
-                'url'        => $url,
+                'idx' => (int) ($f['idx'] ?? 0),
+                'page' => isset($f['page']) ? (int) $f['page'] : null,
+                'bbox' => is_array($f['bbox'] ?? null) ? $f['bbox'] : null,
+                'caption' => (string) ($f['caption'] ?? ''),
+                'key' => $key,
+                'sha256' => isset($f['sha256']) ? (string) $f['sha256'] : null,
+                'url' => $url,
                 'expires_at' => $expires->toIso8601String(),
             ];
         }

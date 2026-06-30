@@ -114,7 +114,7 @@ return new class extends Migration
                 -- fans out into answer_citation_spans.
                 CONSTRAINT answer_citation_items_unique_per_run
                     UNIQUE (answer_run_id, marker_text)
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -122,31 +122,31 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_items_run
-                 ON silver.answer_citation_items (answer_run_id)'
+                 ON silver.answer_citation_items (answer_run_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_items_workspace
-                 ON silver.answer_citation_items (workspace_id)'
+                 ON silver.answer_citation_items (workspace_id)',
         );
 
         // Partial: only rows where evidence_id is populated (citation traceability).
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_items_evidence
                  ON silver.answer_citation_items (evidence_id)
-                 WHERE evidence_id IS NOT NULL'
+                 WHERE evidence_id IS NOT NULL',
         );
 
         // Partial: only rows where passage_id is populated (legacy path).
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_items_passage
                  ON silver.answer_citation_items (passage_id)
-                 WHERE passage_id IS NOT NULL'
+                 WHERE passage_id IS NOT NULL',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_citation_items_marker_text
-                 ON silver.answer_citation_items (marker_text)'
+                 ON silver.answer_citation_items (marker_text)',
         );
     }
 

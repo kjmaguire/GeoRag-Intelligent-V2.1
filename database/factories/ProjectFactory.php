@@ -26,24 +26,24 @@ class ProjectFactory extends Factory
 
     public function definition(): array
     {
-        $projectName = $this->faker->unique()->company() . ' '
-            . $this->faker->randomElement(['Project', 'Claim Group', 'Property']);
+        $projectName = $this->faker->unique()->company().' '
+            .$this->faker->randomElement(['Project', 'Claim Group', 'Property']);
 
         return [
-            'project_id'            => (string) Str::uuid(),
-            'project_name'          => $projectName,
-            'crs_datum'             => 'EPSG:32613',
-            'company'               => $this->faker->company(),
-            'magnetic_declination'  => $this->faker->randomFloat(2, -30, 30),
+            'project_id' => (string) Str::uuid(),
+            'project_name' => $projectName,
+            'crs_datum' => 'EPSG:32613',
+            'company' => $this->faker->company(),
+            'magnetic_declination' => $this->faker->randomFloat(2, -30, 30),
             'orientation_reference' => $this->faker->randomElement(['grid', 'true']),
-            'commodity'             => $this->faker->randomElement([
+            'commodity' => $this->faker->randomElement([
                 'Au', 'Ag', 'Cu', 'U3O8', 'Zn', 'Pb', 'Ni',
             ]),
-            'region'                => $this->faker->randomElement([
+            'region' => $this->faker->randomElement([
                 'Saskatchewan', 'British Columbia', 'Ontario', 'Québec', 'Nunavut',
             ]),
-            'status'                => ProjectStatus::Active,
-            'slug'                  => Str::slug($projectName) . '-' . $this->faker->unique()->numberBetween(1000, 9999),
+            'status' => ProjectStatus::Active,
+            'slug' => Str::slug($projectName).'-'.$this->faker->unique()->numberBetween(1000, 9999),
         ];
     }
 

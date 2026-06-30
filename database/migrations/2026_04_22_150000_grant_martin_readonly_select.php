@@ -116,10 +116,10 @@ return new class extends Migration
         // (the explicit grants above cover existing objects).
         // ════════════════════════════════════════════════════════════════════
         DB::unprepared(
-            'ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO martin_readonly;'
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO martin_readonly;',
         );
         DB::unprepared(
-            'ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo GRANT SELECT ON TABLES TO martin_readonly;'
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo GRANT SELECT ON TABLES TO martin_readonly;',
         );
     }
 
@@ -146,10 +146,10 @@ return new class extends Migration
 
         // Revoke the default privilege changes.
         DB::unprepared(
-            'ALTER DEFAULT PRIVILEGES IN SCHEMA silver REVOKE SELECT ON TABLES FROM martin_readonly;'
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA silver REVOKE SELECT ON TABLES FROM martin_readonly;',
         );
         DB::unprepared(
-            'ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo REVOKE SELECT ON TABLES FROM martin_readonly;'
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo REVOKE SELECT ON TABLES FROM martin_readonly;',
         );
     }
 };

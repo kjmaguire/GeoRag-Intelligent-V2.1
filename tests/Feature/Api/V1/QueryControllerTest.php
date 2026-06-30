@@ -42,7 +42,7 @@ class QueryControllerTest extends TestCase
 
         // Phase 1 — reserve: returns 202 + query_id, but must NOT dispatch yet.
         $reserve = $this->postJson('/api/v1/queries', [
-            'query'      => 'What is the average gold grade in the northern zone?',
+            'query' => 'What is the average gold grade in the northern zone?',
             'project_id' => $project->project_id,
         ]);
 
@@ -72,7 +72,7 @@ class QueryControllerTest extends TestCase
     public function test_store_returns_422_when_project_id_does_not_exist(): void
     {
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => 'What is the average gold grade?',
+            'query' => 'What is the average gold grade?',
             'project_id' => '00000000-0000-0000-0000-000000000000',
         ]);
 
@@ -83,7 +83,7 @@ class QueryControllerTest extends TestCase
     public function test_store_returns_422_when_project_id_is_not_a_uuid(): void
     {
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => 'Show me the lithology summary.',
+            'query' => 'Show me the lithology summary.',
             'project_id' => 'not-a-uuid',
         ]);
 
@@ -96,7 +96,7 @@ class QueryControllerTest extends TestCase
         $project = Project::factory()->create();
 
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => str_repeat('a', 2001),
+            'query' => str_repeat('a', 2001),
             'project_id' => $project->project_id,
         ]);
 
@@ -112,7 +112,7 @@ class QueryControllerTest extends TestCase
         $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
 
         $response = $this->postJson('/api/v1/queries', [
-            'query'      => 'Summarise drill results for hole DH-001.',
+            'query' => 'Summarise drill results for hole DH-001.',
             'project_id' => $project->project_id,
         ]);
 

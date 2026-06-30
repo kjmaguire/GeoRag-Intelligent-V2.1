@@ -67,7 +67,7 @@ class PortfolioController extends Controller
             QueryAuditLog::where('user_id', $user->id)
                 ->whereIn('project_id', $projectIds)
                 ->where('created_at', '>=', CarbonImmutable::now()->subDays(30))
-                ->count() / 30
+                ->count() / 30,
         );
 
         // Citation resolution rate = fraction of answered queries that
@@ -79,7 +79,7 @@ class PortfolioController extends Controller
             ->where('created_at', '>=', CarbonImmutable::now()->subDays(7));
         $answeredCount = (clone $answered)->count();
         $citedCount = (clone $answered)
-            ->whereRaw("citations IS NOT NULL AND jsonb_array_length(citations) > 0")
+            ->whereRaw('citations IS NOT NULL AND jsonb_array_length(citations) > 0')
             ->count();
         $citationRate = $answeredCount > 0 ? round($citedCount / $answeredCount, 3) : null;
 
@@ -87,20 +87,20 @@ class PortfolioController extends Controller
         // keyed off dotted paths, not a reshaped payload).
         return response()->json([
             'data' => [
-                'projects'                 => ['active' => $activeCount, 'archived' => $archivedCount],
-                'documents_indexed'        => $docsIndexed,
-                'queries_24h'              => $queries24h,
+                'projects' => ['active' => $activeCount, 'archived' => $archivedCount],
+                'documents_indexed' => $docsIndexed,
+                'queries_24h' => $queries24h,
                 'citation_resolution_rate' => $citationRate,
-                'feedback_signal'          => null,  // awaits M2 §10p feedback capture
+                'feedback_signal' => null,  // awaits M2 §10p feedback capture
                 'trends' => [
-                    'documents_indexed_7d_delta'    => $docsThisWeek,
-                    'queries_24h_vs_avg_pct'        => $thirtyDayAvgPerDay > 0
+                    'documents_indexed_7d_delta' => $docsThisWeek,
+                    'queries_24h_vs_avg_pct' => $thirtyDayAvgPerDay > 0
                         ? round((($queries24h - $thirtyDayAvgPerDay) / $thirtyDayAvgPerDay) * 100, 1)
                         : null,
                     'citation_resolution_wow_delta' => null,  // need week-over-week baseline
                 ],
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 60,
         ]);
     }
@@ -126,14 +126,14 @@ class PortfolioController extends Controller
 
         $rows = $projects->map(function (Project $p) use ($queryCountsByProject) {
             return [
-                'id'                 => $p->project_id,
-                'slug'               => $p->slug ?? Str::slug($p->project_name),
-                'name'               => $p->project_name,
-                'status'             => $p->status?->value ?? 'active',
-                'region'             => $p->region ?? '—',
-                'doc_count'          => $p->collars_count ?? 0,
-                'queries_7d'         => (int) ($queryCountsByProject[$p->project_id] ?? 0),
-                'last_activity_at'   => $p->updated_at?->toIso8601String(),
+                'id' => $p->project_id,
+                'slug' => $p->slug ?? Str::slug($p->project_name),
+                'name' => $p->project_name,
+                'status' => $p->status?->value ?? 'active',
+                'region' => $p->region ?? '—',
+                'doc_count' => $p->collars_count ?? 0,
+                'queries_7d' => (int) ($queryCountsByProject[$p->project_id] ?? 0),
+                'last_activity_at' => $p->updated_at?->toIso8601String(),
                 'last_activity_kind' => null,
             ];
         });
@@ -151,7 +151,7 @@ class PortfolioController extends Controller
         $projectIds = $user->projects()->pluck('silver.projects.project_id');
 
         $since = CarbonImmutable::now()->subDays(14)->startOfDay();
-        $rows = QueryAuditLog::selectRaw("DATE(created_at) AS day, COUNT(*) AS c")
+        $rows = QueryAuditLog::selectRaw('DATE(created_at) AS day, COUNT(*) AS c')
             ->where('user_id', $user->id)
             ->whereIn('project_id', $projectIds)
             ->where('created_at', '>=', $since)
@@ -167,7 +167,7 @@ class PortfolioController extends Controller
         while ($day <= $today) {
             $k = $day->format('Y-m-d');
             $points[] = [
-                'date'  => $k,
+                'date' => $k,
                 'count' => (int) ($byDay[$k]->c ?? 0),
             ];
             $day = $day->addDay();
@@ -180,11 +180,11 @@ class PortfolioController extends Controller
 
         return response()->json([
             'data' => [
-                'points'      => $points,
+                'points' => $points,
                 'today_count' => $todayCount,
-                'window_avg'  => $windowAvg,
+                'window_avg' => $windowAvg,
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -206,19 +206,19 @@ class PortfolioController extends Controller
             ->get();
 
         $rows = $projects->map(fn (Project $p) => [
-            'project_id'   => $p->project_id,
+            'project_id' => $p->project_id,
             'project_name' => $p->project_name,
-            'bronze'       => 0,
-            'silver'       => 0,
-            'gold'         => 0,
-            'index'        => $p->collars_count ?? 0,  // fixture-compat key name
-            'failed'       => 0,
-            'total'        => $p->collars_count ?? 0,
+            'bronze' => 0,
+            'silver' => 0,
+            'gold' => 0,
+            'index' => $p->collars_count ?? 0,  // fixture-compat key name
+            'failed' => 0,
+            'total' => $p->collars_count ?? 0,
         ]);
 
         return response()->json([
-            'data'              => $rows,
-            'generated_at'      => now()->toIso8601String(),
+            'data' => $rows,
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 300,
         ]);
     }
@@ -231,14 +231,14 @@ class PortfolioController extends Controller
         // fabricated 78%.
         return response()->json([
             'data' => [
-                'total'             => 0,
-                'helpful'           => 0,
-                'citation_issue'    => 0,
-                'wrong_irrelevant'  => 0,
-                'positive_rate'     => null,
-                'top_issue'         => null,
+                'total' => 0,
+                'helpful' => 0,
+                'citation_issue' => 0,
+                'wrong_irrelevant' => 0,
+                'positive_rate' => null,
+                'top_issue' => null,
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 900,
         ]);
     }
@@ -263,24 +263,24 @@ class PortfolioController extends Controller
         $items = $rows->map(function (QueryAuditLog $r) use ($projectNamesById) {
             $citationCount = is_array($r->citations) ? count($r->citations) : 0;
             $summary = $r->response_text !== null
-                ? "Query resolved with {$citationCount} citation" . ($citationCount === 1 ? '' : 's')
-                    . " — \"" . Str::limit($r->query_text, 80) . "\""
-                : 'Query in flight — "' . Str::limit($r->query_text, 80) . '"';
+                ? "Query resolved with {$citationCount} citation".($citationCount === 1 ? '' : 's')
+                    .' — "'.Str::limit($r->query_text, 80).'"'
+                : 'Query in flight — "'.Str::limit($r->query_text, 80).'"';
 
             return [
-                'id'           => $r->audit_id,
-                'occurred_at'  => $r->created_at?->toIso8601String(),
-                'project_id'   => $r->project_id,
+                'id' => $r->audit_id,
+                'occurred_at' => $r->created_at?->toIso8601String(),
+                'project_id' => $r->project_id,
                 'project_name' => $projectNamesById[$r->project_id] ?? 'Unknown project',
-                'kind'         => 'query',
-                'summary'      => $summary,
-                'detail_ref'   => "qry-{$r->query_id}",
+                'kind' => 'query',
+                'summary' => $summary,
+                'detail_ref' => "qry-{$r->query_id}",
             ];
         });
 
         return response()->json([
-            'data'              => $items,
-            'generated_at'      => now()->toIso8601String(),
+            'data' => $items,
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => 60,
         ]);
     }
@@ -288,6 +288,7 @@ class PortfolioController extends Controller
     private function fixture(string $name): JsonResponse
     {
         $json = $this->loadFixture($name);
+
         return response()->json($json);
     }
 

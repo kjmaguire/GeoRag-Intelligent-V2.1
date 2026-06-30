@@ -13,8 +13,11 @@ class Sample extends Model
     use HasUuids;
 
     protected $table = 'silver.samples';
+
     protected $primaryKey = 'sample_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [

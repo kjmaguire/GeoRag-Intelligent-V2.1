@@ -89,15 +89,15 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_layouts_workspace
-             ON silver.ingest_layouts (workspace_id);'
+             ON silver.ingest_layouts (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_layouts_report_page
-             ON silver.ingest_layouts (report_id, page);'
+             ON silver.ingest_layouts (report_id, page);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ingest_layouts_label
-             ON silver.ingest_layouts (layout_label);'
+             ON silver.ingest_layouts (layout_label);',
         );
     }
 

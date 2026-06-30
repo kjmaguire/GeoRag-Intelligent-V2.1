@@ -39,14 +39,14 @@ use Throwable;
 class ShadowRouter
 {
     private const FLAG_TRAFFIC_PCT = 'ingest_pdf_hatchet_traffic_pct';
+
     private const FLAG_ENABLED = 'ingest_pdf_shadow_enabled';
 
     public function __construct(
         private readonly AuditEmitter $auditEmitter,
         private readonly FastApiJwtMinter $jwtMinter,
         private readonly ConfigRepository $config,
-    ) {
-    }
+    ) {}
 
     /**
      * Decide whether to dual-write this upload, and if so, fire the
@@ -141,7 +141,7 @@ class ShadowRouter
             ]);
             DB::statement(
                 'UPDATE silver.shadow_runs SET error_hatchet = ?, completed_at = now() WHERE id = ?::uuid',
-                [substr($e->getMessage(), 0, 1000), $shadowId]
+                [substr($e->getMessage(), 0, 1000), $shadowId],
             );
         }
 
@@ -185,7 +185,7 @@ class ShadowRouter
               WHERE flag_name = ?
                 AND (workspace_id = ?::uuid OR workspace_id IS NULL)
               ORDER BY workspace_id NULLS LAST LIMIT 1',
-            [$flag, $workspaceId]
+            [$flag, $workspaceId],
         );
 
         if ($row === null) {
@@ -202,7 +202,7 @@ class ShadowRouter
               WHERE flag_name = ?
                 AND (workspace_id = ?::uuid OR workspace_id IS NULL)
               ORDER BY workspace_id NULLS LAST LIMIT 1',
-            [$flag, $workspaceId]
+            [$flag, $workspaceId],
         );
 
         if ($row === null) {
@@ -229,7 +229,7 @@ class ShadowRouter
                      classification, started_at)
                  VALUES (?::uuid, 'ingest_pdf', ?, ?, 'partial', clock_timestamp())
                  RETURNING id::text AS id",
-                [$workspaceId, $correlationToken, $minioKey]
+                [$workspaceId, $correlationToken, $minioKey],
             );
 
             return $row->id;
@@ -247,7 +247,7 @@ class ShadowRouter
     ): string {
         $url = rtrim(
             $this->config->get('services.fastapi.url') ?: env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
-            '/'
+            '/',
         ).'/internal/v1/shadow/ingest_pdf/trigger';
 
         $serviceKey = env('FASTAPI_SERVICE_KEY');
@@ -277,7 +277,7 @@ class ShadowRouter
 
         if (! $resp->successful()) {
             throw new RuntimeException(
-                'Hatchet trigger HTTP '.$resp->status().': '.substr($resp->body(), 0, 200)
+                'Hatchet trigger HTTP '.$resp->status().': '.substr($resp->body(), 0, 200),
             );
         }
 

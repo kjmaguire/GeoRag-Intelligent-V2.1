@@ -16,8 +16,11 @@ class Survey extends Model
     use HasUuids;
 
     protected $table = 'silver.surveys';
+
     protected $primaryKey = 'survey_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -29,11 +32,11 @@ class Survey extends Model
     ];
 
     protected $casts = [
-        'depth'         => 'float',
-        'azimuth'       => 'float',
-        'dip'           => 'float',
-        'created_at'    => 'datetime',
-        'updated_at'    => 'datetime',
+        'depth' => 'float',
+        'azimuth' => 'float',
+        'dip' => 'float',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
         // §04e Downhole Survey — closed-vocabulary instrument family.
         'survey_method' => SurveyMethod::class,
     ];

@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Models\SavedMapView;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Throwable;
 
 /**
  * Saved map views CRUD endpoints (§6.5 doc-phase 105 skeleton).
@@ -34,7 +32,7 @@ class SavedMapViewController extends Controller
     public function index(Request $request, string $projectId): JsonResponse
     {
         throw new \LogicException(
-            'SavedMapViewController::index is a doc-phase 105 skeleton.'
+            'SavedMapViewController::index is a doc-phase 105 skeleton.',
         );
     }
 
@@ -46,7 +44,7 @@ class SavedMapViewController extends Controller
     public function store(Request $request, string $projectId): JsonResponse
     {
         throw new \LogicException(
-            'SavedMapViewController::store is a doc-phase 105 skeleton.'
+            'SavedMapViewController::store is a doc-phase 105 skeleton.',
         );
     }
 
@@ -58,7 +56,7 @@ class SavedMapViewController extends Controller
     public function show(Request $request, string $projectId, string $viewId): JsonResponse
     {
         throw new \LogicException(
-            'SavedMapViewController::show is a doc-phase 105 skeleton.'
+            'SavedMapViewController::show is a doc-phase 105 skeleton.',
         );
     }
 
@@ -70,7 +68,7 @@ class SavedMapViewController extends Controller
     public function update(Request $request, string $projectId, string $viewId): JsonResponse
     {
         throw new \LogicException(
-            'SavedMapViewController::update is a doc-phase 105 skeleton.'
+            'SavedMapViewController::update is a doc-phase 105 skeleton.',
         );
     }
 
@@ -82,7 +80,7 @@ class SavedMapViewController extends Controller
     public function destroy(Request $request, string $projectId, string $viewId): JsonResponse
     {
         throw new \LogicException(
-            'SavedMapViewController::destroy is a doc-phase 105 skeleton.'
+            'SavedMapViewController::destroy is a doc-phase 105 skeleton.',
         );
     }
 }

@@ -48,7 +48,7 @@ class UpdateTimeoutRequest extends FormRequest
             if ($soft > 0 && $hard > 0 && $soft > $hard) {
                 $v->errors()->add(
                     'soft_timeout_ms',
-                    'soft_timeout_ms must be less than or equal to hard_timeout_ms.'
+                    'soft_timeout_ms must be less than or equal to hard_timeout_ms.',
                 );
             }
         });

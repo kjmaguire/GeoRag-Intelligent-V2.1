@@ -40,7 +40,7 @@ return new class extends Migration
                 updated_at    TIMESTAMP(0) WITHOUT TIME ZONE,
                 CONSTRAINT workspaces_pkey PRIMARY KEY (workspace_id),
                 CONSTRAINT workspaces_slug_unique UNIQUE (slug)
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -58,7 +58,7 @@ return new class extends Migration
                 END IF;
                 RETURN NEW;
             END;
-            $$ LANGUAGE plpgsql'
+            $$ LANGUAGE plpgsql',
         );
 
         // -----------------------------------------------------------------------
@@ -71,7 +71,7 @@ return new class extends Migration
                 BEFORE UPDATE ON silver.workspaces
                 FOR EACH ROW
                 WHEN (NEW.data_version IS DISTINCT FROM OLD.data_version)
-                EXECUTE FUNCTION silver.enforce_data_version_monotonic()'
+                EXECUTE FUNCTION silver.enforce_data_version_monotonic()',
         );
 
         // -----------------------------------------------------------------------
@@ -87,7 +87,7 @@ return new class extends Migration
                  NOW(),
                  NOW()
              )
-             ON CONFLICT (workspace_id) DO NOTHING"
+             ON CONFLICT (workspace_id) DO NOTHING",
         );
 
         // -----------------------------------------------------------------------
@@ -97,7 +97,7 @@ return new class extends Migration
             'ALTER TABLE silver.projects
                 ADD COLUMN IF NOT EXISTS workspace_id UUID NULL
                     REFERENCES silver.workspaces(workspace_id) ON DELETE SET NULL,
-                ADD COLUMN IF NOT EXISTS data_version BIGINT NOT NULL DEFAULT 0'
+                ADD COLUMN IF NOT EXISTS data_version BIGINT NOT NULL DEFAULT 0',
         );
 
         // -----------------------------------------------------------------------
@@ -106,7 +106,7 @@ return new class extends Migration
         DB::statement(
             "UPDATE silver.projects
                 SET workspace_id = '{$this->defaultWorkspaceId}'
-              WHERE workspace_id IS NULL"
+              WHERE workspace_id IS NULL",
         );
 
         // -----------------------------------------------------------------------
@@ -119,7 +119,7 @@ return new class extends Migration
                 BEFORE UPDATE ON silver.projects
                 FOR EACH ROW
                 WHEN (NEW.data_version IS DISTINCT FROM OLD.data_version)
-                EXECUTE FUNCTION silver.enforce_data_version_monotonic()'
+                EXECUTE FUNCTION silver.enforce_data_version_monotonic()',
         );
     }
 

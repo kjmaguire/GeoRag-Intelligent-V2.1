@@ -49,11 +49,12 @@ class DumpAuditPii extends Command
         $chunk = max(1, (int) $this->option('chunk'));
         $dryRun = (bool) $this->option('dry-run');
 
-        if (!$output) {
+        if (! $output) {
             $this->error(
                 'audit:dump-pii requires --output=<path> (or --output=- for stdout). '
-                . 'Refusing to print PII without an explicit destination.'
+                .'Refusing to print PII without an explicit destination.',
             );
+
             return self::FAILURE;
         }
 
@@ -67,33 +68,33 @@ class DumpAuditPii extends Command
                 // has the same threat model as the database itself; don't
                 // drop it into /tmp by accident.
                 $dir = dirname($output);
-                if (!is_dir($dir)) {
+                if (! is_dir($dir)) {
                     throw new RuntimeException("Output directory does not exist: {$dir}");
                 }
                 $perms = fileperms($dir) & 0777;
                 $sticky = (fileperms($dir) & 0o1000) !== 0; // /tmp-style sticky bit
-                if (($perms & 0o002) !== 0 && !$sticky) {
+                if (($perms & 0o002) !== 0 && ! $sticky) {
                     // Truly world-writable, no sticky bit — refuse.
                     throw new RuntimeException(
                         "Refusing to dump PII: directory {$dir} is world-writable with "
-                        . "no sticky bit (perms=" . decoct($perms) . "). "
-                        . "Tighten with: chmod o-w {$dir}  (or +t for sticky)."
+                        .'no sticky bit (perms='.decoct($perms).'). '
+                        ."Tighten with: chmod o-w {$dir}  (or +t for sticky).",
                     );
                 }
                 if (($perms & 0o002) !== 0 && $sticky) {
                     $this->warn(
                         "Dump directory {$dir} is world-writable with sticky bit. "
-                        . "OK for transient dumps that get shredded immediately, "
-                        . "but prefer a locked-down directory for long-lived backups."
+                        .'OK for transient dumps that get shredded immediately, '
+                        .'but prefer a locked-down directory for long-lived backups.',
                     );
                 }
                 if (($perms & 0o004) !== 0) {
                     $this->warn(
                         "Dump directory {$dir} is world-readable — proceeding but this "
-                        . "violates least-privilege for PII at rest."
+                        .'violates least-privilege for PII at rest.',
                     );
                 }
-                if (!$dryRun) {
+                if (! $dryRun) {
                     $stream = fopen($output, 'w');
                     if ($stream === false) {
                         throw new RuntimeException("Cannot open {$output} for writing.");
@@ -120,25 +121,25 @@ class DumpAuditPii extends Command
                         continue;
                     }
                     $payload = [
-                        'audit_id'         => $row->audit_id,
-                        'user_id'          => $row->user_id,
-                        'project_id'       => $row->project_id,
-                        'query_id'         => $row->query_id,
-                        'query_text'       => $row->query_text,        // cast decrypts
-                        'response_text'    => $row->response_text,     // cast decrypts
-                        'citations'        => $row->citations,
-                        'sources_used'     => $row->sources_used,
-                        'confidence'       => $row->confidence,
+                        'audit_id' => $row->audit_id,
+                        'user_id' => $row->user_id,
+                        'project_id' => $row->project_id,
+                        'query_id' => $row->query_id,
+                        'query_text' => $row->query_text,        // cast decrypts
+                        'response_text' => $row->response_text,     // cast decrypts
+                        'citations' => $row->citations,
+                        'sources_used' => $row->sources_used,
+                        'confidence' => $row->confidence,
                         'response_time_ms' => $row->response_time_ms,
-                        'llm_model'        => $row->llm_model,
-                        'ip_address'       => $row->ip_address,
-                        'dispatched_at'    => optional($row->dispatched_at)?->toIso8601String(),
-                        'created_at'       => optional($row->created_at)?->toIso8601String(),
+                        'llm_model' => $row->llm_model,
+                        'ip_address' => $row->ip_address,
+                        'dispatched_at' => optional($row->dispatched_at)?->toIso8601String(),
+                        'created_at' => optional($row->created_at)?->toIso8601String(),
                     ];
                     // JSONL — one row per line so restore can stream.
                     fwrite(
                         $stream,
-                        json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL,
+                        json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).PHP_EOL,
                     );
                 }
             });
@@ -148,18 +149,18 @@ class DumpAuditPii extends Command
             // the final row count AND a SHA-256 of the concatenated
             // audit_ids so truncation or edit-in-flight can't pass the
             // count check alone.
-            if (!$dryRun && $stream !== null) {
+            if (! $dryRun && $stream !== null) {
                 $trailer = [
-                    '__meta__'      => 'audit-pii-dump',
+                    '__meta__' => 'audit-pii-dump',
                     'schema_version' => 1,
-                    'row_count'     => $total,
-                    'ids_sha256'    => hash_final($hashCtx),
-                    'app_key_hint'  => substr(hash_hmac('sha256', 'audit-pii', config('app.key')), 0, 16),
-                    'written_at'    => now()->toIso8601String(),
+                    'row_count' => $total,
+                    'ids_sha256' => hash_final($hashCtx),
+                    'app_key_hint' => substr(hash_hmac('sha256', 'audit-pii', config('app.key')), 0, 16),
+                    'written_at' => now()->toIso8601String(),
                 ];
                 fwrite(
                     $stream,
-                    json_encode($trailer, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . PHP_EOL,
+                    json_encode($trailer, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES).PHP_EOL,
                 );
             }
 
@@ -171,13 +172,14 @@ class DumpAuditPii extends Command
             if ($dryRun) {
                 $this->info("Would dump {$total} rows (dry-run).");
             } else {
-                $this->info("Dumped {$total} rows → " . ($output === '-' ? 'stdout' : $output));
+                $this->info("Dumped {$total} rows → ".($output === '-' ? 'stdout' : $output));
                 if ($output !== '-') {
                     $this->warn(
-                        'IMPORTANT: shred the dump after APP_KEY rotation:  shred -u ' . escapeshellarg($output)
+                        'IMPORTANT: shred the dump after APP_KEY rotation:  shred -u '.escapeshellarg($output),
                     );
                 }
             }
+
             return self::SUCCESS;
         } catch (\Throwable $e) {
             if ($stream !== null && $output !== '-') {
@@ -188,7 +190,8 @@ class DumpAuditPii extends Command
                     @unlink($output);
                 }
             }
-            $this->error("Dump failed: " . $e->getMessage());
+            $this->error('Dump failed: '.$e->getMessage());
+
             return self::FAILURE;
         }
     }

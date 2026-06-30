@@ -30,24 +30,24 @@ class UpdateVendorProfileRequest extends FormRequest
         $profile = $this->route('vendor_profile');
 
         return [
-            'name'         => [
+            'name' => [
                 'sometimes',
                 'required',
                 'string',
                 'max:100',
                 Rule::unique('vendor_profiles', 'name')->ignore($profile->id),
             ],
-            'description'  => ['sometimes', 'nullable', 'string'],
+            'description' => ['sometimes', 'nullable', 'string'],
             'profile_type' => ['sometimes', 'required', Rule::in(VendorProfile::PROFILE_TYPES)],
-            'is_global'    => ['sometimes', 'required', 'boolean'],
+            'is_global' => ['sometimes', 'required', 'boolean'],
         ];
     }
 
     public function messages(): array
     {
         return [
-            'name.unique'     => 'A vendor profile with this name already exists.',
-            'profile_type.in' => 'profile_type must be one of: ' . implode(', ', VendorProfile::PROFILE_TYPES) . '.',
+            'name.unique' => 'A vendor profile with this name already exists.',
+            'profile_type.in' => 'profile_type must be one of: '.implode(', ', VendorProfile::PROFILE_TYPES).'.',
         ];
     }
 }

@@ -58,10 +58,10 @@ return new class extends Migration
             //   collars(project_id, hole_id) index for the lookup.
             $qual = $table === 'collars'
                 ? "current_setting('georag.project_id', true) IS NULL "
-                  . "OR project_id = current_setting('georag.project_id', true)::uuid"
+                  ."OR project_id = current_setting('georag.project_id', true)::uuid"
                 : "current_setting('georag.project_id', true) IS NULL "
-                  . "OR collar_id IN (SELECT collar_id FROM silver.collars "
-                  . "WHERE project_id = current_setting('georag.project_id', true)::uuid)";
+                  .'OR collar_id IN (SELECT collar_id FROM silver.collars '
+                  ."WHERE project_id = current_setting('georag.project_id', true)::uuid)";
 
             DB::statement("
                 CREATE POLICY {$table}_project_scope

@@ -86,13 +86,13 @@ class ProjectControllerTest extends TestCase
     public function test_store_creates_project_and_returns_201(): void
     {
         $payload = [
-            'project_name'           => 'Goldfields North',
-            'crs_datum'              => 'EPSG:32654',
-            'company'                => 'Apex Mining',
-            'commodity'              => 'Gold',
-            'region'                 => 'Western Australia',
-            'magnetic_declination'   => -2.5,
-            'orientation_reference'  => 'BOH',
+            'project_name' => 'Goldfields North',
+            'crs_datum' => 'EPSG:32654',
+            'company' => 'Apex Mining',
+            'commodity' => 'Gold',
+            'region' => 'Western Australia',
+            'magnetic_declination' => -2.5,
+            'orientation_reference' => 'BOH',
         ];
 
         $response = $this->postJson('/api/v1/projects', $payload);
@@ -117,7 +117,7 @@ class ProjectControllerTest extends TestCase
     public function test_store_returns_422_when_magnetic_declination_is_out_of_range(): void
     {
         $response = $this->postJson('/api/v1/projects', [
-            'project_name'         => 'Test Project',
+            'project_name' => 'Test Project',
             'magnetic_declination' => 999,
         ]);
 
@@ -128,7 +128,7 @@ class ProjectControllerTest extends TestCase
     public function test_store_returns_422_when_orientation_reference_is_invalid(): void
     {
         $response = $this->postJson('/api/v1/projects', [
-            'project_name'          => 'Test Project',
+            'project_name' => 'Test Project',
             'orientation_reference' => 'INVALID',
         ]);
 

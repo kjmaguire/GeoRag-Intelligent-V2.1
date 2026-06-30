@@ -5,7 +5,6 @@ use Laravel\Pulse\Pulse;
 use Laravel\Pulse\Recorders;
 
 return [
-
     /*
     |--------------------------------------------------------------------------
     | Pulse Domain

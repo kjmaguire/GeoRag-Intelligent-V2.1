@@ -18,7 +18,9 @@ use Illuminate\Queue\SerializesModels;
  */
 class ActivityEventBroadcast implements ShouldBroadcastNow
 {
-    use Dispatchable, InteractsWithSockets, SerializesModels;
+    use Dispatchable;
+    use InteractsWithSockets;
+    use SerializesModels;
 
     public function __construct(
         private readonly string $workspaceId,

@@ -1,6 +1,6 @@
 <?php
 
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__.'/../vendor/autoload.php';
 
 // PHPUnit's <env force="true"> sets $_ENV and putenv() but does not touch
 // $_SERVER. Laravel's vlucas/phpdotenv Env repository reads $_SERVER first,

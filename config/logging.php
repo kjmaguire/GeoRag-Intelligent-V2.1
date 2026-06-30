@@ -1,12 +1,12 @@
 <?php
 
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
 use Monolog\Processor\PsrLogMessageProcessor;
 
 return [
-
     /*
     |--------------------------------------------------------------------------
     | Default Log Channel
@@ -65,9 +65,9 @@ return [
             'replace_placeholders' => true,
             // V1.5-04 — Monolog JSON formatter so Promtail can parse via
             // straight `| json` pipeline instead of regex extraction.
-            'formatter' => \Monolog\Formatter\JsonFormatter::class,
+            'formatter' => JsonFormatter::class,
             'formatter_with' => [
-                'batchMode' => \Monolog\Formatter\JsonFormatter::BATCH_MODE_NEWLINES,
+                'batchMode' => JsonFormatter::BATCH_MODE_NEWLINES,
                 'appendNewline' => true,
             ],
         ],
@@ -79,16 +79,16 @@ return [
         // queries have a workable history window.
         'authz_audit' => [
             'driver' => 'daily',
-            'path'   => storage_path('logs/authz_audit.log'),
-            'level'  => env('AUTHZ_AUDIT_LEVEL', 'info'),
-            'days'   => env('AUTHZ_AUDIT_RETENTION_DAYS', 30),
+            'path' => storage_path('logs/authz_audit.log'),
+            'level' => env('AUTHZ_AUDIT_LEVEL', 'info'),
+            'days' => env('AUTHZ_AUDIT_RETENTION_DAYS', 30),
             'replace_placeholders' => true,
             // V1.5-04 — JSON formatter. The structured `event=authz.deny`
             // payload from AuthorizationAuditLogger now serialises as a
             // single JSON line, dropping Promtail's regex pipeline stage.
-            'formatter' => \Monolog\Formatter\JsonFormatter::class,
+            'formatter' => JsonFormatter::class,
             'formatter_with' => [
-                'batchMode' => \Monolog\Formatter\JsonFormatter::BATCH_MODE_NEWLINES,
+                'batchMode' => JsonFormatter::BATCH_MODE_NEWLINES,
                 'appendNewline' => true,
             ],
         ],
@@ -100,9 +100,9 @@ return [
             'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
             // V1.5-04 — JSON formatter (matches single channel).
-            'formatter' => \Monolog\Formatter\JsonFormatter::class,
+            'formatter' => JsonFormatter::class,
             'formatter_with' => [
-                'batchMode' => \Monolog\Formatter\JsonFormatter::BATCH_MODE_NEWLINES,
+                'batchMode' => JsonFormatter::BATCH_MODE_NEWLINES,
                 'appendNewline' => true,
             ],
         ],

@@ -106,9 +106,9 @@ class ProjectAnalyticsController extends Controller
             'window_days' => $days,
             'kpis' => [
                 ['label' => 'QUERIES', 'value' => (string) $totalQueries, 'sub' => "{$days}d window", 'tone' => 'accent'],
-                ['label' => 'REFUSED', 'value' => (string) $refusedQueries, 'sub' => $totalQueries > 0 ? round(($refusedQueries / $totalQueries) * 100, 1) . '%' : '0%'],
+                ['label' => 'REFUSED', 'value' => (string) $refusedQueries, 'sub' => $totalQueries > 0 ? round(($refusedQueries / $totalQueries) * 100, 1).'%' : '0%'],
                 ['label' => 'AVG CONFIDENCE', 'value' => number_format($avgConfidence, 2)],
-                ['label' => 'COLLARS', 'value' => (string) $collarsTotal, 'sub' => number_format($totalMeters) . ' m total'],
+                ['label' => 'COLLARS', 'value' => (string) $collarsTotal, 'sub' => number_format($totalMeters).' m total'],
                 ['label' => 'SAMPLES', 'value' => (string) $samplesCount],
             ],
             'refusal_by_week' => $weeks,

@@ -62,29 +62,29 @@ return new class extends Migration
         //   1. "all active links for this document" (document card: References N mines / M occurrences…)
         //   2. "all active links for this entity"   (entity card: Referenced in N reports)
         //   3. "all historical links"               (audit)
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_del_document_active
                 ON public_geo.document_entity_links (document_id, canonical_type)
                 WHERE superseded_at IS NULL
-        ");
-        DB::statement("
+        ');
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_del_entity_active
                 ON public_geo.document_entity_links (entity_id, canonical_type)
                 WHERE superseded_at IS NULL
-        ");
-        DB::statement("
+        ');
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_del_established_by
                 ON public_geo.document_entity_links (established_by)
-        ");
+        ');
 
         // At most one active link per (document, canonical_type, entity) tuple.
         // Superseded rows are excluded from the uniqueness check — that's the
         // append-only invariant.
-        DB::statement("
+        DB::statement('
             CREATE UNIQUE INDEX IF NOT EXISTS uq_del_active_triple
                 ON public_geo.document_entity_links (document_id, canonical_type, entity_id)
                 WHERE superseded_at IS NULL
-        ");
+        ');
     }
 
     public function down(): void

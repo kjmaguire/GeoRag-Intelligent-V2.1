@@ -79,13 +79,13 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_mineral_disposition', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_jurisdiction ON public_geo.pg_mineral_disposition (jurisdiction_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_source ON public_geo.pg_mineral_disposition (source_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_geom ON public_geo.pg_mineral_disposition USING GIST (geom)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_type_status ON public_geo.pg_mineral_disposition (disposition_type, status)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_commodity ON public_geo.pg_mineral_disposition USING GIN (commodity_codes)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_holder ON public_geo.pg_mineral_disposition (holder_name)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_disp_number ON public_geo.pg_mineral_disposition (jurisdiction_code, disposition_number)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_jurisdiction ON public_geo.pg_mineral_disposition (jurisdiction_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_source ON public_geo.pg_mineral_disposition (source_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_geom ON public_geo.pg_mineral_disposition USING GIST (geom)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_type_status ON public_geo.pg_mineral_disposition (disposition_type, status)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_commodity ON public_geo.pg_mineral_disposition USING GIN (commodity_codes)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_holder ON public_geo.pg_mineral_disposition (holder_name)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_disp_number ON public_geo.pg_mineral_disposition (jurisdiction_code, disposition_number)');
 
         DB::statement("
             CREATE TABLE IF NOT EXISTS public_geo.pg_mineral_disposition_history (
@@ -112,13 +112,13 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_mineral_disposition_history', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_history_id ON public_geo.pg_mineral_disposition_history (id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_md_history_superseded ON public_geo.pg_mineral_disposition_history (superseded_at DESC)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_history_id ON public_geo.pg_mineral_disposition_history (id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_md_history_superseded ON public_geo.pg_mineral_disposition_history (superseded_at DESC)');
 
         // Martin MVT view — drops source_attributes + source_geom_wkt to keep
         // tile payload lean. Disposition number + holder are included so
         // click-through popups can show "owner + expiry" at a glance.
-        DB::statement("
+        DB::statement('
             CREATE OR REPLACE VIEW public_geo.v_pg_mineral_dispositions_mvt AS
             SELECT
                 d.id, d.jurisdiction_code, d.source_id, d.source_feature_id,
@@ -127,13 +127,13 @@ return new class extends Migration
                 d.commodity_codes, d.geographic_area,
                 d.source_url, d.last_seen_at, d.geom
               FROM public_geo.pg_mineral_disposition d
-        ");
+        ');
         DB::statement("COMMENT ON VIEW public_geo.v_pg_mineral_dispositions_mvt IS 'MVT tile source for Martin. Mineral tenure/dispositions polygons from SK Mining + Crown Dispositions services. Consumed by /tiles/public-geoscience/pg_mineral_dispositions.'");
 
         // Expand canonical_type CHECK on sources to include the new type.
         // One DROP/ADD pass per migration keeps the constraint tight at
         // every checkpoint. Final consolidated pass at end of plan.
-        DB::statement("ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check");
+        DB::statement('ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check');
         DB::statement("
             ALTER TABLE public_geo.sources
               ADD CONSTRAINT sources_canonical_type_check
@@ -152,7 +152,7 @@ return new class extends Migration
         DB::statement('DROP TABLE IF EXISTS public_geo.pg_mineral_disposition CASCADE');
 
         // Restore CHECK to pre-Tenure state (Tier 1 types only).
-        DB::statement("ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check");
+        DB::statement('ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check');
         DB::statement("
             ALTER TABLE public_geo.sources
               ADD CONSTRAINT sources_canonical_type_check

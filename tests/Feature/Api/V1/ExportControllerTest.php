@@ -3,7 +3,6 @@
 namespace Tests\Feature\Api\V1;
 
 use App\Jobs\GenerateExportJob;
-use App\Models\Collar;
 use App\Models\Export;
 use App\Models\Project;
 use App\Models\User;
@@ -27,6 +26,7 @@ class ExportControllerTest extends TestCase
     use RefreshDatabase;
 
     private Project $project;
+
     private User $user;
 
     protected function setUp(): void
@@ -34,8 +34,8 @@ class ExportControllerTest extends TestCase
         parent::setUp();
 
         $this->project = Project::create([
-            'project_name'          => 'Export Test Project ' . uniqid(),
-            'crs_datum'             => 'EPSG:32613',
+            'project_name' => 'Export Test Project '.uniqid(),
+            'crs_datum' => 'EPSG:32613',
             'orientation_reference' => 'BOH',
         ]);
 
@@ -54,7 +54,7 @@ class ExportControllerTest extends TestCase
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/exports",
-            ['export_type' => 'csv_collars']
+            ['export_type' => 'csv_collars'],
         );
 
         $response->assertStatus(202)
@@ -62,7 +62,7 @@ class ExportControllerTest extends TestCase
             ->assertJsonPath('data.status', 'pending')
             ->assertJsonPath('data.project_id', $this->project->project_id)
             ->assertJsonStructure([
-                'data'        => ['export_id', 'export_type', 'status', 'project_id', 'created_at'],
+                'data' => ['export_id', 'export_type', 'status', 'project_id', 'created_at'],
                 'status_url',
                 'message',
             ]);
@@ -89,7 +89,7 @@ class ExportControllerTest extends TestCase
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/exports",
-            ['export_type' => 'csa_bundle']
+            ['export_type' => 'csa_bundle'],
         );
 
         $response->assertStatus(202)
@@ -111,12 +111,12 @@ class ExportControllerTest extends TestCase
             "/api/v1/projects/{$this->project->project_id}/exports",
             [
                 'export_type' => 'csv_collars',
-                'filters'     => [
-                    'hole_type'  => 'Diamond',
-                    'min_depth'  => 100.0,
-                    'max_depth'  => 500.0,
+                'filters' => [
+                    'hole_type' => 'Diamond',
+                    'min_depth' => 100.0,
+                    'max_depth' => 500.0,
                 ],
-            ]
+            ],
         );
 
         $response->assertStatus(202);
@@ -137,7 +137,7 @@ class ExportControllerTest extends TestCase
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/exports",
-            ['export_type' => 'invalid_type']
+            ['export_type' => 'invalid_type'],
         );
 
         $response->assertUnprocessable()
@@ -152,7 +152,7 @@ class ExportControllerTest extends TestCase
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->project->project_id}/exports",
-            []
+            [],
         );
 
         $response->assertUnprocessable()
@@ -167,7 +167,7 @@ class ExportControllerTest extends TestCase
         // be used to enumerate which project UUIDs exist.
         $response = $this->postJson(
             '/api/v1/projects/00000000-0000-0000-0000-000000000000/exports',
-            ['export_type' => 'csv_collars']
+            ['export_type' => 'csv_collars'],
         );
 
         $response->assertForbidden();
@@ -181,14 +181,14 @@ class ExportControllerTest extends TestCase
     public function test_can_fetch_export_status(): void
     {
         $export = Export::create([
-            'project_id'  => $this->project->project_id,
+            'project_id' => $this->project->project_id,
             'export_type' => 'csv_collars',
-            'status'      => 'pending',
-            'filters'     => [],
+            'status' => 'pending',
+            'filters' => [],
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}"
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
         );
 
         $response->assertOk()
@@ -200,20 +200,20 @@ class ExportControllerTest extends TestCase
     public function test_show_returns_download_url_when_completed(): void
     {
         $export = Export::create([
-            'project_id'             => $this->project->project_id,
-            'export_type'            => 'csv_collars',
-            'status'                 => 'completed',
-            'filters'                => [],
-            'minio_path'             => 'georag-exports/test/collars.csv',
-            'download_url'           => 'https://minio.example.com/signed-url',
+            'project_id' => $this->project->project_id,
+            'export_type' => 'csv_collars',
+            'status' => 'completed',
+            'filters' => [],
+            'minio_path' => 'georag-exports/test/collars.csv',
+            'download_url' => 'https://minio.example.com/signed-url',
             'download_url_expires_at' => now()->addHours(23),
-            'completed_at'           => now(),
-            'file_count'             => 1,
-            'total_size_bytes'       => 1024,
+            'completed_at' => now(),
+            'file_count' => 1,
+            'total_size_bytes' => 1024,
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}"
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
         );
 
         $response->assertOk()
@@ -224,20 +224,20 @@ class ExportControllerTest extends TestCase
     public function test_show_returns_404_for_export_in_wrong_project(): void
     {
         $otherProject = Project::create([
-            'project_name'          => 'Other Project ' . uniqid(),
-            'crs_datum'             => 'EPSG:32613',
+            'project_name' => 'Other Project '.uniqid(),
+            'crs_datum' => 'EPSG:32613',
             'orientation_reference' => 'BOH',
         ]);
 
         $export = Export::create([
-            'project_id'  => $otherProject->project_id,
+            'project_id' => $otherProject->project_id,
             'export_type' => 'csv_collars',
-            'status'      => 'pending',
-            'filters'     => [],
+            'status' => 'pending',
+            'filters' => [],
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}"
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
         );
 
         $response->assertNotFound();
@@ -250,21 +250,21 @@ class ExportControllerTest extends TestCase
     public function test_index_returns_exports_for_project(): void
     {
         Export::create([
-            'project_id'  => $this->project->project_id,
+            'project_id' => $this->project->project_id,
             'export_type' => 'csv_collars',
-            'status'      => 'pending',
-            'filters'     => [],
+            'status' => 'pending',
+            'filters' => [],
         ]);
 
         Export::create([
-            'project_id'  => $this->project->project_id,
+            'project_id' => $this->project->project_id,
             'export_type' => 'csa_bundle',
-            'status'      => 'completed',
-            'filters'     => [],
+            'status' => 'completed',
+            'filters' => [],
         ]);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->project->project_id}/exports"
+            "/api/v1/projects/{$this->project->project_id}/exports",
         );
 
         $response->assertOk();
@@ -276,7 +276,7 @@ class ExportControllerTest extends TestCase
         // Non-member requests MUST get 403, not 404 — that way the API cannot
         // be used to enumerate which project UUIDs exist.
         $response = $this->getJson(
-            '/api/v1/projects/00000000-0000-0000-0000-000000000000/exports'
+            '/api/v1/projects/00000000-0000-0000-0000-000000000000/exports',
         );
 
         $response->assertForbidden();
@@ -289,10 +289,10 @@ class ExportControllerTest extends TestCase
     public function test_download_returns_409_when_export_not_completed(): void
     {
         $export = Export::create([
-            'project_id'  => $this->project->project_id,
+            'project_id' => $this->project->project_id,
             'export_type' => 'csv_collars',
-            'status'      => 'pending',
-            'filters'     => [],
+            'status' => 'pending',
+            'filters' => [],
         ]);
 
         $response = $this->getJson("/api/v1/exports/{$export->export_id}/download");
@@ -303,7 +303,7 @@ class ExportControllerTest extends TestCase
     public function test_download_returns_404_for_nonexistent_export(): void
     {
         $response = $this->getJson(
-            '/api/v1/exports/00000000-0000-0000-0000-000000000000/download'
+            '/api/v1/exports/00000000-0000-0000-0000-000000000000/download',
         );
 
         $response->assertNotFound();

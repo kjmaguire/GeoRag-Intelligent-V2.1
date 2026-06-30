@@ -8,7 +8,7 @@ return new class extends Migration
     public function up(): void
     {
         DB::statement("ALTER TABLE silver.projects ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'");
-        DB::statement("ALTER TABLE silver.projects ADD COLUMN IF NOT EXISTS slug VARCHAR(255)");
+        DB::statement('ALTER TABLE silver.projects ADD COLUMN IF NOT EXISTS slug VARCHAR(255)');
 
         DB::statement("ALTER TABLE silver.projects ADD CONSTRAINT projects_status_check CHECK (status IN ('active', 'indexing', 'degraded', 'archived'))");
 
@@ -18,8 +18,8 @@ return new class extends Migration
         // Remove trailing hyphens from generated slugs.
         DB::statement("UPDATE silver.projects SET slug = RTRIM(slug, '-') WHERE slug LIKE '%-'");
 
-        DB::statement("ALTER TABLE silver.projects ALTER COLUMN slug SET NOT NULL");
-        DB::statement("CREATE UNIQUE INDEX IF NOT EXISTS projects_slug_unique ON silver.projects (slug)");
+        DB::statement('ALTER TABLE silver.projects ALTER COLUMN slug SET NOT NULL');
+        DB::statement('CREATE UNIQUE INDEX IF NOT EXISTS projects_slug_unique ON silver.projects (slug)');
     }
 
     public function down(): void

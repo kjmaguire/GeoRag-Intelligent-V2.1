@@ -60,7 +60,7 @@ class ProjectLifecycleTest extends TestCase
         } catch (\Throwable $e) {
             $this->markTestSkipped(
                 'ProjectLifecycleTest requires a live Postgres connection (silver schema). '
-                . 'Error: ' . $e->getMessage(),
+                .'Error: '.$e->getMessage(),
             );
         }
     }

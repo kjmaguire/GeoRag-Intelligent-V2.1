@@ -1,4 +1,5 @@
 <?php
+
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
@@ -8,6 +9,7 @@ return new class extends Migration
     {
         if (DB::connection()->getDriverName() === 'sqlite') {
             DB::statement('ALTER TABLE "silver.document_passages" ADD COLUMN contextualized_content TEXT NULL');
+
             return;
         }
         DB::statement('ALTER TABLE silver.document_passages ADD COLUMN IF NOT EXISTS contextualized_content TEXT NULL');

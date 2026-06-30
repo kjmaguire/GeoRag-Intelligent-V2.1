@@ -76,15 +76,15 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drillhole_intervals_visual_collar
-             ON gold.drillhole_intervals_visual (collar_id, depth_from);'
+             ON gold.drillhole_intervals_visual (collar_id, depth_from);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drillhole_intervals_visual_workspace
-             ON gold.drillhole_intervals_visual (workspace_id);'
+             ON gold.drillhole_intervals_visual (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_drillhole_intervals_visual_project
-             ON gold.drillhole_intervals_visual (project_id);'
+             ON gold.drillhole_intervals_visual (project_id);',
         );
     }
 

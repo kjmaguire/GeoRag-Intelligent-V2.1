@@ -83,11 +83,11 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_geological_ontology_terms_class
-             ON silver.geological_ontology_terms (class);'
+             ON silver.geological_ontology_terms (class);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_geological_ontology_synonyms_synonym
-             ON silver.geological_ontology_synonyms (synonym);'
+             ON silver.geological_ontology_synonyms (synonym);',
         );
 
         DB::statement('GRANT SELECT ON silver.geological_ontology_terms TO georag_app;');

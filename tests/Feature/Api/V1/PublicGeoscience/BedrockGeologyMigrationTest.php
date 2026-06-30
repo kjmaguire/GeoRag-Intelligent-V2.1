@@ -58,28 +58,28 @@ class BedrockGeologyMigrationTest extends TestCase
 
         $this->assertNotNull(
             $row,
-            "Column '$column' missing from public_geoscience.pg_bedrock_geology"
+            "Column '$column' missing from public_geoscience.pg_bedrock_geology",
         );
     }
 
     public static function bedrockGeologyColumnProvider(): array
     {
         return [
-            'unit_code'         => ['unit_code'],
-            'unit_name'         => ['unit_name'],
-            'eon'               => ['eon'],
-            'era'               => ['era'],
-            'period'            => ['period'],
-            'group_name'        => ['group_name'],
-            'formation'         => ['formation'],
-            'member'            => ['member'],
+            'unit_code' => ['unit_code'],
+            'unit_name' => ['unit_name'],
+            'eon' => ['eon'],
+            'era' => ['era'],
+            'period' => ['period'],
+            'group_name' => ['group_name'],
+            'formation' => ['formation'],
+            'member' => ['member'],
             'structural_domain' => ['structural_domain'],
-            'lithology'         => ['lithology'],
-            'scale'             => ['scale'],
-            'geom'              => ['geom'],
-            'source_id'         => ['source_id'],
+            'lithology' => ['lithology'],
+            'scale' => ['scale'],
+            'geom' => ['geom'],
+            'source_id' => ['source_id'],
             'jurisdiction_code' => ['jurisdiction_code'],
-            'checksum'          => ['checksum'],
+            'checksum' => ['checksum'],
         ];
     }
 
@@ -96,7 +96,7 @@ class BedrockGeologyMigrationTest extends TestCase
 
         $this->assertNotNull(
             $exists,
-            'Table public_geoscience.pg_bedrock_geology_history does not exist.'
+            'Table public_geoscience.pg_bedrock_geology_history does not exist.',
         );
     }
 
@@ -112,7 +112,7 @@ class BedrockGeologyMigrationTest extends TestCase
 
         $this->assertNotNull(
             $row,
-            "Column 'superseded_at' missing from pg_bedrock_geology_history"
+            "Column 'superseded_at' missing from pg_bedrock_geology_history",
         );
     }
 
@@ -129,7 +129,7 @@ class BedrockGeologyMigrationTest extends TestCase
 
         $this->assertNotNull(
             $exists,
-            'View public_geoscience.v_pg_bedrock_geology_mvt does not exist.'
+            'View public_geoscience.v_pg_bedrock_geology_mvt does not exist.',
         );
     }
 
@@ -152,7 +152,7 @@ class BedrockGeologyMigrationTest extends TestCase
         $this->assertStringContainsString(
             'bedrock_geology',
             $row->def,
-            "sources_canonical_type_check does not include 'bedrock_geology'"
+            "sources_canonical_type_check does not include 'bedrock_geology'",
         );
     }
 
@@ -171,7 +171,7 @@ class BedrockGeologyMigrationTest extends TestCase
             $this->assertStringContainsString(
                 $type,
                 $row->def,
-                "sources_canonical_type_check dropped previously-valid type '$type'"
+                "sources_canonical_type_check dropped previously-valid type '$type'",
             );
         }
     }

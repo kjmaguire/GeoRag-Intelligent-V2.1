@@ -90,17 +90,17 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_low_confidence_page_reviews_workspace_status
-             ON silver.low_confidence_page_reviews (workspace_id, status);'
+             ON silver.low_confidence_page_reviews (workspace_id, status);',
         );
         DB::statement(
             "CREATE INDEX IF NOT EXISTS idx_low_confidence_page_reviews_pending
              ON silver.low_confidence_page_reviews (created_at)
-             WHERE status = 'pending';"
+             WHERE status = 'pending';",
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_low_confidence_page_reviews_assigned_to
              ON silver.low_confidence_page_reviews (assigned_to)
-             WHERE assigned_to IS NOT NULL;'
+             WHERE assigned_to IS NOT NULL;',
         );
     }
 

@@ -92,7 +92,7 @@ class CacheTelemetryController extends Controller
             ->selectRaw(
                 'count(*) FILTER (WHERE cache_hit_of_run_id IS NOT NULL) AS hits, '
                 .'count(*) FILTER (WHERE cache_hit_of_run_id IS NULL) AS misses, '
-                .'count(*) AS total'
+                .'count(*) AS total',
             )
             ->where('created_at', '>=', DB::raw("now() - interval '{$hours} hour'"))
             ->first();

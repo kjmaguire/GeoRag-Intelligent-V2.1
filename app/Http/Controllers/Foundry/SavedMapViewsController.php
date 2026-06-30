@@ -30,8 +30,8 @@ class SavedMapViewsController extends Controller
             $rows = DB::table('silver.saved_map_views')
                 ->where(function ($q) use ($project, $user) {
                     $q->where('project_id', $project->project_id)
-                      ->orWhere('created_by', $user->id)
-                      ->orWhereNotNull('workspace_id');
+                        ->orWhere('created_by', $user->id)
+                        ->orWhereNotNull('workspace_id');
                 })
                 ->orderByDesc('updated_at')
                 ->limit(50)
@@ -40,13 +40,14 @@ class SavedMapViewsController extends Controller
             // table may not exist in some envs
         }
 
-        $views = $rows->map(function ($r) use ($user, $project) {
+        $views = $rows->map(function ($r) use ($user) {
             $scope = 'user';
             if (isset($r->workspace_id) && $r->workspace_id !== null && $r->project_id === null) {
                 $scope = 'workspace';
             } elseif (isset($r->project_id) && $r->project_id !== null) {
                 $scope = 'project';
             }
+
             return [
                 'id' => (string) ($r->view_id ?? $r->id ?? ''),
                 'scope' => $scope,

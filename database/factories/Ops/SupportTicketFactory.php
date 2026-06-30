@@ -23,21 +23,21 @@ class SupportTicketFactory extends Factory
     public function definition(): array
     {
         return [
-            'ticket_id'           => (string) Str::uuid(),
-            'workspace_id'        => (string) Str::uuid(),
+            'ticket_id' => (string) Str::uuid(),
+            'workspace_id' => (string) Str::uuid(),
             'reported_by_user_id' => User::factory(),
-            'reported_at'         => now(),
-            'channel'             => $this->faker->randomElement(['in_app', 'email', 'webhook', 'phone']),
-            'category'            => $this->faker->randomElement([
+            'reported_at' => now(),
+            'channel' => $this->faker->randomElement(['in_app', 'email', 'webhook', 'phone']),
+            'category' => $this->faker->randomElement([
                 'wrong_answer', 'failed_ingestion', 'failed_report',
                 'integration_issue', 'performance', 'other',
             ]),
-            'description'         => $this->faker->paragraph(),
-            'severity'            => $this->faker->randomElement(['low', 'medium', 'high', 'critical']),
+            'description' => $this->faker->paragraph(),
+            'severity' => $this->faker->randomElement(['low', 'medium', 'high', 'critical']),
             'assigned_to_user_id' => null,
-            'status'              => 'open',
-            'resolution_summary'  => null,
-            'resolved_at'         => null,
+            'status' => 'open',
+            'resolution_summary' => null,
+            'resolved_at' => null,
             'customer_visible_response' => null,
         ];
     }

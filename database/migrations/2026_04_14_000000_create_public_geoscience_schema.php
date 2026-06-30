@@ -48,18 +48,18 @@ return new class extends Migration
 
         // PostGIS bbox polygon (EPSG:4326) — used by the map fly-to.
         DB::statement(
-            "SELECT AddGeometryColumn('public_geo', 'jurisdictions', 'bbox', 4326, 'POLYGON', 2)"
+            "SELECT AddGeometryColumn('public_geo', 'jurisdictions', 'bbox', 4326, 'POLYGON', 2)",
         );
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_pg_jurisdictions_country_status
                 ON public_geo.jurisdictions (country_code, status)
-        ");
+        ');
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_pg_jurisdictions_bbox
                 ON public_geo.jurisdictions USING GIST (bbox)
-        ");
+        ');
 
         // ── sources registry (plan §03a) ─────────────────────────────────
         // One row per (jurisdiction, canonical_type) feed. Canonical entity
@@ -93,15 +93,15 @@ return new class extends Migration
             )
         ");
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_pg_sources_jurisdiction
                 ON public_geo.sources (jurisdiction_code)
-        ");
+        ');
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_pg_sources_canonical_type
                 ON public_geo.sources (canonical_type)
-        ");
+        ');
     }
 
     public function down(): void

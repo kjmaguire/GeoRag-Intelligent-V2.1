@@ -70,7 +70,7 @@ class TargetRecommendation extends Model
         return $this->hasMany(
             TargetReviewDecision::class,
             'recommendation_id',
-            'recommendation_id'
+            'recommendation_id',
         );
     }
 
@@ -83,7 +83,7 @@ class TargetRecommendation extends Model
         return $this->hasMany(
             TargetOutcome::class,
             'recommendation_id',
-            'recommendation_id'
+            'recommendation_id',
         );
     }
 }

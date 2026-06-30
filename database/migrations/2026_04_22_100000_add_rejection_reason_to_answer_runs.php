@@ -30,7 +30,7 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE silver.answer_runs
-             ADD COLUMN IF NOT EXISTS rejection_reason TEXT NULL'
+             ADD COLUMN IF NOT EXISTS rejection_reason TEXT NULL',
         );
     }
 
@@ -38,7 +38,7 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE silver.answer_runs
-             DROP COLUMN IF EXISTS rejection_reason'
+             DROP COLUMN IF EXISTS rejection_reason',
         );
     }
 };

@@ -21,16 +21,16 @@ class TargetRecommendationFactory extends Factory
     public function definition(): array
     {
         return [
-            'recommendation_id'    => (string) Str::uuid(),
-            'workspace_id'         => (string) Str::uuid(),
-            'project_id'           => Project::factory(),
-            'run_id'               => (string) Str::uuid(),
-            'zone_id'              => (string) Str::uuid(),
-            'score_id'             => (string) Str::uuid(),
-            'rank'                 => $this->faker->numberBetween(1, 25),
-            'explanation_markdown' => "Highest-ranked untested target zone based on "
-                                      . "current evidence. " . $this->faker->paragraph(),
-            'created_at'           => now(),
+            'recommendation_id' => (string) Str::uuid(),
+            'workspace_id' => (string) Str::uuid(),
+            'project_id' => Project::factory(),
+            'run_id' => (string) Str::uuid(),
+            'zone_id' => (string) Str::uuid(),
+            'score_id' => (string) Str::uuid(),
+            'rank' => $this->faker->numberBetween(1, 25),
+            'explanation_markdown' => 'Highest-ranked untested target zone based on '
+                                      .'current evidence. '.$this->faker->paragraph(),
+            'created_at' => now(),
         ];
     }
 

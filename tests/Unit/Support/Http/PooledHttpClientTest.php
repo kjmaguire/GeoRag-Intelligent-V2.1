@@ -29,6 +29,7 @@ final class PooledHttpClientTest extends TestCase
     {
         $ref = new ReflectionClass($pool);
         $prop = $ref->getProperty('clients');
+
         return $prop->getValue($pool);
     }
 
@@ -59,7 +60,7 @@ final class PooledHttpClientTest extends TestCase
         $this->assertCount(3, $clients);
         $this->assertSame(
             ['http://martin:3000', 'http://fastapi:8000', 'http://qdrant:6333'],
-            array_keys($clients)
+            array_keys($clients),
         );
     }
 

@@ -87,7 +87,7 @@ return new class extends Migration
 
                 CONSTRAINT answer_retrieval_items_store_valid
                     CHECK (source_store IN (\'qdrant\', \'neo4j\', \'postgis\', \'hybrid\'))
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -95,25 +95,25 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_retrieval_items_run
-                 ON silver.answer_retrieval_items (answer_run_id)'
+                 ON silver.answer_retrieval_items (answer_run_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_retrieval_items_workspace
-                 ON silver.answer_retrieval_items (workspace_id)'
+                 ON silver.answer_retrieval_items (workspace_id)',
         );
 
         // Composite: supports "give me all reranked candidates for this run" queries.
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_retrieval_items_stage
-                 ON silver.answer_retrieval_items (answer_run_id, stage)'
+                 ON silver.answer_retrieval_items (answer_run_id, stage)',
         );
 
         // Partial index: only rows tied to a specific passage (citation traceability).
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_retrieval_items_passage
                  ON silver.answer_retrieval_items (passage_id)
-                 WHERE passage_id IS NOT NULL'
+                 WHERE passage_id IS NOT NULL',
         );
     }
 

@@ -65,26 +65,26 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_saved_map_views_workspace
-             ON silver.saved_map_views (workspace_id);'
+             ON silver.saved_map_views (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_saved_map_views_project
-             ON silver.saved_map_views (project_id);'
+             ON silver.saved_map_views (project_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_saved_map_views_user
-             ON silver.saved_map_views (user_id);'
+             ON silver.saved_map_views (user_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_saved_map_views_aoi_gist
              ON silver.saved_map_views USING GIST (aoi_geom)
-             WHERE aoi_geom IS NOT NULL;'
+             WHERE aoi_geom IS NOT NULL;',
         );
 
         // RLS — same pattern as other silver tables. Workspace-scoped
         // via app.workspace_id session setting (see §RLS docs).
         DB::statement(
-            'ALTER TABLE silver.saved_map_views ENABLE ROW LEVEL SECURITY;'
+            'ALTER TABLE silver.saved_map_views ENABLE ROW LEVEL SECURITY;',
         );
         // Doc-phase 172 — DROP-first makes the migration re-runnable under
         // `migrate:fresh` which keeps non-public schemas + their policies

@@ -70,7 +70,7 @@ class WorkspacesController extends Controller
 
             $configJson = json_encode(
                 $data['config'],
-                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
             );
 
             DB::connection('pgsql')->statement(

@@ -12,8 +12,11 @@ class Report extends Model
     use HasUuids;
 
     protected $table = 'silver.reports';
+
     protected $primaryKey = 'report_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [

@@ -83,9 +83,9 @@ class PromptsTest extends TestCase
                 'prompts',
                 fn ($prompts) => collect($prompts)->contains(
                     fn ($g) => $g['prompt_id'] === self::PROMPT_ID
-                        && count($g['versions']) === 2
-                )
-            )
+                        && count($g['versions']) === 2,
+                ),
+            ),
         );
         $this->assertNotEmpty($ids);
     }
@@ -112,7 +112,7 @@ class PromptsTest extends TestCase
         $this->assertSame(
             'deprecated',
             $oldRow->promotion_state,
-            'old production should auto-deprecate to keep the partial unique index satisfied'
+            'old production should auto-deprecate to keep the partial unique index satisfied',
         );
 
         $audit = DB::connection('pgsql')->table('audit.audit_ledger')

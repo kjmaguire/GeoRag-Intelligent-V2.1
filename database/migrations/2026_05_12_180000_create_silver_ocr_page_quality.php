@@ -71,11 +71,11 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ocr_page_quality_workspace
-             ON silver.ocr_page_quality (workspace_id);'
+             ON silver.ocr_page_quality (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_ocr_page_quality_needs_review
-             ON silver.ocr_page_quality (needs_review) WHERE needs_review = TRUE;'
+             ON silver.ocr_page_quality (needs_review) WHERE needs_review = TRUE;',
         );
     }
 

@@ -38,14 +38,16 @@ class VendorProfileControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $adminUser;
+
     private User $regularUser;
+
     private VendorProfile $profile;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        $this->adminUser   = User::factory()->create(['is_admin' => true]);
+        $this->adminUser = User::factory()->create(['is_admin' => true]);
         $this->regularUser = User::factory()->create(['is_admin' => false]);
 
         $this->profile = VendorProfile::factory()->create();
@@ -60,9 +62,9 @@ class VendorProfileControllerIDORTest extends TestCase
         $this->actingAs($this->regularUser, 'sanctum');
 
         $response = $this->postJson('/api/v1/vendor-profiles', [
-            'name'         => 'Stolen Profile',
+            'name' => 'Stolen Profile',
             'profile_type' => 'lab',
-            'is_global'    => true,
+            'is_global' => true,
         ]);
 
         $response->assertForbidden();

@@ -28,7 +28,7 @@ final class ResourcePotentialResolver extends AbstractPgeoResolver
     protected function mergePayload(array $envelope, ?object $entity, array $parts): array
     {
         $commodity = $entity?->commodity ? ucfirst((string) $entity->commodity) : 'Commodity unknown';
-        $rank      = $entity?->potential_rank;
+        $rank = $entity?->potential_rank;
 
         $envelope['title'] = $rank !== null
             ? "{$commodity} Resource Potential — rank {$rank}/6"
@@ -40,13 +40,13 @@ final class ResourcePotentialResolver extends AbstractPgeoResolver
             $entity->methodology_ref ?? 'not referenced',
         );
         $envelope['entity'] = $entity ? [
-            'id'                 => $entity->id,
-            'commodity'          => $entity->commodity,
+            'id' => $entity->id,
+            'commodity' => $entity->commodity,
             'commodity_grouping' => $entity->commodity_grouping,
-            'potential_rank'     => $entity->potential_rank,
-            'methodology_ref'    => $entity->methodology_ref,
-            'source_feature_id'  => $entity->source_feature_id,
-            'last_seen_at'       => $entity->last_seen_at,
+            'potential_rank' => $entity->potential_rank,
+            'methodology_ref' => $entity->methodology_ref,
+            'source_feature_id' => $entity->source_feature_id,
+            'last_seen_at' => $entity->last_seen_at,
         ] : null;
 
         return $envelope;

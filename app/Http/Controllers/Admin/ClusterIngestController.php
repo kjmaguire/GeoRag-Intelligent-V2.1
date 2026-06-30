@@ -187,6 +187,7 @@ class ClusterIngestController extends Controller
             $passages = (int) $r->passage_count;
             $embedded = (int) $r->embedded_count;
             $pct = $passages > 0 ? round(($embedded / $passages) * 100, 1) : 0.0;
+
             return [
                 'project_id' => (string) $r->project_id,
                 'project_name' => $r->project_name,

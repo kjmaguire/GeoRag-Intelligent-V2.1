@@ -32,7 +32,7 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE silver.answer_runs '
-            . 'ADD COLUMN IF NOT EXISTS partial_resolution_rate NUMERIC(5,4) NULL'
+            .'ADD COLUMN IF NOT EXISTS partial_resolution_rate NUMERIC(5,4) NULL',
         );
     }
 
@@ -40,7 +40,7 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE silver.answer_runs '
-            . 'DROP COLUMN IF EXISTS partial_resolution_rate'
+            .'DROP COLUMN IF EXISTS partial_resolution_rate',
         );
     }
 };

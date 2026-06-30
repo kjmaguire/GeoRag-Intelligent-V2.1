@@ -57,7 +57,7 @@ class Track3DashboardsTest extends TestCase
             ->has('ontology_progress')
             ->has('recent_runs')
             // Doc-phase 171 — §04i failure-layer breakdown panel
-            ->has('failure_layer_breakdown')
+            ->has('failure_layer_breakdown'),
         );
     }
 
@@ -85,7 +85,7 @@ class Track3DashboardsTest extends TestCase
             ->where('failure_layer_breakdown.7.failure_layer', 'evaluator_not_ready')
             // Every bucket has the expected shape, even with zero failures
             ->has('failure_layer_breakdown.0.fail_count')
-            ->has('failure_layer_breakdown.0.last_failed_at')
+            ->has('failure_layer_breakdown.0.last_failed_at'),
         );
     }
 
@@ -115,7 +115,7 @@ class Track3DashboardsTest extends TestCase
             ->has('by_human_decision')
             ->has('recent_decisions')
             ->has('recent_audit_anchors')
-            ->has('valid_decision_types')
+            ->has('valid_decision_types'),
         );
     }
 
@@ -149,7 +149,7 @@ class Track3DashboardsTest extends TestCase
             ->has('recent_replays')
             ->has('valid_statuses')
             ->has('valid_severities')
-            ->has('valid_categories')
+            ->has('valid_categories'),
         );
     }
 
@@ -161,7 +161,7 @@ class Track3DashboardsTest extends TestCase
         $response->assertOk();
         $response->assertInertia(fn ($page) => $page
             ->component('Admin/SupportCockpit')
-            ->where('filters.status', 'investigating')
+            ->where('filters.status', 'investigating'),
         );
     }
 
@@ -193,7 +193,7 @@ class Track3DashboardsTest extends TestCase
             ->has('recent_hypotheses')
             ->has('recent_evidence_links')
             ->has('valid_review_statuses')
-            ->has('valid_evidence_roles')
+            ->has('valid_evidence_roles'),
         );
     }
 }

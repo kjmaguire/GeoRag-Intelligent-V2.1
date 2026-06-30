@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Middleware;
 
 use App\Http\Middleware\SecurityHeadersMiddleware;
+use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
@@ -26,7 +27,7 @@ final class SecurityHeadersTest extends TestCase
         parent::setUp();
         Route::get('/_test/security-headers/probe', fn () => 'ok')->withoutMiddleware([
             // Prevent any auth guards from interfering with the probe route.
-            \Illuminate\Auth\Middleware\Authenticate::class,
+            Authenticate::class,
         ]);
     }
 
@@ -85,7 +86,7 @@ final class SecurityHeadersTest extends TestCase
         $request = Request::create('https://georag.example.com/_test/security-headers/probe', 'GET');
         $this->assertTrue($request->isSecure(), 'precondition: scheme=https should be secure');
 
-        $mw = new SecurityHeadersMiddleware();
+        $mw = new SecurityHeadersMiddleware;
         $resp = $mw->handle($request, fn ($r) => response('ok'));
 
         $hsts = $resp->headers->get('Strict-Transport-Security');
@@ -98,14 +99,14 @@ final class SecurityHeadersTest extends TestCase
     {
         // Default test env is `testing`. Build the CSP directly with env=local
         // to verify the conditional logic — this also exercises the helper.
-        $mw = new SecurityHeadersMiddleware();
+        $mw = new SecurityHeadersMiddleware;
         $csp_local = $mw->buildCsp('local');
         $this->assertStringNotContainsString('upgrade-insecure-requests', $csp_local);
     }
 
     public function test_csp_includes_upgrade_insecure_in_production(): void
     {
-        $mw = new SecurityHeadersMiddleware();
+        $mw = new SecurityHeadersMiddleware;
         $csp_prod = $mw->buildCsp('production');
         $this->assertStringContainsString('upgrade-insecure-requests', $csp_prod);
     }

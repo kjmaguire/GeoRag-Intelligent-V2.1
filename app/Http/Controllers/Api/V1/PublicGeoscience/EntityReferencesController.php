@@ -73,23 +73,23 @@ class EntityReferencesController extends Controller
             ]);
 
         return response()->json([
-            'canonical_type'   => $canonicalType,
-            'pg_id'            => $pgId,
-            'total'            => $rows->count(),
-            'min_confidence'   => $minConfidence,
-            'documents'        => $rows->map(function ($r) {
+            'canonical_type' => $canonicalType,
+            'pg_id' => $pgId,
+            'total' => $rows->count(),
+            'min_confidence' => $minConfidence,
+            'documents' => $rows->map(function ($r) {
                 return [
-                    'document_id'       => $r->document_id,
-                    'title'             => $r->title,
-                    'filename'          => $r->document_filename,
-                    'filing_date'       => $r->filing_date,
-                    'company'           => $r->company,
-                    'commodity'         => $r->commodity,
-                    'confidence'        => (float) $r->confidence,
-                    'signals'           => $this->decodeSignals($r->signals),
+                    'document_id' => $r->document_id,
+                    'title' => $r->title,
+                    'filename' => $r->document_filename,
+                    'filing_date' => $r->filing_date,
+                    'company' => $r->company,
+                    'commodity' => $r->commodity,
+                    'confidence' => (float) $r->confidence,
+                    'signals' => $this->decodeSignals($r->signals),
                     'extracted_context' => $r->extracted_context,
-                    'established_at'    => $r->established_at,
-                    'established_by'    => $r->established_by,
+                    'established_at' => $r->established_at,
+                    'established_by' => $r->established_by,
                 ];
             })->all(),
         ]);
@@ -134,16 +134,17 @@ class EntityReferencesController extends Controller
 
             $hydrated[$canonicalType] = $links->map(function ($link) use ($names) {
                 $display = $names[$link->entity_id] ?? null;
+
                 return [
-                    'entity_id'       => $link->entity_id,
-                    'display_name'    => $display['name'] ?? null,
+                    'entity_id' => $link->entity_id,
+                    'display_name' => $display['name'] ?? null,
                     'jurisdiction_code' => $display['jurisdiction_code'] ?? null,
-                    'source_id'       => $display['source_id'] ?? null,
-                    'confidence'      => (float) $link->confidence,
-                    'signals'         => $this->decodeSignals($link->signals),
+                    'source_id' => $display['source_id'] ?? null,
+                    'confidence' => (float) $link->confidence,
+                    'signals' => $this->decodeSignals($link->signals),
                     'extracted_context' => $link->extracted_context,
-                    'established_at'  => $link->established_at,
-                    'established_by'  => $link->established_by,
+                    'established_at' => $link->established_at,
+                    'established_by' => $link->established_by,
                 ];
             })->values()->all();
         }
@@ -161,10 +162,10 @@ class EntityReferencesController extends Controller
         }
 
         return response()->json([
-            'document_id'   => $reportId,
-            'total'         => $rows->count(),
+            'document_id' => $reportId,
+            'total' => $rows->count(),
             'min_confidence' => $minConfidence,
-            'counts'        => $counts,
+            'counts' => $counts,
             'by_canonical_type' => $hydrated,
         ]);
     }
@@ -209,11 +210,12 @@ class EntityReferencesController extends Controller
         $out = [];
         foreach ($rows as $row) {
             $out[$row->id] = [
-                'name'              => $row->name,
+                'name' => $row->name,
                 'jurisdiction_code' => $row->jurisdiction_code,
-                'source_id'         => $row->source_id,
+                'source_id' => $row->source_id,
             ];
         }
+
         return $out;
     }
 
@@ -226,6 +228,7 @@ class EntityReferencesController extends Controller
             return $value;
         }
         $decoded = json_decode((string) $value, true);
+
         return is_array($decoded) ? $decoded : [];
     }
 }

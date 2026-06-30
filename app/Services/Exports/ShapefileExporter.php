@@ -23,23 +23,23 @@ class ShapefileExporter
         $serviceKey = config('services.fastapi.service_key');
 
         $response = Http::withHeaders([
-                'X-Service-Key' => $serviceKey,
-                'Accept'        => 'application/zip',
-            ])
+            'X-Service-Key' => $serviceKey,
+            'Accept' => 'application/zip',
+        ])
             ->timeout(60)
             ->post("{$fastApiUrl}/internal/exports/shapefile", [
                 'project_id' => $projectId,
-                'format'     => 'shapefile',
+                'format' => 'shapefile',
             ]);
 
         if (! $response->successful()) {
             throw new \RuntimeException(
                 "FastAPI shapefile export failed: HTTP {$response->status()} — "
-                . substr($response->body(), 0, 200)
+                .substr($response->body(), 0, 200),
             );
         }
 
-        $tmpPath = sys_get_temp_dir() . '/georag_collars_shapefile_' . uniqid() . '.zip';
+        $tmpPath = sys_get_temp_dir().'/georag_collars_shapefile_'.uniqid().'.zip';
         file_put_contents($tmpPath, $response->body());
 
         return [

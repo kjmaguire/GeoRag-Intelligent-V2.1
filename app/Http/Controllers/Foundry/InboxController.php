@@ -23,7 +23,8 @@ class InboxController extends Controller
                 ->orderByDesc('created_at')
                 ->limit(50)
                 ->get();
-        } catch (\Throwable $e) { /* */ }
+        } catch (\Throwable $e) { /* */
+        }
 
         $reviewRequests = collect();
         try {
@@ -33,7 +34,8 @@ class InboxController extends Controller
                 ->orderByDesc('created_at')
                 ->limit(20)
                 ->get();
-        } catch (\Throwable $e) { /* */ }
+        } catch (\Throwable $e) { /* */
+        }
 
         $refusals = collect();
         try {
@@ -43,7 +45,8 @@ class InboxController extends Controller
                 ->orderByDesc('created_at')
                 ->limit(20)
                 ->get();
-        } catch (\Throwable $e) { /* */ }
+        } catch (\Throwable $e) { /* */
+        }
 
         return Inertia::render('Foundry/Inbox', [
             'mentions' => $items->map(fn ($m) => [

@@ -90,12 +90,12 @@ class MvtViewNullNumericRegressionTest extends TestCase
 
         $this->assertEmpty(
             $offenders,
-            "One or more MVT views expose non-text columns with NULL rows. "
-            . "Martin will encode these as null-typed properties, which breaks "
-            . "MapLibre's tile parser silently. Fix with Pattern A (drop the "
-            . "column) or Pattern B (COALESCE + has_* bool) — see "
-            . "docs/mvt-nullable-numeric-convention.md.\n\nOffenders:\n  - "
-            . implode("\n  - ", $offenders)
+            'One or more MVT views expose non-text columns with NULL rows. '
+            .'Martin will encode these as null-typed properties, which breaks '
+            ."MapLibre's tile parser silently. Fix with Pattern A (drop the "
+            .'column) or Pattern B (COALESCE + has_* bool) — see '
+            ."docs/mvt-nullable-numeric-convention.md.\n\nOffenders:\n  - "
+            .implode("\n  - ", $offenders),
         );
     }
 
@@ -112,11 +112,11 @@ class MvtViewNullNumericRegressionTest extends TestCase
     {
         $pairs = [
             'v_pg_drillhole_collars_mvt' => [
-                'total_length_m'   => 'numeric',
+                'total_length_m' => 'numeric',
                 'has_total_length' => 'boolean',
             ],
             'v_pg_resource_potential_mvt' => [
-                'potential_rank'     => 'smallint',
+                'potential_rank' => 'smallint',
                 'has_potential_rank' => 'boolean',
             ],
         ];
@@ -134,16 +134,16 @@ class MvtViewNullNumericRegressionTest extends TestCase
                 $this->assertNotNull(
                     $row,
                     "MVT view $view is missing column $col — Pattern B pairing "
-                    . "(see docs/mvt-nullable-numeric-convention.md) appears to "
-                    . "have been broken."
+                    .'(see docs/mvt-nullable-numeric-convention.md) appears to '
+                    .'have been broken.',
                 );
 
                 $this->assertSame(
                     $expectedType,
                     $row->data_type,
                     "MVT view $view.$col expected type $expectedType, got "
-                    . "{$row->data_type}. If the canonical column type changed, "
-                    . "update this test + the Martin yaml declaration."
+                    ."{$row->data_type}. If the canonical column type changed, "
+                    .'update this test + the Martin yaml declaration.',
                 );
             }
         }

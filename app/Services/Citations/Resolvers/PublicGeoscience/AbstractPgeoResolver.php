@@ -51,18 +51,20 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
      *     $envelope['entity'] = $entity ? [ ... ] : null;
      *     return $envelope;
      *
-     * @param  array<string, mixed>  $envelope
-     * @param  array<string, ?string> $parts
+     * @param array<string, mixed> $envelope
+     * @param array<string, ?string> $parts
+     *
      * @return array<string, mixed>
      */
     abstract protected function mergePayload(array $envelope, ?object $entity, array $parts): array;
 
     public function resolve(string $sourceId): JsonResponse
     {
-        $parts    = $this->parseChunkId($sourceId);
-        $entity   = $this->loadEntity($parts['pg_id']);
+        $parts = $this->parseChunkId($sourceId);
+        $entity = $this->loadEntity($parts['pg_id']);
         $envelope = $this->buildEnvelope($sourceId, $parts);
-        $payload  = $this->mergePayload($envelope, $entity, $parts);
+        $payload = $this->mergePayload($envelope, $entity, $parts);
+
         return response()->json($payload);
     }
 
@@ -85,7 +87,7 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
     protected function parseChunkId(string $sourceId): array
     {
         preg_match('/^pg_([a-z0-9_]+):([^:]+)/', $sourceId, $base);
-        $canonicalType  = $base[1] ?? null;
+        $canonicalType = $base[1] ?? null;
         $publicSourceId = $base[2] ?? null;
 
         preg_match('/feature=([^:]+)/', $sourceId, $f);
@@ -96,9 +98,9 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
 
         return [
             'canonical_type' => $canonicalType,
-            'source_id'      => $publicSourceId,
-            'feature_id'     => $featureId,
-            'pg_id'          => $pgId,
+            'source_id' => $publicSourceId,
+            'feature_id' => $featureId,
+            'pg_id' => $pgId,
         ];
     }
 
@@ -117,6 +119,7 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
         if ($pgId === null) {
             return null;
         }
+
         return DB::table($this->tableName())
             ->where('id', $pgId)
             ->first($this->columns());
@@ -129,7 +132,8 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
     /**
      * Build the shared response envelope every PGEO resolver returns.
      *
-     * @param  array{canonical_type: ?string, source_id: ?string, feature_id: ?string, pg_id: ?string} $parts
+     * @param array{canonical_type: ?string, source_id: ?string, feature_id: ?string, pg_id: ?string} $parts
+     *
      * @return array<string, mixed>
      */
     protected function buildEnvelope(string $sourceChunkId, array $parts): array
@@ -151,7 +155,7 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
             ])
             ->first();
 
-        $lastRefreshedAt  = $sourceRow?->last_refreshed_at;
+        $lastRefreshedAt = $sourceRow?->last_refreshed_at;
         $stalenessSeconds = null;
         if ($lastRefreshedAt !== null) {
             try {
@@ -170,23 +174,23 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
         }
 
         return [
-            'source_type'     => 'public_geo',
-            'corpus'          => 'public_geo',
-            'canonical_type'  => $parts['canonical_type'],
+            'source_type' => 'public_geo',
+            'corpus' => 'public_geo',
+            'canonical_type' => $parts['canonical_type'],
             'source_chunk_id' => $sourceChunkId,
-            'jurisdiction'    => [
-                'code'      => $sourceRow?->jurisdiction_code,
-                'name'      => $sourceRow?->jurisdiction_name,
+            'jurisdiction' => [
+                'code' => $sourceRow?->jurisdiction_code,
+                'name' => $sourceRow?->jurisdiction_name,
                 'authority' => $sourceRow?->primary_authority,
             ],
             'source' => [
-                'source_id'   => $parts['source_id'],
-                'name'        => $sourceRow?->source_name,
+                'source_id' => $parts['source_id'],
+                'name' => $sourceRow?->source_name,
                 'service_url' => $sourceRow?->service_url,
             ],
             'license' => [
                 'summary' => $sourceRow?->license_summary,
-                'url'     => $sourceRow?->license_url,
+                'url' => $sourceRow?->license_url,
             ],
             'refresh' => [
                 'last_refreshed_at' => $lastRefreshedAt,
@@ -196,12 +200,12 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
                 $parts['pg_id'],
                 $parts['canonical_type'],
             ),
-            'title'    => null,
-            'text'     => null,
-            'entity'   => null,
+            'title' => null,
+            'text' => null,
+            'entity' => null,
             'metadata' => [
                 'feature_id' => $parts['feature_id'],
-                'pg_id'      => $parts['pg_id'],
+                'pg_id' => $parts['pg_id'],
             ],
         ];
     }
@@ -247,14 +251,14 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
             ]);
 
         return [
-            'count'     => $count,
+            'count' => $count,
             'documents' => $rows->map(fn ($row) => [
-                'document_id'    => $row->document_id,
-                'title'          => $row->title,
-                'filename'       => $row->document_filename,
-                'filing_date'    => $row->filing_date,
-                'confidence'     => (float) $row->confidence,
-                'signals'        => $this->decodeSignals($row->signals),
+                'document_id' => $row->document_id,
+                'title' => $row->title,
+                'filename' => $row->document_filename,
+                'filing_date' => $row->filing_date,
+                'confidence' => (float) $row->confidence,
+                'signals' => $this->decodeSignals($row->signals),
                 'established_at' => $row->established_at,
                 'established_by' => $row->established_by,
             ])->all(),

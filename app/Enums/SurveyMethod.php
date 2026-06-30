@@ -23,7 +23,7 @@ namespace App\Enums;
  */
 enum SurveyMethod: string
 {
-    case Gyro      = 'Gyro';
-    case Magnetic  = 'Magnetic';
+    case Gyro = 'Gyro';
+    case Magnetic = 'Magnetic';
     case Multishot = 'Multishot';
 }

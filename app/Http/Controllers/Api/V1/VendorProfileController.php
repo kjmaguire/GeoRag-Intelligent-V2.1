@@ -86,7 +86,7 @@ class VendorProfileController extends Controller
         } catch (UniqueConstraintViolationException) {
             return response()->json([
                 'message' => 'A vendor profile with this name already exists.',
-                'errors'  => ['name' => ['A vendor profile with this name already exists.']],
+                'errors' => ['name' => ['A vendor profile with this name already exists.']],
             ], 409);
         }
     }
@@ -107,7 +107,7 @@ class VendorProfileController extends Controller
         } catch (UniqueConstraintViolationException) {
             return response()->json([
                 'message' => 'A vendor profile with this name already exists.',
-                'errors'  => ['name' => ['A vendor profile with this name already exists.']],
+                'errors' => ['name' => ['A vendor profile with this name already exists.']],
             ], 409);
         }
     }

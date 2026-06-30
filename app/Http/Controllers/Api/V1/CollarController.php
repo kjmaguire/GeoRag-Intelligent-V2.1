@@ -10,6 +10,7 @@ use App\Http\Resources\CollarResource;
 use App\Models\Collar;
 use App\Models\Project;
 use App\Support\AuthorizationAuditLogger;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -36,6 +37,7 @@ class CollarController extends Controller
                 reason: 'no_pivot_row',
                 context: ['action' => __FUNCTION__, 'path' => $request->path()],
             );
+
             return response()->json(['message' => 'Project not found.'], 404);
         }
 
@@ -60,14 +62,14 @@ class CollarController extends Controller
                 ->paginate($request->integer('per_page', 50));
 
             return CollarResource::collection($collars);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Project not found.'], 404);
         } catch (Throwable $e) {
             report($e);
 
             return response()->json([
                 'message' => 'Failed to retrieve collars.',
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -89,6 +91,7 @@ class CollarController extends Controller
                 reason: 'no_pivot_row',
                 context: ['action' => __FUNCTION__, 'path' => $request->path()],
             );
+
             return response()->json(['message' => 'Project not found.'], 404);
         }
 
@@ -105,14 +108,14 @@ class CollarController extends Controller
             return (new CollarResource($collar))
                 ->response()
                 ->setStatusCode(201);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Project not found.'], 404);
         } catch (Throwable $e) {
             report($e);
 
             return response()->json([
                 'message' => 'Failed to create collar.',
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -134,6 +137,7 @@ class CollarController extends Controller
                 reason: 'no_pivot_row',
                 context: ['action' => __FUNCTION__, 'path' => $request->path()],
             );
+
             return response()->json(['message' => 'Project not found.'], 404);
         }
 
@@ -142,28 +146,28 @@ class CollarController extends Controller
             Project::findOrFail($projectId);
 
             $collar = Collar::with([
-                    'surveys',
-                    'lithologyLogs',
-                    'alterations',
-                    'structures',
-                    'samples',
-                    'geochemistry',
-                    'wellLogCurves',
-                ])
+                'surveys',
+                'lithologyLogs',
+                'alterations',
+                'structures',
+                'samples',
+                'geochemistry',
+                'wellLogCurves',
+            ])
                 ->withCount(['surveys', 'samples'])
                 ->selectRaw('*, ST_X(ST_Transform(geom, 4326)) AS longitude, ST_Y(ST_Transform(geom, 4326)) AS latitude')
                 ->where('project_id', $projectId)
                 ->findOrFail($collarId);
 
             return (new CollarResource($collar))->response();
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Collar not found.'], 404);
         } catch (Throwable $e) {
             report($e);
 
             return response()->json([
                 'message' => 'Failed to retrieve collar.',
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ], 500);
         }
     }
@@ -185,6 +189,7 @@ class CollarController extends Controller
                 reason: 'no_pivot_row',
                 context: ['action' => __FUNCTION__, 'path' => $request->path()],
             );
+
             return response()->json(['message' => 'Project not found.'], 404);
         }
 
@@ -197,14 +202,14 @@ class CollarController extends Controller
             $collar->delete();
 
             return response()->json(null, 204);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             return response()->json(['message' => 'Collar not found.'], 404);
         } catch (Throwable $e) {
             report($e);
 
             return response()->json([
                 'message' => 'Failed to delete collar.',
-                'error'   => $e->getMessage(),
+                'error' => $e->getMessage(),
             ], 500);
         }
     }

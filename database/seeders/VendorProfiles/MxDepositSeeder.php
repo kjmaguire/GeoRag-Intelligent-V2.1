@@ -38,6 +38,7 @@ use Illuminate\Database\Seeder;
 class MxDepositSeeder extends Seeder
 {
     private const PROFILE_NAME = 'MX Deposit';
+
     private const PLACEHOLDER_NOTE = 'PLACEHOLDER — verify against real MX Deposit export';
 
     public function run(): void
@@ -51,7 +52,7 @@ class MxDepositSeeder extends Seeder
                     .'file (CC-02 Item 6, 2026-05-23).'
                 ),
                 'profile_type' => 'other',
-                'is_global'    => true,
+                'is_global' => true,
             ],
         );
 
@@ -95,21 +96,21 @@ class MxDepositSeeder extends Seeder
             ColumnMapping::updateOrCreate(
                 [
                     'vendor_profile_id' => $profile->id,
-                    'parser_type'       => $m['parser_type'],
-                    'canonical_field'   => $m['canonical'],
+                    'parser_type' => $m['parser_type'],
+                    'canonical_field' => $m['canonical'],
                 ],
                 [
                     'source_column' => $m['source'],
-                    'source_unit'   => $m['source_unit'],
-                    'target_unit'   => $m['target_unit'],
-                    'notes'         => self::PLACEHOLDER_NOTE,
+                    'source_unit' => $m['source_unit'],
+                    'target_unit' => $m['target_unit'],
+                    'notes' => self::PLACEHOLDER_NOTE,
                 ],
             );
         }
 
         $count = count($mappings);
         $this->command?->info(
-            "Seeded MX Deposit vendor profile (id={$profile->id}) with {$count} placeholder column mappings."
+            "Seeded MX Deposit vendor profile (id={$profile->id}) with {$count} placeholder column mappings.",
         );
     }
 }

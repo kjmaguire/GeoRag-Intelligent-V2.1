@@ -39,7 +39,7 @@ class WhatChangedController extends Controller
                 ->get();
             foreach ($ingests as $r) {
                 $events->push([
-                    'id' => 'ing-' . ($r->manifest_id ?? $r->id ?? uniqid()),
+                    'id' => 'ing-'.($r->manifest_id ?? $r->id ?? uniqid()),
                     'timestamp_seconds_ago' => CarbonImmutable::parse((string) $r->created_at)->diffInSeconds(),
                     'group' => self::groupFor((string) $r->created_at),
                     'kind' => 'ingestion',
@@ -64,7 +64,7 @@ class WhatChangedController extends Controller
                 ->get();
             foreach ($hypos as $h) {
                 $events->push([
-                    'id' => 'hyp-' . ($h->hypothesis_id ?? uniqid()),
+                    'id' => 'hyp-'.($h->hypothesis_id ?? uniqid()),
                     'timestamp_seconds_ago' => CarbonImmutable::parse((string) $h->updated_at)->diffInSeconds(),
                     'group' => self::groupFor((string) $h->updated_at),
                     'kind' => 'hypothesis_flip',
@@ -89,7 +89,7 @@ class WhatChangedController extends Controller
                 ->get();
             foreach ($decisions as $d) {
                 $events->push([
-                    'id' => 'dec-' . ($d->decision_id ?? uniqid()),
+                    'id' => 'dec-'.($d->decision_id ?? uniqid()),
                     'timestamp_seconds_ago' => CarbonImmutable::parse((string) $d->created_at)->diffInSeconds(),
                     'group' => self::groupFor((string) $d->created_at),
                     'kind' => 'decision_logged',
@@ -122,9 +122,16 @@ class WhatChangedController extends Controller
         try {
             $t = CarbonImmutable::parse($isoTs);
             $diffHours = $t->diffInHours();
-            if ($diffHours < 24) return 'today';
-            if ($diffHours < 48) return 'yesterday';
-            if ($diffHours < 168) return 'this week';
+            if ($diffHours < 24) {
+                return 'today';
+            }
+            if ($diffHours < 48) {
+                return 'yesterday';
+            }
+            if ($diffHours < 168) {
+                return 'this week';
+            }
+
             return 'older';
         } catch (\Throwable $e) {
             return 'older';

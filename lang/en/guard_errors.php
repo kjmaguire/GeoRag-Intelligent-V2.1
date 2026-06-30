@@ -110,7 +110,7 @@ return [
     'REQUEST_UNIT_CLARIFICATION' => "I found :commodity assay values but I'm not sure which unit "
         .'family applies. Which would you like me to use: :candidates?',
 
-    'REQUEST_DEPTH_CLARIFICATION' => "The depth value :value appeared without a unit. Mining "
+    'REQUEST_DEPTH_CLARIFICATION' => 'The depth value :value appeared without a unit. Mining '
         .'reports vary between metric and imperial — which would you like: '
         .':candidates?',
 ];

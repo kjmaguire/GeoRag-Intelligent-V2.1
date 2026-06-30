@@ -19,12 +19,12 @@ namespace App\Enums;
  */
 enum CollarStatus: string
 {
-    case Active     = 'Active';
-    case Completed  = 'Completed';
-    case Abandoned  = 'Abandoned';
+    case Active = 'Active';
+    case Completed = 'Completed';
+    case Abandoned = 'Abandoned';
     // Legacy / case-variant values seen in ingested data:
-    case ActiveLc   = 'active';
+    case ActiveLc = 'active';
     case InProgress = 'In Progress';
-    case Planned    = 'Planned';
-    case Unknown    = 'unknown';
+    case Planned = 'Planned';
+    case Unknown = 'unknown';
 }

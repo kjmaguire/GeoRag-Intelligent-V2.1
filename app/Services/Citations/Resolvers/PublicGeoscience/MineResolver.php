@@ -36,8 +36,8 @@ final class MineResolver extends AbstractPgeoResolver
         $statusLabel = $entity->status ?? 'status unknown';
 
         $envelope['title'] = "{$displayName} — Mine ("
-            . ucfirst(str_replace('-', ' ', $statusLabel)) . ')';
-        $envelope['text']  = sprintf(
+            .ucfirst(str_replace('-', ' ', $statusLabel)).')';
+        $envelope['text'] = sprintf(
             '%s: %s operated by %s. Commodities: %s.',
             $displayName,
             $statusLabel,
@@ -45,15 +45,15 @@ final class MineResolver extends AbstractPgeoResolver
             $commodities ? implode(', ', $commodities) : 'not listed',
         );
         $envelope['entity'] = $entity ? [
-            'id'                 => $entity->id,
-            'name'               => $entity->name,
-            'status'             => $entity->status,
-            'commodities'        => $commodities,
+            'id' => $entity->id,
+            'name' => $entity->name,
+            'status' => $entity->status,
+            'commodities' => $commodities,
             'commodity_grouping' => $entity->commodity_grouping,
-            'operator'           => $entity->operator,
-            'source_url'         => $entity->source_url,
-            'source_feature_id'  => $entity->source_feature_id,
-            'last_seen_at'       => $entity->last_seen_at,
+            'operator' => $entity->operator,
+            'source_url' => $entity->source_url,
+            'source_feature_id' => $entity->source_feature_id,
+            'last_seen_at' => $entity->last_seen_at,
         ] : null;
 
         return $envelope;

@@ -50,19 +50,19 @@ class HypothesisWorkspaceController extends Controller
 
         $filters = $request->validate([
             'review_status' => ['nullable', 'in:'.implode(',', self::REVIEW_STATUSES)],
-            'workspace_id'  => ['nullable', 'uuid'],
+            'workspace_id' => ['nullable', 'uuid'],
         ]);
 
         return Inertia::render('Admin/HypothesisWorkspace', [
-            'kpis'                  => $this->kpis(),
-            'by_review_status'      => $this->byReviewStatus(),
-            'by_confidence_method'  => $this->byConfidenceMethod(),
-            'by_evidence_role'      => $this->byEvidenceRole(),
-            'recent_hypotheses'     => $this->recentHypotheses($filters),
+            'kpis' => $this->kpis(),
+            'by_review_status' => $this->byReviewStatus(),
+            'by_confidence_method' => $this->byConfidenceMethod(),
+            'by_evidence_role' => $this->byEvidenceRole(),
+            'recent_hypotheses' => $this->recentHypotheses($filters),
             'recent_evidence_links' => $this->recentEvidenceLinks(),
-            'filters'               => array_filter($filters, fn ($v) => $v !== null),
+            'filters' => array_filter($filters, fn ($v) => $v !== null),
             'valid_review_statuses' => self::REVIEW_STATUSES,
-            'valid_evidence_roles'  => self::EVIDENCE_ROLES,
+            'valid_evidence_roles' => self::EVIDENCE_ROLES,
         ]);
     }
 
@@ -101,17 +101,17 @@ class HypothesisWorkspaceController extends Controller
         SQL);
 
         return [
-            'total_hypotheses'           => (int) $h->total,
-            'accepted_count'             => (int) $h->accepted,
-            'ai_suggested_count'         => (int) $h->ai_suggested,
-            'mean_confidence'            => $h->mean_confidence !== null
+            'total_hypotheses' => (int) $h->total,
+            'accepted_count' => (int) $h->accepted,
+            'ai_suggested_count' => (int) $h->ai_suggested,
+            'mean_confidence' => $h->mean_confidence !== null
                 ? round((float) $h->mean_confidence, 3)
                 : null,
-            'distinct_workspaces'        => (int) $h->distinct_workspaces,
-            'distinct_parent_questions'  => (int) $h->distinct_parents,
-            'total_evidence_links'       => (int) $e->n,
-            'recent_30d_count'           => (int) $h->recent_30d,
-            'latest_created_at'          => $h->latest_at,
+            'distinct_workspaces' => (int) $h->distinct_workspaces,
+            'distinct_parent_questions' => (int) $h->distinct_parents,
+            'total_evidence_links' => (int) $e->n,
+            'recent_30d_count' => (int) $h->recent_30d,
+            'latest_created_at' => $h->latest_at,
         ];
     }
 
@@ -138,7 +138,7 @@ class HypothesisWorkspaceController extends Controller
 
         return array_map(static fn (object $r) => [
             'review_status' => $r->review_status,
-            'count'         => (int) $r->n,
+            'count' => (int) $r->n,
         ], $rows);
     }
 
@@ -158,7 +158,7 @@ class HypothesisWorkspaceController extends Controller
 
         return array_map(static fn (object $r) => [
             'confidence_method' => $r->method,
-            'count'             => (int) $r->n,
+            'count' => (int) $r->n,
         ], $rows);
     }
 
@@ -184,7 +184,7 @@ class HypothesisWorkspaceController extends Controller
         SQL);
 
         return array_map(static fn (object $r) => [
-            'role'  => $r->role,
+            'role' => $r->role,
             'count' => (int) $r->n,
         ], $rows);
     }
@@ -192,7 +192,8 @@ class HypothesisWorkspaceController extends Controller
     /**
      * Last 50 hypotheses (filter-aware), with evidence-link counts.
      *
-     * @param  array{review_status?: ?string, workspace_id?: ?string}  $filters
+     * @param array{review_status?: ?string, workspace_id?: ?string} $filters
+     *
      * @return array<int, array{
      *   hypothesis_id: string,
      *   workspace_id: string,
@@ -252,21 +253,21 @@ class HypothesisWorkspaceController extends Controller
         SQL, $bindings);
 
         return array_map(static fn (object $r) => [
-            'hypothesis_id'           => (string) $r->hypothesis_id,
-            'workspace_id'            => (string) $r->workspace_id,
-            'parent_question'         => (string) $r->parent_question,
-            'label'                   => $r->label,
-            'description'             => (string) $r->description,
-            'confidence'              => $r->confidence !== null ? round((float) $r->confidence, 3) : null,
-            'confidence_method'       => $r->confidence_method,
-            'review_status'           => $r->review_status,
-            'reviewed_by_user_id'     => $r->reviewed_by_user_id !== null ? (int) $r->reviewed_by_user_id : null,
-            'reviewed_at'             => $r->reviewed_at,
-            'created_at'              => $r->created_at,
-            'supporting_count'        => (int) $r->supporting_count,
-            'contradicting_count'     => (int) $r->contradicting_count,
-            'missing_count'           => (int) $r->missing_count,
-            'recommended_test_count'  => (int) $r->recommended_test_count,
+            'hypothesis_id' => (string) $r->hypothesis_id,
+            'workspace_id' => (string) $r->workspace_id,
+            'parent_question' => (string) $r->parent_question,
+            'label' => $r->label,
+            'description' => (string) $r->description,
+            'confidence' => $r->confidence !== null ? round((float) $r->confidence, 3) : null,
+            'confidence_method' => $r->confidence_method,
+            'review_status' => $r->review_status,
+            'reviewed_by_user_id' => $r->reviewed_by_user_id !== null ? (int) $r->reviewed_by_user_id : null,
+            'reviewed_at' => $r->reviewed_at,
+            'created_at' => $r->created_at,
+            'supporting_count' => (int) $r->supporting_count,
+            'contradicting_count' => (int) $r->contradicting_count,
+            'missing_count' => (int) $r->missing_count,
+            'recommended_test_count' => (int) $r->recommended_test_count,
         ], $rows);
     }
 
@@ -302,13 +303,13 @@ class HypothesisWorkspaceController extends Controller
         SQL);
 
         return array_map(static fn (object $r) => [
-            'link_id'           => (string) $r->link_id,
-            'hypothesis_id'     => (string) $r->hypothesis_id,
-            'hypothesis_label'  => $r->hypothesis_label,
-            'workspace_id'      => (string) $r->workspace_id,
-            'source_chunk_id'   => $r->source_chunk_id,
-            'role'              => $r->role,
-            'weight'            => $r->weight !== null ? round((float) $r->weight, 3) : null,
+            'link_id' => (string) $r->link_id,
+            'hypothesis_id' => (string) $r->hypothesis_id,
+            'hypothesis_label' => $r->hypothesis_label,
+            'workspace_id' => (string) $r->workspace_id,
+            'source_chunk_id' => $r->source_chunk_id,
+            'role' => $r->role,
+            'weight' => $r->weight !== null ? round((float) $r->weight, 3) : null,
         ], $rows);
     }
 }

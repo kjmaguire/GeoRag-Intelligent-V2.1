@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rules\Password;
+use Laravel\Sanctum\PersonalAccessToken;
 
 /**
  * Sanctum token-based authentication for the GeoRAG API.
@@ -29,23 +30,23 @@ class AuthController extends Controller
     public function register(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'name'     => ['required', 'string', 'max:255'],
-            'email'    => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', Password::min(8)],
         ]);
 
         $user = User::create([
-            'name'     => $validated['name'],
-            'email'    => $validated['email'],
+            'name' => $validated['name'],
+            'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
         ]);
 
         $token = $user->createToken('georag-api')->plainTextToken;
 
         return response()->json([
-            'user'  => [
-                'id'    => $user->id,
-                'name'  => $user->name,
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
                 'email' => $user->email,
             ],
             'token' => $token,
@@ -58,7 +59,7 @@ class AuthController extends Controller
     public function login(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'email'    => ['required', 'string', 'email'],
+            'email' => ['required', 'string', 'email'],
             'password' => ['required', 'string'],
         ]);
 
@@ -75,9 +76,9 @@ class AuthController extends Controller
         $token = $user->createToken('georag-api')->plainTextToken;
 
         return response()->json([
-            'user'  => [
-                'id'    => $user->id,
-                'name'  => $user->name,
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
                 'email' => $user->email,
             ],
             'token' => $token,
@@ -106,7 +107,7 @@ class AuthController extends Controller
     {
         $token = $request->user()?->currentAccessToken();
 
-        if ($token instanceof \Laravel\Sanctum\PersonalAccessToken) {
+        if ($token instanceof PersonalAccessToken) {
             $token->delete();
         } else {
             // Session-authenticated caller (SPA cookie). Invalidate the
@@ -140,7 +141,7 @@ class AuthController extends Controller
     public function spaLogin(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'email'    => ['required', 'string', 'email'],
+            'email' => ['required', 'string', 'email'],
             'password' => ['required', 'string'],
         ]);
 
@@ -156,8 +157,8 @@ class AuthController extends Controller
 
         return response()->json([
             'user' => [
-                'id'    => $user->id,
-                'name'  => $user->name,
+                'id' => $user->id,
+                'name' => $user->name,
                 'email' => $user->email,
             ],
         ]);
@@ -188,14 +189,14 @@ class AuthController extends Controller
 
         return response()->json([
             'user' => [
-                'id'    => $user->id,
-                'name'  => $user->name,
+                'id' => $user->id,
+                'name' => $user->name,
                 'email' => $user->email,
             ],
             'projects' => $projects->map(fn ($p) => [
-                'project_id'   => $p->project_id,
+                'project_id' => $p->project_id,
                 'project_name' => $p->project_name,
-                'role'         => $p->pivot->role,
+                'role' => $p->pivot->role,
             ]),
         ]);
     }

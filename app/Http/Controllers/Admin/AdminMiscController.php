@@ -23,11 +23,14 @@ class AdminMiscController extends Controller
         $this->authorize('admin');
         $workspaceId = $request->query('workspace_id');
         $params = ['limit' => 200];
-        if ($workspaceId) $params['workspace_id'] = $workspaceId;
+        if ($workspaceId) {
+            $params['workspace_id'] = $workspaceId;
+        }
 
         $response = $this->fastapi()->get(
             $this->base().'/api/v1/admin/source-trust/scores', $params,
         );
+
         return Inertia::render('Admin/SourceTrust', [
             'scores' => $response->ok() ? ($response->json('scores') ?? []) : [],
             'fastapi_error' => $response->ok() ? null : $response->body(),
@@ -42,6 +45,7 @@ class AdminMiscController extends Controller
             $this->base().'/api/v1/admin/export-gate/results',
             ['limit' => 200],
         );
+
         return Inertia::render('Admin/ExportGate', [
             'results' => $response->ok() ? ($response->json('results') ?? []) : [],
             'fastapi_error' => $response->ok() ? null : $response->body(),
@@ -54,6 +58,7 @@ class AdminMiscController extends Controller
         $response = $this->fastapi()->get(
             $this->base().'/api/v1/admin/load-test/scripts',
         );
+
         return Inertia::render('Admin/LoadTest', [
             'scripts' => $response->ok() ? ($response->json('scripts') ?? []) : [],
             'fastapi_error' => $response->ok() ? null : $response->body(),
@@ -63,7 +68,10 @@ class AdminMiscController extends Controller
     private function fastapi()
     {
         $key = config('services.fastapi.service_key');
-        if (! $key) abort(500, 'FASTAPI_SERVICE_KEY not configured');
+        if (! $key) {
+            abort(500, 'FASTAPI_SERVICE_KEY not configured');
+        }
+
         return Http::withHeaders(['X-Service-Key' => $key])->timeout(30);
     }
 

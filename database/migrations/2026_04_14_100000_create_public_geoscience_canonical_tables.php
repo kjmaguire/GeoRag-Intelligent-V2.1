@@ -31,8 +31,8 @@ return new class extends Migration
     {
         // ── Shared enum strings (documented here, enforced per-column) ──
         $mineStatus = "'producing','past-producer','developed-deposit','prospect','closed','unknown'";
-        $occStatus  = "'occurrence','showing','prospect','deposit','past-producer','producer','unknown'";
-        $coreAvail  = "'available','partial','unavailable','unknown'";
+        $occStatus = "'occurrence','showing','prospect','deposit','past-producer','producer','unknown'";
+        $coreAvail = "'available','partial','unavailable','unknown'";
         $commodityGrouping = "'precious_metals','base_metals','uranium','potash_salt','industrial_materials','gemstones','lithium','ree','coal','other'";
 
         // ────────────────────────────────────────────────────────────────
@@ -96,8 +96,8 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_mine_history', 'geom', 4326, 'POINT', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_mine_history_id ON public_geo.pg_mine_history (id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_mine_history_superseded ON public_geo.pg_mine_history (superseded_at DESC)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_mine_history_id ON public_geo.pg_mine_history (id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_mine_history_superseded ON public_geo.pg_mine_history (superseded_at DESC)');
 
         // ────────────────────────────────────────────────────────────────
         // pg_mineral_occurrence
@@ -142,7 +142,7 @@ return new class extends Migration
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_mineral_occurrence', 'geom', 4326, 'POINT', 2)");
         self::addCommonIndexes('pg_mineral_occurrence', commodityColumn: 'primary_commodities');
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_mineral_occurrence_smdi ON public_geo.pg_mineral_occurrence (smdi_id)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_mineral_occurrence_smdi ON public_geo.pg_mineral_occurrence (smdi_id)');
 
         DB::statement("
             CREATE TABLE IF NOT EXISTS public_geo.pg_mineral_occurrence_history (
@@ -170,8 +170,8 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_mineral_occurrence_history', 'geom', 4326, 'POINT', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_mo_history_id ON public_geo.pg_mineral_occurrence_history (id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_mo_history_superseded ON public_geo.pg_mineral_occurrence_history (superseded_at DESC)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_mo_history_id ON public_geo.pg_mineral_occurrence_history (id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_mo_history_superseded ON public_geo.pg_mineral_occurrence_history (superseded_at DESC)');
 
         // ────────────────────────────────────────────────────────────────
         // pg_drillhole_collar
@@ -221,11 +221,11 @@ return new class extends Migration
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_drillhole_collar', 'geom', 4326, 'POINT', 2)");
         // Drillholes don't carry a status enum or commodity_grouping — drop the
         // common-index helper and index the drill-specific columns directly.
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_jurisdiction ON public_geo.pg_drillhole_collar (jurisdiction_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_source      ON public_geo.pg_drillhole_collar (source_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_geom        ON public_geo.pg_drillhole_collar USING GIST (geom)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_drillhole_id ON public_geo.pg_drillhole_collar (drillhole_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_commodity   ON public_geo.pg_drillhole_collar USING GIN (commodity_of_interest)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_jurisdiction ON public_geo.pg_drillhole_collar (jurisdiction_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_source      ON public_geo.pg_drillhole_collar (source_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_geom        ON public_geo.pg_drillhole_collar USING GIST (geom)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_drillhole_id ON public_geo.pg_drillhole_collar (drillhole_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_commodity   ON public_geo.pg_drillhole_collar USING GIN (commodity_of_interest)');
 
         DB::statement("
             CREATE TABLE IF NOT EXISTS public_geo.pg_drillhole_collar_history (
@@ -258,8 +258,8 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_drillhole_collar_history', 'geom', 4326, 'POINT', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_history_id ON public_geo.pg_drillhole_collar_history (id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_dc_history_superseded ON public_geo.pg_drillhole_collar_history (superseded_at DESC)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_history_id ON public_geo.pg_drillhole_collar_history (id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_dc_history_superseded ON public_geo.pg_drillhole_collar_history (superseded_at DESC)');
 
         // ────────────────────────────────────────────────────────────────
         // pg_resource_potential_zone
@@ -297,11 +297,11 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_resource_potential_zone', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_jurisdiction ON public_geo.pg_resource_potential_zone (jurisdiction_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_source ON public_geo.pg_resource_potential_zone (source_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_commodity ON public_geo.pg_resource_potential_zone (commodity)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_rank ON public_geo.pg_resource_potential_zone (potential_rank)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_geom ON public_geo.pg_resource_potential_zone USING GIST (geom)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_jurisdiction ON public_geo.pg_resource_potential_zone (jurisdiction_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_source ON public_geo.pg_resource_potential_zone (source_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_commodity ON public_geo.pg_resource_potential_zone (commodity)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_rank ON public_geo.pg_resource_potential_zone (potential_rank)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_geom ON public_geo.pg_resource_potential_zone USING GIST (geom)');
 
         DB::statement("
             CREATE TABLE IF NOT EXISTS public_geo.pg_resource_potential_zone_history (
@@ -323,8 +323,8 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_resource_potential_zone_history', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_history_id ON public_geo.pg_resource_potential_zone_history (id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rpz_history_superseded ON public_geo.pg_resource_potential_zone_history (superseded_at DESC)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_history_id ON public_geo.pg_resource_potential_zone_history (id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rpz_history_superseded ON public_geo.pg_resource_potential_zone_history (superseded_at DESC)');
     }
 
     public function down(): void

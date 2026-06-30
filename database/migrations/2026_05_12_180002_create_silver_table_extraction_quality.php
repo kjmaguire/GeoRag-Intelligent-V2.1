@@ -67,11 +67,11 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_table_extraction_quality_workspace
-             ON silver.table_extraction_quality (workspace_id);'
+             ON silver.table_extraction_quality (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_table_extraction_quality_needs_review
-             ON silver.table_extraction_quality (needs_review) WHERE needs_review = TRUE;'
+             ON silver.table_extraction_quality (needs_review) WHERE needs_review = TRUE;',
         );
     }
 

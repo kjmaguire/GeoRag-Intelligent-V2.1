@@ -51,11 +51,12 @@ class MlTrainingRunsController extends Controller
         if (! $response->ok()) {
             return response()->json(
                 ['error' => 'fastapi returned non-2xx',
-                 'fastapi_status' => $response->status(),
-                 'fastapi_body' => $response->json()],
+                    'fastapi_status' => $response->status(),
+                    'fastapi_body' => $response->json()],
                 502,
             );
         }
+
         return response()->json($response->json(), 201);
     }
 
@@ -77,11 +78,12 @@ class MlTrainingRunsController extends Controller
         if (! $response->ok()) {
             return response()->json(
                 ['error' => 'fastapi returned non-2xx',
-                 'fastapi_status' => $response->status(),
-                 'fastapi_body' => $response->json()],
+                    'fastapi_status' => $response->status(),
+                    'fastapi_body' => $response->json()],
                 502,
             );
         }
+
         return response()->json($response->json(), 201);
     }
 
@@ -91,6 +93,7 @@ class MlTrainingRunsController extends Controller
         if (! $serviceKey) {
             abort(500, 'FASTAPI_SERVICE_KEY not configured');
         }
+
         return Http::withHeaders(['X-Service-Key' => $serviceKey])->timeout(120);
     }
 

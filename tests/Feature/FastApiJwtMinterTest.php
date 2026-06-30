@@ -26,7 +26,7 @@ class FastApiJwtMinterTest extends TestCase
 
     public function test_minted_token_decodes_with_same_secret(): void
     {
-        $minter = new FastApiJwtMinter();
+        $minter = new FastApiJwtMinter;
 
         $jwt = $minter->mint(42, 'proj-abc', ['member']);
 
@@ -41,7 +41,7 @@ class FastApiJwtMinterTest extends TestCase
 
     public function test_claims_include_iat_exp_and_ttl_is_sixty_seconds(): void
     {
-        $minter = new FastApiJwtMinter();
+        $minter = new FastApiJwtMinter;
 
         $jwt = $minter->mint('user-1', 'proj-xyz', []);
         $decoded = JWT::decode($jwt, new Key(self::TEST_SECRET, 'HS256'));
@@ -53,7 +53,7 @@ class FastApiJwtMinterTest extends TestCase
 
     public function test_token_signed_with_different_secret_fails_to_decode(): void
     {
-        $minter = new FastApiJwtMinter();
+        $minter = new FastApiJwtMinter;
 
         $jwt = $minter->mint(1, 'proj-a', []);
 
@@ -63,7 +63,7 @@ class FastApiJwtMinterTest extends TestCase
 
     public function test_roles_default_to_empty_array(): void
     {
-        $minter = new FastApiJwtMinter();
+        $minter = new FastApiJwtMinter;
 
         $jwt = $minter->mint(7, 'proj-empty');
         $decoded = JWT::decode($jwt, new Key(self::TEST_SECRET, 'HS256'));
@@ -77,7 +77,7 @@ class FastApiJwtMinterTest extends TestCase
      */
     public function test_minted_token_has_default_primary_kid_header(): void
     {
-        $minter = new FastApiJwtMinter();
+        $minter = new FastApiJwtMinter;
         $jwt = $minter->mint(1, 'proj-kid');
 
         // JWT header is the first '.' segment, base64url decoded.
@@ -92,7 +92,7 @@ class FastApiJwtMinterTest extends TestCase
     {
         config(['services.fastapi.service_key_kid' => 'rot-2026-q3']);
 
-        $minter = new FastApiJwtMinter();
+        $minter = new FastApiJwtMinter;
         $jwt = $minter->mint(1, 'proj-kid');
 
         [$headerB64] = explode('.', $jwt);

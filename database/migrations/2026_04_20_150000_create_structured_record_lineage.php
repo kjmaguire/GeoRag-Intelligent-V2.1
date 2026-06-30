@@ -64,7 +64,7 @@ return new class extends Migration
                 -- sha256 must be 64 lowercase hex characters (same pattern as document_revisions).
                 CONSTRAINT structured_record_lineage_sha256_format
                     CHECK (bronze_sha256 ~ \'^[0-9a-f]{64}$\')
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -72,17 +72,17 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_srl_evidence_id
-                 ON silver.structured_record_lineage (evidence_id)'
+                 ON silver.structured_record_lineage (evidence_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_srl_ingestion_run_id
-                 ON silver.structured_record_lineage (ingestion_run_id)'
+                 ON silver.structured_record_lineage (ingestion_run_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_srl_bronze_sha256
-                 ON silver.structured_record_lineage (bronze_sha256)'
+                 ON silver.structured_record_lineage (bronze_sha256)',
         );
     }
 

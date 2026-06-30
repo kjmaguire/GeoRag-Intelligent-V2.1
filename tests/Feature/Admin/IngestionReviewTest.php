@@ -7,6 +7,7 @@ namespace Tests\Feature\Admin;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
@@ -59,7 +60,7 @@ class IngestionReviewTest extends TestCase
             ->has('queue')
             ->has('summary')
             ->has('available_reasons')
-            ->has('available_statuses')
+            ->has('available_statuses'),
         );
     }
 
@@ -79,7 +80,7 @@ class IngestionReviewTest extends TestCase
             ->where('queue.0.page', $seed['page'])
             ->where('queue.0.reason', 'ocr_confidence_below_threshold')
             ->where('queue.0.status', 'pending')
-            ->where('summary.total_pending', fn ($v) => $v >= 1)
+            ->where('summary.total_pending', fn ($v) => $v >= 1),
         );
     }
 
@@ -95,7 +96,7 @@ class IngestionReviewTest extends TestCase
         $response->assertOk();
         $response->assertInertia(fn ($page) => $page
             ->where('queue', [])
-            ->where('filters.status', 'resolved_accept')
+            ->where('filters.status', 'resolved_accept'),
         );
     }
 
@@ -279,31 +280,31 @@ class IngestionReviewTest extends TestCase
             "INSERT INTO silver.workspaces (workspace_id, name)
              VALUES (?::uuid, 'phase58-review-test')
              ON CONFLICT DO NOTHING",
-            [$workspaceId]
+            [$workspaceId],
         );
 
         // Insert a silver.reports row
-        $reportId = '11111111-1111-1111-1111-' . substr(md5(uniqid('', true)), 0, 12);
+        $reportId = '11111111-1111-1111-1111-'.substr(md5(uniqid('', true)), 0, 12);
         DB::connection('pgsql')->statement(
-            "INSERT INTO silver.reports (report_id, title) VALUES (?::uuid, ?)",
-            [$reportId, 'phase58-review-test-report']
+            'INSERT INTO silver.reports (report_id, title) VALUES (?::uuid, ?)',
+            [$reportId, 'phase58-review-test-report'],
         );
 
         // Insert a review row
-        $reviewItemId = (string) \Illuminate\Support\Str::uuid();
+        $reviewItemId = (string) Str::uuid();
         DB::connection('pgsql')->statement(
-            "INSERT INTO silver.low_confidence_page_reviews
+            'INSERT INTO silver.low_confidence_page_reviews
                 (review_item_id, report_id, page, workspace_id, reason, status)
-             VALUES (?::uuid, ?::uuid, ?, ?::uuid, ?, ?)",
-            [$reviewItemId, $reportId, 0, $workspaceId, 'ocr_confidence_below_threshold', 'pending']
+             VALUES (?::uuid, ?::uuid, ?, ?::uuid, ?, ?)',
+            [$reviewItemId, $reportId, 0, $workspaceId, 'ocr_confidence_below_threshold', 'pending'],
         );
 
         // Also seed a per-page quality row to populate the JOIN
         DB::connection('pgsql')->statement(
-            "INSERT INTO silver.ocr_page_quality
+            'INSERT INTO silver.ocr_page_quality
                 (report_id, page, workspace_id, ocr_confidence, parser_used, retry_count, needs_review)
-             VALUES (?::uuid, ?, ?::uuid, ?, ?, ?, ?)",
-            [$reportId, 0, $workspaceId, 0.62, 'scanned_paddleocr', 2, true]
+             VALUES (?::uuid, ?, ?::uuid, ?, ?, ?, ?)',
+            [$reportId, 0, $workspaceId, 0.62, 'scanned_paddleocr', 2, true],
         );
 
         return [

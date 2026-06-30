@@ -37,14 +37,14 @@ class ProjectAnalyticsController extends Controller
     public function show(Request $request, string $slug): JsonResponse
     {
         $project = Project::where('slug', $slug)->first();
-        if (!$project) {
+        if (! $project) {
             return response()->json(['error' => 'project_not_found'], 404);
         }
 
         $user = $request->user();
         if ($user && method_exists($user, 'projects')) {
             $allowed = $user->projects()->where('silver.projects.project_id', $project->project_id)->exists();
-            if (!$allowed) {
+            if (! $allowed) {
                 return response()->json(['error' => 'project_not_found'], 404);
             }
         }
@@ -63,9 +63,9 @@ class ProjectAnalyticsController extends Controller
             $collars = DB::table('silver.collars')
                 ->selectRaw(
                     'collar_id, hole_id, total_depth, azimuth, dip, elevation, '
-                    . 'easting, northing, hole_type, status, drill_date, '
-                    . 'ST_X(ST_Transform(geom, 4326)) AS longitude, '
-                    . 'ST_Y(ST_Transform(geom, 4326)) AS latitude'
+                    .'easting, northing, hole_type, status, drill_date, '
+                    .'ST_X(ST_Transform(geom, 4326)) AS longitude, '
+                    .'ST_Y(ST_Transform(geom, 4326)) AS latitude',
                 )
                 ->where('project_id', $pid)
                 ->orderBy('hole_id')
@@ -81,7 +81,8 @@ class ProjectAnalyticsController extends Controller
                 ->get()
                 ->map(function ($c) {
                     $c->longitude = null;
-                    $c->latitude  = null;
+                    $c->latitude = null;
+
                     return $c;
                 });
         }
@@ -131,18 +132,19 @@ class ProjectAnalyticsController extends Controller
             ->reduce(function ($acc, $c) {
                 $running = ($acc['last'] ?? 0) + (float) $c->total_depth;
                 $acc['points'][] = [
-                    'date'       => $c->drill_date,
-                    'hole_id'    => $c->hole_id,
-                    'meters'     => (float) $c->total_depth,
+                    'date' => $c->drill_date,
+                    'hole_id' => $c->hole_id,
+                    'meters' => (float) $c->total_depth,
                     'cumulative' => round($running, 1),
                 ];
                 $acc['last'] = $running;
+
                 return $acc;
             }, ['points' => [], 'last' => 0])['points'];
 
         // Query-usage meta — scoped to this project's audit rows.
         $since30 = CarbonImmutable::now()->subDays(30);
-        $dailyCounts = QueryAuditLog::selectRaw("DATE(created_at) AS day, COUNT(*) AS c")
+        $dailyCounts = QueryAuditLog::selectRaw('DATE(created_at) AS day, COUNT(*) AS c')
             ->where('project_id', $pid)
             ->where('created_at', '>=', $since30)
             ->groupBy('day')
@@ -179,6 +181,7 @@ class ProjectAnalyticsController extends Controller
 
         $topQueries = $topHashes->map(function ($row) use ($sampleRows) {
             $sample = $sampleRows->get($row->sample_id);
+
             return [
                 'q' => $sample ? mb_strtolower(trim((string) $sample->query_text)) : null,
                 'c' => (int) $row->c,
@@ -195,18 +198,18 @@ class ProjectAnalyticsController extends Controller
             ->avg('response_time_ms');
 
         return response()->json([
-            'collars'           => $collars,
-            'surveys'           => $surveys,
-            'structures'        => $structures,
-            'geochem'           => $geochem,
+            'collars' => $collars,
+            'surveys' => $surveys,
+            'structures' => $structures,
+            'geochem' => $geochem,
             'meters_cumulative' => $metersCumulative,
             'query_usage' => [
-                'total_30d'     => $totalQueries,
-                'avg_latency_ms'=> $avgLatency !== null ? (int) round($avgLatency) : null,
-                'daily'         => $dailyCounts,
-                'top_queries'   => $topQueries,
+                'total_30d' => $totalQueries,
+                'avg_latency_ms' => $avgLatency !== null ? (int) round($avgLatency) : null,
+                'daily' => $dailyCounts,
+                'top_queries' => $topQueries,
             ],
-            'generated_at'      => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
         ]);
     }
 }

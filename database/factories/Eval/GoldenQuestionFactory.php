@@ -26,23 +26,23 @@ class GoldenQuestionFactory extends Factory
     public function definition(): array
     {
         return [
-            'question_id'   => (string) Str::uuid(),
-            'question_set'  => 'schema_mapping',
-            'question_text' => $this->faker->sentence(8) . '?',
+            'question_id' => (string) Str::uuid(),
+            'question_set' => 'schema_mapping',
+            'question_text' => $this->faker->sentence(8).'?',
             'context_setup' => [],
-            'expected_intent_class'        => null,
-            'expected_citations'           => [],
-            'expected_entities'            => [],
-            'expected_numeric_values'      => [],
-            'expected_refusal'             => false,
-            'expected_refusal_reason'      => null,
+            'expected_intent_class' => null,
+            'expected_citations' => [],
+            'expected_entities' => [],
+            'expected_numeric_values' => [],
+            'expected_refusal' => false,
+            'expected_refusal_reason' => null,
             'expected_language_compliance' => [],
-            'difficulty'                   => $this->faker->randomElement(['easy', 'medium', 'hard']),
-            'authored_by_user_id'          => User::factory(),
-            'authored_at'                  => now(),
-            'reviewed_by_user_id'          => null,
-            'reviewed_at'                  => null,
-            'status'                       => 'draft',
+            'difficulty' => $this->faker->randomElement(['easy', 'medium', 'hard']),
+            'authored_by_user_id' => User::factory(),
+            'authored_at' => now(),
+            'reviewed_by_user_id' => null,
+            'reviewed_at' => null,
+            'status' => 'draft',
         ];
     }
 

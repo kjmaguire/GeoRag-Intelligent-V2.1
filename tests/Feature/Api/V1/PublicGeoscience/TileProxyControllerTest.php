@@ -4,6 +4,7 @@ namespace Tests\Feature\Api\V1\PublicGeoscience;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -35,7 +36,7 @@ class TileProxyControllerTest extends TestCase
 
     public function test_unauthenticated_request_returns_401(): void
     {
-        $this->getJson('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/456.pbf')
+        $this->getJson('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/456.pbf')
             ->assertUnauthorized();
     }
 
@@ -70,7 +71,7 @@ class TileProxyControllerTest extends TestCase
         // route won't be found at all (404). Either behaviour is acceptable —
         // the important thing is it does NOT return 200 with a tile body.
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/-1/456.pbf');
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/-1/456.pbf');
 
         $this->assertContains($response->status(), [400, 404],
             'Negative tile x must yield 400 or 404, never 200');
@@ -79,7 +80,7 @@ class TileProxyControllerTest extends TestCase
     public function test_negative_y_returns_400_or_route_not_matched(): void
     {
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/-1.pbf');
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/-1.pbf');
 
         $this->assertContains($response->status(), [400, 404],
             'Negative tile y must yield 400 or 404, never 200');
@@ -98,7 +99,7 @@ class TileProxyControllerTest extends TestCase
         ]);
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/456.pbf');
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/456.pbf');
 
         $response->assertOk();
         $this->assertStringContainsString(
@@ -118,7 +119,7 @@ class TileProxyControllerTest extends TestCase
         ]);
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/456.pbf');
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/456.pbf');
 
         $response->assertOk();
         // Symfony's ResponseHeaderBag normalises Cache-Control to the canonical
@@ -139,7 +140,7 @@ class TileProxyControllerTest extends TestCase
         ]);
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/456.pbf');
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/456.pbf');
 
         $response->assertOk();
         $this->assertSame($fakeBytes, $response->getContent());
@@ -171,7 +172,7 @@ class TileProxyControllerTest extends TestCase
         ]);
 
         $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/456.pbf')
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/456.pbf')
             ->assertNoContent();
     }
 
@@ -181,12 +182,12 @@ class TileProxyControllerTest extends TestCase
     {
         Http::fake([
             '*' => function () {
-                throw new \Illuminate\Http\Client\ConnectionException('Martin is down');
+                throw new ConnectionException('Martin is down');
             },
         ]);
 
         $this->actingAs($this->user)
-            ->get('/tiles/public-geoscience/' . self::VALID_SOURCE . '/10/123/456.pbf')
+            ->get('/tiles/public-geoscience/'.self::VALID_SOURCE.'/10/123/456.pbf')
             ->assertStatus(502);
     }
 }

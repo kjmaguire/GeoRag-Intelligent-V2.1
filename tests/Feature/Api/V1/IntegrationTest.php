@@ -7,9 +7,7 @@ use App\Models\Project;
 use App\Models\QueryAuditLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 /**
@@ -21,6 +19,7 @@ class IntegrationTest extends TestCase
     use RefreshDatabase;
 
     private User $user;
+
     private Project $project;
 
     protected function setUp(): void
@@ -41,7 +40,7 @@ class IntegrationTest extends TestCase
         // Phase 1 — reserve: audit row is written here; job is NOT dispatched yet.
         $reserve = $this->actingAs($this->user)
             ->postJson('/api/v1/queries', [
-                'query'      => 'What are the highest-grade intercepts?',
+                'query' => 'What are the highest-grade intercepts?',
                 'project_id' => $this->project->project_id,
             ]);
 
@@ -70,21 +69,21 @@ class IntegrationTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson('/api/v1/queries', [
-                'query'      => 'Show me lithology for DH-001.',
+                'query' => 'Show me lithology for DH-001.',
                 'project_id' => $this->project->project_id,
             ]);
 
         $response->assertAccepted();
         $this->assertSame(
             "query.{$response->json('query_id')}",
-            $response->json('channel')
+            $response->json('channel'),
         );
     }
 
     public function test_query_returns_401_without_auth(): void
     {
         $this->postJson('/api/v1/queries', [
-            'query'      => 'test',
+            'query' => 'test',
             'project_id' => $this->project->project_id,
         ])->assertUnauthorized();
     }
@@ -95,8 +94,8 @@ class IntegrationTest extends TestCase
     {
         // Register
         $reg = $this->postJson('/api/v1/auth/register', [
-            'name'     => 'Test Geologist',
-            'email'    => 'geo@test.com',
+            'name' => 'Test Geologist',
+            'email' => 'geo@test.com',
             'password' => 'SecureP@ss123',
         ]);
         $reg->assertCreated()
@@ -136,7 +135,7 @@ class IntegrationTest extends TestCase
     public function test_login_with_wrong_password_returns_401(): void
     {
         $this->postJson('/api/v1/auth/login', [
-            'email'    => $this->user->email,
+            'email' => $this->user->email,
             'password' => 'wrong-password',
         ])->assertUnauthorized();
     }
@@ -144,8 +143,8 @@ class IntegrationTest extends TestCase
     public function test_duplicate_email_registration_returns_422(): void
     {
         $this->postJson('/api/v1/auth/register', [
-            'name'     => 'Duplicate',
-            'email'    => $this->user->email,
+            'name' => 'Duplicate',
+            'email' => $this->user->email,
             'password' => 'SecureP@ss123',
         ])->assertUnprocessable()
             ->assertJsonValidationErrors(['email']);
@@ -163,7 +162,7 @@ class IntegrationTest extends TestCase
             $response = $this->json($method, $uri);
             $this->assertTrue(
                 $response->status() === 401,
-                "{$method} {$uri} should return 401, got {$response->status()}"
+                "{$method} {$uri} should return 401, got {$response->status()}",
             );
         }
     }

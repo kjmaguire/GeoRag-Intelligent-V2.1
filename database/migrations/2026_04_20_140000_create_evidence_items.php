@@ -112,7 +112,7 @@ return new class extends Migration
                         (evidence_type = \'graph_edge\'        AND graph_edge_ref IS NOT NULL) OR
                         (evidence_type = \'map_feature\'       AND map_feature_ref IS NOT NULL)
                     )
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -120,24 +120,24 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_workspace_id
-                 ON silver.evidence_items (workspace_id)'
+                 ON silver.evidence_items (workspace_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_evidence_type
-                 ON silver.evidence_items (evidence_type)'
+                 ON silver.evidence_items (evidence_type)',
         );
 
         // Partial index: only rows where a passage is linked.
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_passage_id
                  ON silver.evidence_items (passage_id)
-                 WHERE passage_id IS NOT NULL'
+                 WHERE passage_id IS NOT NULL',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_source_date
-                 ON silver.evidence_items (source_date)'
+                 ON silver.evidence_items (source_date)',
         );
     }
 

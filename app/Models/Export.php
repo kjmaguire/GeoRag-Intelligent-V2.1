@@ -13,8 +13,11 @@ class Export extends Model
     use HasUuids;
 
     protected $table = 'silver.exports';
+
     protected $primaryKey = 'export_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -33,13 +36,13 @@ class Export extends Model
     ];
 
     protected $casts = [
-        'filters'                 => 'array',
-        'file_count'              => 'integer',
-        'total_size_bytes'        => 'integer',
+        'filters' => 'array',
+        'file_count' => 'integer',
+        'total_size_bytes' => 'integer',
         'download_url_expires_at' => 'datetime',
-        'completed_at'            => 'datetime',
-        'created_at'              => 'datetime',
-        'updated_at'              => 'datetime',
+        'completed_at' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     /**

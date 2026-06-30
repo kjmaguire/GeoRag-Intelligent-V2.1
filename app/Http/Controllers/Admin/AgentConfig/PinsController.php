@@ -108,7 +108,7 @@ class PinsController extends Controller
                     $version->prompt_id !== $pin->prompt_id,
                     422,
                     "prompt_version_id belongs to prompt_id={$version->prompt_id}, "
-                        ."but the pin is for prompt_id={$pin->prompt_id}."
+                        ."but the pin is for prompt_id={$pin->prompt_id}.",
                 );
             }
 

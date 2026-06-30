@@ -47,6 +47,7 @@ class IntegrationsController extends Controller
      * not a code deploy.
      */
     private const REGISTRY_CACHE_KEY = 'phase4.flow_registry';
+
     private const REGISTRY_CACHE_SECONDS = 60;
 
     /**
@@ -69,13 +70,14 @@ class IntegrationsController extends Controller
                     ->orderBy('kind')
                     ->orderBy('flow_name')
                     ->get(['flow_name', 'flag_name', 'kind', 'description']);
+
                 return $rows->map(static fn (object $r) => [
                     'flow_name' => (string) $r->flow_name,
                     'flag_name' => $r->flag_name !== null ? (string) $r->flag_name : null,
                     'kind' => (string) $r->kind,
                     'description' => (string) $r->description,
                 ])->all();
-            }
+            },
         );
     }
 
@@ -157,11 +159,11 @@ class IntegrationsController extends Controller
             : 'disabled_at = NULL';
         DB::connection('pgsql')->statement(
             "UPDATE usage.external_notification_senders SET $update WHERE id = ?::uuid",
-            [$id]
+            [$id],
         );
 
         return redirect()->route('admin.integrations')->with(
-            'flash', sprintf('sender %s %sd', substr($id, 0, 8), $action)
+            'flash', sprintf('sender %s %sd', substr($id, 0, 8), $action),
         );
     }
 
@@ -419,8 +421,8 @@ class IntegrationsController extends Controller
             // matches Phase 12 Step 4 (immediate cut).
             DB::connection('pgsql')->statement(
                 'UPDATE usage.external_notification_senders '
-                . 'SET disabled_at = clock_timestamp() + make_interval(hours => ?) '
-                . 'WHERE id = ?::uuid',
+                .'SET disabled_at = clock_timestamp() + make_interval(hours => ?) '
+                .'WHERE id = ?::uuid',
                 [$overlapHours, $prior->id],
             );
         });
@@ -520,14 +522,14 @@ class IntegrationsController extends Controller
         $userId = Auth::id();
 
         DB::connection('pgsql')->statement(
-            "INSERT INTO workspace.feature_flags
+            'INSERT INTO workspace.feature_flags
                 (workspace_id, flag_name, bool_value, updated_by, updated_at)
              VALUES (NULL, ?, ?, ?, now())
              ON CONFLICT (workspace_id, flag_name) DO UPDATE
                 SET bool_value = EXCLUDED.bool_value,
                     updated_by = EXCLUDED.updated_by,
-                    updated_at = now()",
-            [$flagName, $value, $userId]
+                    updated_at = now()',
+            [$flagName, $value, $userId],
         );
 
         // Doc-phase 133 — §21.3 workflow_enablement capture hook.
@@ -601,6 +603,7 @@ class IntegrationsController extends Controller
                 'updated_at' => $r->updated_at,
             ];
         }
+
         return $by;
     }
 
@@ -630,7 +633,7 @@ class IntegrationsController extends Controller
               AND w.name IN ($placeholders)
             GROUP BY w.name
             SQL,
-            $names
+            $names,
         );
 
         // R-P2-6 — durations come from v1_task_events_olap by pairing
@@ -653,11 +656,13 @@ class IntegrationsController extends Controller
                 'last_started_at' => $r->last_started_at,
             ];
         }
+
         return $by;
     }
 
     /**
-     * @param  list<string>  $names
+     * @param list<string> $names
+     *
      * @return array<string, array{p50: ?float, p95: ?float}>
      */
     private function loadHatchetDurations(array $names, string $placeholders): array
@@ -685,7 +690,7 @@ class IntegrationsController extends Controller
             WHERE w.name IN ($placeholders)
             GROUP BY w.name
             SQL,
-            $names
+            $names,
         );
 
         $by = [];
@@ -695,6 +700,7 @@ class IntegrationsController extends Controller
                 'p95' => $r->p95,
             ];
         }
+
         return $by;
     }
 
@@ -719,9 +725,10 @@ class IntegrationsController extends Controller
         foreach ($rows as $r) {
             $by[$r->action_type] = (int) $r->n;
         }
+
         return [
             'public_geoscience_pull' => $by['public_geo.pull.complete'] ?? 0,
-            'external_notification'  => $by['external_notification.received'] ?? 0,
+            'external_notification' => $by['external_notification.received'] ?? 0,
         ];
     }
 

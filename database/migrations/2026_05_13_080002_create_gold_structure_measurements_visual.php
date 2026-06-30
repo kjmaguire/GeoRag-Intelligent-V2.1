@@ -88,15 +88,15 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_structure_measurements_visual_collar
-             ON gold.structure_measurements_visual (collar_id, depth);'
+             ON gold.structure_measurements_visual (collar_id, depth);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_structure_measurements_visual_workspace
-             ON gold.structure_measurements_visual (workspace_id);'
+             ON gold.structure_measurements_visual (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_structure_measurements_visual_project_type
-             ON gold.structure_measurements_visual (project_id, structure_type);'
+             ON gold.structure_measurements_visual (project_id, structure_type);',
         );
     }
 

@@ -29,6 +29,7 @@ class UploadVendorProfileTest extends TestCase
     use RefreshDatabase;
 
     private User $user;
+
     private Project $project;
 
     protected function setUp(): void
@@ -38,8 +39,8 @@ class UploadVendorProfileTest extends TestCase
         // Create a real project and attach the user as owner so that the
         // UploadController's hasProjectAccess() check passes in SQLite.
         $this->project = Project::create([
-            'project_name'          => 'Upload Test Project ' . uniqid(),
-            'crs_datum'             => 'EPSG:32613',
+            'project_name' => 'Upload Test Project '.uniqid(),
+            'crs_datum' => 'EPSG:32613',
             'orientation_reference' => 'BOH',
         ]);
 
@@ -70,7 +71,7 @@ class UploadVendorProfileTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file'     => $this->makeCsvFile(),
+                'file' => $this->makeCsvFile(),
                 'category' => 'collars',
                 // vendor_profile_id intentionally omitted
             ]);
@@ -97,8 +98,8 @@ class UploadVendorProfileTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file'              => $this->makeCsvFile(),
-                'category'          => 'collars',
+                'file' => $this->makeCsvFile(),
+                'category' => 'collars',
                 'vendor_profile_id' => $profile->id,
             ]);
 
@@ -112,8 +113,8 @@ class UploadVendorProfileTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file'              => $this->makeCsvFile(),
-                'category'          => 'collars',
+                'file' => $this->makeCsvFile(),
+                'category' => 'collars',
                 'vendor_profile_id' => 999999, // does not exist in the DB
             ]);
 
@@ -139,7 +140,8 @@ class UploadVendorProfileTest extends TestCase
             ->with('s3')
             ->andReturnUsing(
                 function () use ($fakeDisk, &$capturedOptions) {
-                    return new class ($fakeDisk, $capturedOptions) {
+                    return new class($fakeDisk, $capturedOptions)
+                    {
                         public function __construct(
                             private readonly mixed $inner,
                             private mixed &$capturedOptions,
@@ -164,13 +166,13 @@ class UploadVendorProfileTest extends TestCase
                             return $this->inner->{$method}(...$args);
                         }
                     };
-                }
+                },
             );
 
         $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file'              => $this->makeCsvFile(),
-                'category'          => 'collars',
+                'file' => $this->makeCsvFile(),
+                'category' => 'collars',
                 'vendor_profile_id' => $profile->id,
             ])
             ->assertCreated();
@@ -197,7 +199,8 @@ class UploadVendorProfileTest extends TestCase
             ->with('s3')
             ->andReturnUsing(
                 function () use ($fakeDisk, &$capturedOptions) {
-                    return new class ($fakeDisk, $capturedOptions) {
+                    return new class($fakeDisk, $capturedOptions)
+                    {
                         public function __construct(
                             private readonly mixed $inner,
                             private mixed &$capturedOptions,
@@ -222,12 +225,12 @@ class UploadVendorProfileTest extends TestCase
                             return $this->inner->{$method}(...$args);
                         }
                     };
-                }
+                },
             );
 
         $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file'     => $this->makeCsvFile(),
+                'file' => $this->makeCsvFile(),
                 'category' => 'collars',
                 // no vendor_profile_id
             ])

@@ -27,26 +27,26 @@ class SavedMapViewFactory extends Factory
     public function definition(): array
     {
         return [
-            'view_id'      => (string) Str::uuid(),
+            'view_id' => (string) Str::uuid(),
             'workspace_id' => (string) Str::uuid(),
-            'project_id'   => Project::factory(),
-            'user_id'      => User::factory(),
-            'name'         => $this->faker->unique()->words(3, true),
-            'description'  => $this->faker->optional()->sentence(),
-            'view_state'   => [
+            'project_id' => Project::factory(),
+            'user_id' => User::factory(),
+            'name' => $this->faker->unique()->words(3, true),
+            'description' => $this->faker->optional()->sentence(),
+            'view_state' => [
                 'camera' => [
                     'longitude' => $this->faker->randomFloat(4, -110, -100),
-                    'latitude'  => $this->faker->randomFloat(4, 50, 60),
-                    'zoom'      => $this->faker->randomFloat(1, 5, 14),
-                    'bearing'   => 0,
-                    'pitch'     => 0,
+                    'latitude' => $this->faker->randomFloat(4, 50, 60),
+                    'zoom' => $this->faker->randomFloat(1, 5, 14),
+                    'bearing' => 0,
+                    'pitch' => 0,
                 ],
                 'active_layer_pack' => $this->faker->randomElement([
                     'private_project', 'public_geo', 'qa', 'target',
                 ]),
                 'filters' => [],
             ],
-            'aoi_geom'  => null,
+            'aoi_geom' => null,
             'is_shared' => false,
         ];
     }

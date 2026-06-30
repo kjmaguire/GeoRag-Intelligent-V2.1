@@ -44,6 +44,7 @@ class OnboardingController extends Controller
         'uranium', 'gold', 'copper', 'lithium', 'oil_gas',
         'silver', 'nickel', 'cobalt', 'REE', 'custom',
     ];
+
     private const REGIONS = [
         'CA-SK' => 'Saskatchewan',
         'CA-BC' => 'British Columbia',
@@ -51,7 +52,7 @@ class OnboardingController extends Controller
         'CA-YT' => 'Yukon',
         'CA-ON' => 'Ontario',
         'CA-QC' => 'Québec',
-        'US'    => 'United States',
+        'US' => 'United States',
         'OTHER' => 'Other',
     ];
 
@@ -162,6 +163,7 @@ class OnboardingController extends Controller
             });
         } catch (\Throwable $e) {
             report($e);
+
             return response()->json([
                 'error' => 'failed to create project',
                 'reason' => $e->getMessage(),
@@ -175,11 +177,11 @@ class OnboardingController extends Controller
             try {
                 $geojson = json_encode($data['aoi_geojson']);
                 DB::statement(
-                    "INSERT INTO interpretation.interpretation_target_zones
+                    'INSERT INTO interpretation.interpretation_target_zones
                         (workspace_id, project_id, author_user_id, name, rationale,
                          commodity, confidence, geom)
                      VALUES (?, ?, ?, ?, ?, ?, ?,
-                             ST_SetSRID(ST_GeomFromGeoJSON(?), 4326))",
+                             ST_SetSRID(ST_GeomFromGeoJSON(?), 4326))',
                     [
                         'a0000000-0000-0000-0000-000000000001',
                         $projectId,
@@ -242,6 +244,7 @@ class OnboardingController extends Controller
         if ($projectId) {
             return redirect()->route('chat', ['project_id' => $projectId]);
         }
+
         return redirect()->route('chat');
     }
 }

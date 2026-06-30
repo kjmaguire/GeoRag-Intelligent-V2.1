@@ -45,7 +45,7 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_chat_conversations_user_updated '
-            . 'ON chat_conversations (user_id, updated_at DESC)'
+            .'ON chat_conversations (user_id, updated_at DESC)',
         );
 
         DB::statement('
@@ -61,7 +61,7 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_created '
-            . 'ON chat_messages (conversation_id, created_at ASC)'
+            .'ON chat_messages (conversation_id, created_at ASC)',
         );
     }
 

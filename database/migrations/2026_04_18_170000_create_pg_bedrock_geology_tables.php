@@ -70,12 +70,12 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_bedrock_geology', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_jurisdiction ON public_geo.pg_bedrock_geology (jurisdiction_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_source ON public_geo.pg_bedrock_geology (source_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_geom ON public_geo.pg_bedrock_geology USING GIST (geom)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_unit_scale ON public_geo.pg_bedrock_geology (unit_code, scale)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_period ON public_geo.pg_bedrock_geology (period)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_formation ON public_geo.pg_bedrock_geology (formation)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_jurisdiction ON public_geo.pg_bedrock_geology (jurisdiction_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_source ON public_geo.pg_bedrock_geology (source_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_geom ON public_geo.pg_bedrock_geology USING GIST (geom)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_unit_scale ON public_geo.pg_bedrock_geology (unit_code, scale)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_period ON public_geo.pg_bedrock_geology (period)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_formation ON public_geo.pg_bedrock_geology (formation)');
 
         // ── pg_bedrock_geology_history ────────────────────────────────────
         DB::statement("
@@ -105,14 +105,14 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_bedrock_geology_history', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_history_id ON public_geo.pg_bedrock_geology_history (id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_bg_history_superseded ON public_geo.pg_bedrock_geology_history (superseded_at DESC)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_history_id ON public_geo.pg_bedrock_geology_history (id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_bg_history_superseded ON public_geo.pg_bedrock_geology_history (superseded_at DESC)');
 
         // ── Martin MVT view ───────────────────────────────────────────────
         // Excludes source_attributes + source_geom_wkt to keep tile payload
         // lean. Canonical geology columns (unit_code, period, formation,
         // lithology) drive popup display and filtering in the frontend.
-        DB::statement("
+        DB::statement('
             CREATE OR REPLACE VIEW public_geo.v_pg_bedrock_geology_mvt AS
             SELECT
                 b.id, b.jurisdiction_code, b.source_id, b.source_feature_id,
@@ -121,14 +121,14 @@ return new class extends Migration
                 b.lithology, b.scale,
                 b.source_url, b.last_seen_at, b.geom
               FROM public_geo.pg_bedrock_geology b
-        ");
+        ');
         DB::statement("COMMENT ON VIEW public_geo.v_pg_bedrock_geology_mvt IS 'MVT tile source for Martin. Bedrock geology polygons from SK Geology/MapServer/10 (250K). Consumed by /tiles/public-geoscience/pg_bedrock_geology.'");
 
         // ── Expand canonical_type CHECK on sources ────────────────────────
         // Drop the constraint placed by the mineral_disposition migration and
         // re-add it with bedrock_geology appended. Final consolidated pass at
         // end of plan per §12.
-        DB::statement("ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check");
+        DB::statement('ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check');
         DB::statement("
             ALTER TABLE public_geo.sources
               ADD CONSTRAINT sources_canonical_type_check
@@ -147,7 +147,7 @@ return new class extends Migration
         DB::statement('DROP TABLE IF EXISTS public_geo.pg_bedrock_geology CASCADE');
 
         // Restore CHECK to pre-bedrock_geology state (mineral_disposition era).
-        DB::statement("ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check");
+        DB::statement('ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check');
         DB::statement("
             ALTER TABLE public_geo.sources
               ADD CONSTRAINT sources_canonical_type_check

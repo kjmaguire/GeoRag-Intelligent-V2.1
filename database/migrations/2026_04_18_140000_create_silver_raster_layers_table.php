@@ -22,7 +22,7 @@ return new class extends Migration
     public function up(): void
     {
         // Create the table without the geometry column first
-        DB::statement("
+        DB::statement('
             CREATE TABLE IF NOT EXISTS silver.raster_layers (
                 raster_id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
                 project_id             UUID          NULL,
@@ -52,41 +52,41 @@ return new class extends Migration
                     REFERENCES silver.projects(project_id)
                     ON DELETE SET NULL
             )
-        ");
+        ');
 
         // Add PostGIS geometry column for bounding polygon (EPSG:4326)
         DB::statement(
-            "SELECT AddGeometryColumn('silver', 'raster_layers', 'bbox', 4326, 'POLYGON', 2)"
+            "SELECT AddGeometryColumn('silver', 'raster_layers', 'bbox', 4326, 'POLYGON', 2)",
         );
 
         // Indexes: spatial (GIST), project, format, and SHA256 deduplication
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_raster_layers_bbox
                 ON silver.raster_layers USING GIST (bbox)
-        ");
+        ');
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_raster_layers_project
                 ON silver.raster_layers (project_id)
-        ");
+        ');
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_raster_layers_format
                 ON silver.raster_layers (format)
-        ");
+        ');
 
-        DB::statement("
+        DB::statement('
             CREATE INDEX IF NOT EXISTS idx_raster_layers_sha256
                 ON silver.raster_layers (source_file_sha256)
-        ");
+        ');
 
         // Partial unique on (project_id, source_file_sha256) where project_id is NOT NULL
         // Allows same raster to exist globally (project_id IS NULL) but not duplicated within a project
-        DB::statement("
+        DB::statement('
             CREATE UNIQUE INDEX IF NOT EXISTS uq_raster_layers_project_sha
                 ON silver.raster_layers (project_id, source_file_sha256)
                 WHERE project_id IS NOT NULL
-        ");
+        ');
     }
 
     /**

@@ -146,7 +146,7 @@ class JurisdictionControllerTest extends TestCase
     {
         return [
             'countries' => [],
-            'counts'    => ['total' => 0, 'active' => 0, 'coming_soon' => 0],
+            'counts' => ['total' => 0, 'active' => 0, 'coming_soon' => 0],
         ];
     }
 
@@ -155,18 +155,18 @@ class JurisdictionControllerTest extends TestCase
         return [
             'countries' => [
                 [
-                    'country_code'  => 'CA',
-                    'display_name'  => 'Canada',
+                    'country_code' => 'CA',
+                    'display_name' => 'Canada',
                     'jurisdictions' => [
                         ['jurisdiction_code' => 'CA-SK', 'country_code' => 'CA',
-                         'display_name' => 'Saskatchewan', 'level' => 'province',
-                         'status' => 'active', 'sort_order' => 10, 'sources' => []],
+                            'display_name' => 'Saskatchewan', 'level' => 'province',
+                            'status' => 'active', 'sort_order' => 10, 'sources' => []],
                         ['jurisdiction_code' => 'CA-BC', 'country_code' => 'CA',
-                         'display_name' => 'British Columbia', 'level' => 'province',
-                         'status' => 'active', 'sort_order' => 20, 'sources' => []],
+                            'display_name' => 'British Columbia', 'level' => 'province',
+                            'status' => 'active', 'sort_order' => 20, 'sources' => []],
                         ['jurisdiction_code' => 'CA-AB', 'country_code' => 'CA',
-                         'display_name' => 'Alberta', 'level' => 'province',
-                         'status' => 'coming_soon', 'sort_order' => 30, 'sources' => []],
+                            'display_name' => 'Alberta', 'level' => 'province',
+                            'status' => 'coming_soon', 'sort_order' => 30, 'sources' => []],
                     ],
                 ],
             ],

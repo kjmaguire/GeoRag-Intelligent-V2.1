@@ -3,7 +3,6 @@
 namespace Tests\Feature\Api\V1;
 
 use App\Models\Project;
-use App\Models\User;
 use Tests\TestCase;
 
 /**
@@ -64,7 +63,7 @@ class SavedMapViewRoutesTest extends TestCase
             $this->assertContains(
                 $name,
                 $registeredNames,
-                "Route name '{$name}' should be registered"
+                "Route name '{$name}' should be registered",
             );
         }
     }

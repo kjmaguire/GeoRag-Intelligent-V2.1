@@ -62,10 +62,10 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_rock_sample', 'geom', 4326, 'POINT', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rs_jurisdiction ON public_geo.pg_rock_sample (jurisdiction_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rs_source ON public_geo.pg_rock_sample (source_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rs_geom ON public_geo.pg_rock_sample USING GIST (geom)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rs_nts ON public_geo.pg_rock_sample (nts_250k)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rs_jurisdiction ON public_geo.pg_rock_sample (jurisdiction_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rs_source ON public_geo.pg_rock_sample (source_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rs_geom ON public_geo.pg_rock_sample USING GIST (geom)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rs_nts ON public_geo.pg_rock_sample (nts_250k)');
 
         DB::statement("
             CREATE TABLE IF NOT EXISTS public_geo.pg_rock_sample_history (
@@ -93,17 +93,17 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_rock_sample_history', 'geom', 4326, 'POINT', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_rs_history_id ON public_geo.pg_rock_sample_history (id)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_rs_history_id ON public_geo.pg_rock_sample_history (id)');
 
         // Martin MVT view
-        DB::statement("
+        DB::statement('
             CREATE OR REPLACE VIEW public_geo.v_pg_rock_samples_mvt AS
             SELECT
                 r.id, r.jurisdiction_code, r.source_id, r.source_feature_id,
                 r.station, r.sample_number, r.geologist, r.geographic_area,
                 r.report_number, r.nts_250k, r.last_seen_at, r.geom
               FROM public_geo.pg_rock_sample r
-        ");
+        ');
 
         // ── pg_assessment_survey ─────────────────────────────────────
         DB::statement("
@@ -135,10 +135,10 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_assessment_survey', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_as_jurisdiction ON public_geo.pg_assessment_survey (jurisdiction_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_as_source ON public_geo.pg_assessment_survey (source_id)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_as_geom ON public_geo.pg_assessment_survey USING GIST (geom)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_as_type ON public_geo.pg_assessment_survey (survey_type)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_as_jurisdiction ON public_geo.pg_assessment_survey (jurisdiction_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_as_source ON public_geo.pg_assessment_survey (source_id)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_as_geom ON public_geo.pg_assessment_survey USING GIST (geom)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_as_type ON public_geo.pg_assessment_survey (survey_type)');
 
         DB::statement("
             CREATE TABLE IF NOT EXISTS public_geo.pg_assessment_survey_history (
@@ -157,23 +157,23 @@ return new class extends Migration
             )
         ");
         DB::statement("SELECT AddGeometryColumn('public_geo', 'pg_assessment_survey_history', 'geom', 4326, 'MULTIPOLYGON', 2)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_pg_as_history_id ON public_geo.pg_assessment_survey_history (id)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_pg_as_history_id ON public_geo.pg_assessment_survey_history (id)');
 
         // Martin MVT view
-        DB::statement("
+        DB::statement('
             CREATE OR REPLACE VIEW public_geo.v_pg_assessment_surveys_mvt AS
             SELECT
                 a.id, a.jurisdiction_code, a.source_id, a.source_feature_id,
                 a.survey_type, a.last_seen_at, a.geom
               FROM public_geo.pg_assessment_survey a
-        ");
+        ');
 
         // Update canonical_type CHECK on sources table to include new types
         // (existing CHECK only allows the original 4 types)
-        DB::statement("
+        DB::statement('
             ALTER TABLE public_geo.sources
               DROP CONSTRAINT IF EXISTS sources_canonical_type_check
-        ");
+        ');
         DB::statement("
             ALTER TABLE public_geo.sources
               ADD CONSTRAINT sources_canonical_type_check
@@ -194,7 +194,7 @@ return new class extends Migration
         DB::statement('DROP TABLE IF EXISTS public_geo.pg_rock_sample CASCADE');
 
         // Restore original CHECK constraint
-        DB::statement("ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check");
+        DB::statement('ALTER TABLE public_geo.sources DROP CONSTRAINT IF EXISTS sources_canonical_type_check');
         DB::statement("
             ALTER TABLE public_geo.sources
               ADD CONSTRAINT sources_canonical_type_check

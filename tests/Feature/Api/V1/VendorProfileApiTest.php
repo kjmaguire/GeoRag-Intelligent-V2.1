@@ -37,12 +37,13 @@ class VendorProfileApiTest extends TestCase
     use RefreshDatabase;
 
     private User $user;
+
     private User $admin;
 
     protected function setUp(): void
     {
         parent::setUp();
-        $this->user  = User::factory()->create();
+        $this->user = User::factory()->create();
         $this->admin = User::factory()->admin()->create();
     }
 
@@ -143,9 +144,9 @@ class VendorProfileApiTest extends TestCase
     {
         $response = $this->actingAs($this->user)
             ->postJson('/api/v1/vendor-profiles', [
-                'name'         => 'Should Be Blocked',
+                'name' => 'Should Be Blocked',
                 'profile_type' => 'lab',
-                'is_global'    => true,
+                'is_global' => true,
             ]);
 
         $response->assertForbidden();
@@ -155,10 +156,10 @@ class VendorProfileApiTest extends TestCase
     public function test_admin_store_creates_profile_and_returns_201(): void
     {
         $payload = [
-            'name'         => 'ALS Geochemistry',
-            'description'  => 'Standard ALS lab output format',
+            'name' => 'ALS Geochemistry',
+            'description' => 'Standard ALS lab output format',
             'profile_type' => 'lab',
-            'is_global'    => true,
+            'is_global' => true,
         ];
 
         $response = $this->actingAs($this->admin)
@@ -179,9 +180,9 @@ class VendorProfileApiTest extends TestCase
 
         $response = $this->actingAs($this->admin)
             ->postJson('/api/v1/vendor-profiles', [
-                'name'         => 'Duplicate Name',
+                'name' => 'Duplicate Name',
                 'profile_type' => 'lab',
-                'is_global'    => false,
+                'is_global' => false,
             ]);
 
         $response->assertUnprocessable()
@@ -192,9 +193,9 @@ class VendorProfileApiTest extends TestCase
     {
         $response = $this->actingAs($this->admin)
             ->postJson('/api/v1/vendor-profiles', [
-                'name'         => 'Bad Type Profile',
+                'name' => 'Bad Type Profile',
                 'profile_type' => 'totally_made_up',
-                'is_global'    => false,
+                'is_global' => false,
             ]);
 
         $response->assertUnprocessable()
@@ -205,7 +206,7 @@ class VendorProfileApiTest extends TestCase
     {
         $response = $this->actingAs($this->admin)
             ->postJson('/api/v1/vendor-profiles', [
-                'name'         => 'Missing Global Flag',
+                'name' => 'Missing Global Flag',
                 'profile_type' => 'internal',
                 // is_global intentionally omitted
             ]);

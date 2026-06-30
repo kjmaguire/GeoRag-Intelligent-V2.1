@@ -23,10 +23,10 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE query_audit_log '
-            . 'ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMP(0) NULL'
+            .'ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMP(0) NULL',
         );
         DB::statement(
-            'UPDATE query_audit_log SET dispatched_at = created_at WHERE dispatched_at IS NULL'
+            'UPDATE query_audit_log SET dispatched_at = created_at WHERE dispatched_at IS NULL',
         );
     }
 

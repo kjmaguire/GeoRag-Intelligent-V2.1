@@ -26,8 +26,6 @@ use ZipArchive;
 class CsaBundleExporter
 {
     /**
-     * @param  string  $projectId
-     * @param  array   $filters
      * @return array{path: string, size: int}
      */
     public function export(string $projectId, array $filters = []): array
@@ -36,14 +34,14 @@ class CsaBundleExporter
         $collarIds = $collars->pluck('collar_id')->all();
 
         $surveys = $this->fetchSurveys($collarIds);
-        $assays  = $this->fetchAssays($collarIds);
+        $assays = $this->fetchAssays($collarIds);
 
         // Build a hole_id lookup keyed by collar_id so surveys/assays can
         // reference the human-readable hole identifier.
         $holeIdByCollar = $collars->pluck('hole_id', 'collar_id');
 
-        $tmpDir  = sys_get_temp_dir();
-        $zipPath = $tmpDir . '/georag_csa_bundle_' . uniqid() . '.zip';
+        $tmpDir = sys_get_temp_dir();
+        $zipPath = $tmpDir.'/georag_csa_bundle_'.uniqid().'.zip';
 
         // Write each CSV to a temp file first, then bundle.
         $collarsCsv = $this->writeCsvFile($tmpDir, 'collars', function ($handle) use ($collars) {
@@ -76,10 +74,10 @@ class CsaBundleExporter
         $assaysCsv = $this->writeCsvFile($tmpDir, 'assays', function ($handle) use ($assays, $holeIdByCollar) {
             fputcsv($handle, ['hole_id', 'from_depth', 'to_depth', 'sample_type', 'u3o8_ppm', 'au_ppb', 'cu_pct']);
             foreach ($assays as $sample) {
-                $ca       = is_array($sample->commodity_assays) ? $sample->commodity_assays : [];
-                $u3o8     = $ca['u3o8_ppm'] ?? null;
-                $au       = $ca['au_ppb']   ?? null;
-                $cu       = $ca['cu_pct']   ?? null;
+                $ca = is_array($sample->commodity_assays) ? $sample->commodity_assays : [];
+                $u3o8 = $ca['u3o8_ppm'] ?? null;
+                $au = $ca['au_ppb'] ?? null;
+                $cu = $ca['cu_pct'] ?? null;
 
                 fputcsv($handle, [
                     $holeIdByCollar[$sample->collar_id] ?? $sample->collar_id,
@@ -94,14 +92,14 @@ class CsaBundleExporter
         });
 
         try {
-            $zip = new ZipArchive();
+            $zip = new ZipArchive;
             if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
                 throw new \RuntimeException("Cannot create ZIP archive at: {$zipPath}");
             }
 
             $zip->addFile($collarsCsv, 'collars.csv');
             $zip->addFile($surveysCsv, 'surveys.csv');
-            $zip->addFile($assaysCsv,  'assays.csv');
+            $zip->addFile($assaysCsv, 'assays.csv');
             $zip->close();
         } finally {
             @unlink($collarsCsv);
@@ -123,16 +121,16 @@ class CsaBundleExporter
     {
         $query = Collar::where('project_id', $projectId);
 
-        if (!empty($filters['hole_type'])) {
+        if (! empty($filters['hole_type'])) {
             $query->where('hole_type', $filters['hole_type']);
         }
-        if (!empty($filters['status'])) {
+        if (! empty($filters['status'])) {
             $query->where('status', $filters['status']);
         }
-        if (!empty($filters['drill_date_from'])) {
+        if (! empty($filters['drill_date_from'])) {
             $query->where('drill_date', '>=', $filters['drill_date_from']);
         }
-        if (!empty($filters['drill_date_to'])) {
+        if (! empty($filters['drill_date_to'])) {
             $query->where('drill_date', '<=', $filters['drill_date_to']);
         }
         if (isset($filters['min_depth'])) {
@@ -172,13 +170,12 @@ class CsaBundleExporter
     /**
      * Write rows to a uniquely named temp CSV and return its path.
      *
-     * @param  string    $dir
-     * @param  string    $name   Name hint (used in the filename for debuggability).
-     * @param  callable  $writer Receives an open file handle.
+     * @param string $name Name hint (used in the filename for debuggability).
+     * @param callable $writer Receives an open file handle.
      */
     private function writeCsvFile(string $dir, string $name, callable $writer): string
     {
-        $path   = $dir . '/georag_csa_' . $name . '_' . uniqid() . '.csv';
+        $path = $dir.'/georag_csa_'.$name.'_'.uniqid().'.csv';
         $handle = fopen($path, 'w');
 
         if ($handle === false) {

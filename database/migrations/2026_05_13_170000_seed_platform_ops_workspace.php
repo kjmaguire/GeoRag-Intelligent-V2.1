@@ -45,7 +45,7 @@ return new class extends Migration
                 self::PLATFORM_OPS_WORKSPACE_ID,
                 'platform_ops',
                 'platform-ops',
-            ]
+            ],
         );
     }
 

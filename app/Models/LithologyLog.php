@@ -13,8 +13,11 @@ class LithologyLog extends Model
     use HasUuids;
 
     protected $table = 'silver.lithology_logs';
+
     protected $primaryKey = 'log_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Models\Ops;
 
-use App\Models\Project;
 use App\Models\User;
 use Database\Factories\Ops\SupportTicketFactory;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;

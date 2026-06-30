@@ -51,8 +51,10 @@ abstract class AbstractCitationResolver implements CitationResolver
                 fn ($p) => trim(trim($p), '"'),
                 explode(',', $inner),
             );
+
             return array_values(array_filter($parts, fn ($v) => $v !== ''));
         }
+
         return array_values(array_filter(array_map('trim', explode(',', $s))));
     }
 
@@ -71,6 +73,7 @@ abstract class AbstractCitationResolver implements CitationResolver
             return $value;
         }
         $decoded = json_decode((string) $value, true);
+
         return is_array($decoded) ? $decoded : [];
     }
 }

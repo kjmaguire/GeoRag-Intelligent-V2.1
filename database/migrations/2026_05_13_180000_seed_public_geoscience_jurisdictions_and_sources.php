@@ -119,7 +119,7 @@ return new class extends Migration
                 'primary_authority', 'license_summary', 'license_url',
                 'default_source_crs', 'refresh_cadence', 'teaser', 'sort_order',
                 'updated_at',
-            ]
+            ],
         );
 
         // Sources registry — known public datasets per jurisdiction.
@@ -243,7 +243,7 @@ return new class extends Migration
                 'jurisdiction_code', 'name', 'canonical_type', 'service_url',
                 'layer_index', 'source_crs', 'license_summary',
                 'refresh_cadence', 'notes', 'updated_at',
-            ]
+            ],
         );
     }
 

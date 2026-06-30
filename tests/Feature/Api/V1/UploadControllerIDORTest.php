@@ -33,7 +33,9 @@ class UploadControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private Project $projectB;
 
     protected function setUp(): void
@@ -68,9 +70,9 @@ class UploadControllerIDORTest extends TestCase
         $response = $this->postJson(
             "/api/v1/projects/{$this->projectB->project_id}/upload",
             [
-                'file'     => $file,
+                'file' => $file,
                 'category' => 'collars',
-            ]
+            ],
         );
 
         // hasProjectAccess returns false → 403.
@@ -80,7 +82,7 @@ class UploadControllerIDORTest extends TestCase
         // Confirm nothing was written to the fake disk (no files at all on this disk).
         $this->assertEmpty(
             Storage::disk('s3')->allFiles(),
-            'No file should have been uploaded to the s3 bucket.'
+            'No file should have been uploaded to the s3 bucket.',
         );
     }
 
@@ -97,9 +99,9 @@ class UploadControllerIDORTest extends TestCase
         $response = $this->postJson(
             "/api/v1/projects/{$this->projectB->project_id}/upload",
             [
-                'file'     => $file,
+                'file' => $file,
                 'category' => 'surveys',
-            ]
+            ],
         );
 
         $response->assertForbidden();
@@ -136,9 +138,9 @@ class UploadControllerIDORTest extends TestCase
         $response = $this->postJson(
             "/api/v1/projects/{$this->projectB->project_id}/upload",
             [
-                'file'     => $file,
+                'file' => $file,
                 'category' => 'collars',
-            ]
+            ],
         );
 
         $response->assertUnauthorized();
@@ -160,9 +162,9 @@ class UploadControllerIDORTest extends TestCase
         $response = $this->postJson(
             "/api/v1/projects/{$projectA->project_id}/upload",
             [
-                'file'     => $file,
+                'file' => $file,
                 'category' => 'collars',
-            ]
+            ],
         );
 
         // Gate passes; actual S3 upload is faked so it always succeeds.

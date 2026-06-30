@@ -73,8 +73,8 @@ class TimeoutsTest extends TestCase
             ->has('timeouts')
             ->where(
                 'timeouts',
-                fn ($timeouts) => collect($timeouts)->contains(fn ($r) => $r['agent_name'] === self::AGENT)
-            )
+                fn ($timeouts) => collect($timeouts)->contains(fn ($r) => $r['agent_name'] === self::AGENT),
+            ),
         );
     }
 

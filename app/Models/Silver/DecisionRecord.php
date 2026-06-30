@@ -71,7 +71,7 @@ class DecisionRecord extends Model
         return $this->hasMany(
             DecisionEvidenceLink::class,
             'decision_id',
-            'decision_id'
+            'decision_id',
         );
     }
 
@@ -99,7 +99,7 @@ class DecisionRecord extends Model
         return $this->hasMany(
             DecisionLessonLearned::class,
             'decision_id',
-            'decision_id'
+            'decision_id',
         );
     }
 }

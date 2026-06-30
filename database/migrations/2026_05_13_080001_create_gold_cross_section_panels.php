@@ -54,15 +54,15 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_cross_section_panels_geom
-             ON gold.cross_section_panels USING GIST (section_line_geom);'
+             ON gold.cross_section_panels USING GIST (section_line_geom);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_cross_section_panels_workspace
-             ON gold.cross_section_panels (workspace_id);'
+             ON gold.cross_section_panels (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_cross_section_panels_project
-             ON gold.cross_section_panels (project_id);'
+             ON gold.cross_section_panels (project_id);',
         );
     }
 

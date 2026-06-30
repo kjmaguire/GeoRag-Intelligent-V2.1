@@ -18,8 +18,11 @@ class ChatMessage extends Model
     use HasUuids;
 
     protected $table = 'chat_messages';
+
     protected $primaryKey = 'message_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     // The chat_messages table only has created_at — messages are append-

@@ -23,14 +23,14 @@ class JurisdictionResource extends JsonResource
     {
         $sources = $this->whenLoaded('sources', function () {
             return $this->sources->map(fn ($s) => [
-                'source_id'       => $s->source_id,
-                'name'            => $s->name,
-                'canonical_type'  => $s->canonical_type,
-                'service_url'     => $s->service_url,
-                'layer_index'     => $s->layer_index,
-                'source_crs'      => $s->source_crs,
+                'source_id' => $s->source_id,
+                'name' => $s->name,
+                'canonical_type' => $s->canonical_type,
+                'service_url' => $s->service_url,
+                'layer_index' => $s->layer_index,
+                'source_crs' => $s->source_crs,
                 'license_summary' => $s->license_summary,
-                'license_url'     => $s->license_url,
+                'license_url' => $s->license_url,
                 'refresh_cadence' => $s->refresh_cadence,
                 'last_refreshed_at' => $s->last_refreshed_at?->toIso8601String(),
             ])->values()->all();
@@ -48,21 +48,21 @@ class JurisdictionResource extends JsonResource
         }
 
         return [
-            'jurisdiction_code'  => $this->jurisdiction_code,
-            'country_code'       => $this->country_code,
-            'display_name'       => $this->display_name,
-            'level'              => $this->level,
-            'status'             => $this->status,
-            'primary_authority'  => $this->primary_authority,
-            'license_summary'    => $this->license_summary,
-            'license_url'        => $this->license_url,
+            'jurisdiction_code' => $this->jurisdiction_code,
+            'country_code' => $this->country_code,
+            'display_name' => $this->display_name,
+            'level' => $this->level,
+            'status' => $this->status,
+            'primary_authority' => $this->primary_authority,
+            'license_summary' => $this->license_summary,
+            'license_url' => $this->license_url,
             'default_source_crs' => $this->default_source_crs,
-            'refresh_cadence'    => $this->refresh_cadence,
-            'last_refreshed_at'  => $this->last_refreshed_at?->toIso8601String(),
-            'teaser'             => $this->teaser,
-            'sort_order'         => $this->sort_order,
-            'bbox'               => $bbox,
-            'sources'            => $sources,
+            'refresh_cadence' => $this->refresh_cadence,
+            'last_refreshed_at' => $this->last_refreshed_at?->toIso8601String(),
+            'teaser' => $this->teaser,
+            'sort_order' => $this->sort_order,
+            'bbox' => $bbox,
+            'sources' => $sources,
         ];
     }
 }

@@ -80,39 +80,39 @@ return new class extends Migration
                         \'citation_issue\',
                         \'length_issue\'
                     ))
-            )'
+            )',
         );
 
         DB::statement(
             'CREATE INDEX idx_message_feedback_answer_run
-             ON silver.message_feedback (answer_run_id)'
+             ON silver.message_feedback (answer_run_id)',
         );
 
         DB::statement(
             'CREATE INDEX idx_message_feedback_workspace
-             ON silver.message_feedback (workspace_id)'
+             ON silver.message_feedback (workspace_id)',
         );
 
         DB::statement(
             'CREATE INDEX idx_message_feedback_user
              ON silver.message_feedback (user_id)
-             WHERE user_id IS NOT NULL'
+             WHERE user_id IS NOT NULL',
         );
 
         DB::statement(
             'CREATE INDEX idx_message_feedback_created_at
-             ON silver.message_feedback (created_at DESC)'
+             ON silver.message_feedback (created_at DESC)',
         );
 
         DB::statement(
             'CREATE INDEX idx_message_feedback_polarity
-             ON silver.message_feedback (polarity)'
+             ON silver.message_feedback (polarity)',
         );
 
         DB::statement(
             'CREATE INDEX idx_message_feedback_category
              ON silver.message_feedback (category)
-             WHERE category IS NOT NULL'
+             WHERE category IS NOT NULL',
         );
     }
 

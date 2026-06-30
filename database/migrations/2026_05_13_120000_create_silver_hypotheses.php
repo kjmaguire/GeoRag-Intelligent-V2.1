@@ -82,20 +82,20 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_hypotheses_workspace
-             ON silver.hypotheses (workspace_id);'
+             ON silver.hypotheses (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_hypotheses_parent_question
-             ON silver.hypotheses USING HASH (md5(parent_question));'
+             ON silver.hypotheses USING HASH (md5(parent_question));',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_links_hypothesis
-             ON silver.hypothesis_evidence_links (hypothesis_id);'
+             ON silver.hypothesis_evidence_links (hypothesis_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_links_chunk
              ON silver.hypothesis_evidence_links (source_chunk_id)
-             WHERE source_chunk_id IS NOT NULL;'
+             WHERE source_chunk_id IS NOT NULL;',
         );
 
         // RLS — Doc-phase 172 DROP-first idempotency.

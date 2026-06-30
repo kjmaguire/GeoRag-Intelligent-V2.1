@@ -32,12 +32,12 @@ final class DrillholeResolver extends AbstractPgeoResolver
     {
         $displayName = $entity->drillhole_name ?? $entity->drillhole_id ?? 'Unknown drillhole';
         $commodities = $this->parsePgArray($entity->commodity_of_interest ?? null);
-        $strat       = $entity?->stratigraphic_depths
+        $strat = $entity?->stratigraphic_depths
             ? json_decode((string) $entity->stratigraphic_depths, true)
             : null;
 
         $envelope['title'] = "Drillhole {$displayName}";
-        $envelope['text']  = sprintf(
+        $envelope['text'] = sprintf(
             'Drillhole %s (%s) at %s by %s, drilled %s. Total depth: %s m. Targets: %s. Core: %s.',
             $displayName,
             $entity->drill_type ?? 'type unknown',
@@ -49,23 +49,23 @@ final class DrillholeResolver extends AbstractPgeoResolver
             $entity->core_availability ?? 'unknown',
         );
         $envelope['entity'] = $entity ? [
-            'id'                    => $entity->id,
-            'drillhole_id'          => $entity->drillhole_id,
-            'drillhole_name'        => $entity->drillhole_name,
-            'company'               => $entity->company,
-            'project_name'          => $entity->project_name,
-            'date_drilled'          => $entity->date_drilled,
-            'drill_type'            => $entity->drill_type,
+            'id' => $entity->id,
+            'drillhole_id' => $entity->drillhole_id,
+            'drillhole_name' => $entity->drillhole_name,
+            'company' => $entity->company,
+            'project_name' => $entity->project_name,
+            'date_drilled' => $entity->date_drilled,
+            'drill_type' => $entity->drill_type,
             'commodity_of_interest' => $commodities,
-            'total_length_m'        => $entity->total_length_m,
-            'collar_elevation_m'    => $entity->collar_elevation_m,
-            'stratigraphic_depths'  => $strat,
-            'core_availability'     => $entity->core_availability,
-            'core_storage'          => $entity->core_storage,
-            'disposition'           => $entity->disposition,
-            'source_url'            => $entity->source_url,
-            'source_feature_id'     => $entity->source_feature_id,
-            'last_seen_at'          => $entity->last_seen_at,
+            'total_length_m' => $entity->total_length_m,
+            'collar_elevation_m' => $entity->collar_elevation_m,
+            'stratigraphic_depths' => $strat,
+            'core_availability' => $entity->core_availability,
+            'core_storage' => $entity->core_storage,
+            'disposition' => $entity->disposition,
+            'source_url' => $entity->source_url,
+            'source_feature_id' => $entity->source_feature_id,
+            'last_seen_at' => $entity->last_seen_at,
         ] : null;
 
         return $envelope;

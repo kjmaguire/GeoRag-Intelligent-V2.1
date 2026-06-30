@@ -27,23 +27,23 @@ final class AssessmentSurveyResolver extends AbstractPgeoResolver
     protected function mergePayload(array $envelope, ?object $entity, array $parts): array
     {
         $typeLabel = match ($entity?->survey_type) {
-            'airborne'    => 'Airborne survey',
-            'ground'      => 'Ground survey',
+            'airborne' => 'Airborne survey',
+            'ground' => 'Ground survey',
             'underground' => 'Underground survey',
-            default       => 'Assessment survey',
+            default => 'Assessment survey',
         };
 
         $envelope['title'] = "{$typeLabel} footprint";
-        $envelope['text']  = sprintf(
+        $envelope['text'] = sprintf(
             '%s footprint from the SMAD index. Detailed survey content lives in the linked assessment filing.',
             $typeLabel,
         );
         $envelope['entity'] = $entity ? [
-            'id'                => $entity->id,
-            'survey_type'       => $entity->survey_type,
-            'source_url'        => $entity->source_url,
+            'id' => $entity->id,
+            'survey_type' => $entity->survey_type,
+            'source_url' => $entity->source_url,
             'source_feature_id' => $entity->source_feature_id,
-            'last_seen_at'      => $entity->last_seen_at,
+            'last_seen_at' => $entity->last_seen_at,
         ] : null;
 
         return $envelope;

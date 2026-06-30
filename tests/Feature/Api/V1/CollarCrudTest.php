@@ -23,6 +23,7 @@ class CollarCrudTest extends TestCase
     use RefreshDatabase;
 
     private User $user;
+
     private Project $project;
 
     protected function setUp(): void
@@ -48,15 +49,15 @@ class CollarCrudTest extends TestCase
     {
         $response = $this->actingAs($this->user)
             ->postJson("/api/v1/projects/{$this->project->project_id}/collars", [
-                'hole_id'     => 'DH-TEST-001',
-                'easting'     => 512345.0,
-                'northing'    => 6234567.0,
-                'elevation'   => 450.0,
+                'hole_id' => 'DH-TEST-001',
+                'easting' => 512345.0,
+                'northing' => 6234567.0,
+                'elevation' => 450.0,
                 'total_depth' => 350.0,
-                'hole_type'   => 'Diamond',
-                'azimuth'     => 135.0,
-                'dip'         => -60.0,
-                'status'      => 'Completed',
+                'hole_type' => 'Diamond',
+                'azimuth' => 135.0,
+                'dip' => -60.0,
+                'status' => 'Completed',
             ]);
 
         $response->assertCreated()
@@ -70,13 +71,13 @@ class CollarCrudTest extends TestCase
         // Create collar in our project
         Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'hole_id'    => 'DH-OURS-001',
+            'hole_id' => 'DH-OURS-001',
         ]);
 
         // Create collar in other project
         Collar::factory()->create([
             'project_id' => $otherProject->project_id,
-            'hole_id'    => 'DH-OTHER-001',
+            'hole_id' => 'DH-OTHER-001',
         ]);
 
         $response = $this->actingAs($this->user)
@@ -93,7 +94,7 @@ class CollarCrudTest extends TestCase
     {
         $collar = Collar::factory()->create([
             'project_id' => $this->project->project_id,
-            'hole_id'    => 'DH-SHOW-001',
+            'hole_id' => 'DH-SHOW-001',
         ]);
 
         $this->actingAs($this->user)

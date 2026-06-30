@@ -10,7 +10,6 @@ use App\Models\PublicGeoscience\Jurisdiction;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Read-only jurisdiction registry endpoint for the Public Geoscience surface.
@@ -30,6 +29,7 @@ use Illuminate\Support\Facades\DB;
 class JurisdictionController extends Controller
 {
     private const CACHE_KEY = 'public-geoscience:jurisdictions:v1';
+
     private const CACHE_TTL_SECONDS = 300;
 
     public function index(Request $request): JsonResponse
@@ -37,12 +37,12 @@ class JurisdictionController extends Controller
         $payload = Cache::remember(
             self::CACHE_KEY,
             self::CACHE_TTL_SECONDS,
-            fn () => $this->build()
+            fn () => $this->build(),
         );
 
         return response()->json([
-            'data'              => $payload,
-            'generated_at'      => now()->toIso8601String(),
+            'data' => $payload,
+            'generated_at' => now()->toIso8601String(),
             'cache_ttl_seconds' => self::CACHE_TTL_SECONDS,
         ]);
     }
@@ -78,9 +78,9 @@ class JurisdictionController extends Controller
 
         return [
             'countries' => $byCountry,
-            'counts'    => [
-                'total'       => $jurisdictions->count(),
-                'active'      => $jurisdictions->where('status', 'active')->count(),
+            'counts' => [
+                'total' => $jurisdictions->count(),
+                'active' => $jurisdictions->where('status', 'active')->count(),
                 'coming_soon' => $jurisdictions->where('status', 'coming_soon')->count(),
             ],
         ];
@@ -94,7 +94,7 @@ class JurisdictionController extends Controller
     private function countryDisplayName(string $code): string
     {
         return match ($code) {
-            'CA'    => 'Canada',
+            'CA' => 'Canada',
             default => $code,
         };
     }

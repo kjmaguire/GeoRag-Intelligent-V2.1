@@ -74,12 +74,12 @@ return new class extends Migration
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_document_ingestion_quality_workspace
-             ON silver.document_ingestion_quality (workspace_id);'
+             ON silver.document_ingestion_quality (workspace_id);',
         );
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_document_ingestion_quality_action
              ON silver.document_ingestion_quality (recommended_action)
-             WHERE recommended_action != \'accept\';'
+             WHERE recommended_action != \'accept\';',
         );
     }
 

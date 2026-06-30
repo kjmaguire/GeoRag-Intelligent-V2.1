@@ -29,14 +29,14 @@ class GoldenSetReportTest extends TestCase
     {
         for ($i = 0; $i < $times; $i++) {
             QueryAuditLog::create([
-                'user_id'       => null,
-                'project_id'    => (string) Str::uuid(),
-                'query_id'      => (string) Str::uuid(),
-                'query_text'    => $query,
-                'confidence'    => $confidence,
-                'ip_address'    => '127.0.0.1',
-                'llm_model'     => 'test-model',
-                'created_at'    => now()->subMinutes($minutesAgo),
+                'user_id' => null,
+                'project_id' => (string) Str::uuid(),
+                'query_id' => (string) Str::uuid(),
+                'query_text' => $query,
+                'confidence' => $confidence,
+                'ip_address' => '127.0.0.1',
+                'llm_model' => 'test-model',
+                'created_at' => now()->subMinutes($minutesAgo),
             ]);
         }
     }
@@ -48,7 +48,7 @@ class GoldenSetReportTest extends TestCase
         $this->seedQuery('show holes', 0.85, times: 3);     // low weight:  3 × 0.15 = 0.45
         $this->seedQuery('what grade?', 0.30, times: 4);    // medium:      4 × 0.70 = 2.8
 
-        $outputPath = sys_get_temp_dir() . '/golden-' . Str::uuid() . '.md';
+        $outputPath = sys_get_temp_dir().'/golden-'.Str::uuid().'.md';
         register_shutdown_function(fn () => @unlink($outputPath));
 
         $this->artisan('audit:golden-set-report', [
@@ -84,7 +84,7 @@ class GoldenSetReportTest extends TestCase
         // Only one occurrence — below min-count.
         $this->seedQuery('lonely query', 0.1, times: 1);
 
-        $outputPath = sys_get_temp_dir() . '/golden-' . Str::uuid() . '.md';
+        $outputPath = sys_get_temp_dir().'/golden-'.Str::uuid().'.md';
         register_shutdown_function(fn () => @unlink($outputPath));
 
         $this->artisan('audit:golden-set-report', [
@@ -102,7 +102,7 @@ class GoldenSetReportTest extends TestCase
         // Very low confidence + high count → hallucination-failure suggestion.
         $this->seedQuery('fabricated numbers?', 0.1, times: 5);
 
-        $outputPath = sys_get_temp_dir() . '/golden-' . Str::uuid() . '.md';
+        $outputPath = sys_get_temp_dir().'/golden-'.Str::uuid().'.md';
         register_shutdown_function(fn () => @unlink($outputPath));
 
         $this->artisan('audit:golden-set-report', [

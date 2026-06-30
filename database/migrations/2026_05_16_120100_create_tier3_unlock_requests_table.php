@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\DB;
  * Tier-3 PGEO layers. Tracks selected layers + 3 attestations + admin
  * approval state.
  */
-return new class extends Migration {
+return new class extends Migration
+{
     public function up(): void
     {
         DB::statement('SET search_path TO silver, public;');

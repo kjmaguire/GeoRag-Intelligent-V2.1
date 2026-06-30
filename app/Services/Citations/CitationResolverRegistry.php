@@ -59,12 +59,13 @@ final class CitationResolverRegistry
                 return $resolver->resolve($sourceId);
             }
         }
+
         return null;
     }
 
     /**
-     * @return array<int, string>  Prefixes currently registered, for debug /
-     *                             health-check / admin-route enumeration.
+     * @return array<int, string> Prefixes currently registered, for debug /
+     *                            health-check / admin-route enumeration.
      */
     public function registeredPrefixes(): array
     {

@@ -22,12 +22,12 @@ namespace App\Enums;
  */
 enum HoleType: string
 {
-    case Diamond    = 'Diamond';     // DD/DDH — solid core
-    case RC         = 'RC';          // Reverse circulation — chip samples
-    case RAB        = 'RAB';         // Rotary air blast — shallow chips
-    case Rotary     = 'Rotary';      // Generic rotary
+    case Diamond = 'Diamond';     // DD/DDH — solid core
+    case RC = 'RC';          // Reverse circulation — chip samples
+    case RAB = 'RAB';         // Rotary air blast — shallow chips
+    case Rotary = 'Rotary';      // Generic rotary
     case Percussion = 'Percussion';  // Open-hole percussion
-    case Auger      = 'Auger';       // Soil/saprolite shallow sampling
+    case Auger = 'Auger';       // Soil/saprolite shallow sampling
     case Exploration = 'exploration'; // Generic exploration drillhole (legacy / ingested)
-    case Unknown    = 'unknown';     // Catch-all for upstream rows without a method
+    case Unknown = 'unknown';     // Catch-all for upstream rows without a method
 }

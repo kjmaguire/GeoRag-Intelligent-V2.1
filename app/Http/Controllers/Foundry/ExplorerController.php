@@ -27,10 +27,14 @@ class ExplorerController extends Controller
         $activeHole = $request->query('hole');
 
         $q = DB::table('silver.collars')->where('project_id', $project->project_id);
-        if ($statusFilter && $statusFilter !== 'all') $q->where('status', $statusFilter);
-        if ($search) $q->where(function ($qq) use ($search) {
-            $qq->where('hole_id', 'ilike', "%{$search}%")->orWhere('hole_id_canonical', 'ilike', "%{$search}%");
-        });
+        if ($statusFilter && $statusFilter !== 'all') {
+            $q->where('status', $statusFilter);
+        }
+        if ($search) {
+            $q->where(function ($qq) use ($search) {
+                $qq->where('hole_id', 'ilike', "%{$search}%")->orWhere('hole_id_canonical', 'ilike', "%{$search}%");
+            });
+        }
         $collars = $q->orderBy('hole_id')->limit(500)->get();
 
         $detail = null;
@@ -58,6 +62,7 @@ class ExplorerController extends Controller
                     ])->values(),
                     'samples' => $samples->map(function ($s) {
                         $assays = is_string($s->commodity_assays ?? null) ? json_decode($s->commodity_assays, true) : ($s->commodity_assays ?? []);
+
                         return [
                             'sample_id' => (string) $s->sample_id,
                             'from_depth' => (float) $s->from_depth,

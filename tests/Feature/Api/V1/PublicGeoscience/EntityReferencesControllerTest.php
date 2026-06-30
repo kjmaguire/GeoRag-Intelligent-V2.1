@@ -3,6 +3,7 @@
 namespace Tests\Feature\Api\V1\PublicGeoscience;
 
 use App\Models\User;
+use Illuminate\Database\Query\Expression;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -24,6 +25,7 @@ class EntityReferencesControllerTest extends TestCase
     private User $user;
 
     private const VALID_UUID = 'cccccccc-0000-0000-0000-000000000001';
+
     private const VALID_DOC_UUID = 'dddddddd-0000-0000-0000-000000000001';
 
     protected function setUp(): void
@@ -36,7 +38,7 @@ class EntityReferencesControllerTest extends TestCase
 
     public function test_for_entity_returns_401_without_auth(): void
     {
-        $this->getJson('/api/v1/public-geoscience/entities/mine/' . self::VALID_UUID . '/references')
+        $this->getJson('/api/v1/public-geoscience/entities/mine/'.self::VALID_UUID.'/references')
             ->assertUnauthorized();
     }
 
@@ -45,7 +47,7 @@ class EntityReferencesControllerTest extends TestCase
     public function test_for_entity_returns_404_for_unknown_canonical_type(): void
     {
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/entities/unknown_type/' . self::VALID_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/entities/unknown_type/'.self::VALID_UUID.'/references')
             ->assertNotFound();
     }
 
@@ -53,7 +55,7 @@ class EntityReferencesControllerTest extends TestCase
     {
         // 'gemstone' is a real geological concept but not in the controller whitelist.
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/entities/gemstone/' . self::VALID_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/entities/gemstone/'.self::VALID_UUID.'/references')
             ->assertNotFound();
     }
 
@@ -80,7 +82,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockLinksQuery(self::VALID_UUID, 'mine', collect([]));
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/entities/mine/' . self::VALID_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/entities/mine/'.self::VALID_UUID.'/references')
             ->assertOk()
             ->assertJsonPath('canonical_type', 'mine')
             ->assertJsonPath('pg_id', self::VALID_UUID)
@@ -94,7 +96,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockLinksQuery(self::VALID_UUID, 'mineral_occurrence', collect([]));
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/entities/mineral_occurrence/' . self::VALID_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/entities/mineral_occurrence/'.self::VALID_UUID.'/references')
             ->assertOk()
             ->assertJsonStructure([
                 'canonical_type',
@@ -115,7 +117,7 @@ class EntityReferencesControllerTest extends TestCase
             $this->mockLinksQuery(self::VALID_UUID, $type, collect([]));
 
             $this->actingAs($this->user)
-                ->getJson("/api/v1/public-geoscience/entities/{$type}/" . self::VALID_UUID . '/references')
+                ->getJson("/api/v1/public-geoscience/entities/{$type}/".self::VALID_UUID.'/references')
                 ->assertOk()
                 ->assertJsonPath('canonical_type', $type);
         }
@@ -130,7 +132,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockLinksQuery(self::VALID_UUID, 'mine', collect([]), minConfidence: 0.9);
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/entities/mine/' . self::VALID_UUID . '/references?min_confidence=0.9')
+            ->getJson('/api/v1/public-geoscience/entities/mine/'.self::VALID_UUID.'/references?min_confidence=0.9')
             ->assertOk()
             ->assertJsonPath('min_confidence', 0.9);
     }
@@ -139,7 +141,7 @@ class EntityReferencesControllerTest extends TestCase
 
     public function test_for_document_returns_401_without_auth(): void
     {
-        $this->getJson('/api/v1/public-geoscience/documents/' . self::VALID_DOC_UUID . '/references')
+        $this->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
             ->assertUnauthorized();
     }
 
@@ -166,7 +168,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockDocumentLinksQuery(self::VALID_DOC_UUID, collect([]));
 
         $response = $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/documents/' . self::VALID_DOC_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
             ->assertOk();
 
         $counts = $response->json('counts');
@@ -181,7 +183,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockDocumentLinksQuery(self::VALID_DOC_UUID, collect([]));
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/documents/' . self::VALID_DOC_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
             ->assertOk()
             ->assertJsonPath('by_canonical_type', []);
     }
@@ -191,7 +193,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockDocumentLinksQuery(self::VALID_DOC_UUID, collect([]));
 
         $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/documents/' . self::VALID_DOC_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
             ->assertOk()
             ->assertJsonStructure([
                 'document_id',
@@ -209,27 +211,27 @@ class EntityReferencesControllerTest extends TestCase
         $links = collect([
             (object) [
                 'canonical_type' => 'mine',
-                'entity_id'      => 'eeeeeeee-0000-0000-0000-000000000001',
-                'confidence'     => '0.85',
-                'signals'        => null,
+                'entity_id' => 'eeeeeeee-0000-0000-0000-000000000001',
+                'confidence' => '0.85',
+                'signals' => null,
                 'extracted_context' => 'Test mine context',
                 'established_at' => '2026-01-01 00:00:00',
                 'established_by' => 'smad_linker_v1',
             ],
             (object) [
                 'canonical_type' => 'mine',
-                'entity_id'      => 'eeeeeeee-0000-0000-0000-000000000002',
-                'confidence'     => '0.72',
-                'signals'        => null,
+                'entity_id' => 'eeeeeeee-0000-0000-0000-000000000002',
+                'confidence' => '0.72',
+                'signals' => null,
                 'extracted_context' => null,
                 'established_at' => '2026-01-01 00:00:00',
                 'established_by' => 'smad_linker_v1',
             ],
             (object) [
                 'canonical_type' => 'drillhole_collar',
-                'entity_id'      => 'eeeeeeee-0000-0000-0000-000000000003',
-                'confidence'     => '0.91',
-                'signals'        => null,
+                'entity_id' => 'eeeeeeee-0000-0000-0000-000000000003',
+                'confidence' => '0.91',
+                'signals' => null,
                 'extracted_context' => null,
                 'established_at' => '2026-01-01 00:00:00',
                 'established_by' => 'smad_linker_v1',
@@ -239,7 +241,7 @@ class EntityReferencesControllerTest extends TestCase
         $this->mockDocumentLinksQueryWithNames(self::VALID_DOC_UUID, $links);
 
         $response = $this->actingAs($this->user)
-            ->getJson('/api/v1/public-geoscience/documents/' . self::VALID_DOC_UUID . '/references')
+            ->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
             ->assertOk();
 
         $counts = $response->json('counts');
@@ -283,7 +285,7 @@ class EntityReferencesControllerTest extends TestCase
         // resource_potential_zone to build the COALESCE/commodity name expression.
         DB::shouldReceive('raw')
             ->withAnyArgs()
-            ->andReturnUsing(fn ($expr) => new \Illuminate\Database\Query\Expression($expr));
+            ->andReturnUsing(fn ($expr) => new Expression($expr));
 
         // fetchEntityNames calls DB::table($entityTable)->whereIn()->select()->get()
         // for each unique canonical_type in the rows. Use separate Mockery builder

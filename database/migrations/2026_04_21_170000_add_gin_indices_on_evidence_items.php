@@ -47,7 +47,7 @@ return new class extends Migration
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_structured_ref_gin
                  ON silver.evidence_items USING GIN (structured_ref)
-                 WHERE structured_ref IS NOT NULL'
+                 WHERE structured_ref IS NOT NULL',
         );
 
         // Partial GIN index: graph_edge_ref JSONB — only non-NULL rows.
@@ -55,7 +55,7 @@ return new class extends Migration
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_graph_edge_ref_gin
                  ON silver.evidence_items USING GIN (graph_edge_ref)
-                 WHERE graph_edge_ref IS NOT NULL'
+                 WHERE graph_edge_ref IS NOT NULL',
         );
 
         // Partial GIN index: map_feature_ref JSONB — only non-NULL rows.
@@ -63,7 +63,7 @@ return new class extends Migration
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_evidence_items_map_feature_ref_gin
                  ON silver.evidence_items USING GIN (map_feature_ref)
-                 WHERE map_feature_ref IS NOT NULL'
+                 WHERE map_feature_ref IS NOT NULL',
         );
     }
 

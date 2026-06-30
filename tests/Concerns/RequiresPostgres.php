@@ -42,7 +42,7 @@ trait RequiresPostgres
 
         if ($conn !== 'pgsql') {
             $this->markTestSkipped(
-                'Requires the postgres test connection. Run with `-c phpunit.pgsql.xml`.'
+                'Requires the postgres test connection. Run with `-c phpunit.pgsql.xml`.',
             );
 
             return;

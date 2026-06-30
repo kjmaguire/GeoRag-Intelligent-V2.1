@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\AppBoot;
 
+use Illuminate\Database\Query\Builder;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -54,11 +56,11 @@ class ProjectUserPivotGuardTest extends TestCase
         // We exercise the guard logic directly (not by re-booting the container,
         // which would affect other tests and is not Octane-safe in CI).
         $pdoException = new \PDOException(
-            'SQLSTATE[42P01]: Undefined table: 7 ERROR: relation "project_user" does not exist'
+            'SQLSTATE[42P01]: Undefined table: 7 ERROR: relation "project_user" does not exist',
         );
         $pdoException->errorInfo = ['42P01', 7, 'relation "project_user" does not exist'];
 
-        $queryException = new \Illuminate\Database\QueryException(
+        $queryException = new QueryException(
             'pgsql',
             'select * from "project_user" limit 1',
             [],
@@ -67,7 +69,7 @@ class ProjectUserPivotGuardTest extends TestCase
 
         // Mock the DB facade: table('project_user') returns a builder mock
         // whose limit()->get() path throws the prepared QueryException.
-        $builderMock = \Mockery::mock(\Illuminate\Database\Query\Builder::class);
+        $builderMock = \Mockery::mock(Builder::class);
         $builderMock->shouldReceive('limit')->andReturnSelf();
         $builderMock->shouldReceive('get')->andThrow($queryException);
 
@@ -86,7 +88,7 @@ class ProjectUserPivotGuardTest extends TestCase
         } catch (\Throwable $e) {
             throw new \RuntimeException(
                 'project_user pivot table is missing or unreadable — refusing to boot. '
-                . 'Run `php artisan migrate` and ensure the database is reachable.',
+                .'Run `php artisan migrate` and ensure the database is reachable.',
                 0,
                 $e,
             );

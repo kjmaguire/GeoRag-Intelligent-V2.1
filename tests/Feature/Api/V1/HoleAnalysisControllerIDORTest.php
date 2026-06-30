@@ -31,7 +31,9 @@ class HoleAnalysisControllerIDORTest extends TestCase
     use RefreshDatabase;
 
     private User $userA;
+
     private User $userB;
+
     private Project $projectB;
 
     protected function setUp(): void
@@ -57,7 +59,7 @@ class HoleAnalysisControllerIDORTest extends TestCase
     public function test_user_a_cannot_read_hole_analysis_in_user_b_project_by_hole_id(): void
     {
         $response = $this->getJson(
-            "/api/v1/projects/{$this->projectB->project_id}/holes/DH-0001/analysis"
+            "/api/v1/projects/{$this->projectB->project_id}/holes/DH-0001/analysis",
         );
 
         // Gate fires before any DB lookup — returns project_not_found 404.
@@ -70,7 +72,7 @@ class HoleAnalysisControllerIDORTest extends TestCase
         $collarUuid = '00000000-1234-0000-0000-000000000099';
 
         $response = $this->getJson(
-            "/api/v1/projects/{$this->projectB->project_id}/holes/{$collarUuid}/analysis"
+            "/api/v1/projects/{$this->projectB->project_id}/holes/{$collarUuid}/analysis",
         );
 
         $response->assertNotFound()
@@ -85,11 +87,11 @@ class HoleAnalysisControllerIDORTest extends TestCase
     {
         $nonExistentProject = '00000000-0000-0000-0000-000000000000';
 
-        $deniedResponse    = $this->getJson(
-            "/api/v1/projects/{$this->projectB->project_id}/holes/HOLE-1/analysis"
+        $deniedResponse = $this->getJson(
+            "/api/v1/projects/{$this->projectB->project_id}/holes/HOLE-1/analysis",
         );
-        $notFoundResponse  = $this->getJson(
-            "/api/v1/projects/{$nonExistentProject}/holes/HOLE-1/analysis"
+        $notFoundResponse = $this->getJson(
+            "/api/v1/projects/{$nonExistentProject}/holes/HOLE-1/analysis",
         );
 
         $deniedResponse->assertNotFound();
@@ -115,7 +117,7 @@ class HoleAnalysisControllerIDORTest extends TestCase
         $this->userA->projects()->attach($projectA->project_id, ['role' => 'owner']);
 
         $response = $this->getJson(
-            "/api/v1/projects/{$projectA->project_id}/holes/NONEXISTENT-9999/analysis"
+            "/api/v1/projects/{$projectA->project_id}/holes/NONEXISTENT-9999/analysis",
         );
 
         // Project gate passes; hole lookup fails — hole_not_found, not project_not_found.

@@ -58,8 +58,8 @@ class ShadowRunsController extends Controller
                 'hatchet_duration_ms',
                 'started_at',
                 'completed_at',
-                DB::raw("(v149_result    IS NOT NULL) AS has_v149"),
-                DB::raw("(hatchet_result IS NOT NULL) AS has_hatchet"),
+                DB::raw('(v149_result    IS NOT NULL) AS has_v149'),
+                DB::raw('(hatchet_result IS NOT NULL) AS has_hatchet'),
                 DB::raw('error_v149    IS NOT NULL OR error_hatchet IS NOT NULL AS has_error'),
             ])
             ->orderByDesc('started_at')
@@ -175,7 +175,7 @@ class ShadowRunsController extends Controller
                     SET int_value = EXCLUDED.int_value,
                         updated_by = EXCLUDED.updated_by,
                         updated_at = now()",
-                [$workspaceId, $value, $userId]
+                [$workspaceId, $value, $userId],
             );
         });
 

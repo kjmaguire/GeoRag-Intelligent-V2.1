@@ -18,11 +18,11 @@ class VendorProfileFactory extends Factory
     public function definition(): array
     {
         return [
-            'name'                => $this->faker->unique()->company() . ' Profile',
-            'description'         => $this->faker->optional()->sentence(),
-            'profile_type'        => $this->faker->randomElement(VendorProfile::PROFILE_TYPES),
-            'is_global'           => $this->faker->boolean(),
-            'created_by_user_id'  => User::factory(),
+            'name' => $this->faker->unique()->company().' Profile',
+            'description' => $this->faker->optional()->sentence(),
+            'profile_type' => $this->faker->randomElement(VendorProfile::PROFILE_TYPES),
+            'is_global' => $this->faker->boolean(),
+            'created_by_user_id' => User::factory(),
         ];
     }
 

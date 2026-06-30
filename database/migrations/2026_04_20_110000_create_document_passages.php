@@ -58,7 +58,7 @@ return new class extends Migration
                     CHECK (ordinal >= 0),
                 CONSTRAINT document_passages_unique_revision_text
                     UNIQUE (document_id, revision_number, text_hash)
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -66,23 +66,23 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_document_passages_text_hash
-                 ON silver.document_passages (text_hash)'
+                 ON silver.document_passages (text_hash)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_document_passages_doc_revision
-                 ON silver.document_passages (document_id, revision_number)'
+                 ON silver.document_passages (document_id, revision_number)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_document_passages_workspace_id
-                 ON silver.document_passages (workspace_id)'
+                 ON silver.document_passages (workspace_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_document_passages_embedding_id
                  ON silver.document_passages (embedding_id)
-                 WHERE embedding_id IS NOT NULL'
+                 WHERE embedding_id IS NOT NULL',
         );
     }
 

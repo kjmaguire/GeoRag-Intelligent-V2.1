@@ -104,21 +104,21 @@ class SourceGraphController extends Controller
         // Column 0: sections
         foreach ($sections as $i => $section) {
             $nodes[] = [
-                'id'    => "sec-{$section}",
-                'col'   => 0,
-                'kind'  => 'section',
+                'id' => "sec-{$section}",
+                'col' => 0,
+                'kind' => 'section',
                 'label' => "PLSS {$section}",
-                'meta'  => 'bronze cluster',
+                'meta' => 'bronze cluster',
             ];
         }
         // Fallback section node if no provenance yet
         if (empty($sections)) {
             $nodes[] = [
-                'id'    => 'sec-none',
-                'col'   => 0,
-                'kind'  => 'section',
+                'id' => 'sec-none',
+                'col' => 0,
+                'kind' => 'section',
                 'label' => 'No bronze yet',
-                'meta'  => 'connect a source',
+                'meta' => 'connect a source',
             ];
         }
 
@@ -126,16 +126,16 @@ class SourceGraphController extends Controller
         foreach ($parsers as $i => $p) {
             $nodeId = "parser-{$p->parser_name}";
             $nodes[] = [
-                'id'    => $nodeId,
-                'col'   => 1,
-                'kind'  => 'parser',
+                'id' => $nodeId,
+                'col' => 1,
+                'kind' => 'parser',
                 'label' => $p->parser_name,
-                'meta'  => "{$p->rows_written} rows",
+                'meta' => "{$p->rows_written} rows",
             ];
             // edge from every section → this parser
             foreach ($sections as $section) {
                 $edges[] = [
-                    'id'     => "sec-{$section}->{$nodeId}",
+                    'id' => "sec-{$section}->{$nodeId}",
                     'source' => "sec-{$section}",
                     'target' => $nodeId,
                 ];
@@ -145,15 +145,15 @@ class SourceGraphController extends Controller
         // Column 2: documents (reports + a drillhole-summary node)
         $collarsNode = 'collars-summary';
         $nodes[] = [
-            'id'    => $collarsNode,
-            'col'   => 2,
-            'kind'  => 'collars',
+            'id' => $collarsNode,
+            'col' => 2,
+            'kind' => 'collars',
             'label' => "{$collarsCount} drillholes",
-            'meta'  => 'silver.collars',
+            'meta' => 'silver.collars',
         ];
         foreach ($parsers as $p) {
             $edges[] = [
-                'id'     => "parser-{$p->parser_name}->{$collarsNode}",
+                'id' => "parser-{$p->parser_name}->{$collarsNode}",
                 'source' => "parser-{$p->parser_name}",
                 'target' => $collarsNode,
             ];
@@ -161,18 +161,18 @@ class SourceGraphController extends Controller
         foreach ($reports as $r) {
             $nodeId = "rep-{$r->report_id}";
             $nodes[] = [
-                'id'         => $nodeId,
-                'col'        => 2,
-                'kind'       => 'report',
-                'label'      => mb_substr((string) ($r->title ?? '—'), 0, 40),
-                'meta'       => (string) ($r->company ?? ''),
-                'report_id'  => (string) $r->report_id,
+                'id' => $nodeId,
+                'col' => 2,
+                'kind' => 'report',
+                'label' => mb_substr((string) ($r->title ?? '—'), 0, 40),
+                'meta' => (string) ($r->company ?? ''),
+                'report_id' => (string) $r->report_id,
             ];
             // Connect every parser → every featured report (visual; real
             // 1:1 mapping would need passage-level provenance fanout)
             foreach ($parsers as $p) {
                 $edges[] = [
-                    'id'     => "parser-{$p->parser_name}->{$nodeId}",
+                    'id' => "parser-{$p->parser_name}->{$nodeId}",
                     'source' => "parser-{$p->parser_name}",
                     'target' => $nodeId,
                 ];
@@ -182,15 +182,15 @@ class SourceGraphController extends Controller
         if ($reportsCount > count($reports)) {
             $more = $reportsCount - count($reports);
             $nodes[] = [
-                'id'    => 'rep-more',
-                'col'   => 2,
-                'kind'  => 'report-summary',
+                'id' => 'rep-more',
+                'col' => 2,
+                'kind' => 'report-summary',
                 'label' => "+{$more} more reports",
-                'meta'  => 'silver.reports',
+                'meta' => 'silver.reports',
             ];
             foreach ($parsers as $p) {
                 $edges[] = [
-                    'id'     => "parser-{$p->parser_name}->rep-more",
+                    'id' => "parser-{$p->parser_name}->rep-more",
                     'source' => "parser-{$p->parser_name}",
                     'target' => 'rep-more',
                 ];
@@ -204,34 +204,34 @@ class SourceGraphController extends Controller
                 ->keyBy('role')
                 ->map(fn ($r) => (int) $r->n);
             $support = $byRole->get('supporting', 0);
-            $contra  = $byRole->get('contradicting', 0);
+            $contra = $byRole->get('contradicting', 0);
 
             $nodeId = "hyp-{$h->hypothesis_id}";
             $nodes[] = [
-                'id'            => $nodeId,
-                'col'           => 3,
-                'kind'          => 'hypothesis',
-                'label'         => mb_substr((string) ($h->parent_question ?? ''), 0, 60),
-                'meta'          => sprintf('%s · %s · conf %s',
+                'id' => $nodeId,
+                'col' => 3,
+                'kind' => 'hypothesis',
+                'label' => mb_substr((string) ($h->parent_question ?? ''), 0, 60),
+                'meta' => sprintf('%s · %s · conf %s',
                     $h->label ?? '?',
                     $h->review_status ?? 'ai_suggested',
                     $h->confidence !== null ? number_format((float) $h->confidence, 2) : '—',
                 ),
-                'support_count'    => $support,
+                'support_count' => $support,
                 'contradict_count' => $contra,
-                'hypothesis_id'    => (string) $h->hypothesis_id,
+                'hypothesis_id' => (string) $h->hypothesis_id,
             ];
 
             // Connect every document-column node → this hypothesis
             foreach ($reports as $r) {
                 $edges[] = [
-                    'id'     => "rep-{$r->report_id}->{$nodeId}",
+                    'id' => "rep-{$r->report_id}->{$nodeId}",
                     'source' => "rep-{$r->report_id}",
                     'target' => $nodeId,
                 ];
             }
             $edges[] = [
-                'id'     => "{$collarsNode}->{$nodeId}",
+                'id' => "{$collarsNode}->{$nodeId}",
                 'source' => $collarsNode,
                 'target' => $nodeId,
             ];
@@ -242,15 +242,15 @@ class SourceGraphController extends Controller
         if ($totalLinks > 0) {
             $evNode = 'evidence-summary';
             $nodes[] = [
-                'id'    => $evNode,
-                'col'   => 4,
-                'kind'  => 'evidence',
+                'id' => $evNode,
+                'col' => 4,
+                'kind' => 'evidence',
                 'label' => "{$totalLinks} evidence links",
-                'meta'  => 'hypothesis_evidence_links',
+                'meta' => 'hypothesis_evidence_links',
             ];
             foreach ($hypotheses as $h) {
                 $edges[] = [
-                    'id'     => "hyp-{$h->hypothesis_id}->{$evNode}",
+                    'id' => "hyp-{$h->hypothesis_id}->{$evNode}",
                     'source' => "hyp-{$h->hypothesis_id}",
                     'target' => $evNode,
                 ];
@@ -260,27 +260,28 @@ class SourceGraphController extends Controller
         // De-dup edges
         $edges = array_values(array_reduce($edges, function ($carry, $e) {
             $carry[$e['id']] = $e;
+
             return $carry;
         }, []));
 
         return Inertia::render('Foundry/SourceGraph', [
             'project' => [
-                'project_id'   => $project->project_id,
+                'project_id' => $project->project_id,
                 'project_name' => $project->project_name,
-                'slug'         => $project->slug,
+                'slug' => $project->slug,
             ],
-            'nodes'    => $nodes,
-            'edges'    => $edges,
-            'stats'    => [
-                'sections'         => count($sections),
-                'parsers'          => count($parsers),
-                'reports'          => $reportsCount,
+            'nodes' => $nodes,
+            'edges' => $edges,
+            'stats' => [
+                'sections' => count($sections),
+                'parsers' => count($parsers),
+                'reports' => $reportsCount,
                 'reports_featured' => count($reports),
-                'collars'          => $collarsCount,
-                'hypotheses'       => count($hypotheses),
-                'evidence_links'   => (int) $totalLinks,
+                'collars' => $collarsCount,
+                'hypotheses' => count($hypotheses),
+                'evidence_links' => (int) $totalLinks,
             ],
-            'empty'    => empty($sections) && $reportsCount === 0 && empty($hypotheses),
+            'empty' => empty($sections) && $reportsCount === 0 && empty($hypotheses),
         ]);
     }
 
@@ -304,6 +305,7 @@ class SourceGraphController extends Controller
                 $sections[] = (string) $row->section;
             }
         }
+
         return array_values(array_unique($sections));
     }
 }

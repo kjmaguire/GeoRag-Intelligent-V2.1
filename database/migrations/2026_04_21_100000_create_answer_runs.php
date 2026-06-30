@@ -134,7 +134,7 @@ return new class extends Migration
                         \'posthoc_span_resolution\',
                         \'hybrid_delayed_attachment\'
                     ))
-            )'
+            )',
         );
 
         // -----------------------------------------------------------------------
@@ -142,29 +142,29 @@ return new class extends Migration
         // -----------------------------------------------------------------------
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_runs_workspace
-                 ON silver.answer_runs (workspace_id)'
+                 ON silver.answer_runs (workspace_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_runs_project
-                 ON silver.answer_runs (project_id)'
+                 ON silver.answer_runs (project_id)',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_runs_created_at
-                 ON silver.answer_runs (created_at DESC)'
+                 ON silver.answer_runs (created_at DESC)',
         );
 
         // Partial index: only rows that carry an OTel trace (avoids indexing NULLs).
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_runs_trace_id
                  ON silver.answer_runs (trace_id)
-                 WHERE trace_id IS NOT NULL'
+                 WHERE trace_id IS NOT NULL',
         );
 
         DB::statement(
             'CREATE INDEX IF NOT EXISTS idx_answer_runs_query_class
-                 ON silver.answer_runs (query_class)'
+                 ON silver.answer_runs (query_class)',
         );
     }
 

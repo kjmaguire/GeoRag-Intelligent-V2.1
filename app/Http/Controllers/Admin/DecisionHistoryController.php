@@ -61,16 +61,16 @@ class DecisionHistoryController extends Controller
 
         $filters = $request->validate([
             'decision_type' => ['nullable', 'in:'.implode(',', self::DECISION_TYPES)],
-            'workspace_id'  => ['nullable', 'uuid'],
+            'workspace_id' => ['nullable', 'uuid'],
         ]);
 
         return Inertia::render('Admin/DecisionHistory', [
-            'kpis'                 => $this->kpis(),
-            'by_decision_type'     => $this->byDecisionType(),
-            'by_human_decision'    => $this->byHumanDecision(),
-            'recent_decisions'     => $this->recentDecisions($filters),
+            'kpis' => $this->kpis(),
+            'by_decision_type' => $this->byDecisionType(),
+            'by_human_decision' => $this->byHumanDecision(),
+            'recent_decisions' => $this->recentDecisions($filters),
             'recent_audit_anchors' => $this->recentAuditAnchors(),
-            'filters'              => array_filter($filters, fn ($v) => $v !== null),
+            'filters' => array_filter($filters, fn ($v) => $v !== null),
             'valid_decision_types' => self::DECISION_TYPES,
         ]);
     }
@@ -113,15 +113,15 @@ class DecisionHistoryController extends Controller
         $this->authorize('admin');
 
         $validated = $request->validate([
-            'workspace_id'        => ['nullable', 'uuid'],
-            'decision_type'       => ['required', 'in:'.implode(',', self::DECISION_TYPES)],
-            'recommendation'      => ['required', 'string', 'max:1000'],
-            'human_decision'      => ['required', 'in:'.implode(',', self::HUMAN_DECISIONS)],
-            'reason'              => ['nullable', 'string', 'max:2000'],
-            'uncertainty'         => ['nullable', 'numeric', 'between:0,1'],
-            'evidence_chunk_ids'  => ['nullable', 'array'],
+            'workspace_id' => ['nullable', 'uuid'],
+            'decision_type' => ['required', 'in:'.implode(',', self::DECISION_TYPES)],
+            'recommendation' => ['required', 'string', 'max:1000'],
+            'human_decision' => ['required', 'in:'.implode(',', self::HUMAN_DECISIONS)],
+            'reason' => ['nullable', 'string', 'max:2000'],
+            'uncertainty' => ['nullable', 'numeric', 'between:0,1'],
+            'evidence_chunk_ids' => ['nullable', 'array'],
             'evidence_chunk_ids.*' => ['string', 'max:200'],
-            'options_considered'  => ['nullable', 'array'],
+            'options_considered' => ['nullable', 'array'],
             'options_considered.*.label' => ['required_with:options_considered', 'string', 'max:200'],
             'options_considered.*.description' => ['nullable', 'string', 'max:1000'],
             'options_considered.*.was_chosen' => ['nullable', 'boolean'],
@@ -267,7 +267,8 @@ class DecisionHistoryController extends Controller
     /**
      * Last 50 decisions (filter-aware).
      *
-     * @param  array{decision_type?: ?string, workspace_id?: ?string}  $filters
+     * @param array{decision_type?: ?string, workspace_id?: ?string} $filters
+     *
      * @return array<int, array{
      *   decision_id: string,
      *   workspace_id: string,

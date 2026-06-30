@@ -50,8 +50,8 @@ return new class extends Migration
                 CONSTRAINT uq_commodity_alias_lower UNIQUE (alias_lower)
             )
         ");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_commodity_aliases_canonical ON public_geo.commodity_aliases (canonical_code)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_commodity_aliases_grouping  ON public_geo.commodity_aliases (commodity_grouping)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_commodity_aliases_canonical ON public_geo.commodity_aliases (canonical_code)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_commodity_aliases_grouping  ON public_geo.commodity_aliases (commodity_grouping)');
 
         // Status aliases scoped per (jurisdiction, canonical_type).
         $canonicalTypes = "'mine','mineral_occurrence','drillhole_collar','resource_potential_zone'";
@@ -75,8 +75,8 @@ return new class extends Migration
                     ON DELETE CASCADE
             )
         ");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_status_aliases_scope ON public_geo.status_aliases (jurisdiction_code, canonical_type)");
-        DB::statement("CREATE INDEX IF NOT EXISTS idx_status_aliases_canonical ON public_geo.status_aliases (canonical_status)");
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_status_aliases_scope ON public_geo.status_aliases (jurisdiction_code, canonical_type)');
+        DB::statement('CREATE INDEX IF NOT EXISTS idx_status_aliases_canonical ON public_geo.status_aliases (canonical_status)');
     }
 
     public function down(): void

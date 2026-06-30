@@ -61,34 +61,36 @@ class RotateAuditKey extends Command
 
     public function handle(): int
     {
-        $keepDump        = (bool) $this->option('keep-dump');
-        $force           = (bool) $this->option('force');
+        $keepDump = (bool) $this->option('keep-dump');
+        $force = (bool) $this->option('force');
         $skipMaintenance = (bool) $this->option('no-maintenance');
-        $dumpDir         = rtrim((string) $this->option('dump-dir'), DIRECTORY_SEPARATOR);
+        $dumpDir = rtrim((string) $this->option('dump-dir'), DIRECTORY_SEPARATOR);
 
-        if (!is_dir($dumpDir)) {
+        if (! is_dir($dumpDir)) {
             $this->error("Dump directory does not exist: {$dumpDir}");
+
             return self::FAILURE;
         }
 
         // Build a unique dump path so repeated runs don't collide and we
         // can't accidentally shred an unrelated file.
-        $dumpPath = $dumpDir . '/audit-pii-rotation-' . date('Ymd-His') . '-'
-            . Str::random(6) . '.jsonl';
+        $dumpPath = $dumpDir.'/audit-pii-rotation-'.date('Ymd-His').'-'
+            .Str::random(6).'.jsonl';
 
         $this->line('');
         $this->line('<fg=yellow>APP_KEY rotation plan:</>');
-        $this->line('  1. ' . ($skipMaintenance ? '[SKIPPED]' : 'Enter maintenance mode'));
-        $this->line('  2. Dump audit PII with OLD APP_KEY     → ' . $dumpPath);
+        $this->line('  1. '.($skipMaintenance ? '[SKIPPED]' : 'Enter maintenance mode'));
+        $this->line('  2. Dump audit PII with OLD APP_KEY     → '.$dumpPath);
         $this->line('  3. Generate + install new APP_KEY');
         $this->line('  4. Rebind in-process encrypter');
         $this->line('  5. Restore audit PII with NEW APP_KEY (integrity-checked)');
-        $this->line('  6. ' . ($keepDump ? '[SKIPPED — --keep-dump] Dump preserved at ' . $dumpPath : 'Shred the plaintext dump'));
-        $this->line('  7. ' . ($skipMaintenance ? '[SKIPPED]' : 'Lift maintenance mode'));
+        $this->line('  6. '.($keepDump ? '[SKIPPED — --keep-dump] Dump preserved at '.$dumpPath : 'Shred the plaintext dump'));
+        $this->line('  7. '.($skipMaintenance ? '[SKIPPED]' : 'Lift maintenance mode'));
         $this->line('');
 
-        if (!$force && !$this->confirm('Proceed?', false)) {
+        if (! $force && ! $this->confirm('Proceed?', false)) {
             $this->warn('Aborted by operator.');
+
             return self::SUCCESS;
         }
 
@@ -96,14 +98,14 @@ class RotateAuditKey extends Command
 
         try {
             // ── 1. Maintenance mode ─────────────────────────────────────
-            if (!$skipMaintenance) {
+            if (! $skipMaintenance) {
                 $this->line('[1/7] Entering maintenance mode…');
                 Artisan::call('down');
                 $maintenanceEngaged = true;
             }
 
             // ── 2. Dump with OLD key ────────────────────────────────────
-            $this->line('[2/7] Dumping audit PII with OLD APP_KEY → ' . $dumpPath);
+            $this->line('[2/7] Dumping audit PII with OLD APP_KEY → '.$dumpPath);
             $dumpExit = Artisan::call('audit:dump-pii', [
                 '--output' => $dumpPath,
             ]);
@@ -111,7 +113,7 @@ class RotateAuditKey extends Command
             if ($dumpExit !== self::SUCCESS) {
                 throw new RuntimeException('audit:dump-pii failed');
             }
-            if (!is_file($dumpPath) || filesize($dumpPath) === 0) {
+            if (! is_file($dumpPath) || filesize($dumpPath) === 0) {
                 throw new RuntimeException("Dump file missing or empty: {$dumpPath}");
             }
 
@@ -135,15 +137,15 @@ class RotateAuditKey extends Command
             $this->line(trim(Artisan::output()));
             if ($restoreExit !== self::SUCCESS) {
                 throw new RuntimeException(
-                    'audit:restore-pii failed. Dump preserved at ' . $dumpPath
-                        . ' — rerun audit:restore-pii manually to finish the rotation.'
+                    'audit:restore-pii failed. Dump preserved at '.$dumpPath
+                        .' — rerun audit:restore-pii manually to finish the rotation.',
                 );
             }
 
             // ── 6. Shred the plaintext dump ────────────────────────────
             if ($keepDump) {
-                $this->warn('[6/7] Keeping dump at ' . $dumpPath . ' (--keep-dump). '
-                    . 'SHRED IT MANUALLY as soon as you\'re done.');
+                $this->warn('[6/7] Keeping dump at '.$dumpPath.' (--keep-dump). '
+                    .'SHRED IT MANUALLY as soon as you\'re done.');
             } else {
                 $this->line('[6/7] Shredding the plaintext dump…');
                 $this->shredFile($dumpPath);
@@ -152,14 +154,15 @@ class RotateAuditKey extends Command
 
             return self::SUCCESS;
         } catch (\Throwable $e) {
-            $this->error('Rotation failed: ' . $e->getMessage());
+            $this->error('Rotation failed: '.$e->getMessage());
             if (is_file($dumpPath)) {
                 $this->warn(
-                    'The plaintext dump is preserved at ' . $dumpPath . ' for recovery. '
-                        . 'Do NOT delete it until you have either successfully completed '
-                        . 'the rotation OR reverted APP_KEY to the original value.'
+                    'The plaintext dump is preserved at '.$dumpPath.' for recovery. '
+                        .'Do NOT delete it until you have either successfully completed '
+                        .'the rotation OR reverted APP_KEY to the original value.',
                 );
             }
+
             return self::FAILURE;
         } finally {
             if ($maintenanceEngaged) {
@@ -181,7 +184,7 @@ class RotateAuditKey extends Command
         $appKey = (string) config('app.key');
         if ($appKey === '') {
             throw new RuntimeException(
-                'config(app.key) is empty after key:generate — cannot rebind encrypter.'
+                'config(app.key) is empty after key:generate — cannot rebind encrypter.',
             );
         }
         // Decode `base64:` prefix — matches Laravel's parseKey behaviour.
@@ -209,15 +212,15 @@ class RotateAuditKey extends Command
      */
     private function shredFile(string $path): void
     {
-        if (!is_file($path)) {
+        if (! is_file($path)) {
             return;
         }
-        $shred = (new ExecutableFinder())->find('shred');
+        $shred = (new ExecutableFinder)->find('shred');
         if ($shred !== null) {
             $process = new Process([$shred, '-u', $path]);
             $process->setTimeout(30);
             $process->run();
-            if ($process->isSuccessful() && !file_exists($path)) {
+            if ($process->isSuccessful() && ! file_exists($path)) {
                 return;
             }
             // Fall through to best-effort overwrite on shred failure.

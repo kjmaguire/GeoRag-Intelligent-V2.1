@@ -2,8 +2,8 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
@@ -29,8 +29,8 @@ return new class extends Migration
 
         // PostGIS geometry column — any geometry type in WGS84 (EPSG:4326)
         DB::statement("SELECT AddGeometryColumn('silver', 'spatial_features', 'geom', 4326, 'GEOMETRY', 2)");
-        DB::statement("CREATE INDEX idx_spatial_features_geom ON silver.spatial_features USING GIST(geom)");
-        DB::statement("CREATE INDEX idx_spatial_features_properties ON silver.spatial_features USING GIN(properties)");
+        DB::statement('CREATE INDEX idx_spatial_features_geom ON silver.spatial_features USING GIST(geom)');
+        DB::statement('CREATE INDEX idx_spatial_features_properties ON silver.spatial_features USING GIN(properties)');
     }
 
     /**

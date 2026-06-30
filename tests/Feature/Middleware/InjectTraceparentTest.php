@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Middleware;
 
 use App\Http\Middleware\InjectTraceparent;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
@@ -18,7 +19,7 @@ final class InjectTraceparentTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Route::get('/_test/trace/echo', function (\Illuminate\Http\Request $r) {
+        Route::get('/_test/trace/echo', function (Request $r) {
             return [
                 'traceparent' => $r->attributes->get(InjectTraceparent::ATTRIBUTE_KEY),
                 'trace_id' => InjectTraceparent::traceIdOf(

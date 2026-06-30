@@ -25,24 +25,24 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE public_geo.pg_mineral_occurrence '
-            . 'RENAME COLUMN smdi_id TO external_id'
+            .'RENAME COLUMN smdi_id TO external_id',
         );
         DB::statement(
             'ALTER TABLE public_geo.pg_mineral_occurrence_history '
-            . 'RENAME COLUMN smdi_id TO external_id'
+            .'RENAME COLUMN smdi_id TO external_id',
         );
 
         // Index rename — keep one concise btree on the new column name.
         DB::statement(
             'ALTER INDEX IF EXISTS public_geo.idx_pg_mineral_occurrence_smdi '
-            . 'RENAME TO idx_pg_mineral_occurrence_external_id'
+            .'RENAME TO idx_pg_mineral_occurrence_external_id',
         );
 
         DB::statement(
-            "COMMENT ON COLUMN public_geo.pg_mineral_occurrence.external_id IS "
-            . "'Jurisdiction-native external identifier — SMDI number for CA-SK, "
-            . "MINFILE_NUMBER for CA-BC, MODS ID for future NL onboarding, etc. "
-            . "Renamed from smdi_id in V1.2 to remove the SK-specific name lie.'"
+            'COMMENT ON COLUMN public_geo.pg_mineral_occurrence.external_id IS '
+            ."'Jurisdiction-native external identifier — SMDI number for CA-SK, "
+            .'MINFILE_NUMBER for CA-BC, MODS ID for future NL onboarding, etc. '
+            ."Renamed from smdi_id in V1.2 to remove the SK-specific name lie.'",
         );
 
         // Refresh the Martin MVT view so the projected column name matches
@@ -77,15 +77,15 @@ return new class extends Migration
     {
         DB::statement(
             'ALTER TABLE public_geo.pg_mineral_occurrence_history '
-            . 'RENAME COLUMN external_id TO smdi_id'
+            .'RENAME COLUMN external_id TO smdi_id',
         );
         DB::statement(
             'ALTER TABLE public_geo.pg_mineral_occurrence '
-            . 'RENAME COLUMN external_id TO smdi_id'
+            .'RENAME COLUMN external_id TO smdi_id',
         );
         DB::statement(
             'ALTER INDEX IF EXISTS public_geo.idx_pg_mineral_occurrence_external_id '
-            . 'RENAME TO idx_pg_mineral_occurrence_smdi'
+            .'RENAME TO idx_pg_mineral_occurrence_smdi',
         );
         // Recreate the MVT view with the restored column name so Martin
         // tile serving works after rollback (review finding — the up()

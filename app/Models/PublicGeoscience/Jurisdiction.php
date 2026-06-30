@@ -18,8 +18,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class Jurisdiction extends Model
 {
     protected $table = 'public_geo.jurisdictions';
+
     protected $primaryKey = 'jurisdiction_code';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [
@@ -40,10 +43,10 @@ class Jurisdiction extends Model
 
     protected $casts = [
         'default_source_crs' => 'integer',
-        'sort_order'         => 'integer',
-        'last_refreshed_at'  => 'datetime',
-        'created_at'         => 'datetime',
-        'updated_at'         => 'datetime',
+        'sort_order' => 'integer',
+        'last_refreshed_at' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     /**
@@ -54,7 +57,7 @@ class Jurisdiction extends Model
         return $this->hasMany(
             PublicGeoSource::class,
             'jurisdiction_code',
-            'jurisdiction_code'
+            'jurisdiction_code',
         );
     }
 }

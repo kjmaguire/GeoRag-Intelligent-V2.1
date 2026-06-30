@@ -32,7 +32,7 @@ class RationaleController extends Controller
             $rec = DB::table('targeting.target_recommendations')->where('recommendation_id', $targetId)->first();
             // Prefer narrative rationale from silver.target_rationales if present.
             $rationale = DB::table('silver.target_rationales')->where('recommendation_id', $targetId)->latest('updated_at')->first();
-            if (!$rationale) {
+            if (! $rationale) {
                 $factors = DB::table('targeting.target_score_factors')->where('score_id', $rec->score_id ?? null)->get();
             }
         } catch (\Throwable $e) {

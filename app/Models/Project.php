@@ -19,8 +19,11 @@ class Project extends Model
     use HasUuids;
 
     protected $table = 'silver.projects';
+
     protected $primaryKey = 'project_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [

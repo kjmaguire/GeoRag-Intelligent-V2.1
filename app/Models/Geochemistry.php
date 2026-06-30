@@ -13,8 +13,11 @@ class Geochemistry extends Model
     use HasUuids;
 
     protected $table = 'silver.geochemistry';
+
     protected $primaryKey = 'geochem_id';
+
     public $incrementing = false;
+
     protected $keyType = 'string';
 
     protected $fillable = [

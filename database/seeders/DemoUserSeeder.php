@@ -26,10 +26,10 @@ class DemoUserSeeder extends Seeder
         $user = User::firstOrCreate(
             ['email' => 'demo@georag.dev'],
             [
-                'name'     => 'Kyle Maguire',
+                'name' => 'Kyle Maguire',
                 'password' => Hash::make('georag2026'),
                 'is_admin' => true,
-            ]
+            ],
         );
 
         // Ensure the admin flag is set even if the row already existed.
@@ -47,9 +47,9 @@ class DemoUserSeeder extends Seeder
 
         if (! $exists) {
             DB::table('project_user')->insert([
-                'user_id'    => $user->id,
+                'user_id' => $user->id,
                 'project_id' => $projectId,
-                'role'       => 'owner',
+                'role' => 'owner',
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);

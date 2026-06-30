@@ -4,6 +4,8 @@ namespace Tests\Unit\Models;
 
 use App\Models\Project;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
@@ -40,7 +42,7 @@ class UserHasProjectAccessTest extends TestCase
 
     public function test_returns_true_when_pivot_row_exists(): void
     {
-        $user    = User::factory()->create();
+        $user = User::factory()->create();
         $project = Project::factory()->create();
         $user->projects()->attach($project->project_id, ['role' => 'member']);
 
@@ -49,7 +51,7 @@ class UserHasProjectAccessTest extends TestCase
 
     public function test_returns_false_when_no_pivot_row(): void
     {
-        $user    = User::factory()->create();
+        $user = User::factory()->create();
         $project = Project::factory()->create();
         // Deliberately NOT attaching — no pivot row.
 
@@ -106,7 +108,7 @@ class UserHasProjectAccessTest extends TestCase
     {
         // Build a PDOException whose getCode() returns '42P01'.
         $pdoException = new \PDOException(
-            'SQLSTATE[42P01]: Undefined table: 7 ERROR: relation "project_user" does not exist'
+            'SQLSTATE[42P01]: Undefined table: 7 ERROR: relation "project_user" does not exist',
         );
 
         // PHP does not parse SQLSTATE from the message string for PDOException
@@ -139,12 +141,12 @@ class UserHasProjectAccessTest extends TestCase
         $queryException = $this->buildMissingPivotException();
 
         // Builder stub: where() returns self, exists() throws.
-        $builderStub = \Mockery::mock(\Illuminate\Database\Eloquent\Builder::class);
+        $builderStub = \Mockery::mock(Builder::class);
         $builderStub->shouldReceive('where')->andReturnSelf();
         $builderStub->shouldReceive('exists')->andThrow($queryException);
 
         // BelongsToMany stub: where() hands off to the builder stub.
-        $relationStub = \Mockery::mock(\Illuminate\Database\Eloquent\Relations\BelongsToMany::class);
+        $relationStub = \Mockery::mock(BelongsToMany::class);
         $relationStub->shouldReceive('where')->andReturn($builderStub);
 
         // User partial mock: only projects() is overridden.

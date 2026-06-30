@@ -32,9 +32,9 @@ return new class extends Migration
             // FK to silver.projects — use raw because Schema::create
             // defaults to the public schema for the table but silver for the ref.
             $table->foreign('project_id')
-                  ->references('project_id')
-                  ->on('silver.projects')
-                  ->cascadeOnDelete();
+                ->references('project_id')
+                ->on('silver.projects')
+                ->cascadeOnDelete();
         });
     }
 

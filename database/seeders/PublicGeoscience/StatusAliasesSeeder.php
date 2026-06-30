@@ -90,19 +90,19 @@ class StatusAliasesSeeder extends Seeder
         foreach (self::ROWS as [$juris, $type, $sourceValue, $canonical]) {
             DB::table('public_geo.status_aliases')->updateOrInsert(
                 [
-                    'jurisdiction_code'   => $juris,
-                    'canonical_type'      => $type,
-                    'source_value_lower'  => mb_strtolower($sourceValue),
+                    'jurisdiction_code' => $juris,
+                    'canonical_type' => $type,
+                    'source_value_lower' => mb_strtolower($sourceValue),
                 ],
                 [
-                    'source_value'     => $sourceValue,
+                    'source_value' => $sourceValue,
                     'canonical_status' => $canonical,
-                    'updated_at'       => $now,
-                    'created_at'       => $now,
-                ]
+                    'updated_at' => $now,
+                    'created_at' => $now,
+                ],
             );
         }
 
-        $this->command?->info('Seeded ' . count(self::ROWS) . ' status aliases (Saskatchewan).');
+        $this->command?->info('Seeded '.count(self::ROWS).' status aliases (Saskatchewan).');
     }
-};
+}

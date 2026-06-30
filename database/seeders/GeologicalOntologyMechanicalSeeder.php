@@ -42,8 +42,6 @@ class GeologicalOntologyMechanicalSeeder extends Seeder
     /**
      * Periodic-table-grade commodity list. Synonyms include element
      * symbols + common names.
-     *
-     * @return void
      */
     private function seedCommodities(): void
     {
@@ -180,14 +178,14 @@ class GeologicalOntologyMechanicalSeeder extends Seeder
      * Upsert one term + its synonyms. Uses ON CONFLICT DO NOTHING so
      * re-runs are safe.
      *
-     * @param  array<int, string>  $synonyms
-     * @param  array<string, mixed>  $payload
+     * @param array<int, string> $synonyms
+     * @param array<string, mixed> $payload
      */
     private function upsertTermWithSynonyms(
         string $class,
         string $canonical,
         array $synonyms,
-        array $payload = []
+        array $payload = [],
     ): void {
         // Find-or-create term.
         $existing = DB::table('silver.geological_ontology_terms')
@@ -200,10 +198,10 @@ class GeologicalOntologyMechanicalSeeder extends Seeder
         } else {
             $termId = (string) Str::uuid();
             DB::table('silver.geological_ontology_terms')->insert([
-                'term_id'        => $termId,
-                'class'          => $class,
+                'term_id' => $termId,
+                'class' => $class,
                 'canonical_term' => $canonical,
-                'payload'        => json_encode($payload),
+                'payload' => json_encode($payload),
             ]);
         }
 
@@ -212,11 +210,11 @@ class GeologicalOntologyMechanicalSeeder extends Seeder
         foreach (array_unique($synonyms) as $syn) {
             DB::table('silver.geological_ontology_synonyms')
                 ->insertOrIgnore([
-                    'synonym_id'    => (string) Str::uuid(),
-                    'term_id'       => $termId,
-                    'synonym'       => $syn,
+                    'synonym_id' => (string) Str::uuid(),
+                    'term_id' => $termId,
+                    'synonym' => $syn,
                     'language_code' => 'en',
-                    'source'        => 'doc-phase-112-mechanical-seed',
+                    'source' => 'doc-phase-112-mechanical-seed',
                 ]);
         }
     }

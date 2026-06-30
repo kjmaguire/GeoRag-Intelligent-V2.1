@@ -68,8 +68,8 @@ return new class extends Migration
 
         DB::statement('COMMENT ON TABLE silver.tenant_isolation_audit IS '
             ."'Z-roadmap Z.9 — per-run audit log for tenant_isolation_audit "
-            ."(Postgres RLS) and graph_tenant_audit (Neo4j) verifiers. "
-            ."Aggregated counters; per-row findings live in "
+            .'(Postgres RLS) and graph_tenant_audit (Neo4j) verifiers. '
+            .'Aggregated counters; per-row findings live in '
             ."silver.store_reconciliation_findings.'");
 
         DB::statement('GRANT USAGE ON SCHEMA silver TO georag_app');
