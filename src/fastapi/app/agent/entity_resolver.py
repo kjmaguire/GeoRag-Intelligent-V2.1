@@ -199,6 +199,7 @@ async def resolve_entity(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from app.db import bind_workspace_scope  # noqa: PLC0415
             await bind_workspace_scope(
                 conn, workspace_id=workspace_id, site="agent.entity_resolver"
             )
@@ -306,6 +307,7 @@ async def log_alias_gap(
     normalised = normalise_entity_text(entity_text)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            from app.db import bind_workspace_scope  # noqa: PLC0415
             await bind_workspace_scope(
                 conn, workspace_id=workspace_id, site="agent.entity_resolver"
             )

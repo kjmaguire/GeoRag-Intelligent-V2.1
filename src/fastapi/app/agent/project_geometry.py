@@ -94,6 +94,7 @@ async def get_project_bbox_wkt(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                from app.db import bind_workspace_scope  # noqa: PLC0415
                 await bind_workspace_scope(
                 conn, workspace_id=workspace_id, site="agent.project_geometry"
             )

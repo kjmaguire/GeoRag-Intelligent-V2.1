@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     import asyncpg
 
     from app.services.pdf_render import PdfRenderService
+    from app.services.eval.pdf_vl_shadow import VlShadowObservation
 
 logger = logging.getLogger(__name__)
 

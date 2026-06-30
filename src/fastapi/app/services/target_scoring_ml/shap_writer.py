@@ -95,6 +95,7 @@ async def write_shap_factors(
         return 0
 
     # Make sure the session has the GUC set so the WITH CHECK passes.
+    from app.db import bind_workspace_scope  # noqa: PLC0415
     await bind_workspace_scope(
         conn, workspace_id=str(workspace_id), site="shap_writer",
     )

@@ -29,6 +29,7 @@ import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timezone
 from typing import Any
+from uuid import UUID
 
 import httpx
 

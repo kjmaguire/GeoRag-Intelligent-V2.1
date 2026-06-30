@@ -36,6 +36,8 @@ report "insufficient information" rather than fabricating data.
 
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 
 # ---------------------------------------------------------------------------
