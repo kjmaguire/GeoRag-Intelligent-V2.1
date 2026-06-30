@@ -214,20 +214,21 @@ describe('pointLayers', () => {
         labelField: 'name',
     };
 
-    it('returns 3 layers (heatmap + circle + label) when withLabels is true', () => {
+    it('returns 4 layers (heatmap + halo + circle + label) when withLabels is true', () => {
         const layers = pointLayers({ ...baseArgs, withLabels: true });
-        expect(layers).toHaveLength(3);
+        expect(layers).toHaveLength(4);
     });
 
-    it('returns 2 layers (heatmap + circle, no label) when withLabels is false', () => {
+    it('returns 3 layers (heatmap + halo + circle, no label) when withLabels is false', () => {
         const layers = pointLayers({ ...baseArgs, withLabels: false });
-        expect(layers).toHaveLength(2);
+        expect(layers).toHaveLength(3);
     });
 
     it('layer ids follow the idPrefix_{type} naming convention', () => {
         const layers = pointLayers({ ...baseArgs, withLabels: true });
         const ids = layers.map((l: any) => l.id);
         expect(ids).toContain('mines_heatmap');
+        expect(ids).toContain('mines_halo');
         expect(ids).toContain('mines_circle');
         expect(ids).toContain('mines_label');
     });
@@ -250,7 +251,7 @@ describe('pointLayers', () => {
         expect(label?.type).toBe('symbol');
     });
 
-    it('drillhole call with withLabels false returns 2 layers', () => {
+    it('drillhole call with withLabels false returns 3 layers', () => {
         const layers = pointLayers({
             sourceId: 'pg_drillhole_collars',
             sourceLayerName: 'pg_drillhole_collars',
@@ -259,10 +260,10 @@ describe('pointLayers', () => {
             withLabels: false,
             labelField: 'drillhole_name',
         });
-        expect(layers).toHaveLength(2);
+        expect(layers).toHaveLength(3);
     });
 
-    it('occurrence call with withLabels true returns 3 layers', () => {
+    it('occurrence call with withLabels true returns 4 layers', () => {
         const layers = pointLayers({
             sourceId: 'pg_mineral_occurrences',
             sourceLayerName: 'pg_mineral_occurrences',
@@ -271,7 +272,7 @@ describe('pointLayers', () => {
             withLabels: true,
             labelField: 'name',
         });
-        expect(layers).toHaveLength(3);
+        expect(layers).toHaveLength(4);
     });
 
     it('all layers reference the correct source and source-layer', () => {
