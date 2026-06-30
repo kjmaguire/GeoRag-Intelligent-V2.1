@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from app.agent.escalation import _parse_rephrasings_json, rephrase_query
-
 
 # ── JSON parser ──────────────────────────────────────────────────────────
 

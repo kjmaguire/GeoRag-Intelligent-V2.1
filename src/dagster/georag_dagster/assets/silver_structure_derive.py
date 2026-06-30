@@ -48,8 +48,6 @@ NOTE: Do NOT add ``from __future__ import annotations`` — Dagster 1.13.
 """
 
 import math
-import uuid
-from typing import Optional
 
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset

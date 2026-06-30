@@ -13,7 +13,6 @@ alone.
 from __future__ import annotations
 
 import polars as pl
-import pytest
 
 from georag_dagster.parsers._csv_io import (
     detect_delimiter,

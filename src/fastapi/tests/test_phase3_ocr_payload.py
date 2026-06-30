@@ -18,8 +18,6 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 # Same dagster-parsers stub injection as Phase 1 persist tests, so the
 # fastapi ingest module can import _FIGURE_TEMPDIR_ROOT without the real
@@ -209,6 +207,7 @@ def test_document_chunk_accepts_ocr_fields():
 
 def test_passage_embedder_query_selects_ocr_columns():
     import inspect
+
     from app.services.ingest import passage_embedder
 
     src = inspect.getsource(passage_embedder)
@@ -222,6 +221,7 @@ def test_passage_embedder_query_selects_ocr_columns():
 
 def test_passage_embedder_payload_includes_ocr_fields():
     import inspect
+
     from app.services.ingest import passage_embedder
 
     src = inspect.getsource(passage_embedder)

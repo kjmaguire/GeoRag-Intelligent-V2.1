@@ -38,7 +38,6 @@ from app.agent.tools import (
     TechniqueBreakdownRow,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixture builders — minimal-valid instances of each tool result type
 # ---------------------------------------------------------------------------

@@ -15,12 +15,11 @@ agent interface; the underlying math lives in
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +90,7 @@ async def target_scoring(
         "scoring_kind":            effective_kind,
         "scores":                  scores,
         "notice":                  notice,
-        "scored_at":               datetime.now(timezone.utc).isoformat(),
+        "scored_at":               datetime.now(UTC).isoformat(),
     }
 
 

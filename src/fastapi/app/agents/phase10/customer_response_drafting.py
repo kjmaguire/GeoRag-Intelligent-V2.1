@@ -6,7 +6,6 @@ template-driven draft per ticket category. The DRAFT goes back to
 ops for review before sending — this agent never auto-sends.
 """
 from __future__ import annotations
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 from typing import Any
@@ -14,8 +13,8 @@ from uuid import UUID
 
 import asyncpg
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.agents import AgentContext, georag_agent
-
 
 _RESPONSE_TEMPLATES: dict[str, str] = {
     "wrong_answer": (

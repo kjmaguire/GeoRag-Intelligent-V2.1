@@ -14,7 +14,6 @@ extras.
 """
 from __future__ import annotations
 
-
 QUESTIONS: list[dict] = [
     {
         "question_set": "report_section",

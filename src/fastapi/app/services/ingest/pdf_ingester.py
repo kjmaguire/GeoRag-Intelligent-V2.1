@@ -58,7 +58,6 @@ def _extract_text_pages(pdf_path: str) -> list[str]:
     Empty-text pages (scanned, no embedded text) come back as empty
     strings — the caller decides how to handle.
     """
-    from pdfminer.high_level import extract_text
 
     # pdfminer doesn't natively expose per-page; use extract_pages instead
     from pdfminer.high_level import extract_pages

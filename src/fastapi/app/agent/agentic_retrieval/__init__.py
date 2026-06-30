@@ -17,14 +17,18 @@ intent classifier. The orchestrator does not call into here yet.
 from __future__ import annotations
 
 from app.agent.agentic_retrieval.context_envelope import (
-    ContextEnvelope,
     DEFAULT_QUERY_MODE,
     DEFAULT_REPORTING_CODE,
     EMPTY_ENVELOPE,
+    ContextEnvelope,
     EnvelopeRoutingDecision,
     QueryMode,
     apply_envelope_overrides,
     unspecified_field_descriptions,
+)
+from app.agent.agentic_retrieval.graph import (
+    get_compiled_graph,
+    run_agentic_retrieval,
 )
 from app.agent.agentic_retrieval.intent_classifier import (
     INTENT_LABELS,
@@ -35,8 +39,8 @@ from app.agent.agentic_retrieval.intent_classifier import (
 )
 from app.agent.agentic_retrieval.preprocessor import (
     FIELD_MODE_MAX_CHUNKS,
-    RetrievalFilters,
     TOOL_DATA_SOURCE_MAP,
+    RetrievalFilters,
     preprocess_envelope,
 )
 from app.agent.agentic_retrieval.qaqc_availability import (
@@ -49,10 +53,6 @@ from app.agent.agentic_retrieval.retrieval_profile import (
     profile_for_intent,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
-from app.agent.agentic_retrieval.graph import (
-    get_compiled_graph,
-    run_agentic_retrieval,
-)
 
 __all__ = [
     "AgenticRetrievalState",

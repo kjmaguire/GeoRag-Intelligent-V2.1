@@ -25,8 +25,6 @@ verification_status to verified / failed / insufficient.
 """
 from __future__ import annotations
 
-from app.db import bind_workspace_scope
-
 import json
 import logging
 from enum import Enum
@@ -34,6 +32,8 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.claim_ledger")
 

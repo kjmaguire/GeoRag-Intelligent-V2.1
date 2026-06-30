@@ -32,7 +32,6 @@ import os
 import re
 
 import httpx
-import pytest
 import pytest_asyncio
 
 # ---------------------------------------------------------------------------
@@ -120,6 +119,7 @@ async def neo4j_driver():
     not polluting CI / dev runs that don't have Neo4j up.
     """
     import os as _os
+
     import pytest as _pytest  # noqa: PLC0415
 
     try:

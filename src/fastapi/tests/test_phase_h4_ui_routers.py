@@ -7,16 +7,20 @@ are exercised via separate live tests guarded on POSTGRES_PASSWORD.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 
 # Import them at module load — failing here surfaces import-time
 # errors (mis-typed dependency, schema drift) before the smoke run.
 from app.routers import (
     citation_feedback as citation_feedback_router,
+)
+from app.routers import (
     ml_training as ml_training_router,
+)
+from app.routers import (
     report_builder as report_builder_router,
+)
+from app.routers import (
     target_recommendation_cockpit as trg_cockpit_router,
 )
 
@@ -51,8 +55,9 @@ async def test_report_types_endpoint_returns_11_types() -> None:
 
 
 def test_sign_off_request_model_validates_decision() -> None:
-    from app.routers.target_recommendation_cockpit import SignOffRequest
     from pydantic import ValidationError
+
+    from app.routers.target_recommendation_cockpit import SignOffRequest
     with pytest.raises(ValidationError):
         SignOffRequest(
             target_id="11111111-1111-1111-1111-111111111111",
@@ -64,8 +69,9 @@ def test_sign_off_request_model_validates_decision() -> None:
 
 
 def test_citation_feedback_request_rejects_invalid_verdict() -> None:
-    from app.routers.citation_feedback import FeedbackRequest
     from pydantic import ValidationError
+
+    from app.routers.citation_feedback import FeedbackRequest
     with pytest.raises(ValidationError):
         FeedbackRequest(
             workspace_id="11111111-1111-1111-1111-111111111111",

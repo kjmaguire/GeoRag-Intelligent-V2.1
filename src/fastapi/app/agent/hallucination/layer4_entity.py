@@ -128,7 +128,7 @@ async def _resolve_hole_ids_in_postgres(
 
     try:
         found_ids = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "layer4_entity: hole-ID resolution timed out for project=%s — "
             "skipping entity check (fail open)",
@@ -179,7 +179,7 @@ async def _resolve_names_in_neo4j(
 
     try:
         unresolved = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_NEO4J_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "layer4_entity: Neo4j name resolution timed out for project=%s — "
             "skipping (fail open)",

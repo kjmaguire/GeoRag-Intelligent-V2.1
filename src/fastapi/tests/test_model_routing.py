@@ -6,7 +6,6 @@ Exercises the pure `select_tier` / `tier_to_model` / `downshift` /
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import patch
 
 import httpx
@@ -119,7 +118,7 @@ class TestDownshift:
 
 class TestRetriableViaFailover:
     def test_asyncio_timeout_is_retriable(self):
-        assert is_retriable_via_failover(asyncio.TimeoutError()) is True
+        assert is_retriable_via_failover(TimeoutError()) is True
 
     def test_httpx_timeout_is_retriable(self):
         assert is_retriable_via_failover(httpx.TimeoutException("timed out")) is True

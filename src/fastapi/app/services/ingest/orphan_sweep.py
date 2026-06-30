@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import asyncpg
 
@@ -44,15 +43,15 @@ STALE_AFTER_INTERVAL = "5 minutes"
 @dataclass
 class OrphanDocument:
     document_id: str
-    project_id: Optional[str]
-    workspace_id: Optional[str]
-    minio_key: Optional[str]
+    project_id: str | None
+    workspace_id: str | None
+    minio_key: str | None
     orphan_count: int
-    parent_run_id: Optional[str]
+    parent_run_id: str | None
     parent_attempt_number: int
-    parent_workspace_id: Optional[str]
-    parent_project_id: Optional[str]
-    parent_minio_key: Optional[str]
+    parent_workspace_id: str | None
+    parent_project_id: str | None
+    parent_minio_key: str | None
 
 
 SELECT_ORPHANS_SQL = """
@@ -142,7 +141,7 @@ async def release_document(conn: asyncpg.Connection, document_id: str) -> None:
         log.debug("orphan_sweep: unlock failed doc=%s err=%s", document_id, exc)
 
 
-async def create_recovery_run(orphan: OrphanDocument) -> Optional[str]:
+async def create_recovery_run(orphan: OrphanDocument) -> str | None:
     """Create a new silver.ingest_progress row for this recovery attempt.
 
     Per the spec's invariant: recovery work always creates new rows
@@ -185,7 +184,7 @@ async def create_recovery_run(orphan: OrphanDocument) -> Optional[str]:
 class SweepClaim:
     """One document successfully claimed by the sweep."""
     orphan: OrphanDocument
-    recovery_run_id: Optional[str]
+    recovery_run_id: str | None
 
 
 async def claim_and_record_recovery(

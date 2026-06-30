@@ -106,7 +106,7 @@ async def fetch_project_graph_entities(
             return [str(r["name"]) for r in records if r.get("name")]
 
         names = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_NEO4J_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "fetch_project_graph_entities: timed out after %.1fs project=%s",
             settings.TIMEOUT_NEO4J_S,

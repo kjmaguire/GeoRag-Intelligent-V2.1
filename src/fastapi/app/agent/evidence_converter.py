@@ -56,7 +56,6 @@ from app.agent.evidence import (
     TableEvidence,
 )
 
-
 logger = logging.getLogger(__name__)
 
 

@@ -20,12 +20,11 @@ Gate to swap: ``import xgboost`` must succeed AND the model_version's
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import asyncpg
-
 
 logger = logging.getLogger(__name__)
 

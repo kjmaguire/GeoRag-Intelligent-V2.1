@@ -37,7 +37,6 @@ from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.services.shadow_diff import classify_shadow_run
 
-
 log = logging.getLogger("georag.hatchet.shadow_diff")
 
 

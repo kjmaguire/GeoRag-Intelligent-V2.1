@@ -44,8 +44,8 @@ from datetime import datetime
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
-from app.hatchet_workflows import hatchet
 from app.hatchet_workflows import _progress as ingest_progress
+from app.hatchet_workflows import hatchet
 from app.services.laravel_bridge import post_ingestion_progress
 
 log = logging.getLogger("georag.hatchet.stale_run_detector")
@@ -155,6 +155,7 @@ async def _dispatch_recovery_run(
         # Imported lazily — keeps the stale_run_detector worker bootable
         # even when ingest_pdf has an import-time error.
         from uuid import uuid4
+
         from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
 
         # file_size is informational only — preflight re-downloads and

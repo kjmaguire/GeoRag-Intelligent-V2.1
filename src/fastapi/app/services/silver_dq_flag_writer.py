@@ -26,7 +26,6 @@ block the data pipeline).
 """
 
 from __future__ import annotations
-from app.db import bind_workspace_scope
 
 import logging
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from typing import Any
 
 import asyncpg
 
+from app.db import bind_workspace_scope
 
 logger = logging.getLogger(__name__)
 

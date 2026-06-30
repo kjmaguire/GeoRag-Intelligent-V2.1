@@ -39,7 +39,6 @@ import json
 import os
 import time
 from typing import Any
-from uuid import UUID
 
 import asyncpg
 from hatchet_sdk import Context
@@ -527,8 +526,9 @@ async def drain(
     # without value).
     if rows_processed > 0:
         try:
-            from app.services.laravel_bridge import post_admin_surface_updated
             import logging
+
+            from app.services.laravel_bridge import post_admin_surface_updated
             admin_payload = {
                 "workflow_kind": "outbox_dispatcher",
                 "rows_processed": rows_processed,

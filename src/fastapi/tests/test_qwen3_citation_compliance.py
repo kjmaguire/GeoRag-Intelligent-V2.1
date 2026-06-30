@@ -28,13 +28,11 @@ Trial counts come verbatim from plan §0c (20 / 20 / 20 / 10 / 10 / 20).
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Skip-by-default — flip via env QWEN3_COMPLIANCE_MANUAL=1 (the runner script
@@ -156,7 +154,6 @@ def _system_prompt_citation_section() -> str:
     # Lazy import so the test module loads without the FastAPI app
     # being importable in isolation.
     try:
-        from app.agent.prompts.answer_emphasis_section import build_answer_emphasis
         # If production exposes a citation-section builder, use it.
         # Today the plan-§4a draft prompt lives at
         # src/fastapi/app/agent/prompts/_drafts/structured_answer_format_v1.txt

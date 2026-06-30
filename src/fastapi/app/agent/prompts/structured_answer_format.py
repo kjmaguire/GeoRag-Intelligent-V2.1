@@ -22,7 +22,6 @@ sections the assembler renders from the LLM output.
 
 from __future__ import annotations
 
-
 STRUCTURED_ANSWER_FORMAT = """
 ## Geology answer format
 

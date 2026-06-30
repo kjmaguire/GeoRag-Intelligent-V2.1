@@ -15,9 +15,7 @@ exceptions at realistic call sites.
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -52,7 +50,7 @@ class TestRetriabilitySurface:
         assert is_retriable_via_failover(exc) is False
 
     def test_asyncio_timeout_is_retriable(self):
-        assert is_retriable_via_failover(asyncio.TimeoutError()) is True
+        assert is_retriable_via_failover(TimeoutError()) is True
 
     def test_httpx_connect_timeout_is_retriable(self):
         assert is_retriable_via_failover(httpx.ConnectTimeout("socket timed out")) is True

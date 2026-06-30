@@ -12,16 +12,15 @@ import gzip
 import io
 import json
 import os
-import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import asyncpg
 import pytest
 
-from app.hatchet_workflows import workspace_export as we
 from app.hatchet_workflows import _restore_pg_from_export as rp
+from app.hatchet_workflows import workspace_export as we
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ def test_row_to_dict_handles_uuid_bytes_datetime() -> None:
     row = _FakeRow({
         "id": _u.UUID("11111111-1111-1111-1111-111111111111"),
         "hash": b"\x01\x02\x03",
-        "created_at": datetime(2026, 5, 16, 12, 0, 0, tzinfo=timezone.utc),
+        "created_at": datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC),
         "name": "demo",
     })
     out = we._row_to_dict(row)

@@ -106,6 +106,7 @@ RERANKER_MODEL_NAME = "Qwen/Qwen3-Reranker-0.6B"
 # tag bump). When set, the runtime asserts the resolved SHA at load
 # time so a silent drift surfaces in logs.
 import os as _os_pin  # noqa: PLC0415 — top-level import is fine
+
 RERANKER_REVISION = _os_pin.environ.get("RERANKER_REVISION", "main")
 RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
 
@@ -189,7 +190,7 @@ class _RemoteReranker:
         self._url = base_url.rstrip("/") + "/rerank"
         self._timeout_s = timeout_s
 
-    def predict(self, pairs: "list[tuple[str, str]]") -> list[float]:
+    def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         import httpx  # noqa: PLC0415
 
         from app.sidecar_auth import SERVICE_KEY_HEADERS  # noqa: PLC0415
@@ -270,7 +271,7 @@ class _Qwen3CausalReranker:
             f"<Query>: {query}\n<Document>: {passage}{self._SUFFIX}"
         )
 
-    def predict(self, pairs: "list[tuple[str, str]]") -> list[float]:
+    def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         torch = self._torch
         scores: list[float] = []
         with torch.no_grad():
@@ -296,7 +297,7 @@ class _Qwen3CausalReranker:
 
 
 @lru_cache(maxsize=1)
-def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
+def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
     """Load and return the BGE reranker singleton (cached per worker process).
 
     Raises:
@@ -307,6 +308,7 @@ def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
     failure degrades quality but must not prevent service startup.
     """
     import os  # noqa: PLC0415
+
     import torch  # noqa: PLC0415
     from sentence_transformers import CrossEncoder  # noqa: PLC0415
 
@@ -383,7 +385,7 @@ def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
     return model
 
 
-def get_reranker_or_none() -> "CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | None":
+def get_reranker_or_none() -> CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | None:
     """Return the reranker (local singleton, remote proxy, or None).
 
     When RERANKER_SERVICE_URL is set, returns an HTTP proxy to the shared

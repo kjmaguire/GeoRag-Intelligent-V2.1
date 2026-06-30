@@ -40,12 +40,10 @@ import time
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from tests.conftest import (
     AUTH_HEADERS,
     FASTAPI_URL,
-    SERVICE_KEY,
     TEST_PROJECT_ID,
     parse_sse_stream,
 )

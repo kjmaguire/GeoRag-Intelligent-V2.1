@@ -53,7 +53,7 @@ class _RemoteEmbedding:
         self._timeout_s = timeout_s
         self._dim = dim
 
-    def encode(self, sentences: "str | list[str]", normalize_embeddings: bool = False, **_kwargs: Any) -> "np.ndarray":
+    def encode(self, sentences: str | list[str], normalize_embeddings: bool = False, **_kwargs: Any) -> np.ndarray:
         import httpx  # noqa: PLC0415
 
         from app.sidecar_auth import SERVICE_KEY_HEADERS  # noqa: PLC0415

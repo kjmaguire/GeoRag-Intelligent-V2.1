@@ -25,8 +25,6 @@ the ingest pipeline.
 """
 from __future__ import annotations
 
-from app.db import bind_workspace_scope
-
 import logging
 import os
 import time as _t
@@ -36,11 +34,11 @@ import asyncpg
 from qdrant_client import AsyncQdrantClient
 
 from app.audit import emit_audit
+from app.db import bind_workspace_scope
 from app.metrics import (
     QDRANT_PAYLOAD_AUDIT_RUNS,
     QDRANT_PAYLOAD_AUDIT_VIOLATIONS,
 )
-
 
 log = logging.getLogger("georag.hatchet.embed_pending_passages.smoke")
 
@@ -148,6 +146,7 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
     try:
         import torch  # noqa: PLC0415
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+
         from app.config import settings  # noqa: PLC0415
         from app.services.qdrant_service import hybrid_query  # noqa: PLC0415
         from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
@@ -187,7 +186,7 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
             limit=5,
             additional_filter=None,
         )
-    except Exception as q_exc:
+    except Exception:
         log.exception(
             "embed_smoke: hybrid_query failed for workspace=%s — query path is broken",
             workspace_id,

@@ -17,13 +17,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.target_recommendation.state import (
-    CandidateZone,
-    ScoreFactor,
-    TargetRecommendationState,
-    ZoneScore,
-)
 from app.services.target_recommendation.nodes import (
+    _synthetic_factors_for_zone,
     apply_constraints,
     calculate_uncertainty,
     collect_private_evidence,
@@ -37,7 +32,12 @@ from app.services.target_recommendation.nodes import (
     score_candidate_zones,
     select_commodity_deposit_model,
     weighted_aggregate,
-    _synthetic_factors_for_zone,
+)
+from app.services.target_recommendation.state import (
+    CandidateZone,
+    ScoreFactor,
+    TargetRecommendationState,
+    ZoneScore,
 )
 
 

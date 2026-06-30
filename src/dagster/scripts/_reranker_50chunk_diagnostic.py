@@ -78,7 +78,7 @@ def main() -> int:
         "postgresql://georag_app:georag-app-dev-2026@postgresql:5432/georag"
     )
 
-    print(f"=== §5e XL pre-flight diagnostic ===")
+    print("=== §5e XL pre-flight diagnostic ===")
     print(f"N_CHUNKS={N_CHUNKS}  MIN_CHUNK_CHARS={MIN_CHUNK_CHARS}")
     print()
 

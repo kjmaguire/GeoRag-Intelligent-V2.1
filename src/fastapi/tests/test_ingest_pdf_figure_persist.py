@@ -424,8 +424,10 @@ def test_run_parser_subprocess_returns_figures_key(tmp_path):
 
 def test_run_parser_subprocess_cleans_figure_tempdir():
     import os
+
+    from georag_dagster.parsers.pdf_report import _figure_tempdir
+
     from app.hatchet_workflows import ingest_pdf as mod
-    from georag_dagster.parsers.pdf_report import _figure_tempdir, _FIGURE_TEMPDIR_ROOT
 
     sha = "cc" * 32
 
@@ -468,8 +470,10 @@ def test_run_parser_subprocess_cleans_figure_tempdir():
 
 def test_run_parser_subprocess_cleans_tempdir_on_parse_error():
     import os
-    from app.hatchet_workflows import ingest_pdf as mod
+
     from georag_dagster.parsers.pdf_report import _figure_tempdir
+
+    from app.hatchet_workflows import ingest_pdf as mod
 
     sha = "dd" * 32
     d = _figure_tempdir(sha)

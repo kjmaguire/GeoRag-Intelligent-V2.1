@@ -12,7 +12,6 @@ Transforms:
 
 Re-runs are idempotent — replaying the same import_batch_id is a no-op.
 """
-import uuid
 
 import psycopg2.extras
 from dagster import (

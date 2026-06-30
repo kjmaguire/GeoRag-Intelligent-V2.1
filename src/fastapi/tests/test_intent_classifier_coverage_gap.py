@@ -12,7 +12,6 @@ import pytest
 
 from app.agent.agentic_retrieval import INTENT_LABELS, classify_intent_sync
 
-
 COVERAGE_GAP_QUERIES: tuple[str, ...] = (
     "What data gaps do we have for this project?",
     "Which holes are missing assay coverage?",

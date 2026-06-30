@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuid
 
 import asyncpg
 import pytest
@@ -27,7 +26,6 @@ from app.services.mv_refresh import (  # noqa: E402
     MaterializedView,
     refresh_views_with_advisory_lock,
 )
-
 
 _TEST_WORKSPACE = "a0000000-0000-0000-0000-0000000bdf01"
 

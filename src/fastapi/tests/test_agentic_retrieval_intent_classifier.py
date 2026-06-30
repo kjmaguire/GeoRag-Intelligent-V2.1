@@ -18,7 +18,6 @@ from app.agent.agentic_retrieval import (
     classify_intent_sync,
 )
 
-
 # ---------------------------------------------------------------------------
 # Labeled query set (20 queries × 6 intents)
 # ---------------------------------------------------------------------------

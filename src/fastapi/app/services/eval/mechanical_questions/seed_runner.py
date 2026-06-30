@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 from uuid import UUID
 
 import asyncpg
@@ -35,7 +35,7 @@ class SeedReport:
 def stable_question_id(question_set: str, question_text: str) -> UUID:
     """SHA-256-derived UUID — same (set, text) always maps to same id."""
     digest = hashlib.sha256(
-        f"{question_set}|{question_text}".encode("utf-8")
+        f"{question_set}|{question_text}".encode()
     ).digest()
     # Set UUID v4 variant + version bits.
     digest = bytearray(digest[:16])

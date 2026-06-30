@@ -10,7 +10,6 @@ Run with:
     pytest src/fastapi/tests/test_identifier_boost.py -v
 """
 
-import pytest
 
 from app.services.identifier_boost import (
     SPARSE_BOOST_FACTOR,
@@ -18,7 +17,6 @@ from app.services.identifier_boost import (
     detect_identifiers,
     get_patterns,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper

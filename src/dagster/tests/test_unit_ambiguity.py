@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from io import StringIO
 
-import pytest
 
 from georag_dagster.parsers._unit_ambiguity import (
     detect_long_format_units,

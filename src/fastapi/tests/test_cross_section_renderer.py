@@ -1,8 +1,6 @@
 """§5 cross-section renderer tests (Phase H4)."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.visualizations import (
     CrossSectionPanel,
     render_cross_section_matplotlib_png,

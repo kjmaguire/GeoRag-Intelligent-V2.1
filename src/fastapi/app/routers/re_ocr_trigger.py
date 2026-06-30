@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from app.config import settings
 from app.hatchet_workflows.re_ocr_page import ReOcrPageInput, re_ocr_page
 
-
 log = logging.getLogger("georag.re_ocr_trigger")
 
 router = APIRouter(prefix="/internal/v1/re_ocr_page", tags=["re-ocr"])

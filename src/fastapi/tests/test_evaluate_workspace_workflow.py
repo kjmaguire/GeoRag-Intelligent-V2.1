@@ -8,6 +8,8 @@ import pytest
 
 from app.hatchet_workflows.evaluate_workspace import (
     EvaluateWorkspaceInput,
+)
+from app.hatchet_workflows.evaluate_workspace import (
     execute as evaluate_workspace_execute,
 )
 

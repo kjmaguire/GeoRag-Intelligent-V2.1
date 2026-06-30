@@ -16,8 +16,6 @@ Run with:  pytest tests/test_pdf_warnings.py -v
 
 from __future__ import annotations
 
-import io
-import struct
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

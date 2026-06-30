@@ -15,8 +15,6 @@ Run with:  pytest tests/test_raster_parser.py -v
 
 from __future__ import annotations
 
-import os
-import tempfile
 
 import numpy as np
 import pytest

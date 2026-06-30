@@ -39,7 +39,6 @@ Dagster 1.13 Config/ConfigurableResource classes use Pydantic for type
 introspection and that import breaks runtime annotation evaluation.
 """
 
-import io
 import json
 import math
 import os
@@ -47,7 +46,6 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
-import psycopg2.extras
 from dagster import (
     AssetCheckExecutionContext,
     AssetCheckResult,

@@ -32,7 +32,6 @@ if not os.environ.get("POSTGRES_USER"):
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

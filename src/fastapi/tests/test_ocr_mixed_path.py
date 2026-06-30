@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ocr"
 PLS_2024 = FIXTURE_DIR / "PLS-2024-Technical-Report.pdf"
 

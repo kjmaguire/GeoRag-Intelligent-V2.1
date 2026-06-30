@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.agent.pricing import Pricing, estimate_cost_usd, user_bucket
+from app.agent.pricing import estimate_cost_usd, user_bucket
 
 
 class TestEstimateCost:

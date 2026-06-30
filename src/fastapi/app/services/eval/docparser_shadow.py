@@ -22,10 +22,10 @@ Shape, mirroring the Qwen3-VL gate in services/eval/pdf_vl_shadow.py:
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 # Layout labels (silver enum) that count as figures / headings. Both parsers
 # normalise into this enum, so the same sets apply to each.
@@ -104,7 +104,7 @@ class DocparserShadowObservation:
         vl: dict[str, Any],
         docling_latency_ms: float | None = None,
         vl_latency_ms: float | None = None,
-    ) -> "DocparserShadowObservation":
+    ) -> DocparserShadowObservation:
         """Build an observation from the two parsers' output dicts.
 
         Either dict may be ``{}`` (parser failed) — its metrics then read 0,

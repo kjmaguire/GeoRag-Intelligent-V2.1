@@ -60,10 +60,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import asyncpg
-
 
 log = logging.getLogger(__name__)
 

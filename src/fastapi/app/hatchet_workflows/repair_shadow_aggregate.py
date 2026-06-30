@@ -35,8 +35,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
 from hatchet_sdk import Context
@@ -44,7 +43,6 @@ from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
-
 
 logger = logging.getLogger(__name__)
 
@@ -301,10 +299,10 @@ async def aggregate_window(
       4. For each workspace: set GUC, run the upsert.
       5. Return summary metrics.
     """
-    started = datetime.now(tz=timezone.utc)
+    started = datetime.now(tz=UTC)
     target_date = input.for_date or (started.date() - timedelta(days=1))
     window_start = datetime.combine(
-        target_date, datetime.min.time(), tzinfo=timezone.utc,
+        target_date, datetime.min.time(), tzinfo=UTC,
     )
     window_end = window_start + timedelta(days=1)
 
@@ -351,7 +349,7 @@ async def aggregate_window(
         await conn.close()
 
     elapsed_ms = int(
-        (datetime.now(tz=timezone.utc) - started).total_seconds() * 1000
+        (datetime.now(tz=UTC) - started).total_seconds() * 1000
     )
 
     return RepairShadowAggregateOutput(

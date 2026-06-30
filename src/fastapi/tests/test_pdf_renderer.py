@@ -1,13 +1,10 @@
 """Phase G.3 follow-up — tests for the markdown → HTML → PDF renderer."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.report_builder.renderers.pdf_renderer import (
     markdown_to_html,
     render_pdf_from_markdown,
 )
-
 
 # ─────────────────────── markdown_to_html ────────────────────────
 

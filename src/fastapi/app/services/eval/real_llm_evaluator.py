@@ -50,6 +50,8 @@ log = logging.getLogger("georag.eval.real_llm_evaluator")
 # as backward-compat aliases for existing test imports.
 from app.services.eval.validators import (
     REFUSAL_PATTERNS as _REFUSAL_PATTERNS,
+)
+from app.services.eval.validators import (
     detect_refusal as _detect_refusal,
 )
 

@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ocr"
 PLS_2024 = FIXTURE_DIR / "PLS-2024-Technical-Report.pdf"
 
@@ -87,8 +86,8 @@ def test_profile_classifies_pls_2024_as_native(native_pdf_path: Path) -> None:
 
 
 def test_profile_per_page_profiles_match_count(native_pdf_path: Path) -> None:
-    from app.ocr.profile import profile
     from app.ocr.preflight import preflight
+    from app.ocr.profile import profile
 
     preflight_result = asyncio.run(preflight(native_pdf_path))
     profile_result = asyncio.run(profile(native_pdf_path))

@@ -26,7 +26,6 @@ from app.services.target_recommendation.sme_content.seed_runner import (
     seed_deposit_model_from_module,
 )
 
-
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("sme_seeder")
 

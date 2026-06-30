@@ -9,9 +9,14 @@ import asyncpg
 import pytest
 
 from app.services.claim_ledger import (
-    ClaimType, Support, VerificationStatus,
-    record_claim, record_claims_bulk, update_verification,
-    list_claims_for_run, summary_for_run,
+    ClaimType,
+    Support,
+    VerificationStatus,
+    list_claims_for_run,
+    record_claim,
+    record_claims_bulk,
+    summary_for_run,
+    update_verification,
 )
 
 PG_DSN = os.environ.get(

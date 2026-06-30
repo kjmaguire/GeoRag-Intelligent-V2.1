@@ -26,27 +26,26 @@ from app.services.target_recommendation.deposit_models import (
     DEPOSIT_MODEL_TEMPLATES,
     get_deposit_model_template,
 )
-from app.services.target_recommendation.state import (
-    TargetRecommendationState,
-    ScoringKind,
-)
-from app.services.target_recommendation.nodes import (
-    select_commodity_deposit_model,
-    load_workspace_playbook,
-    collect_private_evidence,
-    collect_public_geoscience,
-    generate_candidate_zones,
-    score_candidate_zones,
-    calculate_uncertainty,
-    apply_constraints,
-    rank_targets,
-    explain_score_factors,
-    create_map_layers,
-    route_to_review_cockpit,
-)
-
 from app.services.target_recommendation.graph import (
     build_target_recommendation_graph,
+)
+from app.services.target_recommendation.nodes import (
+    apply_constraints,
+    calculate_uncertainty,
+    collect_private_evidence,
+    collect_public_geoscience,
+    create_map_layers,
+    explain_score_factors,
+    generate_candidate_zones,
+    load_workspace_playbook,
+    rank_targets,
+    route_to_review_cockpit,
+    score_candidate_zones,
+    select_commodity_deposit_model,
+)
+from app.services.target_recommendation.state import (
+    ScoringKind,
+    TargetRecommendationState,
 )
 
 __all__ = [

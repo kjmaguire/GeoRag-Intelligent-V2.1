@@ -36,10 +36,9 @@ Defaults
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aioboto3
 import asyncpg
@@ -131,7 +130,7 @@ class _SeaweedFsColdTierStore:
 async def run_archive(
     input: ColdTierArchiveInput, ctx: Context,
 ) -> ColdTierArchiveOutput:
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     cutoff = started_at - timedelta(days=input.retention_days)
 
     dsn = _build_dsn()
@@ -149,7 +148,7 @@ async def run_archive(
                 dry_run=False,
             )
         except Exception as exc:  # noqa: BLE001
-            duration_s = (datetime.now(tz=timezone.utc) - started_at).total_seconds()
+            duration_s = (datetime.now(tz=UTC) - started_at).total_seconds()
             await emit_audit(
                 conn,
                 action_type="audit.cold_tier.archive.failed",
@@ -169,7 +168,7 @@ async def run_archive(
             log.exception("cold_tier_archive failed cutoff=%s", cutoff)
             raise
 
-        completed_at = datetime.now(tz=timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         duration_s = (completed_at - started_at).total_seconds()
 
         await emit_audit(

@@ -11,7 +11,6 @@ from app.services.laravel_bridge import (
     post_workspace_activity,
 )
 
-
 # ─── workspace.activity ─────────────────────────────────────────────────────
 
 

@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -30,7 +30,6 @@ from app.services.target_scoring_ml.xgboost_inference import (
     _linear_baseline,
 )
 
-
 # ──────────────────── incident_diagnosis nodes ───────────────────
 
 
@@ -39,7 +38,7 @@ def _make_incident_state(payload: dict | None = None) -> IncidentDiagnosisState:
         incident_id=uuid4(),
         workspace_id=uuid4(),
         triage_kind="other",
-        reported_at=datetime.now(timezone.utc),
+        reported_at=datetime.now(UTC),
         initial_payload=payload or {},
     )
 

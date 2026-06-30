@@ -23,15 +23,14 @@ asserted the old v5 prefix were stale; the code is correct.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID, uuid4
+from datetime import UTC, datetime
+from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
 from app.agent.orchestrator import _cache_key
 from app.models.retrieval_cache import CachedRetrievalCandidate, CachedRetrievalContext
-
 
 # ---------------------------------------------------------------------------
 # 1. Model shape — CachedRetrievalContext must NOT contain answer fields
@@ -82,7 +81,7 @@ class TestCachedRetrievalContextShape:
 
     def test_schema_version_default_is_1(self):
         ctx = CachedRetrievalContext(
-            cached_at=datetime.now(timezone.utc),
+            cached_at=datetime.now(UTC),
             workspace_id=uuid4(),
             workspace_data_version_at_cache=1,
             query_class="spatial",
@@ -105,7 +104,7 @@ class TestCachedRetrievalContextShape:
             rrf_score=0.0625,
         )
         ctx = CachedRetrievalContext(
-            cached_at=datetime.now(timezone.utc),
+            cached_at=datetime.now(UTC),
             workspace_id=uuid4(),
             workspace_data_version_at_cache=7,
             project_data_version_at_cache=3,
@@ -129,7 +128,7 @@ class TestCachedRetrievalContextShape:
     def test_no_answer_fields_in_serialised_json(self):
         """JSON output must not contain any answer-level keys."""
         ctx = CachedRetrievalContext(
-            cached_at=datetime.now(timezone.utc),
+            cached_at=datetime.now(UTC),
             workspace_id=uuid4(),
             workspace_data_version_at_cache=1,
             query_class="spatial",

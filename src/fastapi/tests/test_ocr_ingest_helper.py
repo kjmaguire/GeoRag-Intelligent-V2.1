@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ocr"
 PLS_2024 = FIXTURE_DIR / "PLS-2024-Technical-Report.pdf"
 
@@ -41,6 +40,7 @@ def db_available() -> bool:
 
 async def _make_pool():
     import asyncpg
+
     from app.ocr._persist import _dsn
 
     return await asyncpg.create_pool(

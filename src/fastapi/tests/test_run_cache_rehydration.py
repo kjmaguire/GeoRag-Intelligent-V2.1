@@ -12,8 +12,7 @@ Covers:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -31,7 +30,6 @@ from app.agent.tools import (
     DocumentSearchResult,
     SpatialQueryResult,
 )
-
 
 # ───────────────────────── cache_key ─────────────────────────
 
@@ -171,11 +169,11 @@ def test_build_cached_candidates_qdrant_serialises_payload() -> None:
 # ─────────────────────── rehydrate_tool_results ─────────────
 
 
-def _wrap_in_context(cands: list) -> "CachedRetrievalContext":
+def _wrap_in_context(cands: list) -> CachedRetrievalContext:
     """Build a CachedRetrievalContext around a list of candidates."""
     from app.models.retrieval_cache import CachedRetrievalContext  # noqa: PLC0415
     return CachedRetrievalContext(
-        cached_at=datetime.now(timezone.utc),
+        cached_at=datetime.now(UTC),
         workspace_id=UUID("a0000000-0000-0000-0000-000000000001"),
         project_id=UUID("11111111-1111-1111-1111-111111111111"),
         workspace_data_version_at_cache=0,

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from app.agents.phase5.drillhole_visual_qa import drillhole_visual_qa
 from app.agents.phase5.visual_readiness import visual_readiness
 from app.agents.phase6.public_private_boundary import public_private_boundary

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-import uuid
+from datetime import UTC
 
 import asyncpg
 import pytest
@@ -75,14 +75,14 @@ def test_env_threshold_rejects_zero(monkeypatch: pytest.MonkeyPatch) -> None:
 # Output contract
 # ---------------------------------------------------------------------------
 def test_output_round_trip() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
     out = cbw.CostBurnWatcherOutput(
         workspaces_checked=3,
         workspaces_over_threshold=1,
         alerts_emitted=1,
         alerts_suppressed_idempotent=0,
         window_minutes=60,
-        sampled_at=datetime.now(tz=timezone.utc),
+        sampled_at=datetime.now(tz=UTC),
     )
     d = out.model_dump()
     assert d["alerts_emitted"] == 1

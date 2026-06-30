@@ -29,7 +29,6 @@ from app.hatchet_workflows.tiff_normalize import (
 )
 from app.middleware.project_lifecycle import require_active_project
 
-
 log = logging.getLogger("georag.shadow_trigger")
 
 router = APIRouter(prefix="/internal/v1/shadow", tags=["shadow"])

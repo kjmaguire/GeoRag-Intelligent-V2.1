@@ -13,10 +13,7 @@ Run with:
 
 from __future__ import annotations
 
-import pytest
-
 from app.agent.orchestrator import _classify_query, _extract_public_geoscience_hints
-
 
 # ---------------------------------------------------------------------------
 # _classify_query
@@ -190,7 +187,8 @@ class TestCacheKeyIsolation:
     def _get_cache_key(self, query: str, project_id: str, categories: dict | None = None) -> str:
         """Replicate the _cache_key logic from orchestrator.py in a test-local
         function so we can test it without importing it (it may be private)."""
-        import hashlib, json
+        import hashlib
+        import json
 
         if categories is None:
             # v1 namespace — no categories

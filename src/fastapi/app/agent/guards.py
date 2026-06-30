@@ -32,7 +32,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-
 __all__ = [
     "GuardErrorCode",
     "RepairAttempt",
@@ -249,7 +248,9 @@ def classify_guards(
 # ---------------------------------------------------------------------------
 
 
-from dataclasses import dataclass, field as _field  # noqa: E402 — keep
+from dataclasses import dataclass  # noqa: E402 — keep
+from dataclasses import field as _field
+
                                                    #  detector co-located
 
 

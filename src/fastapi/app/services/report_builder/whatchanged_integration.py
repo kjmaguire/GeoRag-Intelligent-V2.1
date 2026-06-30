@@ -26,6 +26,8 @@ from uuid import uuid4
 
 from app.hatchet_workflows.what_changed_detector import (
     WhatChangedInput,
+)
+from app.hatchet_workflows.what_changed_detector import (
     execute as what_changed_execute,
 )
 from app.services.report_builder.state import (
@@ -190,9 +192,9 @@ async def gather_evidence_what_changed(
         SectionDraft(
             section_id="claim_changes",
             body_markdown=(
-                f"## Claim Ledger Changes\n\n"
-                f"_No claim-ledger delta available — the "
-                f"`silver.claim_ledger` schema lands with §9.5._\n"
+                "## Claim Ledger Changes\n\n"
+                "_No claim-ledger delta available — the "
+                "`silver.claim_ledger` schema lands with §9.5._\n"
             ),
             claims=[
                 Claim(
@@ -218,10 +220,10 @@ async def gather_evidence_what_changed(
         SectionDraft(
             section_id="target_changes",
             body_markdown=(
-                f"## Target Recommendation Changes\n\n"
-                f"_No target-zone score-shift signal available — the "
-                f"§18 delta detection wires in when score_targets emits "
-                f"score-change audits._\n"
+                "## Target Recommendation Changes\n\n"
+                "_No target-zone score-shift signal available — the "
+                "§18 delta detection wires in when score_targets emits "
+                "score-change audits._\n"
             ),
             claims=[
                 Claim(

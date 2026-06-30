@@ -28,9 +28,9 @@ deliberately does not require.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Sequence
-
+from typing import Any
 
 # ── Locked gate thresholds (ADR-0015 step 3) ─────────────────────────
 SCHEMA_VALID_RATE_MIN: float = 0.95
@@ -102,7 +102,7 @@ class VlShadowObservation:
         v3_summary: Any,
         v2_latency_ms: float | None = None,
         v3_latency_ms: float | None = None,
-    ) -> "VlShadowObservation":
+    ) -> VlShadowObservation:
         """Build an observation from two VL outputs (validated shape or None).
 
         ``None`` for a version means it failed schema validation (or errored) —

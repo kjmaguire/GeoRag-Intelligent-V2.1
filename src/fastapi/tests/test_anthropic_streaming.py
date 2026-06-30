@@ -28,7 +28,6 @@ import pytest
 
 from app.agent.orchestrator import _call_anthropic_llm
 
-
 # ---------------------------------------------------------------------------
 # Fake stream context manager
 # ---------------------------------------------------------------------------

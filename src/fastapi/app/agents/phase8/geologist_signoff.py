@@ -20,12 +20,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -98,14 +97,14 @@ async def geologist_signoff(
         "qp_user_id":                    qp_user_id,
         "qp_credential_id":              qp_credential_id,
         "credential_verified_at":        (
-            datetime.now(timezone.utc).isoformat() if credential_verified else None
+            datetime.now(UTC).isoformat() if credential_verified else None
         ),
         "decision":                      decision,
         "rationale":                     rationale,
         "qp_signature_method":           qp_signature_method,
         "target_recommendations_hash":   target_hash,
         "claim_ledger_hash":             ledger_hash,
-        "signed_at":                     datetime.now(timezone.utc).isoformat(),
+        "signed_at":                     datetime.now(UTC).isoformat(),
         "audit_action_type":             f"target.r5_signoff.{decision}",
     }
     logger.info(

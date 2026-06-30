@@ -22,7 +22,7 @@ graduates the wiring inserts it before scoring.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -152,7 +152,7 @@ async def execute(input: ScoreTargetsInput, ctx: Context) -> ScoreTargetsOutput:
         scoring_kind=input.scoring_kind,
         candidate_zones=zones,
         workspace_playbook=playbook,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
 
     graph = build_target_recommendation_graph()

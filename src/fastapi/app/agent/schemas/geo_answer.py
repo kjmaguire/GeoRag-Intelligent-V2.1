@@ -38,7 +38,6 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
-
 GEO_ANSWER_SCHEMA_VERSION = "1.0"
 
 ConfidenceLevel = Literal["High", "Medium", "Low"]

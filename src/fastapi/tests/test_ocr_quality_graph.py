@@ -9,12 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
-
 from app.ocr.quality_graph import (
-    ACCEPT_OCR_CONFIDENCE,
     MAX_OCR_RETRIES,
-    REVIEW_OCR_CONFIDENCE,
     route_page,
     summarize_document,
 )

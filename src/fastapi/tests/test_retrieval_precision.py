@@ -16,10 +16,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from app.agent.orchestrator import _mmr_select_chunks
-
 
 # ── MMR ranking guarantees ───────────────────────────────────────────────
 

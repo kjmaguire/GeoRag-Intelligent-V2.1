@@ -11,7 +11,6 @@ test the full read here — that requires a real FileGDB sample).
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 

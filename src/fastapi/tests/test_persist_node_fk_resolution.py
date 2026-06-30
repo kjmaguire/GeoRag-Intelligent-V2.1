@@ -17,10 +17,8 @@ re-introduce the §39 regression.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -181,8 +179,9 @@ async def test_fk_precheck_failure_falls_through():
 
 def test_retrieval_trace_answer_run_id_is_nullable():
     """Pin trace_writer.RetrievalTrace.answer_run_id: UUID | None."""
-    from app.services import trace_writer  # noqa: PLC0415
     import typing as _typing  # noqa: PLC0415
+
+    from app.services import trace_writer  # noqa: PLC0415
 
     annot = _typing.get_type_hints(trace_writer.RetrievalTrace)
     rt = annot["answer_run_id"]

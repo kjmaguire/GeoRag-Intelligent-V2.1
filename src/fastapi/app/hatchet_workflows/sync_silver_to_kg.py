@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 import asyncpg
 from hatchet_sdk import Context

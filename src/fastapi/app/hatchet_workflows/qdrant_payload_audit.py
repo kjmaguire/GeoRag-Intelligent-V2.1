@@ -43,7 +43,6 @@ from app.metrics import (
     QDRANT_PAYLOAD_AUDIT_VIOLATIONS,
 )
 
-
 log = logging.getLogger("georag.hatchet.qdrant_payload_audit")
 
 

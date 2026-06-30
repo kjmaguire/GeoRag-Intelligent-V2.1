@@ -30,7 +30,6 @@ from pydantic import BaseModel, Field
 from app.hatchet_workflows import hatchet
 from app.services.ingest.tiff_ocr_ingester import ocr_cluster_tiffs
 
-
 log = logging.getLogger("georag.hatchet.tiff_ocr_cluster")
 
 

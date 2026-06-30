@@ -39,7 +39,6 @@ from dagster import (
 
 from georag_dagster.assets.silver_nl_summaries import (
     CHUNK_KIND_STRUCTURED,
-    PARSER_USED,
     _bulk_upsert,
     _derive_passage_id,
     _text_hash,

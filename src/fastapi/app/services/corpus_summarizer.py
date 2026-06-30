@@ -213,7 +213,7 @@ async def decide_scope(
             ),
             timeout=settings.SUMMARIZER_SCOPE_TIMEOUT_S,
         )
-    except (asyncio.TimeoutError, Exception) as exc:
+    except (TimeoutError, Exception) as exc:
         logger.warning("corpus_summarizer.decide_scope: LLM error (%s)", exc)
         return ScopeFilter(raw_query=query)
 
@@ -319,7 +319,7 @@ async def map_chunk(
             ),
             timeout=settings.SUMMARIZER_MAP_TIMEOUT_S,
         )
-    except (asyncio.TimeoutError, Exception) as exc:
+    except (TimeoutError, Exception) as exc:
         logger.warning(
             "corpus_summarizer.map_chunk: LLM error for chunk=%s: %s",
             chunk_id[:12],
@@ -424,7 +424,7 @@ async def reduce_summaries(
             ),
             timeout=settings.SUMMARIZER_REDUCE_TIMEOUT_S,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("corpus_summarizer.reduce_summaries: timed out")
         return ""
     except Exception as exc:  # noqa: BLE001

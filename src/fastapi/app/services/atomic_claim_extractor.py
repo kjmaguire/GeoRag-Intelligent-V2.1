@@ -229,7 +229,7 @@ async def extract_claims_from_chunk(
             ),
             timeout=deadline,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "atomic_claim_extractor: timeout (%.1fs) for chunk=%s",
             deadline,
@@ -413,7 +413,7 @@ async def compose_from_claims(
             ),
             timeout=deadline,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("citation_first_composer: timed out after %.1fs", deadline)
         return ""
     except Exception as exc:  # noqa: BLE001

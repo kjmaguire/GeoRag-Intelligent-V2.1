@@ -51,7 +51,6 @@ from app.agent.geospatial_planner import (
     plan_spatial_query,
 )
 
-
 logger = logging.getLogger(__name__)
 
 

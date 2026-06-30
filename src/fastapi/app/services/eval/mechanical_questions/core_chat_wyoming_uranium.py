@@ -25,7 +25,6 @@ SME review pending. Mark `status='draft'` until Kyle approves.
 """
 from __future__ import annotations
 
-
 QUESTIONS: list[dict] = [
     # ─────────────────────── Layer 4 + Layer 1 — entity ───────────────────
     {

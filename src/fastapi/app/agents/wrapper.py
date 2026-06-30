@@ -28,22 +28,20 @@ import functools
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, TypeVar
-from uuid import UUID, uuid4
-
-import asyncpg
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any, Literal, TypeVar
+from uuid import UUID
 
 from app.audit import emit_audit
+
 from .context import AgentContext, AgentOutcome
 from .exceptions import (
     AgentCircuitOpenError,
     AgentError,
     AgentRefusalError,
-    AgentTimeoutError,
 )
 from .runtime import get_runtime
-
 
 T = TypeVar("T")
 RiskTier = Literal["R0", "R1", "R2", "R3", "R4", "R5"]
@@ -517,7 +515,7 @@ def georag_agent(
                     timeout=policy["hard_timeout_ms"] / 1000.0,
                 )
                 outcome = "success"
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 outcome = "timeout"
                 error = f"hard_timeout_ms={policy['hard_timeout_ms']} exceeded"
             except AgentRefusalError as e:

@@ -14,12 +14,9 @@ import os
 import tempfile
 import zipfile
 
-import asyncpg
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 

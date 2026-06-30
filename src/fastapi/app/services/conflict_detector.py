@@ -40,7 +40,7 @@ import logging
 from dataclasses import dataclass
 from uuid import UUID
 
-from app.agent.citation_binding import BoundEvidence, BoundEvidenceSet
+from app.agent.citation_binding import BoundEvidence
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,6 @@ from fastapi import HTTPException
 
 from app.services.auth import UserContext, extract_user_context
 
-
 TEST_SECRET = "test-shared-secret-abcdef1234567890_padded-to-at-least-32-bytes"
 
 

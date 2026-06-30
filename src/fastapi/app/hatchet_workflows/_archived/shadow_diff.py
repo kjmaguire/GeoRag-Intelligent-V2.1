@@ -36,7 +36,6 @@ from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
 from app.services.shadow_diff import classify_shadow_run
 
-
 log = logging.getLogger("georag.hatchet.shadow_diff")
 
 

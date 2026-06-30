@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 # Docling label → silver.ingest_layouts.layout_label CHECK enum
 # Anything not in this map → "other"
 _DOCLING_LABEL_MAP = {

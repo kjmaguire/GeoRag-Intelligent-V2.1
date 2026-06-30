@@ -43,7 +43,6 @@ from fastapi.responses import Response
 from app.config import settings
 from app.ocr.render import render_page
 
-
 log = logging.getLogger("georag.ocr_render")
 
 router = APIRouter(prefix="/internal/v1/ocr", tags=["ocr"])

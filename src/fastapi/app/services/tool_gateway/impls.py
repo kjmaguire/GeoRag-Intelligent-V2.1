@@ -29,8 +29,8 @@ async def _audit_provenance(inputs: dict[str, Any]) -> dict[str, Any]:
     """Read silver.* provenance chain for a single row.
     Inputs: {table_name: str, silver_pk: uuid}
     """
-    from app.services.review_lineage_lookup import lookup_review_lineage
     from app.main import app
+    from app.services.review_lineage_lookup import lookup_review_lineage
     pg_pool = getattr(app.state, "pg_pool", None)
     table = inputs.get("table_name", "")
     pk = inputs.get("silver_pk", "")
@@ -118,7 +118,7 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
     """
     try:
         from qdrant_client import AsyncQdrantClient
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
     except ImportError:
         return {"error": "qdrant client not installed"}
     host = os.environ.get("QDRANT_HOST", "qdrant")
@@ -219,10 +219,14 @@ async def _run_evaluation(inputs: dict[str, Any]) -> dict[str, Any]:
     """Fire the eval harness against a question_set.
     Inputs: {question_set: str, evaluator_kind: str}
     """
-    from app.hatchet_workflows.evaluate_workspace import (
-        EvaluateWorkspaceInput, run as evaluate_workspace_task,
-    )
     from uuid import uuid4
+
+    from app.hatchet_workflows.evaluate_workspace import (
+        EvaluateWorkspaceInput,
+    )
+    from app.hatchet_workflows.evaluate_workspace import (
+        run as evaluate_workspace_task,
+    )
 
     qs = inputs.get("question_set", "refusal_correctness")
     evaluator = inputs.get("evaluator_kind", "aio_mock")

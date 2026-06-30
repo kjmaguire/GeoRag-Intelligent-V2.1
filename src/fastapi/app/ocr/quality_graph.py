@@ -68,7 +68,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-
 PageRoute = Literal["accept", "re_ocr", "silver_review", "reject"]
 
 

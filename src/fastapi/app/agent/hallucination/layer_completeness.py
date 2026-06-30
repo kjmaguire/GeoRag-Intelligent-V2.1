@@ -37,8 +37,8 @@ Design
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -252,9 +252,12 @@ async def evaluate_guards(
     """
     import asyncio
     import time as _time
+
+    from app.agent.hallucination.orchestrator_validators import (
+        verify_entities as _verify_entities,
+    )
     from app.agent.hallucination.orchestrator_validators import (
         verify_numbers as _verify_numbers,
-        verify_entities as _verify_entities,
     )
 
     # Module 6 Chunk 3.5 — parallel guard evaluation.

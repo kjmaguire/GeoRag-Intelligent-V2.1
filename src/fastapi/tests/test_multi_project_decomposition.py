@@ -7,15 +7,12 @@ it's a thin wrapper over an asyncpg.fetchrow.
 
 from __future__ import annotations
 
-import pytest
-
 from app.services.multi_project_decomposition import (
     DecompositionResult,
     build_per_project_sub_query,
     decompose_query,
     detect_projects_in_query,
 )
-
 
 PROJECTS = [
     "Shakespeare",

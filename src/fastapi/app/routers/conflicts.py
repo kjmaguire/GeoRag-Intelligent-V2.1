@@ -24,7 +24,6 @@ from pydantic import BaseModel, Field
 from app.agents.phase7.conflict_resolver import conflict_resolver
 from app.services.auth import verify_service_key
 
-
 logger = logging.getLogger(__name__)
 
 

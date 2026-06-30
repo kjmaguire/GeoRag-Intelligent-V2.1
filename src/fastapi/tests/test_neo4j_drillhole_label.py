@@ -24,7 +24,6 @@ import pytest
 
 from app.agent.tools import _ALLOWED_GRAPH_LABELS, _validate_cypher_label
 
-
 # ---------------------------------------------------------------------------
 # Unit tests — run in the fast suite, no live Neo4j required
 # ---------------------------------------------------------------------------

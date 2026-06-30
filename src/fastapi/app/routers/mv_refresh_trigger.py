@@ -14,7 +14,6 @@ Auth: X-Service-Key, same as /internal/v1/shadow.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
@@ -43,7 +42,7 @@ def _check_service_key(x_service_key: str | None = Header(default=None)) -> None
 
 
 class MvRefreshRunInput(BaseModel):
-    workspace_id: Optional[str] = Field(
+    workspace_id: str | None = Field(
         default=None,
         description="UUID. Scopes the gold.mv_refresh_log row + dependency "
                     "staleness check. NULL = global refresh (nightly cron).",
@@ -62,13 +61,13 @@ class MvRefreshViewResult(BaseModel):
     view_name: str
     status: str
     duration_ms: int
-    rows_before: Optional[int] = None
-    rows_after: Optional[int] = None
-    error: Optional[str] = None
+    rows_before: int | None = None
+    rows_after: int | None = None
+    error: str | None = None
 
 
 class MvRefreshRunOutput(BaseModel):
-    workspace_id: Optional[str]
+    workspace_id: str | None
     triggered_by: str
     results: list[MvRefreshViewResult]
 

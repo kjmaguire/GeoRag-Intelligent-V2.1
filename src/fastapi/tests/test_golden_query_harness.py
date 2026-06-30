@@ -15,16 +15,12 @@ from app.agent.evidence import (
     SpatialEvidence,
 )
 from app.agent.golden_query_harness import (
-    CriterionResult,
     EvaluationCriterion,
-    EvaluationReport,
     GoldenQuery,
-    QueryEvaluation,
     evaluate_packet,
     load_golden_queries,
     run_golden_harness,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -42,7 +42,6 @@ from typing import Any
 import asyncpg
 import httpx
 
-from app.services.eval.real_llm_evaluator import _detect_refusal
 from app.services.eval.workspace_evaluator import (
     QuestionRecord,
     QuestionResult,
@@ -81,8 +80,8 @@ async def _build_agent_deps() -> Any:
     """
     # Local imports — keep module import lightweight for the unit-test
     # path that doesn't invoke RAG.
-    from qdrant_client import AsyncQdrantClient
     from neo4j import AsyncGraphDatabase
+    from qdrant_client import AsyncQdrantClient
 
     from app.agent.deps import AgentDeps
 
@@ -143,6 +142,7 @@ async def _build_agent_deps() -> Any:
     embedding_model = None
     try:
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+
         from app.config import settings  # noqa: PLC0415
 
         embedding_model = SentenceTransformer(
@@ -264,7 +264,7 @@ async def evaluate_question_real_rag(
             run_deterministic_rag(question.question_text, deps),
             timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
         log.warning(
             "real_rag_evaluator.timeout question_id=%s after %.1fs",

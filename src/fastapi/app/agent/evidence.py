@@ -32,10 +32,9 @@ References:
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 __all__ = [
     "DocumentEvidence",
@@ -343,14 +342,7 @@ class GraphEvidence(_EvidenceBase):
 
 
 EvidenceUnion = Annotated[
-    Union[
-        DocumentEvidence,
-        TableEvidence,
-        AssayEvidence,
-        CollarEvidence,
-        SpatialEvidence,
-        GraphEvidence,
-    ],
+    DocumentEvidence | TableEvidence | AssayEvidence | CollarEvidence | SpatialEvidence | GraphEvidence,
     Field(discriminator="kind"),
 ]
 """Discriminated union over all six evidence subtypes.

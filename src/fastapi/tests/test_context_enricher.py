@@ -1,14 +1,15 @@
 """Unit tests for context_enricher service."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.services.ingest.context_enricher import (
+    _MAX_ENRICHED_LENGTH,
     _combine_enriched,
     _make_enrichment_prompt,
     enrich_passage_context,
-    _MAX_ENRICHED_LENGTH,
 )
 
 

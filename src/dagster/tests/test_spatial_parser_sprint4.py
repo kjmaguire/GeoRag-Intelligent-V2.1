@@ -19,7 +19,6 @@ Run with:  pytest tests/test_spatial_parser_sprint4.py -v
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 

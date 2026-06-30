@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from uuid import uuid4
+from datetime import UTC, datetime
 
 import pytest
 
@@ -234,8 +233,8 @@ def test_backtesting_computes_hit_rate() -> None:
     result = _run(
         backtesting, workspace_id="ws",
         target_model_version_id="v1",
-        window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        window_end=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        window_start=datetime(2026, 1, 1, tzinfo=UTC),
+        window_end=datetime(2026, 5, 1, tzinfo=UTC),
         outcomes=outcomes,
     )
     metrics = result["metrics_payload"]
@@ -256,8 +255,8 @@ def test_backtesting_precision_at_k() -> None:
     result = _run(
         backtesting, workspace_id="ws",
         target_model_version_id="v1",
-        window_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        window_end=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        window_start=datetime(2026, 1, 1, tzinfo=UTC),
+        window_end=datetime(2026, 5, 1, tzinfo=UTC),
         outcomes=outcomes, ranked_recommendations=ranked,
     )
     metrics = result["metrics_payload"]

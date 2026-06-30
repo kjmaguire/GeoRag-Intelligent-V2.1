@@ -28,7 +28,7 @@ The pair is invoked from :mod:`app.agent.response_assembler` (stage 1) and
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.agent.schemas import ConfidenceLevel, GeoAnswer, UncertaintyBlock
 from app.models.rag import Citation, GeoRAGResponse

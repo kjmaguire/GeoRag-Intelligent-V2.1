@@ -16,7 +16,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-
 # Eleven report types per §15.2.
 ReportType = Literal[
     "weekly_project_digest",

@@ -56,6 +56,7 @@ USER_MESSAGES: dict[ErrorCode, str] = {
 def classify_error(exc: Exception) -> tuple[ErrorCode, str]:
     """Classify an exception into a structured error code + user message."""
     import asyncio
+
     import httpx
 
     if isinstance(exc, asyncio.TimeoutError):

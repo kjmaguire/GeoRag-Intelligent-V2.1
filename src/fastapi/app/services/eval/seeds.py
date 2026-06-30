@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-
 QuestionSet = Literal[
     "core_chat",
     "public_private_boundary",

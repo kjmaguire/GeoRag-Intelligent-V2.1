@@ -35,14 +35,13 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # 1. Helper exists + has the documented shape
 # ---------------------------------------------------------------------------
 
 
 def test_scoped_connection_is_importable_from_app_db() -> None:
-    from app.db import BareConnectionError, UUID_RE, scoped_connection
+    from app.db import UUID_RE, BareConnectionError, scoped_connection
 
     # scoped_connection must be an async context manager. Pure async
     # generators decorated with @asynccontextmanager have __wrapped__

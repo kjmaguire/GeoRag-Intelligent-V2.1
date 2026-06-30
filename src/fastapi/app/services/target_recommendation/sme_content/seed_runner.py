@@ -21,7 +21,6 @@ from __future__ import annotations
 import importlib
 import json
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
 import asyncpg

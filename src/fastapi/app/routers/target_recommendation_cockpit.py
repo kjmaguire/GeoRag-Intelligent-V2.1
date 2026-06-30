@@ -29,10 +29,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.agents.context import AgentContext
 from app.agents.phase8.geologist_signoff import geologist_signoff
 from app.services.auth import verify_service_key
-
 
 logger = logging.getLogger(__name__)
 

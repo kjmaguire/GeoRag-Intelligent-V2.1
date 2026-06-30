@@ -31,7 +31,6 @@ import logging
 import os
 import re
 import uuid
-from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -40,7 +39,6 @@ from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
-
 
 log = logging.getLogger("georag.hatchet.ocr_quality_check")
 
@@ -253,8 +251,8 @@ async def run(
             # Fire re-OCR for each unique page (de-duped above)
             try:
                 from app.hatchet_workflows.re_ocr_page import (
-                    re_ocr_page,
                     ReOcrPageInput,
+                    re_ocr_page,
                 )
                 for page in pages_to_reocr:
                     try:

@@ -27,9 +27,9 @@ from __future__ import annotations
 import io
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
-
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

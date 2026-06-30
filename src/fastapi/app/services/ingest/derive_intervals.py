@@ -25,7 +25,6 @@ Run via:
     python -m app.services.ingest.derive_intervals --project-id <uuid>
 """
 from __future__ import annotations
-from app.db import bind_workspace_scope
 
 import argparse
 import asyncio
@@ -37,6 +36,8 @@ import uuid
 from dataclasses import dataclass
 
 import asyncpg
+
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.ingest.derive")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")

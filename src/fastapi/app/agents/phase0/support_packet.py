@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import tarfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -38,7 +38,6 @@ from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
-
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +109,7 @@ async def support_packet_assemble(
     if not incident_id:
         raise ValueError("incident_id is required")
 
-    incident_time = incident_time or datetime.now(timezone.utc)
+    incident_time = incident_time or datetime.now(UTC)
 
     # ---- Gather artefacts -------------------------------------------------
     runs = await rt.pg_pool.fetch(
@@ -155,7 +154,7 @@ async def support_packet_assemble(
         "workspace_id": str(ctx.workspace_id),
         "trace_id": trace_id,
         "incident_time": incident_time.isoformat(),
-        "assembled_at": datetime.now(timezone.utc).isoformat(),
+        "assembled_at": datetime.now(UTC).isoformat(),
         "counts": {
             "workflow_runs": len(runs),
             "audit_entries": len(audit_rows),
@@ -229,7 +228,7 @@ async def support_packet_assemble(
     bundle_bytes = buf.getvalue()
 
     # ---- Upload to SeaweedFS ---------------------------------------------
-    iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    iso = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     object_key = (
         f"support-packets/{ctx.workspace_id}/{incident_id}_{iso}.tar.gz"
     )

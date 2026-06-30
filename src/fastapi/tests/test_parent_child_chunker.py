@@ -12,7 +12,6 @@ focuses on the pure-function chunker logic so it runs without a pool.
 
 from __future__ import annotations
 
-import re
 import uuid
 
 import pytest
@@ -22,7 +21,6 @@ from app.services.ingest.pdf_ingester import (
     _chunk_pages_flat,
     _group_into_parents,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

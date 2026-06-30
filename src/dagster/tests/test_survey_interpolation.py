@@ -13,7 +13,6 @@ import pytest
 
 from georag_dagster.parsers._survey_interp import (
     SurveyStation,
-    XYZ,
     interpolate_sample_xyz,
     minimum_curvature,
 )

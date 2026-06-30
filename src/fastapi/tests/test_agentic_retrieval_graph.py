@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 
 from app.agent.agentic_retrieval import (
-    AgenticRetrievalState,
     INTENT_LABELS,
+    AgenticRetrievalState,
     RetrievalProfile,
     get_compiled_graph,
     profile_for_intent,
@@ -30,12 +30,9 @@ from app.agent.agentic_retrieval.nodes import (
     _build_adversarial_query,
     assemble_node,
     classify_node,
-    demote_node,
     execute_node,
     route_node,
-    validate_node,
 )
-
 
 # ---------------------------------------------------------------------------
 # Profiles — locked from plan Step 2.3
@@ -375,11 +372,10 @@ async def test_assemble_node_context_prep_disabled_uses_legacy_path(monkeypatch)
     """When ``CONTEXT_PREP_ENABLED=False`` (default), assemble_node
     builds the LLM context block from ``state.tool_results`` — the
     byte-identical legacy path. The prepared-packet path stays dark."""
-    from app.agent.agentic_retrieval.nodes import assemble_node
+    import app.agent.llm_calls as _llm_mod
     from app.agent.agentic_retrieval.state import AgenticRetrievalState
     from app.agent.evidence import DocumentEvidence, EvidencePacket
     from app.config import settings as _settings
-    import app.agent.llm_calls as _llm_mod
 
     monkeypatch.setattr(_settings, "CONTEXT_PREP_ENABLED", False, raising=False)
 
@@ -424,11 +420,10 @@ async def test_assemble_node_context_prep_enabled_uses_prepared_packet(monkeypat
     """When ``CONTEXT_PREP_ENABLED=True``, assemble_node renders from
     the prepared EvidencePacket (authority-ranked + diversity-balanced
     + budget-fit) instead of the raw tool_results."""
-    from app.agent.agentic_retrieval.nodes import assemble_node
+    import app.agent.llm_calls as _llm_mod
     from app.agent.agentic_retrieval.state import AgenticRetrievalState
     from app.agent.evidence import DocumentEvidence, EvidencePacket
     from app.config import settings as _settings
-    import app.agent.llm_calls as _llm_mod
 
     monkeypatch.setattr(_settings, "CONTEXT_PREP_ENABLED", True, raising=False)
 
@@ -471,10 +466,9 @@ async def test_assemble_node_context_prep_enabled_handles_empty_packet(monkeypat
     """With the flag on but evidence_packet=None (the converter failed
     or the graph wasn't engaged), assemble_node MUST fall back to the
     legacy path gracefully — never break the answer flow."""
-    from app.agent.agentic_retrieval.nodes import assemble_node
+    import app.agent.llm_calls as _llm_mod
     from app.agent.agentic_retrieval.state import AgenticRetrievalState
     from app.config import settings as _settings
-    import app.agent.llm_calls as _llm_mod
 
     monkeypatch.setattr(_settings, "CONTEXT_PREP_ENABLED", True, raising=False)
 

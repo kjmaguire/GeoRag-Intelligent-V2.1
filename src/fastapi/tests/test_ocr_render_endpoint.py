@@ -22,7 +22,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ocr"
 PLS_2024 = FIXTURE_DIR / "PLS-2024-Technical-Report.pdf"
 
@@ -60,6 +59,7 @@ def app_client() -> TestClient:
 
 async def _make_pool():
     import asyncpg
+
     from app.ocr._persist import _dsn
 
     return await asyncpg.create_pool(
@@ -116,6 +116,7 @@ async def _upload_to_s3(bronze_key: str, body: bytes) -> None:
     ingest_pdf module's S3 conventions).
     """
     import aioboto3
+
     from app.routers.ocr_render import _s3_credentials, _s3_endpoint
 
     sess = aioboto3.Session(
@@ -130,6 +131,7 @@ async def _upload_to_s3(bronze_key: str, body: bytes) -> None:
 
 async def _delete_from_s3(bronze_key: str) -> None:
     import aioboto3
+
     from app.routers.ocr_render import _s3_credentials, _s3_endpoint
 
     sess = aioboto3.Session(

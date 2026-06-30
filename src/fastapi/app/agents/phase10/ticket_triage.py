@@ -8,7 +8,6 @@ severity/category fields, then suggests adjustments.
 Doc-phase 98 skeleton → Phase G.5 graduation.
 """
 from __future__ import annotations
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 import re
@@ -17,8 +16,8 @@ from uuid import UUID
 
 import asyncpg
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.agents import AgentContext, georag_agent
-
 
 # Severity hint keywords — descending order of severity.
 _SEVERITY_KEYWORDS: list[tuple[str, list[str]]] = [

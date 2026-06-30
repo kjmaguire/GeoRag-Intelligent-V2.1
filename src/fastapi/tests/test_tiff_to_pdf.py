@@ -89,7 +89,8 @@ def test_bilevel_tiff_stays_bilevel_through_wrap():
 
 def test_empty_input_raises_clear_error():
     from app.services.ingest.tiff_to_pdf import (
-        TiffNormalizeError, tiff_to_pdf,
+        TiffNormalizeError,
+        tiff_to_pdf,
     )
 
     with pytest.raises(TiffNormalizeError, match="empty input"):
@@ -100,7 +101,9 @@ def test_oversized_input_raises_before_pil_call():
     """The 2 GB cap matches the Laravel upload ceiling. Confirm the
     cap fires *before* PIL tries to decode anything pathological."""
     from app.services.ingest.tiff_to_pdf import (
-        MAX_TIFF_BYTES, TiffNormalizeError, tiff_to_pdf,
+        MAX_TIFF_BYTES,
+        TiffNormalizeError,
+        tiff_to_pdf,
     )
 
     fake_huge = b"\x00" * (MAX_TIFF_BYTES + 1)
@@ -112,7 +115,8 @@ def test_malformed_input_surfaces_normalize_error():
     """A non-TIFF byte blob must raise TiffNormalizeError (not a raw
     PIL exception) so the Hatchet workflow can route to triage."""
     from app.services.ingest.tiff_to_pdf import (
-        TiffNormalizeError, tiff_to_pdf,
+        TiffNormalizeError,
+        tiff_to_pdf,
     )
 
     with pytest.raises(TiffNormalizeError):

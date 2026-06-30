@@ -12,12 +12,11 @@ envelope ready for INSERT.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +63,7 @@ async def field_outcome(
         ),
         "hit_or_miss":          hit_or_miss,
         "outcome_payload":      outcome_payload,
-        "recorded_at":          datetime.now(timezone.utc).isoformat(),
+        "recorded_at":          datetime.now(UTC).isoformat(),
         "audit_action_type":    f"target.outcome.{hit_or_miss}",
     }
     logger.info(

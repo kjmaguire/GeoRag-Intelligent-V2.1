@@ -1,13 +1,15 @@
 """Live tests for the doc-phase 156 §7.2 ↔ §9.13 integration."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 
 from app.hatchet_workflows.generate_report import (
     GenerateReportInput,
+)
+from app.hatchet_workflows.generate_report import (
     execute as generate_report_execute,
 )
 from app.services.report_builder.nodes import gather_evidence, plan_sections
@@ -56,7 +58,7 @@ async def test_what_changed_integration_returns_none_without_window():
 @pytest.mark.asyncio
 async def test_what_changed_integration_returns_drafts_with_window():
     """what_changed + window → 4 section drafts with real workspace deltas."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     state = _make_state(
         report_type="what_changed",
         window_start=now - timedelta(days=7),
@@ -83,7 +85,7 @@ async def test_what_changed_integration_returns_drafts_with_window():
 async def test_what_changed_integration_threaded_through_gather_evidence():
     """End-to-end via gather_evidence node — what_changed report
     populates section_drafts from the detector."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     state = _make_state(
         report_type="what_changed",
         window_start=now - timedelta(days=7),
@@ -118,7 +120,7 @@ async def test_what_changed_falls_back_to_stub_without_window():
 async def test_generate_report_task_body_threads_window_through():
     """Full Hatchet body invocation with window → ReportBuilderState
     carries the window + the integration runs end-to-end."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     inp = GenerateReportInput(
         workspace_id=UUID("a0000000-0000-0000-0000-000000000001"),
         project_id=uuid4(),

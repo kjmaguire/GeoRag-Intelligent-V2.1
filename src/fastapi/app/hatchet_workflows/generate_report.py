@@ -21,7 +21,7 @@ the admin / observability surfaces.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from hatchet_sdk import Context
@@ -148,7 +148,7 @@ async def execute(input: GenerateReportInput, ctx: Context) -> GenerateReportOut
         requested_by_user_id=input.requested_by_user_id,
         report_window_start=window_start,
         report_window_end=window_end,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
 
     graph = build_report_builder_graph()

@@ -7,7 +7,6 @@ workflow_runs scoped to the ticket's workspace. SeaweedFS upload of
 the bundle is deferred to §15.4 follow-up.
 """
 from __future__ import annotations
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 from datetime import datetime
@@ -16,6 +15,7 @@ from uuid import UUID
 
 import asyncpg
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.agents import AgentContext, georag_agent
 
 

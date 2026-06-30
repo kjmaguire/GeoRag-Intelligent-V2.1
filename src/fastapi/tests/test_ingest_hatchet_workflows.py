@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import pytest
 
-from app.hatchet_workflows.sync_silver_to_kg import (
-    SyncSilverToKGInput,
-    sync_silver_to_kg,
-    run as sync_silver_to_kg_run,
-)
 from app.hatchet_workflows.embed_pending_passages import (
     EmbedPendingPassagesInput,
     embed_pending_passages_wf,
+)
+from app.hatchet_workflows.embed_pending_passages import (
     run as embed_pending_passages_run,
 )
-
+from app.hatchet_workflows.sync_silver_to_kg import (
+    SyncSilverToKGInput,
+    sync_silver_to_kg,
+)
+from app.hatchet_workflows.sync_silver_to_kg import (
+    run as sync_silver_to_kg_run,
+)
 
 # ───────────────────────── sync_silver_to_kg ──────────────────────
 

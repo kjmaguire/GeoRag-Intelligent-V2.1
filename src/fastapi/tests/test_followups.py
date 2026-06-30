@@ -127,7 +127,7 @@ class TestConfidenceProbe:
 
 class TestDeduplicationAndCap:
     def test_caps_at_three_suggestions(self):
-        from app.agent.tools import SpatialQueryResult, AssayDataResult, DocumentSearchResult, GraphTraversalResult
+        from app.agent.tools import AssayDataResult, DocumentSearchResult, GraphTraversalResult, SpatialQueryResult
         # Construct a rich context that would match every rule.
         tool_results = [
             ("query_spatial_collars", SpatialQueryResult(

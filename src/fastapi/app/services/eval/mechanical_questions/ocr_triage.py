@@ -16,7 +16,6 @@ same route + reason. No interpretive output.
 """
 from __future__ import annotations
 
-
 QUESTIONS: list[dict] = [
     {
         "question_set": "ocr_triage",

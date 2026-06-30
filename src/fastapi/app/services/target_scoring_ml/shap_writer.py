@@ -20,13 +20,11 @@ table schema doesn't care which produced the numbers.
 """
 from __future__ import annotations
 
-import json
 import logging
-from typing import Mapping
+from collections.abc import Mapping
 from uuid import UUID
 
 import asyncpg
-
 
 logger = logging.getLogger(__name__)
 

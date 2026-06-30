@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import httpx
@@ -80,7 +80,7 @@ async def test_chain_verify_healthy_chain_continuous(
     from app.audit.chain_verify import verify_chain_window
 
     tag = f"healthy-{uuid.uuid4().hex[:8]}"
-    since = datetime.now(timezone.utc) - timedelta(seconds=1)
+    since = datetime.now(UTC) - timedelta(seconds=1)
     try:
         await _emit_n(pg_conn, 5, tag)
         result = await verify_chain_window(pg_conn, since=since)
@@ -100,8 +100,8 @@ async def test_chain_verify_empty_window_is_trivially_continuous(
     from app.audit.chain_verify import verify_chain_window
 
     # A window in the year 2000 — guaranteed empty (audit ledger created later).
-    until = datetime(2000, 1, 1, tzinfo=timezone.utc)
-    since = datetime(1999, 1, 1, tzinfo=timezone.utc)
+    until = datetime(2000, 1, 1, tzinfo=UTC)
+    since = datetime(1999, 1, 1, tzinfo=UTC)
     result = await verify_chain_window(pg_conn, since=since, until=until)
     assert result.continuous is True
     assert result.rows_verified == 0
@@ -122,7 +122,7 @@ async def test_chain_verify_detects_tampered_previous_hash(
     from app.audit.chain_verify import verify_chain_window
 
     tag = f"tampered-{uuid.uuid4().hex[:8]}"
-    since = datetime.now(timezone.utc) - timedelta(seconds=1)
+    since = datetime.now(UTC) - timedelta(seconds=1)
     try:
         ids = await _emit_n(pg_conn, 4, tag)
         # Tamper row index 2's previous_hash to break the chain.
@@ -148,7 +148,7 @@ async def test_chain_verify_endpoint_round_trip(
     """The /admin/audit-explorer/verify-chain endpoint round-trips the
     same result the in-process helper produces."""
     tag = f"endpoint-{uuid.uuid4().hex[:8]}"
-    since = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    since = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     try:
         await _emit_n(pg_conn, 3, tag)
         async with httpx.AsyncClient(base_url=FASTAPI_URL) as client:

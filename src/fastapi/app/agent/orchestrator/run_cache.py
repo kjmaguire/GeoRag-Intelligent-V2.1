@@ -33,21 +33,18 @@ import dataclasses as _dc
 import hashlib
 import json as _json
 import logging
-from datetime import datetime, timezone
-from typing import Any, TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 if TYPE_CHECKING:
-    from app.models.retrieval_cache import (
-        CachedRetrievalCandidate,
-        CachedRetrievalContext,
-    )
     from app.agent.tools import (
         CollarRecord,
         DocumentChunk,
-        DocumentSearchResult,
-        ProjectOverviewResult,
-        SpatialQueryResult,
+    )
+    from app.models.retrieval_cache import (
+        CachedRetrievalCandidate,
+        CachedRetrievalContext,
     )
 
 logger = logging.getLogger(__name__)
@@ -389,7 +386,7 @@ def build_cached_context(
     )
 
     return CachedRetrievalContext(
-        cached_at=datetime.now(timezone.utc),
+        cached_at=datetime.now(UTC),
         workspace_id=UUID(workspace_id),
         project_id=UUID(project_id) if project_id else None,
         workspace_data_version_at_cache=workspace_data_version,

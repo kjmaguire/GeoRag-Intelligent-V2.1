@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -17,7 +17,6 @@ from app.services.report_builder.graph import build_report_builder_graph
 from app.services.report_builder.state import (
     EvidenceItem,
     ReportBuilderState,
-    SignOffRecord,
 )
 
 
@@ -31,7 +30,7 @@ def _seed_state(report_type: str = "weekly_project_digest") -> ReportBuilderStat
         report_type=report_type,
         risk_tier=REPORT_RISK_TIERS[report_type],
         requested_by_user_id=1,
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
 
 
@@ -162,9 +161,9 @@ async def test_compliance_check_records_failure_when_no_evidence() -> None:
     # Synthesize a state where gather_evidence found nothing by
     # invoking nodes directly with an empty evidence path.
     from app.services.report_builder.nodes import (
-        compliance_check,
         attach_citations,
         build_appendix,
+        compliance_check,
         generate_section_drafts,
     )
 
@@ -193,7 +192,7 @@ async def test_compliance_passes_with_evidence_present() -> None:
         generate_section_drafts,
         validate_claims,
     )
-    from app.services.report_builder.state import SectionPlan, SectionDraft, Claim
+    from app.services.report_builder.state import Claim, SectionDraft, SectionPlan
 
     state = _seed_state("weekly_project_digest")
     state.sections_plan = [SectionPlan(
@@ -238,7 +237,7 @@ async def test_compliance_passes_with_evidence_present() -> None:
 async def test_invalid_evidence_visibility_marks_claim_unvalidated() -> None:
     """A claim whose evidence has wrong visibility tag fails validation."""
     from app.services.report_builder.nodes import validate_claims
-    from app.services.report_builder.state import SectionDraft, Claim
+    from app.services.report_builder.state import Claim, SectionDraft
 
     state = _seed_state("weekly_project_digest")
     state.section_drafts = [SectionDraft(
@@ -275,9 +274,9 @@ async def test_pipeline_short_circuits_on_failure_reason() -> None:
         build_appendix,
         compliance_check,
         export_package,
-        geologist_approval,
         generate_maps_charts,
         generate_section_drafts,
+        geologist_approval,
         validate_claims,
     )
     state = _seed_state("weekly_project_digest")

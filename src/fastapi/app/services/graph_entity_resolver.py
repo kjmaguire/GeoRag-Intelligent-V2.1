@@ -111,7 +111,7 @@ async def resolve_formation_terms(
                     records = await asyncio.wait_for(
                         result.data(), timeout=timeout_s,
                     )
-                except (asyncio.TimeoutError, Exception):
+                except (TimeoutError, Exception):
                     logger.debug(
                         "resolve_formation_terms: lookup failed term=%s",
                         term, exc_info=True,

@@ -30,7 +30,6 @@ from typing import Any
 
 from app.agent.repair_strategy import RepairStrategy
 
-
 __all__ = [
     "LLM_STRATEGY_SUFFIXES",
     "apply_llm_only_strategy",

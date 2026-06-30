@@ -9,8 +9,8 @@ model (the deterministic baseline runs in the meantime).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 
 from app.db import scoped_connection
 from app.services.auth import verify_service_key
-
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ async def post_feedback(req: FeedbackRequest) -> FeedbackResponse:
         )
 
     feature_id = uuid4()
-    recorded_at = datetime.now(timezone.utc)
+    recorded_at = datetime.now(UTC)
     ws = str(req.workspace_id)
 
     payload = {

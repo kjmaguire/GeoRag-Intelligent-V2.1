@@ -31,16 +31,14 @@ Tests cover:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 
 from app.agent.citation_binding import BoundEvidence, BoundEvidenceSet
-from app.models.answer_run import AnswerCitationItemCreate, AnswerCitationSpanCreate
+from app.models.answer_run import AnswerCitationSpanCreate
 from app.services.span_resolver import _normalize_markers, resolve_spans
-
 
 # ---------------------------------------------------------------------------
 # Helpers to build BoundEvidenceSets for tests

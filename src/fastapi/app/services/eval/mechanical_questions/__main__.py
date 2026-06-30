@@ -25,7 +25,6 @@ from app.services.eval.mechanical_questions import (
     seed_mechanical_questions,
 )
 
-
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("mechanical_seeder")
 

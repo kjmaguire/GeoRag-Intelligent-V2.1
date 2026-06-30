@@ -14,7 +14,6 @@ right answer per raw column for the canonical schema.
 """
 from __future__ import annotations
 
-
 QUESTIONS: list[dict] = [
     {
         "question_set": "schema_mapping",

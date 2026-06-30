@@ -392,7 +392,7 @@ class TestRetryBehaviour:
                 resp.url = url
                 resp.request = MagicMock()
                 raise httpx.HTTPStatusError(
-                    f"Upstream 5xx: 503",
+                    "Upstream 5xx: 503",
                     request=resp.request,
                     response=resp,
                 )

@@ -10,11 +10,10 @@ Covers:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-
 
 WS = UUID("a0000000-0000-0000-0000-000000000001")
 PROJ = UUID("11111111-1111-1111-1111-111111111111")
@@ -24,10 +23,10 @@ REPORT = UUID("22222222-2222-2222-2222-222222222222")
 def _happy_state(risk_tier: str = "R3"):
     """Build a ReportBuilderState that should pass every blocking gate."""
     from app.services.report_builder.state import (
-        ReportBuilderState,
-        SectionDraft,
         Claim,
         EvidenceItem,
+        ReportBuilderState,
+        SectionDraft,
         SignOffRecord,
     )
 
@@ -60,7 +59,7 @@ def _happy_state(risk_tier: str = "R3"):
             SignOffRecord(
                 role="geologist",
                 user_id=1,
-                signed_at=datetime.now(tz=timezone.utc),
+                signed_at=datetime.now(tz=UTC),
             ),
         ]
     elif risk_tier == "R5":
@@ -68,13 +67,13 @@ def _happy_state(risk_tier: str = "R3"):
             SignOffRecord(
                 role="geologist",
                 user_id=1,
-                signed_at=datetime.now(tz=timezone.utc),
+                signed_at=datetime.now(tz=UTC),
             ),
             SignOffRecord(
                 role="qp",
                 user_id=2,
                 qp_credential_id="QP-12345",
-                signed_at=datetime.now(tz=timezone.utc),
+                signed_at=datetime.now(tz=UTC),
             ),
         ]
 
@@ -256,13 +255,13 @@ async def test_g09_r5_qp_credential_missing_warns_in_graph_pass() -> None:
         SignOffRecord(
             role="geologist",
             user_id=1,
-            signed_at=datetime.now(tz=timezone.utc),
+            signed_at=datetime.now(tz=UTC),
         ),
         SignOffRecord(
             role="qp",
             user_id=2,
             qp_credential_id=None,  # missing!
-            signed_at=datetime.now(tz=timezone.utc),
+            signed_at=datetime.now(tz=UTC),
         ),
     ]
     state = await compliance_check(state)

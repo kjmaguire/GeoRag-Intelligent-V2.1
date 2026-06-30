@@ -28,9 +28,9 @@ Design notes:
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal
-
+from typing import Any, Literal
 
 Classification = Literal["clean", "minor", "divergent", "fatal"]
 

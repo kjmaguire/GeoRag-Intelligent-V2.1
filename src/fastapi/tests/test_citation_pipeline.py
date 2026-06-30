@@ -17,16 +17,14 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 
-from app.agent.citation_binding import BoundEvidence, BoundEvidenceSet, bind_evidence
+from app.agent.citation_binding import BoundEvidence, BoundEvidenceSet
 from app.models.answer_run import AnswerCitationItemCreate, AnswerCitationSpanCreate
 from app.services.span_resolver import resolve_spans
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -206,8 +204,9 @@ async def test_s3_completeness_guard_fails_bare_assertion():
     evaluate_guards() returns all_passed=False when text contains an
     uncited declarative sentence.
     """
-    from app.agent.hallucination.layer_completeness import evaluate_guards
     from unittest.mock import patch
+
+    from app.agent.hallucination.layer_completeness import evaluate_guards
 
     text = (
         "The deposit is very large with significant uranium potential. "

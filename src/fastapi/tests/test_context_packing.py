@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from app.agent.orchestrator import _build_context, _mmr_select_chunks
 
-
 # ── Fakes matching the ToolResult shapes _build_context discriminates on ──
 
 

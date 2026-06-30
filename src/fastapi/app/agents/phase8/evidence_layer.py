@@ -12,7 +12,7 @@ shape is preserved.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -21,7 +21,6 @@ from app.agents.phase8.deposit_model import (
     _DEFAULT_PROFILE,
     _DEPOSIT_MODELS,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,7 @@ async def evidence_layer(
         "aoi_geom_wkt":      aoi_geom_wkt,
         "layers":            layers,
         "summary":           summary,
-        "assembled_at":      datetime.now(timezone.utc).isoformat(),
+        "assembled_at":      datetime.now(UTC).isoformat(),
     }
 
 

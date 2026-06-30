@@ -18,14 +18,16 @@ The function returns a count dict (table_name → row count written)
 for telemetry / handoff debugging.
 """
 from __future__ import annotations
-from app.db import bind_workspace_scope
 
 import json
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 import asyncpg
+
+from app.db import bind_workspace_scope
 
 
 def _dsn() -> str:

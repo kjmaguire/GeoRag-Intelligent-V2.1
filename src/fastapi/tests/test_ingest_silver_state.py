@@ -15,7 +15,6 @@ import os
 import asyncpg
 import pytest
 
-
 CAMECO_PROJECT_SLUG = "cameco-shirley-basin"
 
 

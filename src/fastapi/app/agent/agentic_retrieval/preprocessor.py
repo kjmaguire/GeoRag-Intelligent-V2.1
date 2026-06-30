@@ -34,8 +34,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.agent.agentic_retrieval.context_envelope import (
-    ContextEnvelope,
     DEFAULT_QUERY_MODE,
+    ContextEnvelope,
     DataSource,
     DepthReference,
     QueryMode,

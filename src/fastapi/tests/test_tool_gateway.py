@@ -22,7 +22,9 @@ import asyncpg
 import pytest
 
 from app.services.tool_gateway import (
-    ToolGatewayContext, invoke_tool, register_tool,
+    ToolGatewayContext,
+    invoke_tool,
+    register_tool,
 )
 
 PG_DSN = os.environ.get(

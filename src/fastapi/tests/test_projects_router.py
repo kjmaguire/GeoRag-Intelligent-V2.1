@@ -21,27 +21,24 @@ Architecture references
 from __future__ import annotations
 
 import datetime
-import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.models.geological import CollarRead, ProjectRead
-from app.routers.projects import router
 from app.services.auth import UserContext
 
 # Module 9 Chunk 9.4 — Bearer JWT for TestClient calls (extract_user_context
 # now raises 401 on missing Authorization for non-probe paths). The HS256
 # secret matches what FastAPI is running with; conftest._mint_test_jwt is
 # the canonical mint path for integration tests.
-from tests.conftest import (  # type: ignore[import-not-found]
-    SERVICE_KEY as _SERVICE_KEY,
+from tests.conftest import (
     _mint_test_jwt as _mint_jwt,
 )
+
 _BEARER = f"Bearer {_mint_jwt()}"
 
 
@@ -54,8 +51,8 @@ def _make_test_app() -> FastAPI:
     app = FastAPI()
 
     # Bypass service-key auth for unit tests.
+
     from app.routers.projects import router as projects_router  # noqa: PLC0415
-    from fastapi import APIRouter  # noqa: PLC0415
     # Re-mount without the verify_service_key dependency by patching it.
     app.include_router(projects_router, prefix="/internal")
     return app
@@ -79,8 +76,8 @@ _PROJECT_ROW: dict[str, Any] = {
     "region": "Saskatchewan, Canada",
     "status": "active",
     "slug": "athabasca-basin-uranium",
-    "created_at": datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.timezone.utc),
-    "updated_at": datetime.datetime(2026, 1, 2, 0, 0, 0, tzinfo=datetime.timezone.utc),
+    "created_at": datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC),
+    "updated_at": datetime.datetime(2026, 1, 2, 0, 0, 0, tzinfo=datetime.UTC),
 }
 
 _COLLAR_ROW: dict[str, Any] = {

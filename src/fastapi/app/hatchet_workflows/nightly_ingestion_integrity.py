@@ -40,10 +40,9 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import time
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import asyncpg
 import httpx
@@ -104,14 +103,14 @@ def _detect_pass_number() -> int:
     forced = os.environ.get("INTEGRITY_SWEEP_FORCE_PASS")
     if forced in ("1", "2"):
         return int(forced)
-    return 2 if datetime.now(timezone.utc).hour == 4 else 1
+    return 2 if datetime.now(UTC).hour == 4 else 1
 
 
 # ---------------------------------------------------------------------------
 # Workflow + input/output
 # ---------------------------------------------------------------------------
 class NightlyIntegritySweepInput(BaseModel):
-    force_pass: Optional[int] = Field(
+    force_pass: int | None = Field(
         default=None,
         description="Override the auto-detected pass number. 1 or 2; "
                     "None = detect from UTC hour.",
@@ -221,7 +220,7 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
 
 async def _dispatch_ingest_pdf(
     *, workspace_id: str, project_id: str, minio_key: str,
-) -> Optional[str]:
+) -> str | None:
     """POST to the existing FastAPI /internal/v1/shadow/ingest_pdf/trigger
     endpoint. Uses the same X-Service-Key as the rest of the bridge."""
     import uuid as _uuid
@@ -614,7 +613,7 @@ async def _write_integrity_report_row(
 async def sweep(
     input: NightlyIntegritySweepInput, ctx: Context,
 ) -> NightlyIntegritySweepOutput:
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
     t_start = time.monotonic()
 
     pass_number = input.force_pass if input.force_pass in (1, 2) else _detect_pass_number()

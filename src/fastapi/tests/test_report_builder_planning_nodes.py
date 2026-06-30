@@ -11,22 +11,21 @@ Pure unit tests against the Pydantic state model — no DB required.
 """
 from __future__ import annotations
 
+from datetime import UTC
 from uuid import uuid4
 
 import pytest
 
-from app.services.report_builder.state import (
-    Claim,
-    EvidenceItem,
-    ReportBuilderState,
-    SectionDraft,
-    SectionPlan,
-)
 from app.services.report_builder.nodes import (
     gather_evidence,
     plan_sections,
     select_report_type,
     verify_evidence_budget,
+)
+from app.services.report_builder.state import (
+    Claim,
+    ReportBuilderState,
+    SectionDraft,
 )
 
 
@@ -66,8 +65,8 @@ async def test_select_report_type_rejects_mismatched_tier():
 
 @pytest.mark.asyncio
 async def test_select_report_type_preserves_started_at_if_set():
-    from datetime import datetime, timezone
-    pinned = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    from datetime import datetime
+    pinned = datetime(2024, 1, 1, tzinfo=UTC)
     state = _make_state("weekly_project_digest", "R3").model_copy(
         update={"started_at": pinned}
     )
@@ -180,7 +179,6 @@ async def test_verify_evidence_budget_fails_under_evidenced_section():
 async def test_full_planning_pipeline_runs_clean():
     """Chain select_report_type → plan_sections → gather_evidence →
     verify_evidence_budget for each of the 11 report types."""
-    from app.services.report_builder.state import ReportType
 
     report_types_and_tiers = [
         ("weekly_project_digest", "R3"),

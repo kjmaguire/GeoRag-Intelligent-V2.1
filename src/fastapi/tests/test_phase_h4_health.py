@@ -1,8 +1,6 @@
 """Unit tests for the Phase H4 composite health router."""
 from __future__ import annotations
 
-import pytest
-
 from app.routers import admin_tier234 as t
 
 

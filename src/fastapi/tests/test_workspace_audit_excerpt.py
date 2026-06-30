@@ -7,14 +7,13 @@ prior live helpers.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
 from app.audit.workspace_excerpt import (
-    AuditExcerptEntry,
     WorkspaceAuditExcerpt,
     get_workspace_audit_excerpt,
 )
@@ -224,7 +223,7 @@ async def test_window_filter(conn, synthetic_workspace, synthetic_user):
         decided_by_user_id=synthetic_user,
     )
 
-    past_start = datetime.now(timezone.utc) - timedelta(days=10)
+    past_start = datetime.now(UTC) - timedelta(days=10)
     past_end = past_start + timedelta(days=1)
     past_excerpt = await get_workspace_audit_excerpt(
         conn,
@@ -243,7 +242,7 @@ async def test_window_filter(conn, synthetic_workspace, synthetic_user):
 @pytest.mark.asyncio
 async def test_invalid_window_raises(conn, synthetic_workspace):
     """end <= start raises ValueError."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with pytest.raises(ValueError, match="window_end .* must be > window_start"):
         await get_workspace_audit_excerpt(
             conn,

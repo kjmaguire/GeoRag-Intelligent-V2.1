@@ -23,16 +23,14 @@ object move is gated on the source still existing in tier-{source_tier}.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
 from app.audit import emit_audit
-
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +122,7 @@ async def storage_tiering_run(
         region_name="us-east-1",
     )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     async with session.client("s3", endpoint_url=endpoint) as s3:
         for rule in rules:
@@ -157,7 +155,7 @@ async def storage_tiering_run(
                             continue
                         # boto3 returns aware datetimes; coerce defensively.
                         if last_mod.tzinfo is None:
-                            last_mod = last_mod.replace(tzinfo=timezone.utc)
+                            last_mod = last_mod.replace(tzinfo=UTC)
                         age = (now - last_mod).total_seconds()
                         if age < age_seconds:
                             per_rule["skipped"] += 1

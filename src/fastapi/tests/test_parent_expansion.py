@@ -13,12 +13,10 @@ from app.agent.evidence import (
     EvidencePacket,
 )
 from app.agent.parent_expansion import (
-    ExpansionResult,
     expand_parents,
     expand_parents_sync,
     fetch_parent_chunks,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

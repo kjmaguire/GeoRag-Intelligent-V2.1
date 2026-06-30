@@ -15,11 +15,9 @@ in a follow-up wiring step; the function here is the cognitive payload.
 from __future__ import annotations
 
 from typing import Any, Literal
-from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
-
 
 TargetType = Literal["workflow_run", "audit_ledger_entry", "workspace"]
 

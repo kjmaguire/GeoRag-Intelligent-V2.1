@@ -39,10 +39,8 @@ This matches the orchestrator's payload-extraction logic in
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
-import uuid
 from dataclasses import dataclass
 
 import asyncpg
@@ -130,6 +128,7 @@ async def embed_pending_passages(
     if embedding_model is None:
         import torch
         from sentence_transformers import SentenceTransformer
+
         from app.config import settings
         # Use CUDA when available — A4500 does ~144 chunks/sec vs ~4 on CPU.
         # Falls back to CPU gracefully if no GPU present or CUDA unavailable.

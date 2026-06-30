@@ -21,7 +21,7 @@ import time
 import httpx
 import pytest
 
-from tests.conftest import AUTH_HEADERS, FASTAPI_URL, SERVICE_KEY, TEST_PROJECT_ID
+from tests.conftest import AUTH_HEADERS, FASTAPI_URL, TEST_PROJECT_ID
 
 # Phase H — every test in this module hits the live FastAPI endpoint AND
 # asserts against a specific shape of ingested corpus. Mark the whole

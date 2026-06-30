@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from app.services.visualizations import (
     StereonetPoint,
     render_stereonet_matplotlib_png,

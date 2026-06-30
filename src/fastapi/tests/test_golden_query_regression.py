@@ -48,7 +48,6 @@ from app.agent.golden_query_harness import (
     run_golden_harness,
 )
 
-
 # ---------------------------------------------------------------------------
 # Mock packet builders — deterministic, parametrised by intent
 # ---------------------------------------------------------------------------

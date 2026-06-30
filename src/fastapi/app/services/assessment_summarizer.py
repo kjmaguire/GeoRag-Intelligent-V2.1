@@ -45,7 +45,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -232,7 +232,7 @@ class AssessmentSummarizer:
             mean_claim_confidence=mean_conf,
             model_id=model_id,
             model_backend=model_backend,
-            generated_at=datetime.now(timezone.utc),
+            generated_at=datetime.now(UTC),
             cache_hit=False,
         )
         logger.info(

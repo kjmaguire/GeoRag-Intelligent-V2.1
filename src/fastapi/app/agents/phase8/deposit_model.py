@@ -18,7 +18,6 @@ from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
 
-
 logger = logging.getLogger(__name__)
 
 

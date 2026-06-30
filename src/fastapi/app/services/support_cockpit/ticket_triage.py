@@ -26,15 +26,15 @@ caller is responsible for not triaging closed tickets.
 """
 
 from __future__ import annotations
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import logging
 import os
-from typing import Any, NamedTuple
+from typing import NamedTuple
 from uuid import UUID
 
 import asyncpg
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.db import lookup_and_rescope
 

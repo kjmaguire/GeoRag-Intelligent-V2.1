@@ -20,11 +20,8 @@ import textwrap
 from io import StringIO
 from pathlib import Path
 
-import pytest
 
 from georag_dagster.parsers.csv_collar import (
-    REQUIRED_FIELDS,
-    CollarParseResult,
     _build_column_map,
     parse_csv_collars,
 )

@@ -25,8 +25,6 @@ Garbage filters:
 """
 from __future__ import annotations
 
-from app.db import bind_workspace_scope
-
 import asyncio
 import hashlib
 import io
@@ -36,6 +34,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import asyncpg
+
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.ingest.tiff_ocr")
 

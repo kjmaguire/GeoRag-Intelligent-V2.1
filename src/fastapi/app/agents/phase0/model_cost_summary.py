@@ -27,7 +27,6 @@ from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
 from app.audit import emit_audit
 
-
 logger = logging.getLogger(__name__)
 
 

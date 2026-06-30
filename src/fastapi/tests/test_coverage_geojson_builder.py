@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from app.agent.tools import _build_coverage_geojson
 
-
 # ---------------------------------------------------------------------------
 # Fixture rows — minimal asyncpg-row shape (dict-like)
 # ---------------------------------------------------------------------------

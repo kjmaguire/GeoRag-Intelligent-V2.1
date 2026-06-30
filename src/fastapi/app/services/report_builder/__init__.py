@@ -20,6 +20,22 @@ The graph is invoked from the Hatchet `generate_report` workflow
 (§7.10), not from a FastAPI request — reports are long-running async
 work routed through the workflow layer.
 """
+from app.services.report_builder.graph import build_report_builder_graph
+from app.services.report_builder.nodes import (
+    activepieces_delivery,
+    attach_citations,
+    build_appendix,
+    compliance_check,
+    export_package,
+    gather_evidence,
+    generate_maps_charts,
+    generate_section_drafts,
+    geologist_approval,
+    plan_sections,
+    select_report_type,
+    validate_claims,
+    verify_evidence_budget,
+)
 from app.services.report_builder.state import ReportBuilderState
 from app.services.report_builder.templates import (
     REPORT_RISK_TIERS,
@@ -27,22 +43,6 @@ from app.services.report_builder.templates import (
     get_risk_tier,
     get_template,
 )
-from app.services.report_builder.nodes import (
-    select_report_type,
-    plan_sections,
-    gather_evidence,
-    verify_evidence_budget,
-    generate_section_drafts,
-    validate_claims,
-    attach_citations,
-    generate_maps_charts,
-    build_appendix,
-    compliance_check,
-    geologist_approval,
-    export_package,
-    activepieces_delivery,
-)
-from app.services.report_builder.graph import build_report_builder_graph
 
 __all__ = [
     "ReportBuilderState",

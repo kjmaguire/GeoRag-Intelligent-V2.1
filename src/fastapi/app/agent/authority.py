@@ -35,14 +35,13 @@ Authority hierarchy (plan §3b verbatim):
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.agent.evidence import (
     DocumentEvidence,
     EvidencePacket,
     EvidenceUnion,
 )
-
 
 __all__ = [
     "DEFAULT_AUTHORITY_RANK",

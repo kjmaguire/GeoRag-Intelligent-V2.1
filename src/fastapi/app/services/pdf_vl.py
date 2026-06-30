@@ -506,7 +506,7 @@ class PdfVlService:
         *,
         v2_model_id: str | None = None,
         v3_model_id: str | None = None,
-    ) -> "VlShadowObservation":
+    ) -> VlShadowObservation:
         """Run BOTH VL model versions on the same pages — ADR-0015 step-3 dual-write.
 
         Renders the section ONCE and feeds the identical images to each model so
@@ -564,7 +564,7 @@ class PdfVlService:
         png_list: list[bytes],
         pages: list[int],
         model_id: str,
-    ) -> tuple["VlSummaryShape | None", float]:
+    ) -> tuple[VlSummaryShape | None, float]:
         """Call the VL backend for one model, time it, validate the output.
 
         Returns ``(VlSummaryShape | None, latency_ms)`` — ``None`` when the

@@ -45,8 +45,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from uuid import UUID
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     pass
@@ -137,7 +137,7 @@ async def _lookup_passage_id(
             return None
 
         return await asyncio.wait_for(_run(), timeout=timeout_s)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.debug(
             "span_resolver._lookup_passage_id: timed out for chunk_id=%s (fail-open)",
             chunk_id,

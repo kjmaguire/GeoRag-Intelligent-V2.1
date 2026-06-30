@@ -22,14 +22,13 @@ Dagster 1.13 Config classes use Pydantic for type introspection and that import
 breaks runtime annotation evaluation.
 """
 
-import json
 import uuid
 
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.assets.bronze_xyz import BRONZE_BUCKET, XYZ_PREFIX
-from georag_dagster.parsers.xyz_parser import XyzChannel, XyzParseResult, parse_xyz_file
+from georag_dagster.parsers.xyz_parser import XyzChannel, parse_xyz_file
 from georag_dagster.resources import S3Resource, PostgresResource
 
 import tempfile

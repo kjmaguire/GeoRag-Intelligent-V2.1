@@ -27,7 +27,7 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 import httpx
@@ -36,8 +36,12 @@ from app.agent.anomaly_detector import detect_anomalies, format_insights_block
 from app.agent.deps import AgentDeps, ToolContext
 from app.agent.drill_targeting import recommend_targets
 from app.agent.hallucination.layer2_typed_output import validate_and_repair
-from app.agent.hallucination.orchestrator_validators import run_post_assembly_validation
 from app.agent.hallucination.layer5_provenance import enrich_provenance
+from app.agent.hallucination.orchestrator_validators import run_post_assembly_validation
+from app.agent.public_geoscience_tool import (
+    PublicGeoscienceSearchResult,
+    search_public_geoscience,
+)
 from app.agent.response_assembler import assemble_response, assign_citation_ids
 from app.agent.tools import (
     AssayDataResult,
@@ -53,10 +57,6 @@ from app.agent.tools import (
     query_spatial_collars,
     search_documents,
     traverse_knowledge_graph,
-)
-from app.agent.public_geoscience_tool import (
-    PublicGeoscienceSearchResult,
-    search_public_geoscience,
 )
 from app.agent.viz_builder import build_map_payload, build_viz_payload, extract_hole_ids
 from app.config import settings
@@ -84,6 +84,12 @@ logger = logging.getLogger(__name__)
 #   `from app.agent.orchestrator import _call_llm` (etc.)
 # keep working unchanged. See docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
+# Z.1 / Appendix C §5 — external-LLM egress profile gate. Aliased with a
+# leading underscore so the orchestrator's `except` branch reads as a
+# private gate-handling tag rather than an importable public name.
+from app.agent.egress_gate import (  # noqa: E402
+    ExternalLlmEgressBlocked as _ExternalLlmEgressBlocked,
+)
 from app.agent.llm_calls import (  # noqa: E402
     LLMCallBudgetExceeded,
     WorkspaceQuotaExceeded,
@@ -97,13 +103,6 @@ from app.agent.llm_calls import (  # noqa: E402
     get_run_token_usage,
     reset_run_token_usage,
 )
-# Z.1 / Appendix C §5 — external-LLM egress profile gate. Aliased with a
-# leading underscore so the orchestrator's `except` branch reads as a
-# private gate-handling tag rather than an importable public name.
-from app.agent.egress_gate import (  # noqa: E402
-    ExternalLlmEgressBlocked as _ExternalLlmEgressBlocked,
-)
-
 
 # ---------------------------------------------------------------------------
 # Phase F.6 — query classification + text helpers extracted to a sibling
@@ -133,7 +132,6 @@ from app.agent.query_classification import (  # noqa: E402  (kept under module-l
     _sanitize_query,
     _select_temperature,
 )
-
 
 # ---------------------------------------------------------------------------
 # Async graph-entity fetch — stays in orchestrator for Phase F.6, scheduled
@@ -221,7 +219,7 @@ async def fetch_project_graph_entities(
             return [str(r["name"]) for r in records if r.get("name")]
 
         names = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_NEO4J_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "fetch_project_graph_entities: timed out after %.1fs project=%s",
             settings.TIMEOUT_NEO4J_S,
@@ -1068,22 +1066,12 @@ async def _build_project_preamble(
 # Re-exported here for backward compatibility. See
 # docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
-from app.agent.tool_result_helpers import (  # noqa: E402
-    _build_collar_aggregates,
-    _build_retrieval_summary,
-    _is_empty_tool_result,
-    _mmr_select_chunks,
-)
-
-
-
 # ---------------------------------------------------------------------------
 # Phase F.11 — _build_context extracted to a sibling module. Re-exported
 # here for backward compatibility (e.g. test_context_packing imports it
 # from orchestrator). See docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
 from app.agent.context_builder import _build_context  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Phase F.14 — Retrieval cache + data-version helpers extracted to
@@ -1095,10 +1083,24 @@ from app.agent.context_builder import _build_context  # noqa: E402
 # ---------------------------------------------------------------------------
 from app.agent.orchestrator.run_cache import (  # noqa: E402
     build_cached_candidates as _build_cached_candidates,
+)
+from app.agent.orchestrator.run_cache import (
     build_cached_context as _build_cached_context,
+)
+from app.agent.orchestrator.run_cache import (
     cache_key as _cache_key_impl,
+)
+from app.agent.orchestrator.run_cache import (
     fetch_data_versions as _fetch_data_versions_impl,
+)
+from app.agent.orchestrator.run_cache import (
     rehydrate_tool_results as _rehydrate_tool_results,
+)
+from app.agent.tool_result_helpers import (  # noqa: E402
+    _build_collar_aggregates,
+    _build_retrieval_summary,
+    _is_empty_tool_result,
+    _mmr_select_chunks,
 )
 
 
@@ -1338,12 +1340,12 @@ async def run_deterministic_rag(
             # _fetch_data_versions); the helper accepts a sentinel and the
             # post-stamp UPDATE never runs on this path, so a sentinel is
             # acceptable for forensics-only use.
-            _refusal_run_id: "UUID | None" = None
+            _refusal_run_id: UUID | None = None
             try:
+                from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
                 from app.services.answer_run_store import (  # noqa: PLC0415
                     insert_refusal_answer_run,
                 )
-                from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
                 _refusal_run_id = await insert_refusal_answer_run(
                     getattr(deps, "pg_pool", None),
                     workspace_id=WorkspaceContext.from_state(
@@ -1442,12 +1444,12 @@ async def run_deterministic_rag(
                     )
                     # Persist a minimal refusal row so the Retrieval
                     # Inspector deep link resolves with the refusal reason.
-                    _oos_refusal_run_id: "UUID | None" = None
+                    _oos_refusal_run_id: UUID | None = None
                     try:
+                        from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
                         from app.services.answer_run_store import (  # noqa: PLC0415
                             insert_refusal_answer_run,
                         )
-                        from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
                         _oos_refusal_run_id = await insert_refusal_answer_run(
                             getattr(deps, "pg_pool", None),
                             workspace_id=WorkspaceContext.from_state(
@@ -1528,16 +1530,16 @@ async def run_deterministic_rag(
     # Minimal payload: fields that are known at query entry.  Backend metadata,
     # token counts, and evidence_truncated_count are written in the UPDATE at
     # the end of the function (still inside the existing observability block).
-    _answer_run_id_early: "UUID | None" = None
+    _answer_run_id_early: UUID | None = None
     try:
-        from app.models.answer_run import AnswerRunCreate as _ARCEarly  # noqa: PLC0415
-        from app.services.answer_run_store import insert_answer_run as _insert_ar_early  # noqa: PLC0415
-        from app.services.citation_lifecycle import transition_lifecycle as _tl  # noqa: PLC0415
-
         # WorkspaceContext.from_state Phase 1 — observe + fall back.
         # Phase 2 flips to hard error; this site moves with it.
         from types import SimpleNamespace as _SN  # noqa: PLC0415
+
         from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+        from app.models.answer_run import AnswerRunCreate as _ARCEarly  # noqa: PLC0415
+        from app.services.answer_run_store import insert_answer_run as _insert_ar_early  # noqa: PLC0415
+        from app.services.citation_lifecycle import transition_lifecycle as _tl  # noqa: PLC0415
         _ws_id_early = WorkspaceContext.from_state(
             _SN(workspace_id=_workspace_id_for_key),
             site="orchestrator.early_answer_run",
@@ -1608,7 +1610,7 @@ async def run_deterministic_rag(
 
     # Sentinel: populated when cache hit returns a valid CachedRetrievalContext.
     # None means cache miss (or read failure) — retrieval will run normally.
-    _cached_retrieval_ctx: "CachedRetrievalContext | None" = None
+    _cached_retrieval_ctx: CachedRetrievalContext | None = None
     _cache_hit: bool = False
 
     # Phase G overnight — gate cache READ behind RETRIEVAL_CACHE_ENABLED.
@@ -2294,7 +2296,8 @@ async def run_deterministic_rag(
     # wiring below can build AnswerRetrievalItemCreate rows from it.
     _fused_candidates: list = []  # ScoredCandidate list; populated when RRF runs (cache miss)
     try:
-        from app.services.fusion import Candidate, FUSION_METHOD as _FUSION_METHOD, rrf_fuse  # noqa: PLC0415
+        from app.services.fusion import FUSION_METHOD as _FUSION_METHOD
+        from app.services.fusion import Candidate, rrf_fuse  # noqa: PLC0415
 
         _rrf_lists: list[list[Candidate]] = []
 
@@ -2442,6 +2445,7 @@ async def run_deterministic_rag(
                 pass
 
             from types import SimpleNamespace as _SN_cache  # noqa: PLC0415
+
             from app.agent.workspace_context import WorkspaceContext as _WC_cache  # noqa: PLC0415
             _ws_id_for_cache = _WC_cache.from_state(
                 _SN_cache(workspace_id=_workspace_id_for_key),
@@ -2581,9 +2585,10 @@ async def run_deterministic_rag(
         import time as _time_s1
         _t_s1_start = _time_s1.monotonic()
         try:
-            from app.agent.citation_binding import bind_evidence as _bind_evidence  # noqa: PLC0415
-            from uuid import UUID as _UUIDBS  # noqa: PLC0415
             from types import SimpleNamespace as _SN_bs  # noqa: PLC0415
+            from uuid import UUID as _UUIDBS  # noqa: PLC0415
+
+            from app.agent.citation_binding import bind_evidence as _bind_evidence  # noqa: PLC0415
             from app.agent.workspace_context import WorkspaceContext as _WC_bs  # noqa: PLC0415
             _ws_uuid_bs = _UUIDBS(
                 _WC_bs.from_state(
@@ -3429,7 +3434,7 @@ async def run_deterministic_rag(
     # Chunk 3 owns the 'retrieved' and 'reranked' stages.
     # 'in_context' is Module 5 scope; 'cited' is Module 6 scope.
     try:
-        from app.models.answer_run import AnswerRunCreate, AnswerRetrievalItemCreate  # noqa: PLC0415
+        from app.models.answer_run import AnswerRetrievalItemCreate, AnswerRunCreate  # noqa: PLC0415
         from app.services.answer_run_store import (  # noqa: PLC0415
             batch_insert_retrieval_items,
             insert_answer_run,
@@ -3482,6 +3487,7 @@ async def run_deterministic_rag(
         # resolved earlier in this function from the JWT / project-id
         # lookup; this site applies the typed wrapper.
         from types import SimpleNamespace as _SN_ins  # noqa: PLC0415
+
         from app.agent.workspace_context import WorkspaceContext as _WC_ins  # noqa: PLC0415
         _ws_id_for_insert = _WC_ins.from_state(
             _SN_ins(workspace_id=_workspace_id_for_key),
@@ -3550,7 +3556,7 @@ async def run_deterministic_rag(
         else:
             _guard_payload: dict[str, Any] = {
                 "schema_version": 1,
-                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "captured_at": datetime.now(UTC).isoformat(),
                 "guards": {},
             }
             # validation_warnings is the only post-assembly signal currently
@@ -3901,17 +3907,22 @@ async def run_deterministic_rag(
             and _bound_set is not None
         ):
             try:
-                from app.services.span_resolver import resolve_spans as _resolve_spans  # noqa: PLC0415
-                from app.services.answer_run_store import (  # noqa: PLC0415
-                    insert_citation_items_with_spans as _insert_items_tx,
+                import time as _time_s2  # noqa: PLC0415
+                from uuid import UUID as _UUIDSR  # noqa: PLC0415
+
+                from app.agent.hallucination.layer_completeness import (
+                    build_refusal_payload as _build_refusal_payload,
                 )
                 from app.agent.hallucination.layer_completeness import (  # noqa: PLC0415
                     evaluate_guards as _evaluate_guards,
-                    build_refusal_payload as _build_refusal_payload,
+                )
+                from app.agent.hallucination.layer_completeness import (
                     format_guard_failure as _format_guard_failure,
                 )
-                import time as _time_s2  # noqa: PLC0415
-                from uuid import UUID as _UUIDSR  # noqa: PLC0415
+                from app.services.answer_run_store import (  # noqa: PLC0415
+                    insert_citation_items_with_spans as _insert_items_tx,
+                )
+                from app.services.span_resolver import resolve_spans as _resolve_spans  # noqa: PLC0415
                 _ws_uuid_sr = _UUIDSR(_ws_id_for_insert)
 
                 # Stage 2: resolve_spans now accepts pg_pool for passage_id lookups.
@@ -4019,6 +4030,8 @@ async def run_deterministic_rag(
                 try:
                     from app.services.conflict_detector import (  # noqa: PLC0415
                         detect_conflicts as _detect_conflicts,
+                    )
+                    from app.services.conflict_detector import (
                         format_conflict_notice as _format_conflict_notice,
                     )
                     _conflicts = _detect_conflicts(_bound_set.bindings)
@@ -4193,8 +4206,8 @@ async def run_deterministic_rag(
             # registration must NOT block the lifecycle write.
             try:
                 from app.metrics import (  # noqa: PLC0415
-                    ANSWER_RUNS_TOTAL,
                     ANSWER_RUNS_COMMITTED_GUARD_STATUS,
+                    ANSWER_RUNS_TOTAL,
                     ANSWER_RUNS_WITH_ORPHAN,
                 )
 

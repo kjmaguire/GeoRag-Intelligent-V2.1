@@ -6,7 +6,6 @@ PagerDuty / Opsgenie integration yet. Output is advisory; assignment
 mutation is opt-in via `apply=True`.
 """
 from __future__ import annotations
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 
 import os
 from typing import Any
@@ -14,8 +13,8 @@ from uuid import UUID
 
 import asyncpg
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.agents import AgentContext, georag_agent
-
 
 # Routing recommendations per severity. Real deployment ties these to
 # PagerDuty / Opsgenie schedules; for now we name the relevant role.

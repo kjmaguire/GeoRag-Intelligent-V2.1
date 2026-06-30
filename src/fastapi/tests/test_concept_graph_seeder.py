@@ -1,7 +1,8 @@
 """Unit tests for concept graph seeder logic."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 
@@ -34,7 +35,6 @@ class TestConceptGraphSeeder:
     @pytest.mark.asyncio
     async def test_empty_pg_returns_early(self):
         """No ontology terms → prints message and returns without Neo4j call."""
-        import importlib.util, sys, types
 
         # We test by importing and mocking the asyncpg + neo4j calls
         mock_conn = AsyncMock()
@@ -42,7 +42,6 @@ class TestConceptGraphSeeder:
 
         with patch("asyncpg.connect", return_value=mock_conn):
             # Just verify it doesn't crash and logs the early-exit message
-            import subprocess
             # Can't easily import the script as a module; test the logic inline
             rows = []
             if not rows:

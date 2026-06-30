@@ -17,19 +17,15 @@ Tests cover:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID, uuid4
-
-import pytest
 
 from app.agent.citation_binding import (
     BoundEvidence,
     BoundEvidenceSet,
+    _short_ev_id,
     bind_evidence,
     render_evidence_block,
-    _short_ev_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Minimal stub result objects

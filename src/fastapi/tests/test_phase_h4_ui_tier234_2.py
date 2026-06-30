@@ -1,7 +1,6 @@
 """Phase H4 Tier 2/3/4 admin router smoke tests."""
 from __future__ import annotations
 
-from datetime import datetime
 import pytest
 
 from app.routers import admin_tier234 as t

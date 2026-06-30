@@ -35,7 +35,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-
 # ---------------------------------------------------------------------------
 # Literal types — mirror DB CHECK constraints exactly
 # ---------------------------------------------------------------------------
@@ -429,7 +428,7 @@ class AnswerCitationItemCreate(BaseModel):
     )
 
     @model_validator(mode="after")
-    def has_target(self) -> "AnswerCitationItemCreate":
+    def has_target(self) -> AnswerCitationItemCreate:
         """Enforce that at least one of (evidence_id, passage_id) is non-None.
 
         Mirrors the DB CHECK constraint answer_citation_items_has_target so
@@ -479,7 +478,7 @@ class AnswerCitationSpanCreate(BaseModel):
     span_end: int = Field(..., ge=1, description="Exclusive end character offset; must be > span_start.")
 
     @model_validator(mode="after")
-    def range_valid(self) -> "AnswerCitationSpanCreate":
+    def range_valid(self) -> AnswerCitationSpanCreate:
         """Enforce span_end > span_start.
 
         Mirrors the DB CHECK constraint answer_citation_spans_range_valid.

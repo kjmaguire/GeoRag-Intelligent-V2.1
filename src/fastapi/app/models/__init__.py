@@ -6,35 +6,6 @@ the rest of the application imports from a single location:
     from app.models import CollarRead, GeoRAGResponse, Citation
 """
 
-from app.models.geological import (
-    AlterationCreate,
-    AlterationRead,
-    CollarCreate,
-    CollarRead,
-    GeochemistryCreate,
-    GeochemistryRead,
-    LithologyLogCreate,
-    LithologyLogRead,
-    ProjectCreate,
-    ProjectRead,
-    ReportCreate,
-    ReportRead,
-    SampleCreate,
-    SampleRead,
-    StructureCreate,
-    StructureRead,
-    SurveyCreate,
-    SurveyRead,
-)
-from app.models.evidence import (
-    DocumentRevisionCreate,
-    DocumentRevisionRead,
-    EvidenceItemCreate,
-    EvidenceItemRead,
-    EvidenceTypeLiteral,
-    StructuredRecordLineageCreate,
-    StructuredRecordLineageRead,
-)
 from app.models.answer_run import (
     AnswerCitationItemCreate,
     AnswerCitationItemRead,
@@ -55,17 +26,46 @@ from app.models.answer_run import (
     SourceStoreLiteral,
     StageLiteral,
 )
-from app.models.rag import (
-    Citation,
-    GeoRAGResponse,
-    MapPayload,
-    VizPayload,
+from app.models.evidence import (
+    DocumentRevisionCreate,
+    DocumentRevisionRead,
+    EvidenceItemCreate,
+    EvidenceItemRead,
+    EvidenceTypeLiteral,
+    StructuredRecordLineageCreate,
+    StructuredRecordLineageRead,
 )
 from app.models.feedback import (
     FeedbackCategory,
     FeedbackCreate,
     FeedbackPolarity,
     FeedbackRead,
+)
+from app.models.geological import (
+    AlterationCreate,
+    AlterationRead,
+    CollarCreate,
+    CollarRead,
+    GeochemistryCreate,
+    GeochemistryRead,
+    LithologyLogCreate,
+    LithologyLogRead,
+    ProjectCreate,
+    ProjectRead,
+    ReportCreate,
+    ReportRead,
+    SampleCreate,
+    SampleRead,
+    StructureCreate,
+    StructureRead,
+    SurveyCreate,
+    SurveyRead,
+)
+from app.models.rag import (
+    Citation,
+    GeoRAGResponse,
+    MapPayload,
+    VizPayload,
 )
 
 __all__ = [

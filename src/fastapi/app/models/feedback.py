@@ -62,7 +62,7 @@ class FeedbackCreate(BaseModel):
     note: str | None = Field(None, max_length=2000)
 
     @model_validator(mode="after")
-    def require_category_when_down(self) -> "FeedbackCreate":
+    def require_category_when_down(self) -> FeedbackCreate:
         """Mirror the DB CHECK message_feedback_category_required_when_down.
 
         Raises ValueError (becomes HTTP 422 from FastAPI) if polarity is

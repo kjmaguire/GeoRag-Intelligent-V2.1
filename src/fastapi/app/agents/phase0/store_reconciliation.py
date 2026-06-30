@@ -180,7 +180,7 @@ async def store_reconciliation_run(
             port=int(os.environ.get("QDRANT_PORT", "6333")),
         )
         try:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue  # noqa: PLC0415
+            from qdrant_client.models import FieldCondition, Filter, MatchValue  # noqa: PLC0415
 
             # ADR-0010: canonical collection is georag_chunks when
             # RETRIEVAL_USE_DOCUMENT_PASSAGES is true (the default since

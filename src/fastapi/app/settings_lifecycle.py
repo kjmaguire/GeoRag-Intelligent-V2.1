@@ -60,7 +60,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Optional
 
 
 class SettingLifecycle(str, Enum):
@@ -99,9 +98,9 @@ class SettingEntry:
     stage: SettingLifecycle
     owner: str
     since: date
-    observe_metric: Optional[str] = None
-    graduates_to: Optional[SettingLifecycle] = None
-    replaced_by: Optional[str] = None
+    observe_metric: str | None = None
+    graduates_to: SettingLifecycle | None = None
+    replaced_by: str | None = None
     notes: str = ""
     # Inferred fields for the future CI gate.
     requires_observability: bool = field(init=False)
@@ -227,7 +226,7 @@ REGISTRY: dict[str, SettingEntry] = {
 }
 
 
-def get_entry(name: str) -> Optional[SettingEntry]:
+def get_entry(name: str) -> SettingEntry | None:
     """Lookup a registry entry by setting name. None if not registered."""
     return REGISTRY.get(name)
 

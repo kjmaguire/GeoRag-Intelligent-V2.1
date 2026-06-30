@@ -24,13 +24,12 @@ import pytest
 from app.agent.deps import AgentDeps
 from app.agent.tools import (
     _STEREONET_MAX_POINTS,
-    _downsample_stereonet_points,
-    _render_stereonet_png,
     StereonetPoint,
     StereonetResult,
+    _downsample_stereonet_points,
+    _render_stereonet_png,
     query_stereonet,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

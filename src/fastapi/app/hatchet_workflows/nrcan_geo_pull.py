@@ -31,8 +31,7 @@ audit grouping clean for operators reading the audit explorer.
 from __future__ import annotations
 
 import logging
-import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from hatchet_sdk import Context
@@ -40,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
+
 # Reuse the BC MINFILE helpers — the per-page ArcGIS REST walk +
 # source-registry lookup + failure-mode taxonomy are jurisdiction-
 # agnostic. Re-exposing under stable names keeps tests and acceptance
@@ -86,7 +86,7 @@ nrcan_geo_pull = hatchet.workflow(
 
 @nrcan_geo_pull.task(execution_timeout="60m")
 async def run_pull(input: NrcanGeoPullInput, ctx: Context) -> NrcanGeoPullOutput:
-    sampled_at = datetime.now(tz=timezone.utc)
+    sampled_at = datetime.now(tz=UTC)
     dsn = _build_dsn()
 
     conn = await asyncpg.connect(dsn, statement_cache_size=0)

@@ -40,10 +40,8 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from typing import Optional
 
 import asyncpg
-
 
 log = logging.getLogger("georag.hatchet.progress")
 
@@ -79,7 +77,7 @@ def _dsn() -> str:
 # ---------------------------------------------------------------------------
 # Module-level asyncpg pool — spec constraint #3: hooks/sweeps reuse the pool.
 # ---------------------------------------------------------------------------
-_pool: Optional[asyncpg.Pool] = None
+_pool: asyncpg.Pool | None = None
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -143,10 +141,10 @@ async def start_run(
     project_id: str,
     minio_key: str,
     triggered_by: str = "upload",
-    parent_run_id: Optional[str] = None,
-    recovery_reason: Optional[str] = None,
-    workflow_run_id: Optional[str] = None,
-) -> Optional[str]:
+    parent_run_id: str | None = None,
+    recovery_reason: str | None = None,
+    workflow_run_id: str | None = None,
+) -> str | None:
     """Insert a fresh ingest_progress row and return the new run_id.
 
     Idempotency: this always INSERTs. Recovery dispatches (sweep,
@@ -215,7 +213,7 @@ async def mark_stage_started(
     *,
     run_id: str,
     stage: str,
-    worker_id: Optional[str] = None,
+    worker_id: str | None = None,
 ) -> None:
     """Mark the given stage as in-progress for this run.
 
@@ -327,7 +325,7 @@ async def heartbeat_loop(
 async def mark_completed_by_run(
     *,
     run_id: str,
-    report_id: Optional[str] = None,
+    report_id: str | None = None,
 ) -> bool:
     """Terminal write — sets status=completed via conditional update.
 
@@ -374,7 +372,7 @@ async def mark_completed_by_run(
 async def mark_failed_by_run(
     *,
     run_id: str,
-    stage: Optional[str] = None,
+    stage: str | None = None,
     error: str,
 ) -> bool:
     """Terminal write — sets status=failed via conditional update.
@@ -488,7 +486,7 @@ async def lookup_active_run_id(
     *,
     workspace_id: str,
     minio_key: str,
-) -> Optional[str]:
+) -> str | None:
     """Return the run_id of the active (non-terminal) row for this file, if any.
 
     Used by the backward-compat shims below — task code that only knows
@@ -513,7 +511,7 @@ async def lookup_active_run_id(
         return None
 
 
-async def get_run(*, run_id: str) -> Optional[dict]:
+async def get_run(*, run_id: str) -> dict | None:
     """Read a single run row by run_id. Used by the on_failure_task hook to
     resolve current_stage when reporting the failure upstream."""
     sql = """
@@ -559,7 +557,7 @@ async def mark_started(
     project_id: str,
     minio_key: str,
     step: str,
-    workflow_run_id: Optional[str] = None,
+    workflow_run_id: str | None = None,
 ) -> None:
     """LEGACY shim — resolves to the active run_id and calls mark_stage_started.
 
@@ -584,7 +582,7 @@ async def mark_completed(
     *,
     workspace_id: str,
     minio_key: str,
-    report_id: Optional[str] = None,
+    report_id: str | None = None,
 ) -> None:
     """LEGACY shim — resolves to the active run_id and calls
     mark_completed_by_run. Preserves the existing ingest_pdf.py /
@@ -605,7 +603,7 @@ async def mark_failed(
     workspace_id: str,
     minio_key: str,
     error: str,
-    stage: Optional[str] = None,
+    stage: str | None = None,
 ) -> None:
     """LEGACY shim — resolves to the active run_id and calls
     mark_failed_by_run. Preserves the existing ingest_pdf.py /

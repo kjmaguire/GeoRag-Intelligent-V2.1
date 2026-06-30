@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-import uuid
+from datetime import UTC
 
 import asyncpg
 import pytest
@@ -72,7 +72,7 @@ def test_source_pull_result_outcome_values() -> None:
 
 
 def test_pull_output_round_trip() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
     out = bm.BcMinfilePullOutput(
         sources_attempted=2,
         sources_succeeded=1,
@@ -81,7 +81,7 @@ def test_pull_output_round_trip() -> None:
             bm.SourcePullResult(source_id="a", outcome="completed", feature_count=15),
             bm.SourcePullResult(source_id="b", outcome="endpoint_arcgis_error"),
         ],
-        sampled_at=datetime.now(tz=timezone.utc),
+        sampled_at=datetime.now(tz=UTC),
     )
     d = out.model_dump()
     assert d["per_source"][0]["feature_count"] == 15
@@ -135,9 +135,9 @@ def test_nrcan_reuses_bc_helpers() -> None:
     """The NRCan module imports its per-source walker from bc_minfile_pull
     rather than duplicating; this contract test pins the import so a
     rename in bc surfaces here too."""
-    from app.hatchet_workflows.bc_minfile_pull import _pull_one_source as bc_walker
     # NRCan must use the same callable instance (not a copy).
     import app.hatchet_workflows.nrcan_geo_pull as mod
+    from app.hatchet_workflows.bc_minfile_pull import _pull_one_source as bc_walker
     assert mod._pull_one_source is bc_walker
 
 

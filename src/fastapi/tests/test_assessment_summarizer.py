@@ -19,7 +19,6 @@ import pytest
 from app.models.assessment_summary import (
     CANONICAL_SECTIONS,
     AssessmentReportSummary,
-    CompletenessChecklist,
     CompletenessItem,
     SectionId,
     SummaryClaim,
@@ -29,7 +28,6 @@ from app.services.assessment_summarizer import (
     _SECTION_PATTERNS,
     _build_completeness_checklist,
 )
-
 
 # ---------------------------------------------------------------------------
 # Heading patterns — every canonical section has at least one pattern

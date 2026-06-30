@@ -46,7 +46,7 @@ import logging
 import os
 import time
 from typing import Any, NamedTuple
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 

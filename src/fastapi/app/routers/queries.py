@@ -400,7 +400,7 @@ async def _agent_rag_stream(
                     bind_callback=_push_bind,
                 )
             await status_queue.put(("done", result))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             outcome = "timeout"
             logger.error(
                 "agent_rag_stream: overall deadline exceeded (%.1fs) project=%s",
@@ -428,13 +428,13 @@ async def _agent_rag_stream(
             # per orchestrator run (not per status frame), so it matches
             # the Grafana dashboard panel's expected cardinality.
             try:
+                from app.config import settings as _s  # noqa: PLC0415
                 from app.metrics import (  # noqa: PLC0415
                     PG_POOL_SATURATION,
                     PG_POOL_SIZE,
                     QUERIES_TOTAL,
                     QUERY_DURATION,
                 )
-                from app.config import settings as _s  # noqa: PLC0415
                 QUERY_DURATION.labels(outcome=outcome).observe(
                     _time.monotonic() - started
                 )
@@ -711,7 +711,7 @@ async def post_query(
         # exception-handler latency. log_safe.query_hash + pricing.user_bucket
         # both ship with the app and never fail to import.
         from app.agent.errors import classify_error  # noqa: PLC0415
-        from app.agent.log_safe import query_hash, project_tag  # noqa: PLC0415
+        from app.agent.log_safe import project_tag, query_hash  # noqa: PLC0415
         from app.agent.pricing import user_bucket  # noqa: PLC0415
 
         try:

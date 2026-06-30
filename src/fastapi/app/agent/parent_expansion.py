@@ -38,7 +38,6 @@ from app.agent.evidence import (
 )
 from app.db import bind_workspace_scope
 
-
 logger = logging.getLogger(__name__)
 
 

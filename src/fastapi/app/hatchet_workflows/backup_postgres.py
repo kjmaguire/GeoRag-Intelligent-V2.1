@@ -43,7 +43,7 @@ import asyncio
 import hashlib
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from hatchet_sdk import Context
@@ -231,7 +231,7 @@ async def _put_s3(bucket: str, key: str, body: bytes) -> None:
 
 @backup_postgres.task(execution_timeout="60m")
 async def run_backup(input: BackupPostgresInput, ctx: Context) -> BackupPostgresOutput:
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     dsn = _build_dsn()
 
     conn = await asyncpg.connect(dsn, statement_cache_size=0)
@@ -273,7 +273,7 @@ async def run_backup(input: BackupPostgresInput, ctx: Context) -> BackupPostgres
             bytes_count=total,
         )
 
-        completed_at = datetime.now(tz=timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         await emit_audit(
             conn,
             action_type="backup.postgres.snapshot.completed",

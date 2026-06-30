@@ -43,8 +43,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from app.agent.deps import AgentDeps
 from app.agent.tools import _metered  # P1 #16 — per-tool latency metric
@@ -236,7 +237,7 @@ async def search_public_geoscience(
             ),
             timeout=settings.TIMEOUT_QDRANT_S * 2,  # 2× because we fan out
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("search_public_geoscience: Qdrant fan-out timed out")
         return PublicGeoscienceSearchResult(
             records=[], count=0,
@@ -454,7 +455,7 @@ async def _hydrate_registry_metadata(
 
     try:
         rows = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("search_public_geoscience: registry hydration timed out")
         return
     except Exception:

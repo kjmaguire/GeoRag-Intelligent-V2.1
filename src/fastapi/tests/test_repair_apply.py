@@ -11,7 +11,6 @@ from app.agent.repair_apply import (
 )
 from app.agent.repair_strategy import RepairStrategy
 
-
 # ---------------------------------------------------------------------------
 # Stage 3 — LLM-only suffixes
 # ---------------------------------------------------------------------------

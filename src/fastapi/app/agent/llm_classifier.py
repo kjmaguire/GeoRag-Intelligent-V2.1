@@ -44,7 +44,6 @@ from app.agent.prompts.classifier_system import (
     SYSTEM_PROMPT as _CLASSIFIER_SYSTEM_PROMPT,
 )
 
-
 # Default-all-false shape the caller expects.
 _EMPTY_CATEGORIES: dict[str, bool] = {
     "spatial": False,

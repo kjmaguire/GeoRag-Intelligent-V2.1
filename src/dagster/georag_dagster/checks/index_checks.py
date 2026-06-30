@@ -7,7 +7,6 @@ no passage was committed to Silver without a corresponding Qdrant point id.
 NOTE: Do NOT add `from __future__ import annotations` to this file.
 """
 
-import psycopg2.extras
 from dagster import (
     AssetCheckExecutionContext,
     AssetCheckResult,

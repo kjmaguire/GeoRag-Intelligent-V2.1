@@ -15,7 +15,6 @@ from app.agent.prompts.answer_emphasis_section import (
     fragment_for,
 )
 
-
 # ---------------------------------------------------------------------------
 # Coverage — every intent's emphasis tag resolves to a non-empty fragment
 # ---------------------------------------------------------------------------

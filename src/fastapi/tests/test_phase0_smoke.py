@@ -19,11 +19,9 @@ new code paths can't regress silently.
 from __future__ import annotations
 
 import importlib
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-
 
 PHASE0_MODULES = [
     "app.agents.phase0.store_reconciliation",
@@ -47,6 +45,7 @@ def test_store_reconciliation_includes_cross_store_drift() -> None:
     """All-nighter 2026-05-21 — store_reconciliation now reports
     cross_store_drift with workspace-scoped PG/Qdrant/Neo4j count diffs."""
     import inspect
+
     from app.agents.phase0 import store_reconciliation as m
     src = inspect.getsource(m)
     assert "cross_store_drift" in src
@@ -59,6 +58,7 @@ def test_index_health_includes_qdrant_reachability_and_neo4j_pagecache() -> None
     """All-nighter 2026-05-21 — index_health adds HNSW reachability +
     Neo4j page-cache hit ratio + zero-hit index sweep."""
     import inspect
+
     from app.agents.phase0 import index_health as m
     src = inspect.getsource(m)
     assert "qdrant_reachability" in src
@@ -139,6 +139,7 @@ def test_lineage_reporter_emits_broken_at_field() -> None:
     wrapper (which needs a live runtime singleton that's hard to fake
     cleanly)."""
     import inspect
+
     from app.agents.phase0 import lineage_reporter as m
     src = inspect.getsource(m)
     assert "broken_at" in src
@@ -151,6 +152,7 @@ def test_model_upgrade_watch_includes_compatibility() -> None:
     computes weights vs budget, and stamps `compatibility.fits` onto
     the result + vram_warning onto any vllm_release notifications."""
     import inspect
+
     from app.agents.phase0 import model_upgrade_watch as m
     src = inspect.getsource(m)
     assert "GPU_VRAM_GB" in src
@@ -164,6 +166,7 @@ def test_tenant_isolation_emits_set_local_violations() -> None:
     pg_proc.prosrc for SET (non-LOCAL) GUC writes AND escalates to
     Kestra on any violation."""
     import inspect
+
     from app.agents.phase0 import tenant_isolation_auditor as m
     src = inspect.getsource(m)
     assert "set_local_violations" in src
@@ -193,6 +196,7 @@ async def test_storage_tiering_default_dry_run(monkeypatch: pytest.MonkeyPatch) 
     True. The signature default must protect operators from destructive
     surprises."""
     import inspect
+
     from app.agents.phase0 import storage_tiering as m
 
     sig = inspect.signature(m.storage_tiering_run)

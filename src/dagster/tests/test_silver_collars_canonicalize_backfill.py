@@ -11,7 +11,7 @@ Run with:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from georag_dagster.assets.silver_collars_canonicalize_backfill import (
     BATCH_SIZE,

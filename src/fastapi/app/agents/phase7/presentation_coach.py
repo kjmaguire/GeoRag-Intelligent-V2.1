@@ -20,12 +20,10 @@ Output contract — see module docstring.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Literal
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 

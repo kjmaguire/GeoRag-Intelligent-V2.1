@@ -37,7 +37,6 @@ from app.agents.phase0 import (
 )
 from app.services.auth import UserContext, extract_user_context, verify_service_key
 
-
 logger = logging.getLogger(__name__)
 
 

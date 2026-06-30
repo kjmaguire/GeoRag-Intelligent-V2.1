@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     # testcontainers is the planned import; not in pyproject yet.
     # Guarded with TYPE_CHECKING so this file still imports cleanly
     # without the dep installed.
-    from testcontainers.postgres import PostgresContainer
+    pass
 
 
 @pytest.fixture(scope="session")

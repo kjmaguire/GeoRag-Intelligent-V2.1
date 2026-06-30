@@ -8,11 +8,11 @@ import asyncpg
 import httpx
 import pytest
 
+from app.routers import admin_tier234 as t
 from app.services.cross_store_consistency import (
     WorkspaceFootprint,
     count_workspace_footprint,
 )
-from app.routers import admin_tier234 as t
 
 
 # ---------------------------------------------------------------------------

@@ -48,20 +48,15 @@ Covers:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID, uuid4
 
-import pytest
-
 from app.agent.citation_binding import BoundEvidence, BoundEvidenceSet
-from app.models.answer_run import AnswerCitationItemCreate, AnswerCitationSpanCreate
-from app.models.rag import GeoRAGResponse, Citation
+from app.models.rag import Citation, GeoRAGResponse
 from app.services.conflict_detector import (
     ConflictingEvidence,
     detect_conflicts,
 )
 from app.services.span_resolver import resolve_spans_delayed
-
 
 # ---------------------------------------------------------------------------
 # Test constants

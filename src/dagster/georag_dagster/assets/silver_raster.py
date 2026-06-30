@@ -39,7 +39,6 @@ Dagster 1.13 Config classes use Pydantic for type introspection and that import
 breaks runtime annotation evaluation.
 """
 
-import json
 import os
 import tempfile
 import uuid

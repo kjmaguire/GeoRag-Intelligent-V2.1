@@ -14,7 +14,6 @@ record them in Dagster materialisation metadata.
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from io import StringIO
@@ -25,7 +24,6 @@ import polars as pl
 
 from georag_dagster.parsers._csv_io import (
     DEFAULT_NULL_VALUES,
-    _check_decimal_comma,
     detect_delimiter,
     open_csv_with_encoding,
     transform_decimal_comma,

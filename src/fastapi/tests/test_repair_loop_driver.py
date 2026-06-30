@@ -3,17 +3,13 @@ that calls plan_repair → apply_*_strategy → re-issue iteratively."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
 from app.agent.agentic_retrieval.nodes import (
-    _run_repair_loop,
     _snapshot_field,
     repair_shadow_node,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
-from app.agent.repair_strategy import RepairPlan, RepairStrategy
 from app.config import settings as _settings
 
 
@@ -165,9 +161,9 @@ async def test_stage4_full_reissues_execute_and_assemble_on_over_filtered(monkey
     monkeypatch.setattr(_settings, "REPAIR_LOOP_LOWCOST_ENABLED", False, raising=False)
     monkeypatch.setattr(_settings, "REPAIR_LOOP_MAX_ATTEMPTS", 2, raising=False)
 
+    from app.agent.agentic_retrieval import nodes as _nodes_mod
     from app.agent.agentic_retrieval import preprocessor as _pp_mod
     from app.agent.agentic_retrieval import retrieval_profile as _rp_mod
-    from app.agent.agentic_retrieval import nodes as _nodes_mod
 
     # Build minimal RetrievalProfile + RetrievalFilters so apply_*
     # has something concrete to mutate.

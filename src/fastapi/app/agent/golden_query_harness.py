@@ -30,12 +30,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from app.agent.evidence import EvidencePacket
-
 
 logger = logging.getLogger(__name__)
 

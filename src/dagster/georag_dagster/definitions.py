@@ -15,7 +15,6 @@ Sensors:
                           based on the file path prefix.
 """
 
-from typing import Optional
 
 from dagster import (
     AssetExecutionContext,
@@ -25,7 +24,6 @@ from dagster import (
     EnvVar,
     RunRequest,
     ScheduleDefinition,
-    SensorDefinition,
     SensorEvaluationContext,
     asset,
     sensor,
@@ -516,7 +514,6 @@ _PREFIX_TO_ASSET = {
 # asset import chain. The module-level alias preserves the back-compat
 # private names referenced by sensor code below.
 from georag_dagster.sensor_helpers import (
-    BRONZE_TO_SILVER as _BRONZE_TO_SILVER,
     build_sensor_run_config as _build_sensor_run_config,
 )
 

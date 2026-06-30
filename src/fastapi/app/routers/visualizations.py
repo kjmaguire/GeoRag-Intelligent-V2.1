@@ -531,8 +531,10 @@ async def get_stereonet(
 # ternary, grade-tonnage, anomaly map, target heatmap)
 # ============================================================================
 from pydantic import BaseModel, Field
+
 from app.services.visualizations.additional_charts import (
-    KNOWN_CHARTS, render_chart,
+    KNOWN_CHARTS,
+    render_chart,
 )
 
 
@@ -617,7 +619,7 @@ async def _fetch_harker_samples(
             "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
         )
         rows = await conn.fetch(
-            f"""
+            """
             SELECT s.rock_type,
                    max(CASE WHEN a.assay_element = 'SiO2' THEN a.assay_value END) AS sio2,
                    max(CASE WHEN a.assay_element = $2 THEN a.assay_value END) AS y_val

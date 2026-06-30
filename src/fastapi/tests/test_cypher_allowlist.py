@@ -16,7 +16,6 @@ SQL allowlist. Pins:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -26,7 +25,6 @@ from app.agent.tools import (
     _validate_cypher_label,
     _validate_cypher_relationship,
 )
-
 
 # ---------------------------------------------------------------------------
 # Validator unit tests

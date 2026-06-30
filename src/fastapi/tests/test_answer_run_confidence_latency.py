@@ -32,7 +32,6 @@ from app.services.answer_run_store import (
     insert_refusal_answer_run,
 )
 
-
 PG_DSN = os.environ.get(
     "PG_DSN",
     "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",

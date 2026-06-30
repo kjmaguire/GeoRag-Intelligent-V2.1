@@ -21,10 +21,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
-from datetime import timedelta
-from typing import Any
-from uuid import UUID, uuid4
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import asyncpg
 from hatchet_sdk import Context
@@ -32,7 +30,6 @@ from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
-
 
 log = logging.getLogger("georag.hatchet.field_outcome_learning")
 
@@ -147,7 +144,7 @@ async def execute(
 
         # Compute window from oldest → newest recorded_at
         recorded = [o["recorded_at"] for o in outcomes if o["recorded_at"]]
-        window_start = min(recorded) if recorded else datetime.now(tz=timezone.utc)
+        window_start = min(recorded) if recorded else datetime.now(tz=UTC)
         window_end = max(recorded) if recorded else window_start
 
         # Write a targeting.target_backtests row (zero model_version uuid

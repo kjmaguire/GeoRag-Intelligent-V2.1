@@ -29,9 +29,7 @@ All tests are pure unit tests — no live DB, no Docker required.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -216,8 +214,9 @@ def test_insufficient_evidence_payload_sync():
 
 def test_refusal_reason_code_enum_values():
     """RefusalReasonCode Literal contains all six stable values for Module 7 branching."""
-    from app.models.answer_run import RefusalReasonCode
     import typing
+
+    from app.models.answer_run import RefusalReasonCode
 
     # Unwrap the Literal args — works for both Python 3.8+ forms.
     args = typing.get_args(RefusalReasonCode)
@@ -358,6 +357,7 @@ def test_evidence_map_feature_payload_bbox_parsing():
 async def test_evidence_endpoint_404_on_missing_row():
     """get_evidence raises 404 when _fetch_evidence_row returns None."""
     from fastapi import HTTPException
+
     from app.routers.evidence import get_evidence
     from app.services.auth import UserContext
 
@@ -394,6 +394,7 @@ async def test_evidence_endpoint_404_on_missing_row():
 async def test_evidence_endpoint_500_on_db_exception():
     """get_evidence raises 500 when DB raises an unexpected exception."""
     from fastapi import HTTPException
+
     from app.routers.evidence import get_evidence
     from app.services.auth import UserContext
 

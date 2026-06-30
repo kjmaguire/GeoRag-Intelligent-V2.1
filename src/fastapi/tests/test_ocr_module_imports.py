@@ -14,7 +14,6 @@ import inspect
 
 import pytest
 
-
 OCR_MODULES = [
     ("app.ocr.preflight", "preflight"),
     ("app.ocr.profile", "profile"),

@@ -10,7 +10,6 @@ from app.agent.guards import GuardErrorCode
 from app.agent.repair_strategy import RepairStrategy
 from app.config import settings as _settings
 
-
 # ---------------------------------------------------------------------------
 # Minimal AgentDeps stand-in (avoids importing the real one which pulls
 # asyncpg etc. — the shadow node never touches deps).

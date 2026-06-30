@@ -7,17 +7,15 @@ the canonical `factor_weights` JSONB path.
 from __future__ import annotations
 
 import os
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
 
 from app.services.targeting.score_factors import (
     ScoreFactor,
-    ScoredZone,
     score_candidate_zone,
 )
-
 
 _MODEL_VERSION_FAKE = UUID("00000000-0000-0000-0000-000000000001")
 

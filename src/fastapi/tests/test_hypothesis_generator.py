@@ -13,16 +13,13 @@ reasoning content.
 """
 from __future__ import annotations
 
-import json
 import os
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import pytest
 
 from app.services.geological_reasoning import (
-    HypothesisDraft,
-    EvidenceLinkDraft,
     generate_hypotheses_for_question,
 )
 from app.services.geological_reasoning.hypothesis_generator import (

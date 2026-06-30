@@ -1,7 +1,6 @@
 """§12.10 continuous_learning_loop tests (Phase H4 graduation)."""
 from __future__ import annotations
 
-import asyncio
 import os
 from uuid import uuid4
 
@@ -10,6 +9,8 @@ import pytest
 
 from app.hatchet_workflows.continuous_learning_loop import (
     ContinuousLearningLoopInput,
+)
+from app.hatchet_workflows.continuous_learning_loop import (
     execute as continuous_learning_loop_execute,
 )
 

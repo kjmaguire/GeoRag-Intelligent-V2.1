@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 import asyncpg
@@ -68,7 +68,6 @@ _REDIS_TIMEOUT_S = 0.5  # Section 06 — Redis ≤500ms
 # helper in app.services.workspace_resolution. The default-UUID fallback is
 # gone; missing workspace context now returns HTTP 403.
 from app.services.workspace_resolution import resolve_workspace_id  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # RBAC helper — verify answer_run belongs to workspace

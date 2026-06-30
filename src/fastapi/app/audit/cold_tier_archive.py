@@ -39,12 +39,12 @@ import gzip
 import io
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Iterable, Protocol
+from datetime import UTC, datetime
+from typing import Any, Protocol
 
 import asyncpg
-
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +262,7 @@ async def archive_window(
     # Manifest.
     manifest = {
         "schema_version":     1,
-        "archived_at":        datetime.now(timezone.utc).isoformat(),
+        "archived_at":        datetime.now(UTC).isoformat(),
         "cutoff_before":      cutoff_before.isoformat(),
         "workspace_id_scope": workspace_id_scope,
         "rows_archived":      total,

@@ -43,7 +43,6 @@ from typing import Any
 
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 
-
 log = logging.getLogger(__name__)
 
 # Hardcoded default-tenant UUID — referenced ONCE here so the phase-2

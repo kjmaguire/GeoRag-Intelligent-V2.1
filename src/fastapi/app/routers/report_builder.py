@@ -26,18 +26,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.agents.context import AgentContext
 from app.agents.phase7.report_planner import report_planner
 from app.services.auth import verify_service_key
 from app.services.report_builder.state import ReportType
-
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +216,7 @@ async def build_report(req: BuildRequest) -> BuildEnvelope:
         report_type=req.report_type,
         workspace_id=str(req.workspace_id),
         project_id=str(req.project_id),
-        requested_at=datetime.now(timezone.utc),
+        requested_at=datetime.now(UTC),
         sections_planned=len(plan.sections),
         sections=plan.sections,
         status="planned",
@@ -293,6 +291,8 @@ async def trigger_export(req: ExportRequest) -> dict[str, Any]:
     """
     from app.hatchet_workflows.generate_report import (
         GenerateReportInput,
+    )
+    from app.hatchet_workflows.generate_report import (
         execute as generate_report_execute,
     )
     from app.services.laravel_bridge import post_report_build_progress
@@ -446,7 +446,7 @@ async def put_section_draft(
             status.HTTP_404_NOT_FOUND, f"build_id={build_id} not found",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     from app.audit import emit_audit
     async with pool.acquire() as conn:
         await emit_audit(

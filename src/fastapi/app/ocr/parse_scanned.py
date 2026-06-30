@@ -50,9 +50,6 @@ Output schema (locked here):
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any, Sequence
-
 
 # PaddleOCR model cache root. The default ($HOME/.paddleocr) is not
 # writable for the FastAPI container's www-data user. Use /tmp so OCR
@@ -60,6 +57,10 @@ from typing import Any, Sequence
 # runs as. Operators who want a persistent (not /tmp) cache should
 # set PADDLEOCR_HOME at container startup.
 import os as _os
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
 _PADDLEOCR_HOME = _os.environ.get("PADDLEOCR_HOME", "/tmp/.paddleocr")
 
 
@@ -135,8 +136,9 @@ def _parse_scanned_sync(
     # Phase 9 (2026-05-22) — env-gated GPU acceleration. Same helper
     # used by services/pdf_ocr.py so routing is consistent across both
     # PaddleOCR call sites.
-    from app.ocr._paddleocr_gpu import paddleocr_use_gpu  # noqa: PLC0415
     import logging as _logging  # noqa: PLC0415
+
+    from app.ocr._paddleocr_gpu import paddleocr_use_gpu  # noqa: PLC0415
     use_gpu = paddleocr_use_gpu()
     # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
     #   use_angle_cls   -> use_textline_orientation
@@ -201,7 +203,7 @@ def _parse_scanned_sync(
                 # 2026-06-23 sweep — PaddleOCR 3.x migration (ADR-0016):
                 # `ocr.ocr(arr)` -> `ocr.predict(arr)`.
                 result = ocr.predict(arr)
-            except Exception as exc:  # PaddleOCR can throw on degenerate pages
+            except Exception:  # PaddleOCR can throw on degenerate pages
                 # Record the failure as a zero-confidence page; the
                 # caller (quality_graph) will route to retry/review.
                 per_page_ocr_confidence.append(0.0)

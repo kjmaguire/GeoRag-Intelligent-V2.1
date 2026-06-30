@@ -32,7 +32,6 @@ import re
 
 import pytest
 
-
 _LEGACY_DEFAULT_TENANT_UUID = "a0000000-0000-0000-0000-000000000001"
 
 

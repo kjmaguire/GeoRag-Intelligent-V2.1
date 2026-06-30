@@ -33,16 +33,17 @@ CPU-OCR latency baselines measured 2026-05-12 (see
 """
 from __future__ import annotations
 
+from app.ocr.parse_docparser_vl import parse_docparser_vl
+from app.ocr.parse_mixed import parse_mixed
+from app.ocr.parse_native import parse_native
+from app.ocr.parse_scanned import parse_scanned
+from app.ocr.parse_table_heavy import parse_table_heavy
+
 # Skeleton re-exports — concrete implementations land in later steps.
 from app.ocr.preflight import preflight
 from app.ocr.profile import profile
-from app.ocr.parse_native import parse_native
-from app.ocr.parse_scanned import parse_scanned
-from app.ocr.parse_mixed import parse_mixed
-from app.ocr.parse_table_heavy import parse_table_heavy
-from app.ocr.parse_docparser_vl import parse_docparser_vl
-from app.ocr.render import render_page
 from app.ocr.quality_graph import route_page, summarize_document
+from app.ocr.render import render_page
 
 __all__ = [
     "preflight",

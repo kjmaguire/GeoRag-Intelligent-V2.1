@@ -52,19 +52,13 @@ import hashlib
 import json
 import logging
 import math
-import uuid
-from typing import Optional
 
 import psycopg2.extras
 from dagster import (
-    AssetCheckExecutionContext,
-    AssetCheckResult,
-    AssetCheckSeverity,
     AssetExecutionContext,
     MaterializeResult,
     MetadataValue,
     asset,
-    asset_check,
 )
 from pyproj import Transformer
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -37,7 +37,6 @@ from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
-
 
 log = logging.getLogger("georag.hatchet.train_target_model")
 

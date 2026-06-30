@@ -19,7 +19,6 @@ from app.agent.evidence_converter import (
     extract_spatial_evidence,
 )
 
-
 # ---------------------------------------------------------------------------
 # extract_document_evidence
 # ---------------------------------------------------------------------------

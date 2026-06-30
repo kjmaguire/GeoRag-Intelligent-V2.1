@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from app.agent.agentic_retrieval.retrieval_profile import AnswerEmphasis
 
-
 # ---------------------------------------------------------------------------
 # Per-emphasis fragments
 # ---------------------------------------------------------------------------

@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 

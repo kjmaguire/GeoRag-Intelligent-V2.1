@@ -12,14 +12,12 @@ associated materialization.
 NOTE: Do NOT add `from __future__ import annotations` to this file.
 """
 
-import re
 
 import psycopg2.extras
 from dagster import (
     AssetCheckExecutionContext,
     AssetCheckResult,
     AssetCheckSeverity,
-    AssetCheckSpec,
     asset_check,
 )
 
@@ -567,7 +565,7 @@ def silver_reports_check_schema_conformance(
             f"{with_sections}/{total} reports have populated sections_text "
             f"(ratio={ratio:.2%})."
             if passed
-            else f"No reports have populated sections_text — total parse failure, blocking commit."
+            else "No reports have populated sections_text — total parse failure, blocking commit."
         ),
         metadata={
             "parse_total": total,

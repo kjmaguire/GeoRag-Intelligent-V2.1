@@ -27,7 +27,6 @@ import pytest
 from app.agent.deps import AgentDeps
 from app.models.rag import Citation, GeoRAGResponse
 
-
 # ---------------------------------------------------------------------------
 # Shared test fixtures
 # ---------------------------------------------------------------------------

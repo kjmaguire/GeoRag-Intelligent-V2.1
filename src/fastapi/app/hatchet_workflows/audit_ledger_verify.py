@@ -13,7 +13,7 @@ the kickoff). Manually invokable via ``audit_ledger_verify.run({})``.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncpg
@@ -60,7 +60,7 @@ def _build_dsn() -> str:
 
 @audit_ledger_verify.task(execution_timeout="5m")
 async def run_verification(input: AuditVerifyInput, ctx: Context) -> AuditVerifyOutput:
-    end_at = input.end_at or datetime.now(tz=timezone.utc)
+    end_at = input.end_at or datetime.now(tz=UTC)
     start_at = input.start_at or (end_at - timedelta(days=1))
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)

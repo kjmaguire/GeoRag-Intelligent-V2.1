@@ -30,8 +30,7 @@ LLM content is the stubbed part.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-
+from datetime import UTC, datetime
 from typing import Any
 
 from app.services.report_builder.state import (
@@ -77,7 +76,7 @@ async def select_report_type(state: ReportBuilderState) -> ReportBuilderState:
 
     updates = {}
     if state.started_at is None:
-        updates["started_at"] = datetime.now(timezone.utc)
+        updates["started_at"] = datetime.now(UTC)
     log.info(
         "select_report_type.passed report_id=%s report_type=%s risk_tier=%s",
         state.report_id, state.report_type, state.risk_tier,

@@ -16,11 +16,12 @@ import os
 import uuid
 
 import asyncpg
-import httpx
 import pytest
 
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
+
+from datetime import UTC
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.hatchet_workflows import nightly_ingestion_integrity as sweep_mod  # noqa: E402
@@ -205,8 +206,8 @@ async def test_tier_4_outbox_reenqueues_stuck_pending_rows():
         await conn.close()
     # enqueued_at must now be recent — the sweep nudged it forward so the
     # outbox_dispatcher will pick it up on its next tick.
-    from datetime import datetime, timezone
-    assert (datetime.now(timezone.utc) - row["enqueued_at"]).total_seconds() < 60
+    from datetime import datetime
+    assert (datetime.now(UTC) - row["enqueued_at"]).total_seconds() < 60
 
 
 # ---------------------------------------------------------------------------

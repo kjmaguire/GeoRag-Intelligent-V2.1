@@ -36,8 +36,9 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -45,7 +46,9 @@ import asyncpg
 from app.audit import emit_audit
 from app.db import scoped_connection
 from app.services.tool_gateway.policies import (
-    RiskTier, has_approval, is_workspace_allowed, resolve_effective_tier,
+    has_approval,
+    is_workspace_allowed,
+    resolve_effective_tier,
 )
 
 log = logging.getLogger("georag.tool_gateway")

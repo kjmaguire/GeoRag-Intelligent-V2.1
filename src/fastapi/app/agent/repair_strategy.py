@@ -46,12 +46,11 @@ Pure module: no I/O, no DB, no LLM. Side-effect-free.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable
 
 from app.agent.guards import GuardErrorCode
-
 
 logger = logging.getLogger(__name__)
 

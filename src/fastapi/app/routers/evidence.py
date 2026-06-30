@@ -69,7 +69,6 @@ _NEO4J_TIMEOUT_S = 2.0  # tight — don't let a slow graph query hang the inspec
 # gone; missing workspace context now returns HTTP 403.
 from app.services.workspace_resolution import resolve_workspace_id  # noqa: E402, F401
 
-
 # ---------------------------------------------------------------------------
 # Payload models — one per evidence_type
 # ---------------------------------------------------------------------------
@@ -349,7 +348,7 @@ async def _fetch_neo4j_node(
         # Trim to a compact preview: first 5 properties.
         preview = dict(list(props.items())[:5])
         return labels, preview
-    except (asyncio.TimeoutError, Exception):
+    except (TimeoutError, Exception):
         logger.warning(
             "evidence: Neo4j node fetch failed node_id=%s (non-fatal)",
             node_id,
@@ -381,7 +380,7 @@ async def _fetch_neo4j_described_in(
         if not records:
             return None
         return [dict(r.get("props") or {}) for r in records]
-    except (asyncio.TimeoutError, Exception):
+    except (TimeoutError, Exception):
         logger.warning(
             "evidence: Neo4j described_in fetch failed (non-fatal)",
             exc_info=True,

@@ -14,10 +14,7 @@ Run with:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from app.agent.public_geoscience_tool import (
     PublicGeoscienceRecord,
@@ -26,15 +23,14 @@ from app.agent.public_geoscience_tool import (
 from app.agent.response_assembler import (
     _pg_record_title,
     _source_chunk_id_for_pg_record,
-    assign_citation_ids,
     assemble_response,
+    assign_citation_ids,
 )
 from app.agent.tools import (
     DocumentChunk,
     DocumentSearchResult,
     SpatialQueryResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — build minimal test fixtures

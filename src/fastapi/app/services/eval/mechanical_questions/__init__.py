@@ -48,7 +48,6 @@ from app.services.eval.mechanical_questions.seed_runner import (
     seed_mechanical_questions,
 )
 
-
 ALL_MECHANICAL_QUESTIONS: list[dict] = (
     NUMERIC_GROUNDING_QUESTIONS
     + REPORT_SECTION_QUESTIONS

@@ -48,7 +48,7 @@ import io
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import aioboto3
@@ -258,7 +258,7 @@ def _build_manifest(
         "format":             "workspace_export",
         "workspace_id":       workspace_id,
         "run_id":             run_id,
-        "captured_at":        datetime.now(tz=timezone.utc).isoformat(),
+        "captured_at":        datetime.now(tz=UTC).isoformat(),
         "table_row_counts":   {k: len(v) for k, v in per_table_rows.items()},
         "tables":             list(per_table_rows.keys()),
         # §11.3-v2 extras
@@ -321,7 +321,7 @@ async def _put_s3(bucket: str, key: str, body: bytes) -> None:
 async def run_export(
     input: WorkspaceExportInput, ctx: Context,
 ) -> WorkspaceExportOutput:
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     workspace_id = str(input.workspace_id)
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)
@@ -386,7 +386,7 @@ async def run_export(
         # Upload.
         await _put_s3(input.bucket, object_key, body)
 
-        completed_at = datetime.now(tz=timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         rows_exported = sum(len(v) for v in per_table_rows.values())
         per_table_counts = manifest["table_row_counts"]
 

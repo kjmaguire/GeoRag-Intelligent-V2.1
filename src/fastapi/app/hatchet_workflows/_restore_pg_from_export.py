@@ -22,8 +22,6 @@ source DB.
 
 from __future__ import annotations
 
-from app.db import bind_workspace_scope
-
 import gzip
 import io
 import json
@@ -33,6 +31,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 import asyncpg
+
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.hatchet._restore_pg_from_export")
 
@@ -130,7 +130,7 @@ async def _insert_row(
     )
     try:
         result = await conn.execute(sql, *[filtered[c] for c in cols])
-    except asyncpg.exceptions.UndefinedColumnError as exc:
+    except asyncpg.exceptions.UndefinedColumnError:
         # No `id` column on the target → some tables (audit_ledger) use
         # composite keys. Skip the conflict clause entirely.
         sql_noconflict = (

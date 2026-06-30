@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import textwrap
-from typing import Any
-
 import pytest
 
 from app.agent.agentic_retrieval import (
-    AgenticRetrievalState,
-    ContextEnvelope,
     DEFAULT_REPORTING_CODE,
     EMPTY_ENVELOPE,
+    AgenticRetrievalState,
+    ContextEnvelope,
     apply_envelope_overrides,
-    profile_for_intent,
     unspecified_field_descriptions,
 )
 from app.agent.agentic_retrieval.nodes import (
@@ -25,12 +21,10 @@ from app.agent.schemas import (
     GeoAnswer,
     Interpretation,
     Observation,
-    RecommendedAction,
     SectionEmpty,
     UncertaintyBlock,
 )
 from app.models.rag import Citation, GeoRAGResponse
-
 
 # ---------------------------------------------------------------------------
 # ContextEnvelope basics

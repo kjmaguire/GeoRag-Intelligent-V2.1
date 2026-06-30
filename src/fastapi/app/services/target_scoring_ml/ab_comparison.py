@@ -20,7 +20,7 @@ distinct ``model_version_id`` values for the per-target brief.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -30,7 +30,6 @@ from app.services.target_scoring_ml.xgboost_inference import (
     XGBoostInferenceResult,
     score_zone_xgboost,
 )
-
 
 logger = logging.getLogger(__name__)
 

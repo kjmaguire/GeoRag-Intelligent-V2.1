@@ -33,14 +33,17 @@ from pydantic import BaseModel, Field
 
 from app.hatchet_workflows.train_source_trust import (
     TrainSourceTrustInput,
+)
+from app.hatchet_workflows.train_source_trust import (
     execute as train_source_trust_execute,
 )
 from app.hatchet_workflows.train_target_model import (
     TrainTargetModelInput,
+)
+from app.hatchet_workflows.train_target_model import (
     execute as train_target_model_execute,
 )
 from app.services.auth import verify_service_key
-
 
 logger = logging.getLogger(__name__)
 

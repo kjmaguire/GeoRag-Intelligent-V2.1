@@ -31,7 +31,6 @@ URIs.
 """
 
 from __future__ import annotations
-from app.db import lookup_and_rescope
 
 import json
 import logging
@@ -42,6 +41,7 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import lookup_and_rescope
 
 log = logging.getLogger("georag.support_cockpit.support_packet")
 

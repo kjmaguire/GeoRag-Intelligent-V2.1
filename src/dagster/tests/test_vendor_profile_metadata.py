@@ -8,11 +8,7 @@ Target: 717 existing + 14 new tests green, 0 xfails.
 """
 
 import logging
-from datetime import datetime, timezone
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
-import pytest
 
 from georag_dagster.definitions import (
     _build_sensor_run_config,

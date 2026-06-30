@@ -30,7 +30,6 @@ from georag_dagster.checks.interval_overlap import (
     find_overlaps,
     summarize_overlaps_as_dq_flags,
     write_overlaps_to_review_queue,
-    resolve_workspace_for_project,
 )
 from georag_dagster.dq_writer import upsert_flags_sync
 from georag_dagster.resources import PostgresResource

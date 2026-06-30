@@ -32,7 +32,7 @@ import asyncio
 import hashlib
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from hatchet_sdk import Context
@@ -209,7 +209,7 @@ async def _trigger_bgsave_and_fetch(
 
 @backup_redis.task(execution_timeout="15m")
 async def run_backup(input: BackupRedisInput, ctx: Context) -> BackupRedisOutput:
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     dsn = _build_dsn()
 
     conn = await asyncpg.connect(dsn, statement_cache_size=0)
@@ -249,7 +249,7 @@ async def run_backup(input: BackupRedisInput, ctx: Context) -> BackupRedisOutput
             bytes_count=total,
         )
 
-        completed_at = datetime.now(tz=timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         await emit_audit(
             conn,
             action_type="backup.redis.snapshot.completed",

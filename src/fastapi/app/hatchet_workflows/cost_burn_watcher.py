@@ -39,10 +39,9 @@ critical, 5x = critical + pager) — out of scope for v1.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from hatchet_sdk import Context
@@ -163,7 +162,7 @@ async def _has_recent_unacked_alert(
 
 @cost_burn_watcher.task(execution_timeout="2m")
 async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatcherOutput:
-    sampled_at = datetime.now(tz=timezone.utc)
+    sampled_at = datetime.now(tz=UTC)
     env_default = _env_threshold(input.default_threshold_usd)
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)

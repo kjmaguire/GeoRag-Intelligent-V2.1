@@ -14,7 +14,7 @@ Each test:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import asyncpg
@@ -79,8 +79,8 @@ async def synthetic_user(conn):
 @pytest.mark.asyncio
 async def test_empty_window_returns_empty_proof(conn, synthetic_workspace):
     """A window with no audit rows returns row_count=0, all_match=True."""
-    start = datetime.now(timezone.utc) - timedelta(hours=2)
-    end = datetime.now(timezone.utc) - timedelta(hours=1)
+    start = datetime.now(UTC) - timedelta(hours=2)
+    end = datetime.now(UTC) - timedelta(hours=1)
 
     proof = await build_hash_chain_proof(
         conn,
@@ -101,7 +101,7 @@ async def test_empty_window_returns_empty_proof(conn, synthetic_workspace):
 @pytest.mark.asyncio
 async def test_invalid_window_raises(conn, synthetic_workspace):
     """end <= start raises ValueError."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with pytest.raises(ValueError, match="end .* must be > start"):
         await build_hash_chain_proof(
             conn,
@@ -124,7 +124,7 @@ async def test_proof_captures_single_decision(
     conn, synthetic_workspace, synthetic_user
 ):
     """One decision → one audit row → proof has 1 row, all_match=True."""
-    start = datetime.now(timezone.utc) - timedelta(minutes=1)
+    start = datetime.now(UTC) - timedelta(minutes=1)
 
     decision_id = await record_decision(
         conn,
@@ -136,7 +136,7 @@ async def test_proof_captures_single_decision(
         reason="Unit conversion validated",
     )
 
-    end = datetime.now(timezone.utc) + timedelta(minutes=1)
+    end = datetime.now(UTC) + timedelta(minutes=1)
 
     proof = await build_hash_chain_proof(
         conn,
@@ -173,7 +173,7 @@ async def test_proof_captures_multiple_decisions_in_order(
     conn, synthetic_workspace, synthetic_user
 ):
     """3 decisions → 3 chained audit rows, ordered by created_at."""
-    start = datetime.now(timezone.utc) - timedelta(minutes=1)
+    start = datetime.now(UTC) - timedelta(minutes=1)
 
     decision_ids = []
     for kind in ("schema_mapping", "export_approval", "workflow_enablement"):
@@ -187,7 +187,7 @@ async def test_proof_captures_multiple_decisions_in_order(
         )
         decision_ids.append(d)
 
-    end = datetime.now(timezone.utc) + timedelta(minutes=1)
+    end = datetime.now(UTC) + timedelta(minutes=1)
 
     proof = await build_hash_chain_proof(
         conn,
@@ -221,7 +221,7 @@ async def test_proof_report_id_filter(
     conn, synthetic_workspace, synthetic_user
 ):
     """report_id filter narrows the proof to matching target_id."""
-    start = datetime.now(timezone.utc) - timedelta(minutes=1)
+    start = datetime.now(UTC) - timedelta(minutes=1)
 
     # First decision (this will be the "report" anchor — use its
     # decision_id as the fake report_id).
@@ -244,7 +244,7 @@ async def test_proof_report_id_filter(
         decided_by_user_id=synthetic_user,
     )
 
-    end = datetime.now(timezone.utc) + timedelta(minutes=1)
+    end = datetime.now(UTC) + timedelta(minutes=1)
 
     proof = await build_hash_chain_proof(
         conn,

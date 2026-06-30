@@ -29,12 +29,10 @@ Scope deliberately narrow for doc-phase 63:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -46,7 +44,6 @@ from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
 from app.ocr.parse_scanned import parse_scanned
 from app.ocr.quality_graph import MAX_OCR_RETRIES, RETRY_SETTINGS_BY_ATTEMPT
-
 
 log = logging.getLogger("georag.hatchet.re_ocr_page")
 

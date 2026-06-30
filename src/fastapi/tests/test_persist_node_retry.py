@@ -28,7 +28,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -37,7 +37,6 @@ from app.agent.agentic_retrieval.nodes import persist_node
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
 from app.metrics import AGENTIC_PERSIST_FAILURES
 from app.models.rag import Citation, GeoRAGResponse
-
 
 TEST_WORKSPACE_ID = "a0000000-0000-0000-0000-000000000001"
 

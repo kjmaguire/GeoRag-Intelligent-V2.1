@@ -18,7 +18,6 @@ from app.services.silver_dq_flag_writer import (
     _validate,
 )
 
-
 # ---------------------------------------------------------------------------
 # Validation — argument-shape checks before DB roundtrip
 # ---------------------------------------------------------------------------
@@ -109,7 +108,7 @@ def test_empty_description_rejected():
 def test_allowed_severities_match_db_check_constraint():
     """If the DB CHECK changes, this assertion forces an update here.
     Drift would surface as a CheckViolationError at runtime."""
-    assert ALLOWED_SEVERITIES == frozenset({"INFO", "WARNING", "ERROR"})
+    assert frozenset({"INFO", "WARNING", "ERROR"}) == ALLOWED_SEVERITIES
 
 
 def test_allowed_record_types_match_db_check_constraint():
@@ -122,7 +121,7 @@ def test_allowed_record_types_match_db_check_constraint():
         "document_chunk", "table_extraction", "spatial_feature",
         "sample", "geochronology_sample",
     })
-    assert ALLOWED_RECORD_TYPES == expected
+    assert expected == ALLOWED_RECORD_TYPES
 
 
 # ---------------------------------------------------------------------------

@@ -40,7 +40,6 @@ from pydantic import BaseModel, Field
 
 from app.agent.agentic_retrieval.intent_classifier import Intent
 
-
 AnswerEmphasis = Literal[
     "exact_citation",
     "synthesis_with_conflicts",

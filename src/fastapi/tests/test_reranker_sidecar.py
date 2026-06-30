@@ -91,7 +91,6 @@ def test_remote_predict_posts_pairs_and_parses_scores(monkeypatch: pytest.Monkey
 
 def test_sidecar_rerank_returns_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.reranker_service as svc
-
     from app.sidecar_auth import SERVICE_KEY_HEADERS
 
     monkeypatch.setattr(svc, "_get_reranker", lambda: _FakeModel())
@@ -106,7 +105,6 @@ def test_sidecar_rerank_returns_scores(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_sidecar_rerank_empty_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.reranker_service as svc
-
     from app.sidecar_auth import SERVICE_KEY_HEADERS
 
     monkeypatch.setattr(svc, "_get_reranker", lambda: _FakeModel())

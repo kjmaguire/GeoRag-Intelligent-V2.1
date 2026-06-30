@@ -22,7 +22,6 @@ import pytest
 
 from app.agent.orchestrator import _call_openai_compatible_llm
 
-
 # ---------------------------------------------------------------------------
 # #13 — pooled httpx.AsyncClient
 # ---------------------------------------------------------------------------
@@ -171,7 +170,7 @@ async def test_metered_records_timeout_outcome_distinctly():
 
     @_metered("test_tool_timeout")
     async def _fake_tool() -> SimpleNamespace:
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     timeout_before = TOOL_DURATION.labels(
         tool="test_tool_timeout", outcome="timeout"

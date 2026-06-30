@@ -16,7 +16,6 @@ Run with:  pytest tests/test_spatial_crs_confidence.py -v
 
 from __future__ import annotations
 
-import os
 
 import pytest
 
@@ -24,7 +23,7 @@ import pytest
 geopandas = pytest.importorskip("geopandas", reason="geopandas not installed")
 shapely = pytest.importorskip("shapely", reason="shapely not installed")
 
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point
 
 from georag_dagster.parsers.spatial_parser import (
     _score_crs_confidence,
@@ -146,7 +145,6 @@ class TestSpatialParserCrsWarnings:
     def test_shapefile_without_prj_sidecar_emits_prj_missing_warning(self, tmp_path):
         """Shapefile created without a .prj sidecar → 'prj_missing' warning."""
         # Build a minimal shapefile using GeoPandas. Then delete the .prj sidecar.
-        import fiona  # noqa: PLC0415 — optional dep, skip if absent
         gdf = _make_point_gdf([(-110.5, 59.0)], crs="EPSG:4326")
         shp_path = tmp_path / "test_no_prj.shp"
         gdf.to_file(str(shp_path))

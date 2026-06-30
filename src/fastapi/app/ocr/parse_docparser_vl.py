@@ -53,9 +53,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 log = logging.getLogger(__name__)
 

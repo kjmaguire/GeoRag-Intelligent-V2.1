@@ -28,7 +28,6 @@ from app.services.query_classifier import (
     classify_query,
 )
 
-
 # ---------------------------------------------------------------------------
 # VIZ class — explicit rendering verbs (highest precedence)
 # ---------------------------------------------------------------------------

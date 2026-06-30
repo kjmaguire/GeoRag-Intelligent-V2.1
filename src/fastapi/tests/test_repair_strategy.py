@@ -13,7 +13,6 @@ from app.agent.repair_strategy import (
     plan_repair,
 )
 
-
 # ---------------------------------------------------------------------------
 # Mapping coverage — locks the table content
 # ---------------------------------------------------------------------------
@@ -36,13 +35,13 @@ def test_every_guard_error_code_has_a_mapping():
 def test_terminal_strategies_set_lists_every_terminal_strategy():
     """Regression — TERMINAL_STRATEGIES must include exactly the 5
     user-facing strategies the plan §4b spec calls out as terminal."""
-    assert TERMINAL_STRATEGIES == frozenset({
+    assert frozenset({
         RepairStrategy.ASK_FOR_DISAMBIGUATION,
         RepairStrategy.SURFACE_CONFLICT,
         RepairStrategy.REQUEST_UNIT_CLARIFICATION,
         RepairStrategy.REQUEST_DEPTH_CLARIFICATION,
         RepairStrategy.REFUSE_OUT_OF_SCOPE,
-    })
+    }) == TERMINAL_STRATEGIES
 
 
 @pytest.mark.parametrize("code,expected_strategy", [

@@ -10,7 +10,6 @@ from app.agent.decision_support_classifier import (
     is_decision_support_query,
 )
 
-
 # ---------------------------------------------------------------------------
 # Positive triggers — each of the 7 plan keywords flips the classifier on
 # ---------------------------------------------------------------------------

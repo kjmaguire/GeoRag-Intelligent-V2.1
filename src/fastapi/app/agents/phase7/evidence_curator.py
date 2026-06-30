@@ -19,12 +19,11 @@ Output contract — see module docstring.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +148,7 @@ async def evidence_curator(
             "missing_kinds":     missing,
         },
         "summary": summary,
-        "curated_at": datetime.now(timezone.utc).isoformat(),
+        "curated_at": datetime.now(UTC).isoformat(),
     }
 
 

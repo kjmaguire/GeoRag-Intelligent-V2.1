@@ -25,7 +25,6 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel
 
-
 log = logging.getLogger("georag.flow_registry")
 
 

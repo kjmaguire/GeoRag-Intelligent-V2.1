@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +39,7 @@ _TRUE_VALUES = frozenset({"true", "1", "yes", "on"})
 _FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
 
-def _parse_tri_state(raw: str) -> Optional[bool]:
+def _parse_tri_state(raw: str) -> bool | None:
     """Parse PADDLEOCR_USE_GPU into (True/False/None).
 
     None means "auto-detect"; True/False means user override.
@@ -66,7 +65,7 @@ def _paddle_compiled_with_cuda() -> bool:
         return False
 
 
-def _free_vram_mb() -> Optional[float]:
+def _free_vram_mb() -> float | None:
     """Return available VRAM in MB on device 0, or None if unavailable."""
     try:
         import torch  # noqa: PLC0415

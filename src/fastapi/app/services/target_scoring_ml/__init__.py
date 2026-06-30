@@ -24,12 +24,12 @@ from app.services.target_scoring_ml.ab_comparison import (
     choose_display_strategy,
     compute_ab_scores,
 )
+from app.services.target_scoring_ml.shap_writer import (
+    write_shap_factors,
+)
 from app.services.target_scoring_ml.xgboost_inference import (
     XGBoostInferenceResult,
     score_zone_xgboost,
-)
-from app.services.target_scoring_ml.shap_writer import (
-    write_shap_factors,
 )
 
 __all__ = [

@@ -102,7 +102,6 @@ if not os.environ.get("POSTGRES_USER"):
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 
-
 # Reuse the workspace + project already provisioned by the state-machine
 # tests. Inserting fresh workspace/project rows fails under RLS when the
 # test connection lands as georag_app (the default POSTGRES_USER inside

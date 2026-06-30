@@ -37,7 +37,7 @@ def test_qwen3_predict_scores_pyes_from_logits() -> None:
     r._token_true = 1
 
     class _Enc(dict):
-        def to(self, _device: str) -> "_Enc":
+        def to(self, _device: str) -> _Enc:
             return self
 
     def _fake_tokenizer(texts: list[str], **_kw: object) -> _Enc:

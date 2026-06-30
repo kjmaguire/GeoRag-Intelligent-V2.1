@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.agent.multi_turn_resolver import (
     ConversationTurn,
     EntityMention,
@@ -11,7 +9,6 @@ from app.agent.multi_turn_resolver import (
     extract_entity_mentions,
     resolve_multi_turn,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -105,7 +102,7 @@ def test_their_resolves_same_as_its():
 def test_it_resolves_to_latest_hole_without_possessive():
     history = [_turn(0, "x", mentions=[_hole(0, "PLS-22-08")])]
     result = resolve_multi_turn("how deep is IT?", history)
-    assert "how deep is PLS-22-08?" == result.rewritten_query
+    assert result.rewritten_query == "how deep is PLS-22-08?"
 
 
 def test_they_resolves_to_latest_hole():

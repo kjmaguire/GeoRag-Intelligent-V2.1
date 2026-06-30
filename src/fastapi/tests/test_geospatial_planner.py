@@ -11,11 +11,9 @@ from app.agent.geospatial_planner import (
     SPATIAL_TARGETS,
     SpatialPlan,
     SpatialQuerySpec,
-    SpatialTarget,
     execute_spatial_query,
     plan_spatial_query,
 )
-
 
 # ---------------------------------------------------------------------------
 # SPATIAL_TARGETS table

@@ -7,7 +7,6 @@ they adopt the pattern.
 """
 from __future__ import annotations
 
-import pytest
 
 from georag_dagster.parsers._vendor_aliases import (
     merge_vendor_aliases,

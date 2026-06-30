@@ -1,7 +1,7 @@
 """§11.10 — unit tests for the cold-tier archive workflow + admin endpoints."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -89,7 +89,7 @@ def test_snapshot_run_model_minimum_fields() -> None:
     r = t.SnapshotRun(
         run_id="abc",
         store="postgres",
-        started_at=datetime.now(tz=timezone.utc),
+        started_at=datetime.now(tz=UTC),
         status="running",
     )
     assert r.bytes is None
@@ -102,7 +102,7 @@ def test_snapshot_run_model_rejects_bad_status() -> None:
     r = t.SnapshotRun(
         run_id="abc",
         store="postgres",
-        started_at=datetime.now(tz=timezone.utc),
+        started_at=datetime.now(tz=UTC),
         status="not-a-real-status",
     )
     # Doesn't raise — the server-side write would, the read path is permissive
@@ -116,6 +116,6 @@ def test_cold_tier_run_model_minimum_fields() -> None:
         rows_archived=0,
         cold_tier_uri="",
         verification_passed=True,
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=datetime.now(tz=UTC),
     )
     assert r.payload == {}

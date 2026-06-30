@@ -17,17 +17,14 @@ from __future__ import annotations
 import re
 from datetime import date
 
-import pytest
-
 from app.hatchet_workflows.repair_shadow_aggregate import (
-    RepairShadowAggregateInput,
-    RepairShadowAggregateOutput,
     _AGGREGATE_SQL,
     _DDL,
     _LIST_WORKSPACES_WITH_TRACES,
+    RepairShadowAggregateInput,
+    RepairShadowAggregateOutput,
     repair_shadow_aggregate,
 )
-
 
 # ---------------------------------------------------------------------------
 # DDL shape

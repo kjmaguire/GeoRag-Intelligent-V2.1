@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from app.agents.phase9.analogue_finder import (
     _embedding_similarity,
     _graph_path_similarity,

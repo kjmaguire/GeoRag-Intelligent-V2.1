@@ -33,10 +33,8 @@ Pattern rules (synthetic):
 """
 
 from __future__ import annotations
-from app.db import lookup_and_rescope
 
 import hashlib
-import json
 import logging
 import os
 from typing import Any, NamedTuple
@@ -45,6 +43,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import lookup_and_rescope
 
 log = logging.getLogger("georag.support_cockpit.root_cause_investigation")
 

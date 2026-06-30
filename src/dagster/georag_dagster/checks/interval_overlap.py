@@ -35,7 +35,7 @@ out a summary DQ flag per collar so the badge stays in sync.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg2.extras

@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
+from datetime import UTC
 
 import asyncpg
 
@@ -74,9 +74,9 @@ class ViewRefreshResult:
     view_name: str
     status: str            # 'completed' | 'failed' | 'skipped'
     duration_ms: int
-    rows_before: Optional[int]
-    rows_after: Optional[int]
-    error: Optional[str]
+    rows_before: int | None
+    rows_after: int | None
+    error: str | None
 
 
 def _record_mv_metrics(
@@ -110,14 +110,13 @@ def _to_epoch(ts) -> float:
     if ts.tzinfo is None:
         # Treat naive timestamps as UTC — Postgres stores them that way
         # in our schemas (all writers use NOW() under SET timezone=UTC).
-        from datetime import timezone
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     return ts.timestamp()
 
 
 async def _last_successful_refresh(
-    conn: asyncpg.Connection, view_name: str, workspace_id: Optional[str],
-) -> Optional[object]:
+    conn: asyncpg.Connection, view_name: str, workspace_id: str | None,
+) -> object | None:
     """Return finished_at of the most recent completed refresh for this view.
 
     workspace_id may be NULL (legacy global refreshes). We pull both NULL
@@ -139,7 +138,7 @@ async def _last_successful_refresh(
 
 async def _max_dependency_change(
     conn: asyncpg.Connection, view: MaterializedView,
-) -> Optional[object]:
+) -> object | None:
     """Return MAX(created_at) across the view's silver dependencies.
 
     None if every dependency table is empty (legitimately nothing to refresh)
@@ -160,7 +159,7 @@ async def _max_dependency_change(
     return max_ts
 
 
-async def _row_count(conn: asyncpg.Connection, qualified: str) -> Optional[int]:
+async def _row_count(conn: asyncpg.Connection, qualified: str) -> int | None:
     """Best-effort COUNT(*). Returns None on error so logging keeps working."""
     try:
         row = await conn.fetchrow(f"SELECT count(*) AS n FROM {qualified}")
@@ -172,7 +171,7 @@ async def _row_count(conn: asyncpg.Connection, qualified: str) -> Optional[int]:
 async def refresh_views_with_advisory_lock(
     *,
     pool: asyncpg.Pool,
-    workspace_id: Optional[str] = None,
+    workspace_id: str | None = None,
     triggered_by: str = "ingestion",
     force: bool = False,
 ) -> list[ViewRefreshResult]:
@@ -212,7 +211,7 @@ async def _refresh_one(
     *,
     pool: asyncpg.Pool,
     view: MaterializedView,
-    workspace_id: Optional[str],
+    workspace_id: str | None,
     triggered_by: str,
     force: bool,
 ) -> ViewRefreshResult:

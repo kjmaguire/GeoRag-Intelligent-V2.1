@@ -19,7 +19,6 @@ breaks runtime annotation evaluation.
 import tempfile
 import uuid
 
-import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.assets.bronze_seismic import BRONZE_BUCKET, SEISMIC_PREFIX

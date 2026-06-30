@@ -31,7 +31,6 @@ from app.config import settings
 from app.services.flow_jwt import verify_flow_jwt_token
 from app.services.flow_registry import get_flow, list_flow_names
 
-
 log = logging.getLogger("georag.integrations_trigger")
 
 router = APIRouter(prefix="/internal/v1/integrations", tags=["integrations"])

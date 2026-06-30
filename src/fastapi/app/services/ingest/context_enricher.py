@@ -11,7 +11,6 @@ enriched passages automatically get better embeddings on next embed run.
 Doc: https://www.anthropic.com/news/contextual-retrieval
 """
 from __future__ import annotations
-from app.db import bind_workspace_scope
 
 import logging
 import os
@@ -19,6 +18,8 @@ from dataclasses import dataclass, field
 
 import asyncpg
 import httpx
+
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.ingest.context_enricher")
 

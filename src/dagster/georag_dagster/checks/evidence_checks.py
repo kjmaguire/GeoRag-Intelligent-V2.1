@@ -15,7 +15,6 @@ NOTE: Do NOT add `from __future__ import annotations` to this file.
 
 import re
 
-import psycopg2.extras
 from dagster import (
     AssetCheckExecutionContext,
     AssetCheckResult,

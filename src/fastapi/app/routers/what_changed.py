@@ -20,7 +20,6 @@ from pydantic import BaseModel
 
 from app.services.auth import verify_service_key
 
-
 logger = logging.getLogger(__name__)
 
 

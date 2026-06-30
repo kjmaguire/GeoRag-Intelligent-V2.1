@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 
 from app.hatchet_workflows import hatchet
 
-
 log = logging.getLogger("georag.hatchet.phase2_smoke")
 
 

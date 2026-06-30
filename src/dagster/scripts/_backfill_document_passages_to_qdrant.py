@@ -48,7 +48,6 @@ from georag_dagster.assets.index_document_passages import (
     _get_model,
 )
 from georag_dagster.assets.sparse_encoder import (
-    SPARSE_MODEL_VERSION,
     encode_sparse_batch,
 )
 

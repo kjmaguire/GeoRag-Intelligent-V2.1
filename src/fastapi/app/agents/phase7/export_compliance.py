@@ -45,7 +45,6 @@ from uuid import UUID, uuid4
 
 from app.agents import AgentContext, georag_agent
 
-
 ExportKind = Literal[
     "report_pdf",
     "report_docx",
@@ -99,10 +98,10 @@ def _build_state_from_payload(
     ``compliance_check`` node can read.
     """
     from app.services.report_builder.state import (  # noqa: PLC0415
-        ReportBuilderState,
-        SectionDraft,
         Claim,
         EvidenceItem,
+        ReportBuilderState,
+        SectionDraft,
         SignOffRecord,
     )
 

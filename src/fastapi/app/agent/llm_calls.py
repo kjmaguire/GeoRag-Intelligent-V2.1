@@ -916,13 +916,13 @@ async def _call_anthropic_llm(
         )
         # Signal-harvesting metrics (#1 dashboard): track cache hit volume.
         try:
+            from app.agent.pricing import estimate_cost_usd, user_bucket  # noqa: PLC0415
             from app.metrics import (  # noqa: PLC0415
                 LLM_COST_USD,
                 LLM_TOKENS_OUTPUT,
                 PROMPT_CACHE_TOKENS,
                 PROMPT_TOTAL_TOKENS,
             )
-            from app.agent.pricing import estimate_cost_usd, user_bucket  # noqa: PLC0415
 
             total_input = input_tokens + cache_read + cache_write
             if total_input > 0:

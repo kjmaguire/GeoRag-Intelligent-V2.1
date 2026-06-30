@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.multi_query_expansion import _parse_llm_json
 from app.services.atomic_claim_extractor import _parse_extractor_json
+from app.services.multi_query_expansion import _parse_llm_json
 from app.services.sentence_grounding import _parse_verifier_json
 
 

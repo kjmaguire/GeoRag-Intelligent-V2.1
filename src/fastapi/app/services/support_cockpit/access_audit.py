@@ -20,7 +20,6 @@ import asyncpg
 
 from app.audit import AuditLedgerEntry, emit_audit
 
-
 # Controlled vocabulary per §25.1 + scope proposal.
 AccessKind = Literal[
     "workspace_state_view",

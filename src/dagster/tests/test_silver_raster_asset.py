@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from georag_dagster.assets.silver_raster import (
     _build_bbox_wkt,

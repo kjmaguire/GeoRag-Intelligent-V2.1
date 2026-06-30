@@ -19,7 +19,6 @@ import pytest
 
 from app.agent import sentry_tags
 
-
 # ---------------------------------------------------------------------------
 # Fake sentry_sdk stub
 # ---------------------------------------------------------------------------
@@ -473,4 +472,4 @@ def test_known_card_types_set_matches_dispatcher_contract():
         "cross_section",
         "graph_viz",
     }
-    assert sentry_tags._KNOWN_CARD_TYPES == frozenset(expected)
+    assert frozenset(expected) == sentry_tags._KNOWN_CARD_TYPES

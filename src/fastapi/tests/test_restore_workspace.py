@@ -10,6 +10,8 @@ import pytest
 
 from app.hatchet_workflows.restore_workspace import (
     RestoreWorkspaceInput,
+)
+from app.hatchet_workflows.restore_workspace import (
     execute as restore_workspace_execute,
 )
 

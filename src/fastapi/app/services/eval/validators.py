@@ -25,7 +25,6 @@ from typing import Any, NamedTuple
 
 from app.services.eval.workspace_evaluator import QuestionRecord
 
-
 # Refusal patterns. Case-insensitive substring match.
 REFUSAL_PATTERNS: list[str] = [
     "i cannot",

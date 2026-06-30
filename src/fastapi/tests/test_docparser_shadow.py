@@ -171,8 +171,8 @@ def test_to_dict_shape() -> None:
 # ---------------------------------------------------------------------------
 
 def test_dual_run_builds_observation(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.ocr.parse_mixed  # noqa: F401 — ensure submodules are in sys.modules
     import app.ocr.parse_docparser_vl  # noqa: F401
+    import app.ocr.parse_mixed  # noqa: F401 — ensure submodules are in sys.modules
 
     async def fake_docling(pdf_path, pages):
         return _parse(tables=1, rows_per_table=3, figures=1, headings=2, pages=2)
@@ -191,8 +191,8 @@ def test_dual_run_builds_observation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_dual_run_records_parser_failure_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.ocr.parse_mixed  # noqa: F401
     import app.ocr.parse_docparser_vl  # noqa: F401
+    import app.ocr.parse_mixed  # noqa: F401
 
     async def ok_docling(pdf_path, pages):
         return _parse(tables=1, figures=1, headings=1)

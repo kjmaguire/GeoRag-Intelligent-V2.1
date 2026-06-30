@@ -17,13 +17,13 @@ hasn't opened one, the function opens one itself.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, Sequence
-from uuid import UUID, uuid4
+from collections.abc import Sequence
+from typing import Any, Literal
+from uuid import UUID
 
 import asyncpg
 
 from app.audit import emit_audit
-
 
 DecisionType = Literal[
     "target_recommendation",

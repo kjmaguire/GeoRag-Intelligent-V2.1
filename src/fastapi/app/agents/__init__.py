@@ -22,11 +22,11 @@ all of the above and returns the agent's value.
 from .context import AgentContext, AgentOutcome
 from .exceptions import (
     AgentCircuitOpenError,
-    AgentTimeoutError,
     AgentRefusalError,
+    AgentTimeoutError,
 )
-from .runtime import register_runtime, get_runtime
-from .wrapper import georag_agent, AgentResult
+from .runtime import get_runtime, register_runtime
+from .wrapper import AgentResult, georag_agent
 
 __all__ = [
     "georag_agent",

@@ -192,7 +192,7 @@ async def _count_neo4j_nodes(workspace_str: str) -> tuple[int, str | None]:
             )
             row = await result.single()
             return int(row["n"] if row and row.get("n") is not None else 0), None
-    except Exception as exc:
+    except Exception:
         # Try a simpler fallback — count nodes whose workspace_id literally matches.
         try:
             async with driver.session() as session:
@@ -226,7 +226,7 @@ async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:
         try:
             # Filter on workspace_id payload field. We use count
             # (exact=True) so the result is deterministic.
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
             result = await client.count(
                 collection_name="georag_reports",
                 count_filter=Filter(must=[
@@ -427,7 +427,10 @@ async def execute(
             body = await _fetch_manifest_bytes(input.snapshot_manifest_uri)
 
             from app.hatchet_workflows._restore_extras import (
-                parse_export_jsonl_gz, restore_neo4j, restore_qdrant, restore_redis,
+                parse_export_jsonl_gz,
+                restore_neo4j,
+                restore_qdrant,
+                restore_redis,
             )
             manifest, _pg_tables, sections = parse_export_jsonl_gz(body)
             manifest_version = manifest.get("manifest_version", "1.0")

@@ -19,14 +19,15 @@ import gzip
 import io
 import json
 import uuid
+from datetime import UTC
 
 import pytest
 
-from app.hatchet_workflows.workspace_export import (
-    _build_manifest, _serialise_jsonl_gz,
-)
 from app.hatchet_workflows._restore_extras import parse_export_jsonl_gz
-
+from app.hatchet_workflows.workspace_export import (
+    _build_manifest,
+    _serialise_jsonl_gz,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -139,8 +140,9 @@ def test_v1_manifest_still_parses():
 def test_workspace_export_output_carries_v2_fields():
     """The WorkspaceExportOutput model exposes the new §11.3-v2 fields
     so downstream consumers can read per-store counts."""
+    from datetime import datetime
+
     from app.hatchet_workflows.workspace_export import WorkspaceExportOutput
-    from datetime import datetime, timezone
 
     out = WorkspaceExportOutput(
         run_id=str(uuid.uuid4()),
@@ -155,8 +157,8 @@ def test_workspace_export_output_carries_v2_fields():
         qdrant_point_count=300,
         redis_key_count=8,
         partial_stores={},
-        started_at=datetime.now(tz=timezone.utc),
-        completed_at=datetime.now(tz=timezone.utc),
+        started_at=datetime.now(tz=UTC),
+        completed_at=datetime.now(tz=UTC),
     )
     assert out.neo4j_node_count == 12
     assert out.qdrant_point_count == 300

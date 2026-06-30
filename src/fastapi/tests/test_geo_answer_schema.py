@@ -15,16 +15,15 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.schemas import (
+    GEO_ANSWER_SCHEMA_VERSION,
     ConfidenceBlock,
     GeoAnswer,
-    GEO_ANSWER_SCHEMA_VERSION,
     Interpretation,
     Observation,
     RecommendedAction,
     SectionEmpty,
     UncertaintyBlock,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -11,13 +11,12 @@ preserved.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.services.llm_incident_diagnosis.state import (
     IncidentDiagnosisState,
     IncidentKind,
 )
-
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +134,7 @@ async def gather_traces(
                 "Trace fetch pending — operator runs §25 trace helper "
                 "with incident time window."
             ),
-            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "captured_at": datetime.now(UTC).isoformat(),
         })
     log.info(
         "gather_traces incident_id=%s excerpts=%d",
@@ -206,7 +205,7 @@ async def record_diagnosis(
     log.info("record_diagnosis: %s", summary)
     return state.model_copy(update={
         "diagnosis_recorded": True,
-        "completed_at":       datetime.now(timezone.utc),
+        "completed_at":       datetime.now(UTC),
     })
 
 

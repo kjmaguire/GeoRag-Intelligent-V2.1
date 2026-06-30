@@ -7,7 +7,7 @@ table. The DB smoke skips when POSTGRES_PASSWORD isn't set.
 from __future__ import annotations
 
 import os
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -30,7 +30,6 @@ from app.agents.phase10.ticket_triage import (
     _suggest_severity,
     ticket_triage,
 )
-
 
 # ─────────────────────── ticket_triage helpers ───────────────────────
 

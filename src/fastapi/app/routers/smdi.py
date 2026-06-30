@@ -21,12 +21,11 @@ See:
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import ORJSONResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.services.auth import UserContext, extract_user_context, verify_service_key
@@ -49,16 +48,16 @@ class SmdiProperties(BaseModel):
     upstream record viewer at mineraldeposits.saskatchewan.ca.
     """
 
-    smdi: Optional[str] = None
-    name: Optional[str] = None
-    primary_commodities: Optional[str] = None
-    associated_commodities: Optional[str] = None
-    symbology_grouping: Optional[str] = None
-    status: Optional[str] = None
-    production: Optional[bool] = None
-    reserves_resources: Optional[bool] = None
-    discovery_type: Optional[str] = None
-    weblink: Optional[str] = None
+    smdi: str | None = None
+    name: str | None = None
+    primary_commodities: str | None = None
+    associated_commodities: str | None = None
+    symbology_grouping: str | None = None
+    status: str | None = None
+    production: bool | None = None
+    reserves_resources: bool | None = None
+    discovery_type: str | None = None
+    weblink: str | None = None
 
 
 class SmdiFeature(BaseModel):
@@ -133,7 +132,7 @@ async def smdi_features(
             "wire vs. filtering client-side."
         ),
     ),
-    commodity_group: Optional[str] = Query(
+    commodity_group: str | None = Query(
         None,
         description=(
             "Optional symbology_grouping exact-match filter. Valid values: "

@@ -16,7 +16,6 @@ Per the CC-03 Item 3 spec field list:
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path

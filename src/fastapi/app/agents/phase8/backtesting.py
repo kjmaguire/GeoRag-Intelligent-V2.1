@@ -17,12 +17,11 @@ plugs in when the analytics orchestrator wires this.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +113,7 @@ async def backtesting(
         "window_end":              window_end.isoformat(),
         "metrics_payload":         metrics,
         "summary":                 summary,
-        "computed_at":             datetime.now(timezone.utc).isoformat(),
+        "computed_at":             datetime.now(UTC).isoformat(),
     }
 
 

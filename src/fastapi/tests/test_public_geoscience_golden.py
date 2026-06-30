@@ -60,7 +60,6 @@ import pytest
 from tests.conftest import (
     AUTH_HEADERS,
     FASTAPI_URL,
-    SERVICE_KEY,
     parse_sse_stream,
 )
 

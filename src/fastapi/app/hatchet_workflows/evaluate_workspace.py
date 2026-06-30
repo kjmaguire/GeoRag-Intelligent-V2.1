@@ -35,7 +35,6 @@ from pydantic import BaseModel, Field
 from app.hatchet_workflows import hatchet
 from app.services.eval.workspace_evaluator import run_workspace_evaluation
 
-
 log = logging.getLogger("georag.hatchet.evaluate_workspace")
 
 

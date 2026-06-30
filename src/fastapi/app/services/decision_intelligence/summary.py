@@ -14,12 +14,10 @@ aggregations to plot decision flow over time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncpg
-
 
 # Mirror of the §21.3 controlled vocabulary so callers can iterate.
 ALL_DECISION_TYPES = (
@@ -80,7 +78,7 @@ async def get_workspace_decision_summary(
         audit-anchor coverage + mean uncertainty + latest timestamp.
     """
     if window_end is None:
-        window_end = datetime.now(timezone.utc)
+        window_end = datetime.now(UTC)
     if window_start is None:
         window_start = window_end - timedelta(days=90)
 

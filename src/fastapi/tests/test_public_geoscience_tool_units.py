@@ -10,7 +10,6 @@ Run with:
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -29,7 +28,6 @@ from app.agent.public_geoscience_tool import (
     _qdrant_filter,
     search_public_geoscience,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test context shim (matches _MockRunContext in test_agent_tools.py)

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from app.services.eval.ndcg_harness import QueryRun, dcg_at_k, ndcg_at_k, score_query
 
 

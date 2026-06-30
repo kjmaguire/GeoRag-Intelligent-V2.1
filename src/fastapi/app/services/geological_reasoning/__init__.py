@@ -11,8 +11,8 @@ until the real LLM reasoning agent graduates — same pattern
 doc-phase 132 used for `evaluate_workspace`.
 """
 from app.services.geological_reasoning.hypothesis_generator import (
-    HypothesisDraft,
     EvidenceLinkDraft,
+    HypothesisDraft,
     HypothesisGenerationResult,
     generate_hypotheses_for_question,
 )

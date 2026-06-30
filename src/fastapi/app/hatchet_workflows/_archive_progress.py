@@ -36,10 +36,8 @@ import contextlib
 import logging
 import os
 import uuid
-from typing import Optional
 
 import asyncpg
-
 
 log = logging.getLogger("georag.hatchet.archive_progress")
 
@@ -59,7 +57,7 @@ def _dsn() -> str:
 
 # Module-level asyncpg pool — mirrors _progress.py. Hatchet worker is
 # single-process so one pool is safe + avoids per-call connect overhead.
-_pool: Optional[asyncpg.Pool] = None
+_pool: asyncpg.Pool | None = None
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -91,8 +89,8 @@ async def start_run(
     minio_key: str,
     run_id: str,
     triggered_by: str = "upload",
-    workflow_run_id: Optional[str] = None,
-) -> Optional[str]:
+    workflow_run_id: str | None = None,
+) -> str | None:
     """Insert the parent archive_ingest_runs row and return archive_run_id.
 
     ``run_id`` is the caller-supplied correlation id (matches
@@ -151,7 +149,7 @@ async def start_run(
         return None
 
 
-async def mark_extracting(*, archive_run_id: str, file_count: Optional[int] = None) -> None:
+async def mark_extracting(*, archive_run_id: str, file_count: int | None = None) -> None:
     """Transition queued → extracting; optionally record discovered file_count.
 
     No-op when status is already terminal.
@@ -225,7 +223,7 @@ async def mark_terminal(
     *,
     archive_run_id: str,
     status: str,
-    error_text: Optional[str] = None,
+    error_text: str | None = None,
 ) -> bool:
     """Terminal write — conditional update so a delayed worker can't
     re-open a previously-closed run.
@@ -261,7 +259,7 @@ async def mark_terminal(
         return False
 
 
-async def lookup_archive_run_id_by_run_id(run_id: str) -> Optional[str]:
+async def lookup_archive_run_id_by_run_id(run_id: str) -> str | None:
     """Resolve archive_run_id from the caller-supplied run_id correlation key.
 
     Used by the on_failure_task hook: the input model carries run_id
@@ -300,7 +298,7 @@ async def archive_lifecycle(
     minio_key: str,
     run_id: str,
     triggered_by: str = "upload",
-    workflow_run_id: Optional[str] = None,
+    workflow_run_id: str | None = None,
 ):
     """Yield archive_run_id; on raise, mark the run failed with the
     exception text.

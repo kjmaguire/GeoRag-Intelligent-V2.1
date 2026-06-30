@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 
 from app.audit.cold_tier_archive import archive_window
 from app.services.auth import verify_service_key
-
 
 logger = logging.getLogger(__name__)
 

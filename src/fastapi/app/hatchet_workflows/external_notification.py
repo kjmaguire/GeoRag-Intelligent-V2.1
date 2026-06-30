@@ -41,7 +41,6 @@ from pydantic import BaseModel, Field
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
 
-
 log = logging.getLogger("georag.hatchet.external_notification")
 
 # Phase 3 Step 5 (R-P2-4) — HMAC sender authentication.
@@ -104,7 +103,7 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def canonical_json_for_hmac(input_data: "ExternalNotificationInput") -> bytes:
+def canonical_json_for_hmac(input_data: ExternalNotificationInput) -> bytes:
     """Phase 3 Step 5 — canonical-JSON serialisation used as the HMAC
     plaintext. Sorted keys, no whitespace, UTF-8. Senders MUST produce
     identical bytes; otherwise verify fails. Test fixture committed
@@ -128,7 +127,7 @@ def _hmac_hex(secret: str, payload: bytes) -> str:
     return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
 
 
-def verify_hmac_signature(input_data: "ExternalNotificationInput") -> tuple[bool, str | None]:
+def verify_hmac_signature(input_data: ExternalNotificationInput) -> tuple[bool, str | None]:
     """Sync verify against the env-var single secret. Phase 3 path —
     kept for backward compat + tests. Phase 4's
     ``verify_hmac_signature_async`` consults the per-sender registry
@@ -236,7 +235,7 @@ async def _lookup_sender_secrets(
 
 async def verify_hmac_signature_async(
     conn: asyncpg.Connection,
-    input_data: "ExternalNotificationInput",
+    input_data: ExternalNotificationInput,
 ) -> tuple[bool, str | None]:
     """Phase 4 Step 1 — multi-sender HMAC verify.
 

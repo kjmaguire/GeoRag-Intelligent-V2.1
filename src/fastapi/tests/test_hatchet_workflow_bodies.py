@@ -13,10 +13,14 @@ import pytest
 
 from app.hatchet_workflows.generate_report import (
     GenerateReportInput,
+)
+from app.hatchet_workflows.generate_report import (
     execute as generate_report_execute,
 )
 from app.hatchet_workflows.score_targets import (
     ScoreTargetsInput,
+)
+from app.hatchet_workflows.score_targets import (
     execute as score_targets_execute,
 )
 

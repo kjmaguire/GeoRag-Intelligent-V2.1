@@ -35,7 +35,6 @@ Wiring TODO (NOT in this commit — depends on Kyle's WIP):
 """
 
 from __future__ import annotations
-from app.db import bind_workspace_scope
 
 import asyncio
 import json
@@ -46,6 +45,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
+
+from app.db import bind_workspace_scope
 
 logger = logging.getLogger(__name__)
 

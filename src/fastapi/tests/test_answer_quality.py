@@ -1,8 +1,9 @@
 """Unit tests for answer_quality scoring service."""
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 def _make_llm_mock(response_json: dict) -> AsyncMock:
@@ -20,6 +21,7 @@ def _make_llm_mock(response_json: dict) -> AsyncMock:
 async def test_faithfulness_score_parsed():
     """Valid LLM response → faithfulness score extracted correctly."""
     import json
+
     from app.services.eval.answer_quality import score_answer_quality
 
     mock_http = AsyncMock()

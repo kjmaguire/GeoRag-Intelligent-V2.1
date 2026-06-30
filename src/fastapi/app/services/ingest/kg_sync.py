@@ -29,7 +29,6 @@ Idempotency: all merges use `MERGE` on `(label, name, project_id)` so
 re-running is safe.
 """
 from __future__ import annotations
-from app.db import bind_workspace_scope
 
 import logging
 import os
@@ -37,6 +36,8 @@ from dataclasses import dataclass
 
 import asyncpg
 from neo4j import AsyncGraphDatabase
+
+from app.db import bind_workspace_scope
 
 log = logging.getLogger("georag.ingest.kg_sync")
 

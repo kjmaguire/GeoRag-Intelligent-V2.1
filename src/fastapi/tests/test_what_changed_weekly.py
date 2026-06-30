@@ -11,13 +11,15 @@ Live-stack tests:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
 
 from app.hatchet_workflows.what_changed_weekly import (
-    WeeklyDigestInput, run_weekly, what_changed_weekly,
+    WeeklyDigestInput,
+    run_weekly,
+    what_changed_weekly,
 )
 
 PG_DSN = os.environ.get(
@@ -66,7 +68,7 @@ async def test_weekly_digest_default_input_runs():
 @pytest.mark.asyncio
 async def test_weekly_digest_explicit_window():
     """Operator override path: explicit window end + custom window_days."""
-    pinned_end = datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc)
+    pinned_end = datetime(2026, 5, 16, 12, 0, tzinfo=UTC)
     out = await run_weekly.aio_mock_run(WeeklyDigestInput(
         window_days=3,
         explicit_window_end=pinned_end,

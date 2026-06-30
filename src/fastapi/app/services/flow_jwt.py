@@ -38,10 +38,9 @@ import time
 
 import asyncpg
 import jwt
-from fastapi import HTTPException, Header, status
+from fastapi import HTTPException, status
 
 from app.config import settings
-
 
 ISSUER = "georag-kestra"
 AUDIENCE = "georag-fastapi-flows"

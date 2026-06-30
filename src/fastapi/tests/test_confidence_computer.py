@@ -25,12 +25,10 @@ from app.agent.schemas import (
     GeoAnswer,
     Interpretation,
     Observation,
-    RecommendedAction,
     SectionEmpty,
     UncertaintyBlock,
 )
 from app.models.rag import Citation, GeoRAGResponse
-
 
 # ---------------------------------------------------------------------------
 # Stage 1 — initial Level

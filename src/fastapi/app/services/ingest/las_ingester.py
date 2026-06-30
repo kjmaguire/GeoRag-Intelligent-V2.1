@@ -27,7 +27,6 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
 import asyncpg
 import lasio

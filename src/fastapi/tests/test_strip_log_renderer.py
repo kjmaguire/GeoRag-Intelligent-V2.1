@@ -14,7 +14,6 @@ from app.services.visualizations import (
     render_strip_log_plotly_figure,
 )
 
-
 # ───────────────────────────── fixtures ───────────────────────────────
 
 

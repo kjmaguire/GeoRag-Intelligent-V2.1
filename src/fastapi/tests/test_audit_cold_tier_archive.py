@@ -4,7 +4,7 @@ from __future__ import annotations
 import gzip
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -95,7 +95,7 @@ def _make_row(i: int, *, prev_hash: bytes | None, h: bytes,
         "previous_hash": prev_hash,
         "hash":          h,
         "trace_id":      f"t-{i}",
-        "created_at":    datetime(2025, 1, 1, tzinfo=timezone.utc)
+        "created_at":    datetime(2025, 1, 1, tzinfo=UTC)
                          + timedelta(seconds=i),
     }
 
@@ -121,7 +121,7 @@ def test_row_to_dict_hexifies_bytes() -> None:
 
 
 def test_row_to_dict_iso_datetimes() -> None:
-    ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     r = FakeRecord({"created_at": ts})
     d = _row_to_dict(r)
     assert d["created_at"].startswith("2026-01-01")
@@ -157,7 +157,7 @@ async def test_archive_window_zero_eligible_short_circuit() -> None:
     store = FakeColdTierStore()
     run = await archive_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
         archive_bucket="audit-cold",
         cold_tier=store,
     )
@@ -171,7 +171,7 @@ async def test_archive_window_dry_run_writes_nothing() -> None:
     store = FakeColdTierStore()
     run = await archive_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
         archive_bucket="audit-cold",
         cold_tier=store,
         dry_run=True,
@@ -187,7 +187,7 @@ async def test_archive_window_writes_chunks_and_manifest() -> None:
     store = FakeColdTierStore()
     run = await archive_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
         archive_bucket="audit-cold",
         cold_tier=store,
         chunk_rows=10,
@@ -215,7 +215,7 @@ async def test_archive_window_aborts_on_chain_break() -> None:
     store = FakeColdTierStore()
     run = await archive_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
         archive_bucket="audit-cold",
         cold_tier=store,
     )
@@ -230,7 +230,7 @@ async def test_archive_window_chunk_first_last_hash_recorded() -> None:
     store = FakeColdTierStore()
     run = await archive_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
         archive_bucket="audit-cold",
         cold_tier=store,
         chunk_rows=10,
@@ -247,7 +247,7 @@ async def test_archive_window_workspace_scope_passed_through() -> None:
     store = FakeColdTierStore()
     await archive_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
         archive_bucket="audit-cold",
         cold_tier=store,
         workspace_id_scope="ws-tenant-A",
@@ -261,7 +261,7 @@ async def test_prune_archived_window_returns_delete_count() -> None:
     conn = FakeConn(eligible_rows=_chain(7), total_rows=20)
     n = await prune_archived_window(
         conn,
-        cutoff_before=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cutoff_before=datetime(2026, 1, 1, tzinfo=UTC),
     )
     assert n == 7
     # Last call should be a DELETE

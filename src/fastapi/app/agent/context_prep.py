@@ -38,8 +38,8 @@ Wiring (downstream session): ``assemble_node`` calls this between
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping
 
 from app.agent.authority import (
     annotate_evidence_packet_with_authority,
@@ -55,7 +55,6 @@ from app.agent.source_diversity import (
     apply_source_diversity,
     compute_kind_distribution,
 )
-
 
 logger = logging.getLogger(__name__)
 

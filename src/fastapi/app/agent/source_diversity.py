@@ -42,10 +42,9 @@ Wiring (later session):
 from __future__ import annotations
 
 import logging
-from typing import Mapping
+from collections.abc import Mapping
 
 from app.agent.evidence import EvidencePacket, EvidenceUnion
-
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +192,7 @@ def _round_robin(
     # in the queues first, then any other kinds (alphabetical for
     # determinism).
     ordered_kinds: list[str] = [k for k in kind_priority if queues.get(k)]
-    extra = sorted(k for k in queues.keys() if k not in ordered_kinds)
+    extra = sorted(k for k in queues if k not in ordered_kinds)
     ordered_kinds.extend(extra)
 
     # Round-robin loop — exit when every queue is empty or max_total
@@ -233,7 +232,7 @@ def _quota(
     """
     selected: list[EvidenceUnion] = []
     ordered_kinds: list[str] = [k for k in kind_priority if k in queues]
-    extra = sorted(k for k in queues.keys() if k not in ordered_kinds)
+    extra = sorted(k for k in queues if k not in ordered_kinds)
     ordered_kinds.extend(extra)
 
     for kind in ordered_kinds:

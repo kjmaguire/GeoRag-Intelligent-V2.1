@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 # import lazily to avoid the dep at module-import time (the fallback
 # module is imported in the hot path; qdrant_client adds ~80ms cold).
 from app.db import bind_workspace_scope
+
+
 def _is_qdrant_unavailability(exc: BaseException) -> bool:
     if isinstance(exc, (asyncio.TimeoutError, httpx.HTTPError, ConnectionError)):
         return True

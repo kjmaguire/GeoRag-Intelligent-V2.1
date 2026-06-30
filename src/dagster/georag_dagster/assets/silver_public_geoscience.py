@@ -54,7 +54,6 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from io import BytesIO
 from typing import Any, Callable, Iterable
 
 import psycopg2.extras

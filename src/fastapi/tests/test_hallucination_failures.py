@@ -43,15 +43,12 @@ Marks
 
 from __future__ import annotations
 
-import time
-
 import httpx
 import pytest
 
 from tests.conftest import (
     AUTH_HEADERS,
     FASTAPI_URL,
-    SERVICE_KEY,
     TEST_PROJECT_ID,
     assert_no_fabricated_numbers,
     parse_sse_stream,
@@ -607,11 +604,11 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):  # type: igno
     )
     if pass_rate < 0.95:
         terminalreporter.write_line(
-            f"  BELOW 95% TARGET — milestone acceptance blocked."
+            "  BELOW 95% TARGET — milestone acceptance blocked."
         )
         for report in halluc_failed_reports:
             terminalreporter.write_line(f"  FAILED: {report.nodeid}")
     else:
         terminalreporter.write_line(
-            f"  Target 95%+ met — hallucination suite passes."
+            "  Target 95%+ met — hallucination suite passes."
         )

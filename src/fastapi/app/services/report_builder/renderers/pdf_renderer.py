@@ -21,7 +21,6 @@ import html
 import logging
 import re
 import textwrap
-from typing import Iterator
 
 logger = logging.getLogger(__name__)
 

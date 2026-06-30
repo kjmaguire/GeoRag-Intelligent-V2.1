@@ -74,8 +74,9 @@ def test_workspace_evaluator_accepts_real_rag_v1_kind():
 
 def test_workspace_evaluator_rejects_unknown_kind_with_real_rag_message():
     """Error message names all 3 valid options."""
-    from app.services.eval.workspace_evaluator import run_workspace_evaluation
     import asyncio
+
+    from app.services.eval.workspace_evaluator import run_workspace_evaluation
     with pytest.raises(ValueError, match="real_rag_v1"):
         # We expect the ValueError before any pool gets created.
         asyncio.run(run_workspace_evaluation(

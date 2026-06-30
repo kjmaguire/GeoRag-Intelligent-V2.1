@@ -21,10 +21,8 @@ Dagster 1.13 Config classes use Pydantic for type introspection and that import
 breaks runtime annotation evaluation.
 """
 
-import json
 import tempfile
 import uuid
-from typing import Literal
 
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset

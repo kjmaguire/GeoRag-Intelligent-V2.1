@@ -10,7 +10,7 @@ Tests fall into three groups:
 from __future__ import annotations
 
 import os
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import httpx

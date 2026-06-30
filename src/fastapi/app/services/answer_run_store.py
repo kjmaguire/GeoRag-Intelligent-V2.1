@@ -174,14 +174,14 @@ async def insert_answer_run(pool: object, run: object) -> UUID | None:
 async def insert_refusal_answer_run(
     pool: object,
     *,
-    workspace_id: "UUID | str",
-    project_id: "UUID | str | None",
+    workspace_id: UUID | str,
+    project_id: UUID | str | None,
     query_text: str,
     rejection_reason: str,
     latency_ms: int,
     workspace_data_version: int = 0,
     project_data_version: int | None = None,
-) -> "UUID | None":
+) -> UUID | None:
     """Write a minimal `rejected` row for an orchestrator early-refusal path.
 
     Background — `run_deterministic_rag` has two early returns that fire
@@ -321,7 +321,7 @@ async def batch_insert_retrieval_items(pool: object, items: list[object]) -> Non
 # ---------------------------------------------------------------------------
 
 
-async def insert_citation_item(pool: object, item: object) -> "UUID | None":
+async def insert_citation_item(pool: object, item: object) -> UUID | None:
     """Insert one row into silver.answer_citation_items.
 
     Args:
@@ -396,7 +396,7 @@ async def insert_citation_items_with_spans(
     pool: object,
     items: list[object],
     spans_by_item: list[list[object]],
-) -> list["UUID"]:
+) -> list[UUID]:
     """Atomically insert citation items + their spans in a single transaction.
 
     items[i] produces answer_citation_item_id = returned_ids[i]; spans_by_item[i]

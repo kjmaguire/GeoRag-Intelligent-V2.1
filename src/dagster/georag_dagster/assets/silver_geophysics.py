@@ -46,7 +46,6 @@ breaks runtime annotation evaluation.
 import json
 import uuid
 
-import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.resources import S3Resource, PostgresResource

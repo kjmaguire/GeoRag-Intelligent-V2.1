@@ -28,7 +28,7 @@ import os
 import shutil
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -338,7 +338,7 @@ async def run_zip_ingest(
         "counts": counts,
         "error_count": len(errors),
         "errors_sample": errors[:20],  # cap sample to keep payload small
-        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": datetime.now(UTC).isoformat(),
     }
     log.info("ingest_zip_archive.complete run_id=%s summary=%s", input.run_id, counts)
     return summary
@@ -404,7 +404,7 @@ async def _ingest_one(
 
     elif ext in ("tif", "tiff"):
         # TIFF scans → upload to bronze tiff/ prefix + trigger tiff_normalize
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         tiff_key = f"tiff/{input.project_id}/{ts}_{safe_name}"
         file_bytes = file_path.read_bytes()
@@ -440,7 +440,7 @@ async def _ingest_one(
 
     elif ext == "pdf":
         # PDF reports → upload to bronze reports/ prefix + trigger ingest_pdf
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         pdf_key = f"reports/{input.project_id}/{ts}_{safe_name}"
         file_bytes = file_path.read_bytes()

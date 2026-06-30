@@ -63,7 +63,6 @@ from georag_dagster.assets.reranker_labels_helpers import (
     SOURCE_BUCKETS,
     TARGET_SAMPLE_SIZE,
     compute_doc_class as _compute_doc_class,
-    deterministic_chunk_id as _deterministic_chunk_id,
     leakage_ratio as _leakage_ratio,
     prompt_sha256 as _prompt_sha256,
     seed_from_run_id as _seed_from_run_id,

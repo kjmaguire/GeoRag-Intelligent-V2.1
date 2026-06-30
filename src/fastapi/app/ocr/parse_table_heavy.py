@@ -43,8 +43,9 @@ Output schema (locked here):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from app.ocr._docling_common import (
     _bbox_from_prov,
@@ -52,7 +53,6 @@ from app.ocr._docling_common import (
     extract_table_cells,
     run_docling_no_ocr,
 )
-
 
 # Confidence floors below which a table is flagged for Silver Review.
 # Tuned in Step 9 against the 50-PDF acceptance corpus.

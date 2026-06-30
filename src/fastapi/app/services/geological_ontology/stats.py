@@ -18,14 +18,13 @@ count + most-recent insert timestamp + status (`empty` /
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
 import asyncpg
 
 from app.services.geological_ontology.seeds import OntologyClass, seed_classes
-
 
 # Per-class minimum term count thresholds for the `populated` status.
 # Mechanical classes have small populations by design (e.g.,

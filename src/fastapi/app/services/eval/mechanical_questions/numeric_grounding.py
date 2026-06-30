@@ -21,7 +21,6 @@ memory entry for the test fixture).
 """
 from __future__ import annotations
 
-
 QUESTIONS: list[dict] = [
     {
         "question_set": "numeric_grounding",

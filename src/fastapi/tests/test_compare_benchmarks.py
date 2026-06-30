@@ -16,7 +16,6 @@ import pytest
 
 from app.services.eval import benchmark_compare as compare_benchmarks
 
-
 # ---------------------------------------------------------------------------
 # Fixtures — minimal report builders
 # ---------------------------------------------------------------------------

@@ -29,7 +29,6 @@ from uuid import UUID
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Layer 1 — source-shape regression
 # ---------------------------------------------------------------------------
@@ -172,7 +171,7 @@ class _FakeResult:
     def __init__(self, records: list[dict[str, Any]]) -> None:
         self._records = [_FakeRecord(r) for r in records]
 
-    def __aiter__(self) -> "_FakeResult":
+    def __aiter__(self) -> _FakeResult:
         self._iter = iter(self._records)
         return self
 
@@ -203,7 +202,7 @@ class _FakeSession:
         # doesn't carry (missing_in_graph).
         self.graph_project_ids = ["graph-only-proj-1"]
 
-    async def __aenter__(self) -> "_FakeSession":
+    async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *_: Any) -> bool:
@@ -310,10 +309,10 @@ class _FakePool:
                 "graph_violations": args[1],
             })
 
-    def acquire(self) -> "_FakePool":
+    def acquire(self) -> _FakePool:
         return self
 
-    async def __aenter__(self) -> "_FakePool":
+    async def __aenter__(self) -> _FakePool:
         return self
 
     async def __aexit__(self, *_: Any) -> bool:

@@ -54,7 +54,6 @@ from app.agent.egress_gate import (
 )
 from app.agent.guards import GuardErrorCode
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures — fake asyncpg pool + fake Anthropic SDK
 # ---------------------------------------------------------------------------

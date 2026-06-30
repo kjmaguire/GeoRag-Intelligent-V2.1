@@ -31,7 +31,6 @@ The Martin function ``silver.density_choropleth_h3(z, x, y)`` picks
 the zoom-appropriate resolution and returns MVT to the MapView.
 """
 
-import psycopg2
 from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.resources import PostgresResource

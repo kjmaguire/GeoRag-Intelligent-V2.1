@@ -15,7 +15,7 @@ Verifies:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import asyncpg
@@ -178,7 +178,7 @@ async def test_window_filter_excludes_out_of_range(
     )
 
     # Window in the past → excludes the just-inserted decision
-    past_window = datetime.now(timezone.utc) - timedelta(days=10)
+    past_window = datetime.now(UTC) - timedelta(days=10)
     past_end = past_window + timedelta(days=1)
     summary = await get_workspace_decision_summary(
         conn,
@@ -189,8 +189,8 @@ async def test_window_filter_excludes_out_of_range(
     assert summary.total_decisions == 0
 
     # Window that includes now → finds it
-    near_start = datetime.now(timezone.utc) - timedelta(minutes=5)
-    near_end = datetime.now(timezone.utc) + timedelta(minutes=5)
+    near_start = datetime.now(UTC) - timedelta(minutes=5)
+    near_end = datetime.now(UTC) + timedelta(minutes=5)
     summary2 = await get_workspace_decision_summary(
         conn,
         workspace_id=synthetic_workspace,
@@ -208,7 +208,7 @@ async def test_window_filter_excludes_out_of_range(
 @pytest.mark.asyncio
 async def test_invalid_window_raises(conn, synthetic_workspace):
     """end <= start raises ValueError."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with pytest.raises(ValueError, match="window_end .* must be > window_start"):
         await get_workspace_decision_summary(
             conn,

@@ -25,7 +25,6 @@ from fastapi.testclient import TestClient
 from app.routers.pdf import router as pdf_router
 from app.services.auth import UserContext, extract_user_context, verify_service_key
 
-
 _VALID_PDF_ID = "1f431fb8a386ace41052ae90821522909eb92c7495608de3f6420d3d54af33a4"
 
 

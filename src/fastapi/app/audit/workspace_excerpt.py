@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -87,7 +87,7 @@ async def get_workspace_audit_excerpt(
     page_size = max(1, min(page_size, _MAX_PAGE_SIZE))
 
     if window_end is None:
-        window_end = datetime.now(timezone.utc)
+        window_end = datetime.now(UTC)
     if window_start is None:
         window_start = window_end - timedelta(days=30)
 
@@ -129,7 +129,7 @@ async def get_workspace_audit_excerpt(
     if action_type_filter:
         rows_sql += " AND action_type ILIKE $4"
         rows_args.append(f"%{action_type_filter}%")
-        rows_sql += f" ORDER BY created_at DESC, id DESC LIMIT $5 OFFSET $6"
+        rows_sql += " ORDER BY created_at DESC, id DESC LIMIT $5 OFFSET $6"
     else:
         rows_sql += " ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5"
     rows_args.extend([page_size, offset])

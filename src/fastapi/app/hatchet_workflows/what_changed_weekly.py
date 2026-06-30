@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,7 +32,10 @@ from pydantic import BaseModel, Field
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.what_changed_detector import (
-    WhatChangedInput, execute as what_changed_execute,
+    WhatChangedInput,
+)
+from app.hatchet_workflows.what_changed_detector import (
+    execute as what_changed_execute,
 )
 
 log = logging.getLogger("georag.hatchet.what_changed_weekly")
@@ -126,7 +129,7 @@ async def run_weekly(
     to back-date the digest.
     """
     run_id = str(uuid4())
-    window_end = input.explicit_window_end or datetime.now(tz=timezone.utc)
+    window_end = input.explicit_window_end or datetime.now(tz=UTC)
     window_start = window_end - timedelta(days=input.window_days)
 
     log.info(

@@ -46,7 +46,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-
 # ---------------------------------------------------------------------------
 # EvidenceType literal — mirrors the DB CHECK constraint in evidence_items.
 # ---------------------------------------------------------------------------
@@ -147,7 +146,7 @@ class EvidenceItemCreate(BaseModel):
     )
 
     @model_validator(mode="after")
-    def exactly_one_ref(self) -> "EvidenceItemCreate":
+    def exactly_one_ref(self) -> EvidenceItemCreate:
         """Enforce the exactly-one-ref invariant at the Pydantic layer.
 
         Exactly one of (passage_id, structured_ref, graph_edge_ref,

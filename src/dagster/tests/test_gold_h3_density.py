@@ -143,7 +143,8 @@ def test_h3_density_in_workspace_id_exempt() -> None:
     geoscience is shared infrastructure."""
     # Test lives in src/fastapi/tests but the assertion is on the
     # shared exemption set; spawn the import here so we catch removal.
-    import sys, pathlib
+    import sys
+    import pathlib
     fastapi_tests = pathlib.Path(__file__).parents[2] / "fastapi" / "tests"
     if str(fastapi_tests) not in sys.path:
         sys.path.insert(0, str(fastapi_tests))

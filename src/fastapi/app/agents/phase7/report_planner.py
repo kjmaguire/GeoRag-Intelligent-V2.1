@@ -34,7 +34,6 @@ from uuid import UUID
 from app.agents import AgentContext, georag_agent
 from app.services.report_builder.state import ReportType
 
-
 logger = logging.getLogger(__name__)
 
 

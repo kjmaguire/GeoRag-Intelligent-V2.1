@@ -223,8 +223,9 @@ async def run_nightly(
 
     # Phase 5 admin surface push — drives Admin/EvalDashboard.
     try:
-        from app.services.laravel_bridge import post_admin_surface_updated
         import logging
+
+        from app.services.laravel_bridge import post_admin_surface_updated
         admin_payload = {
             "workflow_kind": "eval_real_rag_nightly",
             "run_id": str(result.run_id),

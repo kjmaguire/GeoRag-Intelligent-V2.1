@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from io import BytesIO, StringIO
 
-import pytest
 
 from georag_dagster.parsers._encoding import detect_encoding, open_csv_bytes
 from georag_dagster.parsers._csv_io import open_csv_with_encoding

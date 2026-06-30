@@ -29,7 +29,6 @@ from uuid import UUID
 
 import asyncpg
 
-
 RECIPE_VERSION = "v1"
 
 

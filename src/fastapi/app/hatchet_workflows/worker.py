@@ -28,57 +28,63 @@ import sys
 
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.audit_ledger_verify import audit_ledger_verify
-from app.hatchet_workflows.repair_shadow_aggregate import repair_shadow_aggregate
 from app.hatchet_workflows.backup_neo4j import backup_neo4j  # §11.1
 from app.hatchet_workflows.backup_postgres import backup_postgres  # §11.1
 from app.hatchet_workflows.backup_qdrant import backup_qdrant  # §11.1
 from app.hatchet_workflows.backup_redis import backup_redis  # §11.1
 from app.hatchet_workflows.backup_seaweedfs import backup_seaweedfs  # §11.1
 from app.hatchet_workflows.cold_tier_archive import cold_tier_archive_workflow  # §11.10
+from app.hatchet_workflows.continuous_learning_loop import continuous_learning_loop  # doc-phase 102
 from app.hatchet_workflows.cost_burn_watcher import cost_burn_watcher  # §5
+from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
+from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
+from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
+from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-phase 98
+from app.hatchet_workflows.external_notification import external_notification
+from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
+from app.hatchet_workflows.flow_jwt_key_reaper import flow_jwt_key_reaper
+from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
+from app.hatchet_workflows.idempotency_keys_cleanup import idempotency_keys_cleanup  # §35.1 TTL cleanup
+from app.hatchet_workflows.ingest_pdf import ingest_pdf
+from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
+from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
+from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
+from app.hatchet_workflows.ocr_quality_check import ocr_quality_check_wf  # Phase 6 (2026-05-22)
+from app.hatchet_workflows.outbox_dispatcher import outbox_dispatcher
+from app.hatchet_workflows.phase0_agents import (
+    AI_AGENT_WORKFLOWS,
+    INGESTION_AGENT_WORKFLOWS,
+)
+from app.hatchet_workflows.phase2_smoke import phase2_smoke
+from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
+from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
+from app.hatchet_workflows.re_ocr_page import re_ocr_page  # doc-phase 63
+from app.hatchet_workflows.reliability_metrics_publisher import (
+    reliability_metrics_publisher,  # reliability spec Phase 6
+)
+from app.hatchet_workflows.repair_shadow_aggregate import repair_shadow_aggregate
+from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
+from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
+from app.hatchet_workflows.score_targets import score_targets  # doc-phase 88
+from app.hatchet_workflows.stale_run_detector import stale_run_detector  # reliability spec Fix 1e
+from app.hatchet_workflows.support_replay import support_replay  # doc-phase 98
+from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
+from app.hatchet_workflows.tiff_normalize import (
+    tiff_normalize,  # ADR-0005: lossless TIFF→PDF wrap, route through ingest_pdf
+)
+from app.hatchet_workflows.tiff_ocr_cluster import (
+    tiff_ocr_cluster,  # Phase E.1 replacement for the one-off georag-phase-e-ocr container (DEPRECATED 2026-05-23 by tiff_normalize per ADR-0005)
+)
+from app.hatchet_workflows.train_source_trust import train_source_trust  # doc-phase 102
+from app.hatchet_workflows.train_target_model import train_target_model  # doc-phase 101
+from app.hatchet_workflows.what_changed_detector import what_changed_detector  # doc-phase 94
+from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc-phase 182 (§12 polish)
+
 # §6.2 (bc_minfile_pull) + §6.3 (nrcan_geo_pull) workflows retired on
 # 2026-05-25 — superseded by the Dagster Bronze→Silver pipeline
 # (silver_pg_ca_bc_minfile / silver_pg_ca_*_bedrock_geology etc.).
 # See docs/smdi_ingestion_2026_05_25.md.
 from app.hatchet_workflows.workspace_export import workspace_export  # §11.3
-from app.hatchet_workflows.ingest_pdf import ingest_pdf
-from app.hatchet_workflows.outbox_dispatcher import outbox_dispatcher
-from app.hatchet_workflows.stale_run_detector import stale_run_detector  # reliability spec Fix 1e
-from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
-from app.hatchet_workflows.reliability_metrics_publisher import reliability_metrics_publisher  # reliability spec Phase 6
-from app.hatchet_workflows.re_ocr_page import re_ocr_page  # doc-phase 63
-from app.hatchet_workflows.ocr_quality_check import ocr_quality_check_wf  # Phase 6 (2026-05-22)
-from app.hatchet_workflows.tiff_ocr_cluster import tiff_ocr_cluster  # Phase E.1 replacement for the one-off georag-phase-e-ocr container (DEPRECATED 2026-05-23 by tiff_normalize per ADR-0005)
-from app.hatchet_workflows.tiff_normalize import tiff_normalize  # ADR-0005: lossless TIFF→PDF wrap, route through ingest_pdf
-from app.hatchet_workflows.phase0_agents import (
-    AI_AGENT_WORKFLOWS,
-    INGESTION_AGENT_WORKFLOWS,
-)
-from app.hatchet_workflows.external_notification import external_notification
-from app.hatchet_workflows.flow_jwt_key_reaper import flow_jwt_key_reaper
-from app.hatchet_workflows.idempotency_keys_cleanup import idempotency_keys_cleanup  # §35.1 TTL cleanup
-from app.hatchet_workflows.continuous_learning_loop import continuous_learning_loop  # doc-phase 102
-from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-phase 98
-from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
-from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
-from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
-from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
-from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
-from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
-from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
-from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
-from app.hatchet_workflows.score_targets import score_targets  # doc-phase 88
-from app.hatchet_workflows.support_replay import support_replay  # doc-phase 98
-from app.hatchet_workflows.train_source_trust import train_source_trust  # doc-phase 102
-from app.hatchet_workflows.train_target_model import train_target_model  # doc-phase 101
-from app.hatchet_workflows.what_changed_detector import what_changed_detector  # doc-phase 94
-from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc-phase 182 (§12 polish)
-from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
-from app.hatchet_workflows.phase2_smoke import phase2_smoke
-from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
-from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
-from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
-
 
 # Pool → workflow list. Phase 1 Step 4 added `ingest_pdf` to the ingestion
 # pool. Phase 2 Step 3 added phase2_smoke (placeholder); Step 4 added

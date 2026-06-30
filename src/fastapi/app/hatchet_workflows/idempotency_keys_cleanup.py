@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import time as _t
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 from hatchet_sdk import Context
@@ -29,7 +29,6 @@ from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
-
 
 log = logging.getLogger("georag.hatchet.idempotency_keys_cleanup")
 
@@ -80,7 +79,7 @@ async def run_cleanup(input: CleanupInput, ctx: Context) -> CleanupOut:
         async with pool.acquire() as conn:
             if inp.older_than_days is not None:
                 # Bulk-archival path — caller takes responsibility.
-                cutoff = datetime.now(timezone.utc)
+                cutoff = datetime.now(UTC)
                 deleted = await conn.fetchval(
                     """
                     WITH d AS (
@@ -94,7 +93,7 @@ async def run_cleanup(input: CleanupInput, ctx: Context) -> CleanupOut:
                 )
             else:
                 # Regular path — drop rows whose TTL has passed.
-                cutoff = datetime.now(timezone.utc)
+                cutoff = datetime.now(UTC)
                 deleted = await conn.fetchval(
                     """
                     WITH d AS (

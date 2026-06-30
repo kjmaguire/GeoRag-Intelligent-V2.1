@@ -6,13 +6,15 @@ Inserts a synthetic ticket, invokes the workflow body via
 from __future__ import annotations
 
 import os
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import pytest
 
 from app.hatchet_workflows.support_replay import (
     SupportReplayInput,
+)
+from app.hatchet_workflows.support_replay import (
     execute as support_replay_execute,
 )
 

@@ -21,7 +21,7 @@ import base64
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -30,7 +30,6 @@ from pydantic import BaseModel, Field, ValidationError
 from app.agents import AgentContext, georag_agent
 from app.agents.exceptions import AgentRefusalError
 from app.agents.runtime import get_runtime
-
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,7 @@ async def llm_incident_diagnosis_run(
 ) -> dict[str, Any]:
     rt = get_runtime()
 
-    since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    since = datetime.now(UTC) - timedelta(minutes=window_minutes)
 
     # ---- Gather context ---------------------------------------------------
     workflow_rows = await rt.pg_pool.fetch(

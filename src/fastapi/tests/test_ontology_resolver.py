@@ -16,7 +16,6 @@ import asyncpg
 import pytest
 
 from app.services.geological_ontology import (
-    ResolvedTerm,
     find_synonyms,
     resolve_term,
 )

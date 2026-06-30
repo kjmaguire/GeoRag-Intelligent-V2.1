@@ -335,7 +335,7 @@ async def _verify_one_sentence(
             ),
             timeout=timeout_s,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "sentence_grounding: verifier timed out after %.1fs — marking unverified",
             timeout_s,

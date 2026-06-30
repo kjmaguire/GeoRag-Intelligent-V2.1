@@ -10,7 +10,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-
 IncidentKind = Literal[
     "hallucination",
     "refusal_failure",

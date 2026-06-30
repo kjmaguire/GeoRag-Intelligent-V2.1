@@ -47,7 +47,7 @@ Wiring (later session, paired with §3c wiring):
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.agent.authority import DEFAULT_AUTHORITY_RANK
 from app.agent.evidence import (
@@ -55,7 +55,6 @@ from app.agent.evidence import (
     EvidencePacket,
     EvidenceUnion,
 )
-
 
 logger = logging.getLogger(__name__)
 

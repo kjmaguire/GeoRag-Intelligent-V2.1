@@ -254,7 +254,7 @@ async def expand_query_multi(
             ),
             timeout=deadline,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "multi_query_expansion: LLM call timed out after %.1fs — "
             "falling back to single-query retrieval",

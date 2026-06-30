@@ -43,7 +43,6 @@ from fastapi import Depends, HTTPException, Request, status
 
 from app.agent.workspace_context import WorkspaceContext
 
-
 log = logging.getLogger(__name__)
 
 

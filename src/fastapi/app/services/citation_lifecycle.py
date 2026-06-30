@@ -63,7 +63,7 @@ _TERMINAL_STATES: frozenset[str] = frozenset({"committed", "rejected"})
 
 
 async def transition_lifecycle(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     answer_run_id: UUID,
     new_state: CitationLifecycleStateLiteral,
     rejection_reason: str | None = None,
@@ -151,7 +151,7 @@ async def transition_lifecycle(
 
 
 async def transition_to_draft(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     answer_run_id: UUID,
 ) -> None:
     """Convenience wrapper: advance to 'draft' (query entry)."""
@@ -159,7 +159,7 @@ async def transition_to_draft(
 
 
 async def transition_to_generated(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     answer_run_id: UUID,
 ) -> None:
     """Convenience wrapper: advance to 'generated' (LLM stream complete)."""
@@ -167,7 +167,7 @@ async def transition_to_generated(
 
 
 async def transition_to_validated(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     answer_run_id: UUID,
 ) -> None:
     """Convenience wrapper: advance to 'validated' (guards passed)."""
@@ -175,7 +175,7 @@ async def transition_to_validated(
 
 
 async def transition_to_committed(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     answer_run_id: UUID,
 ) -> None:
     """Convenience wrapper: advance to 'committed' (all persistence complete)."""
@@ -183,7 +183,7 @@ async def transition_to_committed(
 
 
 async def transition_to_rejected(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     answer_run_id: UUID,
     reason: str | None = None,
 ) -> None:

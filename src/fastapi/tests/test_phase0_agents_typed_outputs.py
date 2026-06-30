@@ -25,7 +25,6 @@ from pydantic import BaseModel
 
 from app.hatchet_workflows import phase0_agents as p0
 
-
 # (workflow_attr, task_callable_attr, output_model_cls, sample_extra_kw)
 # The sample_extra_kw verifies extra="allow" on each model — these are
 # real conditional keys the agents emit on specific code paths.

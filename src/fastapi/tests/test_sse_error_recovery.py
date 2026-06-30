@@ -52,7 +52,7 @@ async def test_timeout_emits_timeout_event_not_500() -> None:
     try:
         async with asyncio.timeout(0.05):
             await asyncio.sleep(1.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         outcome = "timeout"
         await queue.put(("timeout", None))
 

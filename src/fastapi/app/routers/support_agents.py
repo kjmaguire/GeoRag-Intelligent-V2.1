@@ -40,7 +40,6 @@ from app.agents.phase10.support_packet import support_packet
 from app.agents.phase10.ticket_triage import ticket_triage
 from app.services.auth import verify_service_key
 
-
 logger = logging.getLogger(__name__)
 
 

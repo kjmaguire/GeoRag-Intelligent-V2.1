@@ -48,7 +48,6 @@ import logging
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 
-
 log = logging.getLogger(__name__)
 
 

@@ -15,16 +15,11 @@ Run with:
 
 from __future__ import annotations
 
-import math
 
 import pytest
 
 from georag_dagster.assets.silver_drill_traces import (
-    _AZ_MAX,
-    _AZ_MIN,
     _DOGLEG_HIGH_THRESHOLD_DEG,
-    _DIP_MAX,
-    _DIP_MIN,
     _compute_survey_hash,
     _dogleg_severity_deg_per_30m,
     _filter_and_dedup_surveys,

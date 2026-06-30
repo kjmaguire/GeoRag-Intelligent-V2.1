@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -45,7 +45,6 @@ from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
-
 
 log = logging.getLogger("georag.hatchet.train_source_trust")
 
@@ -109,9 +108,9 @@ def _recency_factor(filing_date: datetime | None) -> float:
     """Exponential decay over years. 1.0 at 0y, 0.5 at ~5y."""
     if filing_date is None:
         return 0.5
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     if filing_date.tzinfo is None:
-        filing_date = filing_date.replace(tzinfo=timezone.utc)
+        filing_date = filing_date.replace(tzinfo=UTC)
     age_years = max(0.0, (now - filing_date).days / 365.25)
     # half-life = 5y → decay constant = ln(2)/5
     return float(math.exp(-math.log(2) * age_years / 5.0))

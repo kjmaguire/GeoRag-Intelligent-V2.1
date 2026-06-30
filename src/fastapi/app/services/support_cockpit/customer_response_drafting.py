@@ -29,7 +29,6 @@ touching the surrounding orchestration.
 """
 
 from __future__ import annotations
-from app.db import lookup_and_rescope
 
 import logging
 import os
@@ -39,6 +38,7 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
+from app.db import lookup_and_rescope
 
 log = logging.getLogger("georag.support_cockpit.customer_response_drafting")
 

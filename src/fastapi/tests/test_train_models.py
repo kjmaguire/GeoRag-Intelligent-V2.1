@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import asyncpg
@@ -12,11 +12,15 @@ from app.hatchet_workflows.train_source_trust import (
     TrainSourceTrustInput,
     _compute_trust,
     _recency_factor,
+)
+from app.hatchet_workflows.train_source_trust import (
     execute as train_source_trust_execute,
 )
 from app.hatchet_workflows.train_target_model import (
     TrainTargetModelInput,
     _fit_linear_weights,
+)
+from app.hatchet_workflows.train_target_model import (
     execute as train_target_model_execute,
 )
 
@@ -80,7 +84,7 @@ def test_fit_linear_weights_empty_returns_uniform_default() -> None:
 def test_compute_trust_high_citation_recent_peer_reviewed() -> None:
     score, components = _compute_trust(
         citations_total=20, citations_validated=18,
-        filing_date=datetime.now(timezone.utc) - timedelta(days=180),
+        filing_date=datetime.now(UTC) - timedelta(days=180),
         doctype="peer_reviewed",
     )
     assert 0.7 < score <= 1.0
@@ -90,7 +94,7 @@ def test_compute_trust_high_citation_recent_peer_reviewed() -> None:
 def test_compute_trust_zero_citations_neutral() -> None:
     score, _ = _compute_trust(
         citations_total=0, citations_validated=0,
-        filing_date=datetime.now(timezone.utc), doctype="unknown",
+        filing_date=datetime.now(UTC), doctype="unknown",
     )
     assert 0.3 < score < 0.7  # neutral-ish
 
@@ -98,11 +102,11 @@ def test_compute_trust_zero_citations_neutral() -> None:
 def test_compute_trust_old_source_decays() -> None:
     score_new, _ = _compute_trust(
         citations_total=10, citations_validated=10,
-        filing_date=datetime.now(timezone.utc), doctype="ni_43_101",
+        filing_date=datetime.now(UTC), doctype="ni_43_101",
     )
     score_old, _ = _compute_trust(
         citations_total=10, citations_validated=10,
-        filing_date=datetime.now(timezone.utc) - timedelta(days=365 * 15),
+        filing_date=datetime.now(UTC) - timedelta(days=365 * 15),
         doctype="ni_43_101",
     )
     assert score_new > score_old
@@ -113,7 +117,7 @@ def test_recency_factor_no_date_is_neutral() -> None:
 
 
 def test_recency_factor_just_now_is_one() -> None:
-    assert _recency_factor(datetime.now(timezone.utc)) == pytest.approx(1.0, abs=0.01)
+    assert _recency_factor(datetime.now(UTC)) == pytest.approx(1.0, abs=0.01)
 
 
 # ──────────────── train_target_model end-to-end (live DB) ──────────────

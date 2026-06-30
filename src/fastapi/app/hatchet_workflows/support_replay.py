@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 from hatchet_sdk import Context

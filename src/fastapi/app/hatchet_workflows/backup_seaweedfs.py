@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aioboto3
 import asyncpg
@@ -167,7 +167,7 @@ def _s3_session_kwargs() -> dict[str, str]:
 
 @backup_seaweedfs.task(execution_timeout="120m")
 async def run_backup(input: BackupSeaweedFsInput, ctx: Context) -> BackupSeaweedFsOutput:
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     dsn = _build_dsn()
 
     conn = await asyncpg.connect(dsn, statement_cache_size=0)
@@ -203,7 +203,7 @@ async def run_backup(input: BackupSeaweedFsInput, ctx: Context) -> BackupSeaweed
                             src_key, dst_key, exc,
                         )
 
-        completed_at = datetime.now(tz=timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         payload = {
             "store":            "seaweedfs",
             "source_bucket":    input.source_bucket,

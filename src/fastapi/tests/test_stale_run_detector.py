@@ -55,7 +55,6 @@ _ensure_parser_stub()
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.hatchet_workflows import stale_run_detector as srd  # noqa: E402
 
-
 # Reuse the workspace + project created by the state-machine tests.
 # Inserting fresh rows fails under RLS when the test connection lands
 # as georag_app (the default POSTGRES_USER inside the fastapi container).

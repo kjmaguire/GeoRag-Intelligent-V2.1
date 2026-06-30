@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 
 from app.agent.agentic_retrieval import (
-    AgenticRetrievalState,
-    ContextEnvelope,
     DEFAULT_QUERY_MODE,
     FIELD_MODE_MAX_CHUNKS,
-    RetrievalFilters,
     TOOL_DATA_SOURCE_MAP,
+    AgenticRetrievalState,
+    ContextEnvelope,
+    RetrievalFilters,
     preprocess_envelope,
     profile_for_intent,
 )
@@ -18,7 +18,6 @@ from app.agent.agentic_retrieval.nodes import route_node
 from app.agent.agentic_retrieval.preprocessor import (
     FIELD_MODE_WORD_CAP_INSTRUCTION,
 )
-
 
 # ---------------------------------------------------------------------------
 # Defaults

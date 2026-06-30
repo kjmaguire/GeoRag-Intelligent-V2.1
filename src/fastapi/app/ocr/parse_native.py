@@ -51,9 +51,9 @@ Output schema (locked here):
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
-
+from typing import Any
 
 # Native PDFs have effectively perfect text extraction; reflect that as a
 # baseline confidence. Step 5's mixed parser may lower this for regions

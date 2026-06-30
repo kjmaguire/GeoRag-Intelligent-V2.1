@@ -38,7 +38,6 @@ from app.agent.agentic_retrieval.nodes import persist_node
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
 from app.models.rag import Citation, GeoRAGResponse
 
-
 PG_DSN = os.environ.get(
     "PG_DSN",
     "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",

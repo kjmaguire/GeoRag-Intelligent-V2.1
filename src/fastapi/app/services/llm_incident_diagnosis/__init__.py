@@ -15,16 +15,16 @@ classifier threshold, etc.).
 Already-stubbed phase0 LLM Incident Diagnosis agent (in
 phase0_agents) graduates here when langgraph wiring lands.
 """
-from app.services.llm_incident_diagnosis.state import (
-    IncidentDiagnosisState,
-    IncidentKind,
-)
 from app.services.llm_incident_diagnosis.nodes import (
     classify_incident,
     gather_traces,
     identify_root_cause,
     propose_remediation,
     record_diagnosis,
+)
+from app.services.llm_incident_diagnosis.state import (
+    IncidentDiagnosisState,
+    IncidentKind,
 )
 
 __all__ = [

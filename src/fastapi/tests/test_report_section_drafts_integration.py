@@ -242,12 +242,12 @@ async def test_section_draft_history_other_section_isolated(
             await client.put(
                 f"/api/v1/admin/reports/builds/{build_id}/sections/{s1}",
                 headers=_headers(),
-                json={"body_markdown": f"s1-only", "updated_by_user_id": 1},
+                json={"body_markdown": "s1-only", "updated_by_user_id": 1},
             )
             await client.put(
                 f"/api/v1/admin/reports/builds/{build_id}/sections/{s2}",
                 headers=_headers(),
-                json={"body_markdown": f"s2-only", "updated_by_user_id": 2},
+                json={"body_markdown": "s2-only", "updated_by_user_id": 2},
             )
             r1 = await client.get(
                 f"/api/v1/admin/reports/builds/{build_id}/sections/{s1}/history",

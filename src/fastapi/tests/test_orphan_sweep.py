@@ -15,7 +15,6 @@ Locks the spec's recovery-run invariants:
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import uuid
@@ -29,9 +28,9 @@ if not os.environ.get("POSTGRES_USER"):
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.services.ingest.orphan_sweep import (  # noqa: E402
     claim_and_record_recovery,
+    release_document,
     select_orphan_documents,
     try_claim_document,
-    release_document,
 )
 
 _TEST_WORKSPACE = "a0000000-0000-0000-0000-0000000bd333"

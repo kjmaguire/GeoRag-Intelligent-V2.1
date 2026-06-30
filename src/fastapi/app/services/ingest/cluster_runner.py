@@ -22,9 +22,6 @@ Per cluster (overall run):
 """
 from __future__ import annotations
 
-from app.db import bind_workspace_scope
-
-import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -33,11 +30,12 @@ from typing import Any
 
 import asyncpg
 
+from app.db import bind_workspace_scope
 from app.services.ingest.cameco_log_ingester import (
     emit_log_provenance,
     parse_cameco_log_header,
-    upsert_collar_from_log,
     update_collar_with_log_coords,
+    upsert_collar_from_log,
 )
 from app.services.ingest.las_ingester import ingest_las_file
 from app.services.ingest.pdf_ingester import ingest_pdf_file

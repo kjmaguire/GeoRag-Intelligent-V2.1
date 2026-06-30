@@ -6,7 +6,6 @@ live `eval.golden_questions` table.
 from __future__ import annotations
 
 import os
-from uuid import UUID
 
 import asyncpg
 import pytest

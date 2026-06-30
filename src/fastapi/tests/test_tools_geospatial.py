@@ -9,11 +9,9 @@ import pytest
 
 from app.agent.tools_geospatial import (
     SpatialGeometryResult,
-    SpatialIntentHints,
     extract_spatial_intent_keywords,
     query_spatial_geometry,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mock asyncpg (mirrors test_geospatial_planner.py)

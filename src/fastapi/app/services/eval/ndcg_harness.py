@@ -111,6 +111,8 @@ async def run_harness(output_path: Path) -> dict[str, Any]:
     """
     # Lazy import so this script can be imported (and unit-tested at
     # the math layer) without bringing in pytest.
+    import httpx  # noqa: PLC0415
+
     from tests.conftest import (  # noqa: PLC0415
         AUTH_HEADERS,
         FASTAPI_URL,
@@ -118,8 +120,6 @@ async def run_harness(output_path: Path) -> dict[str, Any]:
         parse_sse_stream,
     )
     from tests.test_golden_queries import GOLDEN_QUERIES  # noqa: PLC0415
-
-    import httpx  # noqa: PLC0415
 
     per_query: list[dict[str, Any]] = []
 

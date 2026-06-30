@@ -21,7 +21,6 @@ from app.services.seaweedfs_keys import (
     build_workspace_key,
 )
 
-
 WS_A = "a0000000-0000-0000-0000-000000000001"
 WS_B = "b0000000-0000-0000-0000-000000000001"
 

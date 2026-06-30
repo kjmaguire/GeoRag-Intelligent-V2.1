@@ -19,7 +19,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -27,7 +27,6 @@ from pydantic import BaseModel, Field
 from app.agents.phase9.analogue_finder import analogue_finder
 from app.agents.phase9.next_best_data import next_best_data
 from app.services.auth import verify_service_key
-
 
 logger = logging.getLogger(__name__)
 
@@ -1813,7 +1812,8 @@ async def dry_run_question(question_id: UUID) -> DryRunResponse:
     """
     from app.main import app
     from app.services.eval.workspace_evaluator import (
-        QuestionRecord, evaluate_question,
+        QuestionRecord,
+        evaluate_question,
     )
 
     pool = getattr(app.state, "pg_pool", None)

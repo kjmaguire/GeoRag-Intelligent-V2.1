@@ -5,7 +5,11 @@ import pytest
 
 from app.routers import (
     audit_findings as audit_findings_router,
+)
+from app.routers import (
     conflicts as conflicts_router,
+)
+from app.routers import (
     what_changed as what_changed_router,
 )
 
@@ -31,8 +35,9 @@ def test_tenant_isolation_finding_model_schema_alias() -> None:
 
 
 def test_run_resolver_request_requires_claims() -> None:
-    from app.routers.conflicts import RunResolverRequest, ClaimInput
     from pydantic import ValidationError
+
+    from app.routers.conflicts import RunResolverRequest
     with pytest.raises(ValidationError):
         RunResolverRequest(
             workspace_id="11111111-1111-1111-1111-111111111111",
@@ -41,7 +46,7 @@ def test_run_resolver_request_requires_claims() -> None:
 
 
 def test_run_resolver_request_accepts_minimal_claim() -> None:
-    from app.routers.conflicts import RunResolverRequest, ClaimInput
+    from app.routers.conflicts import ClaimInput, RunResolverRequest
     req = RunResolverRequest(
         workspace_id="11111111-1111-1111-1111-111111111111",
         claims=[ClaimInput(claim_id="c1", text="some claim")],
@@ -51,8 +56,9 @@ def test_run_resolver_request_accepts_minimal_claim() -> None:
 
 
 def test_cold_tier_archive_request_dry_run_default() -> None:
-    from app.routers.audit_findings import ColdTierArchiveRequest
     from datetime import datetime
+
+    from app.routers.audit_findings import ColdTierArchiveRequest
     req = ColdTierArchiveRequest(cutoff_before_iso=datetime(2026, 1, 1))
     assert req.dry_run is True
     assert req.archive_bucket == "audit-cold-tier"

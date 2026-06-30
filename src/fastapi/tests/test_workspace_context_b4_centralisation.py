@@ -46,7 +46,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 # Path resolution that works in both layouts:
 #   - host: src/fastapi/tests/...  → app at src/fastapi/app
 #   - container: /app/tests/...    → app at /app/app

@@ -18,7 +18,6 @@ Run with:
 from __future__ import annotations
 
 import importlib
-import os
 import sys
 import types
 from unittest.mock import MagicMock

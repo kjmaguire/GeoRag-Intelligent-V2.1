@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -10,6 +10,8 @@ import pytest
 
 from app.hatchet_workflows.what_changed_detector import (
     WhatChangedInput,
+)
+from app.hatchet_workflows.what_changed_detector import (
     execute as what_changed_execute,
 )
 
@@ -60,7 +62,7 @@ async def test_what_changed_detector_empty_workspace_returns_zeros(
 ):
     """Fresh workspace with no recent activity → all counts zero,
     success=True, audit anchor still lands."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     inp = WhatChangedInput(
         workspace_id=synthetic_workspace,
         window_start=now - timedelta(days=7),
@@ -84,7 +86,7 @@ async def test_what_changed_detector_captures_default_workspace_signal(conn):
     doc-phases 134 (hypotheses) + 136 (support tickets) + 143
     (response drafts) etc."""
     default_ws = UUID("a0000000-0000-0000-0000-000000000001")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     inp = WhatChangedInput(
         workspace_id=default_ws,
         window_start=now - timedelta(days=7),
@@ -106,7 +108,7 @@ async def test_what_changed_detector_emits_audit_anchor(
 ):
     """Verify the rollup audit anchor lands with the structured payload."""
     request_id = uuid4()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     inp = WhatChangedInput(
         workspace_id=synthetic_workspace,
         window_start=now - timedelta(days=1),
@@ -131,7 +133,7 @@ async def test_what_changed_detector_narrow_window_returns_lower_counts(conn):
     """A 1-second window against the Default Workspace returns less than
     a 7-day window — sanity check on the windowing filter."""
     default_ws = UUID("a0000000-0000-0000-0000-000000000001")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     narrow = await what_changed_execute.aio_mock_run(
         WhatChangedInput(

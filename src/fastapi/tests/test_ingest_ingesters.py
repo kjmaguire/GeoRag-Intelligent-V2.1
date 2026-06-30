@@ -15,11 +15,7 @@ run fast in the substrate verifier.
 """
 from __future__ import annotations
 
-import io
-import zipfile
-
 import pytest
-
 
 # Phase H — module-level guard for las_ingester tests. The pyproject pin
 # (`lasio>=0.31`) was added doc-phase 179 but the current FastAPI image
@@ -96,8 +92,9 @@ def test_las_derive_coordinates_falls_back_to_default():
 
 @_requires_lasio
 def test_las_parse_las_date_formats():
-    from app.services.ingest.las_ingester import _parse_las_date
     import datetime
+
+    from app.services.ingest.las_ingester import _parse_las_date
     assert _parse_las_date("08/13/2012") == datetime.date(2012, 8, 13)
     assert _parse_las_date("2012-08-13") == datetime.date(2012, 8, 13)
     assert _parse_las_date("NA") is None
@@ -108,8 +105,10 @@ def test_las_parse_las_date_formats():
 # ───────────────────── cameco_log_ingester ────────────────────────
 
 def test_cameco_log_extracts_coords_from_binary_header():
+    import os
+    import tempfile
+
     from app.services.ingest.cameco_log_ingester import parse_cameco_log_header
-    import tempfile, os
     # Synthesize a minimal Cameco-format binary header
     synthetic = (
         b"PROCESSED9057C 3.60K   1       F.597923 .10    0.60  340.00UE"
@@ -147,8 +146,10 @@ def test_cameco_log_extracts_coords_from_binary_header():
 
 
 def test_cameco_log_skips_when_filename_unmatched():
+    import os
+    import tempfile
+
     from app.services.ingest.cameco_log_ingester import parse_cameco_log_header
-    import tempfile, os
     # Filename doesn't match pattern → skipped
     with tempfile.NamedTemporaryFile(
         suffix=".log", delete=False,

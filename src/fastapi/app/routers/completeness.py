@@ -29,7 +29,7 @@ class FindingOut(BaseModel):
     evidence: dict = Field(default_factory=dict)
 
     @classmethod
-    def from_dataclass(cls, f: CompletenessFinding) -> "FindingOut":
+    def from_dataclass(cls, f: CompletenessFinding) -> FindingOut:
         return cls(
             finding_kind=f.finding_kind,
             severity=f.severity,

@@ -84,35 +84,39 @@ if settings.SENTRY_DSN:
             PydanticAIIntegration(include_prompts=False),
         ],
     )
+from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
+from app.routers import (
+    admin_tier234 as tier234_router,  # Phase H4 Tier 2/3/4 — recommendations + QP + members + settings + AP + audit + maps
+)
 from app.routers import answer_runs as answer_runs_router
+from app.routers import (
+    assessment_summary as assessment_summary_router,  # CC-01 Item 5 — assessment report structured summary
+)
+from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
+from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
+from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
+from app.routers import conflicts as conflicts_router  # Phase H4 §7.4 UI
+from app.routers import coverage as coverage_router  # CC-03 Item 5 — coverage density heatmap
 from app.routers import evidence as evidence_router
 from app.routers import exports as exports_router
+from app.routers import integrations_trigger as integrations_trigger_router
+from app.routers import maps as maps_router  # CC-01 Item 3 (stub) — map ingest scaffold
+from app.routers import metrics_ingestion_events as metrics_ingestion_events_router
+from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
+from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
+from app.routers import ocr_render as ocr_render_router
 from app.routers import outlier_assist as outlier_assist_router
 from app.routers import pdf as pdf_router
-from app.routers import projects, queries
 from app.routers import phase0_ops as phase0_ops_router
-from app.routers import shadow_trigger as shadow_trigger_router
-from app.routers import metrics_ingestion_events as metrics_ingestion_events_router
-from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
-from app.routers import integrations_trigger as integrations_trigger_router
-from app.routers import ocr_render as ocr_render_router
+from app.routers import projects, queries
 from app.routers import re_ocr_trigger as re_ocr_trigger_router
-from app.routers import support_agents as support_agents_router  # Phase G.5 follow-up
-from app.routers import visualizations as visualizations_router  # Phase H4 §5
-from app.routers import target_recommendation_cockpit as trg_cockpit_router  # Phase H4 §8 UI
 from app.routers import report_builder as report_builder_router  # Phase H4 §7 UI
-from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
-from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
-from app.routers import conflicts as conflicts_router  # Phase H4 §7.4 UI
-from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
-from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
-from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
-from app.routers import admin_tier234 as tier234_router  # Phase H4 Tier 2/3/4 — recommendations + QP + members + settings + AP + audit + maps
-from app.routers import assessment_summary as assessment_summary_router  # CC-01 Item 5 — assessment report structured summary
-from app.routers import maps as maps_router  # CC-01 Item 3 (stub) — map ingest scaffold
-from app.routers import coverage as coverage_router  # CC-03 Item 5 — coverage density heatmap
-from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
+from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
+from app.routers import support_agents as support_agents_router  # Phase G.5 follow-up
+from app.routers import target_recommendation_cockpit as trg_cockpit_router  # Phase H4 §8 UI
+from app.routers import visualizations as visualizations_router  # Phase H4 §5
+from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
 # the app emits a structured payload Promtail can ingest with a single
@@ -622,10 +626,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _t1 = time.perf_counter()
     try:
         import os as _os  # noqa: PLC0415
+
         from app.services.reranker import (  # noqa: PLC0415
             RERANKER_VERSION,
-            _RemoteReranker,
             _get_reranker,
+            _RemoteReranker,
         )
 
         # 2026-06-24: when the shared reranker sidecar is configured
@@ -935,7 +940,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             trace_flush_stop.set()
             await asyncio.wait_for(trace_flush_task, timeout=10.0)
             logger.info("Retrieval trace flush loop drained + stopped")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Retrieval trace flush loop did not drain in 10s — cancelling"
             )
@@ -1170,10 +1175,12 @@ app.include_router(tier234_router.eval_questions_router)  # §10-v2 authoring CR
 
 # §19.3 Interpretation Workspace — notes / section-lines / target-zones / comments
 from app.routers import interpretation as interpretation_router  # noqa: E402
+
 app.include_router(interpretation_router.router)
 
 # §4 Tool Gateway — bind R0/R1 implementations so invoke_tool() can dispatch
 from app.services.tool_gateway.impls import register_all_impls  # noqa: E402
+
 register_all_impls()
 
 
@@ -1278,7 +1285,12 @@ async def metrics() -> Response:
     dev containers that haven't been rebuilt from crashing on this route.
     """
     try:
-        from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest, multiprocess  # noqa: PLC0415
+        from prometheus_client import (  # noqa: PLC0415
+            CONTENT_TYPE_LATEST,
+            CollectorRegistry,
+            generate_latest,
+            multiprocess,
+        )
 
         # Import app.metrics so the module's counters/histograms are
         # registered with the default registry before we serialise.

@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-
 AgentOutcome = Literal[
     "success",
     "refusal",

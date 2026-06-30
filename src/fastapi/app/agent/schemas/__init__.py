@@ -8,11 +8,11 @@ contract from ``app.models.rag`` — does not replace it.
 from __future__ import annotations
 
 from app.agent.schemas.geo_answer import (
+    GEO_ANSWER_SCHEMA_VERSION,
     ConfidenceBlock,
     ConfidenceLevel,
     DecisionSupport,
     GeoAnswer,
-    GEO_ANSWER_SCHEMA_VERSION,
     Interpretation,
     Observation,
     RecommendedAction,

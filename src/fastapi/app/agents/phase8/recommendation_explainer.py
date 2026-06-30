@@ -14,12 +14,11 @@ The output schema is identical so callers don't change.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ async def recommendation_explainer(
             "rationale_markdown":   rationale,
             "top_factor":           None,
             "drag_factor":          None,
-            "explained_at":         datetime.now(timezone.utc).isoformat(),
+            "explained_at":         datetime.now(UTC).isoformat(),
         }
 
     sorted_factors = sorted(
@@ -107,7 +106,7 @@ async def recommendation_explainer(
         "rationale_markdown": rationale,
         "top_factor":         top.get("factor_name"),
         "drag_factor":        drag.get("factor_name") if drag else None,
-        "explained_at":       datetime.now(timezone.utc).isoformat(),
+        "explained_at":       datetime.now(UTC).isoformat(),
     }
 
 

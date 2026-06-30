@@ -133,7 +133,9 @@ def _get_ocr_instance():  # type: ignore[return]
 
     try:
         import logging as _logging  # noqa: PLC0415
+
         from paddleocr import PaddleOCR  # noqa: PLC0415
+
         from app.ocr._paddleocr_gpu import paddleocr_use_gpu  # noqa: PLC0415
 
         lang = os.environ.get("PDF_OCR_LANG", "en")

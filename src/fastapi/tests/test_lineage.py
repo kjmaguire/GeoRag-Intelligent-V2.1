@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 
 from app.agent.lineage import build_lineage_payload
 from app.agent.schemas import (
-    ConfidenceBlock,
     GEO_ANSWER_SCHEMA_VERSION,
+    ConfidenceBlock,
     GeoAnswer,
     Interpretation,
     Observation,
-    RecommendedAction,
     SectionEmpty,
     UncertaintyBlock,
 )
@@ -27,7 +25,6 @@ from app.models.lineage import (
     RetrievedSource,
 )
 from app.models.rag import Citation, GeoRAGResponse
-
 
 # ---------------------------------------------------------------------------
 # Helpers

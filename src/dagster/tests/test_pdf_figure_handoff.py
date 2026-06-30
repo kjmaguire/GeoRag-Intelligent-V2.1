@@ -39,7 +39,6 @@ sys.modules.setdefault("botocore.config", _fake_botocore_config)
 from georag_dagster.parsers.pdf_report import (  # noqa: E402
     ReportParseResult,
     ReportSection,
-    _FIGURE_TEMPDIR_ROOT,
     _figure_tempdir,
     _parse_with_docling,
 )

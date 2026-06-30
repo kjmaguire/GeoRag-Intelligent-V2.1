@@ -659,17 +659,17 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # empty tool_results list today.
     evidence_packet = None
     try:
-        from app.agent.authority import (  # noqa: PLC0415
-            annotate_evidence_packet_with_authority,
-            rank_evidence_by_authority,
-        )
-        from app.agent.evidence_converter import build_evidence_packet  # noqa: PLC0415
-
         # Use the answer_run_id when available so the packet's query_id
         # matches the row written by persist_node. Otherwise fall back to
         # a fresh UUID — the packet will still be coherent within its own
         # lifetime; only cross-table joins lose it.
         from uuid import uuid4 as _uuid4  # noqa: PLC0415
+
+        from app.agent.authority import (  # noqa: PLC0415
+            annotate_evidence_packet_with_authority,
+            rank_evidence_by_authority,
+        )
+        from app.agent.evidence_converter import build_evidence_packet  # noqa: PLC0415
         _query_id = str(_uuid4())
 
         raw_packet = build_evidence_packet(
@@ -1443,7 +1443,6 @@ async def repair_shadow_node(state: AgenticRetrievalState) -> dict[str, Any]:
             classify_guards,
         )
         from app.agent.repair_strategy import (  # noqa: PLC0415
-            RepairStrategy,
             plan_repair,
         )
 
@@ -1612,8 +1611,8 @@ async def _run_repair_loop(
         apply_retrieval_strategy,
     )
     from app.agent.repair_strategy import (  # noqa: PLC0415
-        RepairStrategy,
         TERMINAL_STRATEGIES,
+        RepairStrategy,
         plan_repair,
     )
     from app.config import settings as _settings  # noqa: PLC0415
@@ -1909,7 +1908,7 @@ def _build_terminal_refusal_payload(
     (defensive — shouldn't happen given the caller guard).
     """
     from app.agent.guards import GuardErrorCode  # noqa: PLC0415
-    from app.agent.repair_strategy import RepairStrategy, TERMINAL_STRATEGIES  # noqa: PLC0415
+    from app.agent.repair_strategy import TERMINAL_STRATEGIES, RepairStrategy  # noqa: PLC0415
 
     if strategy not in TERMINAL_STRATEGIES:
         return None

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -43,7 +43,6 @@ from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
-
 
 log = logging.getLogger("georag.hatchet.continuous_learning_loop")
 
@@ -115,7 +114,7 @@ async def execute(
         )
         if last_loop_at is None:
             # Genesis run — treat "since" as 7 days ago.
-            last_loop_at = datetime.now(tz=timezone.utc) - timedelta(days=7)
+            last_loop_at = datetime.now(tz=UTC) - timedelta(days=7)
 
         workspaces_pending_training = 0
         target_models_retrained = 0

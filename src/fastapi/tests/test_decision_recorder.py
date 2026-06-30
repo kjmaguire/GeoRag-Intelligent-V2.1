@@ -87,7 +87,7 @@ async def synthetic_user(conn):
         VALUES ($1, $2, $3)
         RETURNING id
         """,
-        f"Decision Test User",
+        "Decision Test User",
         email,
         "test-password-hash",
     )

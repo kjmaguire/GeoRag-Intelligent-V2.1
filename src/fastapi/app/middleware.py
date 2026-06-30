@@ -95,7 +95,7 @@ class GlobalTimeoutMiddleware(BaseHTTPMiddleware):
         import asyncio  # noqa: PLC0415
         try:
             return await asyncio.wait_for(call_next(request), timeout=self.timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "GlobalTimeoutMiddleware: request exceeded %.1fs path=%s method=%s",
                 self.timeout_s,

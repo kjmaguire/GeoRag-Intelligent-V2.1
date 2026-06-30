@@ -7,6 +7,8 @@ import pytest
 
 from app.hatchet_workflows.field_outcome_learning import (
     FieldOutcomeLearningInput,
+)
+from app.hatchet_workflows.field_outcome_learning import (
     execute as field_outcome_task,
 )
 

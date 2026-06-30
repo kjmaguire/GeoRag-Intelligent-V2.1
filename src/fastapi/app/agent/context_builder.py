@@ -91,7 +91,7 @@ def _build_context(
     for idx, (tool_name, result) in enumerate(tool_results):
         bundle = citation_id_bundles[idx] if citation_id_bundles and idx < len(citation_id_bundles) else []
         if isinstance(result, SpatialQueryResult):
-            record_lines.append(f"[SOURCE: PostGIS — authoritative database, confidence=HIGH]")
+            record_lines.append("[SOURCE: PostGIS — authoritative database, confidence=HIGH]")
             record_lines.append(f"Spatial query returned {result.count} drill hole collar(s):")
             collar_cap = settings.MAX_CONTEXT_COLLARS
             for collar in result.collars[:collar_cap]:
@@ -120,7 +120,7 @@ def _build_context(
             if result.count == 0:
                 record_lines.append("Document search returned no relevant sections.")
             else:
-                record_lines.append(f"[SOURCE: NI 43-101 Report — peer-reviewed document, confidence=HIGH]")
+                record_lines.append("[SOURCE: NI 43-101 Report — peer-reviewed document, confidence=HIGH]")
                 record_lines.append(f"Document search returned {result.count} relevant section(s):")
                 doc_cap = settings.MAX_CONTEXT_DOC_CHUNKS
                 mmr_chunks = _mmr_select_chunks(
@@ -150,7 +150,7 @@ def _build_context(
                 graph_lines.append("Knowledge graph query returned no matching entities.")
             else:
                 graph_lines.append(
-                    f"[SOURCE: Neo4j Knowledge Graph — extracted entities, confidence=MEDIUM]"
+                    "[SOURCE: Neo4j Knowledge Graph — extracted entities, confidence=MEDIUM]"
                 )
                 graph_lines.append(
                     f"Knowledge graph returned {result.count} related entities:"
@@ -255,7 +255,7 @@ def _build_context(
                 summary_lines.append(f"Total logged interval: {total_logged:.1f} m")
                 summary_lines.append(f"Number of intervals: {result.count}")
                 summary_lines.append(
-                    f"Lithology codes (top→bottom): "
+                    "Lithology codes (top→bottom): "
                     + " → ".join(unique_codes)
                 )
                 summary_lines.append(f"Average RQD: {avg_rqd}")

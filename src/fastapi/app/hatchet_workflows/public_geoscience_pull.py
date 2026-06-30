@@ -27,8 +27,6 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
-from typing import Any
 
 import asyncpg
 from hatchet_sdk import Context
@@ -36,7 +34,6 @@ from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
-
 
 log = logging.getLogger("georag.hatchet.public_geoscience_pull")
 

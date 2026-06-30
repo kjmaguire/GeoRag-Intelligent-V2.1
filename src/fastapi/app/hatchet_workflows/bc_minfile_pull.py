@@ -51,7 +51,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -173,7 +173,7 @@ async def _fetch_arcgis_page(
         return None, f"arcgis_error: {err.get('code')} {err.get('message','')[:200]}"
 
     if not isinstance(body, dict) or "features" not in body:
-        return None, f"bad_shape: missing 'features' key"
+        return None, "bad_shape: missing 'features' key"
 
     return body, None
 
@@ -184,7 +184,7 @@ async def _pull_one_source(
     """Walk the ArcGIS endpoint for one source. Returns a result without
     raising — failures are returned as `outcome` values so the caller
     can decide whether to continue with the next source."""
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     service_url = src["service_url"]
     source_id = src["source_id"]
 
@@ -241,7 +241,7 @@ async def _pull_one_source(
                     outcome=outcome,
                     feature_count=feature_count,
                     pages_fetched=pages,
-                    duration_s=(datetime.now(tz=timezone.utc) - started_at).total_seconds(),
+                    duration_s=(datetime.now(tz=UTC) - started_at).total_seconds(),
                     detail=err,
                 )
 
@@ -275,7 +275,7 @@ async def _pull_one_source(
     if target_table is None:
         # Unknown source_id mapping — still record the pull-success but
         # warn that no canonical-table data landed.
-        duration_s = (datetime.now(tz=timezone.utc) - started_at).total_seconds()
+        duration_s = (datetime.now(tz=UTC) - started_at).total_seconds()
         return SourcePullResult(
             source_id=source_id,
             outcome="completed",
@@ -308,7 +308,7 @@ async def _pull_one_source(
             if offset >= feature_count:
                 break
 
-    duration_s = (datetime.now(tz=timezone.utc) - started_at).total_seconds()
+    duration_s = (datetime.now(tz=UTC) - started_at).total_seconds()
     return SourcePullResult(
         source_id=source_id,
         outcome="completed",
@@ -923,7 +923,7 @@ def _split_commodities(raw: Any) -> list[str]:
 
 @bc_minfile_pull.task(execution_timeout="60m")
 async def run_pull(input: BcMinfilePullInput, ctx: Context) -> BcMinfilePullOutput:
-    sampled_at = datetime.now(tz=timezone.utc)
+    sampled_at = datetime.now(tz=UTC)
     dsn = _build_dsn()
 
     conn = await asyncpg.connect(dsn, statement_cache_size=0)

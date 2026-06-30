@@ -24,7 +24,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 __all__ = [
     "load_report",
     "build_question_map",

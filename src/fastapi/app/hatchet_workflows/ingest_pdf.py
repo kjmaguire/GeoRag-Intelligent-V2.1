@@ -44,10 +44,9 @@ from pydantic import BaseModel, Field
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
-from app.hatchet_workflows import hatchet
 from app.hatchet_workflows import _progress as ingest_progress
+from app.hatchet_workflows import hatchet
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
-
 
 log = logging.getLogger("georag.hatchet.ingest_pdf")
 
@@ -172,8 +171,8 @@ def _get_parse_pool():
     """
     global _PARSE_POOL
     if _PARSE_POOL is None:
-        from concurrent.futures import ProcessPoolExecutor
         import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
         ctx = mp.get_context("spawn")
         workers = _compute_parse_max_workers()
         _PARSE_POOL = ProcessPoolExecutor(max_workers=workers, mp_context=ctx)
@@ -242,9 +241,10 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     import os as _os
     import shutil as _shutil
     import time as _time
+
     from georag_dagster.parsers.pdf_report import (
-        parse_pdf_report,
         _FIGURE_TEMPDIR_ROOT,
+        parse_pdf_report,
     )
 
     _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
@@ -620,6 +620,7 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
 
     def _count_pages() -> tuple[int, bool, str | None]:
         from io import BytesIO
+
         import pikepdf
         try:
             with pikepdf.open(BytesIO(body)) as pdf:
@@ -1468,11 +1469,12 @@ async def p04p_dual_write(input: IngestPdfInput, ctx: Context) -> dict:
         return {"ok": False, "error": "persist returned no report_id"}
 
     try:
-        from app.ocr._ingest_helper import run_p04p_for_ingest
         # 2026-05-22: try the local cache first (populated by parse
         # subprocess); fall back to S3 re-download if not present.
         # Saves ~10-30s per PDF on the common path.
         import os as _os
+
+        from app.ocr._ingest_helper import run_p04p_for_ingest
         sha = persist_dict.get("sha256") or ""
         cached_path = _cached_pdf_path(sha) if sha else ""
         body: bytes | None = None

@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from io import BytesIO, StringIO
+from io import StringIO
 from pathlib import Path
 from typing import IO, Union
 

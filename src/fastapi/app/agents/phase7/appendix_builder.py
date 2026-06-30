@@ -20,12 +20,11 @@ import csv
 import io
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
 from app.agents import AgentContext, georag_agent
-
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +104,7 @@ def _hash_chain_proof(
 
     return {
         "schema_version":           1,
-        "built_at":                 datetime.now(timezone.utc).isoformat(),
+        "built_at":                 datetime.now(UTC).isoformat(),
         "report_id":                report_id,
         "workspace_id":             workspace_id,
         "citation_manifest_sha256": hashlib.sha256(citation_payload_bytes).hexdigest(),
@@ -151,7 +150,7 @@ async def appendix_builder(
     """
     ws = str(workspace_id)
     rid = str(report_id)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     key_prefix = f"{archive_bucket}/{ws}/{rid}/{stamp}"
 
     citation_bytes = _citation_manifest_csv(citation_payload)

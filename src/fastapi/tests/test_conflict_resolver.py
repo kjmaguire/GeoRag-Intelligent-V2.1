@@ -1,8 +1,6 @@
 """§7.4 Conflict Resolver tests (Phase H4)."""
 from __future__ import annotations
 
-import pytest
-
 from app.agents.phase7.conflict_resolver import conflict_resolver
 
 

@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 import httpx
@@ -184,7 +184,7 @@ async def _snapshot_one_collection(
 
 @backup_qdrant.task(execution_timeout="60m")
 async def run_backup(input: BackupQdrantInput, ctx: Context) -> BackupQdrantOutput:
-    started_at = datetime.now(tz=timezone.utc)
+    started_at = datetime.now(tz=UTC)
     base_url = _qdrant_base_url()
     dsn = _build_dsn()
 
@@ -223,7 +223,7 @@ async def run_backup(input: BackupQdrantInput, ctx: Context) -> BackupQdrantOutp
                         collection, exc,
                     )
 
-        completed_at = datetime.now(tz=timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         payload = {
             "store":                    "qdrant",
             "bucket":                   input.bucket,

@@ -14,6 +14,8 @@ import pytest
 from app.hatchet_workflows.eval_real_rag_nightly import (
     EvalRealRagNightlyInput,
     eval_real_rag_nightly,
+)
+from app.hatchet_workflows.eval_real_rag_nightly import (
     run_nightly as run_nightly_task,
 )
 
@@ -113,6 +115,7 @@ async def test_workflow_alarm_helper_emits_audit_row():
 
     # Verify the row landed with the right action_type + payload shape
     import asyncpg
+
     from app.hatchet_workflows.eval_real_rag_nightly import _build_dsn
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)
     try:

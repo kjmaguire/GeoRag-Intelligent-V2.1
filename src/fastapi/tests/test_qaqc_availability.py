@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.agent.agentic_retrieval import (
-    QaqcAvailability,
     detect_qaqc_availability,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: tool-result shapes

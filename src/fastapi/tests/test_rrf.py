@@ -17,15 +17,11 @@ Test coverage:
 
 from __future__ import annotations
 
-import pytest
-
 from app.services.fusion import (
     RRF_K,
     Candidate,
-    ScoredCandidate,
     rrf_fuse,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

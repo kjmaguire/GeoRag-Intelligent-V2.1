@@ -12,7 +12,6 @@ import io
 from pathlib import Path
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from app.agent.figure_extractor import (

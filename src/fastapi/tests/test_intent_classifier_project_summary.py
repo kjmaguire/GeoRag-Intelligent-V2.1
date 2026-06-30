@@ -14,7 +14,6 @@ import pytest
 
 from app.agent.agentic_retrieval import INTENT_LABELS, classify_intent_sync
 
-
 PROJECT_SUMMARY_QUERIES: tuple[str, ...] = (
     "Give me a breakdown of data collection techniques by year.",
     "What techniques have been used to collect data on this project?",

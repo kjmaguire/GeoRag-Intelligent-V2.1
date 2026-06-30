@@ -15,7 +15,6 @@ These are mechanical because the expected behavior is deterministic
 """
 from __future__ import annotations
 
-
 QUESTIONS: list[dict] = [
     {
         "question_set": "refusal_correctness",
