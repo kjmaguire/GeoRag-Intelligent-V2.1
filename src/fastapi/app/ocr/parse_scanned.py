@@ -50,6 +50,7 @@ Output schema (locked here):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 # PaddleOCR model cache root. The default ($HOME/.paddleocr) is not
 # writable for the FastAPI container's www-data user. Use /tmp so OCR
@@ -183,10 +184,7 @@ def _parse_scanned_sync(
 
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
-        if pages is None:
-            page_indices = list(range(len(pdf)))
-        else:
-            page_indices = [p for p in pages if 0 <= p < len(pdf)]
+        page_indices = list(range(len(pdf))) if pages is None else [p for p in pages if 0 <= p < len(pdf)]
 
         passages: list[dict[str, Any]] = []
         per_page_ocr_confidence: list[float] = []
@@ -233,7 +231,7 @@ def _parse_scanned_sync(
 
             confidences: list[float] = []
             region_idx = 0
-            for idx, (text, conf) in enumerate(zip(texts, scores)):
+            for idx, (text, conf) in enumerate(zip(texts, scores, strict=False)):
                 if not text:
                     continue
                 # rec_boxes is already axis-aligned [x_min, y_min, x_max,
@@ -277,10 +275,8 @@ def _parse_scanned_sync(
             "settings_used": effective_settings,
         }
     finally:
-        try:
+        with contextlib.suppress(Exception):
             pdf.close()
-        except Exception:
-            pass
 
 
 def _flatten_paddleocr_result(result: Any) -> list[tuple[Any, Any]]:

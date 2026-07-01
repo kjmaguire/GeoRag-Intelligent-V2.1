@@ -1503,17 +1503,6 @@ def _upsert_batch(
 
             # 3) UPSERT live. Geometry constructed here via
             #    ST_SetSRID(ST_GeomFromText(wkt), 4326).
-            upsert_update_cols = [
-                *spec.canonical_columns,
-                "source_crs",
-                "source_geom_wkt",
-                "source_url",
-                "source_attributes",
-                "geom",
-                "checksum",
-                "last_seen_at",
-                "updated_at",
-            ]
             upsert_update_setters = ",\n                ".join(
                 [
                     f"{col} = EXCLUDED.{col}" for col in [*spec.canonical_columns,

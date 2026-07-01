@@ -67,8 +67,8 @@ async def test_c1_normalized_text_equals_response_text_after_resolve():
     is what spans index into — the orchestrator must swap response.text
     to telemetry['normalized_text'].
     """
-    chunk_id = str(uuid4())
-    passage_id = uuid4()
+    str(uuid4())
+    uuid4()
     marker_text = "[DATA:1]"
 
     bound = BoundEvidenceSet()

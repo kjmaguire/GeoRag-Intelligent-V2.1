@@ -108,7 +108,7 @@ def _make_collar(hole_id: str, total_depth: float = 339.9) -> CollarRecord:
     dataclass actually has (fields are accepted by-name on rehydration).
     """
     import dataclasses
-    field_names = {f.name for f in dataclasses.fields(CollarRecord)}
+    {f.name for f in dataclasses.fields(CollarRecord)}
     base = {
         "collar_id": str(uuid4()),
         "hole_id": hole_id,

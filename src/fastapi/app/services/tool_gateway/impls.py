@@ -12,6 +12,7 @@ Idempotent: re-importing this module re-registers the same impls (safe).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import Any
@@ -57,12 +58,10 @@ async def _query_postgis_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
     workspace_id = inputs.get("workspace_id")
     if not workspace_id:
         workspace_id = LEGACY_DEFAULT_TENANT_UUID
-        try:
+        with contextlib.suppress(Exception):
             WORKSPACE_RESOLUTION_FAILURES.labels(
                 site="tool_gateway.query_pg_readonly"
             ).inc()
-        except Exception:
-            pass
     args = inputs.get("args", [])
     # REC#2 (2026-06-03) — canonical workspace-scoped connection. The
     # helper opens a transaction, sets `app.workspace_id` via the
@@ -108,8 +107,7 @@ async def _query_neo4j_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
     finally:
-        try: await driver.close()
-        except Exception: pass
+        with contextlib.suppress(Exception): await driver.close()
 
 
 async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -152,8 +150,7 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
     finally:
-        try: await client.close()
-        except Exception: pass
+        with contextlib.suppress(Exception): await client.close()
 
 
 async def _query_public_geo(inputs: dict[str, Any]) -> dict[str, Any]:

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -38,7 +38,7 @@ from app.db import bind_workspace_scope
 log = logging.getLogger("georag.claim_ledger")
 
 
-class ClaimType(str, Enum):
+class ClaimType(StrEnum):
     NUMERIC = "numeric"
     ENTITY = "entity"
     TEMPORAL = "temporal"
@@ -48,14 +48,14 @@ class ClaimType(str, Enum):
     QUALITATIVE = "qualitative"
 
 
-class Support(str, Enum):
+class Support(StrEnum):
     CITATION = "citation"
     STRUCTURED_ROW = "structured_row"
     COMPUTATION = "computation"
     NONE = "none"
 
 
-class VerificationStatus(str, Enum):
+class VerificationStatus(StrEnum):
     PENDING = "pending"
     VERIFIED = "verified"
     FAILED = "failed"

@@ -223,10 +223,7 @@ async def upsert_collar_from_log(
     # 0.01 m floor satisfies chk_collars_total_depth_positive when the
     # filename's depth field is missing or zero — better than dropping
     # the collar entirely.
-    if parsed.total_depth_ft and parsed.total_depth_ft > 0:
-        td_m = parsed.total_depth_ft * FT_TO_M
-    else:
-        td_m = 0.01
+    td_m = parsed.total_depth_ft * FT_TO_M if parsed.total_depth_ft and parsed.total_depth_ft > 0 else 0.01
 
     row = await conn.fetchrow(
         """

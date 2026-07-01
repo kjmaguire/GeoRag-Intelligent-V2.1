@@ -75,7 +75,7 @@ def test_category_other_when_no_keywords() -> None:
 
 def test_routing_table_covers_all_4_severities() -> None:
     assert set(_ROUTING_TABLE.keys()) == {"critical", "high", "medium", "low"}
-    for severity, route in _ROUTING_TABLE.items():
+    for _severity, route in _ROUTING_TABLE.items():
         assert "page" in route
         assert "channel" in route
         assert int(route["sla_minutes"]) > 0

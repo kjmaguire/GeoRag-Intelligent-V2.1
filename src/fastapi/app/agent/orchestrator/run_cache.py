@@ -29,6 +29,7 @@ test suite keep working without touching their import lines.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses as _dc
 import hashlib
 import json as _json
@@ -235,14 +236,12 @@ def build_cached_candidates(
                     passage_id = UUID(str(chunk_id_str))
                 except (ValueError, AttributeError):
                     cand_ref = {"chunk_id": str(chunk_id_str)}
-            try:
+            with contextlib.suppress(Exception):
                 payload_for_cache = (
                     _dc.asdict(payload_obj)
                     if _dc.is_dataclass(payload_obj)
                     else None
                 )
-            except Exception:
-                pass
         elif cand.store in ("neo4j", "postgis"):
             payload_obj = cand.payload
             text = str(
@@ -258,14 +257,12 @@ def build_cached_candidates(
             # rehydration path can reconstruct the original tool result
             # without re-querying. Falls back to None when payload isn't
             # a dataclass (graph entity wrappers etc.).
-            try:
+            with contextlib.suppress(Exception):
                 payload_for_cache = (
                     _dc.asdict(payload_obj)
                     if _dc.is_dataclass(payload_obj)
                     else None
                 )
-            except Exception:
-                pass
 
         out.append(
             CachedRetrievalCandidate(
@@ -378,7 +375,7 @@ def build_cached_context(
 
     pf_dict: dict | None = None
     if partial_failures:
-        pf_dict = {tn: ec for tn, ec in partial_failures}
+        pf_dict = {tn: ec for tn, ec in partial_failures}  # noqa: C416
 
     auxiliary = (
         build_auxiliary_tool_results(tool_results)

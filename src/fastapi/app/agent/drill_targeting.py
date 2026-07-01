@@ -229,4 +229,4 @@ def _interpolate_idw(
     if total_weight == 0:
         return 0.0
 
-    return sum(w * v for w, v in zip(weights, values)) / total_weight
+    return sum(w * v for w, v in zip(weights, values, strict=False)) / total_weight

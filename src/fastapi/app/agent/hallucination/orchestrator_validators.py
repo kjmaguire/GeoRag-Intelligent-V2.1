@@ -15,6 +15,7 @@ Usage in orchestrator:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -319,10 +320,8 @@ def _expand_grounded_with_conversions(grounded: set[float]) -> set[float]:
         if abs(v) < 1e9:
             extras.add(round(v, 1))
             extras.add(round(v, 2))
-            try:
+            with contextlib.suppress(OverflowError, ValueError):
                 extras.add(float(int(v)))
-            except (OverflowError, ValueError):
-                pass
     expanded |= extras
     return expanded
 
@@ -764,7 +763,7 @@ async def verify_entities(
         )
         # Build the tool-results token bag once (already computed above for
         # the commodity-grounding check; recompute if that branch was skipped).
-        if tool_results:
+        if tool_results:  # noqa: SIM108
             tool_tokens = grounded_tokens  # noqa: F821  (set in the commodity block)
         else:
             tool_tokens = set()
@@ -902,17 +901,13 @@ async def run_post_assembly_validation(
         _layer3_nums = set()
         for w in advisory:
             for m in _num_re.findall(w):
-                try:
+                with contextlib.suppress(ValueError):
                     _layer3_nums.add(float(m))
-                except ValueError:
-                    pass
         _layer6_nums = set()
         for w in high:
             for m in _num_re.findall(w):
-                try:
+                with contextlib.suppress(ValueError):
                     _layer6_nums.add(float(m))
-                except ValueError:
-                    pass
         if _layer3_nums & _layer6_nums:
             _layer3_escalated_critical = True
             logger.error(

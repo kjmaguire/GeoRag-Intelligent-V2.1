@@ -150,11 +150,11 @@ def assemble_response(
     # counter reset.
     id_bundles = assign_citation_ids(tool_results)
 
-    for (tool_name, result), bundle in zip(tool_results, id_bundles):
+    for (tool_name, result), bundle in zip(tool_results, id_bundles, strict=False):
         if isinstance(result, PublicGeoscienceSearchResult):
             # Emit one Citation per record so each cited fact traces to the
             # exact upstream entity, not to record[0] (plan §04i Layer 5).
-            for record, citation_id in zip(result.records, bundle):
+            for record, citation_id in zip(result.records, bundle, strict=False):
                 source_chunk_id = _source_chunk_id_for_pg_record(record)
                 citations.append(
                     Citation(

@@ -15,7 +15,7 @@ raw dicts) so future fields can be added without breaking validation.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from app.agent.schemas import GeoAnswer
 
 
-class AnswerMode(str, Enum):
+class AnswerMode(StrEnum):
     """Plan §4a — three answer-shape modes the caller can request.
 
     ``detailed`` (default): full 8-section structured format

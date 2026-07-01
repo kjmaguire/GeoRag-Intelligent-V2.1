@@ -113,7 +113,7 @@ _DOC_C = (
 )
 
 
-import pytest_asyncio
+import pytest_asyncio  # noqa: E402
 
 
 @pytest_asyncio.fixture
@@ -220,10 +220,7 @@ def _references_invented_doc(response: str, max_real_doc: int) -> bool:
     """True if response cites a doc number > what was provided."""
     import re
 
-    for m in re.finditer(r"\[doc:\s*(\d+)", response):
-        if int(m.group(1)) > max_real_doc:
-            return True
-    return False
+    return any(int(m.group(1)) > max_real_doc for m in re.finditer(r"\[doc:\s*(\d+)", response))
 
 
 def _has_value(response: str, value: str) -> bool:

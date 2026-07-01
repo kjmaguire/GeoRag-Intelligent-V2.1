@@ -14,6 +14,7 @@ re-implementing them.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from typing import Any
@@ -846,7 +847,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # into Qwen3-14B-AWQ; that's fine in production but pollutes the
     # critical path with the tokenizer import. Stash on state so
     # persist_node can write it to silver.query_traces.system_prompt_tokens.
-    try:
+    try:  # noqa: SIM105
         state.system_prompt_tokens_estimate = max(1, len(system_prompt) // 4)
     except Exception:  # pragma: no cover — defensive (state attr immutable etc.)
         pass
@@ -1807,7 +1808,7 @@ async def _reissue_llm_only(
     context_lines: list[str] = []
     citation_counter = 0
     for tool_name, result in state.tool_results:
-        citation_counter += 1
+        citation_counter += 1  # noqa: SIM113
         context_lines.append(
             f"[DATA:{citation_counter}] tool={tool_name} result={result!r}"[:1500]
         )
@@ -1832,10 +1833,8 @@ async def _reissue_llm_only(
     # Preserve the answer_run_id stamped by persist_node on the prior
     # attempt (the row already exists; we're re-rendering text only).
     if state.response is not None:
-        try:
+        with contextlib.suppress(Exception):
             new_response.answer_run_id = state.response.answer_run_id
-        except Exception:
-            pass
     state.response = new_response
 
 
@@ -2067,7 +2066,6 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
     from app.config import settings as _settings  # noqa: PLC0415
 
-    text = state.response.text or ""
     citation_state = "rejected" if not state.response.citations else "committed"
 
     # answer_runs.query_class has a CHECK constraint pinned to the spec

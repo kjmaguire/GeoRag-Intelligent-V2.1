@@ -328,7 +328,7 @@ def test_merge_fitz_wins_when_above_threshold(
     docling_pages = [(1, "Different docling text " * 10)]
 
     with _stub_fitz(parser_module, fitz_pages, image_pages=[]), \
-            _stub_docling(parser_module, docling_pages) as patched_docling:
+            _stub_docling(parser_module, docling_pages):
         result = parser_module.parse_pdf_report(minimal_pdf)
 
     combined = "\n".join(s.text for s in result.sections)

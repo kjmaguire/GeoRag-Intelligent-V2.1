@@ -67,7 +67,7 @@ def test_parse_mixed_returns_passages(mixed_result: dict) -> None:
 def test_parse_mixed_returns_layouts_with_labels(mixed_result: dict) -> None:
     # Layouts ≥ passages (layouts include regions with no text)
     assert len(mixed_result["layouts"]) >= len(mixed_result["passages"])
-    labels = {l["layout_label"] for l in mixed_result["layouts"]}
+    labels = {l["layout_label"] for l in mixed_result["layouts"]}  # noqa: E741
     # PLS-2024 should have at least a section_header (we sampled it
     # interactively earlier)
     assert "section_header" in labels or "title" in labels, (

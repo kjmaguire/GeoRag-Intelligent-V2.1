@@ -89,7 +89,7 @@ def stream_minio_to_temp(
                 h.update(chunk)
                 total += len(chunk)
     except Exception:
-        try:
+        try:  # noqa: SIM105
             os.unlink(tmp_path)
         except OSError:
             pass

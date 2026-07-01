@@ -117,15 +117,7 @@ async def hybrid_query(
     )
 
     # Compose the branch filter: workspace_id AND (optional extra conditions).
-    if additional_filter is not None:
-        branch_filter = Filter(
-            must=[
-                ws_filter,
-                additional_filter,
-            ]
-        )
-    else:
-        branch_filter = ws_filter
+    branch_filter = Filter(must=[ws_filter, additional_filter]) if additional_filter is not None else ws_filter
 
     # Sort sparse indices to ensure deterministic serialization.
     sorted_indices = sorted(query_sparse.keys())

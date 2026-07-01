@@ -99,7 +99,7 @@ class TestConceptGraphSeeder:
                 RETURN count(*) AS wired
                 """
             )
-            record = result.single()
+            result.single()
 
         # Just verify the Cypher was called with the expected label
         cypher_called = mock_session.run.call_args[0][0]

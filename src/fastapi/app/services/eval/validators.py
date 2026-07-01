@@ -481,7 +481,7 @@ def validate_entity_resolution(
     )
 
 
-import re
+import re  # noqa: E402
 
 # Match decimals, percentages, negatives. Excludes years-as-numbers
 # by requiring a decimal point or unit-following pattern.

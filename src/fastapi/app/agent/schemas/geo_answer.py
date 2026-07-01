@@ -362,10 +362,10 @@ class DecisionSupport(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-ObservationsSection = Union[list[Observation], SectionEmpty]
-InterpretationsSection = Union[list[Interpretation], SectionEmpty]
-UncertaintySection = Union[UncertaintyBlock, SectionEmpty]
-RecommendedActionsSection = Union[list[RecommendedAction], SectionEmpty]
+ObservationsSection = Union[list[Observation], SectionEmpty]  # noqa: UP007
+InterpretationsSection = Union[list[Interpretation], SectionEmpty]  # noqa: UP007
+UncertaintySection = Union[UncertaintyBlock, SectionEmpty]  # noqa: UP007
+RecommendedActionsSection = Union[list[RecommendedAction], SectionEmpty]  # noqa: UP007
 
 
 class GeoAnswer(BaseModel):

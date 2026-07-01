@@ -48,7 +48,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 from app.agent.guards import GuardErrorCode
 
@@ -69,7 +69,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class RepairStrategy(str, Enum):
+class RepairStrategy(StrEnum):
     """Plan §4b — actions the orchestrator can take when guards fire.
 
     Two flavours:

@@ -59,10 +59,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from enum import Enum
+from enum import StrEnum
 
 
-class SettingLifecycle(str, Enum):
+class SettingLifecycle(StrEnum):
     """Lifecycle stage of a setting. Strings so the registry remains
     grep-friendly + serialisable."""
 

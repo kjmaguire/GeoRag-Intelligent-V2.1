@@ -385,7 +385,7 @@ def _hoist_qfield_properties(
     for ts_col in ("timestamp", "captured_at"):
         actual = next((c for c in row_dict if c.lower() == ts_col), None)
         if actual and row_dict.get(actual) is not None:
-            try:
+            try:  # noqa: SIM105
                 out["_qfield_timestamp"] = str(row_dict[actual])
             except Exception:
                 pass

@@ -358,7 +358,7 @@ def anomaly_map_figure(
             "cmin": -3, "cmax": 3,
             "colorbar": {"title": {"text": "Z-score"}},
         },
-        "text": [f"value={v:.3f}, z={z:.2f}σ" for v, z in zip(vals, z_scores)],
+        "text": [f"value={v:.3f}, z={z:.2f}σ" for v, z in zip(vals, z_scores, strict=False)],
         "hovertemplate": "lng=%{x:.4f}<br>lat=%{y:.4f}<br>%{text}<extra></extra>",
     }]
     layout = _empty_layout(title or f"Anomaly map ({element_label})", height=500)

@@ -121,7 +121,7 @@ def _detect_value_mismatches(claims: list[dict[str, Any]]) -> list[dict[str, Any
             if len(nums_a) != len(nums_b):
                 continue
             disagree = [
-                (na, nb) for na, nb in zip(nums_a, nums_b)
+                (na, nb) for na, nb in zip(nums_a, nums_b, strict=False)
                 if not _numbers_agree(na, nb)
             ]
             if not disagree:

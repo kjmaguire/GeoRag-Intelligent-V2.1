@@ -269,8 +269,8 @@ async def mark_heartbeat(*, run_id: str) -> None:
         log.warning("progress.mark_heartbeat failed (run=%s): %s", run_id, e)
 
 
-import asyncio
-import contextlib
+import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 
 
 @contextlib.asynccontextmanager
@@ -316,10 +316,8 @@ async def heartbeat_loop(
     finally:
         if task is not None:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
 
 async def mark_completed_by_run(

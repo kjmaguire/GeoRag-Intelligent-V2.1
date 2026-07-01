@@ -540,10 +540,7 @@ async def classify_intent(
             top = llm_choice
             second = old_top
             kw_score = scores.get(top, 0.0)
-            if kw_score > 0:
-                confidence = _confidence(scores, top, second)
-            else:
-                confidence = 0.5
+            confidence = _confidence(scores, top, second) if kw_score > 0 else 0.5
             second_confidence = (
                 _confidence(scores, second, top) if second is not None else 0.0
             )

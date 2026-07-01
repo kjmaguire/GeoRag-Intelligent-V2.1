@@ -27,6 +27,7 @@ Suite markers
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -155,10 +156,8 @@ async def neo4j_driver():
             return
         yield driver
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await driver.close()
-        except Exception:
-            pass
 
 
 @pytest_asyncio.fixture

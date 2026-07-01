@@ -1,6 +1,7 @@
 """Live tests for the §25.4 support_packet agent (doc-phase 140)."""
 from __future__ import annotations
 
+import contextlib
 import os
 from uuid import uuid4
 
@@ -61,10 +62,8 @@ async def synthetic_user(conn):
     try:
         yield user_id
     finally:
-        try:
+        with contextlib.suppress(asyncpg.ForeignKeyViolationError):
             await conn.execute("DELETE FROM public.users WHERE id = $1", user_id)
-        except asyncpg.ForeignKeyViolationError:
-            pass
 
 
 @pytest.fixture

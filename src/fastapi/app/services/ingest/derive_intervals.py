@@ -190,7 +190,7 @@ def _build_samples(curves: CurvePack, intervals: list[tuple[float, float, str]])
         while cur_from < to_m:
             cur_to = min(cur_from + SAMPLE_COMPOSITE_M, to_m)
             grade_vals = [
-                g for d, g in zip(curves.depths_m, curves.grade)
+                g for d, g in zip(curves.depths_m, curves.grade, strict=False)
                 if cur_from <= d < cur_to and abs(g - curves.null_value) > 1e-6
             ]
             if grade_vals:
@@ -317,7 +317,7 @@ async def _emit_for_collar(
         "hole_id": hole_id,
         "intervals": litho_inserted,
         "samples": samples_inserted,
-        "ore_bands": sum(1 for _, _, l in intervals if l == "ORE"),
+        "ore_bands": sum(1 for _, _, l in intervals if l == "ORE"),  # noqa: E741
         "max_depth_m": round(max(pack.depths_m), 1) if pack.depths_m else 0,
     }
 

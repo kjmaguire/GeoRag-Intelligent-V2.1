@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Phase 13 Step 1 (R-P12-more-prompts) — the classifier system prompt
 # was previously a module-level triple-quoted string here. It now lives
 # at the canonical Phase 11 Step 3 path; see prompts/classifier_system.py.
-from app.agent.prompts.classifier_system import (
+from app.agent.prompts.classifier_system import (  # noqa: E402
     SYSTEM_PROMPT as _CLASSIFIER_SYSTEM_PROMPT,
 )
 

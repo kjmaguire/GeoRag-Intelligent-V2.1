@@ -101,7 +101,7 @@ def build_report_builder_graph(*, checkpointer: object | None = None):
         g.add_node(name, fn)
 
     g.add_edge(START, _PIPELINE[0][0])
-    for (prev_name, _), (next_name, _) in zip(_PIPELINE, _PIPELINE[1:]):
+    for (prev_name, _), (next_name, _) in zip(_PIPELINE, _PIPELINE[1:], strict=False):
         g.add_edge(prev_name, next_name)
     g.add_edge(_PIPELINE[-1][0], END)
 

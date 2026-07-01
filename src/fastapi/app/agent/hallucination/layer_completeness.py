@@ -144,10 +144,7 @@ def _is_exempt(sentence: str) -> bool:
     for phrase in _REFUSAL_PHRASES:
         if phrase in lowered:
             return True
-    for starter in _IMPERATIVE_STARTERS:
-        if lowered.startswith(starter):
-            return True
-    return False
+    return any(lowered.startswith(starter) for starter in _IMPERATIVE_STARTERS)
 
 
 def _has_marker(sentence: str) -> bool:

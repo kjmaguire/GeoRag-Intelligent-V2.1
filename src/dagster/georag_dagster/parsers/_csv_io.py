@@ -59,7 +59,7 @@ def _sha256_hex(raw: bytes) -> str:
 
 
 def open_csv_with_encoding(
-    source: Union[str, Path, IO],
+    source: Union[str, Path, IO],  # noqa: UP007
 ) -> tuple[StringIO, str, str, int]:
     """Read *source* as bytes, detect encoding, return (StringIO, encoding_name, sha256_hex, byte_count).
 

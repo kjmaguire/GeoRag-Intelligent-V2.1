@@ -52,6 +52,8 @@ def _ensure_parser_stub():
 
 _ensure_parser_stub()
 
+import contextlib  # noqa: E402
+
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.hatchet_workflows import stale_run_detector as srd  # noqa: E402
 
@@ -117,18 +119,14 @@ async def _force_stale_heartbeat(run_id: str, minutes_old: int = 30) -> None:
 @pytest.fixture(autouse=True)
 async def _bootstrap():
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
     await _ensure_test_workspace()
     yield
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
 
 

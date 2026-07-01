@@ -4,13 +4,13 @@ Pure-function module — no DB writes, only reads + policy decisions.
 """
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 import asyncpg
 
 
-class RiskTier(str, Enum):
+class RiskTier(StrEnum):
     R0 = "R0"  # read-only — automatic
     R1 = "R1"  # internal suggestion — automatic
     R2 = "R2"  # internal write — policy check

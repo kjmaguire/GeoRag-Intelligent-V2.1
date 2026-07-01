@@ -530,9 +530,11 @@ async def get_stereonet(
 # §17.3 — 8 additional chart types (long-section, Harker, spider, REE,
 # ternary, grade-tonnage, anomaly map, target heatmap)
 # ============================================================================
-from pydantic import BaseModel, Field
+import contextlib  # noqa: E402
 
-from app.services.visualizations.additional_charts import (
+from pydantic import BaseModel, Field  # noqa: E402
+
+from app.services.visualizations.additional_charts import (  # noqa: E402
     KNOWN_CHARTS,
     render_chart,
 )
@@ -809,12 +811,10 @@ async def render_chart_endpoint(
         workspace_id_str = ws.workspace_id
     else:
         workspace_id_str = LEGACY_DEFAULT_TENANT_UUID
-        try:
+        with contextlib.suppress(Exception):
             WORKSPACE_RESOLUTION_FAILURES.labels(
                 site="visualizations.render"
             ).inc()
-        except Exception:
-            pass
 
     try:
         if body.chart_kind == "long_section" and body.project_id and pg_pool:

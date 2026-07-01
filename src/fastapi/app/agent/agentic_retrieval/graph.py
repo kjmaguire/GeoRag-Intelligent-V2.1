@@ -71,7 +71,7 @@ def _build_graph() -> Any:
     for name, fn in _PIPELINE:
         g.add_node(name, fn)
     g.add_edge(START, _PIPELINE[0][0])
-    for (a, _), (b, _) in zip(_PIPELINE, _PIPELINE[1:]):
+    for (a, _), (b, _) in zip(_PIPELINE, _PIPELINE[1:], strict=False):
         g.add_edge(a, b)
     g.add_edge(_PIPELINE[-1][0], END)
     return g.compile()

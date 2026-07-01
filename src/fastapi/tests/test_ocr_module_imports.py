@@ -94,7 +94,7 @@ def test_ocr_skeletons_raise_notimplemented(
     from pathlib import Path
 
     args = []
-    for param_name, param in sig.parameters.items():
+    for _param_name, param in sig.parameters.items():
         if param.default is not inspect.Parameter.empty:
             continue  # has default → optional, skip
         if param.annotation is Path or "Path" in str(param.annotation):

@@ -23,6 +23,7 @@ Pool: ``ingestion``. Action: ``ingest_pdf``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -304,7 +305,7 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
         # Best-effort cleanup of any per-sha figure tempdir the parser
         # may have created. PNGs were already uploaded to S3 (figures/
         # _pending/{sha}/...) so the on-disk copy is no longer needed.
-        try:
+        try:  # noqa: SIM105
             _shutil.rmtree(f"{_FIGURE_TEMPDIR_ROOT}/{sha256}", ignore_errors=True)
         except Exception:  # noqa: BLE001
             pass
@@ -1038,12 +1039,10 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         # Audit item B4 — centralised legacy default + metric so Phase-2
         # cutover (raise instead of fallback) sees this as a single search.
         workspace_id_str = LEGACY_DEFAULT_TENANT_UUID
-        try:
+        with contextlib.suppress(Exception):
             WORKSPACE_RESOLUTION_FAILURES.labels(
                 site="ingest_pdf.persist"
             ).inc()
-        except Exception:
-            pass
         log.warning(
             "ingest_pdf.persist: input.workspace_id was null; "
             "falling back to default workspace. minio_key=%s",
@@ -1408,12 +1407,10 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
                 wsid = str(input.workspace_id)
             else:
                 wsid = LEGACY_DEFAULT_TENANT_UUID
-                try:
+                with contextlib.suppress(Exception):
                     WORKSPACE_RESOLUTION_FAILURES.labels(
                         site="ingest_pdf.dispatch_embed"
                     ).inc()
-                except Exception:
-                    pass
             embed_input = EmbedPendingPassagesInput(
                 workspace_id=wsid,
                 project_id=str(input.project_id),

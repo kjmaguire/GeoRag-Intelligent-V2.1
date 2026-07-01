@@ -15,7 +15,7 @@ import pytest
 
 @dataclass
 class _BBox:
-    l: float
+    l: float  # noqa: E741
     t: float
     r: float
     b: float
@@ -61,11 +61,11 @@ def fallback():
     return _nearest_text_below_figure
 
 
-def _make_figure_at(page=1, l=100, t=200, r=400, b=400) -> _Pic:
+def _make_figure_at(page=1, l=100, t=200, r=400, b=400) -> _Pic:  # noqa: E741
     return _Pic(prov=[_Prov(page_no=page, bbox=_BBox(l, t, r, b))])
 
 
-def _make_text(text, page=1, l=100, t=420, r=400, b=440) -> _Txt:
+def _make_text(text, page=1, l=100, t=420, r=400, b=440) -> _Txt:  # noqa: E741
     return _Txt(text=text, prov=[_Prov(page_no=page, bbox=_BBox(l, t, r, b))])
 
 

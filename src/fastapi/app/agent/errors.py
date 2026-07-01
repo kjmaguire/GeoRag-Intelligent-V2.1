@@ -6,10 +6,10 @@ messages so the frontend can render actionable feedback.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     """Structured error codes for the RAG pipeline."""
     TIMEOUT = "TIMEOUT"
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"

@@ -25,9 +25,9 @@ import asyncio
 import contextvars
 import json
 import logging
-import os
+import os  # noqa: F401
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timezone  # noqa: F401
 from typing import Any
 from uuid import UUID
 
@@ -40,16 +40,16 @@ from app.agent.hallucination.layer2_typed_output import validate_and_repair
 from app.agent.hallucination.layer5_provenance import enrich_provenance
 from app.agent.hallucination.orchestrator_validators import run_post_assembly_validation
 from app.agent.public_geoscience_tool import (
-    PublicGeoscienceSearchResult,
+    PublicGeoscienceSearchResult,  # noqa: F401
     search_public_geoscience,
 )
 from app.agent.response_assembler import assemble_response, assign_citation_ids
 from app.agent.tools import (
     AssayDataResult,
     DocumentSearchResult,
-    DownholeLogsResult,
+    DownholeLogsResult,  # noqa: F401
     GraphTraversalResult,
-    ProjectOverviewResult,
+    ProjectOverviewResult,  # noqa: F401
     SpatialQueryResult,
     query_assay_data,
     query_downhole_logs,
@@ -93,7 +93,7 @@ from app.agent.egress_gate import (  # noqa: E402
 )
 from app.agent.llm_calls import (  # noqa: E402
     LLMCallBudgetExceeded,
-    WorkspaceQuotaExceeded,
+    WorkspaceQuotaExceeded,  # noqa: F401
     _build_user_message,
     _call_anthropic_llm,
     _call_llm,
@@ -112,24 +112,24 @@ from app.agent.llm_calls import (  # noqa: E402
 # working. See docs/master_plan_orchestrator_refactor.md.
 # ---------------------------------------------------------------------------
 from app.agent.query_classification import (  # noqa: E402  (kept under module-level imports)
-    _ASSAY_KEYWORDS,
-    _CANONICAL_TYPE_HINTS,
-    _COMMODITY_TOKENS_TO_CODE,
-    _DOCUMENT_KEYWORDS,
-    _DOWNHOLE_KEYWORDS,
-    _ELEMENT_KEYWORDS,
-    _GEO_SYNONYMS,
-    _GRAPH_KEYWORDS,
-    _JURISDICTION_ALIASES,
-    _LABEL_KEYWORDS,
-    _PUBLIC_GEOSCIENCE_KEYWORDS,
-    _SPATIAL_KEYWORDS,
+    _ASSAY_KEYWORDS,  # noqa: F401
+    _CANONICAL_TYPE_HINTS,  # noqa: F401
+    _COMMODITY_TOKENS_TO_CODE,  # noqa: F401
+    _DOCUMENT_KEYWORDS,  # noqa: F401
+    _DOWNHOLE_KEYWORDS,  # noqa: F401
+    _ELEMENT_KEYWORDS,  # noqa: F401
+    _GEO_SYNONYMS,  # noqa: F401
+    _GRAPH_KEYWORDS,  # noqa: F401
+    _JURISDICTION_ALIASES,  # noqa: F401
+    _LABEL_KEYWORDS,  # noqa: F401
+    _PUBLIC_GEOSCIENCE_KEYWORDS,  # noqa: F401
+    _SPATIAL_KEYWORDS,  # noqa: F401
     _classify_query,
     _detect_assay_element,
     _expand_query,
     _extract_graph_entities,
     _extract_label_from_query,
-    _extract_public_geoscience_hints,
+    _extract_public_geoscience_hints,  # noqa: F401
     _sanitize_query,
     _select_temperature,
 )
@@ -1083,25 +1083,25 @@ from app.agent.context_builder import _build_context  # noqa: E402
 # orchestrator.run_cache directly.
 # ---------------------------------------------------------------------------
 from app.agent.orchestrator.run_cache import (  # noqa: E402
-    build_cached_candidates as _build_cached_candidates,
+    build_cached_candidates as _build_cached_candidates,  # noqa: F401
 )
-from app.agent.orchestrator.run_cache import (
+from app.agent.orchestrator.run_cache import (  # noqa: E402
     build_cached_context as _build_cached_context,
 )
-from app.agent.orchestrator.run_cache import (
+from app.agent.orchestrator.run_cache import (  # noqa: E402
     cache_key as _cache_key_impl,
 )
-from app.agent.orchestrator.run_cache import (
+from app.agent.orchestrator.run_cache import (  # noqa: E402
     fetch_data_versions as _fetch_data_versions_impl,
 )
-from app.agent.orchestrator.run_cache import (
+from app.agent.orchestrator.run_cache import (  # noqa: E402
     rehydrate_tool_results as _rehydrate_tool_results,
 )
 from app.agent.tool_result_helpers import (  # noqa: E402
-    _build_collar_aggregates,
+    _build_collar_aggregates,  # noqa: F401
     _build_retrieval_summary,
     _is_empty_tool_result,
-    _mmr_select_chunks,
+    _mmr_select_chunks,  # noqa: F401
 )
 
 
@@ -1301,6 +1301,10 @@ async def run_deterministic_rag(
     # outage so the chat product survives a cost-infra outage.
     _ws_for_check = getattr(deps, "workspace_id", None)
     if _ws_for_check:
+        # Resolve the pooled Redis client here (it is otherwise not bound
+        # until later in this function). None → the suspension check fails
+        # OPEN, matching the "survive a Redis outage" contract above.
+        redis_client = getattr(deps, "redis_client", None)
         # WorkspaceQuotaExceeded propagates — the router translates it
         # into HTTP 429 with Retry-After pointing at the next period
         # rollover.
@@ -1540,7 +1544,7 @@ async def run_deterministic_rag(
         from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
         from app.models.answer_run import AnswerRunCreate as _ARCEarly  # noqa: PLC0415
         from app.services.answer_run_store import insert_answer_run as _insert_ar_early  # noqa: PLC0415
-        from app.services.citation_lifecycle import transition_lifecycle as _tl  # noqa: PLC0415
+        from app.services.citation_lifecycle import transition_lifecycle as _tl  # noqa: F401, PLC0415
         _ws_id_early = WorkspaceContext.from_state(
             _SN(workspace_id=_workspace_id_for_key),
             site="orchestrator.early_answer_run",
@@ -1582,7 +1586,7 @@ async def run_deterministic_rag(
     #   deserialize CachedRetrievalContext → rehydrate candidates → synthesize fresh
     # Cache miss flow:
     #   retrieve → rrf → rerank → SETEX(CachedRetrievalContext) → synthesize
-    import json as _json
+    import json as _json  # noqa: F401
     cache_key = _cache_key(
         query,
         deps.project_id,
@@ -1611,7 +1615,7 @@ async def run_deterministic_rag(
 
     # Sentinel: populated when cache hit returns a valid CachedRetrievalContext.
     # None means cache miss (or read failure) — retrieval will run normally.
-    _cached_retrieval_ctx: CachedRetrievalContext | None = None
+    _cached_retrieval_ctx: CachedRetrievalContext | None = None  # noqa: F821
     _cache_hit: bool = False
 
     # Phase G overnight — gate cache READ behind RETRIEVAL_CACHE_ENABLED.
@@ -1838,7 +1842,7 @@ async def run_deterministic_rag(
         )
 
         spatial_result = doc_result = pg_result = None
-        for (tool_name, _), outcome in zip(parallel_branches, parallel_outcomes):
+        for (tool_name, _), outcome in zip(parallel_branches, parallel_outcomes, strict=False):
             if isinstance(outcome, BaseException):
                 partial_failures.append((tool_name, type(outcome).__name__))
                 logger.warning(
@@ -2174,7 +2178,7 @@ async def run_deterministic_rag(
                                 # tool_results with the rephrased-query result,
                                 # or append if there wasn't one.
                                 replaced = False
-                                for i, (name, r) in enumerate(tool_results):
+                                for i, (name, _r) in enumerate(tool_results):
                                     if name == "search_documents":
                                         tool_results[i] = ("search_documents", alt)
                                         replaced = True
@@ -3481,7 +3485,7 @@ async def run_deterministic_rag(
         # Build partial_failure_details from tool-branch failures.
         _pf_details: dict[str, str] | None = None
         if partial_failures:
-            _pf_details = {tool_name: exc_class for tool_name, exc_class in partial_failures}
+            _pf_details = {tool_name: exc_class for tool_name, exc_class in partial_failures}  # noqa: C416
 
         # Resolve workspace_id via WorkspaceContext (Phase 1 — observes +
         # falls back; Phase 2 will hard-fail). _workspace_id_for_key was

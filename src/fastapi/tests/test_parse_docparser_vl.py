@@ -121,7 +121,7 @@ def test_maps_paddleocr_vl_output_to_parse_mixed_schema(monkeypatch: pytest.Monk
 
     # Layouts: every detected region, including the text-less figure.
     assert len(result["layouts"]) == 6
-    assert {l["layout_label"] for l in result["layouts"]} >= {"figure", "table"}
+    assert {l["layout_label"] for l in result["layouts"]} >= {"figure", "table"}  # noqa: E741
 
     # Polygon bbox on page 1 collapsed to its axis-aligned envelope.
     page1_passage = [p for p in result["passages"] if p["page"] == 1][0]

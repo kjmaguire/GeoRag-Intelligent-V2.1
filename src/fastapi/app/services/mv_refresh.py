@@ -356,7 +356,7 @@ async def _refresh_one(
                 error=None,
             )
         finally:
-            try:
+            try:  # noqa: SIM105
                 await conn.execute(
                     "SELECT pg_advisory_unlock(hashtext($1)::bigint)", lock_key,
                 )

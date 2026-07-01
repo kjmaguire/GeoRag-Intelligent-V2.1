@@ -16,6 +16,7 @@ active golden question row from the doc-phase 124 mechanical seed.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from uuid import UUID, uuid4
@@ -78,12 +79,10 @@ async def synthetic_user(conn):
         # Best effort; if any golden_questions reference this user
         # via FK RESTRICT, skip the delete (matches doc-phase 124
         # pattern).
-        try:
+        with contextlib.suppress(asyncpg.ForeignKeyViolationError):
             await conn.execute(
                 "DELETE FROM public.users WHERE id = $1", user_id
             )
-        except asyncpg.ForeignKeyViolationError:
-            pass
 
 
 @pytest.fixture

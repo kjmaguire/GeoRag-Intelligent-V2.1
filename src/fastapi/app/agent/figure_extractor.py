@@ -30,6 +30,7 @@ assumes the docling/pdfminer points/bottom-left convention).
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import logging
@@ -130,10 +131,8 @@ def extract_figures_from_pdf(pdf_path: str) -> list[dict]:
                     "image_bytes": data,
                 })
     finally:
-        try:
+        with contextlib.suppress(Exception):
             pdf.close()
-        except Exception:
-            pass
 
     logger.info(
         "extract_figures_from_pdf: %d figure(s) from %s",
@@ -228,10 +227,8 @@ def extract_figures_from_layout(
                     "image_bytes": data,
                 })
     finally:
-        try:
+        with contextlib.suppress(Exception):
             pdf.close()
-        except Exception:
-            pass
 
     logger.info(
         "extract_figures_from_layout: %d figure(s) from %d region(s) in %s",

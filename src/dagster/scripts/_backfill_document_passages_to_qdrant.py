@@ -32,12 +32,12 @@ _DAGSTER_APP_ROOT = Path(__file__).resolve().parent.parent
 if str(_DAGSTER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_DAGSTER_APP_ROOT))
 
-import psycopg2
-import psycopg2.extras
-from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, SparseVector
+import psycopg2  # noqa: E402
+import psycopg2.extras  # noqa: E402
+from qdrant_client import QdrantClient  # noqa: E402
+from qdrant_client.models import PointStruct, SparseVector  # noqa: E402
 
-from georag_dagster.assets.index_document_passages import (
+from georag_dagster.assets.index_document_passages import (  # noqa: E402
     EMBED_BATCH_SIZE,
     EMBED_MODEL_NAME,
     PAYLOAD_TEXT_LIMIT,
@@ -47,7 +47,7 @@ from georag_dagster.assets.index_document_passages import (
     _ensure_collection,
     _get_model,
 )
-from georag_dagster.assets.sparse_encoder import (
+from georag_dagster.assets.sparse_encoder import (  # noqa: E402
     encode_sparse_batch,
 )
 

@@ -45,6 +45,7 @@ Registered in geo_agent.py with ``@geo_agent.output_validator``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -140,10 +141,8 @@ def _flatten_tool_result_to_numbers(obj: object, _depth: int = 0) -> set[float]:
             # Also scan the string for embedded numbers (e.g. collar IDs,
             # SQL query strings that contain the verified value).
             for m in _NUMBER_RE.finditer(stripped):
-                try:
+                with contextlib.suppress(ValueError):
                     numbers.add(float(m.group(1)))
-                except ValueError:
-                    pass
         return numbers
 
     if isinstance(obj, (list, tuple)):
@@ -169,10 +168,8 @@ def _flatten_tool_result_to_numbers(obj: object, _depth: int = 0) -> set[float]:
         pass
 
     # Fallback: try __dict__
-    try:
+    with contextlib.suppress(TypeError):
         numbers |= _flatten_tool_result_to_numbers(vars(obj), _depth + 1)
-    except TypeError:
-        pass
 
     return numbers
 
@@ -227,10 +224,7 @@ def _is_grounded(value: float, grounded: set[float], tolerance: float = 0.01) ->
     """Return True if value appears (within tolerance) in the grounded number set."""
     if value in grounded:
         return True
-    for g in grounded:
-        if abs(value - g) <= tolerance:
-            return True
-    return False
+    return any(abs(value - g) <= tolerance for g in grounded)
 
 
 async def verify_numerical_claims(

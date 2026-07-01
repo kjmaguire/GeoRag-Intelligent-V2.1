@@ -485,7 +485,7 @@ def index_reports(
         # The key itself is used when we don't have the title separately
         # (sections_text stores body only; title was not persisted to the dict).
         # The chunk format remains informative even without a separate title.
-        if section_key.isdigit():
+        if section_key.isdigit():  # noqa: SIM108
             section_label = f"Section {section_key}"
         else:
             section_label = section_key.capitalize()
@@ -557,7 +557,7 @@ def index_reports(
 
         # section_number payload field must be int when the key is numeric;
         # keep as string for named keys (Qdrant payload is schema-less).
-        if section_key.isdigit():
+        if section_key.isdigit():  # noqa: SIM108
             section_number_payload = int(section_key)
         else:
             section_number_payload = section_key  # type: ignore[assignment]

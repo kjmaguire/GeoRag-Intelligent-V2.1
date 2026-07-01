@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # Sentinel base class catch — qdrant_client's exception hierarchy. We
 # import lazily to avoid the dep at module-import time (the fallback
 # module is imported in the hot path; qdrant_client adds ~80ms cold).
-from app.db import bind_workspace_scope
+from app.db import bind_workspace_scope  # noqa: E402
 
 
 def _is_qdrant_unavailability(exc: BaseException) -> bool:
@@ -194,7 +194,7 @@ def _fire_fallback_metric(collection: str) -> None:
         # because prometheus_client deduplicates by name.
         global _QDRANT_FALLBACK_TOTAL
         try:
-            _QDRANT_FALLBACK_TOTAL  # type: ignore[name-defined]
+            _QDRANT_FALLBACK_TOTAL  # type: ignore[name-defined]  # noqa: B018
         except NameError:
             _QDRANT_FALLBACK_TOTAL = Counter(  # type: ignore[assignment]
                 "georag_qdrant_fallback_total",

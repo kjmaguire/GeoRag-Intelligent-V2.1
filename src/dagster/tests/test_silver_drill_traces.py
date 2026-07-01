@@ -232,10 +232,6 @@ class TestEdgeCase5HighDogleg:
 
     def test_zero_dogleg_vertical_hole(self):
         """Perfectly vertical hole has zero dogleg."""
-        stations = [
-            {"depth": 0.0,  "azimuth": 0.0, "dip": -90.0},
-            {"depth": 30.0, "azimuth": 0.0, "dip": -90.0},
-        ]
         dls = _dogleg_severity_deg_per_30m(0.0, -90.0, 0.0, -90.0, 30.0)
         assert dls == pytest.approx(0.0, abs=1e-9)
 

@@ -201,7 +201,7 @@ async def test_refuses_wrong_jurisdiction_diamond_sk() -> None:
 
     response_text: str = completed.get("text", "")
     confidence: float = completed.get("confidence", 1.0)
-    stripped = re.sub(r"\[(?:DATA|NI43|PUB|PGEO)-\d+\]", "<CIT>", response_text)
+    re.sub(r"\[(?:DATA|NI43|PUB|PGEO)-\d+\]", "<CIT>", response_text)
 
     # Check 3: refusal/deflection OR every diamond mention is cited.
     has_refusal = any(

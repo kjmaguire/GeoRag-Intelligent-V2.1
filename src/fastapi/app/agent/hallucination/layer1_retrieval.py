@@ -63,7 +63,7 @@ _T = TypeVar("_T", bound=HasRelevanceScore)
 # ---------------------------------------------------------------------------
 
 
-def filter_by_quality(results: list[_T], threshold: float) -> list[_T]:
+def filter_by_quality[T: HasRelevanceScore](results: list[_T], threshold: float) -> list[_T]:
     """Filter a list of scored results, dropping those below the quality threshold.
 
     Args:

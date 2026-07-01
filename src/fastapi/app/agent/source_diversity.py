@@ -156,7 +156,7 @@ def apply_source_diversity(
         # equal — pure no-op shortcut.
         same_order = all(
             a.evidence_id == b.evidence_id
-            for a, b in zip(packet.evidence, selected)
+            for a, b in zip(packet.evidence, selected, strict=False)
         )
         if same_order:
             return packet

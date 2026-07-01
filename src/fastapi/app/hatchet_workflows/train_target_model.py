@@ -22,6 +22,7 @@ Pattern matches other AI-pool workflows.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -195,11 +196,11 @@ async def execute(
             """,
             str(input.target_model_id),
         )
-        outcomes_used = len({r["hit_or_miss"] for r in rows}) if rows else 0
+        len({r["hit_or_miss"] for r in rows}) if rows else 0
         labeled_rows = [
             r for r in rows if r["hit_or_miss"] in ("hit", "miss")
         ]
-        unique_outcomes = len({
+        len({
             (r["hit_or_miss"], r["factor_name"]) for r in labeled_rows
         })
 
@@ -244,12 +245,10 @@ async def execute(
         )
         if workspace_id is None:
             workspace_id = LEGACY_DEFAULT_TENANT_UUID
-            try:
+            with contextlib.suppress(Exception):
                 WORKSPACE_RESOLUTION_FAILURES.labels(
                     site="train_target_model.lookup"
                 ).inc()
-            except Exception:
-                pass
 
         # Bump version number for this model.
         next_version = await conn.fetchval(

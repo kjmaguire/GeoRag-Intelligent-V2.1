@@ -1551,13 +1551,13 @@ async def list_questions(
     pi = 1
     if question_set:
         where.append(f"question_set = ${pi}")
-        params.append(question_set); pi += 1
+        params.append(question_set); pi += 1  # noqa: E702
     if status:
         where.append(f"status = ${pi}")
-        params.append(status); pi += 1
+        params.append(status); pi += 1  # noqa: E702
     if search:
         where.append(f"question_text ILIKE ${pi}")
-        params.append(f"%{search}%"); pi += 1
+        params.append(f"%{search}%"); pi += 1  # noqa: E702
     where_sql = " AND ".join(where)
 
     async with pool.acquire() as conn:

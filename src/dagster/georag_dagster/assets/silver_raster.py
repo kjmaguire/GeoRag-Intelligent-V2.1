@@ -280,7 +280,7 @@ def silver_raster(
             }
         )
     finally:
-        try:
+        try:  # noqa: SIM105
             os.unlink(tmp_path)
         except OSError:
             pass

@@ -72,7 +72,7 @@ def _record_to_dict(r: asyncpg.Record) -> dict[str, Any]:
     """Convert asyncpg Record → JSON-safe dict (str-cast UUIDs and
     datetimes)."""
     out: dict[str, Any] = {}
-    for k in r.keys():
+    for k in r.keys():  # noqa: SIM118 — asyncpg.Record iterates VALUES, not keys
         v = r[k]
         if hasattr(v, "isoformat"):
             out[k] = v.isoformat()

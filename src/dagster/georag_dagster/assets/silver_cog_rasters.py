@@ -74,7 +74,7 @@ except ImportError as _cog_err:
 
 try:
     import rasterio
-    from rasterio.crs import CRS as RasterioCRS
+    from rasterio.crs import CRS as RasterioCRS  # noqa: F401
     _RASTERIO_AVAILABLE = True
 except ImportError:
     rasterio = None  # type: ignore[assignment]
@@ -552,7 +552,7 @@ def cog_readable_check(
             continue
 
         try:
-            sidecar = CogSidecarMetadata.model_validate(sidecar_raw)
+            CogSidecarMetadata.model_validate(sidecar_raw)
         except Exception as exc:
             failures.append(f"{sidecar_path}: sidecar validation failed: {exc}")
             continue
@@ -589,7 +589,7 @@ def cog_readable_check(
         except Exception as exc:
             failures.append(f"{cog_object}: rasterio.open() failed: {exc}")
         finally:
-            try:
+            try:  # noqa: SIM105
                 os.unlink(tmp_path)
             except OSError:
                 pass

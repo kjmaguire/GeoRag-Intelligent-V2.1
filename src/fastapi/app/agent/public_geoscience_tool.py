@@ -247,7 +247,7 @@ async def search_public_geoscience(
         )
 
     records: list[PublicGeoscienceRecord] = []
-    for ct, result in zip(types_to_query, fetched):
+    for ct, result in zip(types_to_query, fetched, strict=False):
         if isinstance(result, Exception):
             logger.warning(
                 "search_public_geoscience: %s collection failed: %s",

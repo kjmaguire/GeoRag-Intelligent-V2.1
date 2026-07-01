@@ -29,6 +29,7 @@ Scope deliberately narrow for doc-phase 63:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import tempfile
@@ -234,10 +235,8 @@ async def execute(input: ReOcrPageInput, ctx: Context) -> ReOcrPageOutput:
                 retry_attempt=retry_attempt,
             )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             tmp_path.unlink()
-        except Exception:
-            pass
 
     new_ocr_confidence = (
         parse_result["per_page_ocr_confidence"][0]

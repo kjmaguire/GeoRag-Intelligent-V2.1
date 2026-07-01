@@ -360,10 +360,7 @@ async def ingest_las_file(
     drill_date = _parse_las_date(date_str)
 
     # Project name — derive from company + field if both present, else fallback
-    if company and field:
-        project_name = f"{company} — {field}"
-    else:
-        project_name = project_name_fallback
+    project_name = f"{company} — {field}" if company and field else project_name_fallback
 
     region = ", ".join(filter(None, [county, state])) or "Wyoming"
 

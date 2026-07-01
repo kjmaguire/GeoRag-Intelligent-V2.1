@@ -48,10 +48,10 @@ log = logging.getLogger("georag.eval.real_llm_evaluator")
 # `app.services.eval.validators` module so real_llm_v1 and real_rag_v1
 # share the same Layer 6 logic. Keep `_REFUSAL_PATTERNS` + `_detect_refusal`
 # as backward-compat aliases for existing test imports.
-from app.services.eval.validators import (
+from app.services.eval.validators import (  # noqa: E402
     REFUSAL_PATTERNS as _REFUSAL_PATTERNS,
 )
-from app.services.eval.validators import (
+from app.services.eval.validators import (  # noqa: E402
     detect_refusal as _detect_refusal,
 )
 
@@ -74,7 +74,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _detect_refusal(text: str) -> bool:
+def _detect_refusal(text: str) -> bool:  # noqa: F811
     """Return True if the response text reads as a refusal.
 
     Conservative heuristic — matches any of the canonical refusal

@@ -683,7 +683,7 @@ def _sanitize_query(query: str) -> str:
 
             global _PROMPT_INJECTION_ATTEMPTS
             try:
-                _PROMPT_INJECTION_ATTEMPTS  # type: ignore[name-defined]
+                _PROMPT_INJECTION_ATTEMPTS  # type: ignore[name-defined]  # noqa: B018
             except NameError:
                 _PROMPT_INJECTION_ATTEMPTS = Counter(  # type: ignore[assignment]
                     "georag_prompt_injection_attempts_total",

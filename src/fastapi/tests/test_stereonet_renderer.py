@@ -118,7 +118,7 @@ def test_plotly_point_coords_inside_unit_circle() -> None:
     for trace in fig["data"]:
         if trace.get("mode") != "markers":
             continue
-        for x, y in zip(trace["x"], trace["y"]):
+        for x, y in zip(trace["x"], trace["y"], strict=False):
             r = math.sqrt(x * x + y * y)
             assert r <= 1.0 + 1e-9, f"Point ({x}, {y}) outside unit circle"
 

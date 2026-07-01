@@ -34,13 +34,13 @@ Operator levers
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from app.config import settings
 
 
-class ModelTier(str, Enum):
+class ModelTier(StrEnum):
     """Cost/capability tiers that the classifier maps into."""
 
     FAST = "fast"          # Haiku-class

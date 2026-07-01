@@ -247,7 +247,6 @@ def _pivot_long_to_wide(
                     break
 
     # Verify required grouping columns are present
-    required_csv_cols_needed = set()
     for canonical_name in _LONG_REQUIRED_GROUPING:
         found = any(alias in col_set for alias in COLUMN_ALIASES.get(canonical_name, []))
         if not found:
@@ -701,7 +700,7 @@ def _validate_row(
 # ---------------------------------------------------------------------------
 
 def parse_csv_samples(
-    source: Union[str, Path, IO],
+    source: Union[str, Path, IO],  # noqa: UP007
     *,
     null_values: list = None,
 ) -> SampleParseResult:
@@ -722,7 +721,7 @@ def parse_csv_samples(
     global_warnings: list = []
     detected_encoding = "utf-8"
 
-    if isinstance(source, (str, Path)):
+    if isinstance(source, (str, Path)):  # noqa: SIM108
         source_file_str = str(source)
     else:
         source_file_str = "<stream>"

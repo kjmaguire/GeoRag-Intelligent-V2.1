@@ -155,7 +155,7 @@ class TestDecomposeQuery:
         assert len(result.sub_queries) == 2
         assert set(result.detected_projects) == {"Shakespeare", "Ikkari"}
         # Each sub-query mentions only its focus project.
-        for sq, focus in zip(result.sub_queries, result.detected_projects):
+        for sq, focus in zip(result.sub_queries, result.detected_projects, strict=False):
             assert focus in sq
             for other in PROJECTS:
                 if other != focus and other in result.detected_projects:

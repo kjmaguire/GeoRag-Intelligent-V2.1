@@ -16,6 +16,7 @@ take ~10-15 sec; subsequent tests in the same process are warm.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 from pathlib import Path
 
@@ -58,10 +59,8 @@ def synthetic_scanned_pdf(tmp_path_factory: pytest.TempPathFactory, native_pdf_p
         out_path.write_bytes(buf.getvalue())
         return out_path
     finally:
-        try:
+        with contextlib.suppress(Exception):
             src.close()
-        except Exception:
-            pass
 
 
 # ----- render_page -----

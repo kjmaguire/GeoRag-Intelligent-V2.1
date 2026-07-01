@@ -274,10 +274,7 @@ def _matches_tokens(word_set: set[str], tokens: set[str]) -> bool:
 
 def _matches_phrases(lower_text: str, phrases: set[str]) -> bool:
     """Check if any multi-word phrase matches in the text with word boundaries."""
-    for phrase in phrases:
-        if re.search(r"\b" + re.escape(phrase) + r"\b", lower_text):
-            return True
-    return False
+    return any(re.search(r"\b" + re.escape(phrase) + r"\b", lower_text) for phrase in phrases)
 
 
 def _matches(lower_text: str, word_set: set[str], tokens: set[str], phrases: set[str]) -> bool:

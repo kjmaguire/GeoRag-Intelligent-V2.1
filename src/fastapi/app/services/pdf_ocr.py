@@ -243,7 +243,7 @@ def _ocr_worker(crop_png: bytes, dpi: int) -> dict:  # noqa: ARG001
     boxes = getattr(page, "rec_boxes", None)
 
     lines: list[dict] = []
-    for idx, (text, conf) in enumerate(zip(texts, scores)):
+    for idx, (text, conf) in enumerate(zip(texts, scores, strict=False)):
         if not text:
             continue
         # rec_boxes is already axis-aligned in pixel coords — no min/max

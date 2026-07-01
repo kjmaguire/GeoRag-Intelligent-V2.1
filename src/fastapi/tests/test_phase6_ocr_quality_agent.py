@@ -410,7 +410,7 @@ async def test_workflow_skips_passages_with_null_confidence(monkeypatch):
 
 def test_insert_passage_sql_writes_ocr_status_default():
     """INSERT_PASSAGE_SQL on new passage must default ocr_status='accepted'."""
-    src = open("/app/app/hatchet_workflows/ingest_pdf.py").read()
+    src = open("/app/app/hatchet_workflows/ingest_pdf.py").read()  # noqa: SIM115
     # The literal default lives in the VALUES clause
     assert "'accepted'" in src
     # ON CONFLICT does NOT touch ocr_status (preserves any agent-set value)
@@ -421,7 +421,7 @@ def test_insert_passage_sql_writes_ocr_status_default():
 
 def test_persist_dispatches_quality_agent_when_enabled():
     """persist body must dispatch ocr_quality_check_wf when env is set."""
-    src = open("/app/app/hatchet_workflows/ingest_pdf.py").read()
+    src = open("/app/app/hatchet_workflows/ingest_pdf.py").read()  # noqa: SIM115
     assert "ocr_quality_check_wf.aio_run_no_wait" in src
     assert 'OCR_QUALITY_AGENT_ENABLED' in src
 
@@ -429,6 +429,6 @@ def test_persist_dispatches_quality_agent_when_enabled():
 def test_worker_registers_ocr_quality_check():
     """worker.py must import + register ocr_quality_check_wf on the
     ingestion pool so dispatches actually reach a worker."""
-    src = open("/app/app/hatchet_workflows/worker.py").read()
+    src = open("/app/app/hatchet_workflows/worker.py").read()  # noqa: SIM115
     assert "from app.hatchet_workflows.ocr_quality_check import ocr_quality_check_wf" in src
     assert "ocr_quality_check_wf" in src

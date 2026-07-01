@@ -476,7 +476,7 @@ async def insert_citation_items_with_spans(
                     )
                     item_ids.append(UUID(str(row["answer_citation_item_id"])))
 
-                for item_id, spans in zip(item_ids, spans_by_item):
+                for item_id, spans in zip(item_ids, spans_by_item, strict=False):
                     for span in spans:
                         await conn.execute(
                             span_sql,

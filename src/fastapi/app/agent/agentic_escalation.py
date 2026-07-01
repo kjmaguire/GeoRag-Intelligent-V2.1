@@ -194,7 +194,7 @@ async def _fetch_pdf_bytes_for_agent(ctx: RunContext[AgentDeps], pdf_id: str) ->
 # system prompt was previously a 67-line module-level triple-quoted
 # string here. It now lives at the canonical Phase 11 Step 3 path;
 # see prompts/agent_system.py.
-from app.agent.prompts.agent_system import (
+from app.agent.prompts.agent_system import (  # noqa: E402
     SYSTEM_PROMPT as _AGENT_SYSTEM_PROMPT,
 )
 

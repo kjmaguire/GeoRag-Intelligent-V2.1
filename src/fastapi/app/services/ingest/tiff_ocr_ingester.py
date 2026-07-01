@@ -64,7 +64,7 @@ _TESSERACT_TIMEOUT_S = 30  # per page
 #     Charts with form-field labels typically have ~20-30 unique words.
 #
 # Per-deployment override via env: GUARD_FILTER_MIN_STOPWORD_RATIO, etc.
-import os as _os
+import os as _os  # noqa: E402
 
 FILTER_MIN_STOPWORD_RATIO = float(
     _os.environ.get("OCR_FILTER_MIN_STOPWORD_RATIO", "0.0")

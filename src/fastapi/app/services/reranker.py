@@ -105,7 +105,7 @@ RERANKER_MODEL_NAME = "Qwen/Qwen3-Reranker-0.6B"
 # us to hard-code a SHA in source that will rot on the next upstream
 # tag bump). When set, the runtime asserts the resolved SHA at load
 # time so a silent drift surfaces in logs.
-import os as _os_pin  # noqa: PLC0415 — top-level import is fine
+import os as _os_pin  # noqa: E402, PLC0415
 
 RERANKER_REVISION = _os_pin.environ.get("RERANKER_REVISION", "main")
 RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
@@ -320,7 +320,7 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
     # explicitly to 10 (or RERANKER_TORCH_THREADS env override) drops
     # per-pair latency to ~200-250 ms.
     _desired_threads = int(os.environ.get("RERANKER_TORCH_THREADS", "10"))
-    try:
+    try:  # noqa: SIM105
         torch.set_num_threads(_desired_threads)
     except RuntimeError:
         # PyTorch raises if threads were already set elsewhere; not fatal.

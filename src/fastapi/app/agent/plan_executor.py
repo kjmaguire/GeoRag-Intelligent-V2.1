@@ -547,10 +547,7 @@ def _build_agg_sql(
             raise ValueError(f"group_by column not a valid identifier: {col!r}")
 
     # Aggregate expression.
-    if operation == "count":
-        agg_expr = "count(*)"
-    else:
-        agg_expr = f"{operation}({column})"
+    agg_expr = "count(*)" if operation == "count" else f"{operation}({column})"
 
     select_cols: list[str] = []
     if group_by:

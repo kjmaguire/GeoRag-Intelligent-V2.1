@@ -246,7 +246,7 @@ def render_stereonet_matplotlib_png(
             xs, ys = zip(*(
                 _equal_area_project(p.pole_trend_deg, p.pole_plunge_deg)
                 for p in pts
-            ))
+            ), strict=False)
             ax.scatter(
                 xs, ys,
                 s=40,

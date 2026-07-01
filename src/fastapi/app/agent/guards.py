@@ -29,7 +29,7 @@ Testable in isolation.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 __all__ = [
@@ -45,7 +45,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class GuardErrorCode(str, Enum):
+class GuardErrorCode(StrEnum):
     """Plan §4b — 16 structured codes for post-retrieval guard failures.
 
     Distinct from :class:`app.agent.errors.ErrorCode`, which handles
@@ -249,7 +249,7 @@ def classify_guards(
 
 
 from dataclasses import dataclass  # noqa: E402 — keep
-from dataclasses import field as _field
+from dataclasses import field as _field  # noqa: E402
 
                                                    #  detector co-located
 

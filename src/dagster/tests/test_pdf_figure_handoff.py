@@ -117,7 +117,6 @@ def patched_docling():
     """Patch docling.document_converter so _parse_with_docling can run without
     the heavy docling install. Caller supplies pictures via the returned helper.
     """
-    pictures_box = {"pictures": []}
 
     fake_result = MagicMock()
     fake_result.document = None  # set per test via the helper below

@@ -158,7 +158,7 @@ def record_v149_for_shadow(
     except Exception as e:
         # Roll back the failed UPDATE so the surrounding asset transaction
         # can continue with a clean connection state.
-        try:
+        try:  # noqa: SIM105
             postgres_conn.rollback()
         except Exception:  # pragma: no cover
             pass
@@ -342,7 +342,7 @@ def emit_v149_audits(
         _log("v149_audits: emitted parse.complete + reports.write for report_id=%s",
              report_id)
     except Exception as e:
-        try:
+        try:  # noqa: SIM105
             postgres_conn.rollback()
         except Exception:  # pragma: no cover
             pass

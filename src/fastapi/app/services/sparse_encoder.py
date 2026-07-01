@@ -227,7 +227,7 @@ def encode_sparse(text: str) -> dict[int, float]:
     indices: list[int] = nz.tolist()
     values: list[float] = weights[0][nz].cpu().float().tolist()
 
-    return dict(zip(indices, values))
+    return dict(zip(indices, values, strict=False))
 
 
 def encode_sparse_batch(texts: list[str], batch_size: int = 32) -> list[dict[int, float]]:
@@ -280,6 +280,6 @@ def encode_sparse_batch(texts: list[str], batch_size: int = 32) -> list[dict[int
             else:
                 idx: list[int] = nz.tolist()
                 vals: list[float] = weights[i][nz].cpu().float().tolist()
-                results.append(dict(zip(idx, vals)))
+                results.append(dict(zip(idx, vals, strict=False)))
 
     return results

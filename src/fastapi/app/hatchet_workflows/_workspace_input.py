@@ -103,7 +103,7 @@ def bootstrap_workspace_id(*, reason: str) -> str:
             f"a real workspace claim), or thread the workspace context "
             f"through instead — that's almost always the right fix."
         )
-    try:
+    try:  # noqa: SIM105
         WORKSPACE_RESOLUTION_FAILURES.labels(
             site=f"bootstrap_workspace_id:{reason}"
         ).inc()

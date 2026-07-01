@@ -49,6 +49,7 @@ stream rather than a sudden completed event.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -540,10 +541,8 @@ async def _agent_rag_stream(
         # pending task at request teardown.
         if not run_task.done():
             run_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await run_task
-        except (asyncio.CancelledError, Exception):
-            pass
 
     assert final is not None
 

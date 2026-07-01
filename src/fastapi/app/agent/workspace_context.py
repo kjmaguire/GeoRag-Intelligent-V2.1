@@ -115,7 +115,7 @@ class WorkspaceContext:
             return cls(workspace_id=str(raw), is_fallback=False)
 
         # No workspace_id available. Phase-dependent behavior:
-        try:
+        try:  # noqa: SIM105
             WORKSPACE_RESOLUTION_FAILURES.labels(site=site).inc()
         except Exception:
             # Metric emission must never crash the hot path.

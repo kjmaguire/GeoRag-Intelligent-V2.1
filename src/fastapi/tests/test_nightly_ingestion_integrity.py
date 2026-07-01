@@ -21,6 +21,7 @@ import pytest
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 
+import contextlib
 from datetime import UTC
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
@@ -33,17 +34,13 @@ _TEST_PROJECT = "b3000000-0000-0000-0000-0000000bd555"
 @pytest.fixture(autouse=True)
 async def _reset_pool():
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
     yield
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
 
 

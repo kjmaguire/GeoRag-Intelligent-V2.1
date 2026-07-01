@@ -30,6 +30,8 @@ import pytest
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 
+import contextlib
+
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -98,18 +100,14 @@ async def _bootstrap_workspace():
     # pool bound to a closed event loop (pytest-asyncio default mode
     # creates a fresh loop per test).
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
     await _ensure_test_workspace()
     yield
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
 
 

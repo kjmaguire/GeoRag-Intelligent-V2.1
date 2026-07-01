@@ -36,8 +36,6 @@ report "insufficient information" rather than fabricating data.
 
 from __future__ import annotations
 
-from typing import Any
-
 import asyncio
 
 # ---------------------------------------------------------------------------
@@ -53,6 +51,7 @@ import logging
 import re
 import time as _metric_time  # noqa: E402
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import RunContext
 
@@ -1617,7 +1616,6 @@ async def search_documents(
         )
         return DocumentSearchResult(chunks=[], count=0, data_source="Qdrant (model not loaded)")
 
-    effective_threshold = score_threshold if score_threshold is not None else settings.RETRIEVAL_QUALITY_THRESHOLD
 
     # ADR-0010 — hard flag flip between the legacy and canonical document
     # collections. Lifted out of the inner closure so error / timeout /
@@ -1631,10 +1629,7 @@ async def search_documents(
     # When a reranker is present we fetch a wider candidate set (RETRIEVAL_TOP_N)
     # before the cross-encoder narrows it.  Without a reranker we respect the
     # caller-provided limit (capped to 50).
-    if ctx.deps.reranker is not None:
-        initial_limit = settings.RETRIEVAL_TOP_N
-    else:
-        initial_limit = min(limit, 50)
+    initial_limit = settings.RETRIEVAL_TOP_N if ctx.deps.reranker is not None else min(limit, 50)
 
     # Resolve workspace_id for the mandatory GI-9 tenant filter BEFORE running
     # the search. Audit 2026-06-27 (C3): prefer the authenticated workspace on
@@ -1849,7 +1844,7 @@ async def search_documents(
             min_score = settings.RERANKER_SCORE_THRESHOLD
             paired = [
                 (chunk, logit)
-                for chunk, logit in zip(chunks, raw_logits)
+                for chunk, logit in zip(chunks, raw_logits, strict=False)
                 if logit >= min_score
             ]
             paired.sort(key=lambda p: p[1], reverse=True)
@@ -2266,10 +2261,7 @@ async def verify_numerical_claim(
         logger.exception("verify_numerical_claim failed for %s.%s row=%s", table, column, row_id)
         db_value = None
 
-    if db_value is None:
-        verified = False
-    else:
-        verified = abs(claimed_value - db_value) <= tolerance
+    verified = False if db_value is None else abs(claimed_value - db_value) <= tolerance
 
     return NumericalClaimVerification(
         claim_value=claimed_value,

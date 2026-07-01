@@ -236,7 +236,7 @@ async def embed_pending_passages(
 
             # Build Qdrant points
             points: list[PointStruct] = []
-            for row, dv, sv in zip(batch, dense_vectors, sparse_vectors):
+            for row, dv, sv in zip(batch, dense_vectors, sparse_vectors, strict=False):
                 point_id = _passage_to_point_id(row["passage_id"])
                 vector_dict: dict = {"": dv}
                 if sv:
@@ -339,7 +339,7 @@ async def embed_pending_passages(
                     )
 
             # Update silver.document_passages.embedding_id
-            for row, point in zip(batch, points):
+            for row, point in zip(batch, points, strict=False):
                 try:
                     await pg_conn.execute(
                         "UPDATE silver.document_passages "

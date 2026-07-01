@@ -210,7 +210,7 @@ def _parse_mixed_sync(
     )
 
     # Pages with at least one Docling region but zero text → need OCR
-    pages_with_layouts = {l["page"] for l in layouts}
+    pages_with_layouts = {l["page"] for l in layouts}  # noqa: E741
     pages_with_text = {p["page"] for p in passages}
     pages_needing_ocr = sorted(pages_with_layouts - pages_with_text)
     # Also flag pages Docling returned absolutely nothing for (likely

@@ -155,7 +155,7 @@ async def _trigger_bgsave_and_fetch(
 
     # Trigger BGSAVE, retry up to 3x if "save already in progress"
     last_err = ""
-    for attempt in range(3):
+    for _attempt in range(3):
         bg_proc = await asyncio.create_subprocess_exec(
             "docker", "exec", container,
             "redis-cli", "BGSAVE",

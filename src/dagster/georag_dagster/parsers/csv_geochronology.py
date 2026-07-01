@@ -287,7 +287,7 @@ def _validate_row(row_num: int, raw: dict) -> tuple[dict | None, dict | None]:
 
 
 def parse_csv_geochronology(
-    source: Union[str, Path, IO[str]],
+    source: Union[str, Path, IO[str]],  # noqa: UP007
     *,
     null_values: list[str] | None = None,
 ) -> GeochronParseResult:

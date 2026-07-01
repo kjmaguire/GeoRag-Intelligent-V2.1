@@ -264,7 +264,7 @@ async def verify_hmac_signature_async(
         sender_secrets = []
 
     if sender_secrets:
-        for kid, plain in sender_secrets:
+        for _kid, plain in sender_secrets:
             if hmac.compare_digest(_hmac_hex(plain, canonical), inbound):
                 return True, None
         return False, "hmac_signature_mismatch_registry"

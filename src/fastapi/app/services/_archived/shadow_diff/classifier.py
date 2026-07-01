@@ -237,7 +237,7 @@ def _check_resource_tables(
             "check": "resource_tables.count", "a": len(a), "b": len(b), "ok": False,
         }))
         return outs
-    for i, (ta, tb) in enumerate(zip(a, b)):
+    for i, (ta, tb) in enumerate(zip(a, b, strict=False)):
         ha = [_norm(h) for h in (ta.get("headers") or [])]
         hb = [_norm(h) for h in (tb.get("headers") or [])]
         if set(ha) != set(hb):

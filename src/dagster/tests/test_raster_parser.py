@@ -23,7 +23,7 @@ rasterio = pytest.importorskip("rasterio", reason="rasterio not installed")
 
 from rasterio.transform import from_bounds  # noqa: E402
 
-from georag_dagster.parsers.raster_parser import (
+from georag_dagster.parsers.raster_parser import (  # noqa: E402
     RasterBandStats,
     RasterParseResult,
     parse_raster_file,

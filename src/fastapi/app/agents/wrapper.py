@@ -142,14 +142,13 @@ async def _circuit_record(
         await rt.redis.delete(key)
     else:
         # Increment with TTL = cool_down_seconds (sliding).
-        new_count = await rt.redis.incr(key)
+        await rt.redis.incr(key)
         await rt.redis.expire(key, policy["cool_down_seconds"])
         # The breaker check happens BEFORE the next call; we don't trip here.
 
 
 def _compute_idempotency_key(ctx: AgentContext) -> tuple[bytes, dict[str, Any]] | None:
     """Tier-specific idempotency key recipe. Returns (sha256, components) or None for R0/R1."""
-    parts: list[str] = []
     components: dict[str, Any] = {}
 
     tier = ctx.risk_tier
@@ -346,7 +345,7 @@ async def _emit_langfuse_trace(
         # isn't reachable from inside the container — the explicit `base_url=`
         # kwarg overrides any env-var conflict.
         client = Langfuse(public_key=public_key, secret_key=secret_key, base_url=host)
-        try:
+        try:  # noqa: SIM105
             rt.langfuse = client  # cache on runtime for next call
         except Exception:  # pragma: no cover
             pass
@@ -402,7 +401,7 @@ async def _emit_langfuse_trace(
         "error": error,
     }
 
-    try:
+    try:  # noqa: SIM105
         # Wrap in asyncio.to_thread — the Langfuse SDK's create_event /
         # generation methods are sync; we don't want to block the event
         # loop on a network call inside the agent hot-path.
@@ -545,13 +544,13 @@ def georag_agent(
                     if isinstance(value, dict)
                     else {"value_repr": repr(value)[:200]}
                 )
-                try:
+                try:  # noqa: SIM105
                     await _idempotency_store(id_key, id_components, ctx, result_summary, outcome)
                 except Exception:  # pragma: no cover — best-effort
                     pass
 
             # Write usage event if the agent populated ctx.usage.
-            try:
+            try:  # noqa: SIM105
                 await _write_usage_event(ctx, duration_ms, outcome)
             except Exception:  # pragma: no cover
                 pass
@@ -589,7 +588,7 @@ def georag_agent(
             # record of truth; Langfuse is purely observability and must
             # not be in the agent hot-path.
             if _LANGFUSE_READY is not False:
-                try:
+                try:  # noqa: SIM105
                     asyncio.create_task(_emit_langfuse_trace(
                         ctx=ctx,
                         name=name,

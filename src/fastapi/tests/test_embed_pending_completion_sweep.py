@@ -100,6 +100,8 @@ def test_sweep_source_does_not_filter_by_failed_at_null():
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 
+import contextlib  # noqa: E402
+
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 
 # Reuse the workspace + project already provisioned by the state-machine
@@ -143,18 +145,14 @@ async def _cleanup(key: str) -> None:
 @pytest.fixture(autouse=True)
 async def _bootstrap():
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
     await _ensure_test_workspace()
     yield
     if ingest_progress._pool is not None:
-        try:
+        with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
-        except Exception:
-            pass
         ingest_progress._pool = None
 
 

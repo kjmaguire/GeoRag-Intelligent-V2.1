@@ -152,7 +152,7 @@ def bronze_geophysics(
         )
     finally:
         if cleanup_path:
-            try:
+            try:  # noqa: SIM105
                 os.unlink(cleanup_path)
             except OSError:
                 pass

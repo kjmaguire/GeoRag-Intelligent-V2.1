@@ -28,6 +28,7 @@ Run with:
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -114,10 +115,8 @@ def consume_figure_manifest(
                         "sha256": str(img_sha or ""),
                     },
                 )
-                try:
+                with contextlib.suppress(Exception):
                     s3.delete_object(Bucket=bucket, Key=pending_key)
-                except Exception:
-                    pass
             except Exception:
                 final_key = None
 

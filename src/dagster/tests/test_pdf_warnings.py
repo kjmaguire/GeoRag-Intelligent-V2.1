@@ -212,7 +212,7 @@ class TestPdfPlumberPartialExtractionWarning:
             patch("pdfplumber.open", return_value=mock_pdf_ctx),
         ):
             try:
-                result = parse_pdf_report(str(minimal_pdf))
+                parse_pdf_report(str(minimal_pdf))
                 returned_result = True
             except Exception:
                 returned_result = False

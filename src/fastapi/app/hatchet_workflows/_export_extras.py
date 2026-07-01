@@ -21,6 +21,7 @@ Three exports, three patterns:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import Any
@@ -102,10 +103,8 @@ async def export_neo4j_workspace(
     except Exception as exc:  # noqa: BLE001
         return [], [], f"neo4j_export_failed: {type(exc).__name__}: {exc}"
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await driver.close()
-        except Exception:
-            pass
 
     return nodes, rels, None
 

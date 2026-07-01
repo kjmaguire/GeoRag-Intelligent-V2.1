@@ -232,7 +232,7 @@ async def lookup_and_rescope(
                     f"checking, or catching this exception."
                 )
             # Phase 3: extract + validate the pivot value.
-            pivot_value = row[workspace_col] if workspace_col in row else None
+            pivot_value = row.get(workspace_col, None)
             if pivot_value is None or str(pivot_value).strip() == "":
                 raise BareConnectionError(
                     f"lookup_and_rescope({site}): lookup row has no "

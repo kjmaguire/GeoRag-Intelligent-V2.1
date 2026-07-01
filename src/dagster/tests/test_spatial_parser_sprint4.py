@@ -27,7 +27,7 @@ shapely = pytest.importorskip("shapely", reason="shapely not installed")
 
 from shapely.geometry import LineString, Point  # noqa: E402
 
-from georag_dagster.parsers.spatial_parser import (
+from georag_dagster.parsers.spatial_parser import (  # noqa: E402
     SpatialParseResult,
     _detect_format,
     parse_spatial_file,
@@ -305,7 +305,7 @@ EOF
         # If ezdxf is installed (which it is in this environment), the extraction
         # ran and 'dxf_blocks' should NOT be in deferred_capabilities.
         try:
-            import ezdxf  # noqa: PLC0415
+            import ezdxf  # noqa: F401, PLC0415
             assert "dxf_blocks" not in result.deferred_capabilities, (
                 f"Expected 'dxf_blocks' removed after successful extraction; "
                 f"got: {result.deferred_capabilities}"

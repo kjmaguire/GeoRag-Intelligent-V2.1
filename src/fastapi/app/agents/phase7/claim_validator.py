@@ -111,10 +111,7 @@ def _entities_resolve(
         str(row.get("raw_text") or row.get("payload") or "")
         for row in evidence_rows
     ).lower()
-    for ent in claim_entities:
-        if ent.lower() not in haystack:
-            return False
-    return True
+    return all(ent.lower() in haystack for ent in claim_entities)
 
 
 def _geological_constraints_ok(claim: dict[str, Any]) -> tuple[bool, str | None]:

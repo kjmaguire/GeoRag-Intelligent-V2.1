@@ -291,7 +291,7 @@ class AnthropicBatchClient:
 
     def close(self) -> None:
         """Close the underlying HTTP client. Safe to call multiple times."""
-        try:
+        try:  # noqa: SIM105
             self._client.close()
         except Exception:
             pass

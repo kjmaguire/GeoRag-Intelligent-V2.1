@@ -24,6 +24,7 @@ the sole canonical source.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import tempfile
@@ -134,14 +135,10 @@ async def run_p04p_for_ingest(
         log.exception("p04p ingest helper failed report=%s err=%s", report_id, exc)
     finally:
         if pool is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await pool.close()
-            except Exception:
-                pass
         if tmp_path is not None and tmp_path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 tmp_path.unlink()
-            except Exception:
-                pass
 
     return telemetry

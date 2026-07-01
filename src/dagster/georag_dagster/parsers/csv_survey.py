@@ -239,7 +239,7 @@ def _validate_row(
 # ---------------------------------------------------------------------------
 
 def parse_csv_surveys(
-    source: Union[str, Path, IO],
+    source: Union[str, Path, IO],  # noqa: UP007
     *,
     null_values: list = None,
 ) -> SurveyParseResult:
@@ -260,7 +260,7 @@ def parse_csv_surveys(
     global_warnings: list = []
     detected_encoding = "utf-8"
 
-    if isinstance(source, (str, Path)):
+    if isinstance(source, (str, Path)):  # noqa: SIM108
         source_file_str = str(source)
     else:
         source_file_str = "<stream>"

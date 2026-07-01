@@ -90,7 +90,7 @@ def bronze_lithology(
         )
     finally:
         if source.sourced_from_minio:
-            try:
+            try:  # noqa: SIM105
                 os.unlink(source.local_path)
             except OSError:
                 pass

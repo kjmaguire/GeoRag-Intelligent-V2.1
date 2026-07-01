@@ -67,6 +67,8 @@ _NEO4J_TIMEOUT_S = 2.0  # tight — don't let a slow graph query hang the inspec
 # Module 9 Chunk 9.4 (A2-04) — _resolve_workspace_id replaced by the shared
 # helper in app.services.workspace_resolution. The default-UUID fallback is
 # gone; missing workspace context now returns HTTP 403.
+import contextlib  # noqa: E402
+
 from app.services.workspace_resolution import resolve_workspace_id  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
@@ -464,10 +466,8 @@ async def _assemble_structured(
         parser_version = lineage_row.get("parser_version")
         run_id = lineage_row.get("ingestion_run_id")
         if run_id:
-            try:
+            with contextlib.suppress(ValueError):
                 ingestion_run_id = UUID(str(run_id))
-            except ValueError:
-                pass
 
     return EvidenceStructuredPayload(
         evidence_type="structured_record",

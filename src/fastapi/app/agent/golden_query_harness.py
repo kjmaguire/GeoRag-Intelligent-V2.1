@@ -232,12 +232,12 @@ def _eval_criterion(
                 if count < n:
                     return CriterionResult(
                         criterion=criterion, passed=False,
-                        actual={k: kinds_in_packet.count(k) for k in val.keys()},
+                        actual={k: kinds_in_packet.count(k) for k in val},
                         message=f"expected at least {n} {k}, got {count}",
                     )
             return CriterionResult(
                 criterion=criterion, passed=True,
-                actual={k: kinds_in_packet.count(k) for k in val.keys()},
+                actual={k: kinds_in_packet.count(k) for k in val},
             )
         # tuple shape (kind, n)
         k, n = val
@@ -255,12 +255,12 @@ def _eval_criterion(
                 if count > n:
                     return CriterionResult(
                         criterion=criterion, passed=False,
-                        actual={k: kinds_in_packet.count(k) for k in val.keys()},
+                        actual={k: kinds_in_packet.count(k) for k in val},
                         message=f"expected at most {n} {k}, got {count}",
                     )
             return CriterionResult(
                 criterion=criterion, passed=True,
-                actual={k: kinds_in_packet.count(k) for k in val.keys()},
+                actual={k: kinds_in_packet.count(k) for k in val},
             )
         k, n = val
         count = kinds_in_packet.count(k)
@@ -420,7 +420,7 @@ def run_golden_harness(
                 )
                 continue
             # Auto-fail: an empty placeholder packet with explicit fail.
-            empty = EvidencePacket(
+            EvidencePacket(
                 query_id=q.query_id,
                 query_text=q.query_text or " ",
                 evidence=[],

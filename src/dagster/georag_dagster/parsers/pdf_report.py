@@ -1330,7 +1330,7 @@ def _detect_page_language(text: str) -> str:
 
     try:
         from langdetect import detect  # noqa: PLC0415
-        from langdetect.lang_detect_exception import LangDetectException  # noqa: PLC0415
+        from langdetect.lang_detect_exception import LangDetectException  # noqa: F401, PLC0415
     except ImportError:
         return "unknown"
 
@@ -2596,7 +2596,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
         docling_per_page: list[tuple[int, str]],
         image_pages: list[int],
     ) -> list[tuple[int, str]]:
-        fitz_map = {n: t for n, t in fitz_per_page}
+        fitz_map = {n: t for n, t in fitz_per_page}  # noqa: C416
         image_set = set(image_pages)
         # Fitz output is authoritative for non-image pages
         merged = dict(fitz_map)
@@ -2684,7 +2684,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
                 # OCR confidence in its current API; kickoff
                 # specifies 0.90 as the safe default that lands above
                 # the Phase 6 quality threshold of 0.75).
-                _docling_per_page_map = {n: t for n, t in docling_per_page_text}
+                _docling_per_page_map = {n: t for n, t in docling_per_page_text}  # noqa: C416
                 _DOCLING_DEFAULT_CONFIDENCE = 0.90
                 for img_page in image_page_nums:
                     docling_text_for_page = _docling_per_page_map.get(img_page, "")

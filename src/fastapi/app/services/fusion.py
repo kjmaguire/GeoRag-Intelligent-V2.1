@@ -212,10 +212,7 @@ def apply_freshness_boost(
 
         payload = sc.candidate.payload
         ingested_at = None
-        if isinstance(payload, dict):
-            ingested_at = payload.get("ingested_at")
-        else:
-            ingested_at = getattr(payload, "ingested_at", None)
+        ingested_at = payload.get("ingested_at") if isinstance(payload, dict) else getattr(payload, "ingested_at", None)
 
         # Treat missing ingested_at as fresh — we can't prove stale-ness.
         if ingested_at is None:

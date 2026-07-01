@@ -10,6 +10,7 @@ byte string. Used by:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 from pathlib import Path
 
@@ -61,7 +62,5 @@ def _render_page_sync(pdf_path: Path, page: int, scale: float) -> bytes:
         # pypdfium2's PdfDocument holds a C resource handle; close
         # explicitly so the test harness doesn't accumulate file
         # descriptors across runs.
-        try:
+        with contextlib.suppress(Exception):
             pdf.close()
-        except Exception:
-            pass

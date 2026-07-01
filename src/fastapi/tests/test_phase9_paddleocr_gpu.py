@@ -169,13 +169,13 @@ def test_invalid_vram_threshold_falls_back(gpu_module, monkeypatch):
 
 def test_pdf_ocr_imports_detection_helper():
     """Regression guard — services/pdf_ocr.py must wire use_gpu via helper."""
-    src = open("/app/app/services/pdf_ocr.py").read()
+    src = open("/app/app/services/pdf_ocr.py").read()  # noqa: SIM115
     assert "from app.ocr._paddleocr_gpu import paddleocr_use_gpu" in src
     assert "use_gpu=use_gpu" in src
 
 
 def test_parse_scanned_imports_detection_helper():
     """Regression guard — ocr/parse_scanned.py must wire use_gpu via helper."""
-    src = open("/app/app/ocr/parse_scanned.py").read()
+    src = open("/app/app/ocr/parse_scanned.py").read()  # noqa: SIM115
     assert "from app.ocr._paddleocr_gpu import paddleocr_use_gpu" in src
     assert "use_gpu=use_gpu" in src

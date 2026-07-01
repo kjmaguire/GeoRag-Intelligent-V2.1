@@ -266,7 +266,7 @@ async def persist_orchestrator_result(
                 counts["ingest_ocr_results"] += 1
 
         # Tables → table_extraction_quality (one row per table)
-        for table_idx, table in enumerate(parse_result.get("tables", [])):
+        for _table_idx, table in enumerate(parse_result.get("tables", [])):
             await _insert_table_quality(
                 conn, workspace_id, report_id, table,
             )

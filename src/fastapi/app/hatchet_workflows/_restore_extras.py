@@ -17,6 +17,7 @@ already-decoded — the caller is responsible for the S3 GET).
 from __future__ import annotations
 
 import base64
+import contextlib
 import gzip
 import io
 import json
@@ -47,7 +48,7 @@ def parse_export_jsonl_gz(body: bytes) -> tuple[
     with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as gz:
         text = gz.read().decode("utf-8")
 
-    lines = [l for l in text.split("\n") if l.strip()]
+    lines = [l for l in text.split("\n") if l.strip()]  # noqa: E741
     if not lines:
         raise ValueError("export body is empty")
 
@@ -158,10 +159,8 @@ async def restore_neo4j(
             "error":        f"neo4j_restore_failed: {type(exc).__name__}: {exc}",
         }
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await driver.close()
-        except Exception:
-            pass
 
     return {"nodes_merged": nodes_merged, "rels_merged": rels_merged, "error": None}
 

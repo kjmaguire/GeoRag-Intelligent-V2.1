@@ -40,7 +40,7 @@ async def _trust_lookup(
               FROM silver.source_trust_scores
              WHERE source_document_id = ANY($1::uuid[])
             """,
-            [sid for sid in source_document_ids],
+            [sid for sid in source_document_ids],  # noqa: C416
         )
         for r in rows:
             out[r["source_document_id"]] = float(r["trust_score"] or fallback_trust)

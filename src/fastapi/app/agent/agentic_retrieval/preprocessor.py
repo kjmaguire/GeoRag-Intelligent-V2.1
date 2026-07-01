@@ -175,10 +175,7 @@ def preprocess_envelope(envelope: ContextEnvelope | None) -> RetrievalFilters:
         project_corpus_sources: frozenset[DataSource] = frozenset(
             {"drill_logs", "assays", "technical_reports"}
         )
-        if allowed:
-            allowed = allowed & project_corpus_sources
-        else:
-            allowed = project_corpus_sources
+        allowed = allowed & project_corpus_sources if allowed else project_corpus_sources
 
     prompt_suffixes: list[str] = [_reporting_code_instruction(code, was_defaulted)]
     if is_field_mode:

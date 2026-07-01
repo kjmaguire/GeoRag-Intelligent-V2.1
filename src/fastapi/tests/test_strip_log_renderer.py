@@ -162,7 +162,7 @@ def test_plotly_intervals_sorted_by_depth_even_if_input_isnt() -> None:
         _interval(12,  175, code="SST"),  # middle
     ]
     fig = render_strip_log_plotly_figure(intervals)
-    shapes_top_to_bottom = sorted(
+    sorted(
         fig["layout"]["shapes"], key=lambda s: s["y0"],
     )
     # Tick labels are produced in iteration order — the renderer sorts

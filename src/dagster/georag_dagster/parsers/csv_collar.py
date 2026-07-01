@@ -249,7 +249,7 @@ def _validate_row(
 # ---------------------------------------------------------------------------
 
 def parse_csv_collars(
-    source: Union[str, Path, IO[str]],
+    source: Union[str, Path, IO[str]],  # noqa: UP007
     *,
     null_values: list[str] | None = None,
 ) -> CollarParseResult:
@@ -272,7 +272,7 @@ def parse_csv_collars(
     detected_encoding = "utf-8"
 
     # Resolve source path/name for provenance
-    if isinstance(source, (str, Path)):
+    if isinstance(source, (str, Path)):  # noqa: SIM108
         source_file_str = str(source)
     else:
         source_file_str = "<stream>"

@@ -173,7 +173,7 @@ async def index_health_check(
     # without the hypothetical → compare total cost. If the hypothetical
     # cuts cost by >30% AND >100 cost units, write a suggestion.
     if slow:
-        worst = slow[0]
+        slow[0]
         try:
             async with rt.pg_pool.acquire() as conn:
                 async with conn.transaction():

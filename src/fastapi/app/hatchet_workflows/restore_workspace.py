@@ -30,6 +30,7 @@ This graduation lands two slices:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -206,10 +207,8 @@ async def _count_neo4j_nodes(workspace_str: str) -> tuple[int, str | None]:
         except Exception as exc2:
             return -1, f"neo4j_count_failed: {type(exc2).__name__}: {exc2}"
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await driver.close()
-        except Exception:
-            pass
 
 
 async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:

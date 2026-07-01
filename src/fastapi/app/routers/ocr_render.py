@@ -31,6 +31,7 @@ render cache keyed on (report_id, page, scale).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import tempfile
@@ -196,10 +197,8 @@ async def render(
                 detail=f"render failed: {type(exc).__name__}",
             ) from exc
     finally:
-        try:
+        with contextlib.suppress(Exception):
             tmp_path.unlink()
-        except Exception:
-            pass
 
     return Response(
         content=png,
