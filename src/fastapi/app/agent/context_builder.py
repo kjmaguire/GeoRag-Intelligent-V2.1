@@ -12,6 +12,7 @@ pure: no side effects, no I/O, deterministic for any given
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.agent.public_geoscience_tool import PublicGeoscienceSearchResult
@@ -44,14 +45,35 @@ _UNTRUSTED_GUARD = (
 )
 
 
+# Any contiguous run of 3+ identical angle brackets. Fence markers need a
+# literal "<<<" / ">>>", so breaking every such run is sufficient to make a
+# marker unforgeable from content.
+_ANGLE_RUN_RE = re.compile(r"([<>])\1{2,}")
+
+
+def _break_angle_runs(match: re.Match[str]) -> str:
+    # Interleave a zero-width space between every character of the run. After
+    # this, the longest contiguous run of "<" or ">" anywhere in the output is
+    # 2 chars (a maximal run's neighbours are, by definition, a different
+    # character), so no "<<<"/">>>" can survive or be reassembled by adjacency.
+    return "​".join(match.group(0))
+
+
 def _fence_untrusted(text: str) -> str:
     """Wrap untrusted document text in data-fence delimiters.
 
-    Neutralises the fence token if it appears in the content (inserts a
-    zero-width space) so a malicious chunk can't close the fence early and
-    escape into instruction context.
+    Neutralises fence-marker tokens in the content by breaking every run of
+    3+ identical angle brackets with zero-width spaces, so a malicious chunk
+    can't close the fence early and escape into instruction context.
+
+    Audit 2026-07-01: the previous single-pass ``replace("<<<", ...)`` was NOT
+    idempotent — ``<<<<END_UNTRUSTED_DOCUMENT_TEXT>>>`` (four ``<``) sanitised
+    to a string that still contained the literal close marker, because the
+    replacement's trailing ``<<`` recombined with the leftover ``<``. The
+    run-interleaving form is idempotent (a second application is a no-op) and
+    growth is bounded at one ZWSP per run character.
     """
-    safe = (text or "").replace("<<<", "<​<<")
+    safe = _ANGLE_RUN_RE.sub(_break_angle_runs, text or "")
     return f"{_UNTRUSTED_OPEN} {safe} {_UNTRUSTED_CLOSE}"
 
 
