@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type JSX } from 'react';
 import { Head } from '@inertiajs/react';
 import AppLayout from '../Layouts/AppLayout';
-import type { SourceData, ChatMessage as ChatMessageType, ChatThread, Citation, RefusalPayload } from '@/types';
+import type { SourceData, ChatMessage as ChatMessageType, ChatThread, Citation, RefusalPayload, EchoChannelLike, QueryPhase } from '@/types';
 import ChatMessage from '../Components/ChatMessage';
 import CitationPGEODetail from '../Components/PublicGeoscience/CitationPGEODetail';
 import ProjectContextBanner from '../Components/ProjectContextBanner';
@@ -9,20 +9,8 @@ import { EvidenceInspector } from '../Components/chat/EvidenceInspector';
 import { TrustInspector } from '../Components/chat/TrustInspector';
 import { useEventDedup } from '../Hooks/useEventDedup';
 
-// Initial welcome message shown before the user sends anything
-// Extend window with Laravel Echo instance (set in bootstrap.js)
-declare global {
-    interface Window {
-        // Audit 2026-06-28: typed `any` to match the other global Window.Echo
-        // declaration (laravel-echo bootstrap) — conflicting shapes otherwise.
-        Echo: any;
-    }
-}
-
-interface EchoChannel {
-    listen: (event: string, callback: (e: Record<string, unknown>) => void) => EchoChannel;
-    stopListening: (event: string) => void;
-}
+// window.Echo is declared globally in bootstrap.ts as EchoLike (types.ts) —
+// the previous per-file `Echo: any` redeclaration is gone with it.
 
 const WELCOME_MESSAGE: ChatMessageType = {
     id: 'welcome',
@@ -438,7 +426,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
-    const echoChannelRef = useRef<{ echoChannel: EchoChannel; channel: string } | null>(null);  // for stop button
+    const echoChannelRef = useRef<{ echoChannel: EchoChannelLike; channel: string } | null>(null);  // for stop button
     const [stopToast, setStopToast] = useState<boolean>(false);
 
     // WS-01 — per-run event dedup hook. Tracks seen event_ids + lastSeq for
@@ -556,7 +544,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
                         prev.map((msg) => {
                             if (msg.id !== assistantId) return msg;
                             const prevPhases = Array.isArray(msg.phases) ? msg.phases : [];
-                            const completed = prevPhases.map((p) =>
+                            const completed = prevPhases.map((p): QueryPhase =>
                                 p.state === 'running' ? { ...p, state: 'done' } : p
                             );
                             // Dedupe: if the new label matches the last
@@ -587,7 +575,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
                             return {
                                 ...msg,
                                 phases: [
-                                    ...prevPhases.map((p) =>
+                                    ...prevPhases.map((p): QueryPhase =>
                                         p.state === 'running' ? { ...p, state: 'done' } : p
                                     ),
                                     { label, state: 'done', kind: 'routing' },
@@ -602,19 +590,26 @@ export default function Chat(_props: ChatProps): JSX.Element {
                     // allowed to use. Render anchor chips immediately so the
                     // geologist never sees an unanchored answer.
                     if (Array.isArray(event.citations)) {
-                        const bound = event.citations
+                        const bound: Citation[] = event.citations
                             .filter((c: { citation_id?: string }) => !!c.citation_id)
                             .map((c: {
                                 citation_id: string;
                                 kind?: string;
                                 store?: string;
                                 display_ref?: Record<string, unknown> | null;
-                            }) => ({
+                            }): Citation => ({
                                 citation_id: c.citation_id,
-                                citation_type: c.kind ?? 'DATA',
+                                citation_type: (['DATA', 'NI43', 'PUB', 'PGEO'] as const).includes(
+                                    c.kind as Citation['citation_type'],
+                                )
+                                    ? (c.kind as Citation['citation_type'])
+                                    : 'DATA',
                                 source_chunk_id: c.citation_id,
-                                document_title: undefined,
-                                relevance_score: undefined,
+                                // Placeholder anchor chip — the per-citation events
+                                // that follow carry the real title/score and replace
+                                // these in the merging step below.
+                                document_title: '',
+                                relevance_score: 0,
                             }));
                         if (bound.length > 0) {
                             // Replace, don't append — the bind manifest is the
@@ -686,7 +681,7 @@ export default function Chat(_props: ChatProps): JSX.Element {
                         prev.map((msg) => {
                             if (msg.id !== assistantId) return msg;
                             const doneFinalPhases = Array.isArray(msg.phases)
-                                ? msg.phases.map((p) =>
+                                ? msg.phases.map((p): QueryPhase =>
                                       p.state === 'running' ? { ...p, state: 'done' } : p
                                   )
                                 : [];
@@ -807,6 +802,10 @@ export default function Chat(_props: ChatProps): JSX.Element {
             try {
                 const startResp = await fetch(`/api/v1/queries/${query_id}/start`, {
                     method: 'POST',
+                    // Sanctum auth rides the session cookie — match the
+                    // POST /queries call above so this can't go out
+                    // cookie-less and 401.
+                    credentials: 'same-origin',
                     headers: {
                         'Accept': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',

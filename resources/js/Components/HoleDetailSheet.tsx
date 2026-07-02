@@ -32,19 +32,19 @@ interface LithologyLog {
     lithology_description?: string | null;
 }
 
-// Numeric collar fields arrive as strings from the Laravel API (PG numeric
-// columns serialise as strings), hence the parseFloat() call sites below.
+// Numeric collar fields are numbers on the wire (the API resource casts PG
+// numerics) — aligned with CollarRecord in types.ts; null when unrecorded.
 interface Collar {
     collar_id: string;
     hole_id: string;
     hole_type?: string | null;
     status?: string | null;
-    total_depth?: string | null;
-    elevation?: string | null;
-    easting?: string | null;
-    northing?: string | null;
-    azimuth?: string | null;
-    dip?: string | null;
+    total_depth?: number | null;
+    elevation?: number | null;
+    easting?: number | null;
+    northing?: number | null;
+    azimuth?: number | null;
+    dip?: number | null;
     drill_date?: string | null;
     lithology_logs?: LithologyLog[];
     surveys?: unknown[];
@@ -281,7 +281,7 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
                         <h2 className="text-lg font-bold text-gray-100 font-mono">{holeId}</h2>
                         {collar && (
                             <p className="text-xs text-gray-500 mt-0.5">
-                                {collar.hole_type} · {collar.total_depth ? `${parseFloat(collar.total_depth).toFixed(0)} m TD` : '—'} · {collar.status}
+                                {collar.hole_type} · {collar.total_depth != null ? `${collar.total_depth.toFixed(0)} m TD` : '—'} · {collar.status}
                             </p>
                         )}
                     </div>
@@ -332,12 +332,12 @@ export default function HoleDetailSheet({ holeId, projectId, onClose, onNavigate
                             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
                                 <MetaRow label="Hole Type" value={collar.hole_type} />
                                 <MetaRow label="Status" value={collar.status} />
-                                <MetaRow label="Total Depth" value={collar.total_depth ? `${parseFloat(collar.total_depth).toFixed(1)} m` : '—'} />
-                                <MetaRow label="Elevation" value={collar.elevation ? `${parseFloat(collar.elevation).toFixed(0)} m` : '—'} />
-                                <MetaRow label="Easting" value={collar.easting ? parseFloat(collar.easting).toFixed(1) : '—'} />
-                                <MetaRow label="Northing" value={collar.northing ? parseFloat(collar.northing).toFixed(1) : '—'} />
-                                <MetaRow label="Azimuth" value={collar.azimuth != null ? `${parseFloat(collar.azimuth).toFixed(1)}°` : '—'} />
-                                <MetaRow label="Dip" value={collar.dip != null ? `${parseFloat(collar.dip).toFixed(1)}°` : '—'} />
+                                <MetaRow label="Total Depth" value={collar.total_depth != null ? `${collar.total_depth.toFixed(1)} m` : '—'} />
+                                <MetaRow label="Elevation" value={collar.elevation != null ? `${collar.elevation.toFixed(0)} m` : '—'} />
+                                <MetaRow label="Easting" value={collar.easting != null ? collar.easting.toFixed(1) : '—'} />
+                                <MetaRow label="Northing" value={collar.northing != null ? collar.northing.toFixed(1) : '—'} />
+                                <MetaRow label="Azimuth" value={collar.azimuth != null ? `${collar.azimuth.toFixed(1)}°` : '—'} />
+                                <MetaRow label="Dip" value={collar.dip != null ? `${collar.dip.toFixed(1)}°` : '—'} />
                                 <MetaRow label="Drill Date" value={collar.drill_date ?? '—'} />
                                 <MetaRow label="Collar ID" value={collar.collar_id?.slice(0, 8) + '…'} mono />
                             </div>

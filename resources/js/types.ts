@@ -59,6 +59,39 @@ export type PageProps<T extends Record<string, unknown> = Record<string, unknown
     workspace?: SharedWorkspace;
 };
 
+// ── Realtime (Laravel Echo) types ──────────────────────────────────────────
+
+/**
+ * Structural type for the channels window.Echo hands out. Event payloads stay
+ * loose (`Record<string, any>`) — QueryStreamEvent carries a different shape
+ * per event type and callers narrow field-by-field.
+ */
+export interface EchoChannelLike {
+    listen(event: string, callback: (e: Record<string, any>) => void): EchoChannelLike;
+    stopListening(event: string, callback?: (e: Record<string, any>) => void): EchoChannelLike;
+}
+
+/**
+ * Structural type for the global `window.Echo` instance created in
+ * bootstrap.ts — covers the subset of laravel-echo's API the app uses, so a
+ * typo'd method name fails tsc instead of throwing at runtime (previously
+ * `Echo: any`).
+ */
+export interface EchoLike {
+    channel(name: string): EchoChannelLike;
+    private(name: string): EchoChannelLike;
+    leave(name: string): void;
+    /** pusher-js internals — used for best-effort disconnect detection only. */
+    connector?: {
+        pusher?: {
+            connection: {
+                bind(event: string, callback: () => void): void;
+                unbind(event: string, callback: () => void): void;
+            };
+        };
+    };
+}
+
 // ── API / Domain types ─────────────────────────────────────────────────────
 
 export interface Project {
@@ -338,6 +371,17 @@ export interface FreshnessData {
     answered_at: string;  // ISO 8601
 }
 
+/**
+ * One entry in the retrieval-trail checklist (Chat page C1). Built from
+ * `status` / `routing` SSE events; rendered by ChatMessage's PhaseChecklist.
+ */
+export interface QueryPhase {
+    label: string;
+    state: 'running' | 'done';
+    /** 'routing' marks the model-routing entry; absent for normal phases. */
+    kind?: string;
+}
+
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | 'system';
@@ -360,7 +404,7 @@ export interface ChatMessage {
     answer_run_id?: string | null;
     /** Audit 2026-06-28: client-side message fields the Chat page accumulates
      *  from SSE events / optimistic updates (previously hidden by @ts-nocheck). */
-    phases?: any[];
+    phases?: QueryPhase[];
     originalQuery?: string;
     status?: string | null;
     error?: string | null;

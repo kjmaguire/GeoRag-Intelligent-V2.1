@@ -2,11 +2,16 @@ import axios from 'axios';
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
+import type { EchoLike } from '@/types';
+
 declare global {
     interface Window {
         axios: typeof axios;
         Pusher: typeof Pusher;
-        Echo: any;
+        // Structural subset of the laravel-echo API the app actually calls —
+        // see EchoLike in types.ts. This is the single global declaration;
+        // do not redeclare Window.Echo elsewhere (conflicting shapes).
+        Echo: EchoLike;
     }
 }
 

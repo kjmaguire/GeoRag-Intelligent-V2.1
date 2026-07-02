@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import GeoPlot from '../GeoPlot';
+import { escapeHtml } from '@/lib/escapeHtml';
 
 interface Collar {
     collar_id: string;
@@ -107,7 +108,9 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
                 mode: 'lines',
                 x: xs, y: ys, z: zs,
                 line: { color, width: 3 },
-                hovertext: `${c.hole_id} — ${c.hole_type ?? '—'} (${c.status ?? 'unknown'})`,
+                // Plotly hovertext renders pseudo-HTML (<br>, <b>, …) — escape
+                // the ingested values so a hostile hole_id can't inject markup.
+                hovertext: `${escapeHtml(c.hole_id)} — ${escapeHtml(c.hole_type ?? '—')} (${escapeHtml(c.status ?? 'unknown')})`,
                 hoverinfo: 'text',
                 name: k,
                 showlegend: false,  // consolidated legend via markers below
@@ -119,7 +122,7 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
                 mode: 'markers',
                 x: [xs[0]], y: [ys[0]], z: [zs[0]],
                 marker: { size: 4, color, symbol: 'diamond', line: { color: 'rgba(0,0,0,0.4)', width: 1 } },
-                hovertext: `${c.hole_id} collar`,
+                hovertext: `${escapeHtml(c.hole_id)} collar`,
                 hoverinfo: 'text',
                 showlegend: false,
             });

@@ -9,6 +9,11 @@
  *
  * Order matters: escape `&` first so the entity ampersands added afterwards are
  * not double-escaped.
+ *
+ * Context limits: this escapes for HTML TEXT and double/single-quoted attribute
+ * values only. It is NOT sufficient for interpolation into a URL, a JavaScript
+ * string, inline CSS, or an unquoted attribute — those contexts need their own
+ * encoding (e.g. encodeURIComponent for URLs).
  */
 export function escapeHtml(value: unknown): string {
     const s = value == null ? '' : String(value);
