@@ -256,12 +256,8 @@ class DrillUploadController extends Controller
         ?int $vendorProfileId,
     ): array {
         try {
-            $fastApiBase = rtrim(
-                (string) (config('services.fastapi.internal_url')
-                    ?? config('services.fastapi.internal_url')),
-                '/',
-            );
-            $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
+            $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+            $serviceKey = config('services.fastapi.service_key');
             if (! $serviceKey) {
                 return ['dispatched' => false, 'route' => 'fastapi_pdf', 'error' => 'no_service_key'];
             }
@@ -269,7 +265,8 @@ class DrillUploadController extends Controller
             $jwt = app(FastApiJwtMinter::class)->mint(
                 (string) ($user->id ?? 'unknown'),
                 $projectId,
-                [],
+                roles: [],
+                workspaceId: $workspaceId,
             );
 
             $resp = Http::withHeaders([

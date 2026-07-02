@@ -104,12 +104,8 @@ class AssessmentSummaryController extends Controller
             );
         }
 
-        $fastApiBase = rtrim(
-            (string) (config('services.fastapi.internal_url')
-                ?? config('services.fastapi.internal_url')),
-            '/',
-        );
-        $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
+        $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'FastAPI service key not configured.'], 503);
         }
@@ -157,12 +153,8 @@ class AssessmentSummaryController extends Controller
             );
         }
 
-        $fastApiBase = rtrim(
-            (string) (config('services.fastapi.internal_url')
-                ?? config('services.fastapi.internal_url')),
-            '/',
-        );
-        $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
+        $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'FastAPI service key not configured.'], 503);
         }

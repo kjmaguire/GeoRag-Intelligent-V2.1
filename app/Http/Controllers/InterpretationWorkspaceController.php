@@ -47,13 +47,8 @@ class InterpretationWorkspaceController extends Controller
             return response()->json(['error' => 'unauthenticated'], 401);
         }
 
-        $fastApiBase = rtrim(
-            config('services.fastapi.internal_url')
-                ?? config('services.fastapi.internal_url'),
-            '/',
-        );
-        $serviceKey = config('services.fastapi.service_key')
-            ?? config('services.fastapi.service_key');
+        $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'fastapi service key missing'], 500);
         }

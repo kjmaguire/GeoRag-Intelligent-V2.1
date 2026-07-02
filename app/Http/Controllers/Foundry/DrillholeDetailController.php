@@ -86,15 +86,19 @@ class DrillholeDetailController extends Controller
                     ->get(),
             );
 
-            // JSONB containment via the holes[] array — index-friendly under a
-            // GIN(panel_payload jsonb_path_ops) once large enough to matter.
-            // Beats `panel_payload::text ILIKE '%uuid%'` which forces a full
-            // sequential scan + stringification on every row.
+            // collars_projected is a top-level JSONB array of per-collar
+            // objects ({collar_id, hole_id, trace, intervals, ...}) written by
+            // the Dagster gold_cross_section_panels asset. JSONB containment
+            // is index-friendly under a GIN(collars_projected jsonb_path_ops)
+            // once large enough to matter. hole_count feeds the "N holes"
+            // pill; the heavy payload columns stay out of the Inertia props.
             $crossSections = $this->safeQuery(
                 fn () => DB::table('gold.cross_section_panels')
+                    ->select('panel_id', 'section_name')
+                    ->selectRaw('jsonb_array_length(collars_projected) AS hole_count')
                     ->where('project_id', $project->project_id)
                     ->whereRaw(
-                        "panel_payload -> 'holes' @> ?::jsonb",
+                        'collars_projected @> ?::jsonb',
                         [json_encode([['collar_id' => $collarId]])],
                     )
                     ->orderBy('section_name')
@@ -120,7 +124,7 @@ class DrillholeDetailController extends Controller
         // HTTP round-trip (5s timeout) can exhaust the pool under Swoole
         // concurrency. Same pattern as AssessmentSummaryController. The call
         // does no RLS-scoped DB reads, so nothing is lost by hoisting it.
-        $qa = $this->fetchVisualQa($request, $project->project_id, $collarId);
+        $qa = $this->fetchVisualQa($request, $project->project_id, $collarId, $workspaceId);
 
         return Inertia::render('Foundry/DrillholeDetail', [
             'project' => [
@@ -275,15 +279,11 @@ class DrillholeDetailController extends Controller
      *
      * @return array<string, mixed>|null
      */
-    private function fetchVisualQa(Request $request, string $projectId, string $collarId): ?array
+    private function fetchVisualQa(Request $request, string $projectId, string $collarId, string $workspaceId): ?array
     {
         try {
-            $fastApiBase = rtrim(
-                (string) (config('services.fastapi.internal_url')
-                    ?? config('services.fastapi.internal_url')),
-                '/',
-            );
-            $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
+            $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+            $serviceKey = config('services.fastapi.service_key');
             if (! $serviceKey) {
                 return null;
             }
@@ -291,7 +291,8 @@ class DrillholeDetailController extends Controller
             $jwt = app(FastApiJwtMinter::class)->mint(
                 (string) $request->user()->id,
                 $projectId,
-                [],
+                roles: [],
+                workspaceId: $workspaceId,
             );
 
             $resp = Http::withHeaders([
@@ -318,9 +319,10 @@ class DrillholeDetailController extends Controller
      * Audit 2026-07-02: the inner DB::transaction() creates a SAVEPOINT —
      * required now that show() runs inside withWorkspaceRls(). Without it, a
      * swallowed query error aborts the surrounding transaction and every
-     * later query 500s with SQLSTATE 25P02 (this was breaking the page live:
-     * the cross-section query references gold.cross_section_panels.
-     * panel_payload, which does not exist in the current schema).
+     * later query 500s with SQLSTATE 25P02 (this broke the page live when
+     * the cross-section query still referenced a nonexistent panel_payload
+     * column — since fixed to collars_projected, but the savepoint stays:
+     * it also guards fresh DBs where gold tables don't exist yet).
      */
     private function safeQuery(\Closure $fn): array
     {

@@ -102,7 +102,18 @@ class PublicApiController extends Controller
         }
         $fastApi = rtrim(config('services.fastapi.internal_url'), '/');
         $svc = config('services.fastapi.service_key');
-        $jwt = app(FastApiJwtMinter::class)->mint((string) $user->id, $projectId, []);
+
+        // Carry the project's workspace into the JWT — without it, FastAPI's
+        // workspace resolution falls back (or refuses under strict tenancy).
+        $workspaceId = DB::table('silver.projects')
+            ->where('project_id', $projectId)
+            ->value('workspace_id');
+        $jwt = app(FastApiJwtMinter::class)->mint(
+            (string) $user->id,
+            $projectId,
+            roles: [],
+            workspaceId: $workspaceId !== null ? (string) $workspaceId : null,
+        );
 
         $allNotes = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
             ->timeout(10)->get("$fastApi/v1/interpretation/notes", ['project_id' => $projectId]);

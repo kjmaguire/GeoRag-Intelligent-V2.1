@@ -69,10 +69,6 @@ class AdminMiscController extends Controller
 
     private function base(): string
     {
-        return rtrim(
-            config('services.fastapi.internal_url')
-                ?? config('services.fastapi.internal_url'),
-            '/',
-        );
+        return rtrim((string) config('services.fastapi.internal_url'), '/');
     }
 }
