@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Support;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * Set the `app.workspace_id` Postgres GUC so RLS policies on silver / gold
@@ -41,14 +42,26 @@ trait SetsWorkspaceRlsContext
      * reliably (each autocommit statement could land on a different backend)
      * and leaked the workspace GUC across requests. Always use this wrapper.
      *
+     * Audit 2026-07-02: throws on an empty or non-UUID workspace id. The
+     * canonical RLS policy shape treats an unset OR EMPTY-STRING GUC as
+     * "no filter" (`NULLIF(current_setting('app.workspace_id', true), '')
+     * IS NULL OR ...`), so a caller that coerced a NULL lookup with
+     * `(string) $value` would silently run its entire closure UNFILTERED
+     * across tenants. Callers must resolve a real workspace id (and 404 on a
+     * missing one) BEFORE entering this wrapper.
+     *
      * @template T
      *
      * @param \Closure():T $callback
      *
      * @return T
+     *
+     * @throws \InvalidArgumentException When $workspaceId is empty or not a UUID.
      */
     protected function withWorkspaceRls(string $workspaceId, \Closure $callback): mixed
     {
+        $this->assertValidWorkspaceId($workspaceId);
+
         return DB::transaction(function () use ($workspaceId, $callback) {
             DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
 
@@ -66,6 +79,8 @@ trait SetsWorkspaceRlsContext
      */
     protected function setWorkspaceRlsContext(string $workspaceId): void
     {
+        $this->assertValidWorkspaceId($workspaceId);
+
         if (DB::transactionLevel() < 1) {
             throw new \RuntimeException(
                 'setWorkspaceRlsContext() requires an active transaction under '
@@ -74,5 +89,23 @@ trait SetsWorkspaceRlsContext
         }
 
         DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
+    }
+
+    /**
+     * Reject workspace ids the canonical RLS policies would treat as "no
+     * filter". `''` (and any non-UUID string, which would also fail the
+     * `::uuid` cast inside the policy) must fail loudly HERE, not silently
+     * disable tenant isolation for the whole callback.
+     */
+    private function assertValidWorkspaceId(string $workspaceId): void
+    {
+        if ($workspaceId === '' || ! Str::isUuid($workspaceId)) {
+            throw new \InvalidArgumentException(
+                'Workspace RLS context requires a non-empty UUID workspace id; got '
+                ."'{$workspaceId}'. An empty GUC makes the canonical RLS policies "
+                .'fail OPEN (all tenants visible) — resolve the workspace id and '
+                .'404 on a missing one before binding RLS context.',
+            );
+        }
     }
 }

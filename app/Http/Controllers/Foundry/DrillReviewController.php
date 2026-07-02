@@ -59,9 +59,16 @@ class DrillReviewController extends Controller
             ->where('silver.projects.project_id', $project->project_id)
             ->firstOrFail();
 
-        $workspaceId = (string) DB::table('silver.projects')
+        // Audit 2026-07-02: NULL lookup must 404 — the old `(string)` coercion
+        // produced '', which fails OPEN under the canonical RLS policies
+        // (withWorkspaceRls() now also rejects '').
+        $workspaceId = DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
+        if ($workspaceId === null) {
+            abort(404);
+        }
+        $workspaceId = (string) $workspaceId;
 
         return $this->withWorkspaceRls($workspaceId, function () use ($project) {
             $rows = DB::table('silver.review_queue')
@@ -120,9 +127,14 @@ class DrillReviewController extends Controller
             $validated['decision_payload'] = null;
         }
 
-        $workspaceId = (string) DB::table('silver.projects')
+        // Audit 2026-07-02: same NULL→'' fail-open guard as show().
+        $workspaceId = DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
+        if ($workspaceId === null) {
+            abort(404);
+        }
+        $workspaceId = (string) $workspaceId;
 
         return $this->withWorkspaceRls($workspaceId, function () use ($request, $project, $queueId, $validated) {
             $row = DB::table('silver.review_queue')

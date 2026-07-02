@@ -219,52 +219,58 @@ class AssessmentSummaryController extends Controller
     private function loadLatestCompletenessAudit(string $workspaceId, string $pdfId): ?array
     {
         try {
-            $latestRunId = DB::table('silver.completeness_findings')
-                ->where('workspace_id', $workspaceId)
-                ->where('pdf_id', $pdfId)
-                ->orderByDesc('created_at')
-                ->value('finding_run_id');
+            // Audit 2026-07-02: savepoint (nested transaction) so a swallowed
+            // query failure cannot abort show()'s surrounding transaction —
+            // without it every later query in the request throws SQLSTATE
+            // 25P02 (same pattern as DrillholeDetailController::safeQuery()).
+            return DB::transaction(function () use ($workspaceId, $pdfId): ?array {
+                $latestRunId = DB::table('silver.completeness_findings')
+                    ->where('workspace_id', $workspaceId)
+                    ->where('pdf_id', $pdfId)
+                    ->orderByDesc('created_at')
+                    ->value('finding_run_id');
 
-            if ($latestRunId === null) {
-                return null;
-            }
-
-            $rows = DB::table('silver.completeness_findings')
-                ->where('finding_run_id', $latestRunId)
-                ->orderByRaw(
-                    'CASE severity '
-                    ."WHEN 'error' THEN 0 WHEN 'warn' THEN 1 WHEN 'info' THEN 2 ELSE 3 END",
-                )
-                ->orderByRaw('source_page NULLS LAST')
-                ->orderBy('created_at')
-                ->get();
-
-            $createdAt = (string) DB::table('silver.completeness_findings')
-                ->where('finding_run_id', $latestRunId)
-                ->min('created_at');
-
-            $counts = ['error' => 0, 'warn' => 0, 'info' => 0];
-            $findings = [];
-            foreach ($rows as $r) {
-                $sev = (string) $r->severity;
-                if (isset($counts[$sev])) {
-                    $counts[$sev]++;
+                if ($latestRunId === null) {
+                    return null;
                 }
-                $findings[] = [
-                    'finding_kind' => (string) $r->finding_kind,
-                    'severity' => $sev,
-                    'description' => (string) $r->description,
-                    'source_page' => $r->source_page !== null ? (int) $r->source_page : null,
-                    'evidence' => $this->decodeJsonb($r->evidence),
-                ];
-            }
 
-            return [
-                'finding_run_id' => (string) $latestRunId,
-                'created_at' => $createdAt,
-                'counts' => $counts,
-                'findings' => $findings,
-            ];
+                $rows = DB::table('silver.completeness_findings')
+                    ->where('finding_run_id', $latestRunId)
+                    ->orderByRaw(
+                        'CASE severity '
+                        ."WHEN 'error' THEN 0 WHEN 'warn' THEN 1 WHEN 'info' THEN 2 ELSE 3 END",
+                    )
+                    ->orderByRaw('source_page NULLS LAST')
+                    ->orderBy('created_at')
+                    ->get();
+
+                $createdAt = (string) DB::table('silver.completeness_findings')
+                    ->where('finding_run_id', $latestRunId)
+                    ->min('created_at');
+
+                $counts = ['error' => 0, 'warn' => 0, 'info' => 0];
+                $findings = [];
+                foreach ($rows as $r) {
+                    $sev = (string) $r->severity;
+                    if (isset($counts[$sev])) {
+                        $counts[$sev]++;
+                    }
+                    $findings[] = [
+                        'finding_kind' => (string) $r->finding_kind,
+                        'severity' => $sev,
+                        'description' => (string) $r->description,
+                        'source_page' => $r->source_page !== null ? (int) $r->source_page : null,
+                        'evidence' => $this->decodeJsonb($r->evidence),
+                    ];
+                }
+
+                return [
+                    'finding_run_id' => (string) $latestRunId,
+                    'created_at' => $createdAt,
+                    'counts' => $counts,
+                    'findings' => $findings,
+                ];
+            });
         } catch (\Throwable $e) {
             return null;
         }
@@ -280,9 +286,16 @@ class AssessmentSummaryController extends Controller
             ->where('silver.projects.project_id', $project->project_id)
             ->firstOrFail();
 
-        $workspaceId = (string) DB::table('silver.projects')
+        // Audit 2026-07-02: NULL lookup must 404 — the old `(string)` coercion
+        // produced '', which fails OPEN under the canonical RLS policies
+        // (setWorkspaceRlsContext() now also rejects '').
+        $workspaceId = DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
+        if ($workspaceId === null) {
+            abort(404);
+        }
+        $workspaceId = (string) $workspaceId;
         $this->setWorkspaceRlsContext($workspaceId);
 
         $report = DB::table('silver.reports')

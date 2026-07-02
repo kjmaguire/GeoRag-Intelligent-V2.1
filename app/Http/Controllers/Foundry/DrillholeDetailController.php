@@ -43,11 +43,18 @@ class DrillholeDetailController extends Controller
             ->firstOrFail();
 
         // Pin the RLS GUC so per-collar queries on silver / gold are tenant-scoped.
-        $workspaceId = (string) DB::table('silver.projects')
+        // Audit 2026-07-02: a NULL lookup must 404 HERE — the old `(string)`
+        // coercion turned it into '', which the canonical RLS policies treat
+        // as "no filter" (fail-open). withWorkspaceRls() now also rejects ''.
+        $workspaceId = DB::table('silver.projects')
             ->where('project_id', $project->project_id)
             ->value('workspace_id');
+        if ($workspaceId === null) {
+            abort(404);
+        }
+        $workspaceId = (string) $workspaceId;
 
-        return $this->withWorkspaceRls($workspaceId, function () use ($request, $project, $collarId) {
+        $data = $this->withWorkspaceRls($workspaceId, function () use ($project, $collarId) {
             $collar = DB::table('silver.collars')
                 ->where('collar_id', $collarId)
                 ->where('project_id', $project->project_id)
@@ -94,26 +101,42 @@ class DrillholeDetailController extends Controller
                     ->get(),
             );
 
-            $qa = $this->fetchVisualQa($request, $project->project_id, $collarId);
             $lithologyQuality = $this->lithologyQualityCounters($collarId);
             $dqFlags = $this->dataQualityFlagSummary($collarId);
 
-            return Inertia::render('Foundry/DrillholeDetail', [
-                'project' => [
-                    'project_id' => $project->project_id,
-                    'project_name' => $project->project_name,
-                    'slug' => $project->slug,
-                ],
+            return [
                 'collar' => $collar,
                 'intervals' => $intervals,
                 'assays' => $assayHighlights,
                 'structures' => $structures,
                 'cross_sections' => $crossSections,
-                'qa' => $qa,
                 'lithology_quality' => $lithologyQuality,
                 'data_quality_flags' => $dqFlags,
-            ]);
+            ];
         });
+
+        // Audit 2026-07-02 (C2 follow-up): the FastAPI QA call runs OUTSIDE
+        // the RLS transaction — holding a PgBouncer backend open across an
+        // HTTP round-trip (5s timeout) can exhaust the pool under Swoole
+        // concurrency. Same pattern as AssessmentSummaryController. The call
+        // does no RLS-scoped DB reads, so nothing is lost by hoisting it.
+        $qa = $this->fetchVisualQa($request, $project->project_id, $collarId);
+
+        return Inertia::render('Foundry/DrillholeDetail', [
+            'project' => [
+                'project_id' => $project->project_id,
+                'project_name' => $project->project_name,
+                'slug' => $project->slug,
+            ],
+            'collar' => $data['collar'],
+            'intervals' => $data['intervals'],
+            'assays' => $data['assays'],
+            'structures' => $data['structures'],
+            'cross_sections' => $data['cross_sections'],
+            'qa' => $qa,
+            'lithology_quality' => $data['lithology_quality'],
+            'data_quality_flags' => $data['data_quality_flags'],
+        ]);
     }
 
     /**
@@ -218,7 +241,10 @@ class DrillholeDetailController extends Controller
     private function lithologyQualityCounters(string $collarId): ?array
     {
         try {
-            $row = DB::table('silver.lithology')
+            // Savepoint (nested transaction) — same 25P02 rationale as
+            // safeQuery(): a swallowed failure here must not abort the
+            // surrounding withWorkspaceRls() transaction.
+            $row = DB::transaction(fn () => DB::table('silver.lithology')
                 ->where('collar_id', $collarId)
                 ->selectRaw(
                     'COUNT(*) FILTER (WHERE rock_code_confidence = 1.0) AS exact, '
@@ -226,7 +252,7 @@ class DrillholeDetailController extends Controller
                     .'COUNT(*) FILTER (WHERE rock_code IS NULL) AS unmapped, '
                     .'COUNT(*) AS total',
                 )
-                ->first();
+                ->first());
 
             if ($row === null || (int) $row->total === 0) {
                 return null;
@@ -286,10 +312,20 @@ class DrillholeDetailController extends Controller
         }
     }
 
+    /**
+     * Swallow-and-continue wrapper for optional page sections.
+     *
+     * Audit 2026-07-02: the inner DB::transaction() creates a SAVEPOINT —
+     * required now that show() runs inside withWorkspaceRls(). Without it, a
+     * swallowed query error aborts the surrounding transaction and every
+     * later query 500s with SQLSTATE 25P02 (this was breaking the page live:
+     * the cross-section query references gold.cross_section_panels.
+     * panel_payload, which does not exist in the current schema).
+     */
     private function safeQuery(\Closure $fn): array
     {
         try {
-            return $fn()->map(fn ($row) => (array) $row)->all();
+            return DB::transaction(fn () => $fn()->map(fn ($row) => (array) $row)->all());
         } catch (\Throwable $e) {
             return [];
         }
