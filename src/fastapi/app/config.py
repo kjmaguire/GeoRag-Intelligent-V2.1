@@ -925,21 +925,20 @@ class Settings(BaseSettings):
     EMBEDDING_QUERY_PROMPT_NAME: str = ""
 
     # Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB) replaces
-    # BAAI/bge-reranker-base per the 2026-06-03 swap. Architecturally a
-    # CausalLM that returns a yes-token-logit minus no-token-logit ratio,
-    # wrapped transparently by sentence-transformers CrossEncoder. Score
-    # scale is REAL-VALUED, sign-preserved — but the magnitude band
-    # differs:
-    #
-    #     bge-reranker-base:   typical [-10, +10]
-    #     Qwen3-Reranker-0.6B: typical [-15, +15]
-    #
-    # The RERANKER_SCORE_THRESHOLD default (0.0 — sign-only filter)
-    # carries over unchanged because the sign convention is preserved.
-    # Operators using non-zero thresholds must re-tune against the
+    # BAAI/bge-reranker-base per the 2026-06 swap. Architecturally a CausalLM;
+    # it is NOT loadable through sentence-transformers CrossEncoder — the
+    # custom _Qwen3CausalReranker backend in app/services/reranker.py formats
+    # each (query, doc) pair with the official chat template and scores it as
+    # the yes/no next-token LOG-ODDS (logit_yes − logit_no). Score scale is
+    # REAL-VALUED and sign-preserved (like a CrossEncoder logit), so the
+    # RERANKER_SCORE_THRESHOLD default (0.0 — sign-only filter) carries over
+    # unchanged. Operators using non-zero thresholds must re-tune against the
     # golden_queries set (see scripts/run_eval_120.py) after the swap.
-    # See app/services/reranker.py for the loader; this setting is the
-    # parity check, not the runtime model selector.
+    #
+    # Deployment (2026-06-29): docker-compose.yml enables the backend by
+    # default on the reranker sidecar (RERANKER_BACKEND=qwen3_causal,
+    # RERANKER_DEVICE=cuda); RERANKER_BACKEND=cross_encoder reverts to CPU
+    # bge. This setting is the parity check, not the runtime model selector.
     RERANKER_MODEL_NAME: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # Number of chunks fetched from Qdrant before reranking (coarse retrieval).

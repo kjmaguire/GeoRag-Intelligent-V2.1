@@ -82,20 +82,27 @@ RERANKER_REVISION = "2cfc18c9415c912f9d8155881c133215df768a70"
 RERANKER_VERSION = f"bge-reranker-base@{RERANKER_REVISION[:8]}"
 
 # ---------------------------------------------------------------------------
-# Qwen3-Reranker causal-LM backend (audit 2026-06-28, OPT-IN, NOT deployed)
+# Qwen3-Reranker causal-LM backend (deployed by default via compose)
 # ---------------------------------------------------------------------------
 # bge-reranker-base is a sequence-classification CrossEncoder. Qwen3-Reranker
 # is a CAUSAL LM: each (query, doc) pair is formatted with an instruction chat
-# template and scored from the next-token logits of the "yes"/"no" tokens
-# (relevance = softmax([no, yes])[yes]). It is NOT loadable via
-# sentence_transformers.CrossEncoder, so it gets its own backend selected by
-# RERANKER_BACKEND=qwen3_causal. Default stays "cross_encoder" (bge) — this code
-# path does nothing until explicitly enabled.
+# template and scored from the next-token logits of the "yes"/"no" tokens.
+# It is NOT loadable via sentence_transformers.CrossEncoder, so it gets its
+# own backend (_Qwen3CausalReranker) selected by RERANKER_BACKEND=qwen3_causal.
 #
-# ⚠️ NOT DEPLOYED: a 0.6B causal LM doing one forward pass per pair is far
-# slower than bge on CPU and will blow RERANKER_TIMEOUT_S. Run on GPU
-# (RERANKER_DEVICE=cuda, needs VRAM headroom) and validate against the golden
-# eval before enabling. See manual Ch18 §2 reranker note.
+# DEPLOYED BY DEFAULT (2026-06-29): docker-compose.yml sets
+# RERANKER_BACKEND=qwen3_causal + RERANKER_DEVICE=cuda on the reranker sidecar
+# (validated +13.9% NDCG@10 vs bge on the golden bench). Set
+# RERANKER_BACKEND=cross_encoder to revert to the CPU bge baseline. A 0.6B
+# causal LM doing one forward pass per pair is far slower than bge on CPU and
+# will blow RERANKER_TIMEOUT_S — run this backend on GPU.
+#
+# Score scale (audit 2026-07-01): predict() returns the yes/no next-token
+# LOG-ODDS (logit_yes − logit_no) — a sign-preserving real value like a
+# CrossEncoder logit — NOT a [0,1] probability. This keeps the
+# RERANKER_SCORE_THRESHOLD=0.0 sign filter in search_documents meaningful
+# ("net yes-evidence required") and makes the downstream sigmoid produce the
+# exact P(yes). See _Qwen3CausalReranker.predict.
 RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "cross_encoder").strip().lower()
 QWEN3_RERANKER_MODEL = (
     os.environ.get("QWEN3_RERANKER_MODEL") or "Qwen/Qwen3-Reranker-0.6B"
@@ -180,9 +187,16 @@ class _Qwen3CausalReranker:
 
     Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` so it
     is a drop-in for ``get_reranker_or_none()`` consumers. Each pair is scored as
-    P(yes) from the model's next-token logits over the "yes"/"no" tokens, per the
-    official Qwen3-Reranker model-card usage. Left-padding keeps the final
-    position (-1) aligned to the real last token across a batch.
+    the yes/no next-token LOG-ODDS (logit_yes − logit_no) from the model's final
+    position, per the official Qwen3-Reranker model-card usage. Left-padding
+    keeps the final position (-1) aligned to the real last token across a batch.
+
+    Prompt assembly (audit 2026-07-01): the chat-template PREFIX/SUFFIX are
+    tokenized once at init and re-attached around the (truncated) query+document
+    middle in :meth:`predict` — tokenizing the whole formatted string with
+    right-truncation used to cut the SUFFIX off over-length pairs, which moved
+    the final position away from the yes/no decision point and produced
+    garbage scores for long documents.
     """
 
     # Chat-template scaffolding from the official Qwen3-Reranker model card.
@@ -236,11 +250,50 @@ class _Qwen3CausalReranker:
                 "Qwen3-Reranker: tokenizer lacks single 'yes'/'no' tokens"
             )
 
-    def _format(self, query: str, passage: str) -> str:
+        # Audit 2026-07-01: tokenize the chat scaffold ONCE so predict can
+        # truncate ONLY the query+document middle and the SUFFIX (which ends at
+        # the yes/no decision position) always survives. Mirrors the official
+        # Qwen3-Reranker model-card usage.
+        self._prefix_ids: list[int] = self._tokenizer(
+            self._PREFIX, add_special_tokens=False
+        )["input_ids"]
+        self._suffix_ids: list[int] = self._tokenizer(
+            self._SUFFIX, add_special_tokens=False
+        )["input_ids"]
+
+    def _format_middle(self, query: str, passage: str) -> str:
+        """The truncatable middle of the prompt (between PREFIX and SUFFIX)."""
         return (
-            f"{self._PREFIX}<Instruct>: {self._instruction}\n"
-            f"<Query>: {query}\n<Document>: {passage}{self._SUFFIX}"
+            f"<Instruct>: {self._instruction}\n"
+            f"<Query>: {query}\n<Document>: {passage}"
         )
+
+    def _build_batch_input_ids(
+        self, batch: "list[tuple[str, str]]"
+    ) -> list[list[int]]:
+        """Tokenize a batch: truncate the middle only, re-attach the scaffold.
+
+        Tokenizing the fully-formatted string with ``truncation=True``
+        (right-truncation) cut the SUFFIX off over-length pairs — the final
+        position then wasn't the yes/no decision point and the scores were
+        garbage for long documents (audit 2026-07-01). Instead, the middle is
+        truncated to ``max_length − len(prefix) − len(suffix)`` and the
+        pre-tokenized prefix/suffix ids are concatenated around it.
+        """
+        middles = [self._format_middle(str(q), str(p)) for q, p in batch]
+        budget = self._max_length - len(self._prefix_ids) - len(self._suffix_ids)
+        enc = self._tokenizer(
+            middles,
+            padding=False,
+            truncation="longest_first",
+            max_length=budget,
+            add_special_tokens=False,
+            return_attention_mask=False,
+        )
+        return [
+            self._prefix_ids + ids + self._suffix_ids
+            for ids in enc["input_ids"]
+        ]
 
     def predict(self, pairs: "list[tuple[str, str]]") -> list[float]:
         torch = self._torch
@@ -248,22 +301,31 @@ class _Qwen3CausalReranker:
         with torch.no_grad():
             for start in range(0, len(pairs), self._batch_size):
                 batch = pairs[start : start + self._batch_size]
-                texts = [self._format(str(q), str(p)) for q, p in batch]
-                enc = self._tokenizer(
-                    texts,
+                input_ids = self._build_batch_input_ids(batch)
+                # tokenizer.pad honours padding_side="left" (set at init), so
+                # position -1 is the real last token for every row.
+                enc = self._tokenizer.pad(
+                    {"input_ids": input_ids},
                     padding=True,
-                    truncation=True,
-                    max_length=self._max_length,
                     return_tensors="pt",
                 ).to(self._device)
                 # Next-token logits at the final position; compare yes vs no.
                 last_logits = self._model(**enc).logits[:, -1, :]
-                pair_logits = torch.stack(
-                    [last_logits[:, self._token_false], last_logits[:, self._token_true]],
-                    dim=1,
+                # Audit 2026-07-01: return LOG-ODDS (logit_yes − logit_no), not
+                # softmax P(yes). Log-odds are sign-preserving like CrossEncoder
+                # logits, so (a) the RERANKER_SCORE_THRESHOLD=0.0 sign filter in
+                # search_documents keeps meaning "net yes-evidence required"
+                # instead of degenerating into a pass-everything gate on [0,1]
+                # probabilities, and (b) the downstream sigmoid in tools.py
+                # yields the exact P(yes): sigmoid(log-odds) == softmax(
+                # [logit_no, logit_yes])[yes]. Log-odds are strictly monotonic
+                # in P(yes), so ranking order — and the +13.9% NDCG@10
+                # validation of 2026-06-29 — is unchanged.
+                log_odds = (
+                    last_logits[:, self._token_true].float()
+                    - last_logits[:, self._token_false].float()
                 )
-                probs = torch.softmax(pair_logits.float(), dim=1)
-                scores.extend(probs[:, 1].tolist())
+                scores.extend(log_odds.tolist())
         return scores
 
 
@@ -302,17 +364,18 @@ def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
         torch.get_num_interop_threads(),
     )
 
-    # Audit 2026-06-28 — opt-in Qwen3-Reranker causal-LM backend. Default
-    # (RERANKER_BACKEND=cross_encoder) skips this and loads the bge CrossEncoder
-    # below; this path only runs when explicitly enabled.
+    # Qwen3-Reranker causal-LM backend — the compose default on the reranker
+    # sidecar (RERANKER_BACKEND=qwen3_causal, cuda; validated +13.9% NDCG@10 vs
+    # bge 2026-06-29). Module-level RERANKER_BACKEND defaults to cross_encoder
+    # so in-process loads (tests, eval harness) stay on the bge CrossEncoder
+    # below unless explicitly switched.
     if RERANKER_BACKEND == "qwen3_causal":
         model_id = (
             os.environ.get("RERANKER_MODEL_PATH") or ""
         ).strip() or QWEN3_RERANKER_MODEL
-        logger.warning(
-            "Loading Qwen3-Reranker CAUSAL-LM backend: %s device=%s. NOTE: slow "
-            "on CPU — intended for GPU + golden-eval validation, not yet a "
-            "validated production swap.",
+        logger.info(
+            "Loading Qwen3-Reranker CAUSAL-LM backend: %s device=%s "
+            "(scores are yes/no log-odds; slow on CPU — intended for GPU).",
             model_id, RERANKER_DEVICE,
         )
         qwen_reranker = _Qwen3CausalReranker(model_id, device=RERANKER_DEVICE)
