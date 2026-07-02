@@ -97,6 +97,7 @@ async def _build_agent_deps() -> Any:
         project_row = await conn.fetchrow(
             """
             SELECT p.project_id::text AS pid,
+                   p.workspace_id::text AS wid,
                    COALESCE(c.cnt, 0) + COALESCE(r.cnt, 0) AS data_weight
               FROM silver.projects p
               LEFT JOIN (
@@ -118,6 +119,7 @@ async def _build_agent_deps() -> Any:
             "silver.projects; none found."
         )
     project_id = project_row["pid"]
+    workspace_id = project_row["wid"]
 
     qdrant_host = os.environ.get("QDRANT_HOST", "qdrant")
     qdrant_port = int(os.environ.get("QDRANT_PORT", "6333"))
@@ -180,13 +182,17 @@ async def _build_agent_deps() -> Any:
         qdrant_client=qdrant_client,
         neo4j_driver=neo4j_driver,
         project_id=project_id,
+        # Workspace of the selected project — without it, acquire_scoped()
+        # never binds app.workspace_id, so workspace-scoped RLS tables
+        # (answer_runs, evidence_items, …) fail open / strict tenancy refuses.
+        workspace_id=workspace_id,
         embedding_model=embedding_model,
         reranker=reranker,
     )
     log.info(
-        "real_rag_evaluator.deps_built project_id=%s qdrant=%s neo4j=%s "
-        "embedding=%s reranker=%s",
-        project_id, qdrant_host, neo4j_uri,
+        "real_rag_evaluator.deps_built project_id=%s workspace_id=%s "
+        "qdrant=%s neo4j=%s embedding=%s reranker=%s",
+        project_id, workspace_id, qdrant_host, neo4j_uri,
         embedding_model is not None, reranker is not None,
     )
     return deps

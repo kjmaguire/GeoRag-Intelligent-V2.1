@@ -34,6 +34,7 @@ from app.agent.agentic_retrieval.nodes import (
     validate_node,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
+from app.agent.workspace_context import WorkspaceResolutionError
 from app.models.rag import GeoRAGResponse
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,27 @@ async def run_agentic_retrieval(
     )
     # LangGraph's ainvoke accepts either a dict or the state model; the
     # report-builder graph passes the model directly. final is a dict.
-    final = await graph.ainvoke(initial)
+    try:
+        final = await graph.ainvoke(initial)
+    except WorkspaceResolutionError:
+        # Strict tenancy (WORKSPACE_STRICT_TENANCY=true) makes
+        # WorkspaceContext.from_state raise when no workspace can be
+        # resolved. That raise happens outside _call_tool_safely's try in
+        # execute_node, so it propagates all the way here. Refusing with a
+        # structured response is correct — answering would require the
+        # default-tenant fallback the strict mode exists to forbid.
+        logger.warning(
+            "agentic_retrieval: workspace resolution failed — refusing "
+            "(strict tenancy, no workspace on deps)",
+            exc_info=True,
+        )
+        from app.agent.response_assembler import assemble_response  # noqa: PLC0415
+        return assemble_response(
+            "I can't answer this question because the request has no "
+            "workspace context. Please re-select your workspace and try "
+            "again.",
+            tool_results=[],
+        )
     response = final.get("response") if isinstance(final, dict) else None
     if response is None:
         # Extremely defensive — should never happen because assemble_node
