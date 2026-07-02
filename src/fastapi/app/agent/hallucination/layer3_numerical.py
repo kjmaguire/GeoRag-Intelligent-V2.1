@@ -54,6 +54,7 @@ from dataclasses import is_dataclass
 from pydantic_ai import ModelRetry, RunContext
 
 from app.agent.deps import AgentDeps
+from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.config import settings
 from app.models.rag import GeoRAGResponse
 
@@ -66,12 +67,7 @@ _NUMBER_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
 
 # Citation marker pattern — numbers that are part of [DATA-X] should not be
 # verified because they are reference indices, not factual claims.
-# Audit 2026-06-27 (T3): accept BOTH the colon form ([DATA:1]) that the prompts
-# instruct the model to emit (canonical, Kyle 2026-04-22) and the dash form
-# ([DATA-1]) the assembler appends, plus the PGEO prefix. Previously only dash
-# matched, so colon citation indices leaked through as "ungrounded numbers" and
-# inflated the Layer 3 false-positive / retry rate.
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)[:-]\d+\]")
+_CITATION_MARKER_RE = CITATION_MARKER_RE
 
 # Numbers so small they're almost certainly formatting rather than facts.
 # 0 and 1 appear in too many innocuous contexts (list indices, boolean-like

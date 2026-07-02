@@ -18,7 +18,6 @@ invented by the LLM.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Literal
 
 from app.agent.public_geoscience_tool import (
@@ -38,20 +37,16 @@ from app.agent.tools import (
     SpatialQueryResult,
     StereonetResult,
 )
+from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.config import settings
 from app.models.rag import Citation, GeoRAGResponse, MapPayload, VizPayload
 
 logger = logging.getLogger(__name__)
 
 # Pattern to find existing citation markers ([DATA-X]/[DATA:X], [NI43-X], etc.)
-# in LLM output so we can detect whether the model placed inline markers or not.
-# Audit 2026-06-27 (T3): tolerate BOTH the dash and colon separators. The
-# assembler + agentic prompt emit dash, but citation_binding/repair_apply +
-# parts of the prompt use colon (Kyle's 2026-04-22 canonical), and oiur_parser
-# already accepts both. A dash-only regex here MISSED colon markers → the
-# assembler wrongly concluded "no inline citations" and fell back/refused even
-# when the model DID cite. `[:\-]` unifies detection with oiur_parser/layer3.
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)[:\-]\d+\]")
+# in LLM output so we can detect whether the model placed inline markers or not
+# (shared pattern — see citation_markers.py for the colon/dash rationale).
+_CITATION_MARKER_RE = CITATION_MARKER_RE
 
 
 def assign_citation_ids(

@@ -41,6 +41,10 @@ import re
 from pydantic_ai import ModelRetry, RunContext
 
 from app.agent.deps import AgentDeps
+from app.agent.hallucination.citation_markers import (
+    CITATION_MARKER_RE,
+    CITATION_PREFIXES,
+)
 from app.config import settings
 from app.models.rag import GeoRAGResponse
 
@@ -53,10 +57,10 @@ logger = logging.getLogger(__name__)
 _HOLE_ID_RE = re.compile(r"\b([A-Z]{1,8}-\d{1,6}-\d{1,6})\b")
 
 # Citation markers — stripped before drill-hole extraction to avoid false positives.
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB)-\d+\]")
+_CITATION_MARKER_RE = CITATION_MARKER_RE
 
 # Blocklist for known prefixes that are citation types, not hole ID prefixes.
-_CITATION_PREFIXES: frozenset[str] = frozenset({"DATA", "NI43", "PUB"})
+_CITATION_PREFIXES: frozenset[str] = CITATION_PREFIXES
 
 # Anything in double or single quotes (non-greedy, single-line).
 _QUOTED_NAME_RE = re.compile(r'["\']([^"\']{2,80})["\']')

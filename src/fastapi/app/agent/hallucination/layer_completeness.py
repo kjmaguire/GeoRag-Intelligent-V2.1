@@ -41,14 +41,13 @@ import re
 import logging
 from dataclasses import dataclass, field
 
+from app.agent.hallucination.citation_markers import ALL_MARKER_RE
+
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Colon-form and dash-form citation marker pattern.
-# Matches [DATA:1], [NI43:2], [PUB:3], [PGEO:4], [ev:abc1def2],
-# and legacy dash-form [DATA-1] etc. (still present during rollout window).
-# ---------------------------------------------------------------------------
-_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO|ev)[:-][A-Za-z0-9-]+\]")
+# Colon-form and dash-form citation markers, including [ev:...] evidence ids
+# (shared pattern — see citation_markers.py).
+_MARKER_RE = ALL_MARKER_RE
 
 # Sentence splitter — splits on . ! ? followed by whitespace.
 # Simple regex is intentional: no nltk dep, no spacy dep.
