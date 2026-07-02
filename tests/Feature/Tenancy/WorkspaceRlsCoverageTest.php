@@ -55,9 +55,15 @@ final class WorkspaceRlsCoverageTest extends TestCase
         // enabled (see 2026_05_30_000000_create_silver_tenant_isolation_audit
         // docstring): workspace_id is nullable for system-wide sweeps and the
         // table is admin-Gate-scoped, same pattern as workflow.flow_jwt_keys.
-        // Verified 2026-06-28: only RLS-off workspace_id table across ALL
-        // tenant schemas in production.
         'silver.tenant_isolation_audit',
+        // Support Cockpit tickets — ops.* is GLOBAL by design (§25.2/§25.3,
+        // see 2026_05_13_140100_create_ops_support_schema docstring): support
+        // staff triage across workspaces, the cockpit UI is admin-Gate-scoped,
+        // and every cross-workspace access is compensatingly logged via
+        // emit_audit(action_type='support_access') onto the owning
+        // workspace's own audit ledger. workspace_id here is a nullable
+        // correlation pointer (ON DELETE SET NULL), not a tenancy boundary.
+        'ops.support_tickets',
     ];
 
     /**
@@ -142,6 +148,42 @@ final class WorkspaceRlsCoverageTest extends TestCase
             'Fix by adding ENABLE ROW LEVEL SECURITY + a workspace_isolation policy '.
             'in a new migration. See 2026_05_25_173814_enable_rls_on_post_phase0_workspace_tables '.
             'for the canonical template, or add to EXEMPT_TABLES with a comment if exempt.',
+        );
+    }
+
+    /**
+     * Guards the exclusion the main coverage test relies on.
+     *
+     * The coverage query above skips the `public` schema entirely on the
+     * premise that it holds only Laravel-managed, user-scoped tables with
+     * no workspace_id column. If that premise ever breaks — a migration
+     * drops a workspace-scoped table into `public` — the main test would
+     * silently ignore it. This test turns the premise into an assertion:
+     * no `public` table may carry a workspace_id column. Workspace-scoped
+     * tables belong in a tenant schema (silver, gold, ops, …) where the
+     * coverage test sees them.
+     */
+    public function test_public_schema_has_no_workspace_id_columns(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('RLS is Postgres-only.');
+        }
+
+        $offenders = DB::select(<<<'SQL'
+            SELECT table_name
+              FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND column_name = 'workspace_id'
+             ORDER BY table_name
+        SQL);
+
+        $this->assertSame(
+            [],
+            array_map(fn ($r) => $r->table_name, $offenders),
+            'public-schema tables now carry a workspace_id column, but the '
+            .'RLS coverage test excludes the public schema entirely — move '
+            .'the table to a tenant schema (silver/gold/ops/…) or extend the '
+            .'coverage query before exempting it here.',
         );
     }
 

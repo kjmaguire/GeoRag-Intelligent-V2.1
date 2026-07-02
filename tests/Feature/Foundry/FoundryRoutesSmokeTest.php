@@ -29,7 +29,7 @@ final class FoundryRoutesSmokeTest extends TestCase
             'inbox' => ['/inbox', 'Foundry/Inbox'],
             'settings' => ['/settings', 'Foundry/Settings'],
             'tier3' => ['/public-geoscience/tier3-unlock', 'Foundry/Tier3Unlock'],
-            'pgeo' => ['/foundry/public-geoscience', 'Foundry/PublicGeo'],
+            'pgeo' => ['/public-geoscience', 'PublicGeoscience/Index'],
             'imports' => ['/foundry/imports/wizard', 'Foundry/DataImportWizard'],
             'newproject' => ['/foundry/projects/new', 'Foundry/NewProject'],
         ];
@@ -71,6 +71,21 @@ final class FoundryRoutesSmokeTest extends TestCase
 
         $response->assertStatus(200);
         $response->assertInertia(fn (AssertableInertia $page) => $page->component('Foundry/SupportCockpit'));
+    }
+
+    /**
+     * The Foundry/PublicGeo placeholder page was retired — the legacy URL is
+     * a deliberate 301 to the functional /public-geoscience map (web.php).
+     * This test pins the redirect so the smoke suite stops expecting a 200.
+     */
+    public function test_legacy_foundry_public_geoscience_redirects(): void
+    {
+        $user = User::factory()->create();
+
+        $response = $this->actingAs($user)->get('/foundry/public-geoscience');
+
+        $response->assertStatus(301);
+        $response->assertRedirect('/public-geoscience');
     }
 
     public function test_threads_route_redirects_to_dashboard(): void
