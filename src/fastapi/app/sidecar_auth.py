@@ -127,6 +127,43 @@ def enforce_batch_limits(
             )
 
 
+# Body-size ceiling for sidecar requests. Sized to comfortably fit the largest
+# legitimate batch the char-based guards allow (RERANK_MAX_TOTAL_CHARS is 4M;
+# JSON escaping/overhead roughly doubles that in the worst case).
+_MAX_BODY_BYTES = int(os.environ.get("SIDECAR_MAX_BODY_BYTES", str(16 * 1024 * 1024)))
+
+
+def install_body_size_limit(app, max_bytes: int = _MAX_BODY_BYTES) -> None:
+    """Reject oversized request bodies by Content-Length (HTTP 413).
+
+    ``enforce_batch_limits`` runs only AFTER pydantic has parsed the JSON body,
+    which means a multi-GB body is fully read and decoded before any guard
+    fires. This middleware refuses on the declared Content-Length header
+    before the route handler ever reads the body. Bodies without the header
+    (chunked) fall through to the post-parse guards.
+    """
+    from starlette.responses import JSONResponse  # noqa: PLC0415
+
+    @app.middleware("http")
+    async def _body_size_limit(request, call_next):  # noqa: ANN001, ANN202
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400, content={"detail": "invalid Content-Length"}
+                )
+            if declared > max_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": f"request body of {declared} B exceeds {max_bytes} B"
+                    },
+                )
+        return await call_next(request)
+
+
 def _client_service_key() -> str:
     """Resolve the key the CLIENT proxies should send.
 

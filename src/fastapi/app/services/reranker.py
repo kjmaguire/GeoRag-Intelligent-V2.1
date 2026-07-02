@@ -81,6 +81,28 @@ RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 RERANKER_REVISION = "2cfc18c9415c912f9d8155881c133215df768a70"
 RERANKER_VERSION = f"bge-reranker-base@{RERANKER_REVISION[:8]}"
 
+# Version string of the backend _get_reranker() ACTUALLY loaded — set when the
+# singleton is built. RERANKER_VERSION above is only the bge default; reporting
+# it unconditionally (as the sidecar did pre-2026-07-02) mislabels the
+# qwen3_causal and RERANKER_MODEL_PATH deployments in answer_runs lineage.
+_ACTIVE_VERSION: str | None = None
+
+
+def active_reranker_version() -> str:
+    """Version of the loaded reranker backend (derived from env if not loaded).
+
+    Mirrors the branch order in :func:`_get_reranker` so the pre-load answer
+    matches what a subsequent load will report.
+    """
+    if _ACTIVE_VERSION is not None:
+        return _ACTIVE_VERSION
+    model_path = (os.environ.get("RERANKER_MODEL_PATH") or "").strip()
+    if RERANKER_BACKEND == "qwen3_causal":
+        return f"qwen3-causal:{model_path or QWEN3_RERANKER_MODEL}"
+    if model_path:
+        return f"local:{model_path}"
+    return RERANKER_VERSION
+
 # ---------------------------------------------------------------------------
 # Qwen3-Reranker causal-LM backend (deployed by default via compose)
 # ---------------------------------------------------------------------------
@@ -340,6 +362,8 @@ def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
     The caller (lifespan hook) should catch and log exceptions -- a reranker
     failure degrades quality but must not prevent service startup.
     """
+    global _ACTIVE_VERSION
+
     import os  # noqa: PLC0415
     import torch  # noqa: PLC0415
     from sentence_transformers import CrossEncoder  # noqa: PLC0415
@@ -382,7 +406,8 @@ def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
         qwen_reranker.predict(
             [("warm up query", "warm up geological document passage")]
         )
-        logger.info("Reranker ready: qwen3-causal:%s", model_id)
+        _ACTIVE_VERSION = f"qwen3-causal:{model_id}"
+        logger.info("Reranker ready: %s", _ACTIVE_VERSION)
         return qwen_reranker
 
     # ADR-0010 §5e — RERANKER_MODEL_PATH override lets the operator A/B test
@@ -414,6 +439,7 @@ def _get_reranker() -> "CrossEncoder | _Qwen3CausalReranker":
 
     # Warm-up pass so the first real query doesn't pay JIT compilation cost.
     model.predict([("warm up query", "warm up geological document passage")])
+    _ACTIVE_VERSION = active_version
     logger.info("Reranker ready: %s", active_version)
     return model
 

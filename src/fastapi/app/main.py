@@ -577,8 +577,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _elapsed = time.perf_counter() - _t0
         app.state.embedding_model = embedding_model
         _loaded_dim = embedding_model.get_sentence_embedding_dimension()
+        # %s, not %d — the remote-sidecar proxy returns None for the dimension
+        # when the sidecar can't be reached, and %d would blow up the log call.
         logger.info(
-            "Embedding model ready: %s (dim=%d) loaded in %.2fs",
+            "Embedding model ready: %s (dim=%s) loaded in %.2fs",
             settings.EMBEDDING_MODEL_NAME,
             _loaded_dim,
             _elapsed,
@@ -623,9 +625,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         import os as _os  # noqa: PLC0415
         from app.services.reranker import (  # noqa: PLC0415
-            RERANKER_VERSION,
             _RemoteReranker,
             _get_reranker,
+            active_reranker_version,
         )
 
         # 2026-06-24: when the shared reranker sidecar is configured
@@ -637,24 +639,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if _svc_url:
             _timeout = float(_os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
             app.state.reranker = _RemoteReranker(_svc_url, _timeout)
-            app.state.reranker_version = RERANKER_VERSION
+            # Env-derived best guess — the sidecar reports its true backend
+            # version in every /rerank response.
+            app.state.reranker_version = active_reranker_version()
             logger.info(
                 "Reranker via shared sidecar %s (%s) — no local model loaded",
-                _svc_url, RERANKER_VERSION,
+                _svc_url, app.state.reranker_version,
             )
         else:
             logger.info(
-                "Loading cross-encoder reranker: %s version=%s",
-                "BAAI/bge-reranker-base",
-                RERANKER_VERSION,
+                "Loading cross-encoder reranker (%s)", active_reranker_version()
             )
             reranker = _get_reranker()  # warms the lru_cache singleton
             _elapsed_r = time.perf_counter() - _t1
             app.state.reranker = reranker
-            app.state.reranker_version = RERANKER_VERSION
+            app.state.reranker_version = active_reranker_version()
             logger.info(
                 "Reranker model ready: %s loaded in %.2fs",
-                RERANKER_VERSION,
+                app.state.reranker_version,
                 _elapsed_r,
             )
     except Exception:

@@ -70,6 +70,11 @@ class _RemoteEmbedding:
         resp.raise_for_status()
         vectors = resp.json()["vectors"]
         arr = np.asarray(vectors, dtype=np.float32)
+        # Cache the dimension off the real vectors — the startup dim-parity
+        # guard in main.py runs right after the warm-up encode, so this keeps
+        # the guard effective on the sidecar path even when /health is flaky.
+        if self._dim is None and arr.size:
+            self._dim = int(arr.shape[-1])
         return arr[0] if single else arr
 
     def get_sentence_embedding_dimension(self) -> int | None:
@@ -79,8 +84,8 @@ class _RemoteEmbedding:
             try:
                 resp = httpx.get(f"{self._url}/health", timeout=self._timeout_s)
                 resp.raise_for_status()
-                self._dim = int(resp.json().get("dimension"))
-            except Exception:  # noqa: BLE001 — dimension is advisory (logging only)
+                self._dim = int(resp.json()["dimension"])
+            except Exception:  # noqa: BLE001 — encode() also back-fills _dim
                 logger.warning("remote embedding: could not fetch dimension from %s", self._url)
         return self._dim
 
