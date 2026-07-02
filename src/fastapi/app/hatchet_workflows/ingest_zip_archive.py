@@ -121,6 +121,53 @@ def _build_dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
+# Zip-bomb guard limits (see _extract_zip_safely).
+_MAX_ENTRIES = 50_000
+_MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
+
+
+def _extract_zip_safely(zip_path: Path, extract_dir: Path) -> None:
+    """Extract every file entry of ``zip_path`` into ``extract_dir``.
+
+    Sync on purpose — the caller runs this in ``asyncio.to_thread`` so the
+    (potentially multi-GB) decompression never blocks the worker event loop.
+
+    A bare ``zf.extractall()`` is vulnerable to (a) zip-bombs (unbounded
+    decompressed size / entry count exhausts disk) and (b) zip-slip path
+    traversal (an entry named ``../../etc/x`` escapes ``extract_dir``).
+    Guard both: cap entry count + total declared uncompressed size, and
+    require every resolved destination to sit strictly below the extract
+    root (``extract_root in dest.parents``).
+    """
+    extract_root = extract_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        infos = zf.infolist()
+        if len(infos) > _MAX_ENTRIES:
+            raise ValueError(
+                f"ingest_zip_archive: {len(infos)} entries exceeds "
+                f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
+            )
+        total_uncompressed = sum(i.file_size for i in infos)
+        if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+            raise ValueError(
+                f"ingest_zip_archive: uncompressed size "
+                f"{total_uncompressed} B exceeds {_MAX_TOTAL_UNCOMPRESSED} B "
+                "(zip-bomb guard); refusing."
+            )
+        for info in infos:
+            if info.is_dir():
+                continue
+            dest = (extract_root / info.filename).resolve()
+            if extract_root not in dest.parents:
+                raise ValueError(
+                    f"ingest_zip_archive: unsafe path {info.filename!r} "
+                    "escapes extract dir (zip-slip guard); refusing."
+                )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(dest, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+
 # ---------------------------------------------------------------------------
 # Workflow definition
 # ---------------------------------------------------------------------------
@@ -186,43 +233,10 @@ async def run_zip_ingest(
             extract_dir = Path(tmpdir) / "extracted"
             extract_dir.mkdir()
 
-            # Audit 2026-06-28: safe extraction. A bare zf.extractall() is
-            # vulnerable to (a) zip-bombs (unbounded decompressed size / entry
-            # count exhausts disk) and (b) zip-slip path traversal (an entry
-            # named '../../etc/x' escapes extract_dir). Guard both: cap entry
-            # count + total declared uncompressed size, and verify every
-            # resolved destination stays inside extract_dir before writing.
-            _MAX_ENTRIES = 50_000
-            _MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
-            extract_root = extract_dir.resolve()
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                infos = zf.infolist()
-                if len(infos) > _MAX_ENTRIES:
-                    raise ValueError(
-                        f"ingest_zip_archive: {len(infos)} entries exceeds "
-                        f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
-                    )
-                total_uncompressed = sum(i.file_size for i in infos)
-                if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
-                    raise ValueError(
-                        f"ingest_zip_archive: uncompressed size "
-                        f"{total_uncompressed} B exceeds {_MAX_TOTAL_UNCOMPRESSED} B "
-                        "(zip-bomb guard); refusing."
-                    )
-                for info in infos:
-                    if info.is_dir():
-                        continue
-                    dest = (extract_dir / info.filename).resolve()
-                    if dest != extract_root and not str(dest).startswith(
-                        str(extract_root) + os.sep
-                    ):
-                        raise ValueError(
-                            f"ingest_zip_archive: unsafe path {info.filename!r} "
-                            "escapes extract dir (zip-slip guard); refusing."
-                        )
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as src, open(dest, "wb") as out:
-                        shutil.copyfileobj(src, out)
+            # Extraction is pure sync file I/O (potentially gigabytes) — run
+            # it off the event loop so worker heartbeats keep flowing (same
+            # starvation class as the 2026-05-22 heavy-parse fix).
+            await asyncio.to_thread(_extract_zip_safely, zip_path, extract_dir)
 
             all_files = [p for p in extract_dir.rglob("*") if p.is_file()]
             total = len(all_files)
