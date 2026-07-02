@@ -38,6 +38,22 @@ GRANT USAGE ON SCHEMA bronze TO georag_read, georag_write;
 -- granted (read could only see silver/bronze). Add USAGE here + SELECT below.
 -- gold rows still carry RLS, so georag_read remains tenant-filtered. gold is
 -- Dagster-materialised (not app-written), so no INSERT/UPDATE for georag_write.
+--
+-- Review fix 2026-07-02 (fresh-cluster bootstrap): unlike gold (created by
+-- init-postgis.sql, which sorts before this file), public_geo is otherwise
+-- created only by Laravel migration 2026_04_14_000000_create_public_geoscience_schema.php
+-- — which has NOT run at Docker init time. The entrypoint runs init files with
+-- ON_ERROR_STOP=1, so an unguarded GRANT on the missing schema aborted the
+-- entire fresh initdb. Create the schema idempotently here rather than
+-- guard-skipping the grants: a guard would silently skip them on EVERY fresh
+-- cluster (init-roles always runs before migrations), reintroducing the
+-- historical init-roles privilege gap in the soft direction. No AUTHORIZATION
+-- clause on purpose: this script runs as POSTGRES_USER (georag — the same
+-- owner role the pgsql_migrations connection uses), so ownership matches the
+-- migration path exactly, the migration's own CREATE SCHEMA IF NOT EXISTS
+-- becomes a no-op, and its later CREATE TABLEs in public_geo still work
+-- (the owner retains CREATE).
+CREATE SCHEMA IF NOT EXISTS public_geo;
 GRANT USAGE ON SCHEMA gold TO georag_read, georag_write;
 GRANT USAGE ON SCHEMA public_geo TO georag_read, georag_write;
 -- audit schema (created in init-postgis.sql) — all three roles can see it.
