@@ -17,8 +17,10 @@ The dev workstation has ONE RTX A4500 (20 GB). Four GPU tenants compete:
   **every** chat query (~300 ms/20-cand).
 - embedding / sparse sidecars — CPU (moved off-GPU 2026-06-24).
 
-Measured: vLLM(~8 GB) + vllm-vl(~6 GB) + reranker(~1.4 GB) ≈ 99 % of 20 GB
-(181 MiB free) — too thin; a CUDA-graph/fragmentation spike risks OOM-ing the
+Measured (reserved footprints, not bare weights): vLLM ≈ 14.4 GB (0.72 × 20 GB,
+weights + KV cache) + vllm-vl ≈ 4.0 GB (4B-8bit, enforce-eager, util-capped
+just above weights) + reranker ≈ 1.4 GB → ≈ 19.8 GB, 99 % of 20 GB (181 MiB
+free) — too thin; a CUDA-graph/fragmentation spike risks OOM-ing the
 chat-critical vLLM. All three cannot coexist with safe headroom on one A4500.
 
 ## Decision

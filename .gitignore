@@ -98,16 +98,48 @@ src/fastapi/models/
 #
 #   src/fastapi/data/      — older local mirror of reranker_dataset_v1
 #                            (the same data lives in MinIO reranker-labels)
-#   src/fastapi/scripts/   — Docker bind-mount echo of repo /scripts;
-#                            edits belong in /scripts only.
+#   src/fastapi/scripts/   — mixed dir: canonical operational scripts are
+#                            tracked (negated below); one-off training/eval
+#                            scratch left by overnight runs stays ignored.
+#                            The previous blanket `src/fastapi/scripts/` rule
+#                            silently ignored NEW canonical scripts too — add
+#                            a negation here when a script becomes canonical.
 #   tmp/                   — ad-hoc PHP/Python probe scripts left behind by
 #                            older debugging sessions; not source files
 #   bronze/                — textbook PDF dumps, belong in SeaweedFS/MinIO
 #                            not git (GBs of binary corpus data)
 src/fastapi/data/
-src/fastapi/scripts/
+src/fastapi/scripts/*
+!src/fastapi/scripts/_debug_tier0e_psycopg2.py
+!src/fastapi/scripts/_earle_chapter_splitter.py
+!src/fastapi/scripts/_embed_public_geo_passages.py
+!src/fastapi/scripts/_mine_reranker_labels_from_answer_runs.py
+!src/fastapi/scripts/_smoke_parent_chunking.py
+!src/fastapi/scripts/backfill_neo4j_workspace_id.py
+!src/fastapi/scripts/bronze_backfill_las_dir.py
+!src/fastapi/scripts/bronze_backfill_uranium_zip.py
+!src/fastapi/scripts/bronze_backfill_xlsx_dir.py
+!src/fastapi/scripts/cleanup_qdrant.py
+!src/fastapi/scripts/compare_benchmarks.py
+!src/fastapi/scripts/compare_benchmarks_per_slice.py
+!src/fastapi/scripts/ingest_one_cluster.py
+!src/fastapi/scripts/init_qdrant.py
+!src/fastapi/scripts/inspect_ingest_zip.py
+!src/fastapi/scripts/load_test.py
+!src/fastapi/scripts/populate_neo4j.py
+!src/fastapi/scripts/populate_source_files.py
+!src/fastapi/scripts/reembed_qdrant.py
+!src/fastapi/scripts/run_golden_benchmark.py
+!src/fastapi/scripts/run_golden_harness.py
+!src/fastapi/scripts/run_qwen3_citation_compliance.py
+!src/fastapi/scripts/soak_test.py
+!src/fastapi/scripts/sweep_retrieval_threshold.py
+!src/fastapi/scripts/verify_graph_entity_cache.py
 /tmp/
 /bronze/
+
+# One-off frontend container-build log (scripts/ops/fe_container_validate.sh)
+/fe_build.log
 
 # Claude Code agent scratch worktrees (never commit)
 .claude/worktrees/

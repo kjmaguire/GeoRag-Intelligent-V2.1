@@ -36,6 +36,14 @@ free** — it does not fit. Forcing it risks OOM-crashing the chat-critical
 
 - **(a) Drop vllm-vl** (frees ~3.5 GB): stop `georag-vllm-vl`. Cost: no figure/VL
   captioning ingest. Cleanest if VL ingest is not in active use.
+  **This is the deployed state (ADR-0018):** vllm-vl lives on the opt-in
+  `vl-ingest` compose profile and does not auto-start. Re-enabling
+  `FIGURE_VL_DESCRIPTIONS=true` therefore requires BOTH adding
+  `--profile vl-ingest` to the compose invocation AND reverting the
+  `PDF_VL_*` env to the sidecar (`PDF_VL_BACKEND_URL=http://vllm-vl:8000/v1`
+  + `PDF_VL_MODEL_VERSION=3` — the parked defaults point at the main vllm
+  with version 2) — and then re-checking VRAM headroom per §2 (all three
+  tenants don't fit at the current utilizations; see ADR-0018 for numbers).
 - **(b) Trim main vLLM KV-cache**: lower `--gpu-memory-utilization` 0.72 → ~0.66
   (frees ~1.2 GB) and recreate `vllm`. Cost: fewer concurrent sequences / less
   KV headroom for the 14B. Verify chat still serves long contexts.
