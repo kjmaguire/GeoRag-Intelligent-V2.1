@@ -1567,8 +1567,10 @@ async def search_documents(
       1024-dim, swapped from bge-small 2026-06-03) and used to retrieve up to
       RETRIEVAL_TOP_N (20) candidates from Qdrant with a permissive cosine
       threshold (RETRIEVAL_QUALITY_THRESHOLD = 0.3). NOTE (audit 2026-06-27,
-      T1 open): the query-side instruction prefix below is still the bge-era
-      string — a known query/corpus asymmetry pending an eval-gated fix.
+      T1 CLOSED 2026-07-03 — eval confirmed prefix-dropped; see below): the
+      query-side embedding uses the raw expanded query with no bge-era
+      instruction prefix, which the 2026-07-03 A/B eval confirmed is the
+      better choice for the Qwen3 embedder (no query/corpus asymmetry).
 
     Stage 2 — Cross-encoder reranking (when reranker is available):
       Each (query, chunk.text) pair is scored by the configured cross-encoder
@@ -1690,8 +1692,10 @@ async def search_documents(
         # degrades query/passage symmetry. Embed the raw expanded query instead.
         # (Optimal Qwen3 query-instruction wiring via EMBEDDING_QUERY_PROMPT_NAME
         # is a follow-up that needs a golden-eval pass.)
-        # NOTE: applied WITHOUT a golden-eval pass — flag for eval validation
-        # before treating retrieval-quality numbers as final.
+        # Eval-validated 2026-07-03 (scripts/eval_query_prefix_ab.py, 15 golden
+        # bench queries vs live georag_chunks): plain NDCG@10 0.6010 vs bge-
+        # prefixed 0.5923 (delta -0.0087, below the +0.02 re-add gate) →
+        # KEEP_PREFIX_DROPPED. The prefix is confirmed marginally harmful.
         _embed_input = _expanded_query
         # Dense query embedding (sync inference, off the event loop).
         query_vector: list[float] = await loop.run_in_executor(
