@@ -39,7 +39,7 @@ _VIZ_REQUIREMENTS: dict[str, list[tuple[str, int, str]]] = {
     ],
     "cross_section": [
         ("collar_count",        2, "collars on the section line"),
-        ("section_line_present", 1, "silver.section_lines row"),
+        ("section_line_present", 1, "section line (gold.cross_section_panels row)"),
         ("interval_count",      6, "lithology intervals across all collars"),
     ],
     "stereonet": [

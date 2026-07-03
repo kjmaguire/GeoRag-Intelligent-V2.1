@@ -121,6 +121,34 @@ final class LakehouseAndDrillholeDetailTest extends TestCase
         return $collarId;
     }
 
+    /**
+     * Insert a gold.cross_section_panels row with the given collars_projected
+     * payload (array of {collar_id, hole_id, ...} objects, matching what the
+     * Dagster gold_cross_section_panels asset writes).
+     *
+     * @param array<int, array<string, mixed>> $collarsProjected
+     */
+    private function seedCrossSectionPanel(
+        string $projectId,
+        string $workspaceId,
+        string $sectionName,
+        array $collarsProjected,
+    ): void {
+        DB::statement(
+            'INSERT INTO gold.cross_section_panels (
+                workspace_id, project_id, section_name,
+                section_line_geom, collars_projected
+             ) VALUES (
+                ?::uuid, ?::uuid, ?,
+                ST_SetSRID(ST_MakeLine(
+                    ST_MakePoint(-105.1, 57.1), ST_MakePoint(-105.0, 57.0)
+                ), 4326),
+                ?::jsonb
+             )',
+            [$workspaceId, $projectId, $sectionName, json_encode($collarsProjected)],
+        );
+    }
+
     public function test_lakehouse_renders_with_three_layer_props(): void
     {
         ['user' => $user, 'project' => $project] = $this->seedProjectMember();
@@ -239,6 +267,38 @@ final class LakehouseAndDrillholeDetailTest extends TestCase
             ->has('assays')
             ->has('structures')
             ->has('cross_sections'),
+        );
+    }
+
+    /**
+     * Regression for the 2026-07-02 schema-drift fix: the cross-section query
+     * must match panels via the real collars_projected JSONB column (the old
+     * query referenced a nonexistent panel_payload column and always failed,
+     * silently emptying the section) and must expose hole_count for the UI
+     * pill. A panel that does not contain the collar must not be returned.
+     */
+    public function test_drillhole_detail_returns_cross_section_panels_containing_the_collar(): void
+    {
+        ['user' => $user, 'project' => $project, 'workspace_id' => $workspaceId] = $this->seedProjectMember();
+        $collarId = $this->seedCollar($project->project_id, $workspaceId);
+
+        $this->seedCrossSectionPanel($project->project_id, $workspaceId, 'Section A-A', [
+            ['collar_id' => $collarId, 'hole_id' => 'BSG-TEST-001'],
+            ['collar_id' => (string) Str::uuid(), 'hole_id' => 'BSG-TEST-002'],
+        ]);
+        $this->seedCrossSectionPanel($project->project_id, $workspaceId, 'Section B-B', [
+            ['collar_id' => (string) Str::uuid(), 'hole_id' => 'BSG-TEST-003'],
+        ]);
+
+        $url = '/projects/'.$project->slug.'/holes/'.$collarId.'/detail';
+        $response = $this->actingAs($user)->get($url);
+
+        $response->assertStatus(200);
+        $response->assertInertia(fn (AssertableInertia $page) => $page
+            ->component('Foundry/DrillholeDetail')
+            ->has('cross_sections', 1)
+            ->where('cross_sections.0.section_name', 'Section A-A')
+            ->where('cross_sections.0.hole_count', 2),
         );
     }
 

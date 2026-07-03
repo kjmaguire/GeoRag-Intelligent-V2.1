@@ -14,6 +14,7 @@ doc-phase 186 — cross-section + stereonet added (Phase H4)
 """
 from app.services.visualizations.cross_section import (
     CrossSectionPanel,
+    panels_from_collars_projected,
     render_cross_section_matplotlib_png,
     render_cross_section_plotly_figure,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "render_strip_log_matplotlib_png",
     "render_strip_log_plotly_figure",
     "CrossSectionPanel",
+    "panels_from_collars_projected",
     "render_cross_section_matplotlib_png",
     "render_cross_section_plotly_figure",
     "StereonetPoint",

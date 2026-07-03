@@ -6,9 +6,11 @@ GET /v1/viz/strip_log?collar_id=<uuid>&format=<json|png>
     Returns either an interactive Plotly figure dict (JSON) or a static
     PNG render of the strip log for one drillhole.
 
-GET /v1/viz/cross_section?project_id=<uuid>&section_line_id=<uuid>&format=<json|png>
-    Returns a vertical cross-section panel pre-projected onto the
-    requested section line.
+GET /v1/viz/cross_section?project_id=<uuid>&section_name=<str>&format=<json|png>
+    Returns a vertical cross-section for the project's pre-projected
+    ``gold.cross_section_panels`` row (one row per (project_id,
+    section_name), carrying a ``collars_projected`` JSONB array). When
+    ``section_name`` is omitted the most-recently-computed section is used.
 
 GET /v1/viz/stereonet?project_id=<uuid>&format=<json|png>
     Returns a stereonet projection of structural measurements (foliations,
@@ -29,6 +31,7 @@ PG round-trip per request).
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Literal
 from uuid import UUID
@@ -44,6 +47,7 @@ from app.services.visualizations import (
     CrossSectionPanel,
     StereonetPoint,
     StripLogInterval,
+    panels_from_collars_projected,
     render_cross_section_matplotlib_png,
     render_cross_section_plotly_figure,
     render_stereonet_matplotlib_png,
@@ -268,64 +272,63 @@ async def get_strip_log(
 
 
 # ----------------------------------------------------------------------------
-# Cross-section (stub — full implementation lands with the cross-section
-# renderer module)
+# Cross-section
 # ----------------------------------------------------------------------------
+#
+# Reads the canonical migration shape (2026_05_13_080001): one
+# gold.cross_section_panels row per (project_id, section_name) carrying a
+# ``collars_projected`` JSONB array. The per-interval-row shape the earlier
+# renderer was written against was archived 2026-07-02 (see
+# database/raw/_archive/phase5-20-cross-section-panels.sql). We expand the
+# JSONB into flat renderable panels via panels_from_collars_projected().
 
 
 async def _fetch_cross_section_panels(
     *,
     pg_pool,
     workspace_id: str,
-    section_line_id: UUID,
+    project_id: UUID,
+    section_name: str | None = None,
 ) -> list[CrossSectionPanel]:
-    """Pull pre-projected panels from gold.cross_section_panels."""
+    """Expand one gold.cross_section_panels row into renderable panels.
+
+    The canonical shape stores one row per (project_id, section_name) with a
+    ``collars_projected`` JSONB array. When ``section_name`` is omitted (the
+    map-chart-planner only knows the project), the most-recently-computed
+    section for the project is used. RLS scopes the read via the
+    ``app.workspace_id`` GUC — a cross-tenant project returns no row, which
+    the renderer turns into a graceful "no data" figure.
+    """
     async with pg_pool.acquire() as conn:
         await conn.execute(
             "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
         )
-        rows = await conn.fetch(
+        row = await conn.fetchrow(
             """
-            SELECT
-                panel_id::text            AS panel_id,
-                section_line_id::text     AS section_line_id,
-                interval_id::text         AS interval_id,
-                collar_id::text           AS collar_id,
-                hole_id,
-                distance_along_m::float   AS distance_along_m,
-                top_elevation_m::float    AS top_elevation_m,
-                bottom_elevation_m::float AS bottom_elevation_m,
-                panel_width_m::float      AS panel_width_m,
-                lithology_code,
-                display_label,
-                display_color,
-                is_mineralised,
-                perpendicular_offset_m::float AS perpendicular_offset_m
+            SELECT collars_projected
               FROM gold.cross_section_panels
-             WHERE section_line_id = $1::uuid
-             ORDER BY distance_along_m, top_elevation_m DESC
+             WHERE project_id = $1::uuid
+               AND ($2::text IS NULL OR section_name = $2)
+             ORDER BY computed_at DESC
+             LIMIT 1
             """,
-            str(section_line_id),
+            str(project_id), section_name,
         )
-    return [
-        CrossSectionPanel(
-            panel_id=r["panel_id"],
-            section_line_id=r["section_line_id"],
-            interval_id=r["interval_id"],
-            collar_id=r["collar_id"],
-            hole_id=r["hole_id"],
-            distance_along_m=r["distance_along_m"],
-            top_elevation_m=r["top_elevation_m"],
-            bottom_elevation_m=r["bottom_elevation_m"],
-            panel_width_m=r["panel_width_m"],
-            lithology_code=r["lithology_code"],
-            display_label=r["display_label"],
-            display_color=r["display_color"],
-            is_mineralised=bool(r["is_mineralised"]),
-            perpendicular_offset_m=r["perpendicular_offset_m"] or 0.0,
-        )
-        for r in rows
-    ]
+    if row is None:
+        return []
+    raw = row["collars_projected"]
+    # asyncpg returns JSONB as a str unless a codec is registered; be tolerant
+    # of both str and already-decoded list.
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "[]")
+        except json.JSONDecodeError:
+            logger.warning(
+                "cross_section: could not decode collars_projected JSON for "
+                "project_id=%s section_name=%s", project_id, section_name,
+            )
+            raw = []
+    return panels_from_collars_projected(raw)
 
 
 @router.get(
@@ -333,7 +336,17 @@ async def _fetch_cross_section_panels(
     summary="Vertical cross-section panel (Plotly JSON or PNG)",
 )
 async def get_cross_section(
-    section_line_id: UUID = Query(..., description="silver.section_lines FK"),
+    project_id: UUID = Query(
+        ...,
+        description="silver.projects FK; selects the gold.cross_section_panels row.",
+    ),
+    section_name: str | None = Query(
+        None,
+        description=(
+            "Named section (gold.cross_section_panels.section_name). Omit to "
+            "render the most-recently-computed section for the project."
+        ),
+    ),
     fmt: Literal["json", "png"] = Query("json", alias="format"),
     title: str | None = Query(None),
     with_export_metadata: bool = Query(
@@ -342,7 +355,7 @@ async def get_cross_section(
     ),
     workspace_id: str = Depends(resolve_workspace_id),
 ):
-    """Render a cross-section from pre-projected panels."""
+    """Render a cross-section from the project's pre-projected panel row."""
     from app.main import app as _app  # noqa: PLC0415
 
     pg_pool = getattr(_app.state, "pg_pool", None)
@@ -356,12 +369,13 @@ async def get_cross_section(
         panels = await _fetch_cross_section_panels(
             pg_pool=pg_pool,
             workspace_id=workspace_id,
-            section_line_id=section_line_id,
+            project_id=project_id,
+            section_name=section_name,
         )
     except Exception:
         logger.exception(
-            "cross_section_fetch_failed: section_line_id=%s",
-            section_line_id,
+            "cross_section_fetch_failed: project_id=%s section_name=%s",
+            project_id, section_name,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -371,13 +385,18 @@ async def get_cross_section(
     if fmt == "json":
         figure = render_cross_section_plotly_figure(panels, title=title)
         if with_export_metadata:
+            row_ids = sorted({p.collar_id for p in panels if p.collar_id})
             envelope = _build_export_envelope(
                 chart_type="cross_section",
                 figure=figure,
                 gold_tables=["gold.cross_section_panels", "gold.drillhole_intervals_visual"],
-                row_ids=[p.panel_id for p in panels],
-                method="orthogonal projection of collars + drill_traces onto A→B section line; intervals joined from gold.drillhole_intervals_visual",
-                filters={"section_line_id": str(section_line_id)},
+                row_ids=row_ids,
+                method=(
+                    "collars projected onto the named section line "
+                    "(gold.cross_section_panels.collars_projected); interval "
+                    "depths converted to elevation via collar RL"
+                ),
+                filters={"project_id": str(project_id), "section_name": section_name},
             )
             return JSONResponse(content=envelope)
         return JSONResponse(content=figure)

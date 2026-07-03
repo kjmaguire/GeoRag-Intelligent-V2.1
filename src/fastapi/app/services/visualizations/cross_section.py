@@ -23,12 +23,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CrossSectionPanel:
-    """One pre-projected interval panel on a section line."""
+    """One rendered interval rectangle on a cross-section.
 
-    panel_id:             str
-    section_line_id:      str
-    interval_id:          str
-    collar_id:            str
+    The renderers read only the geometry (``distance_along_m``,
+    ``top_elevation_m``, ``bottom_elevation_m``, ``panel_width_m``), the
+    label/colour, ``is_mineralised`` and ``perpendicular_offset_m`` (hover).
+
+    ``panel_id`` / ``section_line_id`` / ``interval_id`` belonged to the
+    never-applied per-interval table shape (archived 2026-07-02 to
+    ``database/raw/_archive/phase5-20-cross-section-panels.sql``). The
+    canonical migration shape stores one gold row per (project_id,
+    section_name) with a ``collars_projected`` JSONB array, so those ids
+    don't exist per interval — they're optional here purely for back-compat
+    with older callers/tests that still pass them.
+    """
+
     hole_id:              str
     distance_along_m:     float
     top_elevation_m:      float
@@ -39,6 +48,10 @@ class CrossSectionPanel:
     display_color:        str | None = None
     is_mineralised:       bool = False
     perpendicular_offset_m: float = 0.0
+    collar_id:            str | None = None
+    panel_id:             str | None = None
+    section_line_id:      str | None = None
+    interval_id:          str | None = None
 
     @property
     def height_m(self) -> float:
@@ -48,6 +61,108 @@ class CrossSectionPanel:
 _MINERALISED_BORDER = "#1f7a1f"
 _NO_DATA_COLOR = "#dddddd"
 _PLOT_BG = "#fafafa"
+
+
+def _coerce_float(value: Any, default: float | None = None) -> float | None:
+    """Best-effort float coercion for JSONB-sourced numbers/strings."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def panels_from_collars_projected(
+    collars_projected: Sequence[dict[str, Any]] | None,
+    *,
+    panel_width_m: float = 5.0,
+) -> list[CrossSectionPanel]:
+    """Expand a ``gold.cross_section_panels.collars_projected`` JSONB array
+    into flat renderable :class:`CrossSectionPanel` rectangles.
+
+    Each element of ``collars_projected`` is one collar the Dagster
+    ``gold_cross_section_panels`` asset projected onto the section axis::
+
+        {
+          "collar_id": "...", "hole_id": "...",
+          "axis_distance_m": <float>, "perpendicular_offset_m": <float>,
+          "collar_elevation_m": <float>, "total_depth_m": <float>,
+          "trace": [{"axis_m", "perp_m", "elevation_m"}, ...],
+          "intervals": [
+              {"from", "to", "lithology_code", "lithology_label",
+               "color_hint", "assays"}, ...
+          ]
+        }
+
+    Interval depths are downhole metres; we convert to elevation via the
+    collar RL (``elevation = collar_elevation_m - depth``) — a vertical
+    projection, the same convention the strip-log renderer uses. Trace-aware
+    (deviated-hole) elevation is a future refinement. Holes with a positive
+    ``total_depth_m`` but no logged intervals still get a single grey
+    "no-data" column so the drill hole is visible on the section.
+    """
+    panels: list[CrossSectionPanel] = []
+    for collar in collars_projected or []:
+        if not isinstance(collar, dict):
+            continue
+        hole_id = str(collar.get("hole_id") or collar.get("collar_id") or "?")
+        raw_collar_id = collar.get("collar_id")
+        collar_id = str(raw_collar_id) if raw_collar_id is not None else None
+        axis = _coerce_float(collar.get("axis_distance_m"), 0.0) or 0.0
+        perp = _coerce_float(collar.get("perpendicular_offset_m"), 0.0) or 0.0
+        collar_elev = _coerce_float(collar.get("collar_elevation_m"), 0.0) or 0.0
+
+        made_panel_for_hole = False
+        for iv in collar.get("intervals") or []:
+            if not isinstance(iv, dict):
+                continue
+            top_depth = _coerce_float(iv.get("from"))
+            bot_depth = _coerce_float(iv.get("to"))
+            if top_depth is None or bot_depth is None:
+                continue
+            top_elev = collar_elev - top_depth
+            bot_elev = collar_elev - bot_depth
+            # top must be the higher elevation; swap if depths were inverted
+            if bot_elev > top_elev:
+                top_elev, bot_elev = bot_elev, top_elev
+            assays = iv.get("assays")
+            is_min = bool(
+                iv.get("is_mineralised")
+                or (isinstance(assays, dict) and assays.get("is_mineralised"))
+            )
+            panels.append(CrossSectionPanel(
+                hole_id=hole_id,
+                collar_id=collar_id,
+                distance_along_m=axis,
+                top_elevation_m=top_elev,
+                bottom_elevation_m=bot_elev,
+                panel_width_m=panel_width_m,
+                lithology_code=iv.get("lithology_code"),
+                display_label=iv.get("lithology_label") or iv.get("lithology_code"),
+                display_color=iv.get("color_hint") or iv.get("display_color"),
+                is_mineralised=is_min,
+                perpendicular_offset_m=perp,
+            ))
+            made_panel_for_hole = True
+
+        if not made_panel_for_hole:
+            total_depth = _coerce_float(collar.get("total_depth_m"), 0.0) or 0.0
+            if total_depth > 0:
+                panels.append(CrossSectionPanel(
+                    hole_id=hole_id,
+                    collar_id=collar_id,
+                    distance_along_m=axis,
+                    top_elevation_m=collar_elev,
+                    bottom_elevation_m=collar_elev - total_depth,
+                    panel_width_m=panel_width_m,
+                    lithology_code=None,
+                    display_label="no logged lithology",
+                    display_color=_NO_DATA_COLOR,
+                    is_mineralised=False,
+                    perpendicular_offset_m=perp,
+                ))
+    return panels
 
 
 def render_cross_section_plotly_figure(
