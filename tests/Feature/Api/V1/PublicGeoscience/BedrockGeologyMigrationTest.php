@@ -38,11 +38,11 @@ class BedrockGeologyMigrationTest extends TestCase
         $exists = DB::selectOne("
             SELECT 1
               FROM information_schema.tables
-             WHERE table_schema = 'public_geoscience'
+             WHERE table_schema = 'public_geo'
                AND table_name   = 'pg_bedrock_geology'
         ");
 
-        $this->assertNotNull($exists, 'Table public_geoscience.pg_bedrock_geology does not exist.');
+        $this->assertNotNull($exists, 'Table public_geo.pg_bedrock_geology does not exist.');
     }
 
     #[DataProvider('bedrockGeologyColumnProvider')]
@@ -51,14 +51,14 @@ class BedrockGeologyMigrationTest extends TestCase
         $row = DB::selectOne("
             SELECT column_name
               FROM information_schema.columns
-             WHERE table_schema = 'public_geoscience'
+             WHERE table_schema = 'public_geo'
                AND table_name   = 'pg_bedrock_geology'
                AND column_name  = ?
         ", [$column]);
 
         $this->assertNotNull(
             $row,
-            "Column '$column' missing from public_geoscience.pg_bedrock_geology"
+            "Column '$column' missing from public_geo.pg_bedrock_geology"
         );
     }
 
@@ -90,13 +90,13 @@ class BedrockGeologyMigrationTest extends TestCase
         $exists = DB::selectOne("
             SELECT 1
               FROM information_schema.tables
-             WHERE table_schema = 'public_geoscience'
+             WHERE table_schema = 'public_geo'
                AND table_name   = 'pg_bedrock_geology_history'
         ");
 
         $this->assertNotNull(
             $exists,
-            'Table public_geoscience.pg_bedrock_geology_history does not exist.'
+            'Table public_geo.pg_bedrock_geology_history does not exist.'
         );
     }
 
@@ -105,7 +105,7 @@ class BedrockGeologyMigrationTest extends TestCase
         $row = DB::selectOne("
             SELECT column_name
               FROM information_schema.columns
-             WHERE table_schema = 'public_geoscience'
+             WHERE table_schema = 'public_geo'
                AND table_name   = 'pg_bedrock_geology_history'
                AND column_name  = 'superseded_at'
         ");
@@ -123,13 +123,13 @@ class BedrockGeologyMigrationTest extends TestCase
         $exists = DB::selectOne("
             SELECT 1
               FROM information_schema.views
-             WHERE table_schema = 'public_geoscience'
+             WHERE table_schema = 'public_geo'
                AND table_name   = 'v_pg_bedrock_geology_mvt'
         ");
 
         $this->assertNotNull(
             $exists,
-            'View public_geoscience.v_pg_bedrock_geology_mvt does not exist.'
+            'View public_geo.v_pg_bedrock_geology_mvt does not exist.'
         );
     }
 
@@ -145,10 +145,10 @@ class BedrockGeologyMigrationTest extends TestCase
             SELECT pg_get_constraintdef(oid) AS def
               FROM pg_constraint
              WHERE conname      = 'sources_canonical_type_check'
-               AND conrelid     = 'public_geoscience.sources'::regclass
+               AND conrelid     = 'public_geo.sources'::regclass
         ");
 
-        $this->assertNotNull($row, "Constraint 'sources_canonical_type_check' not found on public_geoscience.sources");
+        $this->assertNotNull($row, "Constraint 'sources_canonical_type_check' not found on public_geo.sources");
         $this->assertStringContainsString(
             'bedrock_geology',
             $row->def,
@@ -162,7 +162,7 @@ class BedrockGeologyMigrationTest extends TestCase
             SELECT pg_get_constraintdef(oid) AS def
               FROM pg_constraint
              WHERE conname  = 'sources_canonical_type_check'
-               AND conrelid = 'public_geoscience.sources'::regclass
+               AND conrelid = 'public_geo.sources'::regclass
         ");
 
         $this->assertNotNull($row, "Constraint 'sources_canonical_type_check' not found.");

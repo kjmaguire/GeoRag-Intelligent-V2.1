@@ -59,6 +59,20 @@ final class PooledHttpClient
      */
     public function forBaseUrl(string $baseUrl, int $timeoutSeconds = 15): PendingRequest
     {
+        // Under tests, do NOT bind a pooled Guzzle client onto the request.
+        // PendingRequest::setClient() makes buildClient() return that client
+        // verbatim, which drops the stub-handler middleware Http::fake()
+        // installs — so a faked upstream (Martin, FastAPI, …) is bypassed and
+        // a real socket is opened instead. Returning a plain factory request
+        // keeps Http::fake() and preventStrayRequests() working. Connection
+        // pooling is a prod-only performance optimisation; its absence under
+        // tests changes no observable behaviour.
+        if (app()->runningUnitTests()) {
+            return $this->factory
+                ->baseUrl($baseUrl)
+                ->timeout($timeoutSeconds);
+        }
+
         $client = $this->clientFor($baseUrl);
 
         return $this->factory

@@ -25,7 +25,7 @@ use Tests\TestCase;
  *     `has_*` bool so the client can distinguish "zero recorded" from
  *     "no data".
  *
- * This test walks every `v_pg_%_mvt` view in `public_geoscience` and fails
+ * This test walks every `v_pg_%_mvt` view in `public_geo` and fails
  * if any non-text column contains NULL values. Either remedy (drop the
  * column or COALESCE it) will pass the test; both are valid.
  *
@@ -40,7 +40,7 @@ class MvtViewNullNumericRegressionTest extends TestCase
     {
         parent::setUp();
 
-        // Queries information_schema.columns and public_geoscience.v_pg_* MVT
+        // Queries information_schema.columns and public_geo.v_pg_* MVT
         // views directly — both are Postgres-only. Skip under the SQLite test
         // fixture; run the regression against a real Postgres test connection.
         $this->skipIfSqlite();
@@ -54,7 +54,7 @@ class MvtViewNullNumericRegressionTest extends TestCase
         $columns = DB::select("
             SELECT table_name, column_name, data_type, is_nullable
               FROM information_schema.columns
-             WHERE table_schema = 'public_geoscience'
+             WHERE table_schema = 'public_geo'
                AND table_name LIKE 'v_pg_%_mvt'
                AND is_nullable = 'YES'
                AND data_type NOT IN (
@@ -71,7 +71,7 @@ class MvtViewNullNumericRegressionTest extends TestCase
             $tableName = $col->table_name;
             $columnName = $col->column_name;
             $sql = sprintf(
-                'SELECT COUNT(*) AS nulls FROM public_geoscience.%s WHERE %s IS NULL',
+                'SELECT COUNT(*) AS nulls FROM public_geo.%s WHERE %s IS NULL',
                 $tableName,
                 $columnName,
             );
@@ -126,7 +126,7 @@ class MvtViewNullNumericRegressionTest extends TestCase
                 $row = DB::selectOne("
                     SELECT data_type
                       FROM information_schema.columns
-                     WHERE table_schema = 'public_geoscience'
+                     WHERE table_schema = 'public_geo'
                        AND table_name   = ?
                        AND column_name  = ?
                 ", [$view, $col]);

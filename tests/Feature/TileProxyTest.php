@@ -374,8 +374,13 @@ class TileProxyTest extends TestCase
     {
         $this->seedSilverProject(self::PROJECT_ID, 1);
 
+        // Use a static-tier silver source. The default SILVER_SOURCE
+        // (pg_collars_by_project) is deliberately overridden to max-age=900
+        // in TileProxyController::SOURCE_MAX_AGE (active-program layer), so it
+        // no longer exercises the 24 h family tier this test guards.
+        // pg_boundaries_by_project (claim polygons) is the 86400 s tier.
         $response = $this->actingAs($this->user)
-            ->get('/tiles/silver/' . self::SILVER_SOURCE . '/10/100/200.pbf?project_id=' . self::PROJECT_ID);
+            ->get('/tiles/silver/pg_boundaries_by_project/10/100/200.pbf?project_id=' . self::PROJECT_ID);
 
         $response->assertOk();
         $cc = (string) $response->headers->get('Cache-Control');

@@ -155,17 +155,28 @@ def test_from_state_passes_through_real_value():
 
 
 def test_agent_files_import_workspace_context_at_fallback_sites():
-    """Verify the 8 known fallback sites all reach for WorkspaceContext.
+    """Verify the known fallback sites all reach for WorkspaceContext.
 
     Pins the migration done in 2026-06-03 audit item B2. If any of
     these files stops importing WorkspaceContext at the relevant site,
     something has likely been refactored to bypass the contract.
+
+    NOTE — ``agent/tools.py`` was intentionally dropped from this list.
+    Its only workspace-resolution site (``search_documents``) was
+    hardened by audit 2026-06-27 item C3 to FAIL CLOSED: when the
+    workspace_id can't be resolved from deps or the project row, it
+    refuses (returns zero documents) instead of resolving. That is
+    strictly stronger than ``WorkspaceContext.from_state``, whose
+    Phase-1 default still falls back to the legacy default tenant.
+    Re-introducing ``from_state`` there would REVERT the C3 fail-closed
+    fix and re-open the fail-open cross-tenant hole, so tools.py must
+    NOT import WorkspaceContext. The fail-closed refusal is pinned by
+    the search_documents tenancy tests instead.
     """
     app_root = pathlib.Path(__file__).parents[1] / "app"
     files = [
         "agent/agentic_retrieval/nodes.py",
         "agent/orchestrator/__init__.py",
-        "agent/tools.py",
     ]
     for relpath in files:
         path = app_root / relpath
