@@ -37,6 +37,7 @@ import os
 import re
 import statistics
 import time
+from collections import namedtuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -853,9 +854,11 @@ def _classify_page_table_type(
 ) -> str:
     """Phase 4 (2026-05-22) — classify a PDF page as 'bordered' or 'borderless'.
 
-    Walks the fitz `page.get_drawings()` output (pre-fetched and passed
-    in so the caller can open the PDF once per file rather than once per
-    classifier call).
+    Walks a list of fitz-style ``drawings`` (``[{"items": [...]}]``) pre-fetched
+    and passed in so the caller can open the PDF once per file rather than once
+    per classifier call. The items are produced from pdfplumber
+    (``_pdfplumber_page_drawings``) since PyMuPDF was removed; the ``'l'`` /
+    ``'re'`` item shape is preserved so this heuristic is unchanged.
 
     Heuristic:
       - Count horizontal lines longer than ``min_horizontal_line_length``
@@ -899,18 +902,65 @@ def _classify_page_table_type(
     return "borderless"
 
 
+# Lightweight point adapting pdfplumber line objects into the fitz-drawings
+# shape _classify_page_table_type expects (it only reads .x / .y). See
+# _pdfplumber_page_drawings.
+_ClsPoint = namedtuple("_ClsPoint", ["x", "y"])
+
+
+def _pdfplumber_page_drawings(page: Any) -> list[dict]:
+    """Adapt one pdfplumber page's vector primitives into the fitz-style
+    ``drawings`` shape consumed by :func:`_classify_page_table_type`.
+
+    pdfplumber (pdfminer.six) exposes the content-stream graphics as
+    ``page.lines`` (stroked line segments) and ``page.rects`` (rectangle
+    primitives) — the fitz-free equivalents of PyMuPDF's ``'l'`` and ``'re'``
+    drawing items. Each becomes one ``items`` entry inside a single drawing
+    dict:
+      - line → ``("l", _ClsPoint(x0, top), _ClsPoint(x1, bottom))``
+      - rect → ``("re", None)``  (the classifier counts 're' by kind only)
+
+    A horizontal rule has ``top == bottom`` in pdfplumber coordinates, so the
+    classifier's ``abs(p1.y - p2.y) < 1`` horizontality test holds regardless
+    of y-origin. Thin filled rules that some generators emit as rectangles
+    land in ``page.rects`` (counted toward the rect threshold) — the same way
+    PyMuPDF reported them as ``'re'`` items.
+    """
+    items: list = []
+    for ln in (getattr(page, "lines", None) or []):
+        try:
+            items.append((
+                "l",
+                _ClsPoint(float(ln["x0"]), float(ln["top"])),
+                _ClsPoint(float(ln["x1"]), float(ln["bottom"])),
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue
+    for _rect in (getattr(page, "rects", None) or []):
+        items.append(("re", None))
+    return [{"items": items}]
+
+
 def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
-    """Open the PDF once via fitz and return {page_no: 'bordered'|'borderless'}.
+    """Open the PDF once via pdfplumber and return {page_no: 'bordered'|'borderless'}.
+
+    Fitz-free: PyMuPDF was removed from the dagster image, so the previous
+    ``page.get_drawings()`` classifier ImportErrored and every page silently
+    fell back to borderless (dual-pass). pdfplumber's ``page.lines`` /
+    ``page.rects`` provide the same line/rectangle border primitives;
+    ``_pdfplumber_page_drawings`` adapts them into the shape
+    ``_classify_page_table_type`` consumes, so the line/rect thresholds (and
+    their existing tuning) are unchanged.
 
     Reads thresholds from env vars (with the defaults in kickoff):
       TABLE_BORDER_LINE_THRESHOLD (default 3)
       TABLE_BORDER_RECT_THRESHOLD (default 20)
 
     Returns an empty dict on any failure (caller falls back to legacy
-    behavior — defensive).
+    dual-pass behavior — defensive).
     """
     try:
-        import pymupdf  # noqa: PLC0415
+        import pdfplumber  # noqa: PLC0415
     except ImportError:
         return {}
     try:
@@ -924,10 +974,10 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
 
     result: dict[int, str] = {}
     try:
-        with pymupdf.open(pdf_path) as doc:
-            for n, page in enumerate(doc, start=1):
+        with pdfplumber.open(pdf_path) as pdf:
+            for n, page in enumerate(pdf.pages, start=1):
                 try:
-                    drawings = page.get_drawings()
+                    drawings = _pdfplumber_page_drawings(page)
                 except Exception:
                     drawings = []
                 result[n] = _classify_page_table_type(
@@ -1968,24 +2018,32 @@ def _build_figure_manifest_pypdfium2(
     stopped flowing on every ingest (report → 0 figures) even though the
     persist-side copy + Qwen3-VL caption + ReportSection wiring stayed intact.
 
-    This restores figures using the permissive pypdfium2 extractor that
-    already replaced the AGPL path in FastAPI
-    (``app.agent.figure_extractor.extract_figures_from_pdf``, Apache-2.0). It
-    pulls embedded RASTER images, stages each under the SAME
-    ``figures/_pending/{sha}/...`` key the docling path used, and returns
-    entries in the exact shape persist consumes
-    (``{idx, page, bbox, caption, pending_key, bucket, sha256}``) so the
-    downstream copy → ``figures/{report_id}/...`` step is unchanged.
+    This restores figures using the permissive pypdfium2 extractors that
+    already replaced the AGPL path in FastAPI (``app.agent.figure_extractor``,
+    Apache-2.0), covering BOTH figure kinds:
+      * ``extract_figures_from_pdf`` — embedded RASTER images;
+      * ``extract_vector_figures_from_pdf`` — VECTOR figures (geological
+        cross-sections / plan maps / grade-tonnage curves drawn as vector
+        graphics), clustered from page vector objects then rendered + cropped.
+        Gated by ``PDF_FIGURES_VECTOR_ENABLED`` (default on); ruled-table pages
+        are excluded via ``_classify_pages_from_pdf`` to curb false positives.
+    Both kinds are staged under the SAME ``figures/_pending/{sha}/...`` key the
+    docling path used, de-duped by image sha256, and returned in the exact shape
+    persist consumes (``{idx, page, bbox, caption, pending_key, bucket, sha256}``)
+    so the downstream copy → ``figures/{report_id}/...`` step is unchanged.
+    Vector entries carry a PDF-points/bottom-left ``bbox``; raster entries leave
+    it null.
 
     Best-effort: returns ``[]`` (never raises) when the extractor is
     unavailable, S3 credentials are missing, or an upload fails — parse must
-    not fail because figures could not be staged.
+    not fail because figures could not be staged. Captions are left empty here;
+    the Qwen3-VL persist caption (``FIGURE_VL_DESCRIPTIONS``) supplies figure
+    descriptions downstream.
 
-    Scope: embedded raster images only. Vector figures (many geological
-    cross-sections / plan maps are drawn as vectors) need the layout-region
-    render path (``extract_figures_from_layout``) fed by §04p layout bboxes —
-    a follow-up. Captions are left empty here; the Qwen3-VL persist caption
-    (``FIGURE_VL_DESCRIPTIONS``) supplies figure descriptions downstream.
+    Future upgrade (once §04p graduates from the default-OFF shadow dual-write to
+    a real input): feed ``extract_figures_from_layout`` from §04p layout regions
+    (``layout_label == "figure"``) via a per-parser bbox adapter, replacing or
+    augmenting the heuristic vector detector.
     """
     if not pdf_sha256:
         return []
@@ -1999,6 +2057,7 @@ def _build_figure_manifest_pypdfium2(
             sys.path.insert(0, "/app")
         from app.agent.figure_extractor import (  # noqa: PLC0415
             extract_figures_from_pdf,
+            extract_vector_figures_from_pdf,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -2011,7 +2070,37 @@ def _build_figure_manifest_pypdfium2(
         raw_figures = extract_figures_from_pdf(path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("pdf_report: pypdfium2 figure extraction failed: %s", exc)
-        return []
+        raw_figures = []
+
+    # Vector figures (geological cross-sections, plan maps, grade-tonnage curves
+    # drawn as vector graphics) are invisible to extract_figures_from_pdf, which
+    # only pulls embedded rasters. extract_vector_figures_from_pdf clusters vector
+    # path/shading objects into figure regions and renders+crops them. Gated by
+    # env (default on) since it's a heuristic; ruled-table pages are excluded via
+    # the (now fitz-free) page classifier — they're the main false-positive source.
+    vector_figures: list[dict] = []
+    if os.environ.get("PDF_FIGURES_VECTOR_ENABLED", "true").lower() == "true":
+        try:
+            bordered_pages = {
+                p for p, t in _classify_pages_from_pdf(path).items() if t == "bordered"
+            }
+            vector_figures = extract_vector_figures_from_pdf(
+                path, exclude_pages=bordered_pages,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail parse over figures
+            logger.warning("pdf_report: vector figure extraction failed: %s", exc)
+            vector_figures = []
+
+    # Merge raster + vector, de-duping by image sha256 (a vector crop that lands
+    # on an embedded raster shouldn't be staged twice). Raster figures win ties.
+    raw_figures = list(raw_figures)
+    _seen_sha = {f.get("sha256") for f in raw_figures if f.get("sha256")}
+    for fig in vector_figures:
+        _sha = fig.get("sha256")
+        if _sha and _sha in _seen_sha:
+            continue
+        _seen_sha.add(_sha)
+        raw_figures.append(fig)
     if not raw_figures:
         return []
 
@@ -2074,9 +2163,9 @@ def _build_figure_manifest_pypdfium2(
         figure_manifest.append({
             "idx": idx,
             "page": page_no,
-            # Embedded-raster path has no PDF-points bbox; the vector/layout
-            # path (extract_figures_from_layout) is the follow-up that fills it.
-            "bbox": None,
+            # Vector figures carry a PDF-points/bottom-left bbox (their source
+            # region); embedded-raster figures have none (bbox stays null).
+            "bbox": fig.get("bbox"),
             # Caption left empty — the Qwen3-VL persist caption
             # (FIGURE_VL_DESCRIPTIONS) supplies the figure description.
             "caption": "",
@@ -2085,9 +2174,13 @@ def _build_figure_manifest_pypdfium2(
             "sha256": img_sha,
         })
 
+    _n_vector = sum(1 for f in raw_figures if f.get("bbox"))
     logger.info(
-        "pdf_report: pypdfium2 extracted %d figure(s), uploaded %d to pending",
+        "pdf_report: pypdfium2 extracted %d figure(s) (%d raster, %d vector), "
+        "uploaded %d to pending",
         len(raw_figures),
+        len(raw_figures) - _n_vector,
+        _n_vector,
         len(figure_manifest),
     )
     return figure_manifest

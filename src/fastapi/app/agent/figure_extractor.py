@@ -15,16 +15,29 @@ collection.)
 
   - extract_figures_from_pdf    — embedded RASTER images (pypdfium2, Apache-2.0;
                                   replaced the removed AGPL PyMuPDF path).
-  - extract_figures_from_layout — render page + crop §04p layout figure bboxes;
-                                  catches VECTOR figures too (cross-sections/maps).
+  - detect_vector_figure_regions — cluster a page's vector PATH/SHADING objects
+                                  into figure bboxes (points/bottom-left).
+  - extract_vector_figures_from_pdf — detect_vector_figure_regions +
+                                  extract_figures_from_layout: captures VECTOR
+                                  figures (cross-sections/plan maps/grade-tonnage
+                                  curves) the raster path misses. This is how
+                                  the dagster figure manifest catches vectors.
+  - extract_figures_from_layout — render page + crop figure bboxes; used by
+                                  extract_vector_figures_from_pdf and (future)
+                                  §04p layout figure regions.
   - caption_image_with_vl       — shared single-image Qwen3-VL call; used by the
                                   canonical persist path AND describe_figures_with_vl.
   - describe_figures_with_vl    — caption a batch of extracted figures (VL, with
                                   the heuristic as the per-figure fallback).
   - generate_figure_descriptions — rule-based fallback when VL is unavailable.
 
-Follow-up: per-parser bbox-coord adapters for extract_figures_from_layout (it
-assumes the docling/pdfminer points/bottom-left convention).
+Vector figures now flow via extract_vector_figures_from_pdf (self-contained
+pypdfium2 detection — no §04p dependency). Follow-up, once §04p graduates from
+the default-OFF shadow dual-write to a real input: feed extract_figures_from_layout
+from §04p layout regions (layout_label == "figure") instead of / in addition to
+the heuristic detector, via a per-parser bbox adapter — extract_figures_from_layout
+assumes the docling/pdfminer points/bottom-left convention, while parse_scanned /
+parse_docparser_vl emit pixel-space (top-left) bboxes that need converting.
 """
 
 from __future__ import annotations
@@ -226,6 +239,10 @@ def extract_figures_from_layout(
                     "sha256": sha,
                     "format": "png",
                     "image_bytes": data,
+                    # Source region in PDF points, bottom-left origin — lets
+                    # callers persist the figure's location (the embedded-raster
+                    # path in extract_figures_from_pdf has no bbox).
+                    "bbox": [left, bottom, right, top],
                 })
     finally:
         try:
@@ -239,6 +256,194 @@ def extract_figures_from_layout(
         os.path.basename(pdf_path) if pdf_path else "<unspecified>",
     )
     return figures
+
+
+# Guard against pathological pages (dense CAD-style vector art) blowing up the
+# O(n^2) clustering below. Bounds the per-page object scan.
+_VECTOR_FIGURE_MAX_OBJECTS_PER_PAGE = 4000
+
+
+def _cluster_boxes(
+    boxes: list[tuple[float, float, float, float]],
+    gap: float,
+) -> list[tuple[tuple[float, float, float, float], int]]:
+    """Union axis-aligned boxes into clusters.
+
+    Two boxes join the same cluster when their rectangles — each inflated by
+    ``gap`` on every side — overlap (transitively). Returns one entry per
+    cluster as ``((left, bottom, right, top), member_count)``. Pure +
+    deterministic (order-independent result) so it is unit-testable without
+    pypdfium2. The member count lets callers reject sparse clusters (a page
+    frame or a pair of rule lines) that a bbox alone can't distinguish from a
+    dense figure.
+
+    O(n^2) worst case; callers cap ``boxes`` via
+    ``_VECTOR_FIGURE_MAX_OBJECTS_PER_PAGE``.
+    """
+    remaining = list(boxes)
+    clusters: list[tuple[tuple[float, float, float, float], int]] = []
+    while remaining:
+        cur = list(remaining.pop())
+        count = 1
+        changed = True
+        while changed:
+            changed = False
+            keep: list[tuple[float, float, float, float]] = []
+            for box in remaining:
+                bl, bb, br, bt = box
+                # Overlap test with cur inflated by gap on all sides.
+                if (
+                    bl <= cur[2] + gap
+                    and br >= cur[0] - gap
+                    and bb <= cur[3] + gap
+                    and bt >= cur[1] - gap
+                ):
+                    cur[0] = min(cur[0], bl)
+                    cur[1] = min(cur[1], bb)
+                    cur[2] = max(cur[2], br)
+                    cur[3] = max(cur[3], bt)
+                    count += 1
+                    changed = True
+                else:
+                    keep.append(box)
+            remaining = keep
+        clusters.append(((cur[0], cur[1], cur[2], cur[3]), count))
+    return clusters
+
+
+def detect_vector_figure_regions(
+    pdf_path: str,
+    *,
+    min_dimension_pts: float = 72.0,
+    min_area_frac: float = 0.03,
+    max_area_frac: float = 0.9,
+    min_objects: int = 6,
+    cluster_gap_pts: float = 18.0,
+    exclude_pages: set[int] | None = None,
+) -> list[dict]:
+    """Heuristically locate vector-graphic figure regions in a PDF.
+
+    Many geological figures — cross-sections, plan/claim maps, grade-tonnage
+    curves — are drawn as VECTOR graphics, so extract_figures_from_pdf (which
+    only pulls embedded raster images) misses them entirely. This clusters a
+    page's vector PATH/SHADING object bounds into candidate figure regions,
+    which extract_figures_from_layout then renders + crops.
+
+    Returns ``[{page: 1-based, bbox: [left, bottom, right, top] in PDF points,
+    bottom-left origin}]`` — ready to hand straight to
+    extract_figures_from_layout.
+
+    The heuristic is deliberately conservative — a missed figure is cheaper
+    than flooding the retrieval index with cropped tables or page decoration:
+      * cluster path/shading bounds with a ``cluster_gap_pts`` merge gap;
+      * require at least ``min_objects`` vector objects in the cluster — a page
+        frame or a couple of rule lines is 1-4 objects and would otherwise
+        cluster into a large empty bbox (bbox alone can't tell a stroked frame
+        from a dense figure); real vector figures are many strokes;
+      * keep only clusters at least ``min_dimension_pts`` on BOTH sides and
+        covering ``min_area_frac``..``max_area_frac`` of the page area.
+
+    ``exclude_pages`` (1-based) lets the caller drop pages already classified as
+    ruled-table pages — a dense table grid clears ``min_objects`` and is the
+    main remaining false-positive source, so the caller gates it out. Best-effort:
+    returns ``[]`` on any pypdfium2 failure (parse must not fail because figure
+    detection did).
+    """
+    import pypdfium2 as pdfium  # noqa: PLC0415
+
+    exclude = exclude_pages or set()
+    try:
+        pdf = pdfium.PdfDocument(pdf_path)
+    except Exception:
+        logger.exception("detect_vector_figure_regions: cannot open %s", pdf_path)
+        return []
+
+    want = (pdfium.raw.FPDF_PAGEOBJ_PATH, pdfium.raw.FPDF_PAGEOBJ_SHADING)
+    regions: list[dict] = []
+    try:
+        for page_idx in range(len(pdf)):
+            page_num = page_idx + 1
+            if page_num in exclude:
+                continue
+            page = pdf[page_idx]
+            try:
+                w_pts, h_pts = page.get_size()
+            except Exception:
+                continue
+            page_area = max(1.0, float(w_pts) * float(h_pts))
+
+            boxes: list[tuple[float, float, float, float]] = []
+            try:
+                for obj in page.get_objects(filter=want):
+                    try:
+                        left, bottom, right, top = obj.get_bounds()
+                    except Exception:
+                        continue  # loose/undecodable object — skip
+                    if (right - left) <= 1.0 and (top - bottom) <= 1.0:
+                        continue  # degenerate hairline / dust
+                    boxes.append((left, bottom, right, top))
+                    if len(boxes) >= _VECTOR_FIGURE_MAX_OBJECTS_PER_PAGE:
+                        break
+            except Exception:
+                logger.warning(
+                    "detect_vector_figure_regions: get_objects failed on page %d",
+                    page_num,
+                )
+                continue
+            if not boxes:
+                continue
+
+            for (left, bottom, right, top), count in _cluster_boxes(
+                boxes, cluster_gap_pts,
+            ):
+                if count < min_objects:
+                    continue
+                w, h = right - left, top - bottom
+                if w < min_dimension_pts or h < min_dimension_pts:
+                    continue
+                frac = (w * h) / page_area
+                if frac < min_area_frac or frac > max_area_frac:
+                    continue
+                regions.append({
+                    "page": page_num,
+                    "bbox": [left, bottom, right, top],
+                })
+    finally:
+        try:
+            pdf.close()
+        except Exception:
+            pass
+
+    logger.info(
+        "detect_vector_figure_regions: %d region(s) in %s",
+        len(regions),
+        os.path.basename(pdf_path) if pdf_path else "<unspecified>",
+    )
+    return regions
+
+
+def extract_vector_figures_from_pdf(
+    pdf_path: str,
+    *,
+    render_scale: float = 2.0,
+    exclude_pages: set[int] | None = None,
+    **detect_kwargs: Any,
+) -> list[dict]:
+    """Detect vector-graphic figure regions, then render + crop them.
+
+    Convenience wrapper chaining detect_vector_figure_regions →
+    extract_figures_from_layout. Same output dict shape as
+    extract_figures_from_pdf (page, width, height, sha256, format, image_bytes)
+    plus the source ``bbox`` — so callers can merge this list with the
+    embedded-raster figures from extract_figures_from_pdf. ``**detect_kwargs``
+    are forwarded to detect_vector_figure_regions (thresholds).
+    """
+    regions = detect_vector_figure_regions(
+        pdf_path, exclude_pages=exclude_pages, **detect_kwargs,
+    )
+    if not regions:
+        return []
+    return extract_figures_from_layout(pdf_path, regions, render_scale=render_scale)
 
 
 def generate_figure_descriptions(figures: list[dict], report_title: str) -> list[dict]:

@@ -162,40 +162,82 @@ def test_classify_custom_thresholds(parser_module):
 
 
 # ---------------------------------------------------------------------------
-# 9. _classify_pages_from_pdf — env vars honored
+# 8b. _pdfplumber_page_drawings — adapts pdfplumber lines/rects to fitz shape
 # ---------------------------------------------------------------------------
+
+def _pdfplumber_page(lines=None, rects=None):
+    """A minimal stand-in for a pdfplumber Page (only .lines/.rects read)."""
+    page = MagicMock()
+    page.lines = lines or []
+    page.rects = rects or []
+    return page
+
+
+def test_pdfplumber_page_drawings_maps_lines_and_rects(parser_module):
+    # A horizontal line has top == bottom in pdfplumber coords.
+    page = _pdfplumber_page(
+        lines=[{"x0": 0.0, "x1": 200.0, "top": 100.0, "bottom": 100.0}],
+        rects=[{"x0": 0, "x1": 10, "top": 0, "bottom": 10} for _ in range(3)],
+    )
+    drawings = parser_module._pdfplumber_page_drawings(page)
+    items = drawings[0]["items"]
+    kinds = [it[0] for it in items]
+    assert kinds.count("l") == 1
+    assert kinds.count("re") == 3
+    # The line survives the classifier's horizontality + length test.
+    assert parser_module._classify_page_table_type(
+        drawings, line_threshold=1,
+    ) == "bordered"
+
+
+def test_pdfplumber_page_drawings_skips_malformed_line(parser_module):
+    # Missing 'top' key → that line is skipped, not fatal.
+    page = _pdfplumber_page(lines=[{"x0": 0.0, "x1": 200.0}])
+    drawings = parser_module._pdfplumber_page_drawings(page)
+    assert drawings[0]["items"] == []
+
+
+# ---------------------------------------------------------------------------
+# 9. _classify_pages_from_pdf — env vars honored (pdfplumber-backed)
+# ---------------------------------------------------------------------------
+
+def _fake_pdfplumber_module(pages):
+    """Build a stub `pdfplumber` module whose open() yields *pages*."""
+    class _FakePdf:
+        def __init__(self, pgs): self.pages = pgs
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    fake = types.ModuleType("pdfplumber")
+    fake.open = MagicMock(return_value=_FakePdf(pages))
+    return fake
+
 
 def test_classify_pages_env_thresholds_honored(parser_module, monkeypatch):
     monkeypatch.setenv("TABLE_BORDER_LINE_THRESHOLD", "1")
     monkeypatch.setenv("TABLE_BORDER_RECT_THRESHOLD", "1")
 
-    # Stub fitz to return one page with 1 horizontal line
-    fake_page = MagicMock()
-    fake_page.get_drawings = MagicMock(return_value=[_drawing([
-        ("l", _make_point(0, 100), _make_point(200, 100)),
-    ])])
-
-    class _FakeDoc:
-        def __iter__(self): return iter([fake_page])
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    # One page with a single horizontal line → bordered once the line
+    # threshold is lowered to 1 via the env var.
+    page = _pdfplumber_page(
+        lines=[{"x0": 0.0, "x1": 200.0, "top": 100.0, "bottom": 100.0}],
+    )
+    monkeypatch.setitem(
+        sys.modules, "pdfplumber", _fake_pdfplumber_module([page]),
+    )
 
     result = parser_module._classify_pages_from_pdf("/tmp/fake.pdf")
     assert result == {1: "bordered"}
 
 
 # ---------------------------------------------------------------------------
-# 10. _classify_pages_from_pdf — fitz unavailable returns empty
+# 10. _classify_pages_from_pdf — open failure returns empty
 # ---------------------------------------------------------------------------
 
-def test_classify_pages_fitz_open_failure_returns_empty(parser_module, monkeypatch):
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(side_effect=RuntimeError("can't open"))
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+def test_classify_pages_open_failure_returns_empty(parser_module, monkeypatch):
+    fake = types.ModuleType("pdfplumber")
+    fake.open = MagicMock(side_effect=RuntimeError("can't open"))
+    monkeypatch.setitem(sys.modules, "pdfplumber", fake)
     assert parser_module._classify_pages_from_pdf("/tmp/fake.pdf") == {}
 
 

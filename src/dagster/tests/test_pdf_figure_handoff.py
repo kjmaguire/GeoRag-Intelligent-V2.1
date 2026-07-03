@@ -394,13 +394,17 @@ import types  # noqa: E402
 
 
 @contextmanager
-def _inject_fake_extractor(figures):
+def _inject_fake_extractor(figures, vector_figures=None):
     """Inject a fake `app.agent.figure_extractor` so the parser's cross-service
-    `from app.agent.figure_extractor import extract_figures_from_pdf` resolves
-    on hosts without the FastAPI package. `figures` is the extractor's return
-    value (list of {page, sha256, image_bytes, ...} dicts)."""
+    `from app.agent.figure_extractor import extract_figures_from_pdf,
+    extract_vector_figures_from_pdf` resolves on hosts without the FastAPI
+    package. `figures` is the embedded-raster extractor's return value;
+    `vector_figures` (default []) is the vector extractor's."""
     fake_mod = types.ModuleType("app.agent.figure_extractor")
     fake_mod.extract_figures_from_pdf = lambda _path: figures
+    fake_mod.extract_vector_figures_from_pdf = (
+        lambda _path, **_kw: list(vector_figures or [])
+    )
     with patch.dict(
         "sys.modules",
         {
@@ -514,3 +518,79 @@ def test_pypdfium2_skips_figure_missing_bytes_or_page(docling_env, fake_s3):
     assert len(manifest) == 1
     assert manifest[0]["page"] == 5
     assert manifest[0]["sha256"] == "keep"
+
+
+# ---------------------------------------------------------------------------
+# 12. Vector figures (geological cross-sections/maps drawn as vectors) merged
+#     into the same manifest via extract_vector_figures_from_pdf.
+# ---------------------------------------------------------------------------
+
+def _vector_fig(page, sha, bbox, nbytes=6000):
+    return {
+        "page": page,
+        "width": 400,
+        "height": 300,
+        "format": "png",
+        "sha256": sha,
+        "bbox": bbox,
+        "image_bytes": b"\x89PNG\r\n\x1a\n" + b"v" * nbytes,
+    }
+
+
+def test_pypdfium2_merges_vector_figures_with_bbox(docling_env, fake_s3, monkeypatch):
+    import georag_dagster.parsers.pdf_report as pr
+    # Neutralise the classify pass (avoids a real pdfplumber open of the fake path).
+    monkeypatch.setattr(pr, "_classify_pages_from_pdf", lambda _p: {})
+
+    raster = [_raster_fig(3, sha="r0")]
+    vector = [_vector_fig(5, "v0", [100.0, 400.0, 400.0, 700.0])]
+    sha = "a" * 64
+    with _inject_fake_extractor(raster, vector_figures=vector):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", sha)
+
+    assert len(manifest) == 2
+    # Raster figure: no bbox.
+    assert manifest[0]["sha256"] == "r0" and manifest[0]["bbox"] is None
+    # Vector figure: carries its source region bbox (PDF points, bottom-left).
+    assert manifest[1]["sha256"] == "v0"
+    assert manifest[1]["page"] == 5
+    assert manifest[1]["bbox"] == [100.0, 400.0, 400.0, 700.0]
+    assert manifest[1]["pending_key"] == f"figures/_pending/{sha}/figure_0001_page_5.png"
+
+
+def test_pypdfium2_dedupes_vector_matching_raster(docling_env, fake_s3, monkeypatch):
+    import georag_dagster.parsers.pdf_report as pr
+    monkeypatch.setattr(pr, "_classify_pages_from_pdf", lambda _p: {})
+
+    raster = [_raster_fig(3, sha="dup")]
+    vector = [_vector_fig(3, "dup", [1.0, 2.0, 3.0, 4.0])]  # same sha → dropped
+    with _inject_fake_extractor(raster, vector_figures=vector):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "b" * 64)
+
+    assert len(manifest) == 1
+    assert manifest[0]["sha256"] == "dup" and manifest[0]["bbox"] is None
+
+
+def test_pypdfium2_vector_capture_disabled_by_flag(docling_env, fake_s3, monkeypatch):
+    monkeypatch.setenv("PDF_FIGURES_VECTOR_ENABLED", "false")
+    import georag_dagster.parsers.pdf_report as pr
+    monkeypatch.setattr(pr, "_classify_pages_from_pdf", lambda _p: {})
+
+    called = {"vector": 0, "classify": 0}
+
+    def _count_classify(_p):
+        called["classify"] += 1
+        return {}
+
+    monkeypatch.setattr(pr, "_classify_pages_from_pdf", _count_classify)
+
+    with _inject_fake_extractor([_raster_fig(1, sha="r")]) as _:
+        def _boom(_path, **_kw):
+            called["vector"] += 1
+            return []
+        sys.modules["app.agent.figure_extractor"].extract_vector_figures_from_pdf = _boom
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "c" * 64)
+
+    assert len(manifest) == 1               # raster still captured
+    assert called["vector"] == 0            # flag off → vector extractor skipped
+    assert called["classify"] == 0          # …and no classify pass either

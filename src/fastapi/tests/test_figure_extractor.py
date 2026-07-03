@@ -120,6 +120,7 @@ def test_extract_figures_from_layout_crops_correct_region(tmp_path: Path) -> Non
     f = figs[0]
     assert f["page"] == 1
     assert f["width"] == 400 and f["height"] == 300   # 200x150 block @ render_scale 2
+    assert f["bbox"] == [100, 542, 300, 692]          # source region echoed back
     crop = np.array(Image.open(io.BytesIO(f["image_bytes"]))).reshape(-1, 3).mean(0)
     assert crop[0] > 170 and crop[1] < 80 and crop[2] < 80   # the red block, not white page
 
