@@ -16,6 +16,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.hatchet_workflows import hatchet
 from app.services.eval.answer_quality import score_answer_quality
 
@@ -23,7 +24,7 @@ log = logging.getLogger("georag.hatchet.score_answer_quality")
 
 
 class ScoreAnswerQualityInput(BaseModel):
-    workspace_id: str = Field(default="a0000000-0000-0000-0000-000000000001")
+    workspace_id: str = Field(default=LEGACY_DEFAULT_TENANT_UUID)
     batch_size: int = Field(default=20)
     max_age_hours: int = Field(default=24)
 

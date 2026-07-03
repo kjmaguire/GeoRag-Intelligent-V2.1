@@ -74,7 +74,7 @@ class Citation(BaseModel):
     queried together (plan §09b: "queries both corpora when ambiguous and
     labels results by source surface"). Legacy NI43/PUB/DATA citations have
     corpus='internal_archive'; Public Geoscience citations have
-    corpus='public_geo'.
+    corpus='public_geoscience'.
     """
 
     citation_id: str = Field(
@@ -115,9 +115,9 @@ class Citation(BaseModel):
     # None on internal-archive citations; populated on PGEO citations so the
     # UI can render the jurisdiction-aware citation card without a second
     # round-trip to Laravel's resolver on hover.
-    corpus: Literal["internal_archive", "public_geo"] | None = Field(
+    corpus: Literal["internal_archive", "public_geoscience"] | None = Field(
         default=None,
-        description="Source surface — internal_archive (default) or public_geo",
+        description="Source surface — internal_archive (default) or public_geoscience",
     )
     jurisdiction_code: str | None = Field(
         default=None,

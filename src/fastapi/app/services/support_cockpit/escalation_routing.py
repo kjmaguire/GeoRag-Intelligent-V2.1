@@ -44,6 +44,7 @@ from uuid import UUID
 
 import asyncpg
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
 
@@ -179,7 +180,7 @@ async def route_escalation(
                 # class). SET LOCAL is discarded at COMMIT.
                 await bind_workspace_scope(
                     conn,
-                    workspace_id="a0000000-0000-0000-0000-000000000001",
+                    workspace_id=LEGACY_DEFAULT_TENANT_UUID,
                     site="support_cockpit.escalation_routing.bootstrap",
                 )
                 # 1. Load ticket.

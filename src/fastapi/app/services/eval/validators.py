@@ -233,7 +233,7 @@ async def validate_chunk_provenance(
     Behavior:
       - `expected_refusal=True` + zero citations → vacuous pass
       - Each `source_chunk_id` is looked up in Qdrant via `.retrieve()`
-      - Citations with `corpus='public_geo'` are skipped (those
+      - Citations with `corpus='public_geoscience'` are skipped (those
         IDs aren't Qdrant point ids; a future graduation adds a
         PostGIS-backed lookup)
       - Pass iff every Qdrant-bound citation resolves to a real point
@@ -279,7 +279,7 @@ async def validate_chunk_provenance(
 
     for c in citations:
         chunk_id, corpus, citation_type, citation_id = _coerce(c)
-        if corpus == "public_geo":
+        if corpus == "public_geoscience":
             # PGEO IDs are structured strings, not Qdrant point IDs.
             pgeo_skipped += 1
             continue

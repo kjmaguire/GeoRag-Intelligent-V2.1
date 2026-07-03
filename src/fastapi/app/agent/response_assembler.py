@@ -160,7 +160,7 @@ def assemble_response(
                         section=None,
                         page=None,
                         relevance_score=float(record.relevance_score or 0.0),
-                        corpus="public_geo",
+                        corpus="public_geoscience",
                         jurisdiction_code=record.jurisdiction_code or None,
                         jurisdiction_name=record.jurisdiction_name,
                         license_summary=record.license_summary,
