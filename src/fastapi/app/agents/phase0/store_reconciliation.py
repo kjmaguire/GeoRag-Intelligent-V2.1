@@ -9,7 +9,7 @@ Neo4j to detect drift the outbox missed. Surfaces:
   - missing_in_b candidates (pending_propagations row > 1 hour old without
     any successful propagation_attempts row)
   - cross_store_drift: workspace-scoped count diffs between
-    silver.document_passages and Qdrant georag_reports points;
+    silver.document_passages and Qdrant georag_chunks points;
     silver.projects vs Neo4j (:Project) nodes. Drift > 5% (or >10 abs)
     becomes a finding. Clients are lazily-imported and a missing client
     is a no-op, not an error.
@@ -183,7 +183,11 @@ async def store_reconciliation_run(
             from qdrant_client.models import Filter, FieldCondition, MatchValue  # noqa: PLC0415
 
             r = await qc.count(
-                collection_name="georag_reports",
+                # ADR-0010 cutover: georag_chunks is the canonical corpus fed
+                # from silver.document_passages (index_document_passages).
+                # The legacy georag_reports collection is empty post-cutover, so
+                # counting against it reported false drift on every run.
+                collection_name="georag_chunks",
                 count_filter=Filter(must=[
                     FieldCondition(
                         key="workspace_id",
@@ -240,7 +244,7 @@ async def store_reconciliation_run(
         }
 
     summary["cross_store_drift"] = {
-        "qdrant_georag_reports": _drift_finding(pg_passages, qdrant_count),
+        "qdrant_georag_chunks": _drift_finding(pg_passages, qdrant_count),
         "neo4j_project_nodes": _drift_finding(pg_projects, neo4j_count),
     }
 

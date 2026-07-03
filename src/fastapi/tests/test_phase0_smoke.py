@@ -50,7 +50,9 @@ def test_store_reconciliation_includes_cross_store_drift() -> None:
     from app.agents.phase0 import store_reconciliation as m
     src = inspect.getsource(m)
     assert "cross_store_drift" in src
-    assert "georag_reports" in src
+    # ADR-0010 cutover: drift check targets the canonical georag_chunks
+    # collection, not the now-empty legacy georag_reports.
+    assert "georag_chunks" in src
     assert ":Project" in src or "MATCH (n:Project" in src
     assert "is_drift" in src
 
