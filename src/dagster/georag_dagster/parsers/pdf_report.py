@@ -1955,6 +1955,144 @@ def _parse_with_docling(
     )
 
 
+def _build_figure_manifest_pypdfium2(
+    path: str,
+    pdf_sha256: Optional[str],
+) -> list[dict]:
+    """Fitz-free figure producer for the canonical ingest_pdf persist path.
+
+    PyMuPDF (fitz) AND docling were both removed from the dagster image
+    (AGPL / dependency slimming). docling's ``figure_manifest`` was the ONLY
+    figure producer ``parse_pdf_report`` fed to the persist task, and it is
+    gated behind a successful fitz parse — so once fitz went away, figures
+    stopped flowing on every ingest (report → 0 figures) even though the
+    persist-side copy + Qwen3-VL caption + ReportSection wiring stayed intact.
+
+    This restores figures using the permissive pypdfium2 extractor that
+    already replaced the AGPL path in FastAPI
+    (``app.agent.figure_extractor.extract_figures_from_pdf``, Apache-2.0). It
+    pulls embedded RASTER images, stages each under the SAME
+    ``figures/_pending/{sha}/...`` key the docling path used, and returns
+    entries in the exact shape persist consumes
+    (``{idx, page, bbox, caption, pending_key, bucket, sha256}``) so the
+    downstream copy → ``figures/{report_id}/...`` step is unchanged.
+
+    Best-effort: returns ``[]`` (never raises) when the extractor is
+    unavailable, S3 credentials are missing, or an upload fails — parse must
+    not fail because figures could not be staged.
+
+    Scope: embedded raster images only. Vector figures (many geological
+    cross-sections / plan maps are drawn as vectors) need the layout-region
+    render path (``extract_figures_from_layout``) fed by §04p layout bboxes —
+    a follow-up. Captions are left empty here; the Qwen3-VL persist caption
+    (``FIGURE_VL_DESCRIPTIONS``) supplies figure descriptions downstream.
+    """
+    if not pdf_sha256:
+        return []
+
+    try:
+        # Shared FastAPI code — same cross-service import the legacy
+        # index_reports asset uses (the app package lives at /app in the image).
+        import sys  # noqa: PLC0415
+
+        if "/app" not in sys.path:
+            sys.path.insert(0, "/app")
+        from app.agent.figure_extractor import (  # noqa: PLC0415
+            extract_figures_from_pdf,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "pdf_report: pypdfium2 figure extractor unavailable (%s) — no figures",
+            exc,
+        )
+        return []
+
+    try:
+        raw_figures = extract_figures_from_pdf(path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pdf_report: pypdfium2 figure extraction failed: %s", exc)
+        return []
+    if not raw_figures:
+        return []
+
+    s3_endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get("MINIO_ENDPOINT")
+    s3_bucket = os.environ.get("S3_BUCKET_BRONZE", "bronze")
+    aws_key = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("MINIO_ROOT_USER")
+    aws_secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get(
+        "MINIO_ROOT_PASSWORD"
+    )
+    if not (s3_endpoint and aws_key and aws_secret):
+        logger.info(
+            "pdf_report: S3 credentials missing — figure manifest not built "
+            "(%d pypdfium2 figures discarded)",
+            len(raw_figures),
+        )
+        return []
+
+    try:
+        import boto3  # noqa: PLC0415
+        from botocore.config import Config as BotoConfig  # noqa: PLC0415
+    except ImportError:
+        logger.warning("pdf_report: boto3 unavailable, skipping figure upload")
+        return []
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=s3_endpoint,
+        aws_access_key_id=aws_key,
+        aws_secret_access_key=aws_secret,
+        region_name="us-east-1",
+        config=BotoConfig(signature_version="s3v4"),
+    )
+
+    figure_manifest: list[dict] = []
+    for idx, fig in enumerate(raw_figures):
+        img_bytes = fig.get("image_bytes")
+        page_no = fig.get("page")
+        if not img_bytes or page_no is None:
+            continue
+        img_sha = fig.get("sha256") or hashlib.sha256(img_bytes).hexdigest()
+        pending_key = (
+            f"figures/_pending/{pdf_sha256}/"
+            f"figure_{idx:04d}_page_{page_no}.png"
+        )
+        try:
+            s3.put_object(
+                Bucket=s3_bucket,
+                Key=pending_key,
+                Body=img_bytes,
+                ContentType="image/png",
+                Metadata={
+                    "pdf_sha256": pdf_sha256,
+                    "page": str(page_no),
+                    "sha256": img_sha,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pdf_report: figure pending upload failed: %s", exc)
+            continue
+        figure_manifest.append({
+            "idx": idx,
+            "page": page_no,
+            # Embedded-raster path has no PDF-points bbox; the vector/layout
+            # path (extract_figures_from_layout) is the follow-up that fills it.
+            "bbox": None,
+            # Caption left empty — the Qwen3-VL persist caption
+            # (FIGURE_VL_DESCRIPTIONS) supplies the figure description.
+            "caption": "",
+            "pending_key": pending_key,
+            "bucket": s3_bucket,
+            "sha256": img_sha,
+        })
+
+    logger.info(
+        "pdf_report: pypdfium2 extracted %d figure(s), uploaded %d to pending",
+        len(raw_figures),
+        len(figure_manifest),
+    )
+    return figure_manifest
+
+
 # Phase 10 (2026-05-22) — _parse_with_unstructured removed.
 # Phase 2.1 made fitz-first dispatch the only path; unstructured was never
 # invoked from the dispatch tree. The dependency on `unstructured[pdf]` is
@@ -2816,6 +2954,16 @@ def parse_pdf_report(path: str) -> ReportParseResult:
             else:
                 _span.set_attribute("ocr.recovered", False)
 
+    # Figure manifest. docling (the previous producer) was removed from the
+    # image alongside PyMuPDF, so figures stopped flowing on the canonical
+    # persist path. Prefer docling's richer manifest if it ever returns
+    # (bbox + native captions); otherwise fall back to the fitz-free
+    # pypdfium2 raster extractor. Computed before the empty-text early return
+    # so image-only PDFs with embedded figures still contribute figures.
+    figure_manifest = docling_figure_manifest or _build_figure_manifest_pypdfium2(
+        path, _sha256_hex,
+    )
+
     if not full_text.strip():
         logger.warning("pdf_report: extracted text is empty for '%s'", path)
         return ReportParseResult(
@@ -2833,7 +2981,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
             warnings=extraction_warnings,
             provenance=_provenance,
             page_languages=page_languages,
-            figure_manifest=docling_figure_manifest,
+            figure_manifest=figure_manifest,
         )
 
     # --- Use first ~2000 chars for metadata extraction (title page) ---
@@ -2978,5 +3126,5 @@ def parse_pdf_report(path: str) -> ReportParseResult:
         provenance=_provenance,
         resource_tables=resource_tables,
         page_languages=page_languages,
-        figure_manifest=docling_figure_manifest,
+        figure_manifest=figure_manifest,
     )

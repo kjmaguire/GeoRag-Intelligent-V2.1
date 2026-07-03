@@ -40,6 +40,7 @@ from georag_dagster.parsers.pdf_report import (  # noqa: E402
     ReportParseResult,
     ReportSection,
     _FIGURE_TEMPDIR_ROOT,
+    _build_figure_manifest_pypdfium2,
     _figure_tempdir,
     _parse_with_docling,
 )
@@ -379,3 +380,137 @@ def test_legacy_cache_symbols_removed():
     # And the new helper is exposed
     assert hasattr(mod, "_FIGURE_TEMPDIR_ROOT")
     assert hasattr(mod, "_figure_tempdir")
+
+
+# ---------------------------------------------------------------------------
+# 11. Fitz-free pypdfium2 figure producer (docling + PyMuPDF both removed).
+#     _build_figure_manifest_pypdfium2 pulls embedded raster images via the
+#     shared FastAPI extractor and stages them to figures/_pending/{sha}/...
+#     in the exact shape persist consumes.
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager  # noqa: E402
+import types  # noqa: E402
+
+
+@contextmanager
+def _inject_fake_extractor(figures):
+    """Inject a fake `app.agent.figure_extractor` so the parser's cross-service
+    `from app.agent.figure_extractor import extract_figures_from_pdf` resolves
+    on hosts without the FastAPI package. `figures` is the extractor's return
+    value (list of {page, sha256, image_bytes, ...} dicts)."""
+    fake_mod = types.ModuleType("app.agent.figure_extractor")
+    fake_mod.extract_figures_from_pdf = lambda _path: figures
+    with patch.dict(
+        "sys.modules",
+        {
+            "app": types.ModuleType("app"),
+            "app.agent": types.ModuleType("app.agent"),
+            "app.agent.figure_extractor": fake_mod,
+        },
+    ):
+        yield
+
+
+def _raster_fig(page: int, sha: str = "", nbytes: int = 6000):
+    fig = {
+        "page": page,
+        "width": 800,
+        "height": 600,
+        "format": "png",
+        "image_bytes": b"\x89PNG\r\n\x1a\n" + b"x" * nbytes,
+    }
+    if sha:
+        fig["sha256"] = sha
+    return fig
+
+
+def test_pypdfium2_builds_manifest_and_uploads_to_pending(docling_env, fake_s3):
+    figures = [_raster_fig(3, sha="s0"), _raster_fig(7, sha="s1")]
+    sha = "c" * 64
+    with _inject_fake_extractor(figures):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", sha)
+
+    assert len(manifest) == 2
+    assert manifest[0] == {
+        "idx": 0,
+        "page": 3,
+        "bbox": None,
+        "caption": "",
+        "pending_key": f"figures/_pending/{sha}/figure_0000_page_3.png",
+        "bucket": "bronze",
+        "sha256": "s0",
+    }
+    assert manifest[1]["pending_key"] == (
+        f"figures/_pending/{sha}/figure_0001_page_7.png"
+    )
+
+    client, _ = fake_s3
+    assert client.put_object.call_count == 2
+    first_call = client.put_object.call_args_list[0]
+    assert first_call.kwargs["Bucket"] == "bronze"
+    assert first_call.kwargs["Key"] == manifest[0]["pending_key"]
+    assert first_call.kwargs["ContentType"] == "image/png"
+
+
+def test_pypdfium2_hashes_bytes_when_extractor_omits_sha(docling_env, fake_s3):
+    # extractor may not carry sha256; the producer must derive one.
+    with _inject_fake_extractor([_raster_fig(2)]):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "d" * 64)
+
+    assert len(manifest) == 1
+    assert manifest[0]["sha256"] and len(manifest[0]["sha256"]) == 64
+
+
+def test_pypdfium2_returns_empty_when_sha_none(docling_env, fake_s3):
+    with _inject_fake_extractor([_raster_fig(1, sha="s0")]):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", None)
+
+    assert manifest == []
+    client, _ = fake_s3
+    client.put_object.assert_not_called()
+
+
+def test_pypdfium2_returns_empty_when_creds_missing(fake_s3, monkeypatch):
+    for k in (
+        "S3_ENDPOINT_URL",
+        "MINIO_ENDPOINT",
+        "AWS_ACCESS_KEY_ID",
+        "MINIO_ROOT_USER",
+        "AWS_SECRET_ACCESS_KEY",
+        "MINIO_ROOT_PASSWORD",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    with _inject_fake_extractor([_raster_fig(1, sha="s0")]):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "e" * 64)
+
+    assert manifest == []
+    client, _ = fake_s3
+    client.put_object.assert_not_called()
+
+
+def test_pypdfium2_returns_empty_when_extractor_unavailable(docling_env, fake_s3):
+    # No fake module injected → the cross-service import fails → [] (no raise).
+    manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "f" * 64)
+    assert manifest == []
+
+
+def test_pypdfium2_returns_empty_when_no_figures(docling_env, fake_s3):
+    with _inject_fake_extractor([]):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "0" * 64)
+    assert manifest == []
+
+
+def test_pypdfium2_skips_figure_missing_bytes_or_page(docling_env, fake_s3):
+    figures = [
+        {"page": 4, "image_bytes": b""},        # empty bytes → skip
+        {"page": None, "image_bytes": b"xx"},   # no page → skip
+        _raster_fig(5, sha="keep"),              # valid → kept
+    ]
+    with _inject_fake_extractor(figures):
+        manifest = _build_figure_manifest_pypdfium2("/tmp/fake.pdf", "9" * 64)
+
+    assert len(manifest) == 1
+    assert manifest[0]["page"] == 5
+    assert manifest[0]["sha256"] == "keep"
