@@ -71,6 +71,12 @@
             <!-- Reliability spec Phase 2 — broadcast controller side-effects:
                  data_version bump + refresh dispatch only on completed. -->
             <file>tests/Feature/Internal/IngestionProgressBroadcastControllerTest.php</file>
+            <!-- Tenancy backstop 2026-05-25 — every workspace_id table has
+                 RLS + a policy; inspects pg_catalog/pg_policies so it is
+                 Postgres-only (self-skips on SQLite). Listed here so
+                 filtering on WorkspaceRlsCoverageTest with this config
+                 finds it without an explicit file path. -->
+            <file>tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php</file>
         </testsuite>
         <testsuite name="Postgres (read-only)">
             <!--
