@@ -475,9 +475,10 @@ class WorkspaceController extends Controller
         try {
             // Real schema (verified 2026-05-25): columns are `depth` (not
             // depth_m), `structure_type` (not measurement_kind), `trend_deg`
-            // / `plunge_deg` (not pole_*). Earlier migration source under
-            // database/raw/phase5/30-structure-measurements-visual.sql is
-            // stale relative to the live table.
+            // / `plunge_deg` (not pole_*). The stale-shape raw file that used
+            // pole_* was archived 2026-07-03 to
+            // database/raw/_archive/phase5-30-structure-measurements-visual.sql;
+            // the live table follows migration 2026_05_13_080002.
             $structuresVisual = DB::table('gold.structure_measurements_visual')
                 ->where('project_id', $project->project_id)
                 ->whereNotNull('collar_id')

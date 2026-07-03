@@ -78,12 +78,12 @@ in [2026_05_12_180000…180007](../../../database/migrations/) batch. Live.
 `silver.store_reconciliation_findings`, `silver.corpus_health_findings`, `silver.storage_tier_policy` — [phase0/70-layer-g-findings.sql](../../../database/raw/phase0/70-layer-g-findings.sql).
 `silver.geological_ontology_terms`, `silver.geological_ontology_synonyms` — [2026_05_13_110000](../../../database/migrations/2026_05_13_110000_create_geological_ontology_schema.php).
 `silver.source_trust_scores`, `silver.source_trust_features` — [2026_05_13_150000](../../../database/migrations/2026_05_13_150000_create_source_trust_schema.php).
-`silver.section_lines`, `silver.structure_measurements` — phase5 SQL.
-
 ## Tables that do NOT exist (despite older references)
 
 - `silver.entities` — never created. Use `workspace.entities`.
 - `silver.lithology_intervals` — never created. Use `silver.lithology` (new) or `silver.lithology_logs` (legacy).
+- `silver.section_lines` — never created (verified live 2026-07-02). Its DDL lived only in the per-interval cross-section rewrite, archived to [\_archive/phase5-20-cross-section-panels.sql](../../../database/raw/_archive/phase5-20-cross-section-panels.sql). Section geometry lives in `gold.cross_section_panels.section_line_geom`; geologist-drawn lines in `interpretation.interpretation_section_lines`.
+- `silver.structure_measurements` — never created (verified live 2026-07-02 and 2026-07-03). Its only DDL lived in the never-applied Phase-H4 file, archived 2026-07-03 to [\_archive/phase5-30-structure-measurements-visual.sql](../../../database/raw/_archive/phase5-30-structure-measurements-visual.sql). Structural data lives in `silver.structures` / `gold.structure_measurements_visual`.
 
 ## Triggers
 

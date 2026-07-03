@@ -1,7 +1,11 @@
 """Gold layer asset — drillhole intervals enriched for visual rendering.
 
-§5 Phase H4. Materialises `gold.drillhole_intervals_visual` (schema in
-`database/raw/phase5/10-drillhole-intervals-visual.sql`). Each row is
+§5 Phase H4. Materialises `gold.drillhole_intervals_visual` (canonical
+schema in migration
+`database/migrations/2026_05_13_080000_create_gold_drillhole_intervals_visual.php`
+— PK `visual_id`, `depth_from`/`depth_to`, JSONB `assay_payload`. A
+different-shape Phase-H3 starter was archived 2026-07-03 to
+`database/raw/_archive/phase5-10-drillhole-intervals-visual.sql`). Each row is
 a pre-joined per-interval record carrying everything the §5 strip-log
 renderer needs:
 

@@ -1,3 +1,30 @@
+-- ARCHIVED 2026-07-03 — never applied to any cluster; do NOT run.
+--
+-- This Phase H3 (doc-phase 185) starter defines a completely different
+-- gold.drillhole_intervals_visual shape than the one that actually shipped:
+--   * this file:      PK interval_id, from_depth_m/to_depth_m/interval_length_m,
+--                     hole_id, display_label/display_color, assay_*_max scalar
+--                     columns, easting/northing/elevation_m, crs_epsg.
+--   * migration 2026_05_13_080000_create_gold_drillhole_intervals_visual.php
+--                     (canonical, live): PK visual_id, depth_from/depth_to,
+--                     interval_kind (+ CHECK), color_hint, JSONB assay_payload/
+--                     alteration_payload/structure_payload, visual_y_start/_end.
+-- Verified against live 2026-07-03: the live table is the migration shape
+-- (17 columns, PK visual_id).
+--
+-- Both DDLs use CREATE TABLE IF NOT EXISTS, so on a fresh cluster whichever
+-- ran first would win and the other would silently no-op. scripts/
+-- phase4_step7_build_rollup.sh globs database/raw/phase[0-9]* into
+-- current-rollup.sql; depending on rollup-vs-migration ordering this file
+-- could have won the race and broken every live consumer of the migration
+-- shape: the Dagster gold_drillhole_intervals_visual asset plus the FastAPI
+-- strip-log renderer (src/fastapi/app/services/visualizations/strip_log.py),
+-- derive_intervals, and the phase5 drillhole_visual_qa probe. Archiving it
+-- (not just documenting it) removes it from the rollup glob.
+--
+-- Reviving this shape would require an ADR plus a coordinated rewrite of the
+-- Dagster asset and all FastAPI consumers.
+
 -- Master-plan §5 (Spatial pipeline + drillhole visuals)
 -- doc-phase 185 — Phase H3 strip-log starter
 --

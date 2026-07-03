@@ -17,7 +17,7 @@
 --
 -- GIST index inventory (2026-04-19):
 --   COVERED (13 tables):
---     public_geoscience: jurisdictions, pg_assessment_survey, pg_bedrock_geology,
+--     public_geo: jurisdictions, pg_assessment_survey, pg_bedrock_geology,
 --       pg_drillhole_collar, pg_mine, pg_mineral_disposition, pg_mineral_occurrence,
 --       pg_resource_potential_zone, pg_rock_sample
 --     silver: collars, raster_layers, reports, spatial_features
@@ -28,7 +28,7 @@
 --     silver.seismic_surveys has 1 row.
 --
 --   VIEWS (8, no index possible):
---     public_geoscience: v_pg_assessment_surveys_mvt, v_pg_bedrock_geology_mvt,
+--     public_geo: v_pg_assessment_surveys_mvt, v_pg_bedrock_geology_mvt,
 --       v_pg_drillhole_collars_mvt, v_pg_mineral_dispositions_mvt,
 --       v_pg_mineral_occurrences_mvt, v_pg_mines_mvt, v_pg_resource_potential_mvt,
 --       v_pg_rock_samples_mvt
@@ -38,34 +38,34 @@
 \set ON_ERROR_STOP on
 
 -- ---------------------------------------------------------------------------
--- public_geoscience — _history tables
+-- public_geo — _history tables
 -- All are currently empty (0 rows, 2026-04-19). Index builds are instant.
 -- Apply before Module 3 populates these tables.
 -- ---------------------------------------------------------------------------
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_as_history_geom
-    ON public_geoscience.pg_assessment_survey_history USING GIST (geom);
+    ON public_geo.pg_assessment_survey_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_bg_history_geom
-    ON public_geoscience.pg_bedrock_geology_history USING GIST (geom);
+    ON public_geo.pg_bedrock_geology_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_dc_history_geom
-    ON public_geoscience.pg_drillhole_collar_history USING GIST (geom);
+    ON public_geo.pg_drillhole_collar_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_mine_history_geom
-    ON public_geoscience.pg_mine_history USING GIST (geom);
+    ON public_geo.pg_mine_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_md_history_geom
-    ON public_geoscience.pg_mineral_disposition_history USING GIST (geom);
+    ON public_geo.pg_mineral_disposition_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_mo_history_geom
-    ON public_geoscience.pg_mineral_occurrence_history USING GIST (geom);
+    ON public_geo.pg_mineral_occurrence_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_rpz_history_geom
-    ON public_geoscience.pg_resource_potential_zone_history USING GIST (geom);
+    ON public_geo.pg_resource_potential_zone_history USING GIST (geom);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pg_rs_history_geom
-    ON public_geoscience.pg_rock_sample_history USING GIST (geom);
+    ON public_geo.pg_rock_sample_history USING GIST (geom);
 
 -- ---------------------------------------------------------------------------
 -- silver.seismic_surveys — bbox column (1 row currently)
