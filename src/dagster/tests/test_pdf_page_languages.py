@@ -133,12 +133,12 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",
@@ -159,12 +159,12 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",
@@ -190,12 +190,12 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",
@@ -215,12 +215,12 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",
@@ -239,12 +239,12 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",

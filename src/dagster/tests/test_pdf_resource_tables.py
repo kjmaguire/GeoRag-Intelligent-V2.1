@@ -328,6 +328,31 @@ class TestExtractResourceTables:
             assert required_keys.issubset(r.keys())
 
 
+def _fitz_stub_return(text: str, title: str = "Test Report") -> tuple:
+    """Build a return value matching the current ``_parse_with_fitz`` signature.
+
+    ``_parse_with_unstructured`` was removed in Phase 10 (2026-05-22) — fitz is
+    now the always-first primary parser. Its 9-tuple contract is:
+        (full_text, raw_title, skipped_elements, warnings, page_languages,
+         per_page_text, image_page_nums, per_page_method, per_page_confidence)
+
+    We report a single native-text page with NO image pages so the docling /
+    tesseract / pdfplumber fallback branches in ``parse_pdf_report`` stay dormant
+    and the test isolates the resource-table failure path.
+    """
+    return (
+        text,                 # full_text (must be ≥ MIN_EXTRACTABLE_TEXT_CHARS)
+        title,                # raw_title
+        0,                    # skipped_elements
+        [],                   # extraction_warnings
+        ["en"],               # page_languages
+        [(1, text)],          # per_page_text
+        [],                   # image_page_nums — none, so no OCR fallback fires
+        {1: "fitz_native"},   # per_page_method
+        {1: None},            # per_page_confidence
+    )
+
+
 class TestParseReportResourceTableFailureWarning:
     def test_pdfplumber_exception_produces_resource_table_extraction_failed_warning(
         self, minimal_pdf: Path
@@ -336,12 +361,14 @@ class TestParseReportResourceTableFailureWarning:
         - NOT re-raise.
         - Append {'code': 'resource_table_extraction_failed'} to warnings.
         """
-        mock_text = "1. Summary\nThis is a test NI 43-101 report.\n"
+        # ≥ MIN_EXTRACTABLE_TEXT_CHARS (200) so the pdfplumber/OCR fallbacks
+        # don't fire against the minimal PDF.
+        mock_text = "1. Summary\nThis is a test NI 43-101 report.\n" * 8
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=(mock_text, "Test Report", 0),
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
+                return_value=_fitz_stub_return(mock_text),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",
@@ -357,12 +384,12 @@ class TestParseReportResourceTableFailureWarning:
         self, minimal_pdf: Path
     ):
         """resource_tables is empty when extraction raises."""
-        mock_text = "1. Summary\nTest NI 43-101 report.\n"
+        mock_text = "1. Summary\nTest NI 43-101 report.\n" * 8
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=(mock_text, "Test Report", 0),
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
+                return_value=_fitz_stub_return(mock_text),
             ),
             patch(
                 "georag_dagster.parsers.pdf_report._extract_resource_tables",

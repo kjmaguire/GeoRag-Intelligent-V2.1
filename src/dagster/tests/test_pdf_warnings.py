@@ -25,6 +25,32 @@ import pytest
 
 from georag_dagster.parsers.pdf_report import ReportParseResult, parse_pdf_report
 
+
+def _fitz_stub_return(text: str, title: str = "Test Report") -> tuple:
+    """Build a return value matching the current ``_parse_with_fitz`` signature.
+
+    ``_parse_with_unstructured`` was removed in Phase 10 (2026-05-22) — fitz is
+    now the always-first primary parser, returning a 9-tuple:
+        (full_text, raw_title, skipped_elements, warnings, page_languages,
+         per_page_text, image_page_nums, per_page_method, per_page_confidence)
+
+    A single native-text page with NO image pages keeps the docling / tesseract
+    / pdfplumber fallbacks dormant so the happy-path tests isolate warning
+    threading.
+    """
+    return (
+        text,                 # full_text
+        title,                # raw_title
+        0,                    # skipped_elements
+        [],                   # extraction_warnings
+        ["en"],               # page_languages
+        [(1, text)],          # per_page_text
+        [],                   # image_page_nums — none, so no OCR fallback fires
+        {1: "fitz_native"},   # per_page_method
+        {1: None},            # per_page_confidence
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixture: trivial valid PDF bytes (hand-crafted, no library dependency)
 # ---------------------------------------------------------------------------
@@ -116,14 +142,14 @@ class TestParsePdfReportWarningsThreaded:
     def test_result_warnings_is_list_on_minimal_pdf(self, minimal_pdf: Path):
         """parse_pdf_report must return a result with warnings as a list,
         even when no warnings are generated."""
-        # Both unstructured and pdfplumber may be unavailable in the test env;
-        # patch both to return minimal text so we exercise the happy path.
+        # fitz (the primary parser) is patched to return native text so we
+        # exercise the happy path without a real PDF engine in the test env.
         mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n"
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=(mock_text, "Test PDF Report", 0),
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
+                return_value=_fitz_stub_return(mock_text, "Test PDF Report"),
             ),
         ):
             result = parse_pdf_report(str(minimal_pdf))
@@ -156,9 +182,9 @@ class TestPdfPlumberPartialExtractionWarning:
         2. Append a warning with code='pdf_extraction_partial'.
         3. Return a ReportParseResult (not raise).
         """
-        # Make unstructured unavailable so we fall through to pdfplumber.
-        def _raise_unstructured(*args, **kwargs):
-            raise ImportError("unstructured not available (test mock)")
+        # Make fitz unavailable so we fall through to pdfplumber.
+        def _raise_fitz(*args, **kwargs):
+            raise ImportError("fitz not available (test mock)")
 
         # Mock the pdfplumber page to raise on extract_text
         mock_page = MagicMock()
@@ -171,8 +197,8 @@ class TestPdfPlumberPartialExtractionWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                side_effect=_raise_unstructured,
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
+                side_effect=_raise_fitz,
             ),
             patch("pdfplumber.open", return_value=mock_pdf_ctx),
         ):
@@ -195,8 +221,8 @@ class TestPdfPlumberPartialExtractionWarning:
         self, minimal_pdf: Path
     ):
         """Duplicate assertion framed differently: result is returned, not raised."""
-        def _raise_unstructured(*args, **kwargs):
-            raise ImportError("unstructured not available (test mock)")
+        def _raise_fitz(*args, **kwargs):
+            raise ImportError("fitz not available (test mock)")
 
         mock_page = MagicMock()
         mock_page.extract_text.side_effect = RuntimeError("page error")
@@ -208,8 +234,8 @@ class TestPdfPlumberPartialExtractionWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                side_effect=_raise_unstructured,
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
+                side_effect=_raise_fitz,
             ),
             patch("pdfplumber.open", return_value=mock_pdf_ctx),
         ):
@@ -242,8 +268,10 @@ class TestFixturePdfWarnings:
         """The existing fixture PDF must return a result.warnings that is a list."""
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=("1. Summary\nTest document text.\n", "Test Report", 0),
+                "georag_dagster.parsers.pdf_report._parse_with_fitz",
+                return_value=_fitz_stub_return(
+                    "1. Summary\nTest document text.\n", "Test Report"
+                ),
             ),
         ):
             result = parse_pdf_report(str(_FIXTURE_PDF))

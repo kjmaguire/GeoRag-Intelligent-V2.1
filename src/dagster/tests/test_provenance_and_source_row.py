@@ -255,12 +255,36 @@ class TestSpatialProvenance:
 # PDF report — provenance sha256 sanity check
 # ---------------------------------------------------------------------------
 
+def _fitz_stub_return(text: str, title: str = "Test Report") -> tuple:
+    """Build a return value matching the current ``_parse_with_fitz`` signature.
+
+    ``_parse_with_unstructured`` was removed in Phase 10 (2026-05-22) — fitz is
+    now the always-first primary parser, returning a 9-tuple:
+        (full_text, raw_title, skipped_elements, warnings, page_languages,
+         per_page_text, image_page_nums, per_page_method, per_page_confidence)
+
+    A single native-text page with NO image pages keeps the docling / tesseract
+    / pdfplumber fallbacks dormant so these provenance-only assertions run fast.
+    """
+    return (
+        text,                 # full_text
+        title,                # raw_title
+        0,                    # skipped_elements
+        [],                   # extraction_warnings
+        ["en"],               # page_languages
+        [(1, text)],          # per_page_text
+        [],                   # image_page_nums — none, so no OCR fallback fires
+        {1: "fitz_native"},   # per_page_method
+        {1: None},            # per_page_confidence
+    )
+
+
 class TestPdfReportProvenance:
     def test_sha256_is_64_char_hex(self, minimal_pdf: Path):
-        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n"
+        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n" * 5
         with patch(
-            "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-            return_value=(mock_text, "Test PDF Report", 0),
+            "georag_dagster.parsers.pdf_report._parse_with_fitz",
+            return_value=_fitz_stub_return(mock_text, "Test PDF Report"),
         ):
             result = parse_pdf_report(str(minimal_pdf))
         sha = result.provenance["source_file_sha256"]
@@ -269,28 +293,28 @@ class TestPdfReportProvenance:
 
     def test_sha256_matches_file_bytes(self, minimal_pdf: Path):
         expected = hashlib.sha256(_MINIMAL_PDF_CONTENT).hexdigest()
-        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n"
+        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n" * 5
         with patch(
-            "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-            return_value=(mock_text, "Test PDF Report", 0),
+            "georag_dagster.parsers.pdf_report._parse_with_fitz",
+            return_value=_fitz_stub_return(mock_text, "Test PDF Report"),
         ):
             result = parse_pdf_report(str(minimal_pdf))
         assert result.provenance["source_file_sha256"] == expected
 
     def test_parser_name(self, minimal_pdf: Path):
-        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n"
+        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n" * 5
         with patch(
-            "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-            return_value=(mock_text, "Test PDF Report", 0),
+            "georag_dagster.parsers.pdf_report._parse_with_fitz",
+            return_value=_fitz_stub_return(mock_text, "Test PDF Report"),
         ):
             result = parse_pdf_report(str(minimal_pdf))
         assert result.provenance["parser_name"] == "pdf_report"
 
     def test_parser_version(self, minimal_pdf: Path):
-        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n"
+        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n" * 5
         with patch(
-            "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-            return_value=(mock_text, "Test PDF Report", 0),
+            "georag_dagster.parsers.pdf_report._parse_with_fitz",
+            return_value=_fitz_stub_return(mock_text, "Test PDF Report"),
         ):
             result = parse_pdf_report(str(minimal_pdf))
         assert result.provenance["parser_version"] == "2.0.0"
