@@ -1,15 +1,19 @@
 """Tests for the vector-figure path in app.agent.figure_extractor.
 
 Covers _cluster_boxes (pure), detect_vector_figure_regions (with a fake
-pypdfium2 so the clustering/filtering logic is exercised without a real
-vector PDF — reportlab is not a dependency), and extract_vector_figures_from_pdf
-chaining. These add the coverage the raster-only test file lacked and guard the
-heuristic thresholds against silent regressions.
+pypdfium2 so the clustering/filtering logic is exercised in isolation), and
+extract_vector_figures_from_pdf chaining. A final section drives the REAL
+pypdfium2 library end-to-end against a hand-crafted vector PDF (no reportlab
+dependency) so the actual detect→render→crop integration is covered, not just
+the clustering math. These add the coverage the raster-only test file lacked
+and guard the heuristic thresholds against silent regressions.
 """
 from __future__ import annotations
 
 import sys
 import types
+
+import pytest
 
 from app.agent import figure_extractor as fe
 from app.agent.figure_extractor import (
@@ -198,3 +202,105 @@ def test_extract_vector_forwards_regions_to_layout(monkeypatch):
     assert captured["path"] == "/x.pdf"
     assert captured["regions"] == regions
     assert captured["scale"] == 3.0
+
+
+# --- real pypdfium2 integration (dependency-free hand-crafted vector PDF) ------
+#
+# The tests above drive the vector path through a FAKE pypdfium2, so the
+# clustering/filtering math is covered without a real PDF. That leaves the
+# actual integration point untested: does REAL pypdfium2 surface a real PDF's
+# stroked paths as FPDF_PAGEOBJ_PATH objects with usable bounds, and does the
+# render+crop then produce a figure? That gap is exactly where "figure path
+# built but nothing flows" hides (it is why vector figures silently stopped
+# after the PyMuPDF removal). These drive the real library end-to-end on a
+# hand-crafted PDF — no reportlab dependency — that strokes a clustered grid of
+# lines, standing in for a geological cross-section drawn as vector graphics.
+
+
+def _vector_pdf_bytes() -> bytes:
+    """One-page letter PDF stroking a dense, clustered grid of line paths in a
+    200x250 pt region at (200, 250).
+
+    >= 6 PATH objects clear ``min_objects``; the diagonal strokes keep the
+    rendered crop above ``MIN_IMAGE_BYTES`` (an axis-aligned-only grid
+    compresses under 5 KB and would be filtered).
+    """
+    ox, oy, w, h = 200, 250, 200, 250
+    ops = ["1 w"]
+    for i in range(6):  # horizontal rules
+        y = oy + i * (h // 5)
+        ops.append(f"{ox} {y} m {ox + w} {y} l S")
+    for j in range(6):  # vertical rules
+        x = ox + j * (w // 5)
+        ops.append(f"{x} {oy} m {x} {oy + h} l S")
+    for k in range(9):  # diagonals — defeat PNG run-length compression
+        xa = ox + k * (w // 9)
+        ops.append(f"{ox} {oy} m {xa} {oy + h} l S")
+        ops.append(f"{ox + w} {oy} m {xa} {oy + h} l S")
+    stream = ("\n".join(ops)).encode("latin-1")
+
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 %d\n" % (len(objs) + 1) + b"0000000000 65535 f \n"
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF" % (
+        len(objs) + 1, xref_pos,
+    )
+    return bytes(out)
+
+
+def _write_vector_pdf(tmp_path) -> str:
+    pdf = tmp_path / "handcrafted_vector.pdf"
+    pdf.write_bytes(_vector_pdf_bytes())
+    return str(pdf)
+
+
+def test_detect_vector_regions_on_real_pdf(tmp_path):
+    """Real pypdfium2 parses the stroked paths and clusters them into one region
+    covering the drawn 200x250 pt area."""
+    pytest.importorskip("pypdfium2")
+    regions = detect_vector_figure_regions(_write_vector_pdf(tmp_path))
+
+    assert len(regions) == 1
+    region = regions[0]
+    assert region["page"] == 1
+    left, bottom, right, top = region["bbox"]
+    # Region tracks the drawn box at (200,250)-(400,500), within a stroke width.
+    assert 195 <= left <= 205 and 245 <= bottom <= 255
+    assert 395 <= right <= 405 and 495 <= top <= 505
+
+
+def test_extract_vector_figures_on_real_pdf(tmp_path):
+    """Full path: real pypdfium2 detect → render → crop yields one figure whose
+    PNG clears MIN_IMAGE_BYTES and carries the source bbox."""
+    pytest.importorskip("pypdfium2")
+    figs = extract_vector_figures_from_pdf(_write_vector_pdf(tmp_path))
+
+    assert len(figs) == 1
+    fig = figs[0]
+    assert fig["page"] == 1
+    assert fig["format"] == "png"
+    assert fig["width"] >= fe.MIN_IMAGE_DIMENSION or fig["height"] >= fe.MIN_IMAGE_DIMENSION
+    assert len(fig["image_bytes"]) >= fe.MIN_IMAGE_BYTES
+    assert len(fig["sha256"]) == 64
+    assert len(fig["bbox"]) == 4
+
+
+def test_extract_vector_figures_honours_exclude_pages_on_real_pdf(tmp_path):
+    """Excluding the only page short-circuits detection end-to-end."""
+    pytest.importorskip("pypdfium2")
+    out = extract_vector_figures_from_pdf(
+        _write_vector_pdf(tmp_path), exclude_pages={1},
+    )
+    assert out == []
