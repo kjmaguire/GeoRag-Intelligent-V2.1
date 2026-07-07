@@ -9,7 +9,7 @@ These tests verify that:
   - _assign_ocr_metadata applies first-page-method-wins and min-
     confidence-across-spanned-pages rules.
 
-No real docling / pdfplumber / pymupdf installs needed. All parsers
+No real docling / pdfplumber / pypdfium2 installs needed. All parsers
 are stubbed.
 
 Run with:
@@ -28,6 +28,49 @@ import pytest
 sys.modules.setdefault("boto3", MagicMock())
 sys.modules.setdefault("botocore", MagicMock())
 sys.modules.setdefault("botocore.config", MagicMock())
+
+
+def _install_fake_pypdfium2(monkeypatch, page_texts, *, title=None):
+    """Install a fake ``pypdfium2`` whose ``PdfDocument`` yields ``page_texts``
+    (one string per page via ``get_textpage().get_text_bounded()``).
+
+    Mirrors the engine swap in ``_parse_with_fitz`` (PyMuPDF → pypdfium2 after
+    PyMuPDF was removed for its AGPL license). The lazy ``import pypdfium2``
+    inside the parser picks this up from ``sys.modules`` at call time.
+    """
+    class _FakeTextPage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_text_bounded(self):
+            return self._text
+
+    class _FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_textpage(self):
+            return _FakeTextPage(self._text)
+
+    class _FakeDoc:
+        def __init__(self):
+            self._pages = [_FakePage(t) for t in page_texts]
+
+        def get_metadata_dict(self):
+            return {"Title": title} if title is not None else {}
+
+        def __len__(self):
+            return len(self._pages)
+
+        def __getitem__(self, i):
+            return self._pages[i]
+
+        def close(self):
+            pass
+
+    fake = types.ModuleType("pypdfium2")
+    fake.PdfDocument = MagicMock(return_value=_FakeDoc())
+    monkeypatch.setitem(sys.modules, "pypdfium2", fake)
 
 
 @pytest.fixture
@@ -143,21 +186,7 @@ def test_ocr_single_page_returns_empty_tuple_on_import_error(parser_module, monk
 # ---------------------------------------------------------------------------
 
 def test_parse_with_fitz_tags_text_layer_pages_as_fitz_native(parser_module, monkeypatch):
-    fake_pages = []
-    for _i in range(3):
-        page = MagicMock()
-        page.get_text = MagicMock(return_value="A" * 200)
-        fake_pages.append(page)
-
-    class _FakeDoc:
-        metadata = {"title": "T"}
-        def __iter__(self): return iter(fake_pages)
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    _install_fake_pypdfium2(monkeypatch, ["A" * 200] * 3, title="T")
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf")
     *_, image_pages, method, conf = out
@@ -174,20 +203,7 @@ def test_parse_with_fitz_tags_text_layer_pages_as_fitz_native(parser_module, mon
 
 def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monkeypatch):
     # Page 1 returns substantial text; page 2 returns empty (image page)
-    page1 = MagicMock()
-    page1.get_text = MagicMock(return_value="P" * 200)
-    page2 = MagicMock()
-    page2.get_text = MagicMock(return_value="")
-
-    class _FakeDoc:
-        metadata = {}
-        def __iter__(self): return iter([page1, page2])
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    _install_fake_pypdfium2(monkeypatch, ["P" * 200, ""])
 
     # Stub _ocr_single_page to return text + conf=0.72
     def _fake_ocr(path, page_num, return_confidence=False):
@@ -211,18 +227,7 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
 # ---------------------------------------------------------------------------
 
 def test_parse_with_fitz_no_fallback_leaves_image_pages(parser_module, monkeypatch):
-    page1 = MagicMock()
-    page1.get_text = MagicMock(return_value="")
-
-    class _FakeDoc:
-        metadata = {}
-        def __iter__(self): return iter([page1])
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    _install_fake_pypdfium2(monkeypatch, [""])
 
     out = parser_module._parse_with_fitz(
         "/tmp/fake.pdf", apply_ocr_fallback=False,

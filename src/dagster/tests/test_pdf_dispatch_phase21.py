@@ -74,6 +74,50 @@ def minimal_pdf(tmp_path):
     return str(p)
 
 
+def _install_fake_pypdfium2(monkeypatch, page_texts, *, title=None):
+    """Install a fake ``pypdfium2`` whose ``PdfDocument`` yields ``page_texts``
+    (one string per page via ``get_textpage().get_text_bounded()``).
+
+    Used by the tests that drive the REAL ``_parse_with_fitz`` body — which,
+    after PyMuPDF was removed for its AGPL license, extracts native text via
+    pypdfium2. The lazy ``import pypdfium2`` inside the parser resolves this
+    from ``sys.modules`` at call time.
+    """
+    class _FakeTextPage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_text_bounded(self):
+            return self._text
+
+    class _FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def get_textpage(self):
+            return _FakeTextPage(self._text)
+
+    class _FakeDoc:
+        def __init__(self):
+            self._pages = [_FakePage(t) for t in page_texts]
+
+        def get_metadata_dict(self):
+            return {"Title": title} if title is not None else {}
+
+        def __len__(self):
+            return len(self._pages)
+
+        def __getitem__(self, i):
+            return self._pages[i]
+
+        def close(self):
+            pass
+
+    fake = types.ModuleType("pypdfium2")
+    fake.PdfDocument = MagicMock(return_value=_FakeDoc())
+    monkeypatch.setitem(sys.modules, "pypdfium2", fake)
+
+
 def _stub_fitz(parser_module, per_page, image_pages, warnings=None,
                per_page_method=None, per_page_confidence=None):
     """Patch _parse_with_fitz to return the Phase-3-extended 9-tuple."""
@@ -467,25 +511,8 @@ def test_parse_with_fitz_apply_ocr_fallback_param_skips_loop(
         captured_ocr_calls.append(page_num)
         return "x" * 200
 
-    # We mock the inner pymupdf import to return one short page
-    fake_page = MagicMock()
-    fake_page.get_text = MagicMock(return_value="")
-
-    class _FakeDoc:
-        metadata = {"title": "T"}
-
-        def __iter__(self):
-            return iter([fake_page])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    # One short page (empty text) — routed to the OCR-candidate list.
+    _install_fake_pypdfium2(monkeypatch, [""], title="T")
 
     monkeypatch.setattr(parser_module, "_ocr_single_page", _track_ocr)
 
@@ -507,24 +534,7 @@ def test_parse_with_fitz_apply_ocr_fallback_param_skips_loop(
 def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
     parser_module, monkeypatch
 ):
-    fake_page = MagicMock()
-    fake_page.get_text = MagicMock(return_value="")
-
-    class _FakeDoc:
-        metadata = {"title": "T"}
-
-        def __iter__(self):
-            return iter([fake_page])
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    _install_fake_pypdfium2(monkeypatch, [""], title="T")
 
     # Phase 3: return_confidence=True path; stub returns (text, conf)
     monkeypatch.setattr(
@@ -550,15 +560,7 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
 def test_parse_with_fitz_returns_nine_tuple(parser_module, monkeypatch):
     """Phase 3 extended the return shape from 7- to 9-tuple by adding
     `per_page_method` + `per_page_confidence` for OCR provenance."""
-    class _FakeDoc:
-        metadata = {}
-        def __iter__(self): return iter([])
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    _install_fake_pypdfium2(monkeypatch, [])
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf")
     assert isinstance(out, tuple) and len(out) == 9
