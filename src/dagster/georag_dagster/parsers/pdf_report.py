@@ -1,6 +1,8 @@
 """
-PDF parser — fitz-first dispatch with docling+rapidocr / tesseract OCR
-fallbacks and pdfplumber as the parser-of-last-resort.
+PDF parser — pypdfium2-first dispatch with docling+rapidocr / tesseract OCR
+fallbacks and pdfplumber as the parser-of-last-resort. (The primary native-text
+path is historically called "fitz"; it was PyMuPDF until that was removed for
+its AGPL license and is now backed by pypdfium2 — see _parse_with_fitz.)
 
 **Canonical path**: NI 43-101 PDFs parse via RAGFlow (v0.17.2 pinned per §12).
 This parser is the explicit fallback for cases where RAGFlow parse fails or
@@ -20,9 +22,9 @@ from NI 43-101 technical reports. NI 43-101 mandates a specific table of
 contents structure (up to 27 sections; 17 is the typical baseline) which this
 parser exploits for high-confidence section boundary detection.
 
-Primary extraction engine: PyMuPDF (fitz) for native text + per-page OCR
+Primary extraction engine: pypdfium2 (PDFium) for native text + per-page OCR
 routing to docling+rapidocr (when enabled) or tesseract for image pages.
-Fallback engine: pdfplumber, used only when fitz crashes completely.
+Fallback engine: pdfplumber, used only when the primary crashes completely.
 
 Parse quality is reported as a float 0.0–1.0 representing the fraction of the
 17 expected NI 43-101 sections identified. The caller (silver_reports asset)
@@ -1403,7 +1405,11 @@ def _parse_with_fitz(
     str, str, int, list, list[str], list[tuple[int, str]], list[int],
     dict[int, str], dict[int, Optional[float]],
 ]:
-    """Extract full text using PyMuPDF (fitz). 5-10× faster than pdfplumber.
+    """Extract full text using pypdfium2 (PDFium). Faster than pdfplumber.
+
+    Engine history: originally PyMuPDF (fitz); swapped to pypdfium2 when PyMuPDF
+    was removed for its AGPL license. The `fitz` name/labels are retained as
+    stable identifiers (see the engine note in the body).
 
     Returns (full_text, title, skipped, warnings, page_languages,
              per_page_text, image_page_nums, per_page_method,
@@ -1433,7 +1439,15 @@ def _parse_with_fitz(
     Used as the primary parser when PDF_PARSER_FITZ_ENABLED=true (default).
     Falls back to pdfplumber when fitz returns suspiciously little text.
     """
-    import pymupdf  # noqa: PLC0415
+    # Engine note: this parser was PyMuPDF (fitz) until PyMuPDF was removed for
+    # its AGPL license. It is now backed by pypdfium2 (Apache-2.0 — already a
+    # dependency, used by the figure extractor). The "fitz"/"fitz_native" labels
+    # kept below are STABLE wire-identifiers, not engine names: parse_pdf_report
+    # gates the docling OCR merge on `parser_used == "fitz"`, and per_page_method
+    # feeds the Qdrant/observability payload — so the engine swap deliberately
+    # does not churn those contracts. See the "PyMuPDF removed" note near
+    # _pdfplumber_page_drawings and _build_figure_manifest_pypdfium2.
+    import pypdfium2 as pdfium  # noqa: PLC0415
 
     pages_text: list[str] = []
     per_page_text: list[tuple[int, str]] = []
@@ -1444,15 +1458,23 @@ def _parse_with_fitz(
     per_page_method: dict[int, str] = {}
     per_page_confidence: dict[int, Optional[float]] = {}
 
-    with pymupdf.open(path) as doc:
-        # PyMuPDF reports a title from the doc metadata, often useful.
-        meta_title = (doc.metadata.get("title") or "").strip() if doc.metadata else ""
-        for n, page in enumerate(doc, start=1):
+    # PDFium returns these sentinels for unset metadata fields — treat as "no
+    # title" so the first-line fallback below can supply a real one.
+    _META_SENTINELS = {"", "(anonymous)", "(unspecified)"}
+
+    pdf = pdfium.PdfDocument(path)
+    try:
+        meta = pdf.get_metadata_dict() or {}
+        _raw_title = (meta.get("Title") or "").strip()
+        meta_title = "" if _raw_title in _META_SENTINELS else _raw_title
+        for n in range(1, len(pdf) + 1):
+            page = pdf[n - 1]
             try:
-                # `sort=True` returns text in reading order (top-to-bottom,
-                # left-to-right) — important for two-column pages where
-                # the default y-then-x ordering can interleave columns.
-                txt = page.get_text("text", sort=True)
+                # get_text_bounded() returns the full page's text in PDFium's
+                # reading order (top-to-bottom, left-to-right) — the pypdfium2
+                # equivalent of fitz's get_text("text", sort=True), which matters
+                # for two-column pages where naive ordering interleaves columns.
+                txt = page.get_textpage().get_text_bounded()
             except Exception as e:
                 warnings.append({
                     "code": "pdf_extraction_partial",
@@ -1473,6 +1495,11 @@ def _parse_with_fitz(
                 # Page came back short — queue it for OCR below.
                 page_languages.append("unknown")
                 short_page_nums.append(n)
+    finally:
+        try:
+            pdf.close()
+        except Exception:
+            pass
 
     # Per-page OCR for any pages fitz returned <PER_PAGE_MIN_CHARS on.
     # Runs the same tesseract pipeline as pdfplumber's fallback, so image
