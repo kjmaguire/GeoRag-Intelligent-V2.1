@@ -66,17 +66,18 @@ async def _fetch_manifest_bytes(manifest_uri: str) -> bytes:
         with open(parsed.path, "rb") as f:
             return f.read()
     if parsed.scheme == "s3":
+        # bucket comes straight out of the s3:// URI's netloc — genuinely
+        # dynamic, not one of georag_object_storage's four fixed logical
+        # Bucket members, so this uses the raw-client escape hatch
+        # (async_client_kwargs) rather than the higher-level
+        # AsyncObjectStorage interface.
         import aioboto3
+        from georag_object_storage import StorageConfig, async_client_kwargs
+
         bucket = parsed.netloc
         key = parsed.path.lstrip("/")
         session = aioboto3.Session()
-        async with session.client(
-            "s3",
-            endpoint_url=os.environ.get("SEAWEEDFS_S3_ENDPOINT", "http://seaweedfs:8333"),
-            aws_access_key_id=os.environ.get("SEAWEEDFS_S3_ACCESS_KEY", "georag"),
-            aws_secret_access_key=os.environ.get("SEAWEEDFS_S3_SECRET_KEY", "georag"),
-            region_name=os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1"),
-        ) as s3:
+        async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
             resp = await s3.get_object(Bucket=bucket, Key=key)
             return await resp["Body"].read()
     raise ValueError(f"unsupported manifest_uri scheme: {parsed.scheme!r}")
