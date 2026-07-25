@@ -6,11 +6,11 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Services\StorageService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -28,6 +28,10 @@ use Inertia\Response;
  */
 class IngestionRunsController extends Controller
 {
+    public function __construct(
+        private readonly StorageService $storage,
+    ) {}
+
     public function show(Request $request, string $slug): Response
     {
         $project = $this->loadProject($request, $slug);
@@ -317,7 +321,7 @@ class IngestionRunsController extends Controller
      */
     private function listUploads(string $projectId): array
     {
-        $disk = Storage::disk('s3-bronze');
+        $disk = $this->storage->bronzeReadOnly();
         $out = [];
 
         foreach (['reports', 'tiff'] as $prefix) {
