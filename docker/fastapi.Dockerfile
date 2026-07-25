@@ -123,10 +123,29 @@ RUN pip install --no-cache-dir uv
 
 WORKDIR /app
 
+# Storage-abstraction plan PR1 — build context widened to ./src (see
+# docker-compose.yml) so this sibling path dependency is reachable.
+# Copied to /georag_object_storage so the relative path in
+# src/fastapi/pyproject.toml's [tool.uv.sources] ("../georag_object_storage",
+# relative to /app/pyproject.toml) resolves the same way here as it does
+# in the host checkout.
+COPY georag_object_storage /georag_object_storage
+
 # Copy dependency manifest first to maximise Docker layer caching.
 # The heavy "install all deps" layer only re-runs when pyproject.toml changes.
-COPY pyproject.toml ./
-COPY uv.lock* ./
+COPY fastapi/pyproject.toml ./
+COPY fastapi/uv.lock* ./
+
+# Install the local path dependency FIRST, explicitly. The main install
+# below uses uv's PIP interface (`uv pip install -r pyproject.toml`), which
+# does NOT apply [tool.uv.sources] (that table is only honored by uv's
+# project interface — uv sync/lock; see astral-sh/uv#8846, #15634). Without
+# this step the bare `georag-object-storage` name in project.dependencies
+# would be resolved against PyPI, where it doesn't exist, and the build
+# would fail. Pre-installing it satisfies the requirement so both the uv
+# path and the pip fallback below skip it.
+RUN uv pip install --system --no-cache /georag_object_storage \
+    || pip install --no-cache-dir /georag_object_storage
 
 # Install all project dependencies into the system Python (no virtualenv —
 # simpler single-env model inside containers). Falls back to plain pip if
@@ -183,7 +202,7 @@ RUN pip install --no-cache-dir slowapi>=0.1.9
 
 # Copy application source and register the package itself (entry points etc.).
 # --no-deps avoids re-installing already-present transitive deps.
-COPY . .
+COPY fastapi/ .
 RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true
 
 

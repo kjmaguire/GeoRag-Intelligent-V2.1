@@ -880,8 +880,13 @@ services:
   # ---------------------------------------------------------------------------
   fastapi:
     build:
-      context: ./src/fastapi
-      dockerfile: ../../docker/fastapi.Dockerfile
+      # Storage-abstraction plan PR1 — context widened from ./src/fastapi to
+      # ./src so the Dockerfile can COPY the sibling georag_object_storage
+      # package (a uv path dependency; see src/fastapi/pyproject.toml
+      # [tool.uv.sources]). Docker cannot COPY from outside the build
+      # context, so the narrower context stopped being sufficient.
+      context: ./src
+      dockerfile: ../docker/fastapi.Dockerfile
     image: georag/fastapi:latest
     container_name: georag-fastapi
     restart: unless-stopped
@@ -2098,8 +2103,11 @@ services:
   # ---------------------------------------------------------------------------
   dagster-daemon:
     build:
-      context: ./src/dagster
-      dockerfile: ../../docker/dagster.Dockerfile
+      # Storage-abstraction plan PR1 — context widened from ./src/dagster to
+      # ./src for the same reason as the fastapi service above: the
+      # georag_object_storage path dependency lives outside the old context.
+      context: ./src
+      dockerfile: ../docker/dagster.Dockerfile
     image: georag/dagster:latest
     container_name: georag-dagster-daemon
     restart: unless-stopped

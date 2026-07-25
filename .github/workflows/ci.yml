@@ -116,6 +116,10 @@ jobs:
       - name: Lint Dagster
         run: ruff check src/dagster/
 
+      # Storage-abstraction plan PR1 — new shared package, own lint target.
+      - name: Lint georag_object_storage
+        run: ruff check src/georag_object_storage/
+
       # Doc-phase 125 — incident-driven gate. Catches the doc-phase 122
       # failure mode (app/main.py imports `sentry_sdk` but pyproject's
       # `dependencies` had been edited to remove `sentry-sdk[fastapi]`).
@@ -193,6 +197,19 @@ jobs:
       - name: Run Dagster tests
         working-directory: src/dagster
         run: uv run pytest tests/ -v --tb=short -m "not integration"
+
+      # Storage-abstraction plan PR1 — new shared package, own test target.
+      # Installed independently of fastapi/dagster's uv sync above: those
+      # pull it in as a non-editable path dependency (see its
+      # [tool.uv.sources] comment), which builds a wheel rather than
+      # exercising this source tree directly.
+      - name: Install georag_object_storage dependencies
+        working-directory: src/georag_object_storage
+        run: uv sync --extra dev
+
+      - name: Run georag_object_storage tests
+        working-directory: src/georag_object_storage
+        run: uv run pytest tests/ -v --tb=short
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:
@@ -416,13 +433,18 @@ jobs:
         include:
           - service: fastapi
             dockerfile: docker/fastapi.Dockerfile
-            context: src/fastapi
+            # Storage-abstraction plan PR1 — widened from src/fastapi to src
+            # so the Dockerfile can COPY the sibling georag_object_storage
+            # path dependency. Must match docker-compose.yml's fastapi
+            # build.context.
+            context: src
           - service: laravel
             dockerfile: docker/laravel.Dockerfile
             context: .
           - service: dagster
             dockerfile: docker/dagster.Dockerfile
-            context: src/dagster
+            # Same reasoning as the fastapi entry above.
+            context: src
 
     # GITHUB_TOKEN must have packages:write to push to GHCR.
     # id-token:write is required by anchore/sbom-action attestation.

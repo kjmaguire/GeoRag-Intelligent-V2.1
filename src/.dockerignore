@@ -1,0 +1,48 @@
+# Storage-abstraction plan PR1 — the fastapi and dagster Docker build
+# contexts widened from their own subdirectory to this one (./src), so
+# Docker can COPY the sibling georag_object_storage path dependency.
+# Docker reads .dockerignore from the context root, so the former
+# src/fastapi/.dockerignore and src/dagster/.dockerignore are merged here.
+
+**/.git
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.venv
+**/.env
+**/.env.*
+!**/.env.example
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/htmlcov
+**/dist
+**/*.egg-info
+**/.claude
+**/tests/fixtures
+
+# fastapi-specific — from the former src/fastapi/.dockerignore.
+# 2026-06-03 sweep: keep the build context out of the bytes graveyard.
+# - fastapi/C:            Stray dir created by a Windows uv invocation that
+#                         stripped the drive colon. Buildkit chokes on the
+#                         path shape ("invalid file request") so it's
+#                         excluded defensively in case it returns.
+# - fastapi/models/       Downloaded HF / SBERT model weights (e.g.
+#                         bge-small-domain-ft, ~1.8 GB). Models live in
+#                         HF_HOME at runtime, never baked in.
+# - fastapi/bench_results/  Local benchmark output (per-run JSON).
+# - fastapi/retrieval_threshold_sweep.csv  Local eval scratch file.
+# - fastapi/run_eval*.py  One-shot eval drivers; not imported by the app.
+fastapi/C:
+fastapi/models/
+fastapi/data/
+fastapi/bench_results/
+fastapi/retrieval_threshold_sweep.csv
+fastapi/run_eval*.py
+
+# NOTE: docker/fastapi.Dockerfile.dockerignore and
+# docker/dagster.Dockerfile.dockerignore override this file entirely for
+# their respective builds (BuildKit per-Dockerfile ignore precedence) and
+# additionally exclude the sibling service's whole subtree. This file
+# remains as the fallback for any build path that doesn't pick those up.
+# Keep the three files in sync when adding excludes.
