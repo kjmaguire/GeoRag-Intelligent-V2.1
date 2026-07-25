@@ -40,6 +40,8 @@ from pathlib import Path
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import Response
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.async_client import AsyncS3CompatibleStorage
 
 from app.config import settings
 from app.ocr.render import render_page
@@ -73,22 +75,6 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get(
-        "S3_ENDPOINT_URL",
-        os.environ.get("MINIO_ENDPOINT", "http://minio:8333"),
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    return (
-        os.environ.get("AWS_ACCESS_KEY_ID")
-        or os.environ.get("MINIO_ROOT_USER", "georag-admin"),
-        os.environ.get("AWS_SECRET_ACCESS_KEY")
-        or os.environ.get("MINIO_ROOT_PASSWORD", ""),
-    )
-
-
 async def _lookup_bronze_key(conn: asyncpg.Connection, report_id: str) -> str | None:
     """Find the bronze S3 key for a report via parser_run_artifacts.
 
@@ -112,16 +98,8 @@ async def _lookup_bronze_key(conn: asyncpg.Connection, report_id: str) -> str | 
 
 
 async def _download_from_s3(minio_key: str) -> bytes:
-    import aioboto3
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
-    async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        resp = await s3.get_object(Bucket=bucket, Key=minio_key)
-        return await resp["Body"].read()
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 
 @router.get(

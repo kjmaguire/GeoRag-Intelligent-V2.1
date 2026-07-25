@@ -111,38 +111,22 @@ async def _delete_report(pool, report_id: str) -> None:
 
 
 async def _upload_to_s3(bronze_key: str, body: bytes) -> None:
-    """Upload PDF bytes to the bronze bucket using the existing
-    aioboto3 helper from the render router (which mirrors the
-    ingest_pdf module's S3 conventions).
-    """
-    import aioboto3
+    """Upload PDF bytes to the bronze bucket via georag_object_storage
+    (the render router's own S3 client, storage-abstraction plan PR5c)."""
+    from georag_object_storage import Bucket, StorageConfig
+    from georag_object_storage.async_client import AsyncS3CompatibleStorage
 
-    from app.routers.ocr_render import _s3_credentials, _s3_endpoint
-
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
-    async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        await s3.put_object(Bucket=bucket, Key=bronze_key, Body=body)
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    await storage.put_bytes(Bucket.BRONZE, bronze_key, body)
 
 
 async def _delete_from_s3(bronze_key: str) -> None:
-    import aioboto3
+    from georag_object_storage import Bucket, StorageConfig
+    from georag_object_storage.async_client import AsyncS3CompatibleStorage
 
-    from app.routers.ocr_render import _s3_credentials, _s3_endpoint
-
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
     try:
-        async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-            await s3.delete_object(Bucket=bucket, Key=bronze_key)
+        await storage.delete(Bucket.BRONZE, bronze_key)
     except Exception:
         pass  # cleanup; ignore
 
