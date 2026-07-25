@@ -133,6 +133,40 @@ if aws s3 cp "s3://${BUCKET}/${TEST_KEY}" - \
 fi
 log "  Deletion verified: OK"
 
+# ---------------------------------------------------------------------------
+# Step 7 — Vendor-SDK import scan (Addendum §02a rule 1)
+#
+# Static grep over application source for a vendor-named SDK import
+# (`minio`, `seaweedfs`, etc.) — the runbook (ops/runbooks/s3-abstraction.md)
+# has documented this as check 7/7 since it was first written, but the
+# script itself never implemented it. Requires the repo checkout to be
+# present (true when run from the host, or a container with the source
+# mounted); skipped, not failed, when it isn't (e.g. a bare aws-cli
+# container that only has this one script mounted), since the script is
+# also documented to run that way.
+# ---------------------------------------------------------------------------
+log "Step 7: Scan application source for vendor-specific SDK imports"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCAN_DIRS=()
+SCAN_DIRS_RELATIVE=()
+for d in src/fastapi src/dagster src/georag_object_storage; do
+    if [ -d "${REPO_ROOT}/${d}" ]; then
+        SCAN_DIRS+=("${REPO_ROOT}/${d}")
+        SCAN_DIRS_RELATIVE+=("${d}")
+    fi
+done
+
+if [ "${#SCAN_DIRS[@]}" -eq 0 ]; then
+    log "  SKIP: no application source checkout found under ${REPO_ROOT} (expected when run from a bare aws-cli container)"
+else
+    VIOLATIONS="$(grep -rnE '^\s*(from|import)\s+(minio|seaweedfs)' "${SCAN_DIRS[@]}" --include='*.py' 2>/dev/null || true)"
+    if [ -n "${VIOLATIONS}" ]; then
+        echo "${VIOLATIONS}" >&2
+        fail "vendor-specific SDK import(s) found — see addendum §02a rule 1 (use boto3 / the Laravel AWS SDK instead)"
+    fi
+    log "  No vendor SDK imports found in ${SCAN_DIRS_RELATIVE[*]}"
+fi
+
 log "=== Round-trip PASSED: put/head/list/get/delete all succeeded ==="
 log "    Vendor purity confirmed: standard aws-cli S3 API calls only"
 log "    No SeaweedFS-native or MinIO SDK calls used"
