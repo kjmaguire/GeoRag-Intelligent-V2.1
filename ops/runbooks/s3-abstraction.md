@@ -30,15 +30,28 @@ standard S3.
 
 ## Required Environment Variables
 
-Set in `.env` and propagated to all containers via `docker-compose.yml`:
+Set in `.env` and propagated to all containers via `docker-compose.yml`.
+Canonical names (storage-abstraction plan, 2026-07 — resolved by
+`georag_object_storage.StorageConfig.from_env()`):
 
 | Variable | Example value | Notes |
 |----------|--------------|-------|
 | `AWS_ACCESS_KEY_ID` | `georag_minio_user` | SeaweedFS S3 access key |
 | `AWS_SECRET_ACCESS_KEY` | `georag_minio_password` | SeaweedFS S3 secret key |
-| `AWS_ENDPOINT_URL` | `http://minio:8333` | Docker-internal hostname; use `http://localhost:8333` from host |
+| `AWS_ENDPOINT_URL` | `http://minio:8333` | **The single endpoint source of truth.** Docker-internal hostname; use `http://localhost:8333` from host |
 | `AWS_DEFAULT_REGION` | `us-east-1` | Required by boto3/SDK; SeaweedFS accepts any value |
-| `S3_ENDPOINT_URL` | `http://minio:8333` | Alias used by backup-agent scripts; keep in sync with `AWS_ENDPOINT_URL` |
+| `AWS_BUCKET_BRONZE` / `AWS_BUCKET_EXPORTS` / `AWS_BUCKET_BACKUPS` / `AWS_BUCKET_BRONZE_RASTER` | `bronze` etc. | Logical-bucket overrides; defaults match today's live names |
+
+The earlier revision of this runbook required `S3_ENDPOINT_URL` to be "kept
+in sync" with `AWS_ENDPOINT_URL`. That two-source-of-truth contract was
+itself a source of drift (it's how the backup workflows ended up pointed at
+a dead port — see `docker-compose.yml`'s `SEAWEEDFS_S3_ENDPOINT` default)
+and is retired: **set only `AWS_ENDPOINT_URL`**. Every legacy name
+(`S3_ENDPOINT_URL`, `S3_ENDPOINT`, `MINIO_*`, `SEAWEEDFS_*`,
+`SEAWEEDFS_S3_*`) is still read as a documented fallback by
+`StorageConfig.from_env()` — with a one-time warning log — so existing
+`.env` files keep working during the transition, but new deployments and
+docs should use canonical names only.
 
 **Hostname note:** `minio` resolves to the SeaweedFS container on the `georag` Docker network.
 From the host machine or any external client, use `http://localhost:8333`.
@@ -49,25 +62,39 @@ From the host machine or any external client, use `http://localhost:8333`.
 
 ### Python (FastAPI / Dagster)
 
+Do NOT construct boto3/aioboto3 clients inline. Use the shared
+`georag_object_storage` package (`src/georag_object_storage/`, installed
+into both services as a path dependency):
+
 ```python
-import boto3
-import os
+from georag_object_storage import Bucket, StorageConfig, get_storage_client
+from georag_object_storage.async_client import AsyncS3CompatibleStorage
 
-def get_s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=os.environ["AWS_ENDPOINT_URL"],
-        aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-        region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
-    )
+# Sync (Dagster, scripts):
+store = get_storage_client()                      # reads env via StorageConfig.from_env()
+store.put_bytes(Bucket.BRONZE, "raw/report.pdf", file_bytes)
+pdf = store.get_bytes(Bucket.BRONZE, "raw/report.pdf")
 
-# Usage:
-s3 = get_s3_client()
-s3.put_object(Bucket="georag-bronze", Key="raw/report.pdf", Body=file_bytes)
-obj = s3.get_object(Bucket="georag-bronze", Key="raw/report.pdf")
-s3.head_bucket(Bucket="georag-bronze")  # Check existence (raises if missing)
+# Async (FastAPI, Hatchet workflows — never block the event loop):
+storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+pdf = await storage.get_bytes(Bucket.BRONZE, "raw/report.pdf")
 ```
+
+Escape hatch for genuinely dynamic bucket names (backup snapshot targets,
+outbox rows, tier-{name} buckets) — share the client construction, keep the
+raw API:
+
+```python
+from georag_object_storage import StorageConfig, async_client_kwargs, build_boto3_client
+
+s3 = build_boto3_client(StorageConfig.from_env())          # sync
+async with aioboto3.Session().client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
+    ...                                                     # async
+```
+
+The `STORAGE_BACKEND` env var (default `s3_compatible`) is the deliberate
+seam for a future Azure Blob backend; any other value currently raises
+`NotImplementedError`.
 
 ### PHP (Laravel)
 
@@ -152,17 +179,22 @@ bash ops/tests/s3-abstraction-check.sh
 docker exec georag-backup-agent bash /tests/s3-abstraction-check.sh
 ```
 
-Expected output:
-```
-[PASS] AWS_ENDPOINT_URL set: http://minio:8333
-[PASS] S3 endpoint reachable
-[PASS] Bucket georag-backups exists
-[PASS] Bucket georag-bronze exists
-[PASS] Bucket georag-exports exists
-[PASS] Write/read/delete round-trip OK
-[PASS] No vendor SDK imports found in app/ or src/
-S3 abstraction check: 7/7 PASSED
-```
+The script runs 7 steps (aligned with the script as of the 2026-07
+storage-abstraction pass — earlier revisions of this runbook described
+checks the script never implemented):
+
+1. PUT a timestamped test object
+2. GET it back and verify content matches
+3. HEAD the object (metadata retrievable)
+4. LIST the prefix and confirm the key appears
+5. DELETE the object
+6. Verify deletion (GET now 404s)
+7. Grep application source (`src/fastapi`, `src/dagster`,
+   `src/georag_object_storage`) for vendor-SDK imports (`minio`,
+   `seaweedfs`) — skipped with a log line when no source checkout is
+   present (e.g. run from a bare aws-cli container)
+
+Exit 0 = all steps passed.
 
 ---
 
@@ -172,17 +204,20 @@ These patterns are **prohibited** by addendum §02a:
 
 | Anti-pattern | Why prohibited | Correct alternative |
 |-------------|---------------|---------------------|
-| `from minio import Minio` | Vendor SDK; ties code to MinIO/SeaweedFS API | `import boto3` |
-| `client.fput_object(bucket, key, path)` | MinIO-specific method | `s3.put_object(Bucket=b, Key=k, Body=data)` |
-| `client.bucket_exists(name)` | MinIO-specific method | `s3.head_bucket(Bucket=name)` (catch exception) |
-| Hardcoded endpoint `http://localhost:8333` | Breaks in container | `os.environ["AWS_ENDPOINT_URL"]` |
-| Hardcoded bucket name `"georag-bronze"` | Breaks on rename | `os.environ["BRONZE_BUCKET"]` or config constant |
+| `from minio import Minio` | Vendor SDK; ties code to MinIO/SeaweedFS API | `georag_object_storage` (or raw boto3 via its `build_boto3_client`) |
+| `client.fput_object(bucket, key, path)` | MinIO-specific method | `store.put_file(Bucket.BRONZE, key, path)` |
+| `client.bucket_exists(name)` | MinIO-specific method | `store.bucket_exists(Bucket.BRONZE)` |
+| Inline `boto3.client("s3", endpoint_url=os.environ[...])` construction | Duplicated env resolution — the drift this runbook exists to prevent | `StorageConfig.from_env()` + package clients |
+| Hardcoded endpoint `http://localhost:8333` | Breaks in container | `AWS_ENDPOINT_URL` via `StorageConfig.from_env()` |
+| Hardcoded bucket name `"georag-bronze"` | Breaks on rename | `Bucket` enum + `AWS_BUCKET_*` overrides |
 | SeaweedFS admin API calls (`/cluster/status`) | Vendor-specific; not part of S3 contract | N/A — remove from application code |
 | AWS-specific SDK features (Glacier, SQS, SNS) | AWS-only; not available on SeaweedFS | Use generic S3 primitives only |
 
-**Known violation to fix in Module 3:** `src/dagster/georag_dagster/resources.py` imports
-`from minio import Minio` and uses `fput_object`, `bucket_exists`, `make_bucket`. Replace with
-boto3 before Module 3 Phase B ingestion code runs. Pre-approved in `ops/backlog/module-3-intake.md`.
+**Resolved.** `src/dagster/georag_dagster/resources.py`'s `S3Resource` has used boto3 since
+Module 3 — the violation this note used to describe. The storage-abstraction plan's PR2 (2026-07)
+found and fixed the one remaining violation: `src/fastapi/scripts/populate_source_files.py`
+imported `from minio import Minio` directly. `ops/tests/s3-abstraction-check.sh` now has a step
+that greps for this class of violation on every run, so a new one won't go unnoticed again.
 
 ---
 
