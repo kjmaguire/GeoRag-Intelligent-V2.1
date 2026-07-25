@@ -15,12 +15,11 @@ import contextlib
 import io
 from typing import Generator, Iterator
 
-import boto3
 import psycopg2
 import psycopg2.extras
-from botocore.client import Config
 from botocore.exceptions import ClientError
 from dagster import ConfigurableResource, get_dagster_logger
+from georag_object_storage import StorageConfig, build_boto3_client
 
 logger = get_dagster_logger()
 
@@ -115,6 +114,16 @@ class S3Resource(ConfigurableResource):
         MINIO_ROOT_PASSWORD  — S3 secret key (reused from existing compose env)
 
     Configured in definitions.py under the "s3" resource key.
+
+    Storage-abstraction plan PR3: client construction now delegates to
+    georag_object_storage's build_boto3_client() so this resource and the
+    shared package's S3CompatibleStorage build the client identically — one
+    source of truth for the endpoint/credentials/signature-version wiring.
+    The methods below keep their existing raw-bucket-string signatures
+    (rather than the shared package's Bucket-enum interface) because Dagster
+    callers pass dynamic bucket names — e.g. get_client() is used directly
+    for paginator/list_objects_v2 calls in index_reports.py and
+    silver_public_geoscience.py — that don't map onto a fixed logical set.
     """
 
     endpoint_url: str = "http://minio:8333"  # from S3_ENDPOINT_URL
@@ -124,13 +133,14 @@ class S3Resource(ConfigurableResource):
 
     def get_client(self):
         """Return a boto3 S3 client configured for the project endpoint."""
-        return boto3.client(
-            "s3",
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key,
-            aws_secret_access_key=self.secret_key,
-            region_name=self.region,
-            config=Config(signature_version="s3v4"),
+        return build_boto3_client(
+            StorageConfig(
+                endpoint_url=self.endpoint_url,
+                access_key=self.access_key,
+                secret_key=self.secret_key,
+                region=self.region,
+                bucket_names={},  # unused — this class's methods take raw bucket strings
+            )
         )
 
     def bucket_exists(self, bucket: str) -> bool:
