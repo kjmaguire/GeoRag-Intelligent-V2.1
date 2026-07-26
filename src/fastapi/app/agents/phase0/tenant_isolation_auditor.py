@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
-
-import httpx
 
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
@@ -157,34 +155,55 @@ async def tenant_isolation_audit(
     summary["set_local_violations"] = setset_findings
     summary["violations"] += len(setset_findings)
 
-    # All-nighter 2026-05-21 — Kestra escalation on any violation.
-    # The kickoff rubric expects a Kestra `external_notification` trigger
-    # on cross-tenant findings so the on-call channel hears about it.
+    # Escalation on any violation — 2026-07-25 (Kestra retirement).
+    #
+    # Cross-tenant findings are critical, so the on-call channel has to
+    # hear about them. This previously POSTed straight at Kestra's
+    # execution API, gated on KESTRA_URL — a variable set in no
+    # .env.example and no compose service env. That means this escalation
+    # has been taking the `KESTRA_URL unset` branch and silently doing
+    # nothing: the alarm for RLS tenancy violations never actually rang.
+    #
+    # Now enqueued onto the outbox `external_webhook` target, which is
+    # HMAC-signed, retried, and dead-lettered with an audit row per
+    # attempt. If no webhook URL is configured the row dead-letters
+    # visibly instead of vanishing.
+    #
+    # Deliberately NOT idempotent-suppressed across runs: each nightly
+    # audit that still finds violations should re-notify, because an
+    # unresolved tenancy leak staying quiet is the failure mode this
+    # exists to prevent. The key includes the run's violation count and
+    # date so repeat findings re-fire while a single run can't double-send.
     if summary["violations"] > 0:
-        kestra_url = os.environ.get("KESTRA_URL", "").strip()
-        flow_id = os.environ.get(
-            "KESTRA_TENANT_ISOLATION_FLOW",
-            "external_notification",
-        )
-        if kestra_url:
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    await client.post(
-                        f"{kestra_url.rstrip('/')}/api/v1/executions/georag/{flow_id}",
-                        json={
-                            "severity": "critical",
-                            "source": "tenant_isolation_auditor",
-                            "violations": summary["violations"],
-                            "summary": summary["violation_details"][:5],
-                        },
-                    )
-                summary["kestra_escalated"] = True
-            except httpx.HTTPError as exc:
-                summary["kestra_escalated"] = False
-                summary["kestra_error"] = str(exc)
-                logger.warning("kestra escalation failed: %s", exc)
-        else:
-            summary["kestra_escalated"] = False
-            summary["kestra_skip_reason"] = "KESTRA_URL unset"
+        audit_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            await rt.pg_pool.execute(
+                """
+                INSERT INTO outbox.pending_propagations
+                    (workspace_id, source_schema, source_table, source_id,
+                     target_store, target_collection, operation,
+                     payload, idempotency_key)
+                VALUES (NULL, 'audit', 'tenant_isolation', $1,
+                        'external_webhook', 'security_critical', 'upsert',
+                        $2::jsonb, $3)
+                ON CONFLICT (target_store, idempotency_key)
+                    WHERE status IN ('pending', 'in_flight')
+                    DO NOTHING
+                """,
+                audit_day,
+                json.dumps({
+                    "severity": "critical",
+                    "source": "tenant_isolation_auditor",
+                    "violations": summary["violations"],
+                    "summary": summary["violation_details"][:5],
+                    "audit_day": audit_day,
+                }),
+                f"tenant_isolation:{audit_day}:{summary['violations']}",
+            )
+            summary["escalation_enqueued"] = True
+        except Exception as exc:  # noqa: BLE001 — never fail the audit on notify
+            summary["escalation_enqueued"] = False
+            summary["escalation_error"] = f"{type(exc).__name__}:{exc}"
+            logger.warning("tenant isolation escalation enqueue failed: %s", exc)
 
     return summary

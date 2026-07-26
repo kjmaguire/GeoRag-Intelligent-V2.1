@@ -159,9 +159,9 @@ class TenantIsolationAuditOutput(BaseModel):
 
     Mirrors the agent summary dict in
     ``app.agents.phase0.tenant_isolation_auditor.tenant_isolation_audit``.
-    Conditional keys (``note``, ``kestra_error``, ``kestra_skip_reason``)
-    are accepted via ``extra="allow"`` since they only appear on specific
-    branches (no workspaces, kestra failure, etc).
+    Conditional keys (``note``, ``escalation_enqueued``,
+    ``escalation_error``) are accepted via ``extra="allow"`` since they
+    only appear on specific branches (no workspaces, enqueue failure, etc).
     """
 
     model_config = ConfigDict(extra="allow")
@@ -514,8 +514,11 @@ class SupportPacketAssembleOutput(BaseModel):
     counts: dict[str, Any] = Field(default_factory=dict)
     upload_ok: bool = False
     upload_error: str | None = None
-    kestra_dispatched: bool = False
-    kestra_error: str | None = None
+    # Renamed 2026-07-25 (Kestra retirement) — the on-call handoff now goes
+    # through the outbox `external_webhook` target rather than a direct POST
+    # to Kestra's execution API.
+    dispatch_enqueued: bool = False
+    dispatch_error: str | None = None
 
 
 support_packet_assemble = hatchet.workflow(

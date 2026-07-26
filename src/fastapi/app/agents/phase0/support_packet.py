@@ -324,42 +324,71 @@ async def support_packet_assemble(
         trace_id=ctx.trace_id,
     )
 
-    # All-nighter 2026-05-21 — Kestra dispatch.
-    # The Phase 0 rubric expects the agent to trigger the Kestra
-    # `support_packet_dispatch` flow when the bundle is available, so the
-    # on-call handler can route to email / Slack / ticketing per workspace
-    # policy. Kestra is the integration-boundary owner post-Activepieces
-    # sunset; the agent itself stays "build-the-bundle only".
-    kestra_dispatched = False
-    kestra_error: str | None = None
+    # Outbound on-call dispatch — 2026-07-25 (Kestra retirement).
+    #
+    # The rubric expects the agent to notify the on-call handler once the
+    # bundle is available, so it can route to email / Slack / ticketing per
+    # workspace policy. The agent itself stays "build-the-bundle only".
+    #
+    # This used to POST directly to Kestra's execution API. That leg was
+    # fire-and-forget: no retry, no dead-letter, no audit trail, and it
+    # no-op'd silently whenever KESTRA_URL was unset (which was the default
+    # — the var appears in no .env.example). Kestra's own receiving flow
+    # then tried to email via `globals.georag.smtp_host`, a variable never
+    # defined in either Kestra config, so the notification could not have
+    # been delivered in any environment.
+    #
+    # It now enqueues onto the existing outbox instead. `external_webhook`
+    # already gives HMAC-signed delivery, bounded-concurrency dispatch,
+    # retry with dead-lettering, and one audit row per attempt — and the
+    # outbox dispatcher already mapped `kestra` to that same handler, so
+    # this is the mechanism that was doing the real work regardless.
+    #
+    # Routing: target_collection 'support_packet' resolves to
+    # EXTERNAL_WEBHOOK_URL_SUPPORT_PACKET, falling back to
+    # EXTERNAL_WEBHOOK_URL_DEFAULT. With neither set the dispatcher
+    # dead-letters the row with an explicit reason — a visible failure
+    # rather than the silent no-op this replaces.
+    dispatch_enqueued = False
+    dispatch_error: str | None = None
     if upload_ok:
-        kestra_url = os.environ.get("KESTRA_URL", "").strip()
-        flow_id = os.environ.get(
-            "KESTRA_SUPPORT_PACKET_FLOW", "support_packet_dispatch"
-        )
-        if kestra_url:
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    r = await client.post(
-                        f"{kestra_url.rstrip('/')}/api/v1/executions/georag/{flow_id}",
-                        json={
-                            "packet_id": str(packet_id),
-                            "incident_id": incident_id,
-                            "workspace_id": str(ctx.workspace_id),
-                            "storage_uri": storage_uri,
-                            "bundle_bytes": len(bundle_bytes),
-                            "counts": manifest["counts"],
-                            "requested_by": requested_by,
-                        },
-                    )
-                    if 200 <= r.status_code < 300:
-                        kestra_dispatched = True
-                    else:
-                        kestra_error = f"kestra http {r.status_code}"
-            except httpx.HTTPError as exc:
-                kestra_error = f"{type(exc).__name__}:{exc}"
-        else:
-            kestra_error = "KESTRA_URL unset"
+        try:
+            await rt.pg_pool.execute(
+                """
+                INSERT INTO outbox.pending_propagations
+                    (workspace_id, source_schema, source_table, source_id,
+                     target_store, target_collection, operation,
+                     payload, idempotency_key)
+                VALUES ($1::uuid, 'silver', 'support_packets', $2,
+                        'external_webhook', 'support_packet', 'upsert',
+                        $3::jsonb, $4)
+                ON CONFLICT (target_store, idempotency_key)
+                    WHERE status IN ('pending', 'in_flight')
+                    DO NOTHING
+                """,
+                str(ctx.workspace_id),
+                str(packet_id),
+                json.dumps({
+                    "packet_id": str(packet_id),
+                    "incident_id": incident_id,
+                    "workspace_id": str(ctx.workspace_id),
+                    "storage_uri": storage_uri,
+                    "bundle_bytes": len(bundle_bytes),
+                    "counts": manifest["counts"],
+                    "requested_by": requested_by,
+                }),
+                # R2 idempotency — the agent is already idempotent on
+                # incident_id, so re-assembly of the same incident must not
+                # produce a second notification.
+                f"support_packet:{incident_id}",
+            )
+            dispatch_enqueued = True
+        except Exception as exc:  # noqa: BLE001 — never fail assembly on notify
+            dispatch_error = f"{type(exc).__name__}:{exc}"
+            logger.warning(
+                "support_packet: outbox enqueue failed incident=%s err=%s",
+                incident_id, exc,
+            )
 
     return {
         "packet_id": str(packet_id),
@@ -369,6 +398,6 @@ async def support_packet_assemble(
         "counts": manifest["counts"],
         "upload_ok": upload_ok,
         "upload_error": upload_error,
-        "kestra_dispatched": kestra_dispatched,
-        "kestra_error": kestra_error,
+        "dispatch_enqueued": dispatch_enqueued,
+        "dispatch_error": dispatch_error,
     }

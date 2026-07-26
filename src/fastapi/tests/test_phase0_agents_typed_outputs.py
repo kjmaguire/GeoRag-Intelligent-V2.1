@@ -12,7 +12,7 @@ returns a typed Pydantic v2 BaseModel. These tests pin:
      keys — preserving downstream backward compatibility for any
      caller that still wants dict semantics.
   5. ``extra="allow"`` lets agent-specific conditional keys through
-     (e.g. ``kestra_error``, ``fatal``) without a validation error.
+     (e.g. ``escalation_error``, ``fatal``) without a validation error.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ WORKFLOW_TYPING = [
         "tenant_isolation_audit",
         "_run_tenant_isolation",
         p0.TenantIsolationAuditOutput,
-        {"kestra_error": "kestra http 503"},
+        {"escalation_error": "RuntimeError:outbox unavailable"},
     ),
     (
         "lineage_walk",
