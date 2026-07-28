@@ -50,11 +50,19 @@ class UploadVendorProfileTest extends TestCase
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
-    private function makeCsvFile(): UploadedFile
+    /**
+     * B2 (2026-07-28): was makeCsvFile() uploading under the 'collars'
+     * category. That category was retired with the Dagster services — its
+     * uploads were stored and never processed — so these tests, which are
+     * about vendor-profile metadata rather than CSV ingestion, now exercise
+     * the live 'reports' path instead. dispatchShadowIfPdf() returns early
+     * without FASTAPI_SERVICE_KEY, so no HTTP is attempted under test.
+     */
+    private function makePdfFile(): UploadedFile
     {
         return UploadedFile::fake()->createWithContent(
-            'collars.csv',
-            "hole_id,easting,northing\nDH001,500000,6000000\n",
+            'report.pdf',
+            "%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n",
         );
     }
 
@@ -71,8 +79,8 @@ class UploadVendorProfileTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file' => $this->makeCsvFile(),
-                'category' => 'collars',
+                'file' => $this->makePdfFile(),
+                'category' => 'reports',
                 // vendor_profile_id intentionally omitted
             ]);
 
@@ -98,8 +106,8 @@ class UploadVendorProfileTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file' => $this->makeCsvFile(),
-                'category' => 'collars',
+                'file' => $this->makePdfFile(),
+                'category' => 'reports',
                 'vendor_profile_id' => $profile->id,
             ]);
 
@@ -113,8 +121,8 @@ class UploadVendorProfileTest extends TestCase
 
         $response = $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file' => $this->makeCsvFile(),
-                'category' => 'collars',
+                'file' => $this->makePdfFile(),
+                'category' => 'reports',
                 'vendor_profile_id' => 999999, // does not exist in the DB
             ]);
 
@@ -171,8 +179,8 @@ class UploadVendorProfileTest extends TestCase
 
         $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file' => $this->makeCsvFile(),
-                'category' => 'collars',
+                'file' => $this->makePdfFile(),
+                'category' => 'reports',
                 'vendor_profile_id' => $profile->id,
             ])
             ->assertCreated();
@@ -230,8 +238,8 @@ class UploadVendorProfileTest extends TestCase
 
         $this->actingAs($this->user)
             ->postJson($this->uploadUrl(), [
-                'file' => $this->makeCsvFile(),
-                'category' => 'collars',
+                'file' => $this->makePdfFile(),
+                'category' => 'reports',
                 // no vendor_profile_id
             ])
             ->assertCreated();

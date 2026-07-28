@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -175,7 +175,7 @@ async def tenant_isolation_audit(
     # exists to prevent. The key includes the run's violation count and
     # date so repeat findings re-fire while a single run can't double-send.
     if summary["violations"] > 0:
-        audit_day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        audit_day = datetime.now(UTC).strftime("%Y-%m-%d")
         try:
             await rt.pg_pool.execute(
                 """

@@ -35,30 +35,57 @@ class UploadController extends Controller
 
     /**
      * Accepted file categories and their MinIO path prefixes.
+     *
+     * Only categories with a live downstream consumer belong here. Both of
+     * these dispatch a Hatchet workflow from store() below.
      */
     private const CATEGORIES = [
-        'collars' => ['csv'],
-        'surveys' => ['csv'],
-        'lithology' => ['csv'],
-        'samples' => ['csv'],
         // ADR-0005 (2026-05-23): TIFF scans normalize to PDF at the bronze
         // edge via tiff_normalize, then route through the §04p PDF stack
         // unchanged. Both extensions land under the same `reports/{project_id}/...`
         // prefix; dispatchShadowIfPdf() inspects the extension and calls
         // the right trigger endpoint.
         'reports' => ['pdf', 'tif', 'tiff'],
+        // ZIP archives containing hundreds of small files (TIF, LAS, LOG,
+        // XLSX, PDF ≤10 MB each). The Hatchet ingest_zip_archive workflow
+        // extracts each entry and fans it out to the appropriate ingester.
+        'archive' => ['zip'],
+    ];
+
+    /**
+     * Categories retired with the Dagster services on 2026-07-28 (B2).
+     *
+     * These never reached a Hatchet workflow — store() dispatches only for
+     * `reports` and `archive`. Everything else was picked up by Dagster's
+     * minio_upload_sensor, which a live check confirmed was STOPPED: it
+     * declares no default_status while every schedule in definitions.py
+     * declares one, so it defaulted to STOPPED and never fired.
+     *
+     * The practical effect was that an upload in one of these categories
+     * returned 201, wrote the object and a bronze manifest row, and then
+     * nothing happened — no silver rows, no passages, no retrievable data,
+     * and no error for the user to act on. Rejecting with an explicit 422 is
+     * strictly better than accepting work we silently drop.
+     *
+     * Restoring any of these means giving it a live consumer first (a Hatchet
+     * workflow, or Dagster brought back with the sensor actually RUNNING),
+     * then moving the entry back into CATEGORIES.
+     *
+     * @var array<string, list<string>>
+     */
+    private const RETIRED_CATEGORIES = [
+        'collars' => ['csv'],
+        'surveys' => ['csv'],
+        'lithology' => ['csv'],
+        'samples' => ['csv'],
         'well_logs' => ['las'],
         'spatial' => ['geojson', 'shp', 'zip'],
         'excel' => ['xlsx', 'xls'],
         'seismic' => ['sgy', 'segy'],
         'xyz' => ['xyz', 'dat', 'txt'],
-        // Geophysics interpretation summary JSON — consumed by Dagster
-        // silver_geophysics asset. Schema documented in src/dagster/.../bronze_geophysics.py.
+        // Geophysics interpretation summary JSON — was consumed by the Dagster
+        // silver_geophysics asset.
         'geophysics' => ['json'],
-        // ZIP archives containing hundreds of small files (TIF, LAS, LOG,
-        // XLSX, PDF ≤10 MB each). The Hatchet ingest_zip_archive workflow
-        // extracts each entry and fans it out to the appropriate ingester.
-        'archive' => ['zip'],
     ];
 
     /**
@@ -83,6 +110,19 @@ class UploadController extends Controller
                 'error' => 'forbidden',
                 'message' => 'You do not have access to this project.',
             ], 403);
+        }
+
+        // Answer retired categories with a reason rather than a bare "invalid
+        // category" — these used to be accepted, so a caller hitting one is
+        // most likely an older client, not a typo.
+        $requestedCategory = $request->input('category');
+        if (is_string($requestedCategory) && array_key_exists($requestedCategory, self::RETIRED_CATEGORIES)) {
+            return response()->json([
+                'message' => "Category '{$requestedCategory}' is no longer accepted. Its ingestion "
+                    .'pipeline was retired on 2026-07-28; uploads were being stored but never '
+                    .'processed. Accepted categories: '.implode(', ', array_keys(self::CATEGORIES)).'.',
+                'retired_category' => $requestedCategory,
+            ], 422);
         }
 
         $validated = $request->validate([
@@ -502,11 +542,16 @@ class UploadController extends Controller
      * List accepted file categories and their extensions.
      *
      * GET /api/v1/upload/categories
+     *
+     * `retired` is returned alongside so a client can distinguish "we never
+     * supported that" from "we stopped supporting that", and render the
+     * picker without offering uploads that go nowhere.
      */
     public function categories(): JsonResponse
     {
         return response()->json([
             'categories' => self::CATEGORIES,
+            'retired' => self::RETIRED_CATEGORIES,
         ]);
     }
 }

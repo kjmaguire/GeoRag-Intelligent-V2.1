@@ -96,8 +96,6 @@ volumes:
     driver: local
   fastapi_hf_cache:
     driver: local
-  dagster_home:
-    driver: local
   # Hatchet engine config (TLS certs, server config) persisted across restarts.
   hatchet_config:
     driver: local
@@ -1868,176 +1866,30 @@ services:
         echo "vllm-warmup: complete."
 
   # ===========================================================================
-  # PROFILE: dev-ingest
-  # Dagster daemon + webserver
-  # Start only during ingestion pipeline development — heavy memory footprint.
+  # PROFILE: dev-ingest — REMOVED 2026-07-28 (B2)
+  #
+  # dagster-daemon and dagster-webserver are gone. What they actually ran:
+  #
+  #   - minio_upload_sensor, the trigger for CSV/XLSX structured ingestion.
+  #     Verified STOPPED on the live stack (`dagster sensor list`) — it
+  #     declares no default_status while every schedule in definitions.py
+  #     declares one, so it defaulted to STOPPED and never fired. Generic
+  #     CSV uploads therefore stopped after the object + bronze manifest row
+  #     and nothing downstream ever consumed them.
+  #   - The bronze->silver structured pipelines, public-geoscience pulls and
+  #     gold/visual assets that hung off it.
+  #
+  # PDF ingestion never went through here: Laravel dispatches it to Hatchet
+  # (UploadController, category 'reports'), and A1 moved the PDF parser into
+  # app/services/ingest/pdf_report.py so the FastAPI image no longer imports
+  # anything from the Dagster tree.
+  #
+  # src/dagster/ is retained on disk but dormant — its CSV/XLSX/LAS/SEGY
+  # parsers and their tests are worth keeping for when structured ingest is
+  # rebuilt, and they cost nothing while no container mounts them. The assets
+  # that imported the relocated PDF parser were deleted, since they could no
+  # longer resolve it.
   # ===========================================================================
-
-  # ---------------------------------------------------------------------------
-  # DAGSTER DAEMON — scheduler and sensor background process
-  # Handles scheduled pipeline runs and event-driven sensors (file drop triggers,
-  # PostGIS change detection, etc.).
-  # Both dagster-daemon AND dagster-webserver are required to run Dagster.
-  # ---------------------------------------------------------------------------
-  dagster-daemon:
-    build:
-      context: ./src/dagster
-      dockerfile: ../../docker/dagster.Dockerfile
-    image: georag/dagster:latest
-    container_name: georag-dagster-daemon
-    restart: unless-stopped
-    command: dagster-daemon run
-    # Module 9 Chunk 9.7 (A8-02) — runs as Dockerfile-declared `nobody`
-    # (UID 65534). DAGSTER_HOME is pre-chowned in the image; the dagster_home
-    # named volume inherits the perms on first creation. Existing dev
-    # environments may need to recreate the volume after this change.
-    # See ops/runbooks/container-hardening.md.
-    user: "65534:65534"
-    working_dir: /opt/dagster/app
-    environment:
-      DAGSTER_HOME: ${DAGSTER_HOME:-/opt/dagster/dagster_home}
-      HOME: /opt/dagster/dagster_home
-      # Dagster uses its own PostgreSQL schema for run history and event log
-      DAGSTER_PG_HOST: postgresql
-      DAGSTER_PG_PORT: 5432
-      DAGSTER_PG_DB: ${DAGSTER_PG_DB:-georag_dagster}
-      DAGSTER_PG_USER: ${DAGSTER_PG_USER:-georag}
-      DAGSTER_PG_PASSWORD: ${DAGSTER_PG_PASSWORD:?DAGSTER_PG_PASSWORD must be set in .env}
-      # Application databases for pipeline steps
-      POSTGRES_HOST: pgbouncer
-      POSTGRES_PORT: 6432
-      POSTGRES_DB: ${POSTGRES_DB:-georag}
-      POSTGRES_USER: ${POSTGRES_USER:-georag}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      NEO4J_HOST: ${NEO4J_HOST:-neo4j}
-      NEO4J_PORT: ${NEO4J_PORT:-7687}
-      # N4J-01 fix (2026-04-19 Module 2 Phase B): pass credentials so the
-      # Dagster Neo4jResource can authenticate. NEO4J_URI is used by the resource;
-      # NEO4J_USERNAME / NEO4J_PASSWORD are read by definitions.py via EnvVar().
-      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
-      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
-      QDRANT_PORT: ${QDRANT_PORT:-6333}
-      MINIO_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
-      MINIO_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
-      # Chunk 3a (2026-04-20): S3Resource (boto3) reads S3_ENDPOINT_URL for endpoint_url param.
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:8333}
-      # Reverb broadcast bridge — commit_ingestion_run POSTs to Laravel's
-      # /api/internal/v1/ingest-progress/broadcast with status='completed' so
-      # the IngestionRuns / DrillReview / IngestQuality WorkspaceDataUpdated
-      # cascade fires after drill-data uploads. Both vars must be present:
-      # FASTAPI_SERVICE_KEY is the shared secret the Laravel side validates,
-      # LARAVEL_INTERNAL_URL is the in-network base URL.
-      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
-      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
-      # vLLM endpoint for the reranker_labels asset group. Defaults to the
-      # in-cluster vllm service; can be redirected for staging runs.
-      VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
-      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    volumes:
-      - dagster_home:/opt/dagster/dagster_home
-      - ./src/dagster:/opt/dagster/app:cached
-      - ./src/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
-      - ./src/dagster/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
-    networks:
-      - georag
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "dagster-daemon liveness-check || exit 1"]
-      # 2026-06-24: the daemon is live (liveness-check returns rc=0) but the
-      # check itself takes ~21s — `dagster-daemon liveness-check` is a fresh CLI
-      # invocation that re-imports dagster + the georag_dagster code location
-      # every time. At the old 10s timeout it ALWAYS exceeded → false-unhealthy
-      # for 25h. Raised timeout 10s → 35s to fit the real cost, and interval
-      # 30s → 60s so consecutive ~21s checks don't run nose-to-tail.
-      interval: 60s
-      timeout: 35s
-      retries: 3
-      start_period: 90s
-    # SG-01 fix (CRITICAL): Dagster run workers can be mid-pipeline for up to 120s.
-    # Without this, docker stop SIGKILLs after 10s and in-progress ingestion runs
-    # are lost with no checkpoint.
-    stop_grace_period: 120s
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          # 2026-04-21 Module 4 Chunk 2 cleanup: SPLADE (~440MB) + dense encoder (~100MB)
-          # + daemon base needs >1G. C3-01 from module-4-intake.md.
-          memory: 3G
-        reservations:
-          memory: 1G
-    profiles: ["dev-ingest", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # DAGSTER WEBSERVER — pipeline UI
-  # Access at http://localhost:3001 to view runs, assets, schedules, and sensors.
-  # Same image as dagster-daemon, different command.
-  # ---------------------------------------------------------------------------
-  dagster-webserver:
-    image: georag/dagster:latest
-    container_name: georag-dagster-webserver
-    restart: unless-stopped
-    command: dagster-webserver --host 0.0.0.0 --port 3001
-    # Module 9 Chunk 9.7 (A8-02) — runs as Dockerfile-declared `nobody`
-    # (UID 65534), matching dagster-daemon. See ops/runbooks/container-hardening.md.
-    user: "65534:65534"
-    working_dir: /opt/dagster/app
-    ports:
-      - "${DAGSTER_WEBSERVER_PORT:-3001}:3001"
-    environment:
-      DAGSTER_HOME: ${DAGSTER_HOME:-/opt/dagster/dagster_home}
-      HOME: /opt/dagster/dagster_home
-      DAGSTER_PG_HOST: postgresql
-      DAGSTER_PG_PORT: 5432
-      DAGSTER_PG_DB: ${DAGSTER_PG_DB:-georag_dagster}
-      DAGSTER_PG_USER: ${DAGSTER_PG_USER:-georag}
-      DAGSTER_PG_PASSWORD: ${DAGSTER_PG_PASSWORD:?DAGSTER_PG_PASSWORD must be set in .env}
-      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-      # Reverb broadcast bridge — parity with dagster-daemon. Launchpad-
-      # initiated runs ("dagster job execute" from the webserver) also
-      # land in commit_ingestion_run and need the same broadcast plumbing.
-      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
-      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    volumes:
-      - dagster_home:/opt/dagster/dagster_home
-      - ./src/dagster:/opt/dagster/app:cached
-      - ./src/dagster/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
-      - ./src/dagster/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
-    networks:
-      - georag
-    depends_on:
-      pgbouncer:
-        condition: service_healthy
-      # B2 — upgraded from service_started to service_healthy so the webserver only starts
-      # once the daemon's liveness check passes (scheduler + sensors running).
-      dagster-daemon:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    # SG-01 fix: allow Dagster webserver to close open connections before shutdown
-    stop_grace_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          # 2026-04-21 Module 4 Chunk 2 cleanup: bumped from 1G to 2G (shares
-          # same image as dagster-daemon; 1G was insufficient under load).
-          memory: 2G
-        reservations:
-          memory: 256M
-    profiles: ["dev-ingest", "dev-full"]
 
   # ---------------------------------------------------------------------------
   # RAGFlow removed in §04p Phase 3 — replaced by the in-process PDF Ingestion

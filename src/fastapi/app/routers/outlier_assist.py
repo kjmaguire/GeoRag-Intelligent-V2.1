@@ -2,6 +2,12 @@
 
 POST /internal/outlier-assist
 -----------------------------
+⚠️ B2 (2026-07-28): the Dagster services were removed, so this endpoint
+currently has no caller. It is left mounted rather than deleted because it is
+self-contained and the structured-ingest path it serves is expected back — but
+do not read its presence as evidence that LLM-assisted outlier flagging is
+running. See src/dagster/DORMANT.md.
+
 Called by the Dagster outlier detector
 (``georag_dagster.assets._outlier_llm.call_llm_assist``) when rule-based
 percentile detection produces no flag and the row's per-record confidence
