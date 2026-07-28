@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from app.hatchet_workflows.what_changed_detector import (
     WhatChangedInput,
 )
