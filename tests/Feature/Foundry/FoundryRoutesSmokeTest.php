@@ -6,6 +6,7 @@ namespace Tests\Feature\Foundry;
 
 use App\Models\Project;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Inertia\Testing\AssertableInertia;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -21,6 +22,8 @@ use Tests\TestCase;
  */
 final class FoundryRoutesSmokeTest extends TestCase
 {
+    use RefreshDatabase;
+
     public static function orgRoutes(): array
     {
         return [
