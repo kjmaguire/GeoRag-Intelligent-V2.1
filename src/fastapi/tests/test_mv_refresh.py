@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 
 import asyncpg
@@ -21,8 +22,6 @@ pytestmark = pytest.mark.integration
 
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
-
-import contextlib
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.services import mv_refresh as mv_refresh_mod  # noqa: E402

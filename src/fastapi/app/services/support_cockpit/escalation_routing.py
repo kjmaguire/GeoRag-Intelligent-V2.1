@@ -45,7 +45,6 @@ from uuid import UUID
 import asyncpg
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
-
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
 

@@ -6,12 +6,12 @@ import os
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.integration
-
 from app.services.publicgeo.sk_minoccur_adapter import (
     _fetch_sk_minoccur_features,
     sync_sk_mineral_occurrences,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _dsn() -> str:

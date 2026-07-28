@@ -6,8 +6,6 @@ import os
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.integration
-
 from app.services.publicgeo.assessment_survey_adapters import (
     _fetch_bc_aris_features,
     _fetch_sk_assessment_features,
@@ -15,6 +13,8 @@ from app.services.publicgeo.assessment_survey_adapters import (
     sync_bc_aris_assessment_surveys,
     sync_sk_assessment_surveys,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _dsn() -> str:

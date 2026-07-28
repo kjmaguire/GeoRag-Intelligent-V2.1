@@ -7,12 +7,12 @@ import os
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.integration
-
 from app.services.publicgeo.bedrock_geology_adapters import (
     sync_ab_ags_bedrock_geology,
     sync_nrcan_geo_bedrock_geology,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _dsn() -> str:

@@ -6,12 +6,12 @@ import os
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.integration
-
 from app.services.publicgeo.nrcan_mines_adapter import (
     _fetch_nrcan_mines_features,
     sync_nrcan_canadian_mines,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _dsn() -> str:

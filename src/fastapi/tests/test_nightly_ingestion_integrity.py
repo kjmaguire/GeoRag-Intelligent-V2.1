@@ -11,9 +11,11 @@ Covers:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import uuid
+from datetime import UTC
 
 import asyncpg
 import pytest
@@ -22,9 +24,6 @@ pytestmark = pytest.mark.integration
 
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
-
-import contextlib
-from datetime import UTC
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.hatchet_workflows import nightly_ingestion_integrity as sweep_mod  # noqa: E402
