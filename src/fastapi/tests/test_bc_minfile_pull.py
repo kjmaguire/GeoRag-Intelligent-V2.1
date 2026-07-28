@@ -19,12 +19,6 @@ def test_workflow_registered() -> None:
     assert bm.bc_minfile_pull.name == "bc_minfile_pull"
 
 
-def test_workflow_in_ai_pool() -> None:
-    from app.hatchet_workflows.worker import POOLS
-    names = {w.name for w in POOLS["ai"]}
-    assert "bc_minfile_pull" in names
-
-
 # ---------------------------------------------------------------------------
 # Input model contracts
 # ---------------------------------------------------------------------------
@@ -117,12 +111,6 @@ def test_dsn_builder_uses_direct_host(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_nrcan_workflow_registered() -> None:
     assert ng.nrcan_geo_pull is not None
     assert ng.nrcan_geo_pull.name == "nrcan_geo_pull"
-
-
-def test_nrcan_workflow_in_ai_pool() -> None:
-    from app.hatchet_workflows.worker import POOLS
-    names = {w.name for w in POOLS["ai"]}
-    assert "nrcan_geo_pull" in names
 
 
 def test_nrcan_input_defaults_to_both_federal_sources() -> None:

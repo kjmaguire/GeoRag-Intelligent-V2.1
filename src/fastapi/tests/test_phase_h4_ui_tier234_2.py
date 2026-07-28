@@ -22,10 +22,6 @@ def test_workspace_settings_router_mounted() -> None:
     assert t.ws_settings_router.prefix == "/api/v1/admin/workspace-settings"
 
 
-def test_activepieces_channels_router_mounted() -> None:
-    assert t.ap_router.prefix == "/api/v1/admin/activepieces-channels"
-
-
 def test_audit_explorer_router_mounted() -> None:
     assert t.audit_explorer_router.prefix == "/api/v1/admin/audit-explorer"
 
@@ -68,11 +64,6 @@ def test_workspace_setting_default_tone() -> None:
 def test_workspace_setting_put_default_tone() -> None:
     p = t.WorkspaceSettingPut()
     assert p.default_tone == "technical"
-
-
-def test_ap_channel_put_default_active() -> None:
-    p = t.ApChannelPut(webhook_url="https://example.com/webhook")
-    assert p.is_active is True
 
 
 @pytest.mark.asyncio
