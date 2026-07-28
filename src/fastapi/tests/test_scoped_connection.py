@@ -207,7 +207,7 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # hatchet_workflows — 14 files migrated 2026-06-03 in the
         # REC#2 Phase-2 wave-3 sweep (_restore_pg_from_export,
         # embed_pending_passages_smoke, field_outcome_learning,
-        # ingest_pdf, ingest_zip_archive, ocr_quality_check, re_ocr_page,
+        # ingest_pdf, ingest_zip_archive,
         # repair_shadow_aggregate, restore_workspace, shadow_diff,
         # train_source_trust, train_target_model, what_changed_detector,
         # workspace_export). 16 sites collapsed.

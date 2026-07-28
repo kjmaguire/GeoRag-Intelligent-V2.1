@@ -1,9 +1,8 @@
 """Lossless multi-page TIFF → PDF normalisation (ADR-0005).
 
 Wraps the per-frame image data from a TIFF into a single multi-page PDF
-container so the §04p PDF stack (docling, PaddleOCR, tesseract psm=3,
-preprocessing, ocr_confidence capture, figure linking, p04p_dual_write)
-can run on TIFF-sourced documents.
+container so the standard PDF parser and OCR provenance path can run on
+TIFF-sourced documents.
 
 Why PIL not img2pdf:
   * img2pdf has tighter JPEG-in-TIFF passthrough but isn't installed in

@@ -2379,36 +2379,7 @@ services:
     image: georag/fastapi:latest
     container_name: georag-hatchet-worker-ingestion
     restart: unless-stopped
-    # 2026-05-22: pip install the libs that weren't in pyproject.toml when
-    # the image was last built (polars, pytesseract).
-    # Adds ~30s to first start after a fresh recreate, no-op when the
-    # libs are already present. Once the Dockerfile is rebuilt with the
-    # updated pyproject.toml this can drop back to a bare command list.
-    #
-    # Phase 9 (2026-05-22): if paddlepaddle-gpu is not installed yet AND
-    # the host has CUDA passthrough (env PADDLEOCR_USE_GPU=true), pull
-    # the cu126 wheel from the Paddle index and uninstall the CPU build
-    # first. ~4 min one-time download; no-op on subsequent restarts.
-    #
-    # Phase 10 (2026-05-22): unstructured[pdf] dropped from the
-    # bootstrap. The fitz-first dispatch in pdf_report.py never calls
-    # it; Phase 2.1 made that path unreachable.
-    # 2026-06-23 sweep: polars + pytesseract bootstrap removed (now in
-    # pyproject.toml so the image ships with both). The paddlepaddle-gpu
-    # conditional install is RETAINED — the GPU wheel lives on the
-    # Paddle private index (https://www.paddlepaddle.org.cn/packages/
-    # stable/cu126/) which isn't on PyPI, so pyproject can only declare
-    # the CPU build. The GPU swap remains opt-in via PADDLEOCR_USE_GPU=true
-    # for hosts with NVIDIA passthrough.
-    command: >
-      sh -c "if [ \"$$PADDLEOCR_USE_GPU\" = \"true\" ] && ! python -c 'import paddle; assert paddle.device.is_compiled_with_cuda()' 2>/dev/null; then
-               pip uninstall -y paddlepaddle 2>/dev/null || true;
-               pip install --no-cache-dir 'paddlepaddle-gpu==3.3.1' --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ --extra-index-url https://pypi.org/simple/;
-               # paddle-gpu pins nccl 2.25.1 which breaks torch's nccl 2.30 ABI.
-               # Re-pin afterward so torch.cuda still works.
-               pip install --no-cache-dir 'nvidia-nccl-cu12>=2.30' || true;
-             fi &&
-             exec python3 -m app.hatchet_workflows.worker"
+    command: ["python3", "-m", "app.hatchet_workflows.worker"]
     depends_on:
       hatchet-lite:
         condition: service_healthy
@@ -2489,9 +2460,6 @@ services:
       # POST through laravel_bridge.post_ingestion_progress. See fastapi
       # block for why the http://laravel.test default isn't usable here.
       LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
-      # §04p dual-write toggle. Read by the p04p_dual_write Hatchet task
-      # (own execution_timeout, doesn't starve persist anymore).
-      P04P_DUAL_WRITE_ENABLED: ${P04P_DUAL_WRITE_ENABLED:-false}
       # Phase 2.1 (2026-05-22) — docling now wired as the OCR engine for
       # image pages within the fitz-first dispatch. When true:
       #   - fitz runs first (fast for native-text pages)
@@ -2531,26 +2499,11 @@ services:
       # needs ~3-4 GB resident. See [[tiff-smoke-2026-05-23]].
       PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
       PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
-      # Phase 9 (2026-05-22) — PaddleOCR GPU selection. Empty → auto-
-      # detect (true when paddle is compiled with CUDA and free VRAM
-      # clears the threshold). true → force GPU (warn + fall back if
-      # paddle is CPU-build). false → force CPU.
+      # Manual re-OCR and the region OCR endpoint share PaddleOCR's
+      # device-selection helper.
       PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-}
-      # Minimum free VRAM (MB) required before grabbing GPU. Prevents
-      # OOM when vLLM is already at its 0.80 mem_util cap. Default 1024.
       PADDLEOCR_MIN_FREE_VRAM_MB: ${PADDLEOCR_MIN_FREE_VRAM_MB:-1024}
-      # Phase 6 (2026-05-22) — OCR Quality Agent. Default false during
-      # the staged rollout; flip to true after smoke. Reads passages
-      # post-persist, flags low-confidence ones, dispatches re_ocr_page
-      # for the worst pages, optionally writes a review-queue row.
-      OCR_QUALITY_AGENT_ENABLED: ${OCR_QUALITY_AGENT_ENABLED:-false}
-      OCR_QUALITY_THRESHOLD: ${OCR_QUALITY_THRESHOLD:-0.75}
-      OCR_REOCR_THRESHOLD: ${OCR_REOCR_THRESHOLD:-0.60}
-      OCR_MAX_REOCR_PAGES_PER_DOC: ${OCR_MAX_REOCR_PAGES_PER_DOC:-20}
-      # PaddleOCR downloads its model weights to ~/.paddleocr on first
-      # use. www-data's home (/var/www) is read-only so we redirect
-      # HOME to /tmp; PaddleOCR's default cache resolves to
-      # /tmp/.paddleocr which is writable.
+      # PaddleOCR's default cache must be writable by www-data.
       HOME: /tmp
       # Suppress paddle logging dir clutter — same /tmp redirect.
       FLAGS_logging_dir: /tmp
@@ -2695,11 +2648,8 @@ services:
       # the AI worker can import pdf_ocr.py without crashing (matches
       # the ingestion worker's HOME pin).
       HOME: /tmp
-      # Phase 2.0 + 2.1 (2026-05-22) — same docling + rapidocr envs as
-      # the ingestion worker. The AI pool worker doesn't currently
-      # parse PDFs end-to-end, but it can import the parser transitively
-      # (re_ocr_page workflow lives here in Phase 6) so wire the envs
-      # in lockstep with the ingestion worker.
+      # Keep parser configuration available to AI-pool workflows that
+      # inspect ingestion behavior.
       PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
       DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
       RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}

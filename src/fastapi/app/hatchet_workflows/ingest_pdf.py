@@ -201,11 +201,7 @@ def _reset_parse_pool() -> None:
         _PARSE_POOL = None
 
 
-# Shared cache directory for PDF bodies. Parse writes the PDF here keyed
-# by SHA so downstream Hatchet tasks (§04p) can re-use it without
-# re-downloading from S3. /tmp is tmpfs in most container setups so this
-# is essentially free; entries get cleaned up by container restart or the
-# explicit cleanup hook below.
+# Temporary directory for PDF bodies consumed by parser subprocesses.
 _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
 # Phase 2 (2026-06-24): when set, persist captions each docling figure with the
@@ -217,21 +213,11 @@ _FIGURE_VL_CAPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().l
 )
 
 
-def _cached_pdf_path(sha256: str) -> str:
-    """Return the path where a PDF body lives in the local body cache."""
-    import os as _os
-    _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
-    return f"{_PDF_BODY_CACHE_DIR}/{sha256}.pdf"
-
-
 def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     """Module-level wrapper for the parse so ProcessPoolExecutor can pickle it.
 
     Returns a plain dict (not a Pydantic model) — easier to pickle across
     process boundaries; caller reconstitutes ParseOut.
-
-    Side effect: writes body_bytes to _PDF_BODY_CACHE_DIR/{sha256}.pdf
-    so the §04p task can re-use the same file without re-downloading.
 
     Phase 1 (2026-05-22): the parser returns a `figure_manifest` listing
     each docling-extracted figure already uploaded to
@@ -250,8 +236,7 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
 
     _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
     cached_path = f"{_PDF_BODY_CACHE_DIR}/{sha256}.pdf"
-    # Write the PDF to the persistent (tmpfs) cache so §04p can re-use
-    # it. Using a temp file inside the cache dir + rename for atomicity.
+    # Use a temp file inside the cache dir + rename for atomicity.
     tmp_path = cached_path + ".tmp"
     with open(tmp_path, "wb") as f:
         f.write(body_bytes)
@@ -302,6 +287,8 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
             "is_scanned": bool(getattr(result, "is_scanned", False)),
         }
     finally:
+        with contextlib.suppress(Exception):
+            _os.unlink(cached_path)
         # Best-effort cleanup of any per-sha figure tempdir the parser
         # may have created. PNGs were already uploaded to S3 (figures/
         # _pending/{sha}/...) so the on-disk copy is no longer needed.
@@ -422,14 +409,6 @@ class IngestPdfFinalOut(BaseModel):
     # aware chunking (page_first/last + bbox + chunk_kind='table' /
     # 'caption_figure') is Phase 2 ingestion-pipeline work.
     passages_written: int = 0
-
-    # Doc-phase 57 / master-plan §3 Step 7c — §04p dual-write telemetry.
-    # Populated when the §04p chain runs successfully alongside the v1.49
-    # writes; None or {"ok": False} if §04p failed (existing v1.49 contract
-    # unaffected either way). Keys: ok, counts, document_profile,
-    # recommended_action, error.
-    p04p_telemetry: dict | None = None
-
 
 # =============================================================================
 # Helpers
@@ -1116,18 +1095,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # stays as the model default (None) for backward-compat with any
             # downstream consumer reading the field.
 
-            # §04p dual-write moved to its own task (see `p04p_dual_write`
-            # below). The previous inline block ran paddleocr + layout
-            # models inside persist, starving Hatchet's asyncio loop and
-            # causing heartbeat timeouts → cascading retry storms. The
-            # new task runs after persist and isolates that cost.
-            p04p_telemetry: dict | None = None
-
-            # Wire the §04p telemetry into the final return.
-            # Doc-phase 66 fix: this was previously a separate
-            # assignment AFTER the IngestPdfFinalOut construction;
-            # but the §04p block runs BEFORE final is built, so the
-            # assignment hit UnboundLocalError. Now passed as kwarg.
             persist_ms = int((time.monotonic() - t_start) * 1000)
             final = IngestPdfFinalOut(
                 sha256=pre.get("sha256", ""),
@@ -1149,7 +1116,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 persist_duration_ms=persist_ms,
                 report_id=report_id,
                 passages_written=passages_written,
-                p04p_telemetry=p04p_telemetry,
             )
 
             # --- audit.audit_ledger ---
@@ -1247,37 +1213,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 "ingest_pdf.persist: failed to dispatch embed workflow: %s — "
                 "chunks will be picked up by daily cron at 05:45 UTC",
                 embed_err,
-            )
-
-    # Phase 6 (2026-05-22) — OCR Quality Agent dispatch. Gated on
-    # OCR_QUALITY_AGENT_ENABLED env (default false). Fire-and-forget;
-    # the agent reads the just-committed passages and flags / re-OCRs
-    # low-confidence ones without blocking persist's return.
-    if input.project_id and os.environ.get(
-        "OCR_QUALITY_AGENT_ENABLED", "false",
-    ).lower() == "true":
-        try:
-            from app.hatchet_workflows.ocr_quality_check import (
-                OcrQualityCheckInput,
-                ocr_quality_check_wf,
-            )
-            qc_input = OcrQualityCheckInput(
-                workspace_id=input.workspace_id,
-                project_id=input.project_id,
-                report_id=report_id,
-                actor_id=input.actor_id,
-            )
-            await ocr_quality_check_wf.aio_run_no_wait(qc_input)
-            log.info(
-                "ingest_pdf.persist: ocr_quality_check dispatched for "
-                "report=%s",
-                report_id,
-            )
-        except Exception as qc_err:
-            log.warning(
-                "ingest_pdf.persist: failed to dispatch ocr_quality_check: "
-                "%s — passages stay ocr_status='accepted'",
-                qc_err,
             )
 
     return final
@@ -1441,108 +1376,6 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
         await pool.close()
 
 
-# ---- Step 5: §04p dual-write -------------------------------------------------
-# Runs the §04p stack (unstructured + paddleocr + layout regions) AFTER the
-# atomic v1.49 persist completes. Isolated as its own Hatchet task so its
-# heavy synchronous work cannot starve the persist task's heartbeat. Gated
-# by P04P_DUAL_WRITE_ENABLED so it can be flipped on without touching code.
-@ingest_pdf.task(execution_timeout="45m", schedule_timeout="2h", retries=1, parents=[persist])
-async def p04p_dual_write(input: IngestPdfInput, ctx: Context) -> dict:
-    """Populate the §04p silver tables from the bronze PDF.
-
-    Returns telemetry as a dict ({"ok": bool, "counts": {...}, ...}) so the
-    workflow's run record carries the §04p outcome alongside the v1.49
-    persist result. Errors are caught and downgraded to telemetry so a
-    failed §04p doesn't fail the whole ingest_pdf workflow.
-    """
-    if os.environ.get("P04P_DUAL_WRITE_ENABLED", "false").lower() != "true":
-        log.debug("ingest_pdf.p04p_dual_write: disabled via P04P_DUAL_WRITE_ENABLED")
-        return {"ok": False, "skipped": True, "reason": "disabled"}
-
-    persist_out = ctx.task_output(persist)
-    persist_dict = persist_out.model_dump() if hasattr(persist_out, "model_dump") else dict(persist_out)
-    report_id = persist_dict.get("report_id")
-    if not report_id:
-        return {"ok": False, "error": "persist returned no report_id"}
-
-    try:
-        # 2026-05-22: try the local cache first (populated by parse
-        # subprocess); fall back to S3 re-download if not present.
-        # Saves ~10-30s per PDF on the common path.
-        import os as _os
-
-        from app.ocr._ingest_helper import run_p04p_for_ingest
-        sha = persist_dict.get("sha256") or ""
-        cached_path = _cached_pdf_path(sha) if sha else ""
-        body: bytes | None = None
-        if cached_path and _os.path.exists(cached_path):
-            try:
-                with open(cached_path, "rb") as _f:
-                    body = _f.read()
-                log.info(
-                    "p04p_dual_write: served PDF body from cache (%s)", sha[:12],
-                )
-            except Exception as _cache_exc:
-                log.debug("p04p body cache read failed: %s", _cache_exc)
-                body = None
-        if body is None:
-            body = await _download_from_s3(input.minio_key)
-        telemetry = await run_p04p_for_ingest(
-            workspace_id=str(input.workspace_id),
-            report_id=report_id,
-            pdf_body=body,
-            bronze_s3_key=input.minio_key,
-        )
-        try:
-            from app.metrics import P04P_DUAL_WRITE_FAILURES, P04P_DUAL_WRITE_SUCCESS
-            if telemetry.get("ok"):
-                P04P_DUAL_WRITE_SUCCESS.inc()
-            else:
-                err = (telemetry.get("error") or "").lower()
-                if "preflight" in err or "magic" in err:
-                    kind = "preflight_invalid"
-                elif "persist" in err:
-                    kind = "persist_failed"
-                elif err:
-                    kind = "other"
-                else:
-                    kind = "exception"
-                P04P_DUAL_WRITE_FAILURES.labels(error_kind=kind).inc()
-        except Exception:
-            pass
-
-        if telemetry.get("ok"):
-            log.info(
-                "p04p_dual_write ok report=%s profile=%s counts=%s",
-                report_id, telemetry.get("document_profile"), telemetry.get("counts"),
-            )
-        else:
-            log.warning(
-                "p04p_dual_write skipped report=%s err=%s",
-                report_id, telemetry.get("error"),
-            )
-        return telemetry
-    except Exception as exc:
-        log.warning("p04p_dual_write threw report=%s err=%s", report_id, exc)
-        try:
-            from app.metrics import P04P_DUAL_WRITE_FAILURES
-            P04P_DUAL_WRITE_FAILURES.labels(error_kind="exception").inc()
-        except Exception:
-            pass
-        return {"ok": False, "error": f"exception: {exc}"}
-    finally:
-        # Clean up the cached PDF body now that both parse and §04p
-        # have run. Leaving it on /tmp wastes space on long-running
-        # workers. Best-effort delete — re-runs will recreate it.
-        try:
-            import os as _os
-            sha = persist_dict.get("sha256") or ""
-            if sha:
-                cached = _cached_pdf_path(sha)
-                if _os.path.exists(cached):
-                    _os.unlink(cached)
-        except Exception:
-            pass
 
 
 # =============================================================================

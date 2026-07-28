@@ -115,13 +115,12 @@ async def route_page(
     """Route a parsed page to accept / re-OCR / Silver Review / reject.
 
     Args:
-        parse_result: Output from one of the ``parse_*`` functions
-            (parse_native, parse_scanned, parse_mixed, parse_table_heavy).
-            The function reads per-page confidences from this dict.
+        parse_result: OCR parse output. The function reads per-page
+            confidences from this dict.
         page: 0-indexed page number being routed.
-        profile: Per-page profile from app.ocr.profile (native,
-            scanned, mixed, map_heavy, table_heavy).
-        preflight: Optional preflight result (from app.ocr.preflight).
+        profile: Per-page profile name (native, scanned, mixed,
+            map_heavy, table_heavy).
+        preflight: Optional preflight result mapping.
             If preflight.valid is False, the route is `reject`
             regardless of parse result.
         retry_count: How many re-OCR attempts have already been made

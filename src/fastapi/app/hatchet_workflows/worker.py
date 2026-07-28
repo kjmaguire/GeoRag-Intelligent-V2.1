@@ -49,7 +49,6 @@ from app.hatchet_workflows.ingest_pdf import ingest_pdf
 from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
-from app.hatchet_workflows.ocr_quality_check import ocr_quality_check_wf  # Phase 6 (2026-05-22)
 from app.hatchet_workflows.outbox_dispatcher import outbox_dispatcher
 from app.hatchet_workflows.phase0_agents import (
     AI_AGENT_WORKFLOWS,
@@ -96,7 +95,7 @@ from app.hatchet_workflows.workspace_export import workspace_export  # §11.3
 #   ai        : audit_ledger_verify + phase2_smoke + public_geoscience_pull
 #               + external_notification + 7 agent workflows = 11
 POOLS = {
-    "ingestion": [outbox_dispatcher, ingest_pdf, re_ocr_page, ocr_quality_check_wf, tiff_ocr_cluster, tiff_normalize, stale_run_detector, nightly_ingestion_integrity, reliability_metrics_publisher, ingest_zip_archive] + INGESTION_AGENT_WORKFLOWS,
+    "ingestion": [outbox_dispatcher, ingest_pdf, re_ocr_page, tiff_ocr_cluster, tiff_normalize, stale_run_detector, nightly_ingestion_integrity, reliability_metrics_publisher, ingest_zip_archive] + INGESTION_AGENT_WORKFLOWS,
     "ai": [
         audit_ledger_verify,
         # Plan §4b Stage 1 follow-up — nightly aggregator of repair-loop

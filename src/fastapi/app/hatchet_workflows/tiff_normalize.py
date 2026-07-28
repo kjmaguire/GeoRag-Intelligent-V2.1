@@ -4,10 +4,8 @@ Stream a multi-page TIFF from MinIO, wrap losslessly to PDF via
 ``tiff_to_pdf``, land the derived PDF under ``bronze/reports/...`` with
 provenance metadata, and trigger the existing ``ingest_pdf`` workflow.
 
-The §04p PDF stack (docling layout + tables, PaddleOCR opt-in, tesseract
-psm=3 with preprocessing, ocr_confidence capture, figure linking,
-p04p_dual_write into the 5 quality tables, ocr_quality_check retry
-agent, inline embed dispatch) runs unchanged on the derived PDF.
+The standard PDF parser, OCR provenance capture, figure linking, and
+inline embedding dispatch run unchanged on the derived PDF.
 
 Idempotency: derived key is deterministic
 (``reports/{project_id}/tiff-derived-{sha256:8}-{stem}.pdf``); if the

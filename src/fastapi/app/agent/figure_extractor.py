@@ -158,7 +158,7 @@ def extract_figures_from_layout(
 
     Coordinate convention: bbox is ``[left, bottom, right, top]`` in PDF POINTS,
     BOTTOMLEFT origin — what parse_mixed (docling) / parse_native (pdfminer)
-    emit via _bbox_from_prov. parse_scanned / parse_docparser_vl emit pixel-space
+    emit via _bbox_from_prov. parse_scanned emits pixel-space
     bboxes; convert those before calling (a parser-specific adapter is a
     follow-up). Same output dict shape as extract_figures_from_pdf.
     """

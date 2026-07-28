@@ -13,7 +13,6 @@ import pytest
 from app.services.eval.mechanical_questions import (
     ALL_MECHANICAL_QUESTIONS,
     NUMERIC_GROUNDING_QUESTIONS,
-    OCR_TRIAGE_QUESTIONS,
     REFUSAL_CORRECTNESS_QUESTIONS,
     REPORT_SECTION_QUESTIONS,
     SCHEMA_MAPPING_QUESTIONS,
@@ -62,13 +61,12 @@ def test_question_counts():
     """Each set has its expected count."""
     assert len(NUMERIC_GROUNDING_QUESTIONS) == 15
     assert len(SCHEMA_MAPPING_QUESTIONS) == 10
-    assert len(OCR_TRIAGE_QUESTIONS) == 10
     assert len(REPORT_SECTION_QUESTIONS) == 10
     assert len(REFUSAL_CORRECTNESS_QUESTIONS) == 8
-    # 53 mechanical + 22 Wyoming core_chat = 75 (follow-up that pulled the
+    # 43 mechanical + 22 Wyoming core_chat = 65 (follow-up that pulled the
     # previously-orphaned core_chat_wyoming_uranium set into the seeder so
     # autonomous re-seeds keep all 22 Wyoming golden questions in sync).
-    assert len(ALL_MECHANICAL_QUESTIONS) == 75
+    assert len(ALL_MECHANICAL_QUESTIONS) == 65
 
 
 def test_question_sets_match_module():
@@ -77,8 +75,6 @@ def test_question_sets_match_module():
         assert q["question_set"] == "numeric_grounding"
     for q in SCHEMA_MAPPING_QUESTIONS:
         assert q["question_set"] == "schema_mapping"
-    for q in OCR_TRIAGE_QUESTIONS:
-        assert q["question_set"] == "ocr_triage"
     for q in REPORT_SECTION_QUESTIONS:
         assert q["question_set"] == "report_section"
     for q in REFUSAL_CORRECTNESS_QUESTIONS:
@@ -149,15 +145,6 @@ def test_schema_mapping_expected_entities_well_formed():
         assert "raw_column" in e
         assert "canonical_table" in e and e["canonical_table"].startswith("silver.")
         assert "canonical_column" in e
-
-
-def test_ocr_triage_expected_routes_valid():
-    """ocr_triage expected_route is one of the 4 §9.7 routes."""
-    valid_routes = {"accept", "re_ocr", "silver_review", "reject"}
-    for q in OCR_TRIAGE_QUESTIONS:
-        ents = q.get("expected_entities", [])
-        assert len(ents) == 1
-        assert ents[0]["expected_route"] in valid_routes
 
 
 def test_report_section_required_ids_match_template_slugs():

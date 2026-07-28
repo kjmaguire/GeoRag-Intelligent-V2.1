@@ -60,7 +60,7 @@ def app_client() -> TestClient:
 async def _make_pool():
     import asyncpg
 
-    from app.ocr._persist import _dsn
+    from app.routers.ocr_render import _dsn
 
     return await asyncpg.create_pool(
         _dsn(), min_size=1, max_size=2, statement_cache_size=0

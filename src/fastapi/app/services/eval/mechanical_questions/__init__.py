@@ -7,7 +7,6 @@ fixed system behaviors):
     numeric_grounding (15)  — §04i layer 3 numeric-claim verification
     report_section    (10)  — §15.1/§15.2 report structure integrity
     schema_mapping    (10)  — §04 schema-mapping decision correctness
-    ocr_triage        (10)  — §04p / §9.7 quality_graph routing
 
 The other 50 SME-authored questions (core_chat, public_private_boundary,
 refusal_correctness, target_recommendation) follow the same template
@@ -31,9 +30,6 @@ from app.services.eval.mechanical_questions.core_chat_wyoming_uranium import (
 from app.services.eval.mechanical_questions.numeric_grounding import (
     QUESTIONS as NUMERIC_GROUNDING_QUESTIONS,
 )
-from app.services.eval.mechanical_questions.ocr_triage import (
-    QUESTIONS as OCR_TRIAGE_QUESTIONS,
-)
 from app.services.eval.mechanical_questions.refusal_correctness import (
     QUESTIONS as REFUSAL_CORRECTNESS_QUESTIONS,
 )
@@ -52,7 +48,6 @@ ALL_MECHANICAL_QUESTIONS: list[dict] = (
     NUMERIC_GROUNDING_QUESTIONS
     + REPORT_SECTION_QUESTIONS
     + SCHEMA_MAPPING_QUESTIONS
-    + OCR_TRIAGE_QUESTIONS
     + REFUSAL_CORRECTNESS_QUESTIONS
     + CORE_CHAT_WYOMING_QUESTIONS
 )
@@ -62,7 +57,6 @@ __all__ = [
     "ALL_MECHANICAL_QUESTIONS",
     "CORE_CHAT_WYOMING_QUESTIONS",
     "NUMERIC_GROUNDING_QUESTIONS",
-    "OCR_TRIAGE_QUESTIONS",
     "REFUSAL_CORRECTNESS_QUESTIONS",
     "REPORT_SECTION_QUESTIONS",
     "SCHEMA_MAPPING_QUESTIONS",

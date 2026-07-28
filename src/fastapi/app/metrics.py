@@ -259,36 +259,6 @@ OUT_OF_SCOPE_REFUSALS = Counter(
     "Queries the LLM classifier flagged all-False and we refused immediately.",
 )
 
-# ---------------------------------------------------------------------------
-# Master-plan §3 Step 7c §04p dual-write outcomes (doc-phase 65).
-#
-# The Hatchet ingest_pdf.persist step runs the §04p stack alongside the
-# v1.49 path as dual-write. Failures were silent during the doc-phase 59
-# minio CRLF outage — every ingest had p04p_telemetry.ok=False with only
-# a log.warning to surface it. These counters give Prometheus +
-# Alertmanager visibility.
-#
-# Labels kept low-cardinality:
-#   - error_kind: "exception" | "preflight_invalid" | "persist_failed" | "other"
-#     (NOT the actual error string — that's high-cardinality)
-#
-# Workspace_id is NOT a label per the metrics.py module convention; an
-# operator chasing a specific workspace's failures reads
-# silver.parser_run_artifacts.errors JSONB (which has the workspace_id)
-# or the structured log line in Loki.
-# ---------------------------------------------------------------------------
-
-P04P_DUAL_WRITE_SUCCESS = Counter(
-    "georag_p04p_dual_write_success_total",
-    "Successful §04p dual-write runs (orchestrator + persist completed end-to-end).",
-)
-
-P04P_DUAL_WRITE_FAILURES = Counter(
-    "georag_p04p_dual_write_failures_total",
-    "§04p dual-write runs that failed (p04p_telemetry.ok == False or exception).",
-    labelnames=("error_kind",),
-)
-
 # §04i hallucination guard counters (Eval 01 follow-up, 2026-05-20).
 #
 # Per-layer firing rate is the only way to diagnose which guard is the

@@ -388,8 +388,8 @@ def _extract_entity_names(expected_entities: list[Any]) -> list[str]:
 
     SME-style entries have a `name` (or `entity_name`) field with a
     string value to search for in the response text. Mechanical /
-    structural entries (e.g. `{"expected_route": "accept"}` for
-    ocr_triage, `{"required_section_ids": [...]}` for report_section)
+    structural entries (e.g. `{"required_section_ids": [...]}` for
+    report_section)
     return no extractable names — Layer 4 vacuously passes on those.
     """
     names: list[str] = []

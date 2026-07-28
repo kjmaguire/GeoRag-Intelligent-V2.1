@@ -99,8 +99,7 @@ def test_embed_verify_no_poll_loop_in_source():
     src = inspect.getsource(mod)
     # Locate the embed_verify function body
     start = src.index("async def embed_verify")
-    end = src.index("async def p04p_dual_write", start)
-    body = src[start:end]
+    body = src[start:]
     assert "asyncio.sleep(15)" not in body
     assert "for _ in range(6)" not in body
     assert "unembedded_history" not in body

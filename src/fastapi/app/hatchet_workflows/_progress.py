@@ -284,9 +284,8 @@ async def heartbeat_loop(
 
     Resolves the active run_id from (workspace_id, minio_key) once at
     entry, then bumps last_heartbeat_at every ``interval_seconds`` until
-    the with-block exits. Used in long-running ingest_pdf tasks (parse,
-    persist, p04p_dual_write) so the stale_run_detector cron knows the
-    worker is still alive.
+    the with-block exits. Used in long-running ingest_pdf tasks so the
+    stale_run_detector cron knows the worker is still alive.
 
     Usage::
 
