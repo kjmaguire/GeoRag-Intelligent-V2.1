@@ -748,11 +748,9 @@ async def compliance_check(state: ReportBuilderState) -> ReportBuilderState:
     # Phase H continued — graph-internal compliance_check runs MID-
     # workflow (BEFORE the geologist_approval node), so sign-off
     # failures land in `advisories` (workflow-pipeline aware) rather
-    # than `failed` (workflow-blocking). The standalone
-    # `export_compliance` agent (the actual §7.8 export gate)
-    # promotes them back to blocking at the export-ready surface.
-    # See app/agents/phase7/export_compliance.py for the per-export
-    # promotion logic.
+    # than `failed` (workflow-blocking). There is no registered
+    # standalone export-compliance agent, so callers must enforce
+    # sign-off before exposing an export-ready surface.
     if state.risk_tier in ("R4", "R5"):
         if not state.sign_off_complete:
             warnings.append(f"G08_sign_off_incomplete:{state.risk_tier}")

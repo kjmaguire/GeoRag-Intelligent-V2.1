@@ -1,4 +1,4 @@
-"""Phase 1 step 2 — Hatchet workflow wrappers for the 10 Phase 0 agents.
+"""Hatchet workflow wrappers for the retained Phase 0 agents.
 
 Each wrapper:
   - declares a workflow with name + (where applicable) cron schedule
@@ -34,8 +34,8 @@ Pool assignment for the worker pool split (Step 2):
         model_cost_summary_run, llm_incident_diagnosis_run,
         support_packet_assemble
 
-Total registered with the engine: 10 agent workflows + 2 system workflows
-(audit_ledger_verify + outbox_dispatcher) = 12, matching the kickoff.
+Only ``app.agents.phase0`` modules are exported here. Later domain-agent
+phases are not worker workflows and must not be added to these pool lists.
 """
 
 from __future__ import annotations
@@ -536,13 +536,13 @@ async def _run_support_packet(
 # =============================================================================
 # Pool routing — worker.py looks these up by WORKER_POOL env.
 # =============================================================================
-INGESTION_AGENT_WORKFLOWS = [
+INGESTION_AGENT_WORKFLOWS: tuple = (
     storage_tiering_run,
     index_health_check,
     store_reconciliation_run,
-]
+)
 
-AI_AGENT_WORKFLOWS = [
+AI_AGENT_WORKFLOWS: tuple = (
     tenant_isolation_audit,
     graph_tenant_audit,
     lineage_walk,
@@ -551,7 +551,7 @@ AI_AGENT_WORKFLOWS = [
     model_cost_summary_run,
     llm_incident_diagnosis_run,
     support_packet_assemble,
-]
+)
 
 ALL_AGENT_WORKFLOWS = INGESTION_AGENT_WORKFLOWS + AI_AGENT_WORKFLOWS
 

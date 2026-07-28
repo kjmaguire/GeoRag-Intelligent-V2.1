@@ -91,11 +91,21 @@ from app.hatchet_workflows.workspace_export import workspace_export  # §11.3
 # external_notification (inbound webhook). Phase 4 Step 6 retired the
 # Phase 1 shadow_diff + shadow_diff_scan workflows along with the
 # silver.shadow_runs table.
-#   ingestion : outbox_dispatcher + ingest_pdf + 3 agent workflows = 5
-#   ai        : audit_ledger_verify + phase2_smoke + public_geoscience_pull
-#               + external_notification + 7 agent workflows = 11
+# Phase 0 workflow tuples are unpacked directly so the registered boot set
+# is visible here. Later ``app.agents`` domain phases are not Hatchet pools.
 POOLS = {
-    "ingestion": [outbox_dispatcher, ingest_pdf, re_ocr_page, tiff_ocr_cluster, tiff_normalize, stale_run_detector, nightly_ingestion_integrity, reliability_metrics_publisher, ingest_zip_archive] + INGESTION_AGENT_WORKFLOWS,
+    "ingestion": [
+        outbox_dispatcher,
+        ingest_pdf,
+        re_ocr_page,
+        tiff_ocr_cluster,
+        tiff_normalize,
+        stale_run_detector,
+        nightly_ingestion_integrity,
+        reliability_metrics_publisher,
+        ingest_zip_archive,
+        *INGESTION_AGENT_WORKFLOWS,
+    ],
     "ai": [
         audit_ledger_verify,
         # Plan §4b Stage 1 follow-up — nightly aggregator of repair-loop
@@ -220,7 +230,8 @@ POOLS = {
         # Produces the JSONL.gz manifest that restore_workspace
         # dry_run=False consumes.
         workspace_export,
-    ] + AI_AGENT_WORKFLOWS,
+        *AI_AGENT_WORKFLOWS,
+    ],
 }
 POOLS["all"] = POOLS["ingestion"] + POOLS["ai"]
 
