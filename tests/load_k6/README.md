@@ -1,15 +1,14 @@
 # GeoRAG — k6 Load Test Harness (§11.9 + §11.9b)
 
-Five scripts that exercise the production-critical surfaces under
-realistic load. §11.9b adds the §28 SLO battery (map tiles + report
-builder) on top of the §11.9 starter set.
+Four scripts that exercise the production-critical surfaces under
+realistic load. §11.9b adds the §28 report-builder SLO battery on top
+of the §11.9 starter set.
 
 | Script | Surface | §28 SLO |
 | --- | --- | --- |
 | `rag_query.k6.js` | `/v1/rag/query` end-to-end RAG | 20 RPS, p95 < 5s (tighter than the §28 8s ceiling) |
 | `ingestion_upload.k6.js` | `POST /v1/documents` + lifecycle | 5 RPS, p95 < 8s |
 | `viz_strip_log.k6.js` | `/v1/viz/strip_log` (§5 renderer) | 30 RPS, p95 < 2s |
-| **`map_tile_fetch.k6.js`** | Martin tile sources (mines/drillholes/density) | **p95 < 200ms @ 100 vu** |
 | **`report_build.k6.js`** | §7 report planner + section editor PUT | **p95 plan < 30s; p95 draft < 2s** |
 
 ## Full battery

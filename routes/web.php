@@ -64,7 +64,6 @@ use App\Http\Controllers\Internal\MetricsController;
 use App\Http\Controllers\InterpretationWorkspaceController;
 use App\Http\Controllers\OAuthIngestController;
 use App\Http\Controllers\OnboardingController;
-use App\Http\Controllers\PublicGeoscience\TileProxyController as PublicGeoscienceTileProxy;
 use App\Http\Controllers\PublicGeoscienceController;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Request;
@@ -324,37 +323,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // client-side API round-trip. Currently it renders Inertia with no props.
     Route::get('/public-geoscience', [PublicGeoscienceController::class, 'index'])
         ->name('public-geoscience');
-
-    // MVT tile proxy to Martin, whitelisted to the four public_geo
-    // views. Keeping it on web.php (rather than api.php) lets the same route
-    // serve SPA session-authenticated map tiles without a Bearer token
-    // round-trip per request (Martin + MapLibre fire off hundreds of tile
-    // GETs on pan/zoom).
-    //
-    // Rate limit: 600 requests/minute per authenticated user. MapLibre at
-    // typical pan/zoom fires off 40-80 tile GETs per burst; 600/min gives
-    // ~10 sustained bursts/min headroom without permitting a malicious
-    // client to drown Martin. 429 bubbles back to MapLibre which degrades
-    // gracefully (it retries stale cache + skips missing tiles).
-    Route::middleware(['throttle:public-geoscience-tiles'])->group(function () {
-        Route::get(
-            '/tiles/public-geoscience/{source}/{z}/{x}/{y}.pbf',
-            [PublicGeoscienceTileProxy::class, 'tile'],
-        )
-            ->where(['z' => '[0-9]+', 'x' => '[0-9]+', 'y' => '[0-9]+'])
-            ->name('public-geoscience.tile');
-
-        // Silver workspace-scoped MVT tile proxy.
-        // Requires ?project_id={uuid} query param; enforces project access check.
-        // Cache-Control: public, max-age=86400 (daily Silver refresh cadence).
-        // ETag wiring: derived from silver.projects.data_version (§05d / PROXY-01 fix).
-        Route::get(
-            '/tiles/silver/{source}/{z}/{x}/{y}.pbf',
-            [PublicGeoscienceTileProxy::class, 'silverTile'],
-        )
-            ->where(['z' => '[0-9]+', 'x' => '[0-9]+', 'y' => '[0-9]+'])
-            ->name('silver.tile');
-    });
 
     // /projects/new moved to the top of this group (line ~126) so it
     // beats the /projects/{slug} wildcard. Keeping a comment here for

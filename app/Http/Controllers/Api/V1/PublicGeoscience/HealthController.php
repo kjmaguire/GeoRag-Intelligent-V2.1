@@ -22,11 +22,10 @@ use Throwable;
  *
  *   1. PostGIS — canonical table row counts for active jurisdictions.
  *   2. Staleness — max age across all active source last_refreshed_at.
- *   3. Martin — reachability of the tile server's /health endpoint.
- *   4. Qdrant — point counts per Public Geoscience collection.
+ *   3. Qdrant — point counts per Public Geoscience collection.
  *
  * Cached for 60 seconds to avoid hammering downstream services on
- * high-frequency polls. The check is lightweight (4 SQL counts + 2
+ * high-frequency polls. The check is lightweight (4 SQL counts + 1
  * HTTP GETs) so the cache is more about being a good neighbour than
  * about performance.
  *
@@ -140,31 +139,7 @@ class HealthController extends Controller
             $overall = 'critical';
         }
 
-        // ── 3. Martin tile server reachability ──────────────────────
-        try {
-            $martinUrl = rtrim((string) config('services.martin.internal_url'), '/');
-            $resp = app(PooledHttpClient::class)
-                ->forBaseUrl($martinUrl, 5)
-                ->get("{$martinUrl}/health");
-            $checks['martin'] = [
-                'status' => $resp->successful() ? 'green' : 'warn',
-                'message' => $resp->successful()
-                    ? 'Martin tile server reachable'
-                    : "Martin returned HTTP {$resp->status()}",
-                'url' => "{$martinUrl}/health",
-            ];
-            if (! $resp->successful() && $overall !== 'critical') {
-                $overall = 'warn';
-            }
-        } catch (Throwable $e) {
-            $checks['martin'] = [
-                'status' => 'critical',
-                'message' => "Martin unreachable: {$e->getMessage()}",
-            ];
-            $overall = 'critical';
-        }
-
-        // ── 4. Qdrant collections ───────────────────────────────────
+        // ── 3. Qdrant collections ───────────────────────────────────
         try {
             $qdrantHost = (string) config('services.qdrant.host');
             $qdrantPort = (int) config('services.qdrant.port');
@@ -194,14 +169,13 @@ class HealthController extends Controller
             $overall = 'critical';
         }
 
-        // ── 5. Redis (cache + queue + sessions backbone) ────────────
+        // ── 4. Redis (cache + queue + sessions backbone) ────────────
         // PING the default Redis connection. In dev this is the single
         // instance; in staging/prod (3-instance topology) it's the cache
         // instance. A failure here means: app cache misses (degraded),
         // queue dispatch failing (jobs queue locally and stall), session
         // store unavailable (forced re-login storm). Redis being unreachable
-        // is a critical condition for the app even though tile reads still
-        // work via Martin → PG.
+        // is a critical condition for the app.
         try {
             $start = microtime(true);
             $pong = Redis::connection()->ping();

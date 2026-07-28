@@ -15,8 +15,8 @@ use Tests\TestCase;
  *
  * Rationale:
  *   GET /api/v1/public-geoscience/health returns an aggregated health
- *   payload covering PostGIS row counts, staleness, Martin reachability,
- *   and Qdrant collection counts. All data is derived from workspace-global
+ *   payload covering PostGIS row counts, staleness, and Qdrant collection
+ *   counts. All data is derived from workspace-global
  *   public government open-data tables (public_geoscience.*) and
  *   infrastructure status — not from any per-user or per-project resource.
  *

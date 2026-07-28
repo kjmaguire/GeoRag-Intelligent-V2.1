@@ -99,7 +99,6 @@ run_one() {
 if [ -n "$TOKEN" ]; then
     run_one "RAG query"           "rag_query.k6.js"        "p95 chat < 8s @ 100u"   ""
 fi
-run_one "Map tile fetch"          "map_tile_fetch.k6.js"   "p95 tile < 200ms @ 100u" ""
 if [ -n "$SVC" ]; then
     run_one "Report plan + draft" "report_build.k6.js"     "p95 report < 30s; draft < 2s" ""
 fi

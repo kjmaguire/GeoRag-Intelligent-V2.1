@@ -78,17 +78,10 @@ class PublicApiController extends Controller
             return response()->json(['error' => 'not_found'], 404);
         }
 
-        // Layers available for this project: workspace silver + public-geo + targeting
+        // Vector-tile serving is not part of the demo-core deployment.
         return response()->json([
             'project_id' => $projectId,
-            'layers' => [
-                ['kind' => 'silver_collars',         'tile_url' => "/tiles/silver/collars/{z}/{x}/{y}.pbf?project_id={$projectId}"],
-                ['kind' => 'silver_drill_traces',    'tile_url' => "/tiles/silver/drill_traces/{z}/{x}/{y}.pbf?project_id={$projectId}"],
-                ['kind' => 'pg_mineral_occurrence',  'tile_url' => '/tiles/public-geoscience/pg_mineral_occurrence/{z}/{x}/{y}.pbf'],
-                ['kind' => 'pg_drillhole_collar',    'tile_url' => '/tiles/public-geoscience/pg_drillhole_collar/{z}/{x}/{y}.pbf'],
-                ['kind' => 'pg_mine',                'tile_url' => '/tiles/public-geoscience/pg_mine/{z}/{x}/{y}.pbf'],
-                ['kind' => 'pg_bedrock_geology',     'tile_url' => '/tiles/public-geoscience/pg_bedrock_geology/{z}/{x}/{y}.pbf'],
-            ],
+            'layers' => [],
         ]);
     }
 

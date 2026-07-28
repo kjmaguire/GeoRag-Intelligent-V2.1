@@ -94,21 +94,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Martin Vector Tile Server
-    |--------------------------------------------------------------------------
-    |
-    | Martin serves MVT tiles from PostGIS views. Laravel proxies /tiles/...
-    | requests so tile fetches go through Sanctum auth. `internal_url` is
-    | the in-cluster address; clients never hit Martin directly.
-    |
-    */
-    'martin' => [
-        'internal_url' => env('MARTIN_INTERNAL_URL', 'http://martin:3000'),
-        'request_timeout' => (int) env('MARTIN_REQUEST_TIMEOUT', 15),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | Tempo (distributed tracing backend)
     |--------------------------------------------------------------------------
     |

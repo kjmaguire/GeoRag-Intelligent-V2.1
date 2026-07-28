@@ -32,9 +32,6 @@
 #   dev-ingest   Dagster daemon + webserver
 #                Start only during ingestion pipeline development.
 #
-#   dev-monitor  Prometheus + Grafana
-#                Skipped by default — start when you need metrics dashboards.
-#
 #   dev-full     Everything. Use only for end-to-end integration testing.
 #
 # Usage examples:
@@ -56,8 +53,7 @@
 # HEALTHCHECK FIDELITY (B1 — 2026-04-19)
 #   All healthchecks now reflect service readiness, not just port-open liveness.
 #   TCP-only probes replaced with HTTP endpoint or native CLI checks per B1 spec.
-#   Martin (wget /health) and Qdrant (bash /dev/tcp HTTP GET to /readyz) were the
-#   primary changes. See ops/audit/2026-04-19-infra-phase-b-critical-fixes.md.
+#   Qdrant uses a bash /dev/tcp HTTP GET to /readyz.
 #
 # IMAGE PINNING (B8 — 2026-04-19)
 #   All third-party images now carry @sha256:<digest> pins. georag/* local builds
@@ -100,36 +96,7 @@ volumes:
     driver: local
   fastapi_hf_cache:
     driver: local
-  grafana_data:
-    driver: local
-  # Module 10 Chunk 10.4 — Alertmanager state directory (silences, retries).
-  alertmanager_data:
-    driver: local
-  # Module 10 Chunk 10.6 — Loki ingester chunk storage + index.
-  loki_data:
-    driver: local
-  # Module 10 Chunk 10.6 — Promtail tail-position cursor (resume after restart).
-  promtail_positions:
-    driver: local
-  # 2026-06-23 sweep — Alloy data dir (component state + file positions).
-  # Promtail-to-Alloy migration runs both in parallel during the shadow
-  # window per ops/runbooks/promtail-to-alloy-migration.md; this volume
-  # is the Alloy equivalent of promtail_positions plus component cache.
-  alloy_data:
-    driver: local
   dagster_home:
-    driver: local
-  # Backup staging volume — writable scratch space for backup artifacts in transit.
-  # Scripts write here, upload to SeaweedFS, then delete the local copy.
-  # Mounted on: postgresql, neo4j, qdrant (via backup script containers).
-  # Also mounted on: ofelia (for any pre-upload staging it needs to inspect).
-  backup_staging:
-    driver: local
-  # WAL archive volume — PostgreSQL writes WAL segments here via archive_command.
-  # backup-agent reads this volume (read-only) and uploads to SeaweedFS every 5m.
-  # Max data-loss window: ~10 min (5m archive_timeout + 5m upload interval).
-  # Module 1 Phase C prep — WAL archiving (BK-03), 2026-04-19.
-  pg_wal_archive:
     driver: local
   # Hatchet engine config (TLS certs, server config) persisted across restarts.
   hatchet_config:
@@ -159,9 +126,6 @@ volumes:
   # before re-enabling DOCLING_OCR_ENABLED.
   rapidocr_models:
     driver: local
-  # Tempo trace blocks + WAL (Phase 0 step 3).
-  tempo_data:
-    driver: local
   # Caddy /data — holds the internal CA + issued certs (Phase 7 Step 3).
   # Persisting this keeps the dev cert stable across container restarts,
   # so clients that trust it once don't have to re-import every reboot.
@@ -188,7 +152,6 @@ services:
   # Tuning targets: 64GB workstation, NVMe storage (random_page_cost=1.1).
   # ---------------------------------------------------------------------------
   postgresql:
-    # SIDECAR-MIGRATION 2026-04-19: Backups owned by georag-backup-agent (Module 1 Phase B, 2026-04-19)
     # DB review (High — PostGIS upgrade). 17-3.6-alpine bundles
     # GEOS 3.13.1 (OverlayNG → 2-5x faster ST_Intersects/ST_Union/ST_Difference
     # on complex geometries) and PROJ 9.5 (much faster grid-based CRS
@@ -202,24 +165,13 @@ services:
     # error from the planner after the bump.
     # Built locally (Phase 0 step 1) — adds h3, hypopg, pg_stat_kcache,
     # pg_partman, pg_repack, pg_ivm on top of the postgis/postgis:18-3.6-alpine
-    # base. Kept tagged so observability + ofelia exec patterns keep working.
+    # base.
     image: georag/postgres:18-ext
     build:
       context: .
       dockerfile: docker/postgresql/Dockerfile
     container_name: georag-postgresql
     restart: unless-stopped
-    # Audit 2026-06-27 (T5): schedule pg_partman maintenance. The 3 partitioned
-    # tables (audit.audit_ledger, workflow.workflow_runs, usage.usage_events) are
-    # automatic_maintenance=on, but nothing ever CALLED run_maintenance_proc(),
-    # so premake partitions stopped being created (~Aug 2026) and inserts would
-    # silently fall to the _default partition. Ofelia execs it daily at 04:15 UTC
-    # (after the 02:30-03:00 backup window). NOTE: labels take effect on the next
-    # container (re)create of postgresql.
-    labels:
-      ofelia.enabled: "true"
-      ofelia.job-exec.partman-maintenance.schedule: "0 15 4 * * *"
-      ofelia.job-exec.partman-maintenance.command: 'psql -U georag -d georag -c "CALL partman.run_maintenance_proc()"'
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-georag}
       POSTGRES_USER: ${POSTGRES_USER:-georag}
@@ -283,21 +235,6 @@ services:
         -c max_wal_size=4GB
         -c track_activity_query_size=4096
         -c hba_file=/etc/postgresql/pg_hba.conf
-        -c archive_mode=on
-        -c archive_timeout=300
-        -c "archive_command=test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f"
-    # WAL archive directory permission fix — named volumes are created root-owned.
-    # The entrypoint wrapper chowns /var/lib/postgresql/wal_archive to the postgres
-    # user before handing off to the PG entrypoint, so archive_command can write.
-    # Module 1 Phase C prep — BK-03, 2026-04-19.
-    entrypoint:
-      - sh
-      - -c
-      - |
-        chown postgres:postgres /var/lib/postgresql/wal_archive
-        chmod 700 /var/lib/postgresql/wal_archive
-        exec /usr/local/bin/docker-entrypoint.sh "$$@"
-      - --
     # huge_pages stays at the default `try` (set lower in the file via the
     # PostgreSQL container default). On Linux prod hosts, reserve hugepages
     # so Postgres can actually use them — `try` silently falls back to mmap
@@ -323,16 +260,10 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgresql/init:/docker-entrypoint-initdb.d:ro
-      # Backup script (executed by Ofelia job-exec) + staging volume
-      - ./docker/postgresql/backup.sh:/backup-scripts/postgresql/backup.sh:ro
-      - backup_staging:/backup/staging
       # pg_hba.conf bind mount — Module 1 Phase C prep, 2026-04-19.
       # Overrides whatever pg_hba.conf is in PGDATA; survives volume wipes.
       # Activated via: -c hba_file=/etc/postgresql/pg_hba.conf (in command above).
       - ./docker/postgresql/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
-      # WAL archive volume — PostgreSQL writes WAL segments here via archive_command.
-      # backup-agent reads this volume (read-only) to upload to SeaweedFS every 5m.
-      - pg_wal_archive:/var/lib/postgresql/wal_archive
     # Internal only — applications connect through PgBouncer
     expose:
       - "5432"
@@ -806,73 +737,6 @@ services:
     profiles: ["dev-light", "dev-full"]
 
   # ---------------------------------------------------------------------------
-  # MARTIN — PostGIS-to-MVT tile server
-  # Serves geological vector layers (collars, drill traces, boundaries,
-  # formations, historic workings) as Mapbox Vector Tiles directly from
-  # PostGIS SQL function sources. See §04d-tile in georag-architecture.html.
-  # Connects directly to PostgreSQL (NOT PgBouncer) — Martin uses persistent
-  # connections incompatible with transaction-mode pooling.
-  # Config: docker/martin/martin.yaml
-  # ---------------------------------------------------------------------------
-  martin:
-    # Pinned to Martin 1.x stable. Config (martin.yaml) already on the 1.x
-    # schema (`functions:` / `tables:` instead of *_sources). Latest as of
-    # 2026-04: 1.5.0. Note: 1.x dropped the `v` prefix from image tags.
-    # B8 — digest pinned 2026-04-19
-    # V1.5-06 — bumped 1.5.0 → 1.7.0 for native /metrics endpoint
-    # (martin_tile_cache_requests_total, martin_cache_requests_total + standard
-    # process_*, http_requests_total). Unlocks the 4 alert rules in
-    # docker/prometheus/rules/martin-alerts.yml previously DORMANT per
-    # feedback_martin_tile_gotchas.md gotcha 3.
-    # 2026-06-23 sweep: 1.7.0 -> 1.11.0. Brings PMTiles improvements +
-    # query plan caching + composite source enhancements. The 1.x line
-    # has been API-stable through this range; martin.yaml schema is
-    # unchanged. PostGIS 3.6 fully supported.
-    image: ghcr.io/maplibre/martin:1.11.0@sha256:0650e9025f5fcffdc686358114679421b5e6b0ca37b374ad8a66f14709d59d2b
-    container_name: georag-martin
-    restart: unless-stopped
-    command: --config /config/martin.yaml
-    ports:
-      - "${MARTIN_PORT:-3002}:3000"
-    environment:
-      DATABASE_URL: "postgresql://${GEORAG_APP_USER:-georag_app}:${GEORAG_APP_PASSWORD}@postgresql:5432/${POSTGRES_DB:-georag}"
-    volumes:
-      - ./docker/martin/martin.yaml:/config/martin.yaml:ro
-    networks:
-      - georag
-    depends_on:
-      postgresql:
-        condition: service_healthy
-    # B1 — HC-03 fix: Martin has wget at /usr/bin/wget (verified 2026-04-19).
-    # wget --spider issues a HEAD request; exits 0 on HTTP 200, non-zero otherwise.
-    # /health is Martin's built-in readiness endpoint (responds when tile sources are loaded).
-    # start_period raised to 60s as Martin reads and validates all PostGIS sources on boot.
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-    # SG-01 fix: explicit grace period for discoverability (Martin processes tile requests)
-    stop_grace_period: 10s
-    # ── Network performance tuning ────────────────────────────────────────
-    # Commented out — net.ipv4.tcp_nodelay is not an overridable sysctl in
-    # WSL2's Docker runtime (fails with "unsafe procfs detected" on create).
-    # It's already the kernel default, and net.core.somaxconn=128 is fine
-    # for dev. Tune at the host level in production if needed.
-    # sysctls:
-    #   net.core.somaxconn: 1024
-    #   net.ipv4.tcp_nodelay: 1
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-        reservations:
-          memory: 64M
-    profiles: ["dev-light", "dev-full"]
-
-  # ---------------------------------------------------------------------------
   # FASTAPI — Python domain service
   # Owns: RAG pipeline, Pydantic AI agent, embeddings, all async DB operations,
   # hallucination prevention layers, SSE streaming to Laravel.
@@ -1041,9 +905,8 @@ services:
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
       VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
-      # §04p VL parser (ADR-0015). Default v2 (Qwen2.5-VL) + main vllm URL is
-      # conservative; .env sets version=3 + PDF_VL_BACKEND_URL=http://vllm-vl...
-      # to route figure requests to the Qwen3-VL-8B sidecar.
+      # §04p VL parser (ADR-0015). Default v2 (Qwen2.5-VL) uses the main
+      # vLLM endpoint.
       PDF_VL_MODEL_VERSION: ${PDF_VL_MODEL_VERSION:-2}
       PDF_VL_MODEL_ID_V3: ${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}
       PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-http://vllm:8000/v1}
@@ -1510,9 +1373,6 @@ services:
       - neo4j_logs:/logs
       - neo4j_plugins:/plugins
       - ./docker/neo4j/conf:/conf:ro
-      # Backup script (executed by Ofelia job-exec) + staging volume
-      - ./docker/neo4j/backup.sh:/backup-scripts/neo4j/backup.sh:ro
-      - backup_staging:/backup/staging
     networks:
       - georag
     healthcheck:
@@ -1639,9 +1499,6 @@ services:
       QDRANT__LOG_LEVEL: INFO
     volumes:
       - qdrant_data:/qdrant/storage
-      # Backup script (executed by Ofelia job-exec) + staging volume
-      - ./docker/qdrant/backup.sh:/backup-scripts/qdrant/backup.sh:ro
-      - backup_staging:/backup/staging
     networks:
       - georag
     healthcheck:
@@ -1967,87 +1824,6 @@ services:
     profiles: ["gpu-llm", "gpu-llm-prod"]
 
   # ---------------------------------------------------------------------------
-  # vllm-vl (2026-06-24) — second vLLM for the §04p VL parser (ADR-0015 v3).
-  # ---------------------------------------------------------------------------
-  # Serves Qwen3-VL for figure/diagram understanding. No official AWQ of
-  # Qwen3-VL-8B exists; the 8B community quants (~6-7 GB) also do NOT fit the
-  # 20 GB A4500 alongside the main 14B text LLM (vLLM OOM'd — verified), so this
-  # defaults to the community Qwen3-VL-*4B* 8-bit quant (~6.2 GB weights, the
-  # largest that fits). Vet the community quant before any production use.
-  # Shares the A4500 with the main vLLM: VLLM_GPU_MEM_UTIL is lowered to 0.72
-  # (see .env) to free room — trades the main LLM's KV headroom for VL (demo).
-  # --enforce-eager (skip cudagraph) + max-model-len 4096 keep the VL footprint
-  # inside the tight GPU share. fastapi/pdf_vl.py reaches it via
-  # PDF_VL_BACKEND_URL=http://vllm-vl:8000/v1 + PDF_VL_MODEL_VERSION=3. The
-  # compressed-tensors quant is auto-detected by vLLM (no --quantization flag).
-  vllm-vl:
-    image: vllm/vllm-openai:v0.23.0@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
-    container_name: georag-vllm-vl
-    restart: unless-stopped
-    ports:
-      - "${VLLM_VL_PORT:-8002}:8000"
-    ipc: host
-    environment:
-      HF_TOKEN: ${HF_TOKEN:-}
-      HF_HOME: /root/.cache/huggingface
-      TOKENIZERS_PARALLELISM: "false"
-      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
-    command:
-      - '--model'
-      - '${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}'
-      - '--served-model-name'
-      - '${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}'
-      - '--port'
-      - '8000'
-      - '--host'
-      - '0.0.0.0'
-      - '--max-model-len'
-      - '${VLLM_VL_MAX_MODEL_LEN:-4096}'
-      - '--gpu-memory-utilization'
-      - '${VLLM_VL_GPU_MEM_UTIL:-0.46}'
-      - '--kv-cache-dtype'
-      - '${VLLM_VL_KV_CACHE_DTYPE:-fp8}'
-      - '--max-num-seqs'
-      - '${VLLM_VL_MAX_NUM_SEQS:-4}'
-      - '--enable-prefix-caching'
-      # Low-volume VL sidecar: skip CUDA-graph capture. With the cudagraph
-      # profiler disabled (env above, inherited from the main vLLM tuning) the
-      # graphs aren't memory-accounted and OOM during capture at this tight GPU
-      # share. Eager mode frees that ~1-2 GB; latency impact is negligible at
-      # ingest-rate (figure-extraction) concurrency.
-      - '--enforce-eager'
-    shm_size: "4gb"
-    volumes:
-      - vllm_hf_cache:/root/.cache/huggingface
-    networks:
-      - georag
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${VLLM_GPU_COUNT:-1}
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health -o /dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      # First start downloads the ~6 GB quant from HF + loads it.
-      start_period: 900s
-    stop_grace_period: 30s
-    # 2026-06-29: moved OFF the default gpu-llm profile to its own opt-in
-    # "vl-ingest" profile. The A4500 (20 GB) cannot comfortably host
-    # vllm(14B) + vllm-vl(4B) + the GPU reranker simultaneously; the reranker
-    # (+13.9% NDCG, serves every chat query) takes priority over figure VL
-    # captioning (FIGURE_VL_DESCRIPTIONS is off by default). To run figure
-    # ingest, start with `--profile gpu-llm --profile vl-ingest` AND set
-    # FIGURE_VL_DESCRIPTIONS=true — then either accept the tight VRAM or trim
-    # vllm --gpu-memory-utilization (0.72→~0.62). See
-    # docs/runbooks/reranker-qwen3-flip.md.
-    profiles: ["vl-ingest"]
-
-  # ---------------------------------------------------------------------------
   # vllm-warmup — one-shot sidecar.
   # ---------------------------------------------------------------------------
   # The first request after a vLLM container start pays a 3-5× FlashInfer
@@ -2150,13 +1926,6 @@ services:
       # LARAVEL_INTERNAL_URL is the in-network base URL.
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
       LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
-      # Phase 7 Step 1 (R-P6-1) — OTel export for the silver_reports
-      # asset's parse_pdf_report call. definitions.py:install_tracer_provider()
-      # picks up the endpoint at module load; spans land under
-      # service.name=georag-dagster-daemon in Tempo.
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
-      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      OTEL_SERVICE_NAME: georag-dagster-daemon
       # vLLM endpoint for the reranker_labels asset group. Defaults to the
       # in-cluster vllm service; can be redirected for staging runs.
       VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
@@ -2229,13 +1998,6 @@ services:
       # land in commit_ingestion_run and need the same broadcast plumbing.
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
       LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
-      # Phase 7 Step 1 (R-P6-1) — OTel export. Webserver itself doesn't
-      # call parse_pdf_report, but importing definitions.py installs
-      # the TracerProvider so the launchpad's `dagster job execute`
-      # also emits spans.
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
-      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      OTEL_SERVICE_NAME: georag-dagster-webserver
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - dagster_home:/opt/dagster/dagster_home
@@ -2450,10 +2212,6 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-      # Phase 6 Step 1 (R-P5-1) — OTel export for parse spans.
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
-      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      OTEL_SERVICE_NAME: georag-hatchet-worker
       # Writable caches for parser and embedding workflows. The worker runs
       # both ingestion and AI workflows in the merged `all` pool.
       # Without these the embed workflow silently never executes.
@@ -2704,557 +2462,3 @@ services:
     # dev-data (kestra) profiles, so it joins both — and dev-full which
     # is the union profile.
     profiles: ["dev-light", "dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # OPENTELEMETRY COLLECTOR — Phase 0 step 3 (master plan §35.1).
-  # Single ingest hop for spans + metrics + logs from Laravel, FastAPI,
-  # Hatchet, vLLM. Forwards traces to Tempo and exposes metrics for
-  # Prometheus to scrape on internal :8895/metrics.
-  # ---------------------------------------------------------------------------
-  otel-collector:
-    # 2026-06-23 sweep: 0.151.0 -> 0.154.0 + SHA pin. Weekly cadence
-    # release line; bug fixes + new receivers/exporters in each minor.
-    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
-    container_name: georag-otel-collector
-    restart: unless-stopped
-    command: ["--config=/etc/otelcol-contrib/config.yaml"]
-    environment:
-      DEPLOYMENT_ENVIRONMENT: "${DEPLOYMENT_ENVIRONMENT:-dev}"
-    ports:
-      - "${OTEL_GRPC_PORT:-4317}:4317"   # OTLP gRPC
-      - "${OTEL_HTTP_PORT:-4318}:4318"   # OTLP HTTP
-      - "${OTEL_HEALTH_PORT:-13133}:13133"  # health_check
-    volumes:
-      - ./docker/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
-    # Phase F.5 (#3): the otel/opentelemetry-collector-contrib image is
-    # distroless — no /bin/sh, no wget, no curl. The previous CMD-SHELL
-    # healthcheck always failed even when the service was healthy, marking
-    # the container "unhealthy" indefinitely. Two correct alternatives are
-    # (a) bind-mount a static busybox binary and call it directly, or
-    # (b) rely on Prometheus scraping otel-collector's own /metrics (port
-    # 8888 by default) plus an alert rule on absence-of-metrics.
-    # We use (b) — drop the healthcheck and let the scrape + alerts catch
-    # an actual outage. See docs/SERVICE_INVENTORY.md for the rationale.
-    depends_on:
-      tempo:
-        condition: service_started
-    networks:
-      - georag
-    profiles: ["dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # TEMPO — distributed tracing storage (Phase 0 step 3).
-  # Single-process deployment with local-disk block storage. Workflow Run
-  # Dashboard (Phase 0 step 3 deferred — separate session) links via
-  # workflow_runs.trace_id to http://${TEMPO_HOST_PORT}:3200/api/traces/<id>.
-  # ---------------------------------------------------------------------------
-  tempo:
-    # 2026-06-23 sweep: 2.6.1 -> 2.10.7 + SHA pin. TraceQL improvements +
-    # metrics-generator perf gains across the 2.7/2.8/2.9/2.10 line.
-    # Block format is backward-compatible — existing /var/tempo/blocks
-    # data reads fine.
-    image: grafana/tempo:2.10.7@sha256:032b3acb51ed02c4b801473d54bb63e9e9f13738d215126d9843c30283794f4b
-    container_name: georag-tempo
-    restart: unless-stopped
-    command: ["-config.file=/etc/tempo.yaml"]
-    user: "0"   # tempo image runs as nobody by default; mounts need root for /var/tempo writes
-    ports:
-      - "${TEMPO_HTTP_PORT:-3200}:3200"  # HTTP API + UI
-    volumes:
-      - ./docker/tempo/tempo-config.yaml:/etc/tempo.yaml:ro
-      - tempo_data:/var/tempo
-    healthcheck:
-      # 2026-06-23 sweep: Tempo 2.7+ ships a distroless image — no shell,
-      # no wget. Replaced the HTTP probe on /ready with the binary's own
-      # -version check (binary integrity + execution, not service-ready).
-      # Prometheus scrapes catch true outage. Same pattern as the
-      # promtail healthcheck.
-      test: ["CMD", "/tempo", "-version"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 30s
-    networks:
-      - georag
-    profiles: ["dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # ---------------------------------------------------------------------------
-  # PROMETHEUS — metrics collection
-  # Scrapes: FastAPI /metrics, Laravel Pulse export, PostgreSQL exporter,
-  #          Redis exporter, Neo4j exporter, Qdrant native /metrics, vLLM.
-  # ---------------------------------------------------------------------------
-  prometheus:
-    # Task 1: pinned to current stable minor release.
-    # B8 — digest pinned 2026-04-19
-    image: prom/prometheus:v3.11.3@sha256:e4254400b85610324913f0dc4acf92603d9984e7519414c5a12811aa6146acc3
-    container_name: georag-prometheus
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-lifecycle'
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    volumes:
-      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
-    networks:
-      - georag
-    healthcheck:
-      # Phase F.5 (#3 fix): the prom/prometheus image is built on busybox
-      # and does not include curl, so the prior `curl -f` healthcheck
-      # always failed even when /-/healthy returned 200. Switching to
-      # `wget -q -O -` (busybox-available) lets the healthcheck actually
-      # report the service's real state.
-      test: ["CMD-SHELL", "wget -q -O - http://localhost:9090/-/healthy >/dev/null 2>&1 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    # SG-01 fix: explicit grace period for discoverability
-    stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # ALERTMANAGER — alert routing for Prometheus
-  # Module 10 Chunk 10.4 — receives alerts from Prometheus rules and routes
-  # them to a webhook receiver (operator wires Slack/PagerDuty/email per env).
-  # ---------------------------------------------------------------------------
-  alertmanager:
-    image: prom/alertmanager:v0.32.1@sha256:51a825c2a40acc3e338fdd00d622e01ec090f72be2b3ea46be0839cd47a4d286
-    container_name: georag-alertmanager
-    restart: unless-stopped
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
-      - '--web.external-url=http://localhost:9093'
-    ports:
-      - "${ALERTMANAGER_PORT:-9093}:9093"
-    volumes:
-      - ./docker/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager_data:/alertmanager
-    networks:
-      - georag
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # REDIS_EXPORTER — Prometheus exporter for Redis (oliver006/redis_exporter, MIT).
-  # Module 10 Chunk 10.4 — exposes redis_up, redis_commands_processed_total,
-  # redis_memory_used_bytes, slowlog depth on :9121/metrics.
-  # ---------------------------------------------------------------------------
-  redis_exporter:
-    image: oliver006/redis_exporter:v1.86.0-alpine@sha256:755a0b4cbcc86c4843b167c830674e52b63f9467c934b8ccb811b4f506e197f0
-    container_name: georag-redis-exporter
-    restart: unless-stopped
-    environment:
-      REDIS_ADDR: redis://redis:6379
-      REDIS_EXPORTER_LOG_FORMAT: txt
-    ports:
-      - "${REDIS_EXPORTER_PORT:-9121}:9121"
-    networks:
-      - georag
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9121/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # POSTGRES_EXPORTER — Prometheus exporter for PostgreSQL (Apache-2.0).
-  # Module 10 Chunk 10.4 — exposes pg_up, pg_stat_database_*, pg_locks_count,
-  # pg_settings_max_connections on :9187/metrics. Connects directly to
-  # PostgreSQL (NOT through PgBouncer) so per-DB stats resolve cleanly.
-  # ---------------------------------------------------------------------------
-  postgres_exporter:
-    image: prometheuscommunity/postgres-exporter:v0.17.1
-    container_name: georag-postgres-exporter
-    restart: unless-stopped
-    environment:
-      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-georag}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgresql:5432/${POSTGRES_DB:-georag}?sslmode=disable"
-      PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
-    ports:
-      - "${POSTGRES_EXPORTER_PORT:-9187}:9187"
-    networks:
-      - georag
-    depends_on:
-      postgresql:
-        condition: service_healthy
-    healthcheck:
-      # postgres-exporter v0.17.1 does not expose `/health`; hitting it
-      # returns HTTP 404 and the container reports unhealthy even when
-      # scrapes succeed. Use `/metrics` instead — the Prometheus scrape
-      # endpoint always serves 200 when the exporter is up.
-      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:9187/metrics"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # NEO4J EXPORTER — JMX → Prometheus bridge (V1.5-07).
-  # Neo4j 2026 Community Edition rejects `server.metrics.prometheus.*` at
-  # startup (Enterprise-only); this sidecar polls the JMX surface over Bolt
-  # every 30s and serves Prometheus exposition on :9105/metrics.
-  # See feedback_martin_tile_gotchas.md style notes for the parallel Martin
-  # case — not the same issue but the same "sidecar instead of native
-  # /metrics" pattern.
-  # ---------------------------------------------------------------------------
-  # NB: depends_on neo4j is conditional — neo4j is in `dev-data` profile
-  # and won't be created when only `dev-monitor` is active. Compose's
-  # `required: false` lets neo4j_exporter come up regardless; it will then
-  # poll-fail with `neo4j_up=0` until neo4j is also running, which is the
-  # correct surface for the dashboard.
-  neo4j_exporter:
-    build:
-      context: ./docker/neo4j-exporter
-      dockerfile: Dockerfile
-    image: georag/neo4j-exporter:latest
-    container_name: georag-neo4j-exporter
-    restart: unless-stopped
-    environment:
-      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
-      NEO4J_EXPORTER_POLL_INTERVAL_S: "30"
-      NEO4J_EXPORTER_PORT: "9105"
-    ports:
-      - "${NEO4J_EXPORTER_PORT:-9105}:9105"
-    networks:
-      - georag
-    depends_on:
-      neo4j:
-        condition: service_healthy
-        required: false
-    healthcheck:
-      # The exporter image is python:3.13-slim — has neither curl nor wget.
-      # Use Python's http.client to probe ourselves.
-      test: ["CMD", "python", "-c", "import http.client; c=http.client.HTTPConnection('localhost',9105,timeout=2); c.request('GET','/metrics'); r=c.getresponse(); exit(0 if r.status==200 else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    stop_grace_period: 5s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # LOKI — log aggregation (Module 10 Chunk 10.6).
-  # Promtail tails Laravel + FastAPI log files and ships JSON to Loki;
-  # Grafana queries via LogQL. Dedicated channel labels let the authz dashboard
-  # transition from PromQL counter to LogQL count_over_time per the panel TODO.
-  # ---------------------------------------------------------------------------
-  loki:
-    # 2026-06-23 sweep: 3.4.2 -> 3.7.2 + SHA pin. Bloom-filter improvements
-    # + structured-metadata querying. BoltDB shipper format is
-    # forward/backward compatible across 3.x; existing chunks read fine.
-    image: grafana/loki:3.7.2@sha256:191d4fdfb7264f16989f0a57f320872620a5a7c2ceeec6229212c4190ec49b86
-    container_name: georag-loki
-    restart: unless-stopped
-    command: -config.file=/etc/loki/loki-config.yaml
-    ports:
-      - "${LOKI_PORT:-3100}:3100"
-    volumes:
-      - ./docker/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
-      - loki_data:/loki
-    networks:
-      - georag
-    healthcheck:
-      # 2026-06-23 sweep: Loki 3.5+ ships a distroless image — no shell,
-      # no wget. Replaced the HTTP probe on /ready with the binary's own
-      # -version check (binary integrity + execution, not service-ready).
-      # Prometheus scrapes catch true outage. Same pattern as the
-      # promtail healthcheck.
-      test: ["CMD", "/usr/bin/loki", "-version"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # PROMTAIL — log shipping agent (Module 10 Chunk 10.6).
-  # Tails container stdout/stderr via Docker discovery + the Laravel
-  # storage/logs/authz_audit-*.log files (mounted read-only) and forwards
-  # to Loki with channel/service labels.
-  # ---------------------------------------------------------------------------
-  promtail:
-    # 2026-06-23 sweep: 3.4.2 -> 3.5.5 + SHA pin. Promtail tagging is
-    # FROZEN at the 3.5.x line by Grafana — they've publicly deprecated
-    # Promtail in favour of Grafana Alloy. 3.5.5 is the terminal Promtail
-    # release; future log-pipeline work should target the Alloy migration
-    # (see docs/runbooks/promtail-to-alloy-migration.md once landed).
-    # Until then, Promtail 3.5.5 + Loki 3.7.2 are still wire-compatible
-    # (Promtail's push API is forward-compatible against Loki 3.x).
-    image: grafana/promtail:3.5.5@sha256:784743d283f71f644e290d7b9fadf5e1edff405d2756974c6e13fa7978c08b64
-    container_name: georag-promtail
-    restart: unless-stopped
-    command: -config.file=/etc/promtail/promtail-config.yaml
-    volumes:
-      - ./docker/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./storage/logs:/laravel-logs:ro
-      - promtail_positions:/var/lib/promtail
-    networks:
-      - georag
-    depends_on:
-      loki:
-        condition: service_healthy
-    # Promtail's official image is distroless; no wget. Use a shell-out
-    # via /usr/bin/promtail's own status by checking it's still PID 1.
-    healthcheck:
-      test: ["CMD", "/usr/bin/promtail", "--version"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    stop_grace_period: 10s
-    # 2026-06-24: Promtail→Alloy cutover complete. Grafana Alloy (below) is now
-    # the active log shipper (dev-monitor); it tails the same Laravel logs, so
-    # leaving Promtail in dev-monitor would double-ship every line into Loki.
-    # Parked in a non-active `promtail-legacy` profile: it no longer auto-starts
-    # but stays defined for rollback (`--profile promtail-legacy up -d promtail`,
-    # and stop Alloy). See docs/runbooks/promtail-to-alloy-migration.md.
-    profiles: ["promtail-legacy"]
-
-  # ---------------------------------------------------------------------------
-  # GRAFANA ALLOY (2026-06-23 sweep) — Promtail successor. PRIMARY log shipper
-  # as of the 2026-06-24 cutover: Promtail is parked in the `promtail-legacy`
-  # profile (no longer auto-starts) and Alloy writes to Loki's default tenant
-  # (the shadow-window tenant_id was removed from docker/alloy/config.alloy).
-  # Config lives at docker/alloy/config.alloy. Rollback + history:
-  # docs/runbooks/promtail-to-alloy-migration.md.
-  # ---------------------------------------------------------------------------
-  alloy:
-    image: grafana/alloy:v1.10.0@sha256:1bc130e909116a4bf950eb5187a346007d3b796f96832b529acb14a64e41230f
-    container_name: georag-alloy
-    restart: unless-stopped
-    command:
-      - run
-      - /etc/alloy/config.alloy
-      - --storage.path=/var/lib/alloy/data
-      - --server.http.listen-addr=0.0.0.0:12345
-    volumes:
-      - ./docker/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./storage/logs:/laravel-logs:ro
-      - alloy_data:/var/lib/alloy/data
-    networks:
-      - georag
-    depends_on:
-      loki:
-        condition: service_healthy
-    # 2026-06-24: no container healthcheck. The grafana/alloy image is
-    # distroless — no wget/curl/shell HTTP client — so an in-container probe of
-    # /-/ready cannot run. The old `CMD-SHELL wget …` always exited 1 and
-    # reported a FALSE "unhealthy" while Alloy was in fact ready (GET
-    # :12345/-/ready returns 200, "Alloy is ready"). Health is observable
-    # externally via that endpoint; nothing depends_on Alloy's health gate.
-    stop_grace_period: 10s
-    # Active log shipper after the Promtail→Alloy cutover (promtail parked in the
-    # promtail-legacy profile above).
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # GRAFANA — dashboards and alerting
-  # Pre-provisioned dashboards for: DB cache ratios, Redis memory, queue depth,
-  # Qdrant latency, Neo4j page cache, LLM throughput.
-  # Login: admin / ${GRAFANA_ADMIN_PASSWORD}
-  # ---------------------------------------------------------------------------
-  grafana:
-    # Task 1: pinned to current stable release.
-    # B8 — digest pinned 2026-04-19
-    # 2026-06-23 sweep: 11.6.1 -> 12.4.5. Scenes-based dashboards GA,
-    # dashboard schemas v2, interactive learning UX. Dashboards are
-    # generally portable across the 11 -> 12 jump; data-source plugins
-    # we use (Prometheus, Loki, Tempo) are first-party. After deploy,
-    # spot-check the 14 system + 3 product dashboards for layout drift
-    # — Scenes engine occasionally re-renders panels slightly differently.
-    image: grafana/grafana:12.4.5@sha256:26b8f35a9e4e4431995cf64c3f396505a4faf17bcfc19f9ed84943ec6bfd5ecd
-    container_name: georag-grafana
-    restart: unless-stopped
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
-      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-clock-panel
-      # Prometheus datasource via env provisioning
-      GF_DATASOURCE_NAME: Prometheus
-      GF_DATASOURCE_TYPE: prometheus
-      GF_DATASOURCE_URL: http://prometheus:9090
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    networks:
-      - georag
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    # SG-01 fix: explicit grace period for discoverability
-    stop_grace_period: 10s
-    profiles: ["dev-monitor", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # OFELIA — cron scheduler for backup jobs
-  # MIT license — compliant with the free-licensing rule.
-  # Uses labels-based job definitions on the target containers (postgresql,
-  # neo4j, qdrant). Reads labels from running containers via docker socket.
-  #
-  # Backup schedule (UTC, staggered to avoid IO contention):
-  #   02:30 — PostgreSQL  (pg_basebackup → s3://georag-backups/postgres/)
-  #   02:45 — Neo4j       (neo4j-admin dump → s3://georag-backups/neo4j/)
-  #   03:00 — Qdrant      (snapshot API → s3://georag-backups/qdrant/)
-  #
-  # Digest pinned 2026-04-19 from mcuadros/ofelia:latest.
-  # ---------------------------------------------------------------------------
-  ofelia:
-    image: mcuadros/ofelia:latest@sha256:efcbe2c5cf658a25de6443c1462d653f9cc03791d642e01fc6c638a00f97e492
-    container_name: georag-ofelia
-    restart: unless-stopped
-    command: daemon --docker
-    environment:
-      # Backup S3 credentials injected into job-exec env (ofelia passes host env to exec)
-      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
-      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
-      S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
-    volumes:
-      # Docker socket — required for job-exec (Ofelia runs commands inside target containers)
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - georag
-    depends_on:
-      postgresql:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-    # Ofelia is stateless (job state tracked in memory); 10s is sufficient
-    stop_grace_period: 10s
-    profiles: ["dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # BACKUP AGENT SIDECAR — Module 1 Phase B (2026-04-19)
-  # Dedicated Alpine sidecar that owns all backup jobs. Ofelia job-exec
-  # targets THIS container instead of the stateful service containers, so
-  # backup tools (aws-cli, pg_basebackup, docker-cli, curl/jq) are not
-  # required in the application images.
-  #
-  # Backup schedule (UTC, on georag-backup-agent):
-  #   02:30 — PostgreSQL  (pg_basebackup → s3://georag-backups/postgres/)
-  #   03:00 — Qdrant      (snapshot API  → s3://georag-backups/qdrant/)
-  #   03:00 Sundays — Neo4j (offline dump → s3://georag-backups/neo4j/)
-  #
-  # Neo4j note: offline dump requires stopping the neo4j container briefly
-  # (~75-120s). Approved maintenance window: Sundays 03:00 UTC.
-  # First live run approved for 2026-04-26.
-  # ---------------------------------------------------------------------------
-  backup-agent:
-    build:
-      context: ./docker/backup-agent
-      dockerfile: Dockerfile
-    image: georag/backup-agent:latest
-    container_name: georag-backup-agent
-    restart: unless-stopped
-    # Ofelia job-exec labels — all three backup jobs run inside this container
-    labels:
-      ofelia.enabled: "true"
-      # PostgreSQL physical base backup — daily 02:30 UTC
-      ofelia.job-exec.pg-backup.schedule: "0 30 2 * * *"
-      ofelia.job-exec.pg-backup.command: "/backup-scripts/postgresql/backup.sh"
-      # Qdrant snapshot backup — daily 03:00 UTC
-      ofelia.job-exec.qdrant-backup.schedule: "0 0 3 * * *"
-      ofelia.job-exec.qdrant-backup.command: "/backup-scripts/qdrant/backup.sh"
-      # Neo4j offline dump — Sundays 03:00 UTC only (approved maintenance window)
-      # First live run: 2026-04-26 03:00 UTC
-      # Neo4j is stopped ~75-120s for the dump. ALLOW_WEEKLY_DUMP=1 is required as safety gate.
-      ofelia.job-exec.neo4j-backup.schedule: "0 0 3 * * 0"
-      ofelia.job-exec.neo4j-backup.command: "bash -c 'ALLOW_WEEKLY_DUMP=1 /backup-scripts/neo4j/backup.sh'"
-      # WAL segment upload — every 5 minutes.
-      # Syncs /pg_wal_archive/ → s3://georag-backups/pg-wal/ then cleans local segments.
-      # Combined with archive_timeout=300 on PG, max data-loss window is ~10 min.
-      # Module 1 Phase C prep — BK-03, 2026-04-19.
-      ofelia.job-exec.pg-wal-upload.schedule: "@every 5m"
-      ofelia.job-exec.pg-wal-upload.command: "/backup-scripts/postgresql/wal-upload.sh"
-    environment:
-      # S3 / SeaweedFS credentials
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID must be set in .env}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY must be set in .env}
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://minio:8333}
-      # PostgreSQL connection (connects directly to postgresql service, not PgBouncer,
-      # because pg_basebackup requires a replication connection — PgBouncer blocks those)
-      PGHOST: postgresql
-      PGPORT: "5432"
-      PGUSER: ${POSTGRES_USER:-georag}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      PGDATABASE: ${POSTGRES_DB:-georag}
-      # Neo4j offline dump control
-      NEO4J_BACKUP_CONTAINER: ${NEO4J_BACKUP_CONTAINER:-georag-neo4j}
-      NEO4J_IMAGE: ${NEO4J_IMAGE:-neo4j:2026-community@sha256:a5feb81d916c82d09186807ee8f8a523eb430d578fa6015f37ae72a07f976537}
-      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
-      # Qdrant HTTP API endpoint (no API key in dev — auth disabled)
-      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      # Retention
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
-    volumes:
-      # Backup staging scratch space (writable, shared with no other service now)
-      - backup_staging:/backup/staging
-      # Backup scripts — bind-mounted read-only
-      - ./docker/postgresql/backup.sh:/backup-scripts/postgresql/backup.sh:ro
-      - ./docker/postgresql/wal-upload.sh:/backup-scripts/postgresql/wal-upload.sh:ro
-      - ./docker/neo4j/backup.sh:/backup-scripts/neo4j/backup.sh:ro
-      - ./docker/qdrant/backup.sh:/backup-scripts/qdrant/backup.sh:ro
-      # Docker socket — for Neo4j offline dump (stop container, run neo4j-admin, restart)
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      # WAL archive volume — read-write; backup-agent uploads WAL segments to S3
-      # every 5m, then deletes local copies that are confirmed in S3 to prevent
-      # the volume growing unbounded. PG is the only writer; backup-agent only
-      # deletes after S3 confirmation.
-      # Module 1 Phase C prep — WAL archiving (BK-03), 2026-04-19.
-      - pg_wal_archive:/pg_wal_archive
-    networks:
-      - georag
-    depends_on:
-      minio:
-        condition: service_healthy
-    # Allow in-flight backup to complete before SIGKILL
-    stop_grace_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
-        reservations:
-          memory: 64M
-    profiles: ["dev-data", "dev-full"]
