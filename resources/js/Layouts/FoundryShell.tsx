@@ -17,7 +17,6 @@ import type { PageProps } from '@/types';
  *        Same nav as sub-bar, plus chat-threads + saved-views lists below.
  *
  * Chat lives INSIDE projects only (/projects/{slug}/chat) — no standalone /chat.
- * Admin surfaces live behind the user menu, not in the main top bar.
  */
 
 interface FoundryShellProps {
@@ -52,13 +51,6 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
     // geologists see "Data" (already accepted) vs "Review" (pending) at a glance.
     { id: 'drill-review', suffix: '/drill-review', label: 'Review', icon: 'shield' },
     { id: 'audit', suffix: '/audit', label: 'Audit', icon: 'shield' },
-];
-
-const ADMIN_NAV: Array<{ href: string; label: string }> = [
-    { href: '/support-cockpit', label: 'Support Cockpit' },
-    { href: '/admin/decision-history', label: 'Decision History' },
-    { href: '/admin/hypothesis-workspace', label: 'Hypothesis Workspace' },
-    { href: '/admin/cluster-ingest', label: 'Cluster Ingest' },
 ];
 
 interface SharedRailData {
@@ -105,7 +97,6 @@ function UserMenu() {
     const { auth } = usePage<PageProps>().props;
     const user = auth?.user ?? null;
     const [open, setOpen] = useState(false);
-    const isAdmin = Boolean(auth?.user?.is_admin);
 
     function handleLogout() {
         const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -155,16 +146,6 @@ function UserMenu() {
                     <Link href="/settings" onClick={() => setOpen(false)} role="menuitem" className="block px-3 py-2 text-xs hover:bg-[var(--bg-2)]" style={{ color: 'var(--fg-1)' }}>
                         Workspace settings
                     </Link>
-                    {isAdmin && (
-                        <>
-                            <div className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-wider border-t" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>Admin</div>
-                            {ADMIN_NAV.map((a) => (
-                                <Link key={a.href} href={a.href} onClick={() => setOpen(false)} role="menuitem" className="block px-3 py-1.5 text-[11px] hover:bg-[var(--bg-2)]" style={{ color: 'var(--fg-1)' }}>
-                                    {a.label}
-                                </Link>
-                            ))}
-                        </>
-                    )}
                     <button
                         type="button"
                         onClick={handleLogout}

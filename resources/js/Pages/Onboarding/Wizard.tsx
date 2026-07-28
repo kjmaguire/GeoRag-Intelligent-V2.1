@@ -556,33 +556,9 @@ export default function OnboardingWizard({ commodities, regions, progress }: Pag
 
                         {step === 5 && (
                             <div>
-                                <h2 className="text-base font-medium">Optional — generate your first report</h2>
+                                <h2 className="text-base font-medium">Setup complete</h2>
                                 <p className="text-sm text-zinc-500">
-                                    The Workspace Health Snapshot is a free, no-sign-off report that summarises
-                                    what's in your workspace, what public data overlaps your AOI, and where the
-                                    data gaps are. It takes about 30 seconds to generate.
-                                </p>
-                                <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4">
-                                    <div className="flex items-center justify-between">
-                                        <div>
-                                            <div className="text-sm font-semibold text-indigo-900">
-                                                Workspace Health Snapshot
-                                            </div>
-                                            <div className="text-xs text-indigo-700">
-                                                Inventory · Public overlay · Data gaps · No QP sign-off required
-                                            </div>
-                                        </div>
-                                        <a
-                                            href={projectId ? `/admin/reports/build?template=workspace_health&project_id=${projectId}` : '/admin/reports/build?template=workspace_health'}
-                                            target="_blank" rel="noopener noreferrer"
-                                            className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
-                                        >
-                                            Generate →
-                                        </a>
-                                    </div>
-                                </div>
-                                <p className="mt-3 text-xs text-zinc-500">
-                                    You can also skip this and generate reports later from the Reports cockpit.
+                                    Your project is ready. Open Chat to ask questions against the documents you import.
                                 </p>
                                 <div className="mt-6 flex justify-between">
                                     <button
