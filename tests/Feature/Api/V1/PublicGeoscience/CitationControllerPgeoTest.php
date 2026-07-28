@@ -14,7 +14,7 @@ use Tests\TestCase;
  *
  * Route: GET /api/v1/citations/resolve?source_chunk_id=...  (auth:sanctum)
  *
- * All PGEO resolvers query public_geoscience.* or silver.* tables that SQLite
+ * All PGEO resolvers query public_geo.* or silver.* tables that SQLite
  * cannot emulate. DB::table() chains are mocked via DB::shouldReceive() so
  * every assertion stays at the HTTP-contract layer.
  */
@@ -58,7 +58,7 @@ class CitationControllerPgeoTest extends TestCase
     public function test_pg_mine_resolver_returns_pgeo_envelope(): void
     {
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_mine',
+            entityTable: 'public_geo.pg_mine',
             entityRow: $this->fakeMineRow(),
             canonicalType: 'mine',
         );
@@ -68,8 +68,8 @@ class CitationControllerPgeoTest extends TestCase
         $this->actingAs($this->user)
             ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
-            ->assertJsonPath('source_type', 'public_geoscience')
-            ->assertJsonPath('corpus', 'public_geoscience')
+            ->assertJsonPath('source_type', 'public_geo')
+            ->assertJsonPath('corpus', 'public_geo')
             ->assertJsonPath('canonical_type', 'mine')
             ->assertJsonStructure([
                 'source_type', 'corpus', 'canonical_type', 'source_chunk_id',
@@ -106,7 +106,7 @@ class CitationControllerPgeoTest extends TestCase
         ];
 
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_mineral_occurrence',
+            entityTable: 'public_geo.pg_mineral_occurrence',
             entityRow: $entityRow,
             canonicalType: 'mineral_occurrence',
         );
@@ -116,7 +116,7 @@ class CitationControllerPgeoTest extends TestCase
         $this->actingAs($this->user)
             ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
-            ->assertJsonPath('source_type', 'public_geoscience')
+            ->assertJsonPath('source_type', 'public_geo')
             ->assertJsonPath('canonical_type', 'mineral_occurrence')
             ->assertJsonStructure([
                 'source_type', 'corpus', 'canonical_type', 'source_chunk_id',
@@ -152,7 +152,7 @@ class CitationControllerPgeoTest extends TestCase
         ];
 
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_drillhole_collar',
+            entityTable: 'public_geo.pg_drillhole_collar',
             entityRow: $entityRow,
             canonicalType: 'drillhole_collar',
         );
@@ -162,7 +162,7 @@ class CitationControllerPgeoTest extends TestCase
         $this->actingAs($this->user)
             ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
-            ->assertJsonPath('source_type', 'public_geoscience')
+            ->assertJsonPath('source_type', 'public_geo')
             ->assertJsonPath('canonical_type', 'drillhole_collar')
             ->assertJsonStructure([
                 'source_type', 'corpus', 'canonical_type', 'source_chunk_id',
@@ -188,7 +188,7 @@ class CitationControllerPgeoTest extends TestCase
         ];
 
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_resource_potential_zone',
+            entityTable: 'public_geo.pg_resource_potential_zone',
             entityRow: $entityRow,
             canonicalType: 'resource_potential_zone',
         );
@@ -198,7 +198,7 @@ class CitationControllerPgeoTest extends TestCase
         $this->actingAs($this->user)
             ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
-            ->assertJsonPath('source_type', 'public_geoscience')
+            ->assertJsonPath('source_type', 'public_geo')
             ->assertJsonPath('canonical_type', 'resource_potential_zone')
             ->assertJsonStructure([
                 'source_type', 'corpus', 'canonical_type', 'source_chunk_id',
@@ -217,7 +217,7 @@ class CitationControllerPgeoTest extends TestCase
         $thirtyMinsAgo = $now->copy()->subMinutes(30)->toDateTimeString();
 
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_mine',
+            entityTable: 'public_geo.pg_mine',
             entityRow: array_merge($this->fakeMineRow(), ['name' => 'Staleness Test Mine']),
             canonicalType: 'mine',
             lastRefreshedAt: $thirtyMinsAgo,
@@ -244,7 +244,7 @@ class CitationControllerPgeoTest extends TestCase
     public function test_references_summary_count_is_zero_when_no_active_links(): void
     {
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_mine',
+            entityTable: 'public_geo.pg_mine',
             entityRow: $this->fakeMineRow(),
             canonicalType: 'mine',
         );
@@ -263,7 +263,7 @@ class CitationControllerPgeoTest extends TestCase
     public function test_references_summary_count_reflects_active_links(): void
     {
         $this->mockPgeoResolverCall(
-            entityTable: 'public_geoscience.pg_mine',
+            entityTable: 'public_geo.pg_mine',
             entityRow: $this->fakeMineRow(),
             canonicalType: 'mine',
             linkCount: 3,
@@ -308,7 +308,7 @@ class CitationControllerPgeoTest extends TestCase
             ->andReturnUsing(fn ($expr) => new Expression($expr));
 
         DB::shouldReceive('table')->with('silver.reports')->once()->andReturn($reportBuilder);
-        DB::shouldReceive('table')->with('public_geoscience.document_entity_links')->andReturn($linksBuilder);
+        DB::shouldReceive('table')->with('public_geo.document_entity_links')->andReturn($linksBuilder);
 
         $chunkId = "georag_reports:{$reportId}:section=1:chunk=abc";
 
@@ -369,8 +369,8 @@ class CitationControllerPgeoTest extends TestCase
      *
      * The controller calls queries in this order:
      *   1. DB::table($entityTable)->where()->first()          — entity row
-     *   2. DB::table('public_geoscience.sources as s')->...->first()  — source/jurisdiction
-     *   3. DB::table('public_geoscience.document_entity_links')->...->count() — link count
+     *   2. DB::table('public_geo.sources as s')->...->first()  — source/jurisdiction
+     *   3. DB::table('public_geo.document_entity_links')->...->count() — link count
      *   4. (when linkCount > 0) links detail query
      *
      * We return separate Mockery builder mocks per table so `first()` calls
@@ -415,8 +415,8 @@ class CitationControllerPgeoTest extends TestCase
         $linksCountBuilder->shouldReceive('count')->andReturn($linkCount);
 
         DB::shouldReceive('table')->with($entityTable)->once()->andReturn($entityBuilder);
-        DB::shouldReceive('table')->with('public_geoscience.sources as s')->once()->andReturn($sourceBuilder);
-        DB::shouldReceive('table')->with('public_geoscience.document_entity_links')->andReturn($linksCountBuilder);
+        DB::shouldReceive('table')->with('public_geo.sources as s')->once()->andReturn($sourceBuilder);
+        DB::shouldReceive('table')->with('public_geo.document_entity_links')->andReturn($linksCountBuilder);
 
         if ($linkCount > 0) {
             $linksDetailBuilder = \Mockery::mock('links_detail_query_builder');
@@ -428,7 +428,7 @@ class CitationControllerPgeoTest extends TestCase
             $linksDetailBuilder->shouldReceive('get')->andReturn(collect([]));
 
             DB::shouldReceive('table')
-                ->with('public_geoscience.document_entity_links as l')
+                ->with('public_geo.document_entity_links as l')
                 ->andReturn($linksDetailBuilder);
         }
     }

@@ -15,7 +15,7 @@ use Tests\TestCase;
  *   GET /api/v1/public-geoscience/entities/{canonical_type}/{pg_id}/references
  *   GET /api/v1/public-geoscience/documents/{report_id}/references
  *
- * DB::table() mocked throughout — public_geoscience.* schema not available
+ * DB::table() mocked throughout — public_geo.* schema not available
  * in the SQLite in-memory test environment.
  */
 class EntityReferencesControllerTest extends TestCase
@@ -256,7 +256,7 @@ class EntityReferencesControllerTest extends TestCase
     private function mockLinksQuery(string $pgId, string $canonicalType, $rows, float $minConfidence = 0.6): void
     {
         DB::shouldReceive('table')
-            ->with('public_geoscience.document_entity_links as l')
+            ->with('public_geo.document_entity_links as l')
             ->andReturnSelf();
         DB::shouldReceive('leftJoin')->withAnyArgs()->andReturnSelf();
         DB::shouldReceive('where')->withAnyArgs()->andReturnSelf();
@@ -268,7 +268,7 @@ class EntityReferencesControllerTest extends TestCase
     private function mockDocumentLinksQuery(string $reportId, $rows): void
     {
         DB::shouldReceive('table')
-            ->with('public_geoscience.document_entity_links')
+            ->with('public_geo.document_entity_links')
             ->andReturnSelf();
         DB::shouldReceive('where')->withAnyArgs()->andReturnSelf();
         DB::shouldReceive('whereNull')->andReturnSelf();
@@ -300,7 +300,7 @@ class EntityReferencesControllerTest extends TestCase
         $drillholeBuilder->shouldReceive('select')->withAnyArgs()->andReturn($drillholeBuilder);
         $drillholeBuilder->shouldReceive('get')->andReturn(collect([]));
 
-        DB::shouldReceive('table')->with('public_geoscience.pg_mine')->andReturn($mineBuilder);
-        DB::shouldReceive('table')->with('public_geoscience.pg_drillhole_collar')->andReturn($drillholeBuilder);
+        DB::shouldReceive('table')->with('public_geo.pg_mine')->andReturn($mineBuilder);
+        DB::shouldReceive('table')->with('public_geo.pg_drillhole_collar')->andReturn($drillholeBuilder);
     }
 }
