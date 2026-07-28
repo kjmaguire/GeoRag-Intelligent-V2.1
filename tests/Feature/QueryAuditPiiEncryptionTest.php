@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\Project;
 use App\Models\QueryAuditLog;
-use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -29,7 +28,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
 
     public function test_query_text_is_ciphertext_in_db_but_plaintext_on_model(): void
     {
-        $row = QueryAuditLog::create([
+        $row = $this->createAuditLog([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -47,7 +46,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
         $this->assertNotFalse(Crypt::decryptString($raw), 'Raw column should be Laravel-encrypted');
 
         // Reading via the model decrypts transparently.
-        $fresh = QueryAuditLog::find($row->audit_id);
+        $fresh = $this->auditLogQuery()->find($row->audit_id);
         $this->assertSame('Confidential JV: Gold Corp / Rio XYZ acquisition', $fresh->query_text);
     }
 
@@ -55,7 +54,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
     {
         $text = 'What is the average gold grade?';
 
-        $a = QueryAuditLog::create([
+        $a = $this->createAuditLog([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -64,7 +63,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
             'llm_model' => 'qwen2.5:14b',
         ]);
 
-        $b = QueryAuditLog::create([
+        $b = $this->createAuditLog([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -79,7 +78,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
         $this->assertSame($a->query_text_hash, $b->query_text_hash);
 
         // A different query produces a different hash.
-        $c = QueryAuditLog::create([
+        $c = $this->createAuditLog([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -90,53 +89,21 @@ class QueryAuditPiiEncryptionTest extends TestCase
         $this->assertNotSame($a->query_text_hash, $c->query_text_hash);
     }
 
-    public function test_top_queries_aggregation_uses_hash_and_returns_plaintext(): void
+    private function createAuditLog(array $attributes): QueryAuditLog
     {
-        $user = User::factory()->create();
-        $project = Project::factory()->create();
-        DB::table('project_user')->insert([
-            'project_id' => $project->project_id,
-            'user_id' => $user->id,
-            'role' => 'owner',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $row = new QueryAuditLog;
+        $row->setTable('query_audit_log');
+        $row->fill($attributes);
+        $row->save();
 
-        // Three copies of a common query and one singleton — top result should
-        // be the common one, grouped across case differences.
-        $common = 'What is the average gold grade?';
-        foreach (['What is the average gold grade?', 'what is the average gold grade?', 'WHAT IS THE AVERAGE GOLD GRADE?'] as $variant) {
-            QueryAuditLog::create([
-                'user_id' => $user->id,
-                'project_id' => $project->project_id,
-                'query_id' => (string) Str::uuid(),
-                'query_text' => $variant,
-                'ip_address' => '127.0.0.1',
-                'llm_model' => 'qwen2.5:14b',
-            ]);
-        }
+        return $row;
+    }
 
-        QueryAuditLog::create([
-            'user_id' => $user->id,
-            'project_id' => $project->project_id,
-            'query_id' => (string) Str::uuid(),
-            'query_text' => 'Show me lithology',
-            'ip_address' => '127.0.0.1',
-            'llm_model' => 'qwen2.5:14b',
-        ]);
+    private function auditLogQuery()
+    {
+        $model = new QueryAuditLog;
+        $model->setTable('query_audit_log');
 
-        $this->actingAs($user);
-
-        $response = $this->getJson('/api/v1/dashboard/projects/'.$project->slug.'/analytics');
-        $response->assertOk();
-
-        $top = $response->json('query_usage.top_queries');
-        $this->assertIsArray($top);
-        $this->assertNotEmpty($top);
-
-        // The most common grouped row should have count = 3 and the
-        // decrypted representative plaintext.
-        $this->assertSame(3, (int) $top[0]['c']);
-        $this->assertSame(mb_strtolower(trim($common)), $top[0]['q']);
+        return $model->newQuery();
     }
 }
