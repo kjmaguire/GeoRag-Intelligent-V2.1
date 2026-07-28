@@ -175,11 +175,6 @@ def silver_reports(
     )
 
     # --- Parse ---
-    # TODO (Module 3 Phase B): invoke RAGFlow as the primary parser here.
-    # parse_pdf_report is the fallback-only path (fitz-first + pdfplumber).
-    # It must only be called after a recorded RAGFlow failure for the same
-    # bronze_sha256. See parsers/pdf_report.py module docstring for details.
-    # Kyle-approved 2026-04-20 as temporary fallback-only invocation.
     _parse_started = time.monotonic()
     parse_result = parse_pdf_report(tmp_path)
     _parse_duration_ms = int((time.monotonic() - _parse_started) * 1000)

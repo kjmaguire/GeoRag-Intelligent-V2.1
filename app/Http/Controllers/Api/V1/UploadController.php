@@ -21,21 +21,10 @@ use Throwable;
 /**
  * File upload controller — uploads exploration data files to MinIO bronze bucket.
  *
- * Uploaded files land in the georag-bronze bucket under a path prefix that
- * maps to the Dagster sensor's _PREFIX_TO_ASSET mapping:
- *   collars/   → bronze_collars
- *   surveys/   → bronze_surveys
- *   lithology/ → bronze_lithology
- *   samples/   → bronze_samples
- *   reports/   → bronze_reports
- *   well_logs/ → bronze_well_logs
- *   spatial/   → bronze_spatial
- *   excel/     → bronze_xlsx
- *   seismic/   → bronze_seismic
- *   xyz/       → bronze_xyz
- *
- * The Dagster MinIO sensor polls every 5 minutes and triggers the relevant
- * Bronze asset when new files are detected.
+ * Files land in the georag-bronze bucket under a category/project prefix.
+ * PDF reports are dispatched directly to Hatchet's ingest_pdf workflow;
+ * TIFF reports go through tiff_normalize first. Both triggers happen in the
+ * upload request after the bronze manifest row is written.
  */
 class UploadController extends Controller
 {

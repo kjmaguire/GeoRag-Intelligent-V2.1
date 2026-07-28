@@ -1003,7 +1003,6 @@ dependencies = [
     { name = "rasterio" },
     { name = "segyio" },
     { name = "sentence-transformers" },
-    { name = "unstructured", extra = ["pdf"] },
     { name = "xlrd" },
 ]
 
@@ -1083,7 +1082,6 @@ requires-dist = [
     { name = "segyio", specifier = ">=1.9" },
     { name = "segyio", marker = "extra == 'ingest'" },
     { name = "sentence-transformers", specifier = ">=4.1" },
-    { name = "unstructured", extras = ["pdf"], specifier = ">=0.17" },
     { name = "xlrd", specifier = ">=1.2,<2.0" },
 ]
 provides-extras = ["ingest", "dev"]
