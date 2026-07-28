@@ -308,28 +308,22 @@ class Settings(BaseSettings):
     # Default 8 leaves headroom; lower for cost-sensitive deploys.
     MAX_LLM_CALLS_PER_QUERY: int = 8
 
-    # P1 #9 — Logfire / OpenTelemetry instrumentation for the Pydantic AI
-    # agent. Logfire is the Pydantic team's OTel provider; it auto-traces
+    # P1 #9 — Logfire instrumentation for the Pydantic AI agent. It auto-traces
     # every agent run (system prompt, tool calls, tool returns, retries)
-    # and emits spans either to Pydantic's hosted backend (LOGFIRE_TOKEN)
-    # OR to a local OTel collector (LOGFIRE_OTEL_ENDPOINT). Default off so
-    # no surprise outbound traffic.
+    # and can emit spans to Pydantic's hosted backend (LOGFIRE_TOKEN).
+    # Default off so there is no surprise outbound traffic.
     #
     # Enable for production-grade triage:
     #   LOGFIRE_ENABLED=true
-    #   LOGFIRE_TOKEN=<pylogfire_xxx>            # hosted backend OR
-    #   LOGFIRE_OTEL_ENDPOINT=http://tempo:4317  # local collector
+    #   LOGFIRE_TOKEN=<pylogfire_xxx>
     #
     # When LOGFIRE_TOKEN is set we send spans to logfire.pydantic.dev.
-    # When LOGFIRE_OTEL_ENDPOINT is set we send to that OTLP endpoint
-    # (Tempo / Jaeger / Honeycomb / Grafana Cloud) via the OTel exporter.
-    # When both are unset BUT LOGFIRE_ENABLED=true we configure with
+    # When it is unset BUT LOGFIRE_ENABLED=true we configure with
     # send_to_logfire=False so spans are still created locally for
     # in-process inspection — useful for `logfire.span(...)` debugging
     # without shipping data anywhere.
     LOGFIRE_ENABLED: bool = False
     LOGFIRE_TOKEN: str = ""
-    LOGFIRE_OTEL_ENDPOINT: str = ""
     LOGFIRE_SERVICE_NAME: str = "georag-fastapi"
     LOGFIRE_ENVIRONMENT: str = "dev"
 

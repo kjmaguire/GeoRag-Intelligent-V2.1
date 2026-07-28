@@ -151,7 +151,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     in-flight requests can complete before their pools disappear.
     """
     # -------------------------------------------------------------------------
-    # 0. Logfire / OpenTelemetry — instrument BEFORE other resources so spans
+    # 0. Logfire — instrument BEFORE other resources so spans
     #    wrap pool creation, the embedding-model warmup, and the first request.
     #    See settings.LOGFIRE_* and the SECURITY.md "Observability" section
     #    for the rollout recipe.
@@ -160,8 +160,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             import logfire  # noqa: PLC0415
 
-            # Decide where spans go. Order matters: hosted backend wins,
-            # then OTLP collector, then in-process-only (debug mode).
+            # Send to the hosted backend when configured; otherwise keep
+            # spans in-process for local debugging.
             if settings.LOGFIRE_TOKEN:
                 logfire.configure(
                     token=settings.LOGFIRE_TOKEN,
@@ -174,26 +174,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     settings.LOGFIRE_SERVICE_NAME,
                     settings.LOGFIRE_ENVIRONMENT,
                 )
-            elif settings.LOGFIRE_OTEL_ENDPOINT:
-                # Logfire defers to OTel exporter env vars when
-                # send_to_logfire=False — set them here so the operator
-                # only has to set LOGFIRE_OTEL_ENDPOINT in .env.
-                import os  # noqa: PLC0415
-                os.environ.setdefault(
-                    "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    settings.LOGFIRE_OTEL_ENDPOINT,
-                )
-                logfire.configure(
-                    service_name=settings.LOGFIRE_SERVICE_NAME,
-                    environment=settings.LOGFIRE_ENVIRONMENT,
-                    send_to_logfire=False,
-                )
-                logger.info(
-                    "Logfire configured (OTLP → %s, service=%s env=%s)",
-                    settings.LOGFIRE_OTEL_ENDPOINT,
-                    settings.LOGFIRE_SERVICE_NAME,
-                    settings.LOGFIRE_ENVIRONMENT,
-                )
             else:
                 logfire.configure(
                     service_name=settings.LOGFIRE_SERVICE_NAME,
@@ -201,8 +181,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     send_to_logfire=False,
                 )
                 logger.warning(
-                    "Logfire configured in LOCAL-ONLY mode "
-                    "(neither LOGFIRE_TOKEN nor LOGFIRE_OTEL_ENDPOINT set)"
+                    "Logfire configured in LOCAL-ONLY mode (LOGFIRE_TOKEN unset)"
                 )
 
             # Wire the four instrumentations the Pydantic team ships.

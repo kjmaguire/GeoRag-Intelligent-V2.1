@@ -1339,7 +1339,7 @@ services:
       # `session.execute_read(work, timeout=...)` later if you want
       # true per-query enforcement; the current hybrid is good enough.
       NEO4J_dbms_transaction_timeout: 60s
-      # Logging — query log shipped to Loki via the docker logs driver.
+      # Logging — query log remains available through the Docker logs driver.
       NEO4J_dbms_logs_query_enabled: "INFO"
       NEO4J_dbms_logs_query_threshold: 1000ms
       # Neo4j review #8 — APOC plugin auto-installed at startup.
