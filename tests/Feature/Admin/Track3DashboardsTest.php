@@ -10,17 +10,16 @@ use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
 /**
- * Doc-phase 157 — Inertia route-smoke tests for the 4 Track-3 admin
- * surfaces (Eval Dashboard, Decision History, Support Cockpit,
- * Hypothesis Workspace).
+ * Doc-phase 157 — Inertia route-smoke tests for the Track-3 admin
+ * surfaces (Decision History, Support Cockpit, Hypothesis Workspace).
  *
  * Each test asserts the standard auth flow + Inertia component name
  * + presence of the structural prop keys the React pages depend on.
  * Does NOT assert on data shape inside (that's covered by the
  * controller-side reflection smoke tests).
  *
- * Gated on the postgres test connection (the 4 dashboard controllers
- * all read raw SQL against silver/ops/audit/eval schemas).
+ * Gated on the postgres test connection because the dashboard controllers
+ * read raw SQL against silver/ops/audit schemas.
  */
 class Track3DashboardsTest extends TestCase
 {
@@ -29,65 +28,6 @@ class Track3DashboardsTest extends TestCase
     // sqlite the trait skips before RefreshDatabase fires.
     use RefreshDatabase;
     use RequiresPostgres;
-
-    // ── Eval Dashboard ────────────────────────────────────────────────
-    public function test_eval_dashboard_guest_is_redirected(): void
-    {
-        $this->get('/admin/eval-dashboard')->assertRedirect('/login');
-    }
-
-    public function test_eval_dashboard_non_admin_is_forbidden(): void
-    {
-        $user = User::factory()->create(['is_admin' => false]);
-        $this->actingAs($user, 'sanctum');
-        $this->get('/admin/eval-dashboard')->assertForbidden();
-    }
-
-    public function test_eval_dashboard_admin_renders_with_expected_props(): void
-    {
-        $admin = User::factory()->create(['is_admin' => true]);
-        $this->actingAs($admin, 'sanctum');
-        $response = $this->get('/admin/eval-dashboard');
-        $response->assertOk();
-        $response->assertInertia(fn ($page) => $page
-            ->component('Admin/EvalDashboard')
-            ->has('kpis')
-            ->has('questions_by_set')
-            ->has('questions_by_difficulty')
-            ->has('ontology_progress')
-            ->has('recent_runs')
-            // Doc-phase 171 — §04i failure-layer breakdown panel
-            ->has('failure_layer_breakdown'),
-        );
-    }
-
-    /**
-     * Doc-phase 171 — failure_layer_breakdown returns the full 8-bucket
-     * canonical layer set even on an empty database. Operators see all
-     * §04i layers + 2 infra rows every render, with zero-counts
-     * gracefully muted in the UI.
-     */
-    public function test_eval_dashboard_failure_layer_breakdown_returns_canonical_buckets(): void
-    {
-        $admin = User::factory()->create(['is_admin' => true]);
-        $this->actingAs($admin, 'sanctum');
-        $response = $this->get('/admin/eval-dashboard');
-        $response->assertOk();
-        $response->assertInertia(fn ($page) => $page
-            ->has('failure_layer_breakdown', 8)
-            ->where('failure_layer_breakdown.0.failure_layer', '6_refusal')
-            ->where('failure_layer_breakdown.1.failure_layer', '2_citation_presence')
-            ->where('failure_layer_breakdown.2.failure_layer', '5_chunk_provenance')
-            ->where('failure_layer_breakdown.3.failure_layer', '4_entity_resolution')
-            ->where('failure_layer_breakdown.4.failure_layer', '3_numeric_claims')
-            ->where('failure_layer_breakdown.5.failure_layer', '1_retrieval_quality')
-            ->where('failure_layer_breakdown.6.failure_layer', 'refusal')
-            ->where('failure_layer_breakdown.7.failure_layer', 'evaluator_not_ready')
-            // Every bucket has the expected shape, even with zero failures
-            ->has('failure_layer_breakdown.0.fail_count')
-            ->has('failure_layer_breakdown.0.last_failed_at'),
-        );
-    }
 
     // ── Decision History ──────────────────────────────────────────────
     public function test_decision_history_guest_is_redirected(): void

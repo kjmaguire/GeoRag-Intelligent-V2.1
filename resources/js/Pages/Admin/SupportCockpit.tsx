@@ -317,12 +317,6 @@ export default function SupportCockpit({
                         </div>
                         <div className="flex gap-3 text-sm text-stone-400">
                             <Link
-                                href="/admin/eval-dashboard"
-                                className="hover:text-amber-300"
-                            >
-                                Eval Dashboard
-                            </Link>
-                            <Link
                                 href="/admin/decision-history"
                                 className="hover:text-amber-300"
                             >

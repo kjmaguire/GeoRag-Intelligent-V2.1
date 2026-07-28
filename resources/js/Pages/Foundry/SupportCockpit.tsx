@@ -5,7 +5,7 @@ import { PageHeader, Card, Pill, Stat, EmptyState, Segmented } from '@/Component
 import { useAdminSurfaceUpdated } from '@/Hooks/useAdminSurfaceUpdated';
 import type { SupportCockpitProps } from '@/Types/Foundry';
 
-type Section = 'traces' | 'eval' | 'thresholds';
+type Section = 'traces' | 'thresholds';
 
 export default function FoundrySupportCockpit({ workspaces, traces, thresholds, can_admin, empty }: SupportCockpitProps) {
     const [section, setSection] = useState<Section>('traces');
@@ -87,7 +87,6 @@ export default function FoundrySupportCockpit({ workspaces, traces, thresholds, 
                                     onChange={setSection}
                                     options={[
                                         { value: 'traces', label: 'Traces' },
-                                        { value: 'eval', label: 'Eval' },
                                         { value: 'thresholds', label: 'Thresholds' },
                                     ]}
                                 />
@@ -111,24 +110,6 @@ export default function FoundrySupportCockpit({ workspaces, traces, thresholds, 
                                                 </div>
                                             ))
                                         )}
-                                    </Card>
-                                </div>
-                            )}
-
-                            {section === 'eval' && (
-                                <div className="px-6 py-5">
-                                    <Card eyebrow="EVAL" title="Workspace eval scores">
-                                        <div className="text-xs" style={{ color: 'var(--fg-2)' }}>
-                                            Eval scores come from eval.golden_questions runs (§10.4 evaluate_workspace).
-                                            Admin → Eval Dashboard is the operator surface for golden-question editing.
-                                        </div>
-                                        <Link
-                                            href="/admin/eval-dashboard"
-                                            className="inline-block mt-3 text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                            style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
-                                        >
-                                            Open Eval Dashboard →
-                                        </Link>
                                     </Card>
                                 </div>
                             )}

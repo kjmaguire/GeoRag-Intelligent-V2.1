@@ -57,7 +57,6 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
 
 const ADMIN_NAV: Array<{ href: string; label: string }> = [
     { href: '/support-cockpit', label: 'Support Cockpit' },
-    { href: '/admin/eval-dashboard', label: 'Eval Dashboard' },
     { href: '/admin/decision-history', label: 'Decision History' },
     { href: '/admin/hypothesis-workspace', label: 'Hypothesis Workspace' },
     { href: '/admin/cluster-ingest', label: 'Cluster Ingest' },

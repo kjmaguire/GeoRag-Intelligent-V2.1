@@ -3,7 +3,7 @@
 Usage:
 
     docker exec georag-fastapi python -m \\
-        app.services.eval.mechanical_questions \\
+        app.services.eval_seeders \\
         --user-id 1 \\
         --commit
 
@@ -20,7 +20,7 @@ import sys
 
 import asyncpg
 
-from app.services.eval.mechanical_questions import (
+from app.services.eval_seeders import (
     ALL_MECHANICAL_QUESTIONS,
     seed_mechanical_questions,
 )
@@ -72,7 +72,7 @@ async def _main_async(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m app.services.eval.mechanical_questions",
+        prog="python -m app.services.eval_seeders",
         description="Seed mechanical golden questions into eval.golden_questions.",
     )
     parser.add_argument("--user-id", type=int, default=None,

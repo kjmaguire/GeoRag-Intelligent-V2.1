@@ -84,7 +84,7 @@ def _dsn() -> str:
 embed_pending_passages_wf = hatchet.workflow(
     name="embed_pending_passages",
     # Doc-phase 183 — daily embed sync at 05:45 UTC (after kg_sync at
-    # 05:30 and before the next day's eval_real_rag_nightly).
+    # 05:30).
     # 2026-05-22 — added an "every 10 minutes" safety-net cron so that
     # when the persist-side inline trigger races with a Hatchet retry
     # (BattleNorth bug), unembedded passages get picked up within ~10 min

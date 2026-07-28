@@ -91,10 +91,8 @@ async def _bust_entity_cache(project_ids: list[str]) -> None:
 
 sync_silver_to_kg = hatchet.workflow(
     name="sync_silver_to_kg",
-    # Doc-phase 183 — daily KG refresh at 05:30 UTC (15 min after the
-    # eval_real_rag_nightly cron at 05:15). Ensures any silver
-    # additions from the last 24h get pushed to Neo4j before the eval
-    # cron runs again.
+    # Doc-phase 183 — daily KG refresh at 05:30 UTC. Ensures any silver
+    # additions from the last 24h get pushed to Neo4j.
     on_crons=["30 5 * * *"],
     input_validator=SyncSilverToKGInput,
 )

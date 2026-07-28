@@ -62,7 +62,6 @@ class AdminSurfaceUpdatedBridgeController extends Controller
         // 6 deferred live updates) so a future tightening doesn't have to
         // edit two files. All others have a subscribing admin page.
         'cache-telemetry',
-        'eval-dashboard',
         'conflicts',
         'audit-explorer',
         'backups',

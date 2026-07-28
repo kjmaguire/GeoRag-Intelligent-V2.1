@@ -25,8 +25,8 @@ export interface AuthUser {
     email: string;
     /** Surfaced by HandleInertiaRequests::share() (doc-phase 142).
      *  AppLayout uses this to render Admin nav links to the four
-     *  Track-3 admin surfaces (eval-dashboard, decision-history,
-     *  support-cockpit, hypothesis-workspace). */
+     *  Track-3 admin surfaces (decision-history, support-cockpit,
+     *  hypothesis-workspace). */
     is_admin?: boolean;
 }
 

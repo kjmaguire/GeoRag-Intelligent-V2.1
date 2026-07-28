@@ -13,9 +13,6 @@ use App\Http\Controllers\Admin\ClusterIngestController;
 use App\Http\Controllers\Admin\ConflictsController;
 use App\Http\Controllers\Admin\DashboardsController as AdminDashboardsController;
 use App\Http\Controllers\Admin\DecisionHistoryController;
-use App\Http\Controllers\Admin\EvalCompareController;
-use App\Http\Controllers\Admin\EvalDashboardController;
-use App\Http\Controllers\Admin\EvalQuestionsController;
 use App\Http\Controllers\Admin\HatchetWorkersController;
 use App\Http\Controllers\Admin\HypothesisWorkspaceController;
 // Phase 4 Step 6 — ShadowRunsController removed alongside silver.shadow_runs.
@@ -473,58 +470,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // silver collars / passages / embeddings).
     Route::get('/admin/cluster-ingest', [ClusterIngestController::class, 'index'])
         ->name('admin.cluster-ingest');
-
-    // Master-plan §10.7 (doc-phase 128) — Eval Dashboard.
-    // Surfaces golden-question population, ontology progress, recent
-    // eval runs. Reads eval.golden_questions + eval.run_summaries +
-    // silver.geological_ontology_terms.
-    Route::get('/admin/eval-dashboard', [EvalDashboardController::class, 'index'])
-        ->name('admin.eval-dashboard');
-
-    // Master-plan §10-v2 (doc-phase 179) — Golden Question Authoring UI.
-    // Admin CRUD over eval.golden_questions, proxied through FastAPI.
-    Route::get('/admin/eval/questions',
-        [EvalQuestionsController::class, 'index'])
-        ->name('admin.eval.questions.index');
-    Route::get('/admin/eval/questions/new',
-        [EvalQuestionsController::class, 'create'])
-        ->name('admin.eval.questions.create');
-    Route::get('/admin/eval/questions/{id}',
-        [EvalQuestionsController::class, 'show'])
-        ->name('admin.eval.questions.show')
-        ->whereUuid('id');
-    Route::post('/admin/eval/questions',
-        [EvalQuestionsController::class, 'store'])
-        ->name('admin.eval.questions.store');
-    Route::put('/admin/eval/questions/{id}',
-        [EvalQuestionsController::class, 'update'])
-        ->name('admin.eval.questions.update')
-        ->whereUuid('id');
-    Route::post('/admin/eval/questions/{id}/transition',
-        [EvalQuestionsController::class, 'transition'])
-        ->name('admin.eval.questions.transition')
-        ->whereUuid('id');
-    Route::post('/admin/eval/questions/{id}/dry-run',
-        [EvalQuestionsController::class, 'dryRun'])
-        ->name('admin.eval.questions.dry-run')
-        ->whereUuid('id');
-
-    // Master-plan §10-v2 (doc-phase 179) — Eval Compare (trend + diff + drill).
-    // Side-by-side comparison of any two eval runs with the §10.6
-    // promotion-gate enforcer wired as the verdict action.
-    Route::get('/admin/eval/compare',
-        [EvalCompareController::class, 'index'])
-        ->name('admin.eval.compare');
-    Route::get('/admin/eval/compare/runs.json',
-        [EvalCompareController::class, 'runsJson'])
-        ->name('admin.eval.compare.runs');
-    Route::get('/admin/eval/compare/runs/{id}.json',
-        [EvalCompareController::class, 'perSetJson'])
-        ->name('admin.eval.compare.per-set')
-        ->whereUuid('id');
-    Route::post('/admin/eval/compare/assess',
-        [EvalCompareController::class, 'assess'])
-        ->name('admin.eval.compare.assess');
 
     // Master-plan §9.12 (doc-phase 129) — Decision History.
     // Cross-workspace view of silver.decision_records + the audit_ledger

@@ -90,8 +90,8 @@ from pydantic import BaseModel, Field, field_validator
 if TYPE_CHECKING:
     import asyncpg
 
-    from app.services.eval.pdf_vl_shadow import VlShadowObservation
     from app.services.pdf_render import PdfRenderService
+    from app.services.pdf_vl_shadow import VlShadowObservation
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +512,7 @@ class PdfVlService:
 
         Renders the section ONCE and feeds the identical images to each model so
         the comparison isolates the model, not the input. Returns a paired
-        ``VlShadowObservation`` for ``services.eval.pdf_vl_shadow.assess_vl_shadow``.
+        ``VlShadowObservation`` for ``services.pdf_vl_shadow.assess_vl_shadow``.
 
         This is a read-only probe — neither result is persisted to
         silver.pdf_vl_summaries (the shadow window must not pollute the
@@ -522,7 +522,7 @@ class PdfVlService:
 
         Defaults: V2 ← ``PDF_VL_MODEL_ID_V2``, V3 ← ``PDF_VL_MODEL_ID_V3``.
         """
-        from app.services.eval.pdf_vl_shadow import VlShadowObservation
+        from app.services.pdf_vl_shadow import VlShadowObservation
 
         v2 = v2_model_id or os.environ.get("PDF_VL_MODEL_ID_V2", _DEFAULT_MODEL_ID_V2)
         v3 = v3_model_id or os.environ.get("PDF_VL_MODEL_ID_V3", _DEFAULT_MODEL_ID_V3)

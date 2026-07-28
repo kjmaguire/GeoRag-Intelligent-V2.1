@@ -10,7 +10,7 @@ import os
 import asyncpg
 import pytest
 
-from app.services.eval.mechanical_questions import (
+from app.services.eval_seeders import (
     ALL_MECHANICAL_QUESTIONS,
     NUMERIC_GROUNDING_QUESTIONS,
     REFUSAL_CORRECTNESS_QUESTIONS,
@@ -18,7 +18,7 @@ from app.services.eval.mechanical_questions import (
     SCHEMA_MAPPING_QUESTIONS,
     seed_mechanical_questions,
 )
-from app.services.eval.mechanical_questions.seed_runner import stable_question_id
+from app.services.eval_seeders.seed_runner import stable_question_id
 
 
 def _dsn() -> str:

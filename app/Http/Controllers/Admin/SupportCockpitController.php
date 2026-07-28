@@ -37,7 +37,6 @@ use Inertia\Response;
  *   - get_workspace_audit_excerpt (doc-phase 121) — paginated reader
  *
  * Future graduations that populate this surface:
- *   - §10.4 evaluate_workspace workflow body
  *   - §10.10 support_replay workflow body
  *   - 5 §25.4 support agents (ticket_triage, root_cause_investigation,
  *     support_packet, customer_response_drafting, escalation_routing)

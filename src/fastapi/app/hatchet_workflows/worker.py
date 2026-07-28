@@ -39,8 +39,6 @@ from app.hatchet_workflows.continuous_learning_loop import continuous_learning_l
 from app.hatchet_workflows.cost_burn_watcher import cost_burn_watcher  # §5
 from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
 from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
-from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
-from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-phase 98
 from app.hatchet_workflows.external_notification import external_notification
 from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
 from app.hatchet_workflows.flow_jwt_key_reaper import flow_jwt_key_reaper
@@ -64,7 +62,6 @@ from app.hatchet_workflows.reliability_metrics_publisher import (
 )
 from app.hatchet_workflows.repair_shadow_aggregate import repair_shadow_aggregate
 from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
-from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
 from app.hatchet_workflows.score_targets import score_targets  # doc-phase 88
 from app.hatchet_workflows.stale_run_detector import stale_run_detector  # reliability spec Fix 1e
 from app.hatchet_workflows.support_replay import support_replay  # doc-phase 98
@@ -153,16 +150,6 @@ POOLS = {
         # every Monday at 06:00 UTC. Emits a workspace.what_changed.
         # weekly_digest audit anchor (system-wide, NULL workspace_id).
         what_changed_weekly,
-        # Doc-phase 98 / Master-plan §10.4 — evaluate_workspace runs
-        # the golden-question eval suite + promotion gating. Skeleton.
-        evaluate_workspace,
-        # Doc-phase 170 / Master-plan §10.6 — eval_real_rag_nightly is
-        # the cron wrapper that fires real_rag_v1 against
-        # refusal_correctness nightly @ 05:15 UTC. Wraps
-        # evaluate_workspace because evaluate_workspace requires a
-        # non-default eval_request_id (incompatible with empty cron
-        # payload). Generates a fresh UUID per fire.
-        eval_real_rag_nightly,
         # Doc-phase 183 — silver → Neo4j sync. Wraps the kg_sync
         # service so cluster ingests can trigger KG population from a
         # workflow rather than out-of-band script.
@@ -218,10 +205,6 @@ POOLS = {
         # per-workspace threshold. Cron every 5 min; idempotent within
         # the window so operators see one alert per breach, not 12.
         cost_burn_watcher,
-        # Answer quality eval — Qwen3-as-judge faithfulness + context
-        # precision scoring. Nightly catch-up at 06:00 UTC; scores
-        # audit.query_audit_log rows where faithfulness_score IS NULL.
-        score_answer_quality_wf,
         # bc_minfile_pull (§6.2) + nrcan_geo_pull (§6.3) retired 2026-05-25 —
         # superseded by Dagster Bronze→Silver pipeline. Stale cron entries on
         # the Hatchet engine side were cleared via the de-registration sweep

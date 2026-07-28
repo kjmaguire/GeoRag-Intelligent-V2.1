@@ -24,22 +24,22 @@ Pattern:
        (no human review queue — they test deterministic system
        behaviors, not interpretive output).
 """
-from app.services.eval.mechanical_questions.core_chat_wyoming_uranium import (
+from app.services.eval_seeders.core_chat_wyoming_uranium import (
     QUESTIONS as CORE_CHAT_WYOMING_QUESTIONS,
 )
-from app.services.eval.mechanical_questions.numeric_grounding import (
+from app.services.eval_seeders.numeric_grounding import (
     QUESTIONS as NUMERIC_GROUNDING_QUESTIONS,
 )
-from app.services.eval.mechanical_questions.refusal_correctness import (
+from app.services.eval_seeders.refusal_correctness import (
     QUESTIONS as REFUSAL_CORRECTNESS_QUESTIONS,
 )
-from app.services.eval.mechanical_questions.report_section import (
+from app.services.eval_seeders.report_section import (
     QUESTIONS as REPORT_SECTION_QUESTIONS,
 )
-from app.services.eval.mechanical_questions.schema_mapping import (
+from app.services.eval_seeders.schema_mapping import (
     QUESTIONS as SCHEMA_MAPPING_QUESTIONS,
 )
-from app.services.eval.mechanical_questions.seed_runner import (
+from app.services.eval_seeders.seed_runner import (
     SeedReport,
     seed_mechanical_questions,
 )

@@ -154,12 +154,6 @@ export default function DecisionHistory({
                                 ledger entries they anchor. Master-plan §9.12.
                             </p>
                         </div>
-                        <Link
-                            href="/admin/eval-dashboard"
-                            className="text-sm text-stone-400 hover:text-amber-300"
-                        >
-                            Eval Dashboard →
-                        </Link>
                     </header>
 
                     {/* KPI tiles */}

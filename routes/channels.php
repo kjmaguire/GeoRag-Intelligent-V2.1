@@ -158,7 +158,6 @@ Broadcast::channel('admin.llm-cost', $adminOnly);
 // admin.cache-telemetry is registered for symmetry but has no
 // subscriber yet (live updates deferred per Phase 5 decision 6).
 Broadcast::channel('admin.cache-telemetry', $adminOnly);
-Broadcast::channel('admin.eval-dashboard', $adminOnly);
 Broadcast::channel('admin.conflicts', $adminOnly);
 Broadcast::channel('admin.audit-explorer', $adminOnly);
 Broadcast::channel('admin.backups', $adminOnly);

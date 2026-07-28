@@ -1170,8 +1170,6 @@ app.include_router(tier234_router.saved_maps_router)
 app.include_router(tier234_router.alerts_router)
 app.include_router(tier234_router.phase_h4_health_router)
 app.include_router(tier234_router.backups_router)
-app.include_router(tier234_router.eval_promotion_router)  # §10.6 promotion gate
-app.include_router(tier234_router.eval_questions_router)  # §10-v2 authoring CRUD
 
 # §19.3 Interpretation Workspace — notes / section-lines / target-zones / comments
 from app.routers import interpretation as interpretation_router  # noqa: E402
