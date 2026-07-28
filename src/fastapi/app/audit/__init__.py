@@ -122,25 +122,38 @@ async def emit_audit(
     # GUC (system-event paths, test fixtures), we temporarily align the
     # GUC to the row's workspace_id around the INSERT and restore the
     # caller's prior value on exit.
+    #
+    # 2026-07-28 (#26): was session-scoped (`false`), which is a real
+    # PgBouncer transaction-pool hazard — this file can't migrate to
+    # bind_workspace_scope/scoped_connection like the other call sites
+    # because it must tolerate an empty-string workspace_id (system-event
+    # paths, test fixtures), which those helpers reject by design. Fixed
+    # in place instead: wrap the read-set-insert-restore sequence in one
+    # explicit transaction (a SAVEPOINT when conn already has a caller
+    # transaction open, asyncpg handles that automatically) and switch to
+    # `true` (SET LOCAL). This pins everything to one backend connection
+    # under pooling, AND means a failed insert now rolls back the
+    # temporary override automatically via the transaction/savepoint —
+    # the explicit restore is only needed on the success path.
     ws_setting = (
         str(workspace_id) if isinstance(workspace_id, UUID)
         else (workspace_id or "")
     )
 
     async def _exec(conn: asyncpg.Connection):
-        prior = await conn.fetchval(
-            "SELECT current_setting('app.workspace_id', true)"
-        )
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", ws_setting,
-        )
-        try:
-            return await conn.fetchrow(sql, *args)
-        finally:
+        async with conn.transaction():
+            prior = await conn.fetchval(
+                "SELECT current_setting('app.workspace_id', true)"
+            )
             await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
+                "SELECT set_config('app.workspace_id', $1, true)", ws_setting,
+            )
+            row = await conn.fetchrow(sql, *args)
+            await conn.execute(
+                "SELECT set_config('app.workspace_id', $1, true)",
                 prior or "",
             )
+            return row
 
     if isinstance(conn_or_pool, asyncpg.Pool):
         async with conn_or_pool.acquire() as conn:

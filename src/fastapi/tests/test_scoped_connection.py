@@ -220,15 +220,22 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # OCR persist helper — migrated 2026-06-03.
         # routers (4 sites remaining after REC#2 Phase-2 sweep).
         # citation_feedback.py migrated 2026-06-03 via REC#2 Phase 2.
-        # visualizations.py migrated REC#1 to typed Depends; the GUC
-        # ref left here is in legacy comments only.
-        "routers/interpretation.py",
+        # routers/interpretation.py — migrated to scoped_connection() 2026-07-28
+        # (#26): same PgBouncer transaction-pool RLS hazard as visualizations.py
+        # (12 bespoke set_config(..., false) sites via a shared `_scope()`
+        # helper, no explicit transaction wrapping). All 12 now use the
+        # canonical helper; `_scope()` deleted. Removed from this list.
         # routers/shadow_trigger.py — removed 2026-06-28: no longer contains a
         # bespoke set_config('app.workspace_id', ...) (migrated away); the guard
         # requires this list to shrink, so dead entries must be deleted.
         # routers/target_recommendation_cockpit.py — the file was deleted
         # 2026-07-28 (task #31, zero live callers); removed from this list.
-        "routers/visualizations.py",
+        # routers/visualizations.py — migrated to scoped_connection() 2026-07-28
+        # (#26): its 9 bespoke set_config(..., false) call sites were a real
+        # PgBouncer transaction-pool RLS hazard (SET LOCAL with no explicit
+        # transaction is a no-op past the statement that issued it); all 9 now
+        # use the canonical helper, which pins the SET + query to one explicit
+        # transaction. Removed from this list.
         # services/ — most of the ingest pipeline migrated 2026-06-03
         # in the second REC#2 Phase-2 wave (claim_ledger 5 sites,
         # cluster_runner 2 sites, context_enricher, derive_intervals 2
@@ -241,17 +248,13 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # migrate them mechanically per the reference. Each is ~25
         # lines of bespoke GUC plumbing collapsed to ~13 lines using
         # lookup_and_rescope (+ adds UUID validation on the pivot).
-        # ticket_triage.py has a SECOND set_config call inside its
-        # cron-style batch list-tickets path — that one is a single
-        # scope (not two-phase) and should migrate to scoped_connection
-        # instead of lookup_and_rescope.
         # 3 of 4 support_cockpit services (escalation_routing,
         # root_cause_investigation, support_packet) migrated to
         # lookup_and_rescope 2026-06-04 — no longer have bespoke
-        # set_config. ticket_triage.py keeps its entry because its
-        # cron-style batch path still uses a single-scope set_config
-        # (the primary triage_ticket path is on lookup_and_rescope).
-        "services/support_cockpit/ticket_triage.py",
+        # set_config. ticket_triage.py's cron-style batch path (the 4th
+        # site, `triage_unclassified_tickets`) migrated to
+        # scoped_connection() 2026-07-28 (#26 — same bare-false hazard as
+        # visualizations.py/interpretation.py). Removed from this list.
         # services/tool_gateway/gateway.py migrated 2026-06-03 (REC#2
         # Phase-2 sweep — 10 bespoke sites replaced with scoped_connection).
     }

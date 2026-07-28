@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID, WorkspaceContext
 from app.agent.workspace_dependency import OptionalWorkspace
+from app.db.scoped_pool import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.auth import verify_service_key
 from app.services.visualizations import (
@@ -145,10 +146,9 @@ async def _fetch_strip_log_intervals(
     `app.workspace_id` GUC that the orchestrator sets on every
     connection — RLS denies cross-tenant access by default.
     """
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_strip_log_intervals"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT
@@ -280,10 +280,9 @@ async def _fetch_cross_section_panels(
     section_line_id: UUID,
 ) -> list[CrossSectionPanel]:
     """Pull pre-projected panels from gold.cross_section_panels."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_cross_section_panels"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT
@@ -400,10 +399,9 @@ async def _fetch_stereonet_points(
 ) -> list[StereonetPoint]:
     """Pull pre-aggregated structural measurements from
     gold.structure_measurements_visual."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_stereonet_points"
+    ) as conn:
         if measurement_kind:
             rows = await conn.fetch(
                 """
@@ -546,10 +544,9 @@ async def _fetch_long_section_collars(
     reference_azimuth_deg: float | None = None,
 ) -> dict[str, Any]:
     """Pull silver.collars for one project shaped for long_section_figure."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_long_section_collars"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT hole_id,
@@ -575,10 +572,9 @@ async def _fetch_target_heatmap_cells(
     *, pg_pool, workspace_id: str, commodity: str | None,
 ) -> dict[str, Any]:
     """Pull gold.h3_density_mineral cells, convert h3 → lng/lat for plot."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_target_heatmap_cells"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT silver.h3_cell_to_latlng(h3_index) AS center,
@@ -616,10 +612,9 @@ async def _fetch_harker_samples(
     y_oxide: str = "Al2O3",
 ) -> dict[str, Any]:
     """Pull SiO2 + y_oxide per sample for Harker diagram."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_harker_samples"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT s.rock_type,
@@ -651,10 +646,9 @@ async def _fetch_geochem_samples_by_element(
     elements: list[str], limit_samples: int = 5,
 ) -> list[dict[str, Any]]:
     """Pull samples × element matrix (for spider / REE)."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_geochem_samples_by_element"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT s.sample_code, a.assay_element, a.assay_value
@@ -687,10 +681,9 @@ async def _fetch_grade_tonnage_samples(
     tonnes_per_sample: float = 1000.0,
 ) -> dict[str, Any]:
     """Pull (grade, tonnes) tuples for grade-tonnage curve."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_grade_tonnage_samples"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT a.assay_value AS grade
@@ -720,10 +713,9 @@ async def _fetch_anomaly_map_samples(
     a real wiring would use silver.assays once that table lands. This
     is honest fallback behaviour the chart can demonstrate against
     actual project data."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_anomaly_map_samples"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat,
