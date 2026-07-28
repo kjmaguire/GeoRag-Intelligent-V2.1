@@ -36,7 +36,10 @@ async def test_report_builder_graph_runs_end_to_end():
         risk_tier="R3",
         requested_by_user_id=1,
     )
-    result = await graph.ainvoke(initial)
+    result = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.report_id)}},
+    )
     # LangGraph returns a dict — rehydrate.
     final = ReportBuilderState.model_validate(result)
     assert final.failure_reason is None
@@ -59,7 +62,10 @@ async def test_report_builder_graph_propagates_failure_reason():
         risk_tier="R5",                        # mismatch
         requested_by_user_id=1,
     )
-    result = await graph.ainvoke(initial)
+    result = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.report_id)}},
+    )
     final = ReportBuilderState.model_validate(result)
     assert final.failure_reason is not None
     assert "risk_tier=R5 does not match" in final.failure_reason
@@ -88,7 +94,10 @@ async def test_target_recommendation_graph_runs_end_to_end():
         aoi_geom_wkt="POLYGON((-1 -1, 2 -1, 2 2, -1 2, -1 -1))",
         candidate_zones=zones,
     )
-    result = await graph.ainvoke(initial)
+    result = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.run_id)}},
+    )
     final = TargetRecommendationState.model_validate(result)
 
     # Pipeline produced ranked targets, sorted DESC by score.
@@ -124,7 +133,10 @@ async def test_target_recommendation_graph_with_no_zones_still_runs():
         aoi_geom_wkt="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
         candidate_zones=[],
     )
-    result = await graph.ainvoke(initial)
+    result = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.run_id)}},
+    )
     final = TargetRecommendationState.model_validate(result)
     assert final.failure_reason is None
     # generate_candidate_zones populated 5 synthetic zones

@@ -156,7 +156,10 @@ async def execute(input: ScoreTargetsInput, ctx: Context) -> ScoreTargetsOutput:
     )
 
     graph = build_target_recommendation_graph()
-    raw = await graph.ainvoke(initial_state)
+    raw = await graph.ainvoke(
+        initial_state,
+        config={"configurable": {"thread_id": str(run_id)}},
+    )
     final = TargetRecommendationState.model_validate(raw)
 
     success = final.failure_reason is None
