@@ -428,7 +428,7 @@ async def test_executor_sets_workspace_id_GUC_before_query():
     assert len(conn.execute_calls) == 1
     set_sql, set_args = conn.execute_calls[0]
     assert "set_config('app.workspace_id'" in set_sql
-    assert set_args == ("a0000000-0000-0000-0000-000000000001",)
+    assert set_args == ("a0000000-0000-0000-0000-000000000001", True)
 
 
 @pytest.mark.asyncio
@@ -442,7 +442,7 @@ async def test_executor_passes_plan_params_to_fetch():
         buffer_m=300.0,
     )
     plan = plan_spatial_query(spec)
-    await execute_spatial_query(pool, plan, workspace_id="ws-1")
+    await execute_spatial_query(pool, plan, workspace_id="11111111-1111-4111-8111-111111111111")
     fetch_sql, fetch_args = conn.fetch_calls[0]
     assert fetch_sql == plan.sql
     assert fetch_args == plan.params
@@ -471,5 +471,5 @@ async def test_executor_returns_empty_list_when_no_rows():
         geometry_wkt="POINT(0 0)",
     )
     plan = plan_spatial_query(spec)
-    rows = await execute_spatial_query(pool, plan, workspace_id="ws-1")
+    rows = await execute_spatial_query(pool, plan, workspace_id="11111111-1111-4111-8111-111111111111")
     assert rows == []

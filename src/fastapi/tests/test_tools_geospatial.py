@@ -111,7 +111,7 @@ async def test_query_spatial_geometry_intersects_returns_rows():
 
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.collars",
         operation="intersects",
@@ -131,7 +131,7 @@ async def test_query_spatial_geometry_dwithin_with_buffer():
     deps = _FakeDeps(pool)
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.collars",
         operation="dwithin",
@@ -152,7 +152,7 @@ async def test_query_spatial_geometry_dwithin_defaults_buffer_when_missing():
     deps = _FakeDeps(pool)
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.collars",
         operation="dwithin",
@@ -174,7 +174,7 @@ async def test_query_text_keywords_fill_missing_target_and_op():
     deps = _FakeDeps(pool)
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         geometry_wkt="POINT(0 0)",
         query_text="show collars within 750 m of the corridor",
@@ -194,7 +194,7 @@ async def test_query_text_keywords_dont_override_caller_supplied():
     deps = _FakeDeps(pool)
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.spatial_features",  # caller-supplied
         operation="intersects",             # caller-supplied
@@ -231,7 +231,7 @@ async def test_missing_geometry_wkt_returns_none():
     deps = _FakeDeps(_MockPool(_MockConn()))
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.collars",
         operation="intersects",
@@ -247,7 +247,7 @@ async def test_missing_pool_returns_none():
 
     result = await query_spatial_geometry(
         _NoPoolDeps(),
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.collars",
         operation="intersects",
@@ -262,7 +262,7 @@ async def test_unknown_target_returns_none_after_logging():
     deps = _FakeDeps(_MockPool(_MockConn()))
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.does_not_exist",
         operation="intersects",
@@ -278,7 +278,7 @@ async def test_planner_validation_failure_returns_none():
     deps = _FakeDeps(_MockPool(_MockConn()))
     result = await query_spatial_geometry(
         deps,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         project_id="p1",
         target="silver.collars",
         operation="intersects",
@@ -300,7 +300,7 @@ async def test_query_sets_workspace_id_guc_inside_transaction():
     deps = _FakeDeps(pool)
     await query_spatial_geometry(
         deps,
-        workspace_id="ws-tenant-9",
+        workspace_id="99999999-9999-4999-8999-999999999999",
         project_id="p1",
         target="silver.collars",
         operation="intersects",
@@ -308,6 +308,7 @@ async def test_query_sets_workspace_id_guc_inside_transaction():
     )
     # First execute call inside the transaction is set_config.
     assert any(
-        "set_config('app.workspace_id'" in sql and args == ("ws-tenant-9",)
+        "set_config('app.workspace_id'" in sql
+        and args == ("99999999-9999-4999-8999-999999999999", True)
         for sql, args in conn.execute_calls
     )

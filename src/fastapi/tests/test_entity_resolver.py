@@ -119,7 +119,7 @@ async def test_resolve_entity_raises_on_unknown_entity_type():
     with pytest.raises(ValueError, match="unknown entity_type"):
         await resolve_entity(
             pool,
-            workspace_id="ws-1",
+            workspace_id="11111111-1111-4111-8111-111111111111",
             entity_type="not_a_real_kind",
             entity_text="x",
         )
@@ -141,7 +141,7 @@ async def test_exact_match_returns_canonical_with_confidence_one():
     pool = _MockPool(_MockConn(exact_row=exact_row))
     result = await resolve_entity(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_type="property",
         entity_text="cracking-stone property",  # alias
     )
@@ -164,7 +164,7 @@ async def test_exact_match_does_not_log_gap():
     conn = _MockConn(exact_row=exact_row)
     pool = _MockPool(conn)
     await resolve_entity(
-        pool, workspace_id="ws-1", entity_type="property", entity_text="x",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", entity_type="property", entity_text="x",
     )
     # No INSERT INTO alias_gaps in execute_calls (only set_config).
     inserts = [
@@ -191,7 +191,7 @@ async def test_fuzzy_match_returns_similarity_as_confidence():
     pool = _MockPool(_MockConn(exact_row=None, fuzzy_row=fuzzy_row))
     result = await resolve_entity(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_type="property",
         entity_text="cracking stone",
     )
@@ -209,7 +209,7 @@ async def test_fuzzy_match_respects_threshold():
     pool = _MockPool(_MockConn(exact_row=None, fuzzy_row=None))
     result = await resolve_entity(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_type="property",
         entity_text="totally unrelated string",
         fuzzy_threshold=0.95,
@@ -228,7 +228,7 @@ async def test_miss_logs_gap_with_detector():
     pool = _MockPool(conn)
     result = await resolve_entity(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_type="property",
         entity_text="zzzzz",
         gap_detector="custom_detector",
@@ -255,7 +255,7 @@ async def test_log_gap_on_miss_false_skips_gap_insert():
     pool = _MockPool(conn)
     await resolve_entity(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_type="property",
         entity_text="zzzzz",
         log_gap_on_miss=False,
@@ -273,7 +273,7 @@ async def test_empty_entity_text_returns_gap_without_db_write():
     conn = _MockConn()
     pool = _MockPool(conn)
     result = await resolve_entity(
-        pool, workspace_id="ws-1", entity_type="property", entity_text="   ",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", entity_type="property", entity_text="   ",
     )
     assert result.match_kind == "gap_logged"
     # Pool.acquire() was never entered → no execute_calls.
@@ -291,7 +291,7 @@ async def test_gap_log_swallows_db_failure():
     # Resolver returns the gap result; doesn't raise.
     result = await resolve_entity(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_type="property",
         entity_text="zzzzz",
     )
@@ -309,14 +309,14 @@ async def test_resolve_sets_workspace_id_GUC_inside_transaction():
     pool = _MockPool(conn)
     await resolve_entity(
         pool,
-        workspace_id="ws-tenant-7",
+        workspace_id="77777777-7777-4777-8777-777777777777",
         entity_type="property",
         entity_text="x",
     )
     # First execute call is set_config; arg matches workspace_id.
     assert any(
         "set_config('app.workspace_id'" in sql
-        and args == ("ws-tenant-7",)
+        and args == ("77777777-7777-4777-8777-777777777777", True)
         for sql, args in conn.execute_calls
     )
 
@@ -332,7 +332,7 @@ async def test_log_alias_gap_inserts_with_provided_detector():
     pool = _MockPool(conn)
     await log_alias_gap(
         pool,
-        workspace_id="ws-1",
+        workspace_id="11111111-1111-4111-8111-111111111111",
         entity_text="UnknownHole-99",
         entity_type_guess="hole_id",
         detector="hole_id_extractor",
