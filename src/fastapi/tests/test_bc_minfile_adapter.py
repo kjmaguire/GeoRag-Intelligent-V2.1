@@ -6,6 +6,8 @@ import os
 import asyncpg
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from app.services.publicgeo.bc_minfile_adapter import (
     _feature_checksum,
     _fetch_bc_minfile_features,

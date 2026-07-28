@@ -6,6 +6,8 @@ import os
 import asyncpg
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from app.services.publicgeo.sk_drillhole_adapter import (
     _fetch_sk_drillhole_features,
     sync_sk_drillhole_collars,

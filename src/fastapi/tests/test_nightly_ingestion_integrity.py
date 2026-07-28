@@ -18,6 +18,8 @@ import uuid
 import asyncpg
 import pytest
 
+pytestmark = pytest.mark.integration
+
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 

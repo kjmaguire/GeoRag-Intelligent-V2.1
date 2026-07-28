@@ -6,6 +6,8 @@ import os
 import asyncpg
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from app.services.publicgeo.assessment_survey_adapters import (
     _fetch_bc_aris_features,
     _fetch_sk_assessment_features,

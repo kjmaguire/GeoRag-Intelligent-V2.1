@@ -28,6 +28,8 @@ import os
 import asyncpg
 import pytest
 
+pytestmark = pytest.mark.integration
+
 pytestmark = pytest.mark.asyncio
 
 
