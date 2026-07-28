@@ -43,7 +43,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.audit import emit_audit
-from app.db import lookup_and_rescope
+from app.db import BareConnectionError, lookup_and_rescope
 
 log = logging.getLogger("georag.support_cockpit.root_cause_investigation")
 
@@ -343,6 +343,10 @@ async def investigate_ticket(
                 relevant_decision_ids=relevant_decision_ids,
                 investigation_method="synthetic_stub",
             )
+    except BareConnectionError as exc:
+        if "lookup_sql returned no rows" in str(exc):
+            raise ValueError(f"Ticket {ticket_str} not found") from exc
+        raise
     finally:
         if owns_pool and pool is not None:
             await pool.close()
