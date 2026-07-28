@@ -87,6 +87,16 @@ abstract class TestCase extends BaseTestCase
                 // ── Strip schema prefixes ─────────────────────────────────────────
                 $query = str_replace('"silver".', '', $query);
                 $query = str_replace('silver.', '', $query);
+                $query = str_replace('"audit".', '', $query);
+                $query = str_replace('audit.', '', $query);
+                $query = str_replace('"bronze".', '', $query);
+                $query = str_replace('bronze.', '', $query);
+                $query = str_replace('"gold".', '', $query);
+                $query = str_replace('gold.', '', $query);
+                $query = str_replace('"workflow".', '', $query);
+                $query = str_replace('workflow.', '', $query);
+                $query = str_replace('"usage".', '', $query);
+                $query = str_replace('usage.', '', $query);
                 $query = str_replace('"public_geoscience".', '', $query);
                 $query = str_replace('public_geoscience.', '', $query);
                 // Post-2026-05-17 rename: `public_geoscience` → `public_geo`.

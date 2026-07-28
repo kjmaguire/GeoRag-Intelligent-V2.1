@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Test-DB parity migration — adds the four tenant/multi-project columns the
@@ -24,6 +26,17 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            Schema::table('reports', function (Blueprint $table): void {
+                $table->uuid('workspace_id')->nullable();
+                $table->uuid('project_id')->nullable();
+                $table->json('qp_name')->default('[]');
+                $table->date('effective_date')->nullable();
+            });
+
+            return;
+        }
+
         DB::statement(<<<'SQL'
             ALTER TABLE silver.reports
                 ADD COLUMN IF NOT EXISTS workspace_id uuid,
@@ -35,6 +48,19 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            Schema::table('reports', function (Blueprint $table): void {
+                $table->dropColumn([
+                    'workspace_id',
+                    'project_id',
+                    'qp_name',
+                    'effective_date',
+                ]);
+            });
+
+            return;
+        }
+
         DB::statement(<<<'SQL'
             ALTER TABLE silver.reports
                 DROP COLUMN IF EXISTS workspace_id,
