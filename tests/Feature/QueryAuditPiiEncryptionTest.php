@@ -28,7 +28,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
 
     public function test_query_text_is_ciphertext_in_db_but_plaintext_on_model(): void
     {
-        $row = $this->createAuditLog([
+        $row = QueryAuditLog::create([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -46,7 +46,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
         $this->assertNotFalse(Crypt::decryptString($raw), 'Raw column should be Laravel-encrypted');
 
         // Reading via the model decrypts transparently.
-        $fresh = $this->auditLogQuery()->find($row->audit_id);
+        $fresh = QueryAuditLog::find($row->audit_id);
         $this->assertSame('Confidential JV: Gold Corp / Rio XYZ acquisition', $fresh->query_text);
     }
 
@@ -54,7 +54,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
     {
         $text = 'What is the average gold grade?';
 
-        $a = $this->createAuditLog([
+        $a = QueryAuditLog::create([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -63,7 +63,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
             'llm_model' => 'qwen2.5:14b',
         ]);
 
-        $b = $this->createAuditLog([
+        $b = QueryAuditLog::create([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -78,7 +78,7 @@ class QueryAuditPiiEncryptionTest extends TestCase
         $this->assertSame($a->query_text_hash, $b->query_text_hash);
 
         // A different query produces a different hash.
-        $c = $this->createAuditLog([
+        $c = QueryAuditLog::create([
             'user_id' => null,
             'project_id' => (string) Str::uuid(),
             'query_id' => (string) Str::uuid(),
@@ -87,23 +87,5 @@ class QueryAuditPiiEncryptionTest extends TestCase
             'llm_model' => 'qwen2.5:14b',
         ]);
         $this->assertNotSame($a->query_text_hash, $c->query_text_hash);
-    }
-
-    private function createAuditLog(array $attributes): QueryAuditLog
-    {
-        $row = new QueryAuditLog;
-        $row->setTable('query_audit_log');
-        $row->fill($attributes);
-        $row->save();
-
-        return $row;
-    }
-
-    private function auditLogQuery()
-    {
-        $model = new QueryAuditLog;
-        $model->setTable('query_audit_log');
-
-        return $model->newQuery();
     }
 }

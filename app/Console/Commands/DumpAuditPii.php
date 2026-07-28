@@ -71,28 +71,30 @@ class DumpAuditPii extends Command
                 if (! is_dir($dir)) {
                     throw new RuntimeException("Output directory does not exist: {$dir}");
                 }
-                $perms = fileperms($dir) & 0777;
-                $sticky = (fileperms($dir) & 0o1000) !== 0; // /tmp-style sticky bit
-                if (($perms & 0o002) !== 0 && ! $sticky) {
-                    // Truly world-writable, no sticky bit — refuse.
-                    throw new RuntimeException(
-                        "Refusing to dump PII: directory {$dir} is world-writable with "
-                        .'no sticky bit (perms='.decoct($perms).'). '
-                        ."Tighten with: chmod o-w {$dir}  (or +t for sticky).",
-                    );
-                }
-                if (($perms & 0o002) !== 0 && $sticky) {
-                    $this->warn(
-                        "Dump directory {$dir} is world-writable with sticky bit. "
-                        .'OK for transient dumps that get shredded immediately, '
-                        .'but prefer a locked-down directory for long-lived backups.',
-                    );
-                }
-                if (($perms & 0o004) !== 0) {
-                    $this->warn(
-                        "Dump directory {$dir} is world-readable — proceeding but this "
-                        .'violates least-privilege for PII at rest.',
-                    );
+                if (DIRECTORY_SEPARATOR !== '\\') {
+                    $perms = fileperms($dir) & 0777;
+                    $sticky = (fileperms($dir) & 0o1000) !== 0; // /tmp-style sticky bit
+                    if (($perms & 0o002) !== 0 && ! $sticky) {
+                        // Truly world-writable, no sticky bit — refuse.
+                        throw new RuntimeException(
+                            "Refusing to dump PII: directory {$dir} is world-writable with "
+                            .'no sticky bit (perms='.decoct($perms).'). '
+                            ."Tighten with: chmod o-w {$dir}  (or +t for sticky).",
+                        );
+                    }
+                    if (($perms & 0o002) !== 0 && $sticky) {
+                        $this->warn(
+                            "Dump directory {$dir} is world-writable with sticky bit. "
+                            .'OK for transient dumps that get shredded immediately, '
+                            .'but prefer a locked-down directory for long-lived backups.',
+                        );
+                    }
+                    if (($perms & 0o004) !== 0) {
+                        $this->warn(
+                            "Dump directory {$dir} is world-readable — proceeding but this "
+                            .'violates least-privilege for PII at rest.',
+                        );
+                    }
                 }
                 if (! $dryRun) {
                     $stream = fopen($output, 'w');
