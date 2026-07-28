@@ -49,6 +49,7 @@ from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP a
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
 from app.hatchet_workflows.outbox_dispatcher import outbox_dispatcher
+from app.hatchet_workflows.pg_partman_maintenance import pg_partman_maintenance
 from app.hatchet_workflows.phase0_agents import (
     AI_AGENT_WORKFLOWS,
     INGESTION_AGENT_WORKFLOWS,
@@ -185,6 +186,9 @@ POOLS = {
         backup_qdrant,      # 02:30 UTC
         backup_redis,       # 02:45 UTC
         backup_seaweedfs,   # 03:00 UTC
+        # 2026-06-27 audit T5 — advance the three monthly-partitioned
+        # ledgers before their p_premake=3 window expires. 04:15 UTC.
+        pg_partman_maintenance,
         # Master-plan §11.10 — nightly cold-tier archive (04:00 UTC,
         # after the backup window closes). Writes-only; pruning is
         # operator-gated.
