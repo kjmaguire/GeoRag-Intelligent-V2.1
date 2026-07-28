@@ -14,39 +14,11 @@ Run with:
 
 from __future__ import annotations
 
-import sys
-import types
 from unittest.mock import MagicMock, patch
 
-
-# Same dagster-parsers stub injection as Phase 1 persist tests, so the
-# fastapi ingest module can import _FIGURE_TEMPDIR_ROOT without the real
-# dagster install. The parser-side tests own the real implementation.
-def _ensure_parser_stub_module():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        import os as _os
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        _os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub_module()
-
+# A1 (2026-07-28): the parser is first-party now — see the matching note in
+# test_ingest_pdf_figure_persist.py for why the sys.modules stub had to go.
+from app.services.ingest import pdf_report as _pdf_report_module
 
 # ---------------------------------------------------------------------------
 # 1. _run_parser_subprocess section dicts include ocr_confidence + ocr_method
@@ -92,7 +64,7 @@ def test_run_parser_subprocess_includes_ocr_fields():
     stub.sections = [fitz_section, ocr_section]
 
     with patch.object(
-        sys.modules["georag_dagster.parsers.pdf_report"],
+        _pdf_report_module,
         "parse_pdf_report",
         MagicMock(return_value=stub),
     ):

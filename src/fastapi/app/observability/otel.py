@@ -1,8 +1,10 @@
 """Phase 5 Step 4 / R-P3-7 — lazy OTel TracerProvider bootstrap.
 
-Both the Dagster daemon and the Hatchet AI worker call
-``georag_dagster.parsers.pdf_report.parse_pdf_report``. This module gives
-them a shared, idempotent way to wire up an OTLP exporter when the
+Relocated 2026-07-28 (A1) from ``georag_dagster.observability`` alongside the
+PDF parser it instruments; the parser is now
+``app.services.ingest.pdf_report``. This module gives its callers — the
+Hatchet worker and the parse subprocess — a shared, idempotent way to wire up
+an OTLP exporter when the
 ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var is set, and a no-op tracer when
 it isn't — so emitting spans never crashes a parse just because the
 collector isn't reachable.

@@ -36,13 +36,12 @@ sys.modules.setdefault("boto3", _fake_boto3)
 sys.modules.setdefault("botocore", _fake_botocore)
 sys.modules.setdefault("botocore.config", _fake_botocore_config)
 
-from georag_dagster.parsers.pdf_report import (  # noqa: E402
+from app.services.ingest.pdf_report import (  # noqa: E402
     ReportParseResult,
     ReportSection,
     _figure_tempdir,
     _parse_with_docling,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: synthetic docling "Document" with pictures + a mocked S3 client
@@ -368,7 +367,7 @@ def test_report_parse_result_accepts_figure_manifest():
 # ---------------------------------------------------------------------------
 
 def test_legacy_cache_symbols_removed():
-    import georag_dagster.parsers.pdf_report as mod
+    import app.services.ingest.pdf_report as mod
 
     assert not hasattr(mod, "_DOCLING_FIGURE_CACHE")
     assert not hasattr(mod, "_DOCLING_FIGURE_CACHE_MAX")

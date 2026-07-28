@@ -16,9 +16,27 @@ from unittest.mock import patch
 
 import pytest
 
-from georag_dagster.parsers.pdf_report import (
+from app.services.ingest.pdf_report import (
     _detect_page_language,
     parse_pdf_report,
+)
+
+# A1 (2026-07-28): langdetect is now declared in src/fastapi/pyproject.toml, but
+# a running image built before that commit does not have it. _detect_page_language
+# swallows the ImportError and returns "unknown", so without the rebuild every
+# assertion in this file fails for an environment reason rather than a code one.
+# Skipping with an explicit reason keeps that visible instead of red.
+#
+# This dependency was never declared by either package — it only ever reached the
+# Dagster image transitively through unstructured[pdf], which Phase 10 removed on
+# 2026-05-22. So page-language detection has been dead on the live Hatchet ingest
+# path since then, and the mixed_language warning could not fire.
+pytest.importorskip(
+    "langdetect",
+    reason=(
+        "langdetect declared in pyproject on 2026-07-28 (A1); rebuild the "
+        "fastapi image to enable per-page language detection"
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -133,15 +151,15 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                "app.services.ingest.pdf_report._parse_with_pdfplumber",
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
+                "app.services.ingest.pdf_report._extract_resource_tables",
                 return_value=[],
             ),
         ):
@@ -159,15 +177,15 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                "app.services.ingest.pdf_report._parse_with_pdfplumber",
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
+                "app.services.ingest.pdf_report._extract_resource_tables",
                 return_value=[],
             ),
         ):
@@ -190,15 +208,15 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                "app.services.ingest.pdf_report._parse_with_pdfplumber",
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
+                "app.services.ingest.pdf_report._extract_resource_tables",
                 return_value=[],
             ),
         ):
@@ -215,15 +233,15 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                "app.services.ingest.pdf_report._parse_with_pdfplumber",
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
+                "app.services.ingest.pdf_report._extract_resource_tables",
                 return_value=[],
             ),
         ):
@@ -239,15 +257,15 @@ class TestMixedLanguageWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=ImportError("not available"),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_pdfplumber",
-                return_value=(mock_text, "Test Report", 0, [], mock_page_languages),
+                "app.services.ingest.pdf_report._parse_with_pdfplumber",
+                return_value=(mock_text, "Test Report", 0, [], mock_page_languages, [(1, mock_text)]),
             ),
             patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
+                "app.services.ingest.pdf_report._extract_resource_tables",
                 return_value=[],
             ),
         ):

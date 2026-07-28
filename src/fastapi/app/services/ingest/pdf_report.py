@@ -33,6 +33,7 @@ records this in Dagster materialisation metadata.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -42,7 +43,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # langdetect is stochastic by default — seed for deterministic output across
 # runs so that per-page language tags are reproducible in tests.
@@ -57,7 +58,7 @@ except ImportError:
 # zero-cost. The TracerProvider itself is installed at worker startup
 # (Phase 6 Step 1) so the service.name resource attribute reflects the
 # worker pool rather than the parser module.
-from georag_dagster.observability import get_tracer
+from app.observability import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -197,11 +198,11 @@ REGION_KEYWORDS = [
 class ReportSection:
     """A single numbered section extracted from a NI 43-101 report."""
 
-    section_number: Optional[str]   # "1", "2", ..., "17"
+    section_number: str | None   # "1", "2", ..., "17"
     section_title: str              # e.g. "Summary", "Introduction"
     text: str                       # Body text of the section
-    page_first: Optional[int] = None  # First 1-indexed page this section spans.
-    page_last: Optional[int] = None   # Last 1-indexed page this section spans.
+    page_first: int | None = None  # First 1-indexed page this section spans.
+    page_last: int | None = None   # Last 1-indexed page this section spans.
     # Phase 3 (2026-05-22) — OCR confidence + method per chunk. NULL
     # means the chunk came from the PDF text layer (no OCR). 0.0–1.0
     # means an OCR engine produced the text. ocr_method records which
@@ -209,21 +210,21 @@ class ReportSection:
     # When a chunk spans multiple pages with mixed methods, the minimum
     # confidence is recorded and the first-page method wins (kickoff
     # min-confidence-per-chunk semantics).
-    ocr_confidence: Optional[float] = None
-    ocr_method: Optional[str] = None
+    ocr_confidence: float | None = None
+    ocr_method: str | None = None
 
 
 @dataclass
 class ReportParseResult:
     """Complete result of parsing a NI 43-101 PDF technical report."""
 
-    title: Optional[str]
+    title: str | None
     authors: list[str]
-    company: Optional[str]
-    filing_date: Optional[str]      # ISO 8601 string: YYYY-MM-DD
-    commodity: Optional[str]
-    project_name: Optional[str]
-    region: Optional[str]
+    company: str | None
+    filing_date: str | None      # ISO 8601 string: YYYY-MM-DD
+    commodity: str | None
+    project_name: str | None
+    region: str | None
     sections: list[ReportSection]
     parse_quality_pct: float        # Fraction of expected sections found (0.0–1.0+)
     parser_used: str = "unknown"
@@ -245,7 +246,7 @@ class ReportParseResult:
 # Date parsing helpers
 # ---------------------------------------------------------------------------
 
-def _parse_date_string(raw: str) -> Optional[str]:
+def _parse_date_string(raw: str) -> str | None:
     """Convert a free-text date string to ISO 8601 (YYYY-MM-DD).
 
     Handles formats like "January 15, 2024", "15 January 2024", "Jan 15 2024".
@@ -294,7 +295,7 @@ def _parse_date_string(raw: str) -> Optional[str]:
 # Metadata extraction from leading document text
 # ---------------------------------------------------------------------------
 
-def _extract_company(text: str) -> Optional[str]:
+def _extract_company(text: str) -> str | None:
     for pattern in COMPANY_PATTERNS:
         m = pattern.search(text)
         if m:
@@ -304,7 +305,7 @@ def _extract_company(text: str) -> Optional[str]:
     return None
 
 
-def _extract_filing_date(text: str) -> Optional[str]:
+def _extract_filing_date(text: str) -> str | None:
     for pattern in FILING_DATE_PATTERNS:
         m = pattern.search(text)
         if m:
@@ -314,7 +315,7 @@ def _extract_filing_date(text: str) -> Optional[str]:
     return None
 
 
-def _extract_commodity(text: str) -> Optional[str]:
+def _extract_commodity(text: str) -> str | None:
     text_lower = text.lower()
     for kw in COMMODITY_KEYWORDS:
         if kw in text_lower:
@@ -336,7 +337,7 @@ def _extract_authors(text: str) -> list[str]:
     return []
 
 
-def _extract_project_name(text: str, title: Optional[str]) -> Optional[str]:
+def _extract_project_name(text: str, title: str | None) -> str | None:
     for pattern in PROJECT_NAME_PATTERNS:
         m = pattern.search(text)
         if m:
@@ -349,7 +350,7 @@ def _extract_project_name(text: str, title: Optional[str]) -> Optional[str]:
     return None
 
 
-def _extract_region(text: str) -> Optional[str]:
+def _extract_region(text: str) -> str | None:
     for kw in REGION_KEYWORDS:
         if re.search(re.escape(kw), text, re.IGNORECASE):
             return kw
@@ -361,9 +362,9 @@ def _extract_region(text: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _assign_ocr_metadata(
-    sections: list["ReportSection"],
+    sections: list[ReportSection],
     per_page_method: dict[int, str],
-    per_page_confidence: dict[int, Optional[float]],
+    per_page_confidence: dict[int, float | None],
 ) -> None:
     """Phase 3 (2026-05-22) — backfill ocr_method + ocr_confidence on each
     section using the per-page maps built during dispatch.
@@ -425,12 +426,12 @@ def _pages_for_range(
     page_index: list[tuple[int, int, int]],
     char_start: int,
     char_end: int,
-) -> tuple[Optional[int], Optional[int]]:
+) -> tuple[int | None, int | None]:
     """Find the first and last pages overlapping [char_start, char_end)."""
     if not page_index:
         return None, None
-    page_first: Optional[int] = None
-    page_last: Optional[int] = None
+    page_first: int | None = None
+    page_last: int | None = None
     for ps, pe, pn in page_index:
         if pe <= char_start:
             continue
@@ -455,7 +456,7 @@ def _emit_windows(
     full_text: str,
     abs_start: int,
     abs_end: int,
-    section_number: Optional[str],
+    section_number: str | None,
     section_title: str,
     page_index: list[tuple[int, int, int]],
 ) -> list[ReportSection]:
@@ -678,7 +679,7 @@ def _extract_resource_tables(pdf_path: str) -> list[dict]:
                 continue
 
             # Determine which trigger phrase (if any) matches this page
-            matched_trigger: Optional[str] = None
+            matched_trigger: str | None = None
             for trigger in _RESOURCE_TABLE_TRIGGERS:
                 if trigger in page_text:
                     matched_trigger = trigger
@@ -737,7 +738,7 @@ _MIN_TABLE_ROWS = 3
 _MIN_TABLE_COLS = 2
 
 
-def _table_to_markdown(table: list[list[Optional[str]]]) -> str:
+def _table_to_markdown(table: list[list[str | None]]) -> str:
     """Render a pdfplumber table-of-lists as a markdown-style text block.
 
     The point isn't to be pretty markdown — it's that each cell stays on
@@ -947,7 +948,7 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
     return result
 
 
-def _extract_tables_via_docling_only(pdf_path: str) -> list["ReportSection"]:
+def _extract_tables_via_docling_only(pdf_path: str) -> list[ReportSection]:
     """Phase 4 — invoke docling with `do_ocr=False`, `do_table_structure=True`,
     `generate_picture_images=False` and return ONLY the table sections.
 
@@ -959,12 +960,15 @@ def _extract_tables_via_docling_only(pdf_path: str) -> list["ReportSection"]:
     falls back to pdfplumber-lines for the bordered pages.
     """
     try:
-        from docling.document_converter import (  # noqa: PLC0415
-            DocumentConverter, PdfFormatOption,
-        )
         from docling.datamodel.base_models import InputFormat  # noqa: PLC0415
         from docling.datamodel.pipeline_options import (  # noqa: PLC0415
-            AcceleratorDevice, AcceleratorOptions, PdfPipelineOptions,
+            AcceleratorDevice,
+            AcceleratorOptions,
+            PdfPipelineOptions,
+        )
+        from docling.document_converter import (  # noqa: PLC0415
+            DocumentConverter,
+            PdfFormatOption,
         )
     except ImportError:
         logger.info("pdf_report: docling unavailable — skipping tables-only pass")
@@ -1030,7 +1034,7 @@ def _extract_tables_via_docling_only(pdf_path: str) -> list["ReportSection"]:
 
 def _extract_all_tables_as_sections(
     pdf_path: str,
-    existing_docling_tables: Optional[list["ReportSection"]] = None,
+    existing_docling_tables: list[ReportSection] | None = None,
 ) -> list[ReportSection]:
     """Walk every page and extract every data-table-like table.
 
@@ -1161,7 +1165,7 @@ def _extract_all_tables_as_sections(
         # Run the cross-engine dedupe even on this short path so the
         # output shape is identical to the normal return below.
         out: list[ReportSection] = []
-        seen_keys: set[tuple[Optional[int], str]] = set()
+        seen_keys: set[tuple[int | None, str]] = set()
         for s in bordered_sections:
             body = s.text or ""
             sig = hashlib.sha1(body.encode("utf-8", "ignore")).hexdigest()[:16]
@@ -1234,7 +1238,7 @@ def _extract_all_tables_as_sections(
     #    docling (better structure, preserved row/col coordinates).
     # ------------------------------------------------------------------
     out: list[ReportSection] = []
-    seen_keys: set[tuple[Optional[int], str]] = set()
+    seen_keys: set[tuple[int | None, str]] = set()
     for s in bordered_sections + pdfplumber_sections:
         # Signature comes from a re-parse of the markdown — fast + good
         # enough as a stable dedupe key per (page, table-content) pair.
@@ -1353,7 +1357,7 @@ def _parse_with_fitz(
     apply_ocr_fallback: bool = True,
 ) -> tuple[
     str, str, int, list, list[str], list[tuple[int, str]], list[int],
-    dict[int, str], dict[int, Optional[float]],
+    dict[int, str], dict[int, float | None],
 ]:
     """Extract full text using pypdfium2 (PDFium). Faster than pdfplumber.
 
@@ -1406,7 +1410,7 @@ def _parse_with_fitz(
     short_page_nums: list[int] = []  # candidates for per-page OCR
     # Phase 3 (2026-05-22) — per-page engine + confidence tracking
     per_page_method: dict[int, str] = {}
-    per_page_confidence: dict[int, Optional[float]] = {}
+    per_page_confidence: dict[int, float | None] = {}
 
     # PDFium returns these sentinels for unset metadata fields — treat as "no
     # title" so the first-line fallback below can supply a real one.
@@ -1446,10 +1450,8 @@ def _parse_with_fitz(
                 page_languages.append("unknown")
                 short_page_nums.append(n)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             pdf.close()
-        except Exception:
-            pass
 
     # Per-page OCR for any pages fitz returned <PER_PAGE_MIN_CHARS on.
     # Runs the same tesseract pipeline as pdfplumber's fallback, so image
@@ -1656,13 +1658,13 @@ def _parse_with_docling(
     Slow: ~3-5 sec/page on CPU for the layout model. Gate behind
     PDF_PARSER_DOCLING_ENABLED in production.
     """
-    from docling.document_converter import DocumentConverter, PdfFormatOption  # noqa: PLC0415
     from docling.datamodel.base_models import InputFormat  # noqa: PLC0415
     from docling.datamodel.pipeline_options import (  # noqa: PLC0415
         AcceleratorDevice,
         AcceleratorOptions,
         PdfPipelineOptions,
     )
+    from docling.document_converter import DocumentConverter, PdfFormatOption  # noqa: PLC0415
 
     # Phase 2.0 (2026-05-22) — docling OCR (rapidocr) is now opt-in via
     # DOCLING_OCR_ENABLED. The rapidocr default model cache path is
@@ -1872,9 +1874,10 @@ def _parse_with_docling(
     pictures = list(doc.pictures or [])
     if pdf_sha256 and pictures:
         try:
+            from io import BytesIO  # noqa: PLC0415
+
             import boto3  # noqa: PLC0415
             from botocore.config import Config as BotoConfig  # noqa: PLC0415
-            from io import BytesIO  # noqa: PLC0415
 
             s3_endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get("MINIO_ENDPOINT")
             s3_bucket = os.environ.get("S3_BUCKET_BRONZE", "bronze")
@@ -1909,7 +1912,7 @@ def _parse_with_docling(
                             )
                             caption = ""
 
-                    img_bytes: Optional[bytes] = None
+                    img_bytes: bytes | None = None
                     try:
                         if hasattr(pic, "get_image"):
                             pil_img = pic.get_image(doc)
@@ -2009,8 +2012,8 @@ def _ocr_single_page(
     Returns ``""`` (or ``("", 0.0)``) on any failure.
     """
     try:
-        from pdf2image import convert_from_path
         import pytesseract
+        from pdf2image import convert_from_path
     except ImportError:
         return ("", 0.0) if return_confidence else ""
     try:
@@ -2035,8 +2038,14 @@ def _ocr_single_page(
                     config="--psm 3 --oem 3",
                     output_type=pytesseract.Output.DICT,
                 )
+                # strict=False deliberately: pytesseract's DICT output should
+                # give equal-length text/conf lists, but a malformed OCR result
+                # must degrade to fewer words rather than raise mid-ingest.
                 words = [
-                    (w, int(c)) for w, c in zip(data.get("text", []), data.get("conf", []))
+                    (w, int(c))
+                    for w, c in zip(
+                        data.get("text", []), data.get("conf", []), strict=False
+                    )
                     if w and w.strip() and int(c) >= 0
                 ]
                 text = " ".join(w for w, _c in words)
@@ -2278,7 +2287,8 @@ def _preprocess_image_for_ocr(img):
 
     # Simple denoise: if a pixel is isolated (no dark neighbors), remove it
     # This is a lightweight version of morphological opening
-    from PIL import ImageFilter, Image as PILImage
+    from PIL import Image as PILImage
+    from PIL import ImageFilter
     result = PILImage.fromarray(arr)  # use grayscale (not binary) for Tesseract
 
     # Sharpen to improve edge definition
@@ -2404,7 +2414,7 @@ def _ocr_page_confidence(text: str) -> float:
     return round(min(1.0, confidence), 2)
 
 
-def _attempt_ocr(path: str) -> Optional[str]:
+def _attempt_ocr(path: str) -> str | None:
     """Attempt OCR on a scanned PDF using Tesseract via pdf2image + pytesseract.
 
     Strategy:
@@ -2416,8 +2426,8 @@ def _attempt_ocr(path: str) -> Optional[str]:
     Returns extracted text or empty string if OCR libraries are unavailable.
     """
     try:
-        from pdf2image import convert_from_path
         import pytesseract
+        from pdf2image import convert_from_path
     except ImportError:
         logger.info(
             "pdf_report: OCR libraries (pdf2image, pytesseract) not installed — "
@@ -2641,7 +2651,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
     # dispatch tree, applied to ReportSections at the end via
     # _assign_ocr_metadata.
     per_page_method: dict[int, str] = {}
-    per_page_confidence: dict[int, Optional[float]] = {}
+    per_page_confidence: dict[int, float | None] = {}
     if fitz_enabled:
         try:
             with _tracer.start_as_current_span("pdf_report.fitz") as _span:

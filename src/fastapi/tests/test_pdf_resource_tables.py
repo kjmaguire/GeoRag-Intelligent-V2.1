@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from georag_dagster.parsers.pdf_report import (
+from app.services.ingest.pdf_report import (
     _classify_header,
     _extract_resource_tables,
     _score_header_row,
@@ -336,17 +336,15 @@ class TestParseReportResourceTableFailureWarning:
         - NOT re-raise.
         - Append {'code': 'resource_table_extraction_failed'} to warnings.
         """
-        mock_text = "1. Summary\nThis is a test NI 43-101 report.\n"
-
-        with (
-            patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=(mock_text, "Test Report", 0),
-            ),
-            patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
-                side_effect=RuntimeError("pdfplumber internal error"),
-            ),
+        # The primary text leg used to be mocked here to keep the test focused
+        # on _extract_resource_tables raising. That leg (_parse_with_unstructured)
+        # no longer exists — fitz/pypdfium2 is primary — and mocking its
+        # replacement would mean fabricating a 9-element tuple. The real leg
+        # parses minimal_pdf fine, and the assertion is about the warning, so
+        # letting it run is both simpler and closer to production.
+        with patch(
+            "app.services.ingest.pdf_report._extract_resource_tables",
+            side_effect=RuntimeError("pdfplumber internal error"),
         ):
             result = parse_pdf_report(str(minimal_pdf))
 
@@ -357,17 +355,10 @@ class TestParseReportResourceTableFailureWarning:
         self, minimal_pdf: Path
     ):
         """resource_tables is empty when extraction raises."""
-        mock_text = "1. Summary\nTest NI 43-101 report.\n"
-
-        with (
-            patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=(mock_text, "Test Report", 0),
-            ),
-            patch(
-                "georag_dagster.parsers.pdf_report._extract_resource_tables",
-                side_effect=RuntimeError("boom"),
-            ),
+        # Primary-leg mock dropped — see the sibling test above for why.
+        with patch(
+            "app.services.ingest.pdf_report._extract_resource_tables",
+            side_effect=RuntimeError("boom"),
         ):
             result = parse_pdf_report(str(minimal_pdf))
 

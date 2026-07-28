@@ -2291,7 +2291,11 @@ services:
       TOKENIZERS_PARALLELISM: "false"
     volumes:
       - ./src/fastapi:/app:cached
-      - ./src/dagster/georag_dagster:/app/georag_dagster:cached
+      # A1 (2026-07-28): the georag_dagster bind mount is gone. ingest_pdf's
+      # parse task imported the PDF parser from that mounted tree, which made
+      # the worker silently dependent on the Dagster source layout. The parser
+      # and its OTel bootstrap now live in app/services/ingest/pdf_report.py
+      # and app/observability/, so the FastAPI image is self-contained.
       - georag-phase-b-extract:/extract
       # Phase 2.0 (2026-05-22) — shared rapidocr model cache. Same
       # named volume retained across worker restarts.

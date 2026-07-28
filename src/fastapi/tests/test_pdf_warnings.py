@@ -21,7 +21,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from georag_dagster.parsers.pdf_report import ReportParseResult, parse_pdf_report
+from app.services.ingest import pdf_report as _pdf_report_mod
+from app.services.ingest.pdf_report import ReportParseResult, parse_pdf_report
 
 # ---------------------------------------------------------------------------
 # Fixture: trivial valid PDF bytes (hand-crafted, no library dependency)
@@ -114,17 +115,11 @@ class TestParsePdfReportWarningsThreaded:
     def test_result_warnings_is_list_on_minimal_pdf(self, minimal_pdf: Path):
         """parse_pdf_report must return a result with warnings as a list,
         even when no warnings are generated."""
-        # Both unstructured and pdfplumber may be unavailable in the test env;
-        # patch both to return minimal text so we exercise the happy path.
-        mock_text = "1. Summary\nThis is a test NI 43-101 technical report.\n"
-
-        with (
-            patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=(mock_text, "Test PDF Report", 0),
-            ),
-        ):
-            result = parse_pdf_report(str(minimal_pdf))
+        # The primary text leg used to be mocked here because unstructured was
+        # not installed in the test env. That leg is gone; fitz/pypdfium2 is
+        # primary and IS installed, so minimal_pdf now parses for real — which
+        # is a stronger version of this assertion than the mock ever gave.
+        result = parse_pdf_report(str(minimal_pdf))
 
         assert isinstance(result.warnings, list), (
             "parse_pdf_report must return ReportParseResult with warnings as a list"
@@ -169,14 +164,21 @@ class TestPdfPlumberPartialExtractionWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=_raise_unstructured,
             ),
             patch("pdfplumber.open", return_value=mock_pdf_ctx),
         ):
             result = parse_pdf_report(str(minimal_pdf))
 
-        assert isinstance(result, ReportParseResult), (
+        # Resolve the class through the module rather than the import bound at
+        # line 25. Four sibling test files call importlib.reload(pdf_report) to
+        # re-read env-driven module constants, and reload re-executes the module
+        # body — rebinding ReportParseResult to a NEW class object while any
+        # previously-imported reference goes stale. isinstance() against the
+        # stale reference then fails even though the result is the right type,
+        # which is why this only broke when run alongside those files.
+        assert isinstance(result, _pdf_report_mod.ReportParseResult), (
             "parse_pdf_report must return a ReportParseResult even when a page fails"
         )
         extraction_partial_warnings = [
@@ -206,7 +208,7 @@ class TestPdfPlumberPartialExtractionWarning:
 
         with (
             patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
+                "app.services.ingest.pdf_report._parse_with_fitz",
                 side_effect=_raise_unstructured,
             ),
             patch("pdfplumber.open", return_value=mock_pdf_ctx),
@@ -238,13 +240,8 @@ _FIXTURE_PDF = (
 class TestFixturePdfWarnings:
     def test_fixture_pdf_returns_warnings_list(self):
         """The existing fixture PDF must return a result.warnings that is a list."""
-        with (
-            patch(
-                "georag_dagster.parsers.pdf_report._parse_with_unstructured",
-                return_value=("1. Summary\nTest document text.\n", "Test Report", 0),
-            ),
-        ):
-            result = parse_pdf_report(str(_FIXTURE_PDF))
+        # Primary-leg mock dropped — the real fitz leg parses this fixture.
+        result = parse_pdf_report(str(_FIXTURE_PDF))
 
         assert isinstance(result.warnings, list), (
             "parse_pdf_report must always return warnings as a list"

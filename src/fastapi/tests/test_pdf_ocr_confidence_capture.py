@@ -24,7 +24,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 sys.modules.setdefault("boto3", MagicMock())
 sys.modules.setdefault("botocore", MagicMock())
 sys.modules.setdefault("botocore.config", MagicMock())
@@ -76,7 +75,8 @@ def _install_fake_pypdfium2(monkeypatch, page_texts, *, title=None):
 @pytest.fixture
 def parser_module():
     import importlib
-    from georag_dagster.parsers import pdf_report
+
+    from app.services.ingest import pdf_report
     importlib.reload(pdf_report)
     return pdf_report
 

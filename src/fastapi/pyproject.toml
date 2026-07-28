@@ -137,6 +137,19 @@ dependencies = [
     #   which manifests as ingest_pdf:parse ModuleNotFoundError in the logs
     #   even on PDF-only ingests. Hot-patched on 2026-05-21; making permanent.
     "polars>=1.0",
+    # langdetect: Apache 2.0 — per-page language detection in
+    #   pdf_report._detect_page_language, which feeds ReportParseResult
+    #   .page_languages and the `mixed_language` warning.
+    #
+    #   A1 (2026-07-28): added when the parser moved out of the Dagster tree.
+    #   It was NEVER declared by either package — it only reached the Dagster
+    #   image transitively via unstructured[pdf], and unstructured was dropped
+    #   in Phase 10 (see the note below). _detect_page_language catches
+    #   ImportError and returns "unknown", so on the live Hatchet ingest path
+    #   language detection has silently reported "unknown" for every page and
+    #   the mixed_language warning could never fire. Declaring it here restores
+    #   the feature; the image must be rebuilt for it to take effect.
+    "langdetect>=1.0.9",
     # Phase 10 (2026-05-22) — unstructured removed.
     # The legacy unstructured-first dispatch was supplanted by the
     # Phase 2.1 fitz-first tree. _parse_with_unstructured() and its

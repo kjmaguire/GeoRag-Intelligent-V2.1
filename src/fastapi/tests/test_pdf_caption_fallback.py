@@ -8,7 +8,6 @@ test doesn't require running docling end-to-end.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import pytest
 
@@ -21,7 +20,7 @@ class _BBox:
     b: float
     coord_origin: str = "TOPLEFT"
 
-    def to_top_left_origin(self, page_height: Optional[float]):
+    def to_top_left_origin(self, page_height: float | None):
         # Already top-left in these tests.
         return self
 
@@ -57,7 +56,7 @@ class _Doc:
 
 @pytest.fixture
 def fallback():
-    from georag_dagster.parsers.pdf_report import _nearest_text_below_figure
+    from app.services.ingest.pdf_report import _nearest_text_below_figure
     return _nearest_text_below_figure
 
 

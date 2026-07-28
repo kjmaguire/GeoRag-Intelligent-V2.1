@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from georag_dagster.parsers.pdf_report import (
+from app.services.ingest.pdf_report import (
     _detect_page_columns,
     _extract_text_column_aware,
     _parse_with_pdfplumber,
@@ -226,9 +226,9 @@ class TestPdfPlumberTwoColumnWarning:
         mock_pdf.pages = [mock_page]
 
         with patch("pdfplumber.open", return_value=mock_pdf):
-            full_text, title, skipped, page_warnings, page_languages = (
-                _parse_with_pdfplumber(str(minimal_pdf))
-            )
+            # 6-tuple since per_page_text was added to the production return.
+            (full_text, title, skipped, page_warnings,
+             page_languages, _per_page_text) = _parse_with_pdfplumber(str(minimal_pdf))
 
         two_col_warnings = [
             w for w in page_warnings
@@ -253,9 +253,9 @@ class TestPdfPlumberTwoColumnWarning:
         mock_pdf.pages = [mock_page]
 
         with patch("pdfplumber.open", return_value=mock_pdf):
-            full_text, title, skipped, page_warnings, page_languages = (
-                _parse_with_pdfplumber(str(minimal_pdf))
-            )
+            # 6-tuple since per_page_text was added to the production return.
+            (full_text, title, skipped, page_warnings,
+             page_languages, _per_page_text) = _parse_with_pdfplumber(str(minimal_pdf))
 
         two_col_warnings = [
             w for w in page_warnings
@@ -279,11 +279,17 @@ class TestPdfPlumberTwoColumnWarning:
         with patch("pdfplumber.open", return_value=mock_pdf):
             result = _parse_with_pdfplumber(str(minimal_pdf))
 
-        assert len(result) == 5, (
-            "_parse_with_pdfplumber must return a 5-tuple: "
-            "(full_text, title, skipped, page_warnings, page_languages)"
+        # per_page_text was added to the return tuple in production without this
+        # assertion being updated, so it read 5 while the function returned 6.
+        # It sat broken because the Dagster suite this file used to live in was
+        # never part of the verified baseline.
+        assert len(result) == 6, (
+            "_parse_with_pdfplumber must return a 6-tuple: "
+            "(full_text, title, skipped, page_warnings, page_languages, "
+            "per_page_text)"
         )
-        full_text, title, skipped, page_warnings, page_languages = result
+        full_text, title, skipped, page_warnings, page_languages, per_page_text = result
         assert isinstance(full_text, str)
         assert isinstance(page_warnings, list)
         assert isinstance(page_languages, list)
+        assert isinstance(per_page_text, list)

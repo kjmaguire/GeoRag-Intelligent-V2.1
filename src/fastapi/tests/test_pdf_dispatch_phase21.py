@@ -22,7 +22,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # Inject fake boto3 + botocore.config so the parser module imports cleanly
 sys.modules.setdefault("boto3", MagicMock())
 sys.modules.setdefault("botocore", MagicMock())
@@ -34,7 +33,8 @@ def parser_module():
     """Re-import the parser module fresh for each test so env-driven
     module-level constants aren't pinned across cases."""
     import importlib
-    from georag_dagster.parsers import pdf_report
+
+    from app.services.ingest import pdf_report
     importlib.reload(pdf_report)
     return pdf_report
 

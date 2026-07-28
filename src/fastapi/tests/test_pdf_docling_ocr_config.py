@@ -24,7 +24,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # Inject fake boto3 / botocore.config so the parser module imports cleanly
 # on dev hosts that don't have boto3 installed.
 sys.modules.setdefault("boto3", MagicMock())
@@ -155,7 +154,7 @@ def docling_stack_without_rapidocr():
 
 @pytest.fixture
 def parser_module():
-    from georag_dagster.parsers import pdf_report
+    from app.services.ingest import pdf_report
     importlib.reload(pdf_report)
     return pdf_report
 

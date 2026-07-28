@@ -271,12 +271,18 @@ def main() -> int:
     # pool (-ingestion / -ai) and the exporter starts before the first
     # workflow run. install_tracer_provider() is a no-op when
     # OTEL_EXPORTER_OTLP_ENDPOINT isn't set.
+    #
+    # Moved 2026-07-28 (A1): this used to import from the bind-mounted
+    # georag_dagster package, so an ImportError was the normal case when the
+    # mount was absent. app.observability is first-party now, so an ImportError
+    # here means opentelemetry itself is missing — still non-fatal (tracing is
+    # optional), but worth logging as a warning rather than an info.
     try:
-        from georag_dagster.observability import install_tracer_provider
+        from app.observability import install_tracer_provider
         installed = install_tracer_provider(default_service_name=worker_name)
         log.info("otel: tracer install -> %s", installed)
-    except ImportError:
-        log.info("otel: georag_dagster.observability not on path; skipping bootstrap")
+    except ImportError as exc:
+        log.warning("otel: bootstrap unavailable (%s); continuing untraced", exc)
 
     log.info(
         "starting Hatchet worker pool=%s name=%s slots=%d workflows=[%s]",

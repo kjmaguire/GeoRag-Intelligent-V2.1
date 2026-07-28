@@ -12,7 +12,7 @@ Run with:  pytest tests/test_pdf_section_chunking.py -v
 
 from __future__ import annotations
 
-from georag_dagster.parsers.pdf_report import (
+from app.services.ingest.pdf_report import (
     WINDOW_CHARS,
     WINDOW_OVERLAP_CHARS,
     ReportSection,
@@ -143,7 +143,9 @@ def test_windows_overlap_by_configured_amount() -> None:
     # Each pair of adjacent chunks should share at least
     # WINDOW_OVERLAP_CHARS // 2 characters (the strip() in _emit_windows
     # can trim whitespace, so we don't require exact overlap).
-    for prev, curr in zip(sections, sections[1:]):
+    # strict=False is required, not incidental: sections[1:] is one shorter,
+    # so the pairwise walk is intentionally ragged.
+    for prev, curr in zip(sections, sections[1:], strict=False):
         common_tail = prev.text[-WINDOW_OVERLAP_CHARS:]
         common_head = curr.text[: WINDOW_OVERLAP_CHARS]
         # Both are 'X' * N substrings so they should overlap.

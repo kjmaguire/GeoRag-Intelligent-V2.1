@@ -29,34 +29,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-# Parser-stub injection (same pattern as other Phase tests so ingest_pdf
-# imports cleanly outside the dagster install).
-def _ensure_parser_stub_module():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        import os as _os
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        _os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub_module()
-
-
 def _get_embed_verify_func():
     """Pull the underlying coroutine function out of the Hatchet task
     decorator wrapper so we can call it directly with mocked inputs."""

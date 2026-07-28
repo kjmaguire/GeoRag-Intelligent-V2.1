@@ -29,43 +29,16 @@ Run with:
 from __future__ import annotations
 
 import contextlib
-import sys
-import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-
-# The FastAPI container doesn't have the `georag_dagster.parsers.pdf_report`
-# package importable at the host import path (parse runs in a subprocess
-# where it is available). For the persist-side tests below that hit
-# _run_parser_subprocess in-process, we inject a stub module exposing the
-# two symbols the subprocess wrapper needs.
-def _ensure_parser_stub_module():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return  # real or already-stubbed
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        import os as _os
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        _os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub_module()
-
+# A1 (2026-07-28): the parser is first-party now. This used to be a fabricated
+# sys.modules entry for georag_dagster.parsers.pdf_report because the FastAPI
+# container had no such module; registering a fake under the real path would
+# shadow it for the parser's own 158 tests, making coverage depend on
+# collection order. patch.object works the same against the real module.
+from app.services.ingest import pdf_report as _pdf_report_module
 
 # ---------------------------------------------------------------------------
 # Helper that mirrors the persist-task manifest consumption block. Keeps
@@ -406,7 +379,7 @@ def test_run_parser_subprocess_returns_figures_key(tmp_path):
     ]
 
     with patch.object(
-        sys.modules["georag_dagster.parsers.pdf_report"],
+        _pdf_report_module,
         "parse_pdf_report",
         MagicMock(return_value=stub),
     ):
@@ -424,9 +397,8 @@ def test_run_parser_subprocess_returns_figures_key(tmp_path):
 def test_run_parser_subprocess_cleans_figure_tempdir():
     import os
 
-    from georag_dagster.parsers.pdf_report import _figure_tempdir
-
     from app.hatchet_workflows import ingest_pdf as mod
+    from app.services.ingest.pdf_report import _figure_tempdir
 
     sha = "cc" * 32
 
@@ -454,7 +426,7 @@ def test_run_parser_subprocess_cleans_figure_tempdir():
     stub.figure_manifest = []
 
     with patch.object(
-        sys.modules["georag_dagster.parsers.pdf_report"],
+        _pdf_report_module,
         "parse_pdf_report",
         MagicMock(return_value=stub),
     ):
@@ -470,9 +442,8 @@ def test_run_parser_subprocess_cleans_figure_tempdir():
 def test_run_parser_subprocess_cleans_tempdir_on_parse_error():
     import os
 
-    from georag_dagster.parsers.pdf_report import _figure_tempdir
-
     from app.hatchet_workflows import ingest_pdf as mod
+    from app.services.ingest.pdf_report import _figure_tempdir
 
     sha = "dd" * 32
     d = _figure_tempdir(sha)
@@ -480,7 +451,7 @@ def test_run_parser_subprocess_cleans_tempdir_on_parse_error():
         f.write(b"junk")
 
     with patch.object(
-        sys.modules["georag_dagster.parsers.pdf_report"],
+        _pdf_report_module,
         "parse_pdf_report",
         MagicMock(side_effect=RuntimeError("boom")),
     ):

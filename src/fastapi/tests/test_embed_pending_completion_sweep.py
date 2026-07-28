@@ -15,39 +15,12 @@ from __future__ import annotations
 
 import inspect
 import os
-import sys
 import types
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
-
-
-# Parser stub for the lazy ingest_pdf import path.
-def _ensure_parser_stub():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub()
 
 
 # ---------------------------------------------------------------------------

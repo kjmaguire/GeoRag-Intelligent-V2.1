@@ -5,7 +5,7 @@ Shadow-replacement of the v1.49 PDF ingestion path documented in
 mirror the v1.49 contract:
 
     1. preflight    — S3 GET, magic bytes, sha256, page count, size cap
-    2. parse        — calls georag_dagster.parsers.pdf_report.parse_pdf_report()
+    2. parse        — calls app.services.ingest.pdf_report.parse_pdf_report()
                       which is the canonical v1.49 entry point — runs the
                       full pipeline (fitz → docling/tesseract OCR routing,
                       OCR if scanned, metadata, sections, resource tables)
@@ -229,7 +229,7 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     import shutil as _shutil
     import time as _time
 
-    from georag_dagster.parsers.pdf_report import (
+    from app.services.ingest.pdf_report import (
         _FIGURE_TEMPDIR_ROOT,
         parse_pdf_report,
     )
