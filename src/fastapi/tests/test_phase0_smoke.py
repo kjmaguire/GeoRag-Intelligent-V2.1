@@ -176,7 +176,20 @@ def test_tenant_isolation_emits_set_local_violations() -> None:
     assert "set\\\\s+local" in src or "set\\s+local" in src
     assert "escalation_enqueued" in src
     # Regression guard — the retired direct-dispatch path must not return.
-    assert "KESTRA_URL" not in src
+    #
+    # Guards the CODE, not the word. The comment above the outbox enqueue
+    # deliberately records what KESTRA_URL used to gate and why the alarm
+    # was silent for months; that history earns its place. What must never
+    # come back is reading the variable at runtime, which requires the name
+    # as a quoted string literal (os.environ.get("KESTRA_URL")) or an
+    # attribute on settings. Prose mentions carry neither.
+    assert '"KESTRA_URL"' not in src
+    assert "'KESTRA_URL'" not in src
+    assert "settings.KESTRA_URL" not in src
+    assert "import httpx" not in src, (
+        "tenant_isolation_auditor should not need an HTTP client — escalation "
+        "goes through the outbox, not a direct POST."
+    )
 
 
 @pytest.mark.asyncio
@@ -204,7 +217,11 @@ async def test_support_packet_includes_dispatch_keys(
     assert "dispatch_enqueued" in src
     assert "outbox.pending_propagations" in src
     # Regression guard — the retired direct-dispatch path must not return.
-    assert "KESTRA_URL" not in src
+    # Code, not prose: see the matching guard in
+    # test_tenant_isolation_emits_set_local_violations for why.
+    assert '"KESTRA_URL"' not in src
+    assert "'KESTRA_URL'" not in src
+    assert "settings.KESTRA_URL" not in src
 
 
 @pytest.mark.asyncio
