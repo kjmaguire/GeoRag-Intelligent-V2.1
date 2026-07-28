@@ -69,9 +69,6 @@ from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-pha
 from app.hatchet_workflows.tiff_normalize import (
     tiff_normalize,  # ADR-0005: lossless TIFF→PDF wrap, route through ingest_pdf
 )
-from app.hatchet_workflows.tiff_ocr_cluster import (
-    tiff_ocr_cluster,  # Phase E.1 replacement for the one-off georag-phase-e-ocr container (DEPRECATED 2026-05-23 by tiff_normalize per ADR-0005)
-)
 from app.hatchet_workflows.train_source_trust import train_source_trust  # doc-phase 102
 from app.hatchet_workflows.train_target_model import train_target_model  # doc-phase 101
 from app.hatchet_workflows.what_changed_detector import what_changed_detector  # doc-phase 94
@@ -96,7 +93,6 @@ POOLS = {
         outbox_dispatcher,
         ingest_pdf,
         re_ocr_page,
-        tiff_ocr_cluster,
         tiff_normalize,
         stale_run_detector,
         nightly_ingestion_integrity,
@@ -125,9 +121,7 @@ POOLS = {
         mv_refresh_silver,
         # Doc-phase 83 / Master-plan §7.10 — generate_report wraps the
         # §15.1 Report Builder Graph in a durable Hatchet workflow.
-        # Currently a skeleton (raises NotImplementedError); registered
-        # here so worker startup imports + Hatchet engine sees the
-        # workflow name registered.
+        # Runs the report-builder planning pipeline.
         generate_report,
         # Doc-phase 88 / Master-plan §8.6 — score_targets wraps the
         # §18.2 Target Recommendation Graph in a durable Hatchet
@@ -172,22 +166,17 @@ POOLS = {
         # executes failed workflows in dry-run mode for diagnosis.
         # Skeleton.
         support_replay,
-        # Doc-phase 100 / Master-plan §11.3 — restore_workspace runs
-        # cross-store consistency restore for one workspace.
-        # Graduated Phase G.2 — dry-run path counts rows in all five
-        # stores (Postgres + Neo4j + Qdrant + Redis + SeaweedFS-future)
-        # and verifies snapshot manifest. Real restore (dry_run=False)
-        # still gated on §11.1 backup infrastructure.
+        # Doc-phase 100 / Master-plan §11.3 — cross-store consistency
+        # checks plus manifest-backed workspace restore.
         restore_workspace,
         # Doc-phase 101 / Master-plan §12.3 — train_target_model trains
-        # an XGBoost target-scoring model on accumulated target_outcomes.
-        # Skeleton (waits on xgboost dep + outcome accumulation).
+        # a target-scoring model on accumulated target_outcomes.
         train_target_model,
         # Doc-phase 102 / Master-plan §12.7 — train_source_trust trains
-        # per-workspace source-trust XGBoost model. Skeleton.
+        # per-workspace source-trust weights.
         train_source_trust,
         # Doc-phase 102 / Master-plan §12.10 — continuous_learning_loop
-        # cron orchestrator triggers model retraining + eval. Skeleton.
+        # cron orchestrator tracks retraining readiness.
         continuous_learning_loop,
         # Master-plan §11.1 — nightly backup crons. Staggered 15 min
         # apart starting 02:00 UTC (per kickoff locked defaults).

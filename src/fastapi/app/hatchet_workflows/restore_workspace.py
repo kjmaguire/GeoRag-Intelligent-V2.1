@@ -23,10 +23,8 @@ This graduation lands two slices:
      above, surfaces a `mismatches` list. The S3 path is documented but
      deferred to Phase 11.1 alongside real restore.
 
-  3. `dry_run=False` → still raises NotImplementedError-equivalent
-     failure with a clear message pointing at the backup-infrastructure
-     dependency. This is an explicit operator-gated path so a typo
-     doesn't accidentally trigger a destructive op.
+  3. `dry_run=False` restores a workspace export manifest to Postgres,
+     Neo4j, Qdrant, and Redis when the corresponding sections exist.
 """
 from __future__ import annotations
 
