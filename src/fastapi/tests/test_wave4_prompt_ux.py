@@ -6,12 +6,8 @@ Pins four behaviours added in P1 wave 4:
         to the new GRAPH prompt; mixed queries fall back to DEFAULT.
   * #19 Refusal example baked into each variant — verified by string
         presence in the constants (cheap canary).
-  * #20 Third cache block — _build_project_facts assembles a non-empty
-        summary block from the materialized view, and
-        _call_anthropic_llm wires it into system_blocks with
-        cache_control on every block when caching is enabled.
-  * #15 LLM-classifier all-False short-circuits to a refusal GeoRAGResponse
-        without touching tools, the LLM, or the Redis cache.
+  * #20 Third cache block — _call_anthropic_llm wires supplied project
+        facts into system_blocks with cache_control on every block.
 
 Drift fix (10.1, 2026-04-26): Module 6 Chunk 3.6 introduced a colon-form
 citation variant (CITATION_SPAN_RESOLVER_ENABLED=True). The orchestrator now
@@ -43,7 +39,6 @@ from app.agent.orchestrator import (
     _SYSTEM_PROMPT_NARRATIVE_COLON,
     _SYSTEM_PROMPT_NUMERIC,
     _SYSTEM_PROMPT_NUMERIC_COLON,
-    _build_project_facts,
     _call_anthropic_llm,
     _select_system_prompt,
 )
@@ -151,65 +146,8 @@ def test_every_variant_has_refusal_example(variant: str):
 
 
 # ---------------------------------------------------------------------------
-# #20 — _build_project_facts + third cache block
+# #20 — third cache block
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_build_project_facts_returns_block_when_mv_has_row():
-    """Materialised view returns counts → builder emits a HIGH-CONFIDENCE
-    SUMMARIES block with quotable values."""
-    fetched_row = {
-        "total_collars": 20,
-        "avg_depth": 215.4,
-        "min_depth": 50.0,
-        "max_depth": 510.5,
-        "hole_type_count": 3,
-        "earliest_drill": "2018-06-01",
-        "latest_drill": "2024-09-15",
-        "total_samples": 1248,
-        "total_litho_intervals": 4612,
-    }
-
-    class _Conn:
-        async def fetchrow(self, *_a):
-            return fetched_row
-
-    class _AcquireCM:
-        async def __aenter__(self):
-            return _Conn()
-
-        async def __aexit__(self, *_a):
-            return False
-
-    pool = SimpleNamespace(acquire=lambda: _AcquireCM())
-    block = await _build_project_facts("proj-uuid", pool)
-
-    assert block is not None
-    assert "HIGH-CONFIDENCE SUMMARIES" in block
-    assert "20" in block
-    assert "215.1" in block or "215.4" in block  # mean depth
-    assert "1248" in block  # samples
-    assert "2018-06-01" in block
-
-
-@pytest.mark.asyncio
-async def test_build_project_facts_returns_none_when_mv_has_no_row():
-    """Fresh project / no ingestion yet → no block emitted."""
-    class _Conn:
-        async def fetchrow(self, *_a):
-            return None
-
-    class _AcquireCM:
-        async def __aenter__(self):
-            return _Conn()
-
-        async def __aexit__(self, *_a):
-            return False
-
-    pool = SimpleNamespace(acquire=lambda: _AcquireCM())
-    block = await _build_project_facts("proj-uuid", pool)
-    assert block is None
 
 
 @pytest.mark.asyncio
@@ -310,79 +248,3 @@ async def test_anthropic_call_omits_third_block_when_facts_none(monkeypatch):
 
     blocks = captured["system"]
     assert len(blocks) == 2  # static prompt + preamble; no facts
-
-
-# ---------------------------------------------------------------------------
-# #15 — All-False refusal short-circuits
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_all_false_classifier_returns_refusal_response(monkeypatch):
-    """When LLM classifier returns all-False, the run short-circuits to a
-    polite refusal GeoRAGResponse without touching tools or the LLM
-    synthesis path."""
-    # Avoid real DB / Redis / tool wiring — we patch right at classify_via_llm
-    # so the function returns all-False, and we patch the LLM pre-check + the
-    # cache lookup so the function reaches the refusal branch.
-    from app.agent import orchestrator
-    from app.agent.deps import AgentDeps
-
-    # Monkey-patch the LLM classifier to return all-False.
-    async def _all_false(*_a, **_kw):
-        return {
-            "spatial": False, "documents": False, "graph": False,
-            "assay": False, "downhole": False, "targeting": False,
-            "public_geoscience": False,
-        }
-
-    monkeypatch.setattr(
-        "app.agent.llm_classifier.classify_via_llm", _all_false
-    )
-
-    # Force the keyword classifier to flag classifier_fallback so the LLM
-    # classifier branch fires.
-    def _force_fallback(_q):
-        return {
-            "spatial": False, "documents": False, "graph": False,
-            "assay": False, "downhole": False, "targeting": False,
-            "public_geoscience": False, "classifier_fallback": True,
-        }
-
-    monkeypatch.setattr(orchestrator, "_classify_query", _force_fallback)
-
-    # Bypass the LLM pre-check (only relevant when LLM_BACKEND != anthropic).
-    from app.config import settings
-    object.__setattr__(settings, "LLM_BACKEND", "anthropic")
-
-    # Z.1 — bypass the external-LLM egress gate; this test pins the refusal
-    # short-circuit, not the egress policy (covered in test_anthropic_egress_gate).
-    async def _egress_passthrough(*, workspace_id, pg_pool=None):
-        return None
-    monkeypatch.setattr(
-        "app.agent.egress_gate.assert_external_llm_allowed",
-        _egress_passthrough,
-    )
-
-    # Sentinels: if these are called we've failed the short-circuit.
-    async def _sentinel_call_llm(*_a, **_kw):
-        raise AssertionError("_call_llm must NOT be called on the refusal path")
-
-    monkeypatch.setattr(orchestrator, "_call_llm", _sentinel_call_llm)
-
-    # Build deps with an anthropic_client stub (the classifier reads it
-    # from deps) and minimal others.
-    deps = AgentDeps(
-        pg_pool=None,
-        qdrant_client=None,
-        neo4j_driver=None,
-        project_id="3a2c6f5e-9d11-4f8a-9b3e-1c2d4e5f6a7b",
-        anthropic_client=SimpleNamespace(),  # truthy stub — not actually used
-        redis_client=None,
-    )
-
-    result = await orchestrator.run_deterministic_rag(query="tell me a joke", deps=deps)
-
-    assert "I can only answer geological questions" in result.text
-    assert result.confidence == 0.0
-    assert result.citations[0].source_chunk_id == "out-of-scope-refusal"

@@ -23,14 +23,9 @@ import pytest
 def _scope_fn(monkeypatch):
     """Return _build_document_scope_filter from tools without reloading the module.
 
-    10.1 drift fix: the original fixture called importlib.reload(tools_module) to
-    get a 'clean settings' state. The reload breaks isinstance() checks in
-    test_followups.py (run order dependent): after reload, app.agent.followups
-    holds the pre-reload SpatialQueryResult class while test_followups imports
-    the post-reload version — the two class objects are not identical.
-
-    The setting is patched via monkeypatch.setattr on the shared settings singleton
-    which is already sufficient; the reload is unnecessary and harmful.
+    The setting is patched via monkeypatch.setattr on the shared settings
+    singleton; reloading the module would create duplicate result classes and
+    make isinstance() checks order-dependent.
     """
     from app.agent import tools as tools_module
 

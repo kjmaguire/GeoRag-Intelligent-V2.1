@@ -306,16 +306,6 @@ class Settings(BaseSettings):
     LLM_FALLBACK_MODEL: str = ""
     LLM_FALLBACK_API_KEY: str = ""
 
-    # R9 — bounded escalation via LLM query rephrasing. When a query
-    # hits the "classifier_fallback + all tools empty" signature, the
-    # orchestrator asks the LLM for up to MAX_REPHRASINGS alternative
-    # phrasings and retries the deterministic tool dispatch on each
-    # until one returns something. Latency cost is one extra LLM
-    # round-trip + up to N retry passes of tool fan-out. Disable to
-    # revert to the old straight-through "empty is empty" behaviour.
-    AGENTIC_ESCALATION_ENABLED: bool = True
-    AGENTIC_ESCALATION_MAX_REPHRASINGS: int = 2
-
     # LLM-based classifier fallback tier (→ A grade).
     # When the keyword classifier hits classifier_fallback, ask a FAST-tier
     # LLM to re-classify BEFORE the deterministic fan-out runs. Recovers
@@ -323,28 +313,6 @@ class Settings(BaseSettings):
     # to the rephrasing retry. Off by default only if operators want to
     # isolate pure keyword routing during an evaluation pass.
     LLM_CLASSIFIER_FALLBACK_ENABLED: bool = True
-
-    # R9-full — second-tier Pydantic AI agentic escalation. Fires ONLY when
-    # both the deterministic dispatch AND the R9-lite rephrasing retry
-    # returned empty. Off by default because the signal-harvesting
-    # dashboard (Phase 4 #1) needs to show the R9-lite success rate drop
-    # below ~50% before this tier adds net value. Turn on per-deploy via
-    # env when telemetry justifies it.
-    AGENTIC_FULL_ESCALATION_ENABLED: bool = False
-    # §04p Phase 2.B-i — raised from 3 to 8 to budget for PDF chaining.
-    # PDF chains like find_legends → crop_region → ocr_region → summarize
-    # need at least 4 retrieval calls before verify_numerical_claim.
-    # Non-PDF queries pay nothing extra: the agent stops once it has enough
-    # context regardless of remaining budget.
-    # Override per-deploy via AGENTIC_MAX_TOOL_CALLS env var.
-    AGENTIC_MAX_TOOL_CALLS: int = 8
-    # P1 #11 — verify_numerical_claim is registered alongside the retrieval
-    # tools but should NOT eat into the discovery budget. Give it dedicated
-    # headroom so a verification-happy model can still explore.
-    # Pydantic AI's UsageLimits.tool_calls_limit is global, so the agent's
-    # actual ceiling is AGENTIC_MAX_TOOL_CALLS + this value.
-    AGENTIC_MAX_VERIFY_CALLS: int = 3
-    AGENTIC_TIMEOUT_S: float = 10.0
 
     # P1 #14 — global per-query LLM-call cap. A single user query can
     # invoke the LLM many times: classifier escalation, query rephrasing,
@@ -409,12 +377,7 @@ class Settings(BaseSettings):
     # 1.0 = effectively drop stale public_geo. Operator-tunable.
     FRESHNESS_RANKING_WEIGHT: float = 0.0
 
-    # Model-tier routing (B1). When enabled, the orchestrator picks a model
-    # per query based on classifier output: factoid lookups go to FAST,
-    # narrative synthesis to STANDARD, and multi-hop / retries to DEEP.
-    # Set MODEL_ROUTING_ENABLED=False to pin every query to DEEP (the
-    # pre-B1 behaviour) for A/B comparison against the golden set.
-    MODEL_ROUTING_ENABLED: bool = True
+    # Model identifiers used by the live classifier and pricing telemetry.
     MODEL_TIER_FAST: str = "claude-haiku-4-5"
     MODEL_TIER_STANDARD: str = "claude-sonnet-4-6"
     MODEL_TIER_DEEP: str = "claude-opus-4-8"
@@ -539,24 +502,6 @@ class Settings(BaseSettings):
     # Default false — Chunk 2 is staged; senior-reviewer approval required
     # before flipping. See docs/module-6-chunk-2-design.md.
     CITATION_SPAN_RESOLVER_ENABLED: bool = False
-
-    # 2026-06-24: defensive flag for the citation-first salvage path. The
-    # orchestrator (run_deterministic_rag) gates a salvage block on
-    # `settings.CITATION_FIRST_ENABLED`, but the flag, its 3 companion timeout/
-    # concurrency settings, AND the app.services.atomic_claim_extractor service
-    # were never committed (lost uncommitted work — the live pieces are on the
-    # pr/w01 slice, and even there the config is missing). Without this field the
-    # reference is a latent AttributeError if that path is ever reached. Pinned
-    # OFF so the block is skipped cleanly and the absent service is never
-    # imported. To actually enable citation-first, restore the service + the
-    # CITATION_FIRST_{EXTRACTOR_TIMEOUT_S,EXTRACTOR_CONCURRENCY,COMPOSER_TIMEOUT_S}
-    # settings as a deliberate unit (or deploy pr/w01 whole).
-    CITATION_FIRST_ENABLED: bool = False
-    # Audit 2026-06-28: defined explicitly (default off) so the orchestrator's
-    # `settings.SENTENCE_GROUNDING_ENABLED` access can't raise AttributeError.
-    # The sentence_grounding service source is not committed (pr/w01 slice), so
-    # leave OFF — flipping it on requires restoring that module first.
-    SENTENCE_GROUNDING_ENABLED: bool = False
 
     # Audit 2026-06-27: prompt-injection hardening. When ON, untrusted document
     # body text (NI 43-101 chunks, public-geoscience snippets) is wrapped in
@@ -793,28 +738,6 @@ class Settings(BaseSettings):
     #     hit-path rehydration was design-incomplete. Every hit
     #     produced empty tool_results → "(no data retrieved)" context
     #     → model refused on sequential identical queries.
-    #   Phase H (2026-05-15) SHIPPED the rehydration in
-    #     `orchestrator/run_cache.py::rehydrate_tool_results`:
-    #     - postgis candidates now serialise the full CollarRecord
-    #       dataclass payload (was just `{store, canonical_id}`)
-    #     - qdrant candidates already serialised DocumentChunk payloads
-    #     - rehydration groups by store and rebuilds the original
-    #       SpatialQueryResult / DocumentSearchResult dataclasses
-    #     - neo4j candidates are skipped cleanly (no clean dataclass
-    #       roundtrip for graph entity wrappers — the orchestrator's
-    #       graph branch re-fires when needed)
-    #
-    # Default flipped to True. Empirical speedup on the smoke test:
-    # first call 1.7s (cache miss + write), subsequent 0.85s
-    # (cache hit + rehydrate + synthesize fresh) — half the latency
-    # because retrieval + RRF + reranker are all skipped on hit.
-    # Synthesis ALWAYS runs fresh per Global Invariant 12.
-    #
-    # Tests: tests/test_run_cache_rehydration.py (13 cases) +
-    # explicit cache-hit smoke against the live LLM in
-    # tests/test_cache_scope.py / test_cache_key_versioning.py.
-    RETRIEVAL_CACHE_ENABLED: bool = True
-
     @model_validator(mode="after")
     def _validate_tenant_enforcement(self) -> Settings:
         """Module 9 Chunk 9.4 (A2-03) — refuse to start in an unsafe configuration.
