@@ -75,7 +75,9 @@ async def test_sync_silver_to_kg_runs_against_real_projects():
 # ─────────────────────── embed_pending_passages ───────────────────
 
 def test_embed_pending_passages_default_input():
-    inp = EmbedPendingPassagesInput()
+    inp = EmbedPendingPassagesInput(
+        workspace_id="a0000000-0000-0000-0000-000000000001",
+    )
     assert inp.workspace_id == "a0000000-0000-0000-0000-000000000001"
     assert inp.project_id == "*"
     assert inp.batch_size == 32

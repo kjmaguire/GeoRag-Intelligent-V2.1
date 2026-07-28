@@ -90,7 +90,7 @@ def test_helper_rejects_unknown_bootstrap_reason() -> None:
             pytest.fail("should not have entered the context")
 
     with pytest.raises(ValueError) as exc_info:
-        asyncio.get_event_loop().run_until_complete(_attempt())
+        asyncio.run(_attempt())
     assert "allow-list" in str(exc_info.value)
 
 

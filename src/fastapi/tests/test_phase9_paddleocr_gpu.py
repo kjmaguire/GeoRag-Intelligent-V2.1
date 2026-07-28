@@ -49,9 +49,18 @@ def gpu_module(monkeypatch):
 @pytest.fixture(autouse=True)
 def reset_envs(monkeypatch):
     """Clear PADDLEOCR_* envs before each test."""
+    original_modules = {
+        name: sys.modules.get(name)
+        for name in ("paddle", "torch", "app.ocr._paddleocr_gpu")
+    }
     for k in ("PADDLEOCR_USE_GPU", "PADDLEOCR_MIN_FREE_VRAM_MB"):
         monkeypatch.delenv(k, raising=False)
     yield
+    for name, module in original_modules.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
 
 
 # ---------------------------------------------------------------------------
@@ -171,4 +180,4 @@ def test_pdf_ocr_imports_detection_helper():
     """Regression guard — services/pdf_ocr.py must wire use_gpu via helper."""
     src = open("/app/app/services/pdf_ocr.py").read()  # noqa: SIM115
     assert "from app.ocr._paddleocr_gpu import paddleocr_use_gpu" in src
-    assert "use_gpu=use_gpu" in src
+    assert 'device="gpu:0" if use_gpu else "cpu"' in src

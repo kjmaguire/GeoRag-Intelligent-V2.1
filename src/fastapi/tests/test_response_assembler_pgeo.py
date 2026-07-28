@@ -298,7 +298,7 @@ class TestAssembleResponseWithPgeo:
             )
 
         for cit in response.citations:
-            assert cit.corpus == "public_geoscience"
+            assert cit.corpus == "public_geo"
 
     def test_pg_citations_carry_jurisdiction_and_license_fields(self) -> None:
         pg_result = _make_pg_result(1)
