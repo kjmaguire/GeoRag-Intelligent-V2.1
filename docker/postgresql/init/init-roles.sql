@@ -39,7 +39,16 @@ GRANT USAGE ON SCHEMA bronze TO georag_read, georag_write;
 -- gold rows still carry RLS, so georag_read remains tenant-filtered. gold is
 -- Dagster-materialised (not app-written), so no INSERT/UPDATE for georag_write.
 GRANT USAGE ON SCHEMA gold TO georag_read, georag_write;
-GRANT USAGE ON SCHEMA public_geo TO georag_read, georag_write;
+-- Guard: public_geo is created by Laravel migration
+-- 2026_04_14_000000_create_public_geoscience_schema and does NOT exist at
+-- Docker init time on fresh clusters (2026-07-28, B5 smoke test — same class
+-- of gap as the query_audit_log guard below). Skip if absent; re-running
+-- this file after migrations (per the header) will pick it up.
+DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_namespace WHERE nspname = 'public_geo') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA public_geo TO georag_read, georag_write';
+    END IF;
+END $$;
 -- audit schema (created in init-postgis.sql) — all three roles can see it.
 -- Future tables get role-appropriate grants via the ALTER DEFAULT PRIVILEGES
 -- block at the bottom of this file (idempotent on re-run).
@@ -49,11 +58,18 @@ GRANT USAGE ON SCHEMA audit TO georag_read, georag_write, georag_audit;
 GRANT SELECT ON ALL TABLES IN SCHEMA silver TO georag_read;
 GRANT SELECT ON ALL TABLES IN SCHEMA bronze TO georag_read;
 GRANT SELECT ON ALL TABLES IN SCHEMA gold TO georag_read;
-GRANT SELECT ON ALL TABLES IN SCHEMA public_geo TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT SELECT ON TABLES TO georag_read;
 ALTER DEFAULT PRIVILEGES IN SCHEMA gold GRANT SELECT ON TABLES TO georag_read;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo GRANT SELECT ON TABLES TO georag_read;
+-- Guard: public_geo — see the DO block above for why this can't run
+-- unconditionally on a fresh cluster. ALTER DEFAULT PRIVILEGES has no
+-- "IF EXISTS" form, so it must be inside the same existence check.
+DO $$ BEGIN
+    IF EXISTS (SELECT FROM pg_namespace WHERE nspname = 'public_geo') THEN
+        EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA public_geo TO georag_read';
+        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public_geo GRANT SELECT ON TABLES TO georag_read';
+    END IF;
+END $$;
 
 -- Write role: inherits read + INSERT/UPDATE on silver
 GRANT georag_read TO georag_write;
