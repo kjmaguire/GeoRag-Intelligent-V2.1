@@ -154,7 +154,7 @@ def test_from_state_passes_through_real_value():
 
 
 def test_agent_files_import_workspace_context_at_fallback_sites():
-    """Verify the 8 known fallback sites all reach for WorkspaceContext.
+    """Verify the surviving fallback sites all reach for WorkspaceContext.
 
     Pins the migration done in 2026-06-03 audit item B2. If any of
     these files stops importing WorkspaceContext at the relevant site,
@@ -163,8 +163,6 @@ def test_agent_files_import_workspace_context_at_fallback_sites():
     app_root = pathlib.Path(__file__).parents[1] / "app"
     files = [
         "agent/agentic_retrieval/nodes.py",
-        "agent/orchestrator/__init__.py",
-        "agent/tools.py",
     ]
     for relpath in files:
         path = app_root / relpath
