@@ -104,12 +104,11 @@ def test_migrated_sites_import_the_constant() -> None:
     it at PR time.
     """
     migrated = [
-        # phase10 agents (5)
-        APP / "agents" / "phase10" / "customer_response_drafting.py",
-        APP / "agents" / "phase10" / "escalation_routing.py",
-        APP / "agents" / "phase10" / "root_cause_investigation.py",
-        APP / "agents" / "phase10" / "support_packet.py",
-        APP / "agents" / "phase10" / "ticket_triage.py",
+        # phase10 agents (5) — DELETED 2026-07-28 (task #31): the whole
+        # phase10 tree had zero live callers (its only router,
+        # support_agents.py, was gone since the reader-core trim removed
+        # the admin page that reached it). Removed from this list — the
+        # files don't exist.
         # support_cockpit services — ADR-0014 lookup_and_rescope landed
         # 2026-06-04 across escalation_routing, root_cause_investigation,
         # support_packet, AND customer_response_drafting (the original

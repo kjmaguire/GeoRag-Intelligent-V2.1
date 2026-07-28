@@ -1,21 +1,17 @@
-"""Phase H4 Tier 2/3/4 UI router smoke tests."""
-from __future__ import annotations
+"""Phase H4 Tier 2/3/4 UI router smoke tests.
 
-import pytest
+conflicts.py coverage removed 2026-07-28 (task #31) — the router was deleted
+(zero Laravel-side callers; the admin page that reached it was gone since the
+reader-core trim).
+"""
+from __future__ import annotations
 
 from app.routers import (
     audit_findings as audit_findings_router,
 )
 from app.routers import (
-    conflicts as conflicts_router,
-)
-from app.routers import (
     what_changed as what_changed_router,
 )
-
-
-def test_conflicts_router_mounted() -> None:
-    assert conflicts_router.router.prefix == "/api/v1/admin/conflicts"
 
 
 def test_audit_findings_router_mounted() -> None:
@@ -32,27 +28,6 @@ def test_tenant_isolation_finding_model_schema_alias() -> None:
     f = TenantIsolationFinding(schema_name="silver", table="x", gate="rls_enabled", detail="t")
     dump = f.model_dump(by_alias=True)
     assert dump == {"schema": "silver", "table": "x", "gate": "rls_enabled", "detail": "t"}
-
-
-def test_run_resolver_request_requires_claims() -> None:
-    from pydantic import ValidationError
-
-    from app.routers.conflicts import RunResolverRequest
-    with pytest.raises(ValidationError):
-        RunResolverRequest(
-            workspace_id="11111111-1111-1111-1111-111111111111",
-            claims=[],
-        )
-
-
-def test_run_resolver_request_accepts_minimal_claim() -> None:
-    from app.routers.conflicts import ClaimInput, RunResolverRequest
-    req = RunResolverRequest(
-        workspace_id="11111111-1111-1111-1111-111111111111",
-        claims=[ClaimInput(claim_id="c1", text="some claim")],
-    )
-    assert req.claims[0].validated is True
-    assert req.section_id == "test-bench"
 
 
 def test_cold_tier_archive_request_dry_run_default() -> None:

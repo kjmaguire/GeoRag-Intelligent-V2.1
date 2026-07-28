@@ -87,7 +87,7 @@ if settings.SENTRY_DSN:
     )
 from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
 from app.routers import (
-    admin_tier234 as tier234_router,  # Phase H4 Tier 2/3/4 — recommendations + QP + members + settings + AP + audit + maps
+    admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
 )
 from app.routers import answer_runs as answer_runs_router
 from app.routers import (
@@ -96,7 +96,6 @@ from app.routers import (
 from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
 from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
 from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
-from app.routers import conflicts as conflicts_router  # Phase H4 §7.4 UI
 from app.routers import coverage as coverage_router  # CC-03 Item 5 — coverage density heatmap
 from app.routers import evidence as evidence_router
 from app.routers import exports as exports_router
@@ -111,11 +110,8 @@ from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
 from app.routers import re_ocr_trigger as re_ocr_trigger_router
-from app.routers import report_builder as report_builder_router  # Phase H4 §7 UI
 from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
-from app.routers import support_agents as support_agents_router  # Phase G.5 follow-up
-from app.routers import target_recommendation_cockpit as trg_cockpit_router  # Phase H4 §8 UI
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 
@@ -1202,33 +1198,26 @@ app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliabilit
 app.include_router(integrations_trigger_router.router)
 app.include_router(ocr_render_router.router)
 app.include_router(re_ocr_trigger_router.router)
-app.include_router(support_agents_router.router)  # Phase G.5 follow-up
 app.include_router(visualizations_router.router)  # Phase H4 §5 — strip-log / cross-section / stereonet
-app.include_router(trg_cockpit_router.router)     # Phase H4 §8 UI — TRG cockpit + R5 sign-off
-app.include_router(report_builder_router.router)  # Phase H4 §7 UI — Report Builder cockpit
 app.include_router(ml_training_router.router)     # Phase H4 §12 UI — ML training runs
 app.include_router(citation_feedback_router.router)  # Phase H4 §12.8 UI — citation 👍/👎
-app.include_router(conflicts_router.router)       # Phase H4 §7.4 UI — Conflict Resolver review queue
 app.include_router(audit_findings_router.router)  # Phase H4 §11.5/11.10/6.4 UI — audit findings
 app.include_router(what_changed_router.router)    # Phase H4 §9.9 UI — what-changed digest viewer
 app.include_router(tier1_misc_router.source_trust_router)
 app.include_router(tier1_misc_router.export_gate_router)
 app.include_router(tier1_misc_router.k6_router)
-app.include_router(tier234_router.rec_router)
-app.include_router(tier234_router.qp_router)
-app.include_router(tier234_router.ws_members_router)
-app.include_router(tier234_router.ws_settings_router)
-# tier234_router.ap_router (Kestra channels) removed 2026-05-17.
+# tier234_router.{rec,qp,ws_members,ws_settings,audit_explorer,saved_maps,
+# alerts,phase_h4_health}_router — REMOVED 2026-07-28 (task #31). Zero
+# Laravel-side callers for any of the 8; the admin pages that reached them
+# were deleted in the reader-core trim. See admin_tier234.py's module
+# docstring. tier234_router.ap_router (Kestra channels) was already removed
+# 2026-05-17.
 app.include_router(assessment_summary_router.router)  # CC-01 Item 5 — assessment report structured summary
 app.include_router(maps_router.router)  # CC-01 Item 3 (stub) — map ingest scaffold
 app.include_router(coverage_router.router)  # CC-03 Item 5 — coverage density heatmap
 app.include_router(smdi_router.router)  # SMDI ingestion plan v1.1 Phase 6 — /public-geo/smdi/features
 app.include_router(completeness_router.router)  # CC-03 Item 2 — completeness audit
-app.include_router(tier234_router.audit_explorer_router)
-app.include_router(tier234_router.saved_maps_router)
-app.include_router(tier234_router.alerts_router)
-app.include_router(tier234_router.phase_h4_health_router)
-app.include_router(tier234_router.backups_router)
+app.include_router(tier234_router.backups_router)  # Phase H4 §11.1/§11.10 — backup / cold-tier ops
 
 # §19.3 Interpretation Workspace — notes / section-lines / target-zones / comments
 from app.routers import interpretation as interpretation_router  # noqa: E402

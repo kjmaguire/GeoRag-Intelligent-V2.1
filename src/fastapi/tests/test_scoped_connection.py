@@ -20,12 +20,12 @@ Pinned invariants
 2. Missing / empty / non-UUID workspace_id raises ``BareConnectionError``
    — silent default-tenant fallback is impossible.
 3. The reference call site (``tool_gateway/impls.py``) uses the helper.
-4. No production file under ``app/services/support_cockpit/`` or
-   ``app/agents/phase10/`` ships a new bespoke
-   ``set_config('app.workspace_id', ...)`` — they must use the helper
-   instead (Phase-2 migration tracked separately; this is the *new
+4. No production file under ``app/services/support_cockpit/`` ships a new
+   bespoke ``set_config('app.workspace_id', ...)`` — they must use the
+   helper instead (Phase-2 migration tracked separately; this is the *new
    sites only* gate, with explicit allowlist for the legacy sites
-   awaiting migration).
+   awaiting migration). ``app/agents/phase10/`` was deleted 2026-07-28
+   (task #31) — dead code, zero live callers.
 """
 from __future__ import annotations
 
@@ -198,12 +198,11 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # parent_expansion, project_geometry. All use bind_workspace_scope.
         # agents/phase0 — bootstrap / tenant-isolation auditor (allowed
         # to run cross-tenant for the audit query). Migrated 2026-06-03.
-        # agents/phase10 (5 sites).
-        "agents/phase10/customer_response_drafting.py",
-        "agents/phase10/escalation_routing.py",
-        "agents/phase10/root_cause_investigation.py",
-        "agents/phase10/support_packet.py",
-        "agents/phase10/ticket_triage.py",
+        # agents/phase10 (5 sites) — DELETED 2026-07-28 (task #31): the
+        # whole phase10 tree had zero live callers (its only router,
+        # support_agents.py, was gone since the reader-core trim removed
+        # the admin page that reached it). No longer needs an allowlist
+        # entry — the files don't exist.
         # hatchet_workflows — 14 files migrated 2026-06-03 in the
         # REC#2 Phase-2 wave-3 sweep (_restore_pg_from_export,
         # embed_pending_passages_smoke, field_outcome_learning,
@@ -227,7 +226,8 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # routers/shadow_trigger.py — removed 2026-06-28: no longer contains a
         # bespoke set_config('app.workspace_id', ...) (migrated away); the guard
         # requires this list to shrink, so dead entries must be deleted.
-        "routers/target_recommendation_cockpit.py",
+        # routers/target_recommendation_cockpit.py — the file was deleted
+        # 2026-07-28 (task #31, zero live callers); removed from this list.
         "routers/visualizations.py",
         # services/ — most of the ingest pipeline migrated 2026-06-03
         # in the second REC#2 Phase-2 wave (claim_ledger 5 sites,
