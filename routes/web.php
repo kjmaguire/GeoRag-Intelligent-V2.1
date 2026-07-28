@@ -6,7 +6,6 @@ use App\Http\Controllers\Admin\IntegrationsController;
 use App\Http\Controllers\Admin\KestraSsoController;
 use App\Http\Controllers\ChartsGalleryController;
 use App\Http\Controllers\CitationFeedbackController;
-use App\Http\Controllers\Dashboard\CustomerDashboardsController;
 use App\Http\Controllers\Foundry\AssessmentSummaryController;
 use App\Http\Controllers\Foundry\AuditLogController;
 use App\Http\Controllers\Foundry\ChatController;
@@ -296,15 +295,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
         '/charts/gallery',
         [ChartsGalleryController::class, 'gallery'],
     )->name('charts.gallery');
-
-    // §16.1 — 6 missing customer dashboards (audit-flagged gap).
-    Route::prefix('dashboards')->group(function () {
-        Route::get('evidence-quality', [CustomerDashboardsController::class, 'evidenceQuality'])->name('dashboards.evidence-quality');
-        Route::get('visual-readiness', [CustomerDashboardsController::class, 'visualReadiness'])->name('dashboards.visual-readiness');
-        Route::get('target-recommendation', [CustomerDashboardsController::class, 'targetRecommendation'])->name('dashboards.target-recommendation');
-        Route::get('reporting', [CustomerDashboardsController::class, 'reporting'])->name('dashboards.reporting');
-        Route::get('llm-cost', [CustomerDashboardsController::class, 'llmCost'])->name('dashboards.llm-cost');
-    });
 
     // §8.5 (step 3 deferred branch) — OAuth flows for cloud-source ingestion.
     // Functional scaffold; requires per-provider OAuth app registration
