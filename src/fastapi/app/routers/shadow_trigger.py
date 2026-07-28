@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.config import settings
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
 from app.hatchet_workflows.ingest_zip_archive import (
@@ -83,17 +84,19 @@ async def trigger_ingest_pdf(
 
     # CC-03 Item 8 — lifecycle guard. Block ingest on non-active projects.
     # workspace_id GUC set so the RLS policy admits the silver.projects row.
-    # Parameter-bound — never f-string interpolate (audit pass 5+ caught the
-    # zip-archive sibling using `str` workspace_id without UUID validation,
-    # which is the textbook SQL-injection shape).
+    # Goes through bind_workspace_scope rather than a hand-rolled
+    # set_config: same parameter-bound SET LOCAL form, but it also
+    # rejects a non-UUID workspace_id up front — which is exactly the
+    # gap audit pass 5+ flagged on the zip-archive sibling below.
     if payload.project_id:
         _pg_pool = request.app.state.pg_pool
         async with _pg_pool.acquire() as _conn:
             async with _conn.transaction():
                 if payload.workspace_id:
-                    await _conn.execute(
-                        "SELECT set_config('app.workspace_id', $1, true)",
-                        str(payload.workspace_id),
+                    await bind_workspace_scope(
+                        _conn,
+                        workspace_id=str(payload.workspace_id),
+                        site="routers.shadow_trigger.ingest_pdf",
                     )
                 await require_active_project(
                     project_id=str(payload.project_id), conn=_conn
@@ -151,15 +154,16 @@ async def trigger_tiff_normalize(
     )
 
     # CC-03 Item 8 — lifecycle guard. Block ingest on non-active projects.
-    # Parameter-bound; see ingest_pdf trigger above.
+    # Scoped via bind_workspace_scope; see ingest_pdf trigger above.
     if payload.project_id:
         _pg_pool = request.app.state.pg_pool
         async with _pg_pool.acquire() as _conn:
             async with _conn.transaction():
                 if payload.workspace_id:
-                    await _conn.execute(
-                        "SELECT set_config('app.workspace_id', $1, true)",
-                        str(payload.workspace_id),
+                    await bind_workspace_scope(
+                        _conn,
+                        workspace_id=str(payload.workspace_id),
+                        site="routers.shadow_trigger.tiff_normalize",
                     )
                 await require_active_project(
                     project_id=str(payload.project_id), conn=_conn
@@ -205,19 +209,20 @@ async def trigger_ingest_zip_archive(
     )
 
     # Lifecycle guard — block ingest on non-active projects.
-    # Parameter-bound; see ingest_pdf trigger above. Especially load-bearing
-    # here because IngestZipArchiveInput.workspace_id is typed `str` (not
-    # `UUID`) — Pydantic doesn't validate the shape, so an f-string interp
-    # would be a textbook SQL-injection vector if Laravel ever forwarded
-    # malformed input.
+    # Especially load-bearing here because IngestZipArchiveInput.workspace_id
+    # is typed `str` (not `UUID`), so Pydantic never validates the shape.
+    # bind_workspace_scope closes that gap: it raises BareConnectionError on
+    # anything that isn't a UUID, so malformed input from Laravel is refused
+    # at the boundary instead of being bound as an opaque GUC value.
     if payload.project_id:
         _pg_pool = request.app.state.pg_pool
         async with _pg_pool.acquire() as _conn:
             async with _conn.transaction():
                 if payload.workspace_id:
-                    await _conn.execute(
-                        "SELECT set_config('app.workspace_id', $1, true)",
-                        str(payload.workspace_id),
+                    await bind_workspace_scope(
+                        _conn,
+                        workspace_id=str(payload.workspace_id),
+                        site="routers.shadow_trigger.ingest_zip_archive",
                     )
                 await require_active_project(
                     project_id=str(payload.project_id), conn=_conn
