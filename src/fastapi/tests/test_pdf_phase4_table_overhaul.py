@@ -24,9 +24,21 @@ from unittest.mock import MagicMock
 
 import pytest
 
-sys.modules.setdefault("boto3", MagicMock())
-sys.modules.setdefault("botocore", MagicMock())
-sys.modules.setdefault("botocore.config", MagicMock())
+# Stub boto3/botocore ONLY when genuinely absent (running pytest on a dev host
+# rather than in the container, where they are installed for real). This used to
+# be an unconditional sys.modules.setdefault, which left a MagicMock in
+# sys.modules that unrelated modules tripped over: aioboto3 does
+# `import boto3.session`, and that raises "'boto3' is not a package" against a
+# mock. Once this file moved into the FastAPI suite it sorted ahead of
+# test_pg_partman_maintenance / test_section11_* / test_workspace_export_restore
+# and broke their collection.
+try:  # pragma: no cover - environment probe
+    import boto3  # noqa: F401
+    import botocore.config  # noqa: F401
+except ImportError:  # pragma: no cover - dev host without the AWS SDKs
+    sys.modules.setdefault("boto3", MagicMock())
+    sys.modules.setdefault("botocore", MagicMock())
+    sys.modules.setdefault("botocore.config", MagicMock())
 
 
 @pytest.fixture

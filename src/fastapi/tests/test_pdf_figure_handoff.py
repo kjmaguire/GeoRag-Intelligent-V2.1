@@ -29,12 +29,21 @@ import pytest
 # `import boto3` inside _parse_with_docling resolves on dev hosts that don't
 # have boto3 installed. The container image installs boto3 for real; this
 # stub is purely for host-side unit testing.
-_fake_boto3 = MagicMock()
-_fake_botocore = MagicMock()
-_fake_botocore_config = MagicMock()
-sys.modules.setdefault("boto3", _fake_boto3)
-sys.modules.setdefault("botocore", _fake_botocore)
-sys.modules.setdefault("botocore.config", _fake_botocore_config)
+# Stub boto3/botocore ONLY when genuinely absent (running pytest on a dev host
+# rather than in the container, where they are installed for real). This used to
+# be an unconditional sys.modules.setdefault, which left a MagicMock in
+# sys.modules that unrelated modules tripped over: aioboto3 does
+# `import boto3.session`, and that raises "'boto3' is not a package" against a
+# mock. Once this file moved into the FastAPI suite it sorted ahead of
+# test_pg_partman_maintenance / test_section11_* / test_workspace_export_restore
+# and broke their collection.
+try:  # pragma: no cover - environment probe
+    import boto3  # noqa: F401
+    import botocore.config  # noqa: F401
+except ImportError:  # pragma: no cover - dev host without the AWS SDKs
+    sys.modules.setdefault("boto3", MagicMock())
+    sys.modules.setdefault("botocore", MagicMock())
+    sys.modules.setdefault("botocore.config", MagicMock())
 
 from app.services.ingest.pdf_report import (  # noqa: E402
     ReportParseResult,
