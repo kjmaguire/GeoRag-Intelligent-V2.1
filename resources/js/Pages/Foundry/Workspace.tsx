@@ -112,14 +112,6 @@ interface CommodityKey3D {
     count: number;
 }
 
-interface PgeoLayer {
-    id: string;
-    label: string;
-    tier: number;
-    on: boolean;
-    locked?: boolean;
-}
-
 interface ProjectLayer {
     id: string;
     label: string;
@@ -190,9 +182,7 @@ interface WorkspaceProps {
     project_layers: ProjectLayer[];
     strat_units: StratUnit[];
     strat_source: 'project' | 'reference';
-    pgeo_layers: PgeoLayer[];
-    pgeo_note: string | null;
-    pgeo_country: 'CA' | 'US' | 'OTHER';
+    project_country: 'CA' | 'US' | 'OTHER';
     surveys_3d: Survey3D[];
     structures_3d: Structure3D[];
     assay_composites_3d: AssayComposite3D[];
@@ -218,7 +208,7 @@ type View3D =
 type Mode = 'map' | 'section' | '3d' | 'structure' | 'logs';
 type Tool = 'pan' | 'draw' | 'measure' | 'select';
 
-export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, first_holes_intervals, project_layers, strat_units, strat_source, pgeo_layers, pgeo_note, pgeo_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty }: WorkspaceProps) {
+export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty }: WorkspaceProps) {
     // Phase 5 real-time push — sync_silver_to_kg / mv_refresh_silver /
     // ingest jobs all touch the 3D mode's 9 sub-views. Full reload is
     // acceptable given the large prop surface (per Phase 5 decision).
@@ -231,7 +221,6 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     const [mode, setMode] = useState<Mode>('map');
     const [view3d, setView3d] = useState<View3D>('lithology');
     const [tool, setTool] = useState<Tool>('pan');
-    const [layersOn, setLayersOn] = useState<Record<string, boolean>>({});
     const [projectLayersOn, setProjectLayersOn] = useState<Record<string, boolean>>(
         () => Object.fromEntries(project_layers.map((l) => [l.id, l.on])),
     );
@@ -427,44 +416,6 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                 );
                             })}
                         </div>
-                        {pgeo_layers.length === 0 ? (
-                            <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--line-1)' }}>
-                                <div className="text-[10px] font-mono uppercase tracking-wider mb-1.5" style={{ color: 'var(--fg-3)' }}>
-                                    Public geoscience · {pgeo_country}
-                                </div>
-                                <div className="text-[11px] leading-snug" style={{ color: 'var(--fg-3)' }}>
-                                    {pgeo_note ?? 'No public geoscience layers available for this jurisdiction.'}
-                                </div>
-                            </div>
-                        ) : (
-                            <>
-                                <div className="px-3 py-2 border-t" style={{ borderColor: 'var(--line-1)' }}>
-                                    <div className="text-[10px] font-mono uppercase tracking-wider mb-1.5" style={{ color: 'var(--fg-3)' }}>Tier 2 · permissive</div>
-                                    {pgeo_layers.filter((l) => l.tier === 2).map((l) => (
-                                        <label key={l.id} className="flex items-center gap-2 py-1 text-xs cursor-pointer">
-                                            <input type="checkbox" checked={layersOn[l.id] ?? l.on} onChange={(e) => setLayersOn({ ...layersOn, [l.id]: e.target.checked })} />
-                                            <span style={{ color: 'var(--fg-1)' }}>{l.label}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                                <div className="px-3 py-2 border-t" style={{ borderColor: 'var(--line-1)' }}>
-                                    <div className="text-[10px] font-mono uppercase tracking-wider mb-1.5" style={{ color: 'var(--fg-3)' }}>Tier 3 · gated</div>
-                                    {pgeo_layers.filter((l) => l.tier === 3).map((l) => (
-                                        <div key={l.id} className="flex items-center gap-2 py-1 text-xs" style={{ color: 'var(--fg-3)' }}>
-                                            <span>🔒</span>
-                                            <span className="line-through">{l.label}</span>
-                                        </div>
-                                    ))}
-                                    <Link
-                                        href="/public-geoscience/tier3-unlock"
-                                        className="text-[10px] font-mono uppercase tracking-wider mt-2 inline-block px-2 py-1 rounded border"
-                                        style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
-                                    >
-                                        Request Tier 3 access
-                                    </Link>
-                                </div>
-                            </>
-                        )}
                     </aside>
 
                     {/* Mode canvas — flex-col so map/charts can fill viewport.
@@ -956,8 +907,8 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                                             units={strat_units}
                                                             height={Math.max(360, chartH - 100)}
                                                             width={420}
-                                                            eyebrow={strat_source === 'project' ? 'Project chronostratigraphy' : `Regional reference · ${pgeo_country === 'US' ? 'Wyoming roll-front uranium' : 'Athabasca / Wollaston Domain'}`}
-                                                            title={strat_source === 'project' ? 'Stratigraphic column' : (pgeo_country === 'US' ? 'Shirley / PRB / WRB roll-front host stack' : 'Athabasca Group · Wollaston Domain')}
+                                                            eyebrow={strat_source === 'project' ? 'Project chronostratigraphy' : `Regional reference · ${project_country === 'US' ? 'Wyoming roll-front uranium' : 'Athabasca / Wollaston Domain'}`}
+                                                            title={strat_source === 'project' ? 'Stratigraphic column' : (project_country === 'US' ? 'Shirley / PRB / WRB roll-front host stack' : 'Athabasca Group · Wollaston Domain')}
                                                         />
                                                     </div>
                                                 </div>

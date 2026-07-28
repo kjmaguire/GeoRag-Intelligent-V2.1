@@ -28,8 +28,6 @@ final class FoundryRoutesSmokeTest extends TestCase
             'projects' => ['/projects', 'Foundry/Projects'],
             'inbox' => ['/inbox', 'Foundry/Inbox'],
             'settings' => ['/settings', 'Foundry/Settings'],
-            'tier3' => ['/public-geoscience/tier3-unlock', 'Foundry/Tier3Unlock'],
-            'pgeo' => ['/foundry/public-geoscience', 'Foundry/PublicGeo'],
             'imports' => ['/foundry/imports/wizard', 'Foundry/DataImportWizard'],
             'newproject' => ['/foundry/projects/new', 'Foundry/NewProject'],
         ];

@@ -23,7 +23,6 @@ const ITEMS: PaletteItem[] = [
     { kind: 'nav', title: 'Projects', sub: 'Project picker', href: '/projects', group: 'Navigate' },
     { kind: 'nav', title: 'Chat threads', sub: 'Saved conversations', href: '/threads', group: 'Navigate' },
     { kind: 'nav', title: 'Inbox', sub: 'Mentions + reviews + refusals', href: '/inbox', group: 'Navigate' },
-    { kind: 'nav', title: 'Public Geoscience', sub: 'Read-only second corpus', href: '/public-geoscience', group: 'Navigate' },
     { kind: 'nav', title: 'New project', sub: '4-step wizard', href: '/foundry/projects/new', group: 'Navigate' },
     { kind: 'nav', title: 'Workspace settings', sub: '10-section shell', href: '/settings', group: 'Navigate' },
     { kind: 'nav', title: 'Support cockpit (admin)', sub: '§10 admin replay', href: '/support-cockpit', group: 'Navigate' },

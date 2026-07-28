@@ -677,44 +677,8 @@ class WorkspaceController extends Controller
             $stratUnits = $this->referenceStratColumn($project);
         }
 
-        // Public-geoscience layers are jurisdiction-scoped. Seeded PGEO data
-        // (see 2026_05_13_180000_seed_public_geoscience_jurisdictions_and_sources.php)
-        // is Canadian-only at the moment — 8 provinces (SK/ON/BC/QC/MB/AB/NS/NL).
-        // For US projects (e.g. Wyoming Cameco Shirley Basin) we surface a
-        // pending-state empty list rather than mis-label the Wyoming workspace
-        // with Saskatchewan/Athabasca-flavoured GSC layers.
+        // Retain country context for the regional reference stratigraphic column.
         $country = $this->resolveProjectCountry($project);
-
-        if ($country === 'CA') {
-            $publicGeoLayers = [
-                ['id' => 'bedrock_geology', 'label' => 'Bedrock geology', 'tier' => 2, 'on' => false],
-                ['id' => 'surficial_geology', 'label' => 'Surficial geology', 'tier' => 2, 'on' => false],
-                ['id' => 'faults', 'label' => 'Faults', 'tier' => 2, 'on' => false],
-                ['id' => 'dykes', 'label' => 'Dykes', 'tier' => 2, 'on' => false],
-                ['id' => 'geological_domains', 'label' => 'Geological domains', 'tier' => 2, 'on' => false],
-                ['id' => 'regional_compilation_points', 'label' => 'Regional compilation pts', 'tier' => 2, 'on' => false],
-                ['id' => 'regional_compilation_polygons', 'label' => 'Regional compilation polys', 'tier' => 2, 'on' => false],
-                ['id' => 'geoscience_publications', 'label' => 'Geoscience publications', 'tier' => 2, 'on' => false],
-                ['id' => 'geophys_survey_coverage', 'label' => 'Geophys survey coverage', 'tier' => 2, 'on' => false],
-                ['id' => 'geophys_control_points', 'label' => 'Geophys control points', 'tier' => 2, 'on' => false],
-                ['id' => 'petroleum_wells', 'label' => 'Petroleum wells', 'tier' => 3, 'on' => false, 'locked' => true],
-                ['id' => 'petroleum_well_trajectories', 'label' => 'Well trajectories', 'tier' => 3, 'on' => false, 'locked' => true],
-                ['id' => 'petroleum_pools', 'label' => 'Petroleum pools', 'tier' => 3, 'on' => false, 'locked' => true],
-                ['id' => 'geochronology_samples', 'label' => 'Geochronology samples', 'tier' => 3, 'on' => false, 'locked' => true],
-                ['id' => 'geochemistry_samples', 'label' => 'Geochemistry samples', 'tier' => 3, 'on' => false, 'locked' => true],
-                ['id' => 'geological_feature_points', 'label' => 'Feature points', 'tier' => 3, 'on' => false, 'locked' => true],
-                ['id' => 'geological_feature_lines', 'label' => 'Feature lines', 'tier' => 3, 'on' => false, 'locked' => true],
-            ];
-            $pgeoNote = null;
-        } else {
-            // US (Wyoming) and any other non-Canadian jurisdiction: no public
-            // geoscience corpus is seeded yet. WSGS ingest is a deferred
-            // follow-up (see plan rev 6 §"Wyoming-specific deferred follow-ups").
-            $publicGeoLayers = [];
-            $pgeoNote = $country === 'US'
-                ? 'No public geoscience layers seeded for this US jurisdiction yet. WSGS (Wyoming State Geological Survey) ingest is a deferred follow-up.'
-                : 'No public geoscience layers available for this jurisdiction.';
-        }
 
         return Inertia::render('Foundry/Workspace', [
             'project' => [
@@ -796,9 +760,7 @@ class WorkspaceController extends Controller
             'project_aoi' => $projectAoi,
             'strat_units' => $stratUnits,
             'strat_source' => $stratSource,
-            'pgeo_layers' => $publicGeoLayers,
-            'pgeo_note' => $pgeoNote,
-            'pgeo_country' => $country,
+            'project_country' => $country,
             'empty' => $collars->isEmpty(),
         ]);
     }
@@ -1098,13 +1060,13 @@ class WorkspaceController extends Controller
 
     /**
      * Resolve a project's country code ('CA' | 'US' | 'OTHER') for the
-     * purpose of scoping public-geoscience layers.
+     * purpose of selecting regional stratigraphic columns.
      *
      * Today silver.projects has no jurisdiction/country column, so we fall
      * back to name-based detection. Wyoming Cameco Shirley Basin → 'US'.
      * Saskatchewan/Ontario/BC/... project names → 'CA'. Anything else
      * defaults to 'CA' to preserve existing behavior for the seeded
-     * Canadian PGEO corpus.
+     * Canadian regional context.
      *
      * TODO: replace with a real `silver.projects.country_code` column once
      * Module 10 doc-sweep lands.

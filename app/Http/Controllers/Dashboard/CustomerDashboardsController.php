@@ -23,7 +23,6 @@ use Inertia\Response;
  * Routes:
  *   GET /dashboards/evidence-quality
  *   GET /dashboards/visual-readiness
- *   GET /dashboards/publicgeo-overlay
  *   GET /dashboards/target-recommendation
  *   GET /dashboards/reporting
  *   GET /dashboards/llm-cost
@@ -124,51 +123,6 @@ class CustomerDashboardsController extends Controller
         return Inertia::render('Dashboards/VisualReadiness', [
             'viz_coverage' => $vizCoverage,
             'total_projects' => $totalProjects,
-        ]);
-    }
-
-    // ─── PublicGeo Overlay ─────────────────────────────────────────
-    public function publicGeoOverlay(Request $request): Response
-    {
-        // Public-geoscience inventory + freshness.
-        $counts = DB::selectOne(
-            'SELECT
-                (SELECT count(*) FROM public_geo.pg_mineral_occurrence)::int AS occurrences,
-                (SELECT count(*) FROM public_geo.pg_drillhole_collar)::int AS drillholes,
-                (SELECT count(*) FROM public_geo.pg_mine)::int AS mines,
-                (SELECT count(*) FROM public_geo.pg_bedrock_geology)::int AS bedrock_polygons,
-                (SELECT count(*) FROM public_geo.pg_assessment_survey)::int AS assessment_surveys',
-        );
-
-        // Sources + last refresh
-        $sources = DB::select(
-            'SELECT source_id, jurisdiction_code, name, canonical_type, license_summary,
-                    last_refreshed_at
-               FROM public_geo.sources
-              ORDER BY jurisdiction_code, name',
-        );
-
-        // By jurisdiction
-        $byJurisdiction = DB::select(
-            "SELECT jurisdiction_code,
-                    sum(CASE WHEN tbl = 'occurrences' THEN n ELSE 0 END)::int AS occurrences,
-                    sum(CASE WHEN tbl = 'drillholes' THEN n ELSE 0 END)::int AS drillholes,
-                    sum(CASE WHEN tbl = 'mines' THEN n ELSE 0 END)::int AS mines
-               FROM (
-                   SELECT 'occurrences' AS tbl, jurisdiction_code, count(*)::int AS n FROM public_geo.pg_mineral_occurrence GROUP BY 2
-                   UNION ALL
-                   SELECT 'drillholes', jurisdiction_code, count(*)::int FROM public_geo.pg_drillhole_collar GROUP BY 2
-                   UNION ALL
-                   SELECT 'mines', jurisdiction_code, count(*)::int FROM public_geo.pg_mine GROUP BY 2
-               ) t
-              GROUP BY jurisdiction_code
-              ORDER BY jurisdiction_code",
-        );
-
-        return Inertia::render('Dashboards/PublicGeoOverlay', [
-            'counts' => $counts,
-            'sources' => $sources,
-            'by_jurisdiction' => $byJurisdiction,
         ]);
     }
 

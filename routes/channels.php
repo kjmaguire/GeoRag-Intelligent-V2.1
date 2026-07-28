@@ -169,9 +169,7 @@ Broadcast::channel('admin.what-changed', $adminOnly);
 Broadcast::channel('admin.source-trust', $adminOnly);
 // Phase 6 closeout — 2 Dashboards pages without a natural existing-surface
 // fit. (EvidenceQuality reads silver.answer_runs; VisualReadiness reads
-// MV-refreshed viz coverage.) The other 3 Dashboards pages reuse existing
-// channels: PublicGeoOverlay → public-geoscience.tiles,
-// TargetRecommendation → admin.target-recommendation, Reporting → admin.reports.
+// MV-refreshed viz coverage.)
 Broadcast::channel('admin.dashboards-evidence-quality', $adminOnly);
 Broadcast::channel('admin.dashboards-visual-readiness', $adminOnly);
 
@@ -185,17 +183,3 @@ Broadcast::channel('admin.target-run.{run_id}', function ($user, string $run_id)
 
     return (bool) ($user->is_admin ?? false);
 });
-
-/**
- * Phase 4 — Public-Geoscience tile cache invalidation channel.
- *
- * Fires PublicGeoscienceTilesInvalidated when the public_geoscience_pull
- * workflow (or future SMDI pipeline) successfully refreshes public_geo.*
- * data. Subscribers (PublicGeoscienceMap) drop their MapLibre tile cache
- * via setTiles() + new ?v={epoch} cache-bust.
- *
- * Auth: any authenticated user. Matches the route-level auth on
- * /tiles/public-geoscience/* (also Sanctum-only) — PGEO is a workspace-
- * global read-only corpus, no per-project scoping.
- */
-Broadcast::channel('public-geoscience.tiles', static fn ($user) => $user !== null);

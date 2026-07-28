@@ -303,12 +303,11 @@ async def test_target_heatmap_real_data_or_demo_fallback():
 # ─── §16.1 Customer Dashboards (Laravel-side smoke test) ────────────
 @pytest.mark.asyncio
 async def test_dashboards_routes_exist():
-    """All 6 customer-dashboard routes should at minimum redirect to
+    """All customer-dashboard routes should at minimum redirect to
     /login (302) when unauthenticated — proves they're registered."""
     paths = [
         "/dashboards/evidence-quality",
         "/dashboards/visual-readiness",
-        "/dashboards/publicgeo-overlay",
         "/dashboards/target-recommendation",
         "/dashboards/reporting",
         "/dashboards/llm-cost",

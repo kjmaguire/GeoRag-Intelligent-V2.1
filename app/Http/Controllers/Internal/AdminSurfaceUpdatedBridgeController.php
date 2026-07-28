@@ -74,8 +74,7 @@ class AdminSurfaceUpdatedBridgeController extends Controller
         // Phase 6 — closeout for the 2 Dashboards pages without a natural
         // existing-surface fit (EvidenceQuality reads silver.answer_runs
         // rejection stats; VisualReadiness reads MV-refreshed viz coverage).
-        // The other 3 Dashboards pages (PublicGeoOverlay, TargetRecommendation,
-        // Reporting) reuse existing surfaces — see channels.php notes.
+        // TargetRecommendation and Reporting reuse existing surfaces.
         'dashboards-evidence-quality',
         'dashboards-visual-readiness',
     ];

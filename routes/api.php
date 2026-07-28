@@ -15,9 +15,6 @@ use App\Http\Controllers\Api\V1\IngestProgressController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\PublicApiController;
 use App\Http\Controllers\Api\V1\PublicGeoscience\EntityReferencesController as PublicGeoscienceEntityReferencesController;
-use App\Http\Controllers\Api\V1\PublicGeoscience\FeatureDetailController as PublicGeoscienceFeatureDetailController;
-use App\Http\Controllers\Api\V1\PublicGeoscience\HealthController as PublicGeoscienceHealthController;
-use App\Http\Controllers\Api\V1\PublicGeoscience\JurisdictionController as PublicGeoscienceJurisdictionController;
 use App\Http\Controllers\Api\V1\QueryController;
 use App\Http\Controllers\Api\V1\SavedMapViewController;
 use App\Http\Controllers\Api\V1\TrustController;
@@ -29,7 +26,6 @@ use App\Http\Controllers\Dashboard\ProjectAnalyticsController;
 use App\Http\Controllers\Dashboard\ProjectDashboardController;
 use App\Http\Controllers\Internal\AdminSurfaceUpdatedBridgeController;
 use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
-use App\Http\Controllers\Internal\PublicGeoscienceTilesInvalidatedBridgeController;
 use App\Http\Controllers\Internal\ReportBuildProgressController;
 use App\Http\Controllers\Internal\UserInboxBridgeController;
 use App\Http\Controllers\Internal\WorkspaceActivityBridgeController;
@@ -197,22 +193,8 @@ Route::prefix('v1')->group(function () {
         Route::get('usage/{workspace_id}', [PublicApiController::class, 'usage'])->where('workspace_id', '[0-9a-fA-F-]{36}');
         Route::get('webhooks', [PublicApiController::class, 'webhooks']);
 
-        // ── Public Geoscience (§10) — read-only jurisdiction registry ──
+        // Public-geoscience entity references remain part of cited-answer drill-in.
         Route::prefix('public-geoscience')->group(function () {
-            Route::get('jurisdictions', [PublicGeoscienceJurisdictionController::class, 'index']);
-            Route::get('health', PublicGeoscienceHealthController::class);
-
-            // Single-feature detail fetch — backs the in-map "Expand
-            // upstream record" panel + the Compare-Features modal.
-            // Layer ID validated server-side (LAYER_TABLES registry).
-            // Feature ID is the source agency's identifier (e.g. SMDI
-            // number, MINFILE code) or our canonical source_feature_id.
-            Route::get(
-                'features/{layer}/{feature_id}',
-                [PublicGeoscienceFeatureDetailController::class, 'show'],
-            )->where('layer', '[a-z_]+')
-                ->where('feature_id', '[A-Za-z0-9._\-]+');
-
             // Cross-corpus linker drill-in (plan §07d).
             // GET .../entities/{canonical_type}/{pg_id}/references
             // GET .../documents/{report_id}/references
@@ -313,12 +295,4 @@ Route::middleware('service.key')->prefix('internal')->group(function () {
     Route::post('v1/user-inbox-updated',
         [UserInboxBridgeController::class, 'broadcast'])
         ->name('internal.user_inbox_updated.broadcast');
-
-    // Phase 4 — Public-Geoscience tile cache invalidation. Caller POSTs
-    // {jurisdiction_epoch, source_ids?}; dispatches
-    // App\Events\Map\PublicGeoscienceTilesInvalidated so PublicGeoscienceMap
-    // re-issues setTiles() with the new ?v={epoch} cache-bust.
-    Route::post('v1/public-geoscience-tiles-invalidated',
-        [PublicGeoscienceTilesInvalidatedBridgeController::class, 'broadcast'])
-        ->name('internal.public_geoscience_tiles_invalidated.broadcast');
 });

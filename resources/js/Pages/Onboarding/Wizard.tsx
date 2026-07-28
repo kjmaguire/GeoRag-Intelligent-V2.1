@@ -67,7 +67,6 @@ const SUGGESTED_PROMPTS: Record<string, string[]> = {
 
 function defaultPromptsFor(commodity: string): string[] {
     return SUGGESTED_PROMPTS[commodity] ?? [
-        'What public-geoscience data is available in my project area?',
         'Show me drillholes within 50km of my AOI.',
         'Generate a Workspace Health snapshot.',
     ];
@@ -474,7 +473,7 @@ export default function OnboardingWizard({ commodities, regions, progress }: Pag
                                 <h2 className="text-base font-medium">Bring in some data</h2>
                                 <p className="text-sm text-zinc-500">
                                     Upload PDFs, CSVs, or shapefiles — or skip to try GeoRAG against your project's
-                                    public-geoscience overlay first. You can always add data later from the
+                                    project workspace first. You can always add data later from the
                                     project page.
                                 </p>
                                 <div className="mt-4 rounded border border-dashed border-zinc-300 p-6 text-center">

@@ -116,7 +116,7 @@ export default function FoundrySettings({ workspace, member_count, can_admin }: 
                             </>
                         )}
                         {section === 'members' && <Card eyebrow="MEMBERS" title={`${member_count} member${member_count === 1 ? '' : 's'}`}><div className="text-xs" style={{ color: 'var(--fg-2)' }}>Member management UI deferred — invite by email + bulk CSV + roles assignment lands next.</div></Card>}
-                        {section === 'roles' && <Card eyebrow="ROLES & ACCESS" title="RBAC"><div className="text-xs" style={{ color: 'var(--fg-2)' }}>Workspace roles: admin, qp, geologist, viewer. Per-project overrides + Tier-3 layer gating via /public-geoscience/tier3-unlock.</div></Card>}
+                        {section === 'roles' && <Card eyebrow="ROLES & ACCESS" title="RBAC"><div className="text-xs" style={{ color: 'var(--fg-2)' }}>Workspace roles: admin, qp, geologist, viewer, with per-project overrides.</div></Card>}
                         {section === 'sso' && <Card eyebrow="SSO / SAML" title="Single Sign-On"><div className="text-xs" style={{ color: 'var(--fg-2)' }}>Providers: Okta · Azure · Google · OneLogin · Custom. SCIM provisioning available.</div></Card>}
                         {section === 'security' && <Card eyebrow="SECURITY" title="Authentication & access"><div className="text-xs" style={{ color: 'var(--fg-2)' }}>2FA · WebAuthn · password policy · IP allowlist · Tor block · geo restrictions.</div></Card>}
                         {section === 'tokens' && <Card eyebrow="API TOKENS" title="Personal access tokens"><div className="text-xs" style={{ color: 'var(--fg-2)' }}>Manage Sanctum personal access tokens for API + automation access.</div></Card>}

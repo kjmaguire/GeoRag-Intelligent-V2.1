@@ -47,7 +47,6 @@ use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\PortfolioController;
 use App\Http\Controllers\Foundry\ProjectAnalyticsController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
-use App\Http\Controllers\Foundry\PublicGeoController;
 use App\Http\Controllers\Foundry\RationaleController;
 use App\Http\Controllers\Foundry\ReasoningController;
 use App\Http\Controllers\Foundry\ReportController;
@@ -57,14 +56,12 @@ use App\Http\Controllers\Foundry\SettingsController;
 use App\Http\Controllers\Foundry\SourceGraphController;
 use App\Http\Controllers\Foundry\SourcesController;
 use App\Http\Controllers\Foundry\TargetsController;
-use App\Http\Controllers\Foundry\Tier3Controller;
 use App\Http\Controllers\Foundry\WorkspaceController;
 use App\Http\Controllers\Internal\KestraSsoCheckController;
 use App\Http\Controllers\Internal\MetricsController;
 use App\Http\Controllers\InterpretationWorkspaceController;
 use App\Http\Controllers\OAuthIngestController;
 use App\Http\Controllers\OnboardingController;
-use App\Http\Controllers\PublicGeoscienceController;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -176,11 +173,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->where(['slug' => '[a-z0-9\-]+', 'queueId' => '[0-9a-fA-F-]{36}'])
         ->name('foundry.drill-review.decide');
 
-    Route::get('/public-geoscience/tier3-unlock', [Tier3Controller::class, 'show'])
-        ->name('foundry.tier3');
-    Route::post('/public-geoscience/tier3-unlock', [Tier3Controller::class, 'request'])
-        ->name('foundry.tier3.request');
-
     Route::get('/projects/{slug}/audit', [AuditLogController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')
         ->name('foundry.audit');
@@ -274,13 +266,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->name('foundry.inbox');
     Route::get('/settings', [SettingsController::class, 'show'])
         ->name('foundry.settings');
-    // The Foundry/PublicGeo page was a placeholder shell (no real MapLibre
-    // instance). The functional UI lives at /public-geoscience; redirect
-    // the legacy URL so old bookmarks land somewhere useful. The
-    // PublicGeoController class still exists for reference but is no
-    // longer wired to a route.
-    Route::redirect('/foundry/public-geoscience', '/public-geoscience', 301)
-        ->name('foundry.public-geoscience');
     Route::get('/foundry/imports/wizard', function () {
         return Inertia::render('Foundry/DataImportWizard');
     })->name('foundry.import-wizard');
@@ -317,13 +302,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
         return Inertia::render('SearchQuery');
     })->name('search');
 
-    // Public Geoscience — second read-only corpus (jurisdiction picker + map shell).
-    // Uses a controller (rather than inline Inertia::render) because index() may
-    // later pass server-side props (e.g. available jurisdictions) without a
-    // client-side API round-trip. Currently it renders Inertia with no props.
-    Route::get('/public-geoscience', [PublicGeoscienceController::class, 'index'])
-        ->name('public-geoscience');
-
     // /projects/new moved to the top of this group (line ~126) so it
     // beats the /projects/{slug} wildcard. Keeping a comment here for
     // grep-discoverability.
@@ -345,7 +323,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::prefix('dashboards')->group(function () {
         Route::get('evidence-quality', [CustomerDashboardsController::class, 'evidenceQuality'])->name('dashboards.evidence-quality');
         Route::get('visual-readiness', [CustomerDashboardsController::class, 'visualReadiness'])->name('dashboards.visual-readiness');
-        Route::get('publicgeo-overlay', [CustomerDashboardsController::class, 'publicGeoOverlay'])->name('dashboards.publicgeo-overlay');
         Route::get('target-recommendation', [CustomerDashboardsController::class, 'targetRecommendation'])->name('dashboards.target-recommendation');
         Route::get('reporting', [CustomerDashboardsController::class, 'reporting'])->name('dashboards.reporting');
         Route::get('llm-cost', [CustomerDashboardsController::class, 'llmCost'])->name('dashboards.llm-cost');

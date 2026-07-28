@@ -763,96 +763,6 @@ parameters:
 			path: app/Http/Resources/ProjectResource.php
 
 		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$country_code\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$default_source_crs\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$display_name\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$jurisdiction_code\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$last_refreshed_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$level\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$license_summary\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$license_url\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$primary_authority\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$refresh_cadence\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$sort_order\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$sources\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$status\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Access to an undefined property App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:\$teaser\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
-			message: '#^Method App\\Http\\Resources\\PublicGeoscience\\JurisdictionResource\:\:toArray\(\) return type has no value type specified in iterable type array\.$#'
-			identifier: missingType.iterableValue
-			count: 1
-			path: app/Http/Resources/PublicGeoscience/JurisdictionResource.php
-
-		-
 			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
 			identifier: property.notFound
 			count: 1
@@ -1049,18 +959,6 @@ parameters:
 			identifier: missingType.generics
 			count: 1
 			path: app/Models/Project.php
-
-		-
-			message: '#^Method App\\Models\\PublicGeoscience\\Jurisdiction\:\:sources\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
-			identifier: missingType.generics
-			count: 1
-			path: app/Models/PublicGeoscience/Jurisdiction.php
-
-		-
-			message: '#^Method App\\Models\\PublicGeoscience\\PublicGeoSource\:\:jurisdiction\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'
-			identifier: missingType.generics
-			count: 1
-			path: app/Models/PublicGeoscience/PublicGeoSource.php
 
 		-
 			message: '#^Method App\\Models\\QueryAuditLog\:\:user\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsTo does not specify its types\: TRelatedModel, TDeclaringModel$#'

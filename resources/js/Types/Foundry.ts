@@ -204,22 +204,6 @@ export interface IngestQualityProps {
     empty: boolean;
 }
 
-export interface Tier3LayerOption {
-    layer_id: string;
-    label: string;
-    jurisdictions: string[];
-    license: string;
-    row_count_estimate: string;
-}
-
-export interface Tier3UnlockProps {
-    workspace_id: string;
-    layers: Tier3LayerOption[];
-    request_status: 'none' | 'pending' | 'approved' | 'denied';
-    can_approve: boolean;
-    empty: boolean;
-}
-
 export interface TargetsRecommendation {
     target_id: string;
     rank: number;

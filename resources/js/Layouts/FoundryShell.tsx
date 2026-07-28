@@ -28,7 +28,6 @@ interface FoundryShellProps {
 const ORG_NAV: Array<{ id: string; href: string; label: string }> = [
     { id: 'portfolio', href: '/dashboard', label: 'Portfolio' },
     { id: 'projects', href: '/projects', label: 'Projects' },
-    { id: 'publicgeo', href: '/foundry/public-geoscience', label: 'Public Geo' },
 ];
 
 const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: string }> = [

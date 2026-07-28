@@ -263,33 +263,6 @@ async def pull(
             #
             # Reads the post-write MAX(updated_at) directly so the broadcast
             # carries the same epoch value TileProxyController will compute
-            # for the next tile fetch's ETag. Falls back to wall-clock
-            # epoch when the jurisdictions table isn't updated by the pull
-            # (the `?v=` cache-bust still does its job; the server ETag will
-            # match the post-write value on the next request).
-            should_broadcast = existing is None and feature_count > 0
-            if should_broadcast:
-                try:
-                    epoch_row = await conn.fetchrow(
-                        "SELECT EXTRACT(EPOCH FROM MAX(updated_at))::bigint AS epoch_s "
-                        "FROM public_geo.jurisdictions",
-                    )
-                    epoch_s = int(epoch_row["epoch_s"]) if epoch_row and epoch_row["epoch_s"] else int(time.time())
-
-                    from app.services.laravel_bridge import post_public_geoscience_tiles_invalidated
-                    await post_public_geoscience_tiles_invalidated(
-                        jurisdiction_epoch=epoch_s,
-                        # source_ids omitted — a public_geoscience_pull may
-                        # touch any of the 8 PGEO views; let the receiver
-                        # invalidate them all. SMDI overnight (P3) will pass
-                        # source_ids=['smdi_deposits'] when it lands.
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning(
-                        "public_geoscience_pull: tile invalidation broadcast failed "
-                        "key=%s err=%s", input.minio_key, exc,
-                    )
-
     finally:
         await pool.close()
 
