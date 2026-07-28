@@ -17,7 +17,6 @@ Pool storage on app.state
 -------------------------
   app.state.pg_pool          — asyncpg.Pool (PostGIS via PgBouncer)
   app.state.qdrant_client    — AsyncQdrantClient
-  app.state.neo4j_driver     — neo4j.AsyncDriver
   app.state.redis_client     — redis.asyncio.Redis
   app.state.anthropic_client — anthropic.AsyncAnthropic | None (B2 — pooled
                                to avoid TLS handshake + pool churn per request;
@@ -44,7 +43,6 @@ import asyncpg
 import redis.asyncio as aioredis
 import sentry_sdk
 from fastapi import FastAPI, HTTPException
-from neo4j import AsyncGraphDatabase
 from qdrant_client import AsyncQdrantClient
 from starlette.responses import Response  # for /metrics return-type resolution
 
@@ -342,40 +340,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # -------------------------------------------------------------------------
-    # 3. Neo4j async driver
+    # 3. Neo4j — REMOVED 2026-07-28 (B1). app.state.neo4j_driver is gone;
+    # AgentDeps.neo4j_driver is passed as None from routers/queries.py.
+    # Every consumer (traverse_knowledge_graph, query_graph_by_label,
+    # fetch_project_graph_entities, the Layer 4 entity-resolution
+    # validators, the Phase 0 graph-health agents) already failed open on a
+    # missing/unreachable driver, so this formalizes an already-common
+    # runtime path rather than introducing a new failure mode.
     # -------------------------------------------------------------------------
-    neo4j_uri = f"bolt://{settings.NEO4J_HOST}:{settings.NEO4J_PORT}"
-    logger.info("Connecting Neo4j driver -> %s", neo4j_uri)
-    neo4j_driver = AsyncGraphDatabase.driver(
-        neo4j_uri,
-        auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
-        # FastAPI review #4 — per-worker max trimmed from 25 → 12.
-        # 4 uvicorn workers × 12 = 48 client-side total, which fits
-        # under Neo4j's `server.bolt.thread_pool_max_size=50` server
-        # ceiling. The previous 25 × 4 = 100 was double the server slot
-        # count — caused intermittent `Acquiring connection from pool
-        # timed out` errors from Neo4j under load. If you re-flatten to
-        # a single uvicorn worker, bump this back to 25.
-        max_connection_pool_size=12,
-        # Fail fast under pool contention rather than waiting the
-        # default 60 s — at that point the request has long since
-        # blown its overall deadline.
-        connection_acquisition_timeout=5.0,
-        # Interactive chat path doesn't tolerate the default 30 s
-        # transient-error retry. A failed transient (network blip,
-        # leader election) should bubble up to the FastAPI tool wrapper
-        # well within the per-tool 3 s ceiling.
-        max_transaction_retry_time=5.0,
-        # connection_timeout maps to the Section 06e Neo4j timeout;
-        # individual QUERY timeouts are now enforced via the per-call
-        # `timeout` kwarg on session.run() (Neo4j review #5) instead
-        # of the cluster-wide db.transaction.timeout setting.
-        connection_timeout=settings.TIMEOUT_NEO4J_S,
-    )
-    app.state.neo4j_driver = neo4j_driver
-    logger.info(
-        "Neo4j driver ready (max_pool=25, acquire_timeout=5s, retry=5s)"
-    )
 
     # -------------------------------------------------------------------------
     # 4. Redis async client
@@ -1066,9 +1038,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await redis_client.aclose()
     logger.info("Redis client closed")
 
-    await neo4j_driver.close()
-    logger.info("Neo4j driver closed")
-
     await qdrant_client.close()
     logger.info("Qdrant client closed")
 
@@ -1273,13 +1242,9 @@ async def ready() -> dict[str, str]:
     except Exception as exc:
         checks["qdrant"] = f"error: {exc}"
 
-    # Neo4j
-    try:
-        async with app.state.neo4j_driver.session() as session:
-            await session.run("RETURN 1")
-        checks["neo4j"] = "ok"
-    except Exception as exc:
-        checks["neo4j"] = f"error: {exc}"
+    # Neo4j — REMOVED 2026-07-28 (B1). Was checked here; an Azure readiness
+    # probe reading this endpoint would otherwise mark the pod perpetually
+    # unhealthy for a store that no longer exists.
 
     # Redis
     try:

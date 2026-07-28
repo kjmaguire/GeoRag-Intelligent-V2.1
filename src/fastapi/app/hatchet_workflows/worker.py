@@ -66,7 +66,6 @@ from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-pha
 from app.hatchet_workflows.score_targets import score_targets  # doc-phase 88
 from app.hatchet_workflows.stale_run_detector import stale_run_detector  # reliability spec Fix 1e
 from app.hatchet_workflows.support_replay import support_replay  # doc-phase 98
-from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
 from app.hatchet_workflows.tiff_normalize import (
     tiff_normalize,  # ADR-0005: lossless TIFF→PDF wrap, route through ingest_pdf
 )
@@ -145,10 +144,8 @@ POOLS = {
         # every Monday at 06:00 UTC. Emits a workspace.what_changed.
         # weekly_digest audit anchor (system-wide, NULL workspace_id).
         what_changed_weekly,
-        # Doc-phase 183 — silver → Neo4j sync. Wraps the kg_sync
-        # service so cluster ingests can trigger KG population from a
-        # workflow rather than out-of-band script.
-        sync_silver_to_kg,
+        # sync_silver_to_kg (doc-phase 183, silver → Neo4j sync) removed
+        # 2026-07-28 (B1) along with Neo4j itself.
         # Doc-phase 183 — silver.document_passages → Qdrant embedding
         # sync. Runs BGE + SPLADE++ embeddings + upserts to the
         # georag_reports collection.

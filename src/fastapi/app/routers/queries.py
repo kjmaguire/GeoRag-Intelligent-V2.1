@@ -260,7 +260,10 @@ async def _agent_rag_stream(
     deps = AgentDeps(
         pg_pool=app_state.pg_pool,
         qdrant_client=app_state.qdrant_client,
-        neo4j_driver=app_state.neo4j_driver,
+        # B1 (2026-07-28): Neo4j removed. app_state no longer carries a
+        # driver; every AgentDeps.neo4j_driver consumer already fails open
+        # on None.
+        neo4j_driver=None,
         project_id=body.project_id,
         embedding_model=app_state.embedding_model,
         reranker=getattr(app_state, "reranker", None),

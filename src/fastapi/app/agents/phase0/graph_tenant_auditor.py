@@ -153,167 +153,171 @@ async def graph_tenant_audit(
         summary["skipped_reason"] = "neo4j driver not installed"
         return summary
 
-    driver = AsyncGraphDatabase.driver(_neo4j_uri(), auth=_neo4j_auth())
     try:
-        async with driver.session() as session:
-            summary["neo4j_reachable"] = True
+        driver = AsyncGraphDatabase.driver(_neo4j_uri(), auth=_neo4j_auth())
+        try:
+            async with driver.session() as session:
+                summary["neo4j_reachable"] = True
 
-            # ---- Check 1: every node carries workspace_id --------------
-            # Exempt labels are skipped via a list parameter and the
-            # ``none(...)`` predicate so the query is one round-trip
-            # regardless of how many exemptions exist. Lowercase node
-            # variable per CLAUDE.md Cypher style.
-            exempt_list = list(_NODE_WORKSPACE_ID_EXEMPT)
-            missing_ws_q = (
-                "MATCH (n) "
-                "WHERE n.workspace_id IS NULL "
-                "  AND none(lbl IN labels(n) WHERE lbl IN $exempt) "
-                "RETURN labels(n) AS labels, count(n) AS missing_count, "
-                "       collect(elementId(n))[..$limit] AS sample_ids"
-            )
-            res = await session.run(
-                missing_ws_q,
-                exempt=exempt_list,
-                limit=sample_limit_per_check,
-            )
-            async for record in res:
-                missing = int(record["missing_count"] or 0)
-                if missing == 0:
-                    continue
-                summary["missing_workspace_id"] += missing
-                summary["graph_violations"] += missing
-                summary["missing_workspace_id_details"].append(
-                    {
-                        "labels": list(record["labels"] or []),
-                        "missing_count": missing,
-                        "sample_element_ids": list(record["sample_ids"] or []),
-                    }
+                # ---- Check 1: every node carries workspace_id --------------
+                # Exempt labels are skipped via a list parameter and the
+                # ``none(...)`` predicate so the query is one round-trip
+                # regardless of how many exemptions exist. Lowercase node
+                # variable per CLAUDE.md Cypher style.
+                exempt_list = list(_NODE_WORKSPACE_ID_EXEMPT)
+                missing_ws_q = (
+                    "MATCH (n) "
+                    "WHERE n.workspace_id IS NULL "
+                    "  AND none(lbl IN labels(n) WHERE lbl IN $exempt) "
+                    "RETURN labels(n) AS labels, count(n) AS missing_count, "
+                    "       collect(elementId(n))[..$limit] AS sample_ids"
                 )
-                summary["labels_probed"] += 1
-
-            # Total node count for the run summary.
-            res = await session.run("MATCH (n) RETURN count(n) AS c")
-            rec = await res.single()
-            summary["nodes_probed"] = int(rec["c"] if rec else 0)
-
-            # ---- Check 2: cross-workspace edges ------------------------
-            # The fence violation: a relationship whose endpoints carry
-            # different non-null workspace_id values. NULL on either end
-            # is already covered by Check 1; we explicitly exclude that
-            # case here so violations don't double-count.
-            cross_edge_q = (
-                "MATCH (a)-[e]->(b) "
-                "WHERE a.workspace_id IS NOT NULL "
-                "  AND b.workspace_id IS NOT NULL "
-                "  AND a.workspace_id <> b.workspace_id "
-                "RETURN type(e) AS rel_type, "
-                "       a.workspace_id AS ws_a, "
-                "       b.workspace_id AS ws_b, "
-                "       count(e) AS violations, "
-                "       collect(elementId(e))[..$limit] AS sample_ids"
-            )
-            res = await session.run(cross_edge_q, limit=sample_limit_per_check)
-            async for record in res:
-                violations = int(record["violations"] or 0)
-                if violations == 0:
-                    continue
-                summary["cross_workspace_edges"] += violations
-                summary["graph_violations"] += violations
-                summary["cross_workspace_edge_details"].append(
-                    {
-                        "rel_type": record["rel_type"],
-                        "ws_a": str(record["ws_a"]),
-                        "ws_b": str(record["ws_b"]),
-                        "violations": violations,
-                        "sample_element_ids": list(record["sample_ids"] or []),
-                    }
+                res = await session.run(
+                    missing_ws_q,
+                    exempt=exempt_list,
+                    limit=sample_limit_per_check,
                 )
+                async for record in res:
+                    missing = int(record["missing_count"] or 0)
+                    if missing == 0:
+                        continue
+                    summary["missing_workspace_id"] += missing
+                    summary["graph_violations"] += missing
+                    summary["missing_workspace_id_details"].append(
+                        {
+                            "labels": list(record["labels"] or []),
+                            "missing_count": missing,
+                            "sample_element_ids": list(record["sample_ids"] or []),
+                        }
+                    )
+                    summary["labels_probed"] += 1
 
-            # Total edge count for the run summary.
-            res = await session.run("MATCH ()-[e]->() RETURN count(e) AS c")
-            rec = await res.single()
-            summary["edges_probed"] = int(rec["c"] if rec else 0)
+                # Total node count for the run summary.
+                res = await session.run("MATCH (n) RETURN count(n) AS c")
+                rec = await res.single()
+                summary["nodes_probed"] = int(rec["c"] if rec else 0)
 
-            # ---- Check 3: orphan / missing project cross-store --------
-            # Only runs when the agent invocation is workspace-scoped —
-            # the silver.projects probe is workspace-filtered and a
-            # system-wide sweep would have to fan out to every workspace
-            # which we defer to Phase 1.
-            if ctx.workspace_id is not None:
-                # 3a — silver projects MISSING from graph
-                pg_rows = await rt.pg_pool.fetch(
-                    """
-                    SELECT project_id::text AS project_id, project_name
-                      FROM silver.projects
-                     WHERE workspace_id = $1
-                    """,
-                    ctx.workspace_id,
+                # ---- Check 2: cross-workspace edges ------------------------
+                # The fence violation: a relationship whose endpoints carry
+                # different non-null workspace_id values. NULL on either end
+                # is already covered by Check 1; we explicitly exclude that
+                # case here so violations don't double-count.
+                cross_edge_q = (
+                    "MATCH (a)-[e]->(b) "
+                    "WHERE a.workspace_id IS NOT NULL "
+                    "  AND b.workspace_id IS NOT NULL "
+                    "  AND a.workspace_id <> b.workspace_id "
+                    "RETURN type(e) AS rel_type, "
+                    "       a.workspace_id AS ws_a, "
+                    "       b.workspace_id AS ws_b, "
+                    "       count(e) AS violations, "
+                    "       collect(elementId(e))[..$limit] AS sample_ids"
                 )
-                if pg_rows:
-                    pg_ids = [r["project_id"] for r in pg_rows]
+                res = await session.run(cross_edge_q, limit=sample_limit_per_check)
+                async for record in res:
+                    violations = int(record["violations"] or 0)
+                    if violations == 0:
+                        continue
+                    summary["cross_workspace_edges"] += violations
+                    summary["graph_violations"] += violations
+                    summary["cross_workspace_edge_details"].append(
+                        {
+                            "rel_type": record["rel_type"],
+                            "ws_a": str(record["ws_a"]),
+                            "ws_b": str(record["ws_b"]),
+                            "violations": violations,
+                            "sample_element_ids": list(record["sample_ids"] or []),
+                        }
+                    )
+
+                # Total edge count for the run summary.
+                res = await session.run("MATCH ()-[e]->() RETURN count(e) AS c")
+                rec = await res.single()
+                summary["edges_probed"] = int(rec["c"] if rec else 0)
+
+                # ---- Check 3: orphan / missing project cross-store --------
+                # Only runs when the agent invocation is workspace-scoped —
+                # the silver.projects probe is workspace-filtered and a
+                # system-wide sweep would have to fan out to every workspace
+                # which we defer to Phase 1.
+                if ctx.workspace_id is not None:
+                    # 3a — silver projects MISSING from graph
+                    pg_rows = await rt.pg_pool.fetch(
+                        """
+                        SELECT project_id::text AS project_id, project_name
+                          FROM silver.projects
+                         WHERE workspace_id = $1
+                        """,
+                        ctx.workspace_id,
+                    )
+                    if pg_rows:
+                        pg_ids = [r["project_id"] for r in pg_rows]
+                        res = await session.run(
+                            "UNWIND $ids AS pid "
+                            "OPTIONAL MATCH (p:Project {project_id: pid, "
+                            "                           workspace_id: $ws}) "
+                            "WITH pid, p WHERE p IS NULL "
+                            "RETURN collect(pid) AS missing",
+                            ids=pg_ids,
+                            ws=str(ctx.workspace_id),
+                        )
+                        rec = await res.single()
+                        missing = list(rec["missing"] if rec else [])
+                        if missing:
+                            summary["orphan_nodes"] += len(missing)
+                            summary["graph_violations"] += len(missing)
+                            summary["orphan_node_details"].append(
+                                {
+                                    "kind": "missing_in_graph",
+                                    "label": "Project",
+                                    "count": len(missing),
+                                    "sample_project_ids": missing[:sample_limit_per_check],
+                                }
+                            )
+
+                    # 3b — graph project nodes ORPHANED from silver
                     res = await session.run(
-                        "UNWIND $ids AS pid "
-                        "OPTIONAL MATCH (p:Project {project_id: pid, "
-                        "                           workspace_id: $ws}) "
-                        "WITH pid, p WHERE p IS NULL "
-                        "RETURN collect(pid) AS missing",
-                        ids=pg_ids,
+                        "MATCH (p:Project {workspace_id: $ws}) "
+                        "RETURN collect(p.project_id) AS ids",
                         ws=str(ctx.workspace_id),
                     )
                     rec = await res.single()
-                    missing = list(rec["missing"] if rec else [])
-                    if missing:
-                        summary["orphan_nodes"] += len(missing)
-                        summary["graph_violations"] += len(missing)
-                        summary["orphan_node_details"].append(
-                            {
-                                "kind": "missing_in_graph",
-                                "label": "Project",
-                                "count": len(missing),
-                                "sample_project_ids": missing[:sample_limit_per_check],
-                            }
+                    graph_ids = [
+                        pid for pid in (rec["ids"] if rec else []) if pid
+                    ]
+                    if graph_ids:
+                        silver_rows = await rt.pg_pool.fetch(
+                            """
+                            SELECT project_id::text AS project_id
+                              FROM silver.projects
+                             WHERE workspace_id = $1
+                               AND project_id::text = ANY($2::text[])
+                            """,
+                            ctx.workspace_id,
+                            graph_ids,
                         )
-
-                # 3b — graph project nodes ORPHANED from silver
-                res = await session.run(
-                    "MATCH (p:Project {workspace_id: $ws}) "
-                    "RETURN collect(p.project_id) AS ids",
-                    ws=str(ctx.workspace_id),
-                )
-                rec = await res.single()
-                graph_ids = [
-                    pid for pid in (rec["ids"] if rec else []) if pid
-                ]
-                if graph_ids:
-                    silver_rows = await rt.pg_pool.fetch(
-                        """
-                        SELECT project_id::text AS project_id
-                          FROM silver.projects
-                         WHERE workspace_id = $1
-                           AND project_id::text = ANY($2::text[])
-                        """,
-                        ctx.workspace_id,
-                        graph_ids,
+                        silver_set = {r["project_id"] for r in silver_rows}
+                        orphans = [pid for pid in graph_ids if pid not in silver_set]
+                        if orphans:
+                            summary["orphan_nodes"] += len(orphans)
+                            summary["graph_violations"] += len(orphans)
+                            summary["orphan_node_details"].append(
+                                {
+                                    "kind": "orphan_in_graph",
+                                    "label": "Project",
+                                    "count": len(orphans),
+                                    "sample_project_ids": orphans[:sample_limit_per_check],
+                                }
+                            )
+                else:
+                    summary["orphan_check_skipped_reason"] = (
+                        "workspace_id not set on context — orphan probe runs per-workspace only"
                     )
-                    silver_set = {r["project_id"] for r in silver_rows}
-                    orphans = [pid for pid in graph_ids if pid not in silver_set]
-                    if orphans:
-                        summary["orphan_nodes"] += len(orphans)
-                        summary["graph_violations"] += len(orphans)
-                        summary["orphan_node_details"].append(
-                            {
-                                "kind": "orphan_in_graph",
-                                "label": "Project",
-                                "count": len(orphans),
-                                "sample_project_ids": orphans[:sample_limit_per_check],
-                            }
-                        )
-            else:
-                summary["orphan_check_skipped_reason"] = (
-                    "workspace_id not set on context — orphan probe runs per-workspace only"
-                )
-    finally:
-        await driver.close()
+        finally:
+            await driver.close()
+    except Exception as exc:  # noqa: BLE001 — Neo4j may not exist in this deployment
+        logger.warning("graph_tenant_audit: neo4j unreachable: %s", exc)
+        summary["skipped_reason"] = f"neo4j unreachable: {exc}"
 
     # ---- Persist per-row findings to store_reconciliation_findings ----
     # Each violation kind becomes one finding row with severity='critical'

@@ -50,7 +50,9 @@ class AgentDeps:
     qdrant_client:
         Async Qdrant client for vector similarity search.
     neo4j_driver:
-        Async Neo4j driver for knowledge-graph traversal.
+        Async Neo4j driver for knowledge-graph traversal, or None — Neo4j
+        was removed from the stack (B1, 2026-07-28). Every consumer already
+        fails open when this is None.
     project_id:
         UUID string of the project scoping this query.  Every tool filters
         results to this project so the LLM never sees data from other projects.
@@ -68,7 +70,6 @@ class AgentDeps:
 
     pg_pool: asyncpg.Pool
     qdrant_client: AsyncQdrantClient
-    neo4j_driver: AsyncDriver
     project_id: str
     # Module 9 Chunk 9.3 — workspace_id GUC scoping. Optional because some
     # callers (single-tenant Dagster ingestion, admin scripts) intentionally
@@ -78,6 +79,15 @@ class AgentDeps:
     # answer_retrieval_items, answer_citation_items, answer_citation_spans,
     # document_revisions, document_passages, and message_feedback fire.
     workspace_id: str | None = None
+    # B1 (2026-07-28): Neo4j was removed from the stack, so this is no
+    # longer a hard dependency. Every consumer (traverse_knowledge_graph,
+    # query_graph_by_label, fetch_project_graph_entities, the Layer 4
+    # entity-resolution validators, the Phase 0 graph-health agents)
+    # already treated a missing/unreachable driver as a fail-open case —
+    # graph data being briefly unavailable was always a real possibility,
+    # so this formalizes that path as the permanent one rather than
+    # introducing a new failure mode.
+    neo4j_driver: AsyncDriver | None = None
     embedding_model: Any = None  # SentenceTransformer (BAAI/bge-small-en-v1.5)
     reranker: Any = None  # CrossEncoder (Qwen/Qwen3-Reranker-0.6B; logit delta ~[-15,+15])
     # B2 — pooled clients; Any-typed so missing imports (non-anthropic deploys)

@@ -132,13 +132,16 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
 
     # -------------------------------------------------------------------------
-    # Neo4j
+    # Neo4j — REMOVED 2026-07-28 (B1). NEO4J_HOST/PORT/USER/PASSWORD were only
+    # read by main.py's driver construction, which is gone. The handful of
+    # standalone Phase 0 monitoring agents and backup/restore workflows that
+    # still probe Neo4j directly (graph_tenant_auditor.py, index_health.py,
+    # store_reconciliation.py, tool_gateway/impls.py, outbox_dispatcher.py,
+    # restore_workspace.py, _export_extras.py, _restore_extras.py) read raw
+    # NEO4J_* env vars via os.environ.get(...) with hardcoded fallbacks, not
+    # through this settings object, so removing these fields doesn't affect
+    # them — they already fail open on a connection error.
     # -------------------------------------------------------------------------
-
-    NEO4J_HOST: str = "neo4j"
-    NEO4J_PORT: int = 7687
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = "neo4j"
 
     # -------------------------------------------------------------------------
     # Qdrant
@@ -982,6 +985,14 @@ class Settings(BaseSettings):
     NUMERIC_RETRY_THRESHOLD: int = 3
 
     # Layer 4: resolve drill-hole IDs and quoted entity names against PostGIS / Neo4j.
+    # Left True after B1 (2026-07-28, Neo4j removal): this flag gates BOTH the
+    # hole-ID check (PostGIS — unaffected by removing Neo4j) and the quoted-
+    # name check (Neo4j). Flipping it False would have silenced the PostGIS
+    # half of Layer 4 hallucination prevention for no reason. Instead,
+    # _resolve_names_in_neo4j already fails open (returns no unresolved
+    # names) when neo4j_driver is None — same path it already took whenever
+    # the graph was merely unpopulated — so this flag stays True and Layer 4
+    # keeps validating drill-hole IDs against real data.
     ENTITY_RESOLUTION_ENABLED: bool = True
 
     # Layer 6: apply SME-defined geological constraint rules to numerical claims.
