@@ -140,13 +140,6 @@ export default function FoundrySources({
                     actions={
                         <div className="flex gap-2">
                             <Link
-                                href={`/projects/${project.slug}/graph`}
-                                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)' }}
-                            >
-                                Open graph →
-                            </Link>
-                            <Link
                                 href={`/projects/${project.slug}/corpus`}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                 style={{

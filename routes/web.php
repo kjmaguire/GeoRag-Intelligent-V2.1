@@ -4,41 +4,18 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Admin\IntegrationsController;
 use App\Http\Controllers\Admin\KestraSsoController;
-use App\Http\Controllers\ChartsGalleryController;
 use App\Http\Controllers\CitationFeedbackController;
-use App\Http\Controllers\Foundry\AssessmentSummaryController;
-use App\Http\Controllers\Foundry\AuditLogController;
 use App\Http\Controllers\Foundry\ChatController;
 use App\Http\Controllers\Foundry\CorpusController;
-use App\Http\Controllers\Foundry\DecisionsController;
-use App\Http\Controllers\Foundry\DrillholeDetailController;
-use App\Http\Controllers\Foundry\DrillReviewController;
-use App\Http\Controllers\Foundry\ExplorerController;
-use App\Http\Controllers\Foundry\HoleCompareController;
-use App\Http\Controllers\Foundry\InboxController;
 use App\Http\Controllers\Foundry\IngestionRunsController;
 use App\Http\Controllers\Foundry\IngestQualityController;
-use App\Http\Controllers\Foundry\InvestigationsController;
-use App\Http\Controllers\Foundry\LakehouseController;
 use App\Http\Controllers\Foundry\OverviewController;
-use App\Http\Controllers\Foundry\PortfolioController;
-use App\Http\Controllers\Foundry\ProjectAnalyticsController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
-use App\Http\Controllers\Foundry\RationaleController;
-use App\Http\Controllers\Foundry\ReasoningController;
 use App\Http\Controllers\Foundry\ReportController;
-use App\Http\Controllers\Foundry\RetrievalInspectorController;
-use App\Http\Controllers\Foundry\SavedMapViewsController;
-use App\Http\Controllers\Foundry\SettingsController;
-use App\Http\Controllers\Foundry\SourceGraphController;
 use App\Http\Controllers\Foundry\SourcesController;
-use App\Http\Controllers\Foundry\TargetsController;
-use App\Http\Controllers\Foundry\WorkspaceController;
 use App\Http\Controllers\Internal\KestraSsoCheckController;
 use App\Http\Controllers\Internal\MetricsController;
-use App\Http\Controllers\InterpretationWorkspaceController;
 use App\Http\Controllers\OAuthIngestController;
-use App\Http\Controllers\OnboardingController;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -56,9 +33,7 @@ Route::get('/metrics', MetricsController::class)
     ])
     ->name('metrics');
 
-// Root redirects to /login. Authenticated users get bounced from /login to
-// their dashboard by the Inertia auth flow, so this is a safe single entry
-// point. The legacy Welcome page was removed 2026-05-21.
+// Root redirects to the reader-core login.
 Route::get('/', function () {
     return redirect('/login');
 });
@@ -71,21 +46,8 @@ Route::get('/forgot-password', function () {
     return Inertia::render('ForgotPassword');
 })->name('password.request');
 
-// Foundry sign-in surface — public, intentionally outside the auth group.
-Route::get('/foundry/login', function () {
-    return Inertia::render('Foundry/Login');
-})->name('foundry.login');
-
 // ── Authenticated routes (require Sanctum session or token) ─────────────
 Route::middleware(['auth:sanctum'])->group(function () {
-    // Foundry redesign (Wave 1+) — wired against real Wyoming Roll-Front Uranium
-    // (Cameco Shirley Basin) data. Plan ~/.claude/plans/enumerated-tickling-bachman.md rev 7.
-    Route::get('/dashboard', [PortfolioController::class, 'show'])
-        ->name('dashboard');
-    // Legacy /dashboard/legacy route removed 2026-05-18 along with
-    // resources/js/Pages/Dashboard/* (the pre-Foundry UI). The Foundry
-    // PortfolioController on /dashboard is the canonical entry point.
-
     Route::get('/projects', [ProjectsIndexController::class, 'show'])
         ->name('foundry.projects');
 
@@ -100,18 +62,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // was deleted on 2026-05-25 — Foundry/NewProject is the only render.
     Route::redirect('/projects/new', '/foundry/projects/new', 301)
         ->name('projects.new');
-
-    Route::get('/projects/{slug}/targets', [TargetsController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.targets');
-
-    Route::get('/projects/{slug}/targets/{targetId}/rationale', [RationaleController::class, 'show'])
-        ->where(['slug' => '[a-z0-9\-]+', 'targetId' => '[a-zA-Z0-9\-]+'])
-        ->name('foundry.rationale');
-
-    Route::get('/projects/{slug}/compare', [HoleCompareController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.compare');
 
     Route::get('/projects/{slug}/imports/quality', [IngestQualityController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')
@@ -128,66 +78,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->where('slug', '[a-z0-9\-]+')
         ->name('foundry.ingestion-runs.json');
 
-    // Phase-22 §B/S/G build-out — Bronze + Silver + Gold inventory.
-    Route::get('/projects/{slug}/lakehouse',
-        [LakehouseController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.lakehouse');
-
-    // Phase-22 §B/S/G build-out — Drillhole Detail (§5.12).
-    Route::get('/projects/{slug}/holes/{collarId}/detail',
-        [DrillholeDetailController::class, 'show'])
-        ->where(['slug' => '[a-z0-9\-]+', 'collarId' => '[0-9a-fA-F-]{36}'])
-        ->name('foundry.drillhole-detail');
-
-    // CC-01 Item 1 Slice 4 — SRQ review surface for drill-data ingest.
-    Route::get('/projects/{slug}/drill-review',
-        [DrillReviewController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.drill-review');
-    Route::post('/projects/{slug}/drill-review/{queueId}/decide',
-        [DrillReviewController::class, 'decide'])
-        ->where(['slug' => '[a-z0-9\-]+', 'queueId' => '[0-9a-fA-F-]{36}'])
-        ->name('foundry.drill-review.decide');
-
-    Route::get('/projects/{slug}/audit', [AuditLogController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.audit');
-
-    Route::get('/projects/{slug}/analytics', [ProjectAnalyticsController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.project-analytics');
-
-    Route::get('/retrieval/{traceId}', [RetrievalInspectorController::class, 'show'])
-        ->where('traceId', '[a-zA-Z0-9\-]+')
-        ->name('foundry.retrieval');
-
-    Route::get('/projects/{slug}/whats-changed', [App\Http\Controllers\Foundry\WhatChangedController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.whats-changed');
-
-    Route::get('/projects/{slug}/saved-views', [SavedMapViewsController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.saved-views');
-
-    Route::get('/projects/{slug}/decisions', [DecisionsController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.decisions');
-    Route::post('/projects/{slug}/decisions', [DecisionsController::class, 'store'])
-        ->where('slug', '[a-z0-9\-]+')
-        ->name('foundry.decisions.store');
-
-    Route::get('/support-cockpit', [App\Http\Controllers\Foundry\SupportCockpitController::class, 'show'])
-        ->name('foundry.support-cockpit');
-
-    // /threads is deprecated — chat is project-scoped. Redirect to Portfolio
-    // so the user picks a project and opens chat from inside it.
-    Route::get('/threads', function () {
-        return redirect()->route('dashboard');
-    })->name('foundry.threads');
-
-    // Project index — Overview dashboard. Clicking a Portfolio/Projects tile
-    // lands here. The horizontal sub-bar + left rail are rendered by FoundryShell
+    // Project index. The horizontal sub-bar + left rail are rendered by FoundryShell
     // because the URL starts with /projects/{slug}.
     Route::get('/projects/{slug}', [OverviewController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.project');
@@ -196,18 +87,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects/{slug}/chat', [ChatController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.project.chat');
 
-    Route::get('/projects/{slug}/explorer', [ExplorerController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.explorer');
-    Route::get('/projects/{slug}/workspace', [WorkspaceController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.workspace');
-    Route::get('/projects/{slug}/holes/{hole}/payload', [WorkspaceController::class, 'holePayload'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.hole_payload');
-    Route::get('/projects/{slug}/reasoning', [ReasoningController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.reasoning');
-    Route::get('/projects/{slug}/hypothesis', [ReasoningController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.hypothesis');
-    Route::get('/projects/{slug}/graph', [SourceGraphController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.graph');
     Route::get('/projects/{slug}/sources', [SourcesController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.sources');
     Route::get('/projects/{slug}/corpus', [CorpusController::class, 'show'])
@@ -223,78 +102,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
         [ReportController::class, 'figures'])
         ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
         ->name('foundry.reports.figures');
-    // CC-01 Item 5 — Assessment report structured summary.
-    Route::get('/projects/{slug}/reports/{report_id}/assessment-summary',
-        [AssessmentSummaryController::class, 'show'])
-        ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
-        ->name('foundry.reports.assessment-summary');
-    Route::post('/projects/{slug}/reports/{report_id}/assessment-summary/regenerate',
-        [AssessmentSummaryController::class, 'regenerate'])
-        ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
-        ->name('foundry.reports.assessment-summary.regenerate');
-    Route::post('/projects/{slug}/reports/{report_id}/completeness-audit/run',
-        [AssessmentSummaryController::class, 'runCompletenessAudit'])
-        ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
-        ->name('foundry.reports.completeness-audit.run');
-    Route::get('/projects/{slug}/investigations', [InvestigationsController::class, 'show'])
-        ->where('slug', '[a-z0-9\-]+')->name('foundry.investigations');
-
-    Route::get('/inbox', [InboxController::class, 'show'])
-        ->name('foundry.inbox');
-    Route::get('/settings', [SettingsController::class, 'show'])
-        ->name('foundry.settings');
     Route::get('/foundry/imports/wizard', function () {
         return Inertia::render('Foundry/DataImportWizard');
     })->name('foundry.import-wizard');
     Route::get('/foundry/projects/new', function () {
         return Inertia::render('Foundry/NewProject');
     })->name('foundry.new-project');
-    // Legacy /dashboard/projects/{slug} and /dashboard/projects/{slug}/analytics
-    // routes removed 2026-05-18 along with resources/js/Pages/Dashboard/*.
-    // The Foundry equivalents are /projects/{slug}/explorer and
-    // /projects/{slug}/analytics — already wired above.
-
-    // Convenience: when the user clicks "Analytics" in the top nav
-    // without a project selected, send them to the Portfolio so they
-    // can pick one. The DashboardLayout's project picker will then
-    // deep-link to /dashboard/projects/{slug}/analytics on selection.
-    Route::get('/analytics', function () {
-        return redirect()->route('dashboard');
-    })->name('analytics');
-
-    // Standalone /chat is deprecated — chat is project-scoped. Redirect to
-    // Portfolio so the user picks a project, then opens chat from inside it.
-    Route::get('/chat', function () {
-        return redirect()->route('dashboard');
-    })->name('chat');
-
-    Route::get('/explorer', function () {
-        return Inertia::render('Explorer');
-    })->name('explorer');
-
-    // Phase 39 R-P11-B slice 1 — single-shot Search/Query surface.
-    // Complements /chat (multi-turn). Skeleton ships first; SSE wiring
-    // and citation reuse land in subsequent slices (Phases 40–43).
-    Route::get('/search', function () {
-        return Inertia::render('SearchQuery');
-    })->name('search');
-
     // /projects/new moved to the top of this group (line ~126) so it
     // beats the /projects/{slug} wildcard. Keeping a comment here for
     // grep-discoverability.
-
-    // §19.3 Interpretation Workspace — Inertia page (notes / sections / zones).
-    Route::get(
-        '/projects/{projectId}/interpretation',
-        [InterpretationWorkspaceController::class, 'index'],
-    )->where('projectId', '[0-9a-fA-F-]{36}')
-        ->name('projects.interpretation');
-
-    // §17.3 Charts Gallery — Inertia page showcasing all 8 chart kinds.
-    Route::get(
-        '/charts/gallery',
-        [ChartsGalleryController::class, 'gallery'],
-    )->name('charts.gallery');
 
     // §8.5 (step 3 deferred branch) — OAuth flows for cloud-source ingestion.
     // Functional scaffold; requires per-provider OAuth app registration
@@ -308,18 +124,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/oauth/connections',
         [OAuthIngestController::class, 'listConnections'])
         ->name('oauth.connections');
-
-    // §8.5 Customer Onboarding Wizard — first-15-minutes activation funnel.
-    Route::get('/onboarding', [OnboardingController::class, 'index'])
-        ->name('onboarding');
-    Route::post('/onboarding/step1', [OnboardingController::class, 'step1'])
-        ->name('onboarding.step1');
-    Route::post('/onboarding/step2', [OnboardingController::class, 'step2'])
-        ->name('onboarding.step2');
-    Route::post('/onboarding/step3', [OnboardingController::class, 'step3'])
-        ->name('onboarding.step3');
-    Route::post('/onboarding/complete', [OnboardingController::class, 'complete'])
-        ->name('onboarding.complete');
 
     Route::post('/logout', function (Request $request) {
         Auth::guard('web')->logout();
@@ -368,5 +172,4 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/admin/integrations/senders/{id}/rotate-hmac', [IntegrationsController::class, 'rotateSenderHmac'])
         ->where('id', '[0-9a-fA-F-]{36}')
         ->name('admin.integrations.senders.rotate-hmac');
-
 });

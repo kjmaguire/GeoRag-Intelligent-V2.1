@@ -177,7 +177,7 @@ class OAuthIngestController extends Controller
             return response()->json(['error' => 'connection persist failed', 'reason' => $exc->getMessage()], 500);
         }
 
-        return redirect()->to('/onboarding?oauth_completed='.$provider);
+        return redirect()->to('/projects?oauth_completed='.$provider);
     }
 
     public function listConnections(Request $request): JsonResponse

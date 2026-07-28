@@ -731,11 +731,6 @@ function MessageBubble({ m, projectId }: { m: ChatMessage; projectId?: string | 
                             <Pill tone="info">conf {m.confidence.toFixed(2)}</Pill>
                         </>
                     )}
-                    {m.answer_run_id && (
-                        <Link href={`/retrieval/${m.answer_run_id}`} className="ml-auto" style={{ color: 'var(--accent)' }}>
-                            inspect retrieval →
-                        </Link>
-                    )}
                 </div>
                 {m.citations.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">

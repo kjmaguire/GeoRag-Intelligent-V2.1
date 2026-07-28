@@ -24,10 +24,7 @@ final class FoundryRoutesSmokeTest extends TestCase
     public static function orgRoutes(): array
     {
         return [
-            'portfolio' => ['/dashboard', 'Foundry/Portfolio'],
             'projects' => ['/projects', 'Foundry/Projects'],
-            'inbox' => ['/inbox', 'Foundry/Inbox'],
-            'settings' => ['/settings', 'Foundry/Settings'],
             'imports' => ['/foundry/imports/wizard', 'Foundry/DataImportWizard'],
             'newproject' => ['/foundry/projects/new', 'Foundry/NewProject'],
         ];
@@ -46,62 +43,22 @@ final class FoundryRoutesSmokeTest extends TestCase
 
     public function test_login_page_renders_unauthenticated(): void
     {
-        $response = $this->get('/foundry/login');
+        $response = $this->get('/login');
 
         $response->assertStatus(200);
-        $response->assertInertia(fn (AssertableInertia $page) => $page->component('Foundry/Login'));
-    }
-
-    public function test_support_cockpit_requires_admin(): void
-    {
-        $user = User::factory()->create(['is_admin' => false]);
-
-        $response = $this->actingAs($user)->get('/support-cockpit');
-
-        $response->assertStatus(403);
-    }
-
-    public function test_support_cockpit_renders_for_admin(): void
-    {
-        $user = User::factory()->create(['is_admin' => true]);
-
-        $response = $this->actingAs($user)->get('/support-cockpit');
-
-        $response->assertStatus(200);
-        $response->assertInertia(fn (AssertableInertia $page) => $page->component('Foundry/SupportCockpit'));
-    }
-
-    public function test_threads_route_redirects_to_dashboard(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this->actingAs($user)->get('/threads');
-
-        $response->assertRedirect(route('dashboard'));
+        $response->assertInertia(fn (AssertableInertia $page) => $page->component('Login'));
     }
 
     public static function projectRoutes(): array
     {
         return [
-            'audit' => ['/audit', 'Foundry/AuditLog'],
-            'targets' => ['/targets', 'Foundry/Targets'],
-            'compare' => ['/compare', 'Foundry/HoleCompare'],
+            'overview' => ['', 'Foundry/Overview'],
+            'chat' => ['/chat', 'Foundry/Chat'],
             'ingest-quality' => ['/imports/quality', 'Foundry/IngestQuality'],
-            'analytics' => ['/analytics', 'Foundry/ProjectAnalytics'],
-            'whats-changed' => ['/whats-changed', 'Foundry/WhatChangedFeed'],
-            'saved-views' => ['/saved-views', 'Foundry/SavedMapViews'],
-            'decisions' => ['/decisions', 'Foundry/Decisions'],
-            'explorer' => ['/explorer', 'Foundry/Explorer'],
-            'workspace' => ['/workspace', 'Foundry/Workspace'],
-            'reasoning' => ['/reasoning', 'Foundry/Reasoning'],
-            'hypothesis' => ['/hypothesis', 'Foundry/Reasoning'],
-            'graph' => ['/graph', 'Foundry/SourceGraph'],
+            'ingestion-runs' => ['/ingestion-runs', 'Foundry/IngestionRuns'],
             'sources' => ['/sources', 'Foundry/Sources'],
             'corpus' => ['/corpus', 'Foundry/Corpus'],
             'reports' => ['/reports', 'Foundry/Report'],
-            'investigations' => ['/investigations', 'Foundry/Investigations'],
-            // §B/S/G build-out 2026-05-22 — Lakehouse inventory page.
-            'lakehouse' => ['/lakehouse', 'Foundry/Lakehouse'],
         ];
     }
 
@@ -122,15 +79,5 @@ final class FoundryRoutesSmokeTest extends TestCase
 
         $response->assertStatus(200);
         $response->assertInertia(fn (AssertableInertia $page) => $page->component($expectedComponent));
-    }
-
-    public function test_retrieval_inspector_renders_with_invalid_uuid(): void
-    {
-        $user = User::factory()->create();
-
-        $response = $this->actingAs($user)->get('/retrieval/not-a-uuid');
-
-        $response->assertStatus(200);
-        $response->assertInertia(fn (AssertableInertia $page) => $page->component('Foundry/RetrievalInspector')->where('empty', true));
     }
 }

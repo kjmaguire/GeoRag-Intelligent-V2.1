@@ -108,7 +108,7 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                 const body = await res.json().catch(() => ({}));
                 throw new Error(body.message || `HTTP ${res.status}`);
             }
-            window.location.href = '/dashboard';
+            window.location.href = '/projects';
         } catch (err) {
             setDeleteError(err instanceof Error ? err.message : String(err));
             setDeleting(false);
@@ -133,11 +133,11 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                     actions={
                         <div className="flex items-center gap-2">
                             <Link
-                                href={`/projects/${project.slug}/workspace`}
+                                href={`/projects/${project.slug}/chat`}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                 style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}
                             >
-                                Open Workspace →
+                                Open Chat →
                             </Link>
                             <button
                                 type="button"
@@ -234,12 +234,11 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                             <div className="text-[10px] font-mono uppercase tracking-[0.12em] mb-3" style={{ color: 'var(--fg-3)' }}>Jump to surface</div>
                             <div className="grid grid-cols-3 gap-2">
                                 {[
-                                    { label: 'Workspace', href: `/projects/${project.slug}/workspace`, sub: 'Map · Section · 3D · Structure · Logs' },
                                     { label: 'Chat', href: `/projects/${project.slug}/chat`, sub: 'Threaded reasoning' },
-                                    { label: 'Reasoning', href: `/projects/${project.slug}/reasoning`, sub: '4-stage workbench' },
-                                    { label: 'Targets', href: `/projects/${project.slug}/targets`, sub: '§8 drill recs' },
                                     { label: 'Data', href: `/projects/${project.slug}/sources`, sub: 'Sources + lineage' },
-                                    { label: 'Audit', href: `/projects/${project.slug}/audit`, sub: 'NI 43-101 ledger' },
+                                    { label: 'Reader', href: `/projects/${project.slug}/corpus`, sub: 'Document corpus' },
+                                    { label: 'Reports', href: `/projects/${project.slug}/reports`, sub: 'Ingested reports' },
+                                    { label: 'Quality', href: `/projects/${project.slug}/imports/quality`, sub: 'Ingest checks' },
                                 ].map((q) => (
                                     <Link
                                         key={q.label}

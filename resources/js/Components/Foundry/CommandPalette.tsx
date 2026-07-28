@@ -19,12 +19,8 @@ interface PaletteItem {
 }
 
 const ITEMS: PaletteItem[] = [
-    { kind: 'nav', title: 'Portfolio', sub: 'Org dashboard', href: '/dashboard', group: 'Navigate' },
     { kind: 'nav', title: 'Projects', sub: 'Project picker', href: '/projects', group: 'Navigate' },
-    { kind: 'nav', title: 'Chat threads', sub: 'Saved conversations', href: '/threads', group: 'Navigate' },
-    { kind: 'nav', title: 'Inbox', sub: 'Mentions + reviews + refusals', href: '/inbox', group: 'Navigate' },
     { kind: 'nav', title: 'New project', sub: '4-step wizard', href: '/foundry/projects/new', group: 'Navigate' },
-    { kind: 'nav', title: 'Workspace settings', sub: '10-section shell', href: '/settings', group: 'Navigate' },
     { kind: 'cmd', title: '/compare', sub: 'Compare two holes or analogs', cmd: '/compare', group: 'Commands' },
     { kind: 'cmd', title: '/analog', sub: 'Find nearest-match analogs', cmd: '/analog', group: 'Commands' },
     { kind: 'cmd', title: '/permit', sub: 'Check consultation status', cmd: '/permit', group: 'Commands' },

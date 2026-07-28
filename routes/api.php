@@ -10,27 +10,20 @@ use App\Http\Controllers\Api\V1\ColumnMappingController;
 use App\Http\Controllers\Api\V1\CoverageDensityController;
 use App\Http\Controllers\Api\V1\DrillUploadController;
 use App\Http\Controllers\Api\V1\ExportController;
-use App\Http\Controllers\Api\V1\HoleAnalysisController;
 use App\Http\Controllers\Api\V1\IngestProgressController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\PublicApiController;
 use App\Http\Controllers\Api\V1\PublicGeoscience\EntityReferencesController as PublicGeoscienceEntityReferencesController;
 use App\Http\Controllers\Api\V1\QueryController;
-use App\Http\Controllers\Api\V1\SavedMapViewController;
 use App\Http\Controllers\Api\V1\TrustController;
 use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Api\V1\VendorProfileController;
-use App\Http\Controllers\ChartsGalleryController;
-use App\Http\Controllers\Dashboard\PortfolioController;
-use App\Http\Controllers\Dashboard\ProjectAnalyticsController;
-use App\Http\Controllers\Dashboard\ProjectDashboardController;
 use App\Http\Controllers\Internal\AdminSurfaceUpdatedBridgeController;
 use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
 use App\Http\Controllers\Internal\ReportBuildProgressController;
 use App\Http\Controllers\Internal\UserInboxBridgeController;
 use App\Http\Controllers\Internal\WorkspaceActivityBridgeController;
 use App\Http\Controllers\Internal\WorkspaceDataUpdatedBridgeController;
-use App\Http\Controllers\InterpretationWorkspaceController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -87,17 +80,6 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('projects.collars', CollarController::class)
             ->scoped()
             ->only(['index', 'store', 'show', 'destroy']);
-
-        // Saved map views — per-user-per-project MapLibre state (§6.5 doc-phase 105 skeleton).
-        // Controller methods currently throw LogicException; live behavior
-        // lands when the §6.7+ MapLibre frontend calls these endpoints.
-        Route::apiResource('projects.saved-map-views', SavedMapViewController::class)
-            ->scoped()
-            ->parameters(['saved-map-views' => 'view']);
-
-        // Per-hole geological analysis: surveys + structures + geochemistry
-        // in one payload for the Explorer "Analysis" tab.
-        Route::get('projects/{projectId}/holes/{holeIdOrCollarId}/analysis', [HoleAnalysisController::class, 'show']);
 
         // CC-03 Item 5 — coverage density GeoJSON for the MapView heatmap layer.
         Route::get('projects/{projectId}/coverage-density', [CoverageDensityController::class, 'show'])
@@ -167,20 +149,6 @@ Route::prefix('v1')->group(function () {
             [TrustController::class, 'trustSummary'],
         )->where('id', '[0-9a-fA-F-]{36}');
 
-        // §19.3 Interpretation Workspace — proxy GET/POST/PUT/DELETE for
-        // notes / section-lines / target-zones / comments. Catch-all tail.
-        Route::match(
-            ['get', 'post', 'put', 'delete'],
-            'interpretation/{tail}',
-            [InterpretationWorkspaceController::class, 'proxy'],
-        )->where('tail', '.*');
-
-        // §17.3 Charts Gallery — render any of the 8 chart kinds.
-        Route::post(
-            'charts/render',
-            [ChartsGalleryController::class, 'render'],
-        );
-
         // §3.3 Public REST API breadth — 8 endpoint groups + self-describing index.
         Route::get('', [PublicApiController::class, 'index']);
         Route::get('openapi.json', [PublicApiController::class, 'openapi']);
@@ -206,34 +174,6 @@ Route::prefix('v1')->group(function () {
                 'documents/{report_id}/references',
                 [PublicGeoscienceEntityReferencesController::class, 'forDocument'],
             );
-        });
-
-        // ── Dashboard API endpoints (§3–§4 of dashboard spec) ───────────
-        Route::prefix('dashboard')->group(function () {
-            Route::get('platform-readiness', [PortfolioController::class, 'platformReadiness']);
-            Route::get('portfolio/kpis', [PortfolioController::class, 'kpis']);
-            Route::get('portfolio/projects', [PortfolioController::class, 'projects']);
-            Route::get('portfolio/query-activity', [PortfolioController::class, 'queryActivity']);
-            Route::get('portfolio/ingestion-health', [PortfolioController::class, 'ingestionHealth']);
-            Route::get('portfolio/feedback', [PortfolioController::class, 'feedback']);
-            Route::get('portfolio/activity', [PortfolioController::class, 'activity']);
-
-            Route::get('projects/{slug}/header', [ProjectDashboardController::class, 'header']);
-            Route::get('projects/{slug}/kpis', [ProjectDashboardController::class, 'kpis']);
-            Route::get('projects/{slug}/aoi', [ProjectDashboardController::class, 'aoi']);
-            Route::get('projects/{slug}/kg-counts', [ProjectDashboardController::class, 'kgCounts']);
-            Route::get('projects/{slug}/recent-queries', [ProjectDashboardController::class, 'recentQueries']);
-            Route::get('projects/{slug}/feedback', [ProjectDashboardController::class, 'feedback']);
-            Route::get('projects/{slug}/documents', [ProjectDashboardController::class, 'documents']);
-            Route::get('projects/{slug}/drill-summary', [ProjectDashboardController::class, 'drillSummary']);
-            Route::get('projects/{slug}/analytics', [ProjectAnalyticsController::class, 'show']);
-
-            // D6 — project context banner. Keyed on UUID so the chat page
-            // (which holds project_id but not slug) can surface a one-line
-            // "Project: Lazy Edward Bay · Uranium · Saskatchewan · NAD83 zone 14N · 20 holes"
-            // header above the input. Response shape is a flat dict tuned
-            // for rendering; expensive aggregates are elided.
-            Route::get('projects/by-id/{projectId}/context', [ProjectDashboardController::class, 'context']);
         });
     });
 });
