@@ -101,11 +101,7 @@ volumes:
     driver: local
   # Phase 3 Step 7 — activepieces_cache volume removed (sunset).
   # Kestra storage volume — flow execution data + internal storage. Phase 3 Step 2.
-  kestra_data:
-    driver: local
   # Kestra working directory (subprocess tasks, scratch).
-  kestra_workdir:
-    driver: local
   # Phase 2.0 (2026-05-22) — rapidocr ONNX model cache. Docling's OCR
   # backend (rapidocr) downloads ~150 MB of per-language ONNX models on
   # first use. Default cache path is inside site-packages which is read-
@@ -127,8 +123,6 @@ volumes:
   # Caddy /data — holds the internal CA + issued certs (Phase 7 Step 3).
   # Persisting this keeps the dev cert stable across container restarts,
   # so clients that trust it once don't have to re-import every reboot.
-  caddy_data:
-    driver: local
 
 # =============================================================================
 # Network — single bridge, all services communicate by container name
@@ -2191,140 +2185,28 @@ services:
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
-  # KESTRA — Phase 3 integration edge (replaces Activepieces; sunset in Step 7).
-  # Postgres-backed, YAML-flows-as-code. Owns external feeds, scheduled
-  # imports, third-party connectors. See docs/phase3_implementation_kickoff.md.
+  # KESTRA + CADDY — REMOVED 2026-07-28 (A7).
   #
-  # Storage: separate `kestra` logical DB on the existing postgresql server
-  # (Phase 3 Step 1 migration). No Redis dependency (Postgres handles queue
-  # + repository).
+  # Kestra was never live: KESTRA_URL was set in no .env.example, no compose
+  # service env, and not in the live .env (only KESTRA_BASIC_AUTH_*,
+  # KESTRA_PORT, KESTRA_FLOW_JWT_SECRET). Its three flows were never deployed
+  # (flow-source-loader.enabled: false, no CI push step) — see the deleted
+  # kestra/flows/georag/*.yaml in git history. Two Phase 0 escalation paths
+  # silently no-op'd for months as a result (repointed onto the outbox
+  # 2026-07-25/26); a third (services/dispatchers/kestra.py) was repointed
+  # in this commit.
   #
-  # Auth: basic auth (D3 reaffirmed); SSO is Phase 4+. First-run admin is
-  # set via env vars on first boot.
+  # Caddy existed only to front Kestra — a WebSocket-capable edge proxy that
+  # validated Sanctum sessions via forward_auth to Laravel, then reverse-
+  # proxied to kestra:8080 with basic auth injected. It proxied nothing else,
+  # so it goes with Kestra.
   #
-  # Flows: committed under kestra/flows/*.yaml (D7). Operators load them
-  # into the Kestra service via API or `kestra flow update` CLI; the
-  # YAML files are the source of truth.
+  # Also removed: the kestra Postgres role + logical DB
+  # (database/raw/phase3/95-kestra-sunset.sql mirrors the established
+  # 90-activepieces-sunset.sql pattern), the Laravel SSO proxy
+  # (KestraSsoController + KestraSsoCheckController + their routes), the
+  # kestra config block in config/services.php, and the dead
+  # IntegrationsController Kestra-dashboard methods (index/toggleFlag —
+  # unrouted since the Integrations.tsx page they rendered was deleted in
+  # the reader-core trim).
   # ---------------------------------------------------------------------------
-  kestra:
-    # v1.3.25 (2026-06, SHA-pinned). Bumped from v1.2.18 in the 2026-06-26
-    # version sweep; minor within the v1 line — flows + plugin API stable.
-    image: kestra/kestra:v1.3.25@sha256:2289a0cd123e4b7a76661b486cdaaada42c1759502d09746b7930d1c8ca6d402
-    container_name: georag-kestra
-    restart: unless-stopped
-    # Kestra base image runs without root, but standalone mode needs root
-    # to manage subprocess workers + bind to /tmp/kestra-wd. This matches
-    # Kestra's official docker-compose example.
-    user: "root"
-    command: ["server", "standalone"]
-    ports:
-      - "${KESTRA_PORT:-8086}:8080"
-    environment:
-      KESTRA_CONFIGURATION: |
-        datasources:
-          postgres:
-            url: jdbc:postgresql://postgresql:5432/kestra
-            driverClassName: org.postgresql.Driver
-            username: kestra
-            password: ${KESTRA_PG_PASSWORD}
-        kestra:
-          server:
-            basic-auth:
-              enabled: true
-              username: ${KESTRA_BASIC_AUTH_USER:-admin@georag.local}
-              password: ${KESTRA_BASIC_AUTH_PASSWORD}
-          url: ${KESTRA_URL:-http://localhost:8086/}
-          repository:
-            type: postgres
-          storage:
-            type: local
-            local:
-              base-path: /app/storage
-          queue:
-            type: postgres
-          tasks:
-            tmp-dir:
-              path: /tmp/kestra-wd/tmp
-          # Phase 3 Step 6 — disable the bundled "Getting Started"
-          # blueprint flows; they pollute the /admin/integrations
-          # listing and aren't useful in our deployment.
-          tutorialFlows:
-            enabled: false
-          variables:
-            globals:
-              georag:
-                fastapi_internal_url: ${KESTRA_FASTAPI_INTERNAL_URL:-http://fastapi:8000}
-    volumes:
-      - kestra_data:/app/storage
-      - kestra_workdir:/tmp/kestra-wd
-      - ./kestra/flows:/app/flows:ro
-    depends_on:
-      postgresql:
-        condition: service_healthy
-    healthcheck:
-      # Kestra splits its main server (8080) and management server (8081);
-      # /health lives on the management server. Hit it via the in-container
-      # localhost.
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/health >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
-    networks:
-      - georag
-    profiles: ["dev-data", "dev-full"]
-
-  # ---------------------------------------------------------------------------
-  # CADDY — Phase 6 Step 2 (R-P4-2). WebSocket-capable edge proxy in front
-  # of Kestra. Validates Sanctum session/PAT via forward_auth to Laravel,
-  # then proxies (HTTP + WS) to kestra:8080 with basic auth injected from
-  # the auth-check response. Coexists with the Phase 4 Step 2 Laravel
-  # passthrough at /admin/integrations/kestra/{path?} — browser cookie
-  # users keep that path; PAT + WS operators use this edge.
-  # ---------------------------------------------------------------------------
-  caddy:
-    # 2026-06-03 sweep: 2.8-alpine -> 2.11.3-alpine to pick up CVE patches
-    # in 2.9/2.10/2.11 (admin API, HTTP matchers, TLS auth — CVE-2026-27585
-    # through 27589). Drop-in upgrade, no config breakage expected on the
-    # forward_auth + reverse-proxy block below. Operator: pin to digest
-    # after a successful pull via `docker images caddy:2.11.3-alpine
-    # --digests`. Caddyfile + container env are unchanged.
-    image: caddy:2.11.3-alpine
-    container_name: georag-caddy
-    restart: unless-stopped
-    ports:
-      - "${CADDY_KESTRA_PORT:-8087}:8087"
-      # Phase 7 Step 3 (R-P6-3) — HTTPS listener using Caddy's
-      # internal CA. Operators with WS streaming + TLS needs hit :8443.
-      - "${CADDY_KESTRA_TLS_PORT:-8443}:8443"
-    environment:
-      # Phase 8 Step 3 (R-P7-3) — issuer for the :8443 cert.
-      #   internal  → Caddy's embedded CA (dev / on-prem-self-signed)
-      #   acme      → external ACME (Let's Encrypt etc)
-      CADDY_TLS_ISSUER: ${CADDY_TLS_ISSUER:-internal}
-      # Phase 9 Step 3 (R-P8-2) — email for the ACME account.
-      # Only consulted when CADDY_TLS_ISSUER=acme. Default is a
-      # placeholder; production swap is in docs/runbooks/caddy_tls.md.
-      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:-ops@example.invalid}
-    volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # Persist Caddy's internal CA so the cert doesn't churn on
-      # every restart (would invalidate previously-trusted clients).
-      - caddy_data:/data
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8087/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    depends_on:
-      kestra:
-        condition: service_healthy
-      laravel-octane:
-        condition: service_healthy
-    networks:
-      - georag
-    # Caddy depends on services in both dev-light (laravel-octane) and
-    # dev-data (kestra) profiles, so it joins both — and dev-full which
-    # is the union profile.
-    profiles: ["dev-light", "dev-data", "dev-full"]

@@ -130,8 +130,10 @@ jobs:
 
       # Phase 0 #16 — orchestration-boundary gate. Fails the build if
       # LangGraph code starts doing work owned by Hatchet (durable
-      # workflow + retry) or Kestra (outbound webhooks). See
-      # master plan v2.4.2 §1 and scripts/ci/langgraph_boundary_check.sh.
+      # workflow + retry, or outbound webhooks via the outbox dispatcher —
+      # Kestra, the previous owner of that concern, was retired 2026-07-28
+      # having never actually been deployed). See master plan v2.4.2 §1
+      # and scripts/ci/langgraph_boundary_check.sh.
       - name: LangGraph boundary check (§1 stack discipline)
         run: bash scripts/ci/langgraph_boundary_check.sh
 

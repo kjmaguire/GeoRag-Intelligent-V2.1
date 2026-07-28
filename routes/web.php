@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use App\Http\Controllers\Admin\IntegrationsController;
-use App\Http\Controllers\Admin\KestraSsoController;
 use App\Http\Controllers\CitationFeedbackController;
 use App\Http\Controllers\Foundry\ChatController;
 use App\Http\Controllers\Foundry\CorpusController;
@@ -13,7 +12,6 @@ use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
 use App\Http\Controllers\Foundry\ReportController;
 use App\Http\Controllers\Foundry\SourcesController;
-use App\Http\Controllers\Internal\KestraSsoCheckController;
 use App\Http\Controllers\Internal\MetricsController;
 use App\Http\Controllers\OAuthIngestController;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -138,21 +136,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
         [CitationFeedbackController::class, 'submit'])
         ->name('citations.feedback');
 
-    // Phase 4 Step 2 — Sanctum-fronted reverse proxy to Kestra UI/API.
-    // `where('path', '.*')` lets it capture sub-paths + the empty root.
-    Route::any('/admin/integrations/kestra/{path?}', [KestraSsoController::class, 'forward'])
-        ->where('path', '.*')
-        ->name('admin.integrations.kestra-sso');
-
-    // Phase 6 Step 2 (R-P4-2) — forward_auth target for the Caddy edge.
-    // Caddy subrequests this to validate the inbound session/Sanctum
-    // token before proxying to Kestra; on 204, Caddy copies the
-    // X-Kestra-Auth response header onto the upstream request so Kestra
-    // sees a basic-auth-credentialed call.
-    Route::get(
-        '/internal/sanctum/check',
-        [KestraSsoCheckController::class, 'check'],
-    )->name('internal.sanctum.check');
+    // Phase 4 Step 2 / Phase 6 Step 2 — Sanctum-fronted reverse proxy to
+    // Kestra UI/API, and the Caddy forward_auth target that gated it.
+    // REMOVED 2026-07-28 (A7): Kestra was never deployed (KESTRA_URL unset
+    // in every environment) and the compose kestra + caddy services are
+    // gone. See database/raw/phase3/95-kestra-sunset.sql.
 
     // Phase 4 Step 5 — per-sender HMAC registry enable/disable toggle.
     Route::patch('/admin/integrations/senders/{id}/{action}', [IntegrationsController::class, 'toggleSender'])

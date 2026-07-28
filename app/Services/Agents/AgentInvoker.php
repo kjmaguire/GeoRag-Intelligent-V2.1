@@ -17,8 +17,8 @@ use Throwable;
  *
  * Mirrors the @georag_agent decorator on the Python side. Most agents in
  * Phase 4+ are FastAPI-side; this class exists for the smaller set of
- * Laravel-internal agents (Kestra integration adapters, Horizon-dispatched
- * background tasks).
+ * Laravel-internal agents (Horizon-dispatched background tasks; Kestra
+ * integration adapters were retired 2026-07-28 — Kestra was never deployed).
  *
  * Usage:
  *

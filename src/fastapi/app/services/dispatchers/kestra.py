@@ -1,5 +1,18 @@
 """Kestra HTTP dispatcher for support_packet bundles.
 
+⚠️ A7 (2026-07-28): Kestra was retired — no compose service, no Postgres
+role/DB (see database/raw/phase3/95-kestra-sunset.sql), no operator path to
+ever provision a flow. `KESTRA_URL` was already unset in every environment
+before this, so `dispatched: False, reason: "kestra_disabled"` was already
+the only real outcome; now it is the *permanent* outcome, not a pending
+configuration step. Left as-is rather than repointed onto the outbox pattern
+(used for the two Phase 0 escalation paths in the same retirement) because
+this module has 5 passing tests exercising real HTTP behavior that would
+need rewriting, and its callers — app/agents/phase10/{support_packet,
+escalation_routing}.py — are only reachable through routers/support_agents.py,
+whose own fate is tracked separately (task: "A4 is not actually complete").
+Resolve both together rather than half-fixing this one.
+
 When `KESTRA_URL` is unset, the dispatcher is a no-op — the
 support_packet agent still returns the bundle dict to the cockpit UI,
 but no outbound execution fires. Flip `KESTRA_URL` on once the

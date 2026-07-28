@@ -111,18 +111,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Kestra (integration-edge orchestrator)
+    | Kestra — REMOVED 2026-07-28 (A7)
     |--------------------------------------------------------------------------
     |
-    | Phase 4 Step 2 — Sanctum-fronted reverse proxy needs the Kestra basic
-    | auth credentials to inject `Authorization: Basic …` on behalf of the
-    | authenticated operator. KestraSsoController reads these.
+    | KestraSsoController (which read this block) and the compose kestra +
+    | caddy services are gone. Kestra was never deployed — KESTRA_URL was
+    | unset in every environment. See database/raw/phase3/95-kestra-sunset.sql.
     |
     */
-    'kestra' => [
-        'basic_auth_user' => env('KESTRA_BASIC_AUTH_USER', 'admin@georag.local'),
-        'basic_auth_password' => env('KESTRA_BASIC_AUTH_PASSWORD'),
-    ],
 
     /*
     |--------------------------------------------------------------------------
