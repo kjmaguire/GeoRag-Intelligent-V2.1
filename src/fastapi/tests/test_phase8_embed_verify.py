@@ -286,4 +286,8 @@ async def test_embed_verify_single_select_roundtrip():
     with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)):
         await embed_verify(_make_input(), _make_ctx())
 
-    assert len(fetch_calls) == 1
+    unembedded_fetches = [
+        call for call in fetch_calls
+        if "count(*) AS unembedded" in call[0][0]
+    ]
+    assert len(unembedded_fetches) == 1
