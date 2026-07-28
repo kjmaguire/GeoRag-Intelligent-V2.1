@@ -38,6 +38,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -124,6 +125,25 @@ from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 configure_json_logging(level=settings.LOG_LEVEL.upper())
 
 logger = logging.getLogger(__name__)
+
+
+def qdrant_dense_dim(vectors_config: Any) -> int | None:
+    """Read the canonical dense vector size out of a Qdrant vectors config.
+
+    Qdrant's ``collection.config.params.vectors`` has two shapes: a bare
+    ``VectorParams`` when the collection has a single unnamed dense vector,
+    and a ``dict`` keyed by slot name once named vectors exist. georag_chunks
+    is the dict form (dense in the unnamed ``""`` slot alongside the named
+    sparse slot), but both are handled so this stays correct if the schema
+    is ever simplified.
+
+    Returns ``None`` when the dense size can't be determined — callers treat
+    that as "unknown, don't act" rather than as a mismatch.
+    """
+    if isinstance(vectors_config, dict):
+        dense = vectors_config.get("")
+        return getattr(dense, "size", None) if dense is not None else None
+    return getattr(vectors_config, "size", None)
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +608,66 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Failed to load embedding model — search_documents will return empty results"
         )
         app.state.embedding_model = None
+
+    # -------------------------------------------------------------------------
+    # 5b. Qdrant collection dimension parity
+    # -------------------------------------------------------------------------
+    # The check above compares the LOADED MODEL to EMBEDDING_DIMENSION. Both can
+    # agree with each other and still disagree with the collection we actually
+    # query — e.g. config says 1024/Qwen3 but georag_chunks was created at 384
+    # by an older bge-era run, or a re-embed was never executed. Symptom is an
+    # opaque HTTP 400 from Qdrant on every search, which surfaces to the user as
+    # a bare refusal with no cause. Dagster's index_document_passages already
+    # guards its write path this way (audit 2026-06-27 C1); the read path did
+    # not, so this closes the other half.
+    #
+    # Deliberately fail-soft: a Qdrant that is slow or still starting must not
+    # block FastAPI startup, and a missing collection is the normal state on a
+    # fresh install. Only a confirmed dimension DISAGREEMENT disables the model,
+    # which degrades search to a safe refusal rather than querying a mismatched
+    # vector space.
+    if app.state.embedding_model is not None:
+        from app.services.ingest.passage_embedder import (  # noqa: PLC0415
+            _QDRANT_COLLECTION as _CHUNKS_COLLECTION,
+        )
+
+        try:
+            _info = await qdrant_client.get_collection(_CHUNKS_COLLECTION)
+            _collection_dim = qdrant_dense_dim(_info.config.params.vectors)
+            if (
+                _collection_dim is not None
+                and _collection_dim != settings.EMBEDDING_DIMENSION
+            ):
+                logger.critical(
+                    "Qdrant collection dim mismatch: '%s' dense dim=%d but "
+                    "EMBEDDING_DIMENSION=%d (model %s). Disabling embedding "
+                    "model — every search would 400 against this collection. "
+                    "Re-embed the corpus (scripts/reembed_qdrant.py) or point "
+                    "EMBEDDING_MODEL_NAME/EMBEDDING_DIMENSION at the model the "
+                    "collection was built with.",
+                    _CHUNKS_COLLECTION,
+                    _collection_dim,
+                    settings.EMBEDDING_DIMENSION,
+                    settings.EMBEDDING_MODEL_NAME,
+                )
+                app.state.embedding_model = None
+            else:
+                logger.info(
+                    "Qdrant collection '%s' dense dim=%s matches "
+                    "EMBEDDING_DIMENSION=%d",
+                    _CHUNKS_COLLECTION,
+                    _collection_dim,
+                    settings.EMBEDDING_DIMENSION,
+                )
+        except Exception as exc:  # noqa: BLE001 — never block startup on Qdrant
+            logger.warning(
+                "Could not verify Qdrant collection '%s' dimension at startup "
+                "(%s: %s). Skipping the parity check — a mismatch will surface "
+                "as an HTTP 400 on the first search instead.",
+                _CHUNKS_COLLECTION,
+                type(exc).__name__,
+                exc,
+            )
 
     # -------------------------------------------------------------------------
     # 6. Cross-encoder reranker — BAAI/bge-reranker-base (Module 4 Chunk 3)
