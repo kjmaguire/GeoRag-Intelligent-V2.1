@@ -3,9 +3,32 @@
 namespace Tests;
 
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Tests\Concerns\RequiresPostgres;
 
 abstract class TestCase extends BaseTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // A class-level setUp() overrides methods imported from traits, which
+        // previously let RequiresPostgres tests run against SQLite whenever
+        // the class had its own fixture setup. Enforce the marker centrally
+        // after Laravel has resolved PHPUnit's effective DB configuration.
+        if (
+            in_array(
+                RequiresPostgres::class,
+                class_uses_recursive(static::class),
+                true,
+            )
+            && config('database.default') !== 'pgsql'
+        ) {
+            $this->markTestSkipped(
+                'Requires the postgres test connection. Run with `-c phpunit.pgsql.xml`.',
+            );
+        }
+    }
+
     /**
      * Skip the current test when the default DB connection is sqlite — use in
      * tests that exercise PostGIS (ST_*, geometry columns) or query PG-only
