@@ -1,0 +1,125 @@
+# =============================================================================
+# docker-compose.demo.yml — demo-scale resource overlay
+# =============================================================================
+#
+# WHY THIS EXISTS
+# ---------------
+# The base compose file is tuned for the 64 GB dev workstation running a real
+# corpus. Measured from docker-compose.yml's own `deploy.resources` blocks:
+#
+#     profile      reserved   limits
+#     dev-light     10.7 GB   21.2 GB   (postgresql alone = 10.0 GB of that)
+#     dev-data      33.0 GB   84.8 GB
+#     dev-full      34.8 GB   93.8 GB
+#
+# `reservations` are what force a host/VM to be big — Docker holds them whether
+# or not the bytes are touched. On a single-tenant demo box nothing competes
+# for RAM, so the right move is: **cut reservations hard, leave limits generous.**
+# Limits are free OOM insurance when nothing else is running; reservations are
+# what you actually pay for in VM size.
+#
+# This overlay takes dev-data from ~33 GB reserved to under ~7 GB — the
+# difference between provisioning a 64 GB VM and a much smaller one.
+#
+# THE TRAP THIS AVOIDS
+# --------------------
+# You cannot just shrink the container limits. postgresql pre-allocates from
+# its own config and will fail to start (not merely run slower) if the
+# container is smaller than what it was told to grab:
+#
+#   postgresql  shared_buffers=8GB  -> must lower POSTGRES_SHARED_BUFFERS
+#
+# So every size change below is paired with the config knob that drives it.
+#
+# 2026-07-28 (B5): neo4j and the dagster-daemon/dagster-webserver blocks were
+# removed from this overlay along with those services (B1, B2) — they no
+# longer exist in the base compose file. hatchet-worker-ai was renamed
+# hatchet-worker when the worker pools were merged (A5).
+#
+# USAGE (note the -p and --env-file: multi-clone safety, see RUNBOOK)
+# -------------------------------------------------------------------
+#   docker compose -p <project-name> --env-file /abs/path/to/.env \
+#     -f docker-compose.yml -f docker-compose.demo.yml \
+#     --profile dev-light --profile dev-data --profile gpu-llm up -d
+#
+# Omit --profile gpu-llm if no LLM inference is needed for the smoke test.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # postgresql — the single biggest line item, and it runs in EVERY profile
+  # (no `profiles:` key in the base file). shared_buffers is the driver.
+  # 512 MB buffers + 32 MB work_mem is a normal small-instance config and is
+  # ample for a demo corpus.
+  # ---------------------------------------------------------------------------
+  postgresql:
+    environment:
+      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-512MB}
+      POSTGRES_EFFECTIVE_CACHE_SIZE: ${POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
+      POSTGRES_WORK_MEM: ${POSTGRES_WORK_MEM:-32MB}
+      POSTGRES_MAINTENANCE_WORK_MEM: ${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # ---------------------------------------------------------------------------
+  # fastapi — memory scales with UVICORN_WORKERS (each worker loads its own
+  # model copies; that multiplication is what caused the 2026-06 OOM that
+  # raised the limit to 16g). Two workers is plenty for demo concurrency.
+  # Limit deliberately left at the base value: it is OOM insurance that costs
+  # nothing unless actually consumed.
+  # ---------------------------------------------------------------------------
+  fastapi:
+    environment:
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+    deploy:
+      resources:
+        reservations:
+          memory: 1500M
+
+  # ---------------------------------------------------------------------------
+  # hatchet-worker — 20 concurrent slots is sized for bulk ingest of a real
+  # corpus. A demo ingests one document at a time; 4 slots is generous.
+  # ---------------------------------------------------------------------------
+  hatchet-worker:
+    environment:
+      HATCHET_WORKER_SLOTS: ${HATCHET_WORKER_SLOTS:-4}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 2G
+
+  # ---------------------------------------------------------------------------
+  # Model sidecars — reservations trimmed, limits untouched on purpose. These
+  # load real model weights whose footprint is fixed by the model, not by
+  # config, so cutting their limits risks an OOM kill mid-load.
+  # ---------------------------------------------------------------------------
+  reranker:
+    deploy:
+      resources:
+        reservations:
+          memory: 1G
+
+  embedding:
+    deploy:
+      resources:
+        reservations:
+          memory: 1G
+
+  sparse:
+    deploy:
+      resources:
+        reservations:
+          memory: 512M
+
+  qdrant:
+    deploy:
+      resources:
+        reservations:
+          memory: 256M
