@@ -147,12 +147,12 @@ volumes:
   # only for www-data, so we redirect to /tmp/rapidocr_models via env
   # and mount this named volume so the models survive container
   # restarts (one download per host, not per container start).
-  # Mounted on: hatchet-worker-ingestion, hatchet-worker-ai.
+  # Mounted on: hatchet-worker.
   #
   # ⚠️ ONE-TIME SETUP: Docker creates new named volumes as root:root.
   # Chown to www-data once after the volume is created, then the
   # ownership persists across container restarts:
-  #     docker exec -u 0 georag-hatchet-worker-ingestion \
+  #     docker exec -u 0 georag-hatchet-worker \
   #         chown -R 33:33 /tmp/rapidocr_models
   # If the volume is ever destroyed (`docker volume rm
   # georagintelligencev10_rapidocr_models`), repeat this chown step
@@ -974,7 +974,7 @@ services:
       KESTRA_FLOW_JWT_SECRET: ${KESTRA_FLOW_JWT_SECRET:?KESTRA_FLOW_JWT_SECRET must be set in .env}
       # Phase 5 Step 2 — per-flow JWT signing keys live encrypted in
       # workflow.flow_registry. flow_jwt._load_per_flow_key_sync() needs
-      # the pgcrypto key to decrypt; same value as the hatchet-worker-ai
+      # the pgcrypto key to decrypt; same value as the Hatchet worker
       # block so both can decrypt the shared registries.
       AUDIT_ENCRYPTION_KEY: ${AUDIT_ENCRYPTION_KEY:?AUDIT_ENCRYPTION_KEY must be set in .env}
       # Direct Postgres bypassing pgbouncer — the per-flow key loader
@@ -1111,7 +1111,7 @@ services:
       # default HOME (/var/www) doesn't exist in this image, so the
       # mkdir explodes with PermissionError before any startup code
       # runs. Redirect HOME to /tmp so the cache dir lands somewhere
-      # writable. Matches the hatchet-worker-ingestion HOME=/tmp pin.
+      # writable. Matches the Hatchet worker's HOME=/tmp pin.
       HOME: /tmp
       # Sentry observability — same project as Laravel side. Blank DSN
       # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
@@ -2375,187 +2375,9 @@ services:
   #   psql -U hatchet -d hatchet -c "SELECT id FROM \"Tenant\" WHERE slug='default';"
   # Paste the resulting JWT into HATCHET_CLIENT_TOKEN in .env (already done).
   # ---------------------------------------------------------------------------
-  hatchet-worker-ingestion:
+  hatchet-worker:
     image: georag/fastapi:latest
-    container_name: georag-hatchet-worker-ingestion
-    restart: unless-stopped
-    command: ["python3", "-m", "app.hatchet_workflows.worker"]
-    depends_on:
-      hatchet-lite:
-        condition: service_healthy
-      postgresql:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    environment:
-      # Phase F.5 — same bind-mount-vs-site-packages drift fix as fastapi.
-      PYTHONPATH: /app
-      WORKER_POOL: ingestion
-      # Hatchet client connection — token + in-cluster gRPC target.
-      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:?HATCHET_CLIENT_TOKEN must be set in .env (run hatchet-admin token create)}
-      HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
-      HATCHET_CLIENT_TLS_STRATEGY: ${HATCHET_CLIENT_TLS_STRATEGY:-none}
-      HATCHET_WORKER_SLOTS: ${HATCHET_WORKER_SLOTS:-20}
-      # Direct Postgres — bypass pgbouncer so transactions + RLS settings work
-      # cleanly. The smoke test uses the same direct path.
-      POSTGRES_DIRECT_HOST: postgresql
-      POSTGRES_DIRECT_PORT: "5432"
-      POSTGRES_DB: ${POSTGRES_DB:-georag}
-      POSTGRES_USER: ${POSTGRES_USER:-georag}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
-      # Target stores for outbox_dispatcher.
-      QDRANT_HOST: ${QDRANT_HOST:-qdrant}
-      QDRANT_PORT: ${QDRANT_PORT:-6333}
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      NEO4J_HOST: ${NEO4J_HOST:-neo4j}
-      NEO4J_PORT: ${NEO4J_PORT:-7687}
-      NEO4J_USER: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env}
-      # SeaweedFS S3 endpoint — currently the minio service serves the S3 API
-      # at port 8333 per ADR-0001's transitional dual-run.
-      SEAWEEDFS_S3_ENDPOINT: ${SEAWEEDFS_S3_ENDPOINT:-http://minio:9000}
-      SEAWEEDFS_ACCESS_KEY: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
-      SEAWEEDFS_SECRET_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
-      # AWS_* aliases for boto3-style clients (Storage Tiering Agent, Support
-      # Packet Agent, ingest_pdf workflow). SeaweedFS uses these.
-      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
-      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
-      AWS_DEFAULT_REGION: us-east-1
-      S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-${MINIO_ROOT_USER:-georag-admin}}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
-      MINIO_ENDPOINT: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
-      MINIO_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-${MINIO_BUCKET_BRONZE:-bronze}}
-      # Phase 6 Step 1 (R-P5-1) — OTel export for per-stage parse spans
-      # bootstrapped at worker.py:main(). service.name picks up the
-      # pool-suffixed worker name via the bootstrap's default_service_name.
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
-      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      OTEL_SERVICE_NAME: georag-hatchet-worker-ingestion
-      # Plan §1b parent-child chunker — must be passed through to the
-      # ingestion worker because that's where pdf_ingester._chunk_pages
-      # actually runs. Default off; the .env override is the rollout switch.
-      PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
-      PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
-      # User cache directories — www-data's $HOME (/var/www) is read-only,
-      # so every library that defaults to ~/.cache will crash. Required by
-      # sentence-transformers / unstructured / numba / matplotlib at
-      # import time. Without these, `unstructured.partition.pdf` raises
-      # RuntimeError and pdf_report.py silently falls back to pdfplumber.
-      HF_HOME: /tmp/hf_cache
-      SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
-      TRANSFORMERS_CACHE: /tmp/hf_cache
-      NUMBA_CACHE_DIR: /tmp/numba_cache
-      MPLCONFIGDIR: /tmp/mpl_cache
-      XDG_CACHE_HOME: /tmp/xdg_cache
-      # Required by app.config.Settings; the embedder workflow imports it
-      # transitively. Missing here means embed_pending_passages raises a
-      # pydantic ValidationError before it can write a single vector.
-      FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
-      # Reverb broadcast bridge — ingest_pdf.embed_verify / on_failure_task
-      # POST through laravel_bridge.post_ingestion_progress. See fastapi
-      # block for why the http://laravel.test default isn't usable here.
-      LARAVEL_INTERNAL_URL: ${LARAVEL_INTERNAL_URL:-http://laravel-octane}
-      # Phase 2.1 (2026-05-22) — docling now wired as the OCR engine for
-      # image pages within the fitz-first dispatch. When true:
-      #   - fitz runs first (fast for native-text pages)
-      #   - any pages where fitz returned < PER_PAGE_MIN_CHARS get sent
-      #     to docling with rapidocr OCR for GPU-accelerated recognition
-      #   - tesseract is the fallback if docling unavailable/fails
-      # Default true after Phase 2.1 smoke. Set to false to revert to
-      # the legacy tesseract-only OCR path.
-      PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
-      # Phase 2.0 + 2.1 (2026-05-22) — controls whether docling's
-      # rapidocr backend handles OCR on image pages. Default true after
-      # Phase 2.1 smoke confirmed rapidocr fires on cuda:0 with the
-      # writable model cache. Flip to false to keep docling for tables
-      # + figures only and let tesseract handle OCR.
-      DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
-      RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}
-      # Phase 2.1 (2026-05-22) — kickoff requirement: tesseract is the
-      # fallback-of-last-resort for image pages when docling is
-      # unavailable or fails. Default true so no-data-loss is preserved.
-      PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
-      # Page-level parallelism inside a single parse. Default 4 so two
-      # parses can run on 8 cores without fighting; bump up on headless
-      # boxes with more cores. Set to 1 to disable for debugging.
-      PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}
-      # Phase 5 (2026-05-22) — subprocess pool size + memory guard.
-      # PARSE_SUBPROCESS_MAX_WORKERS: parallel parses per worker.
-      # Empty default → ingest_pdf computes min(os.cpu_count(), 4).
-      # Override to 1 to revert to the pre-Phase-5 single-parse behavior;
-      # set higher than 4 on boxes with > 6 GB free RAM per parse.
-      PARSE_SUBPROCESS_MAX_WORKERS: ${PARSE_SUBPROCESS_MAX_WORKERS:-}
-      # Pre-fork memory threshold + max wait. The parse task awaits
-      # psutil.virtual_memory().available ≥ MIN_FREE_RAM_MB before
-      # submitting to the pool; waits up to MEMORY_WAIT_MAX_S then raises
-      # MemoryError so Hatchet retries on a freer worker.
-      # 2026-05-23 — defaults raised from (1500, 30) to (4500, 120) after
-      # the TIFF smoke proved a single docling+PaddleOCR+RapidOCR parse
-      # needs ~3-4 GB resident. See [[tiff-smoke-2026-05-23]].
-      PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
-      PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
-      # Manual re-OCR and the region OCR endpoint share PaddleOCR's
-      # device-selection helper.
-      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-}
-      PADDLEOCR_MIN_FREE_VRAM_MB: ${PADDLEOCR_MIN_FREE_VRAM_MB:-1024}
-      # PaddleOCR's default cache must be writable by www-data.
-      HOME: /tmp
-      # Suppress paddle logging dir clutter — same /tmp redirect.
-      FLAGS_logging_dir: /tmp
-      # S3 bucket for figure storage (used by the figure-extraction
-      # path inside ingest_pdf.persist). Same bronze bucket as
-      # uploads, but under figures/{report_id}/ prefix.
-      S3_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-bronze}
-      # Logging
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    volumes:
-      - ./src/fastapi:/app:cached
-      - ./src/dagster/georag_dagster:/app/georag_dagster:cached
-      # Phase E.1 — staged TIFFs from the Phase B extractor land here.
-      # The tiff_ocr_cluster Hatchet workflow reads from this mount.
-      # Same `external: true` volume that georag-fastapi mounts at /data.
-      - georag-phase-b-extract:/extract
-      # Phase 2.0 (2026-05-22) — rapidocr ONNX model cache (~150 MB
-      # downloaded once on first OCR call). Lives outside site-packages
-      # so www-data can write here.
-      - rapidocr_models:/tmp/rapidocr_models
-    user: "33:33"
-    healthcheck:
-      test: ["CMD-SHELL", "grep -q app.hatchet_workflows.worker /proc/1/cmdline || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    networks:
-      - georag
-    profiles: ["dev-data", "dev-full"]
-    # 2026-05-22 — GPU passthrough so docling's TableFormer + layout
-    # ONNX models can run on CUDA. Without this onnxruntime falls back
-    # to CPU and docling parses take 17-40 min per big PDF. The
-    # ingestion worker shares the GPU with vLLM + AI worker; lower
-    # VLLM_GPU_MEM_UTIL further if VRAM contention shows up.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-  # ---------------------------------------------------------------------------
-  # OPENTELEMETRY COLLECTOR — Phase 0 step 3 (master plan §35.1).
-  # Single ingest hop for spans + metrics + logs from Laravel, FastAPI,
-  # Hatchet, vLLM. Forwards traces to Tempo and exposes metrics for
-  # Prometheus to scrape on internal :8895/metrics.
-  # ---------------------------------------------------------------------------
-  hatchet-worker-ai:
-    image: georag/fastapi:latest
-    container_name: georag-hatchet-worker-ai
+    container_name: georag-hatchet-worker
     restart: unless-stopped
     # 2026-06-23 sweep: bootstrap pip installs removed. polars + pytesseract
     # are now declared in src/fastapi/pyproject.toml (Phase 5 / Phase 10
@@ -2579,7 +2401,7 @@ services:
     environment:
       # Phase F.5 — same bind-mount-vs-site-packages drift fix as fastapi.
       PYTHONPATH: /app
-      WORKER_POOL: ai
+      WORKER_POOL: all
       # Hatchet client connection — token + in-cluster gRPC target.
       HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:?HATCHET_CLIENT_TOKEN must be set in .env (run hatchet-admin token create)}
       HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
@@ -2631,11 +2453,9 @@ services:
       # Phase 6 Step 1 (R-P5-1) — OTel export for parse spans.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
-      OTEL_SERVICE_NAME: georag-hatchet-worker-ai
-      # 2026-05-22: same www-data cache redirects + service key as the
-      # ingestion worker. AI pool runs embed_pending_passages_wf which
-      # imports app.config.Settings (requires FASTAPI_SERVICE_KEY) and
-      # sentence-transformers/transformers (need writable HF cache dir).
+      OTEL_SERVICE_NAME: georag-hatchet-worker
+      # Writable caches for parser and embedding workflows. The worker runs
+      # both ingestion and AI workflows in the merged `all` pool.
       # Without these the embed workflow silently never executes.
       HF_HOME: /tmp/hf_cache
       SENTENCE_TRANSFORMERS_HOME: /tmp/hf_cache
@@ -2645,15 +2465,25 @@ services:
       XDG_CACHE_HOME: /tmp/xdg_cache
       # 2026-06-23 sweep — PaddleOCR 3.x calls Path.mkdir on
       # $HOME/.paddlex/temp at IMPORT time; redirect HOME to /tmp so
-      # the AI worker can import pdf_ocr.py without crashing (matches
-      # the ingestion worker's HOME pin).
+      # the worker can import pdf_ocr.py without crashing.
       HOME: /tmp
-      # Keep parser configuration available to AI-pool workflows that
-      # inspect ingestion behavior.
+      # Ingest parser and OCR configuration.
       PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
       DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
       RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
+      PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
+      PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
+      PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}
+      PARSE_SUBPROCESS_MAX_WORKERS: ${PARSE_SUBPROCESS_MAX_WORKERS:-}
+      # A measured Docling/OCR parse needs 3-4 GB resident. Keep these
+      # ingestion guards on the merged worker.
+      PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
+      PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
+      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-}
+      PADDLEOCR_MIN_FREE_VRAM_MB: ${PADDLEOCR_MIN_FREE_VRAM_MB:-1024}
+      FLAGS_logging_dir: /tmp
+      S3_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-bronze}
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
       # Reverb broadcast bridge — score_targets.execute calls
       # laravel_bridge.post_workspace_data_updated on success so Foundry/Targets
@@ -2694,9 +2524,9 @@ services:
     volumes:
       - ./src/fastapi:/app:cached
       - ./src/dagster/georag_dagster:/app/georag_dagster:cached
+      - georag-phase-b-extract:/extract
       # Phase 2.0 (2026-05-22) — shared rapidocr model cache. Same
-      # named volume the ingestion worker uses so a model downloaded
-      # by either worker is visible to the other.
+      # named volume retained across worker restarts.
       - rapidocr_models:/tmp/rapidocr_models
     user: "33:33"
     healthcheck:
@@ -2707,7 +2537,7 @@ services:
       start_period: 20s
     networks:
       - georag
-    # 2026-05-22 — GPU acceleration for the embed/rerank/sparse stack.
+    # GPU acceleration for OCR plus the embed/rerank/sparse stack.
     # Without this, bge-small/bge-reranker/SPLADE++ ran on CPU at ~3
     # chunks/sec. With the A4500 the same models do thousands/sec, so
     # large ingests (V3 = 2,496 chunks, was ~20 min on CPU) finish in

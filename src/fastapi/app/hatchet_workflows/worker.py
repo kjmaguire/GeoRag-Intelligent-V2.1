@@ -1,6 +1,7 @@
-"""Hatchet worker entrypoint — supports two pool variants.
+"""Hatchet worker entrypoint.
 
-Reads ``WORKER_POOL`` env var (Phase 1 Step 2):
+The demo compose stack runs the merged ``all`` pool. The narrower pool
+selectors remain available for deployments that still split workers:
 
   ``ingestion``  — registers ``outbox_dispatcher`` + ingestion-class agent
                    workflows (storage tiering, index health, store
