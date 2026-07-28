@@ -129,9 +129,17 @@ class StreamQueryFromFastApi implements ShouldQueue
         // lifecycle/RLS guard on the MAIN query path is actually enforced.
         // Previously this mint omitted workspace_id, so the guard was silently
         // skipped on every chat/RAG query. Derived from the project row.
-        $workspaceId = DB::table('silver.projects')
-            ->where('project_id', $this->projectId)
-            ->value('workspace_id');
+        try {
+            $workspaceId = DB::table('silver.projects')
+                ->where('project_id', $this->projectId)
+                ->value('workspace_id');
+        } catch (\Throwable $e) {
+            Log::warning('StreamQueryFromFastApi: workspace lookup failed (continuing unscoped)', [
+                'project_id' => $this->projectId,
+                'exception' => $e->getMessage(),
+            ]);
+            $workspaceId = null;
+        }
         $jwt = app(FastApiJwtMinter::class)->mint(
             $userId,
             $this->projectId,
