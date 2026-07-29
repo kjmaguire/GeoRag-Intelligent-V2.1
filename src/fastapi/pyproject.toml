@@ -209,6 +209,14 @@ dependencies = [
     "paddlepaddle>=3.1,<3.3",
     # The full-page PaddleOCR-VL `doc-parser` extra was retired with §04p.
     "paddleocr>=3.7,<4.0",
+    # #28 (2026-07-28) — Azure Document Intelligence OCR adapter (MIT).
+    # Standalone module, gated OFF by default (OCR_ENGINE=tesseract).
+    # NOT wired into pdf_report.py's live Tesseract call sites yet — that
+    # rewiring is a separate, riskier follow-up that needs a real Azure
+    # resource + a scanned-corpus regression pass, not blind autonomous
+    # editing of the fragile fitz/tesseract merge path. See
+    # app/services/ingest/document_intelligence_client.py.
+    "azure-ai-documentintelligence>=1.0.0,<2.0",
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the
