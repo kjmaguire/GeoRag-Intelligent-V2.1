@@ -8,6 +8,17 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
+
+// ── Inertia mock ───────────────────────────────────────────────────────────
+// ProjectSelector reads `url` from usePage() to sync the dropdown to the
+// current route's project slug. Outside an <App> tree usePage() throws, so
+// mock it the same way MapView's tests do.
+vi.mock('@inertiajs/react', () => ({
+    usePage: () => ({ url: '/projects/pls' }),
+    router: { visit: vi.fn() },
+}));
+
+// Import AFTER the mock is registered.
 import ProjectSelector from '../ProjectSelector';
 
 describe('ProjectSelector — auth surface', () => {
