@@ -21,8 +21,10 @@ through `app.config.Settings`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 from dataclasses import dataclass
 
 logger = logging.getLogger("georag.ingest.document_intelligence")
@@ -124,6 +126,37 @@ async def ocr_page(pdf_bytes: bytes, page_num: int) -> PageOcrResult:
     return PageOcrResult(text=text.strip(), mean_confidence=mean_confidence)
 
 
+def ocr_page_sync(pdf_bytes: bytes, page_num: int) -> PageOcrResult:
+    """Synchronous bridge to `ocr_page`, for `pdf_report.py`'s fully sync
+    parse pipeline (`_ocr_single_page`, `_attempt_ocr` are plain `def`s,
+    not `async def`s — there is no `await` anywhere in that call chain).
+
+    Always runs the coroutine on a dedicated background thread with its
+    own fresh event loop, rather than `asyncio.run()` directly on the
+    calling thread. `asyncio.run()` raises "cannot be called from a
+    running event loop" if the caller happens to be invoked from inside
+    FastAPI's event loop thread (e.g. a future caller that doesn't route
+    parsing through a process/thread pool executor first); the dedicated
+    thread makes this safe regardless of the caller's own context.
+    """
+    result: list[PageOcrResult] = []
+    error: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            result.append(asyncio.run(ocr_page(pdf_bytes, page_num)))
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if error:
+        raise error[0]
+    return result[0]
+
+
 __all__ = [
     "ENDPOINT_ENV",
     "KEY_ENV",
@@ -133,4 +166,5 @@ __all__ = [
     "is_engine_selected",
     "is_configured",
     "ocr_page",
+    "ocr_page_sync",
 ]

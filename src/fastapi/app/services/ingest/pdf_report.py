@@ -2011,6 +2011,26 @@ def _ocr_single_page(
 
     Returns ``""`` (or ``("", 0.0)``) on any failure.
     """
+    from . import document_intelligence_client as _di
+
+    if _di.is_engine_selected():
+        try:
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            result = _di.ocr_page_sync(pdf_bytes, page_num)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pdf_report: document_intelligence OCR failed on page %d of "
+                "'%s': %s — falling back to tesseract",
+                page_num, pdf_path, exc,
+            )
+        else:
+            return (
+                (result.text, result.mean_confidence)
+                if return_confidence
+                else result.text
+            )
+
     try:
         import pytesseract
         from pdf2image import convert_from_path
@@ -2414,6 +2434,74 @@ def _ocr_page_confidence(text: str) -> float:
     return round(min(1.0, confidence), 2)
 
 
+def _attempt_ocr_document_intelligence(path: str) -> str:
+    """Full-document OCR via Azure Document Intelligence, one call per page.
+
+    Mirrors `_attempt_ocr`'s page-count discovery, no-page-cap policy, and
+    progress/low-confidence logging so callers see the same log shape
+    regardless of which engine produced the text — the only difference is
+    no local rasterisation (no `convert_from_path`): Document Intelligence
+    takes the raw PDF bytes directly per page.
+    """
+    from . import document_intelligence_client as _di
+    from pdf2image import pdfinfo_from_path
+
+    try:
+        info = pdfinfo_from_path(path)
+        total_pages = info.get("Pages", 0)
+    except Exception:
+        total_pages = 0
+
+    if total_pages == 0:
+        logger.warning(
+            "pdf_report: could not determine page count for "
+            "document_intelligence OCR; aborting to tesseract fallback"
+        )
+        raise RuntimeError("page count unavailable")
+
+    with open(path, "rb") as f:
+        pdf_bytes = f.read()
+
+    logger.info(
+        "pdf_report: starting document_intelligence OCR on %d pages",
+        total_pages,
+    )
+
+    texts: list[str] = []
+    page_confidences: list[float] = []
+    low_confidence_pages: list[int] = []
+
+    for page_num in range(1, total_pages + 1):
+        result = _di.ocr_page_sync(pdf_bytes, page_num)
+        if result.text.strip():
+            cleaned = _postprocess_ocr_text(result.text)
+            page_confidences.append(result.mean_confidence)
+            if result.mean_confidence < 0.3:
+                low_confidence_pages.append(page_num)
+                logger.warning(
+                    "pdf_report: OCR page %d low confidence (%.0f%%) — may be image/diagram",
+                    page_num, result.mean_confidence * 100,
+                )
+            texts.append(cleaned)
+
+        if page_num % 10 == 0 or page_num == 1:
+            logger.info(
+                "pdf_report: OCR progress %d/%d pages", page_num, total_pages,
+            )
+
+    result_text = "\n\n".join(texts)
+    avg_confidence = (
+        sum(page_confidences) / len(page_confidences) if page_confidences else 0.0
+    )
+    logger.info(
+        "pdf_report: document_intelligence OCR complete — %d pages, %d chars, "
+        "avg confidence %.0f%%, %d low-confidence pages",
+        total_pages, len(result_text), avg_confidence * 100,
+        len(low_confidence_pages),
+    )
+    return result_text
+
+
 def _attempt_ocr(path: str) -> str | None:
     """Attempt OCR on a scanned PDF using Tesseract via pdf2image + pytesseract.
 
@@ -2425,6 +2513,18 @@ def _attempt_ocr(path: str) -> str | None:
 
     Returns extracted text or empty string if OCR libraries are unavailable.
     """
+    from . import document_intelligence_client as _di
+
+    if _di.is_engine_selected():
+        try:
+            return _attempt_ocr_document_intelligence(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "pdf_report: document_intelligence full-document OCR failed "
+                "on '%s': %s — falling back to tesseract",
+                path, exc,
+            )
+
     try:
         import pytesseract
         from pdf2image import convert_from_path
