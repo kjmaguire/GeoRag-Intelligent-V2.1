@@ -2025,10 +2025,23 @@ def _ocr_single_page(
                 page_num, pdf_path, exc,
             )
         else:
-            return (
-                (result.text, result.mean_confidence)
-                if return_confidence
-                else result.text
+            if result.text.strip():
+                return (
+                    (result.text, result.mean_confidence)
+                    if return_confidence
+                    else result.text
+                )
+            # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
+            # InvalidContentDimensions on an out-of-range scan resolution —
+            # confirmed against a real 1940s-era TIFF in the corpus 2026-07-29)
+            # and return an empty PageOcrResult rather than raising. Without
+            # this check, that soft failure would look identical to "page is
+            # genuinely blank" and skip tesseract entirely, silently losing
+            # a page tesseract might actually be able to read.
+            logger.info(
+                "pdf_report: document_intelligence returned empty text for "
+                "page %d of '%s' — falling back to tesseract",
+                page_num, pdf_path,
             )
 
     try:
@@ -2499,6 +2512,17 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
         total_pages, len(result_text), avg_confidence * 100,
         len(low_confidence_pages),
     )
+    if not result_text.strip():
+        # Every page came back empty — e.g. Azure's InvalidContentDimensions
+        # on an out-of-range scan resolution (confirmed against a real
+        # 1940s-era TIFF in the corpus 2026-07-29), or a full-document
+        # outage. `ocr_page_sync` fails soft per page, so this loop never
+        # raises on its own; raising here is what lets the caller's
+        # try/except fall through to the tesseract path instead of
+        # silently returning an empty document.
+        raise RuntimeError(
+            f"document_intelligence produced no text across {total_pages} pages"
+        )
     return result_text
 
 
