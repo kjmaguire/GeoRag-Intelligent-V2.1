@@ -56,3 +56,9 @@ travel with the parser's own 11 test files.
 5. Re-enable the retired upload categories in
    `app/Http/Controllers/Api/V1/UploadController.php` (`RETIRED_CATEGORIES`)
    only once a live consumer exists for them.
+
+## Demo-scope decision (2026-07-29)
+
+Confirmed: the Azure/Cloudflare demo is scoped to the PDF reader core only
+(upload → OCR → cited answer). No CSV/assay upload requirement. This tree
+stays dormant as-is — no revival work is in scope for the demo.
