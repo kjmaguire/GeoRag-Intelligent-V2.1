@@ -126,21 +126,47 @@ async def embed_pending_passages(
 
     # ── Load models / clients if not provided ─────────────────────
     if embedding_model is None:
-        import torch
-        from sentence_transformers import SentenceTransformer
+        from app.services.embedding import EMBEDDING_BACKEND
 
-        from app.config import settings
-        # Use CUDA when available — A4500 does ~144 chunks/sec vs ~4 on CPU.
-        # Falls back to CPU gracefully if no GPU present or CUDA unavailable.
-        _device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info("embed_pending.loading_embedding_model name=%s device=%s",
-                 settings.EMBEDDING_MODEL_NAME, _device)
-        embedding_model = SentenceTransformer(
-            settings.EMBEDDING_MODEL_NAME,
-            revision=settings.EMBEDDING_MODEL_REVISION,
-            trust_remote_code=False,
-            device=_device,
-        )
+        if EMBEDDING_BACKEND == "foundry":
+            # No local model load at all — Cohere Embed v4 via Azure AI
+            # Foundry. .encode(texts, normalize_embeddings=True,
+            # show_progress_bar=False) below is a drop-in call (input_type
+            # defaults to "search_document", correct for ingestion).
+            import os as _os
+
+            from app.services.embedding import (
+                AZURE_FOUNDRY_EMBED_DEPLOYMENT,
+                _FoundryEmbedding,
+            )
+            endpoint = (_os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
+            api_key = (_os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
+            if not (endpoint and api_key and AZURE_FOUNDRY_EMBED_DEPLOYMENT):
+                raise RuntimeError(
+                    "EMBEDDING_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/"
+                    "API_KEY/AZURE_FOUNDRY_EMBED_DEPLOYMENT not fully set"
+                )
+            log.info(
+                "embed_pending.loading_embedding_model backend=foundry deployment=%s",
+                AZURE_FOUNDRY_EMBED_DEPLOYMENT,
+            )
+            embedding_model = _FoundryEmbedding(endpoint, api_key, AZURE_FOUNDRY_EMBED_DEPLOYMENT)
+        else:
+            import torch
+            from sentence_transformers import SentenceTransformer
+
+            from app.config import settings
+            # Use CUDA when available — A4500 does ~144 chunks/sec vs ~4 on CPU.
+            # Falls back to CPU gracefully if no GPU present or CUDA unavailable.
+            _device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info("embed_pending.loading_embedding_model name=%s device=%s",
+                     settings.EMBEDDING_MODEL_NAME, _device)
+            embedding_model = SentenceTransformer(
+                settings.EMBEDDING_MODEL_NAME,
+                revision=settings.EMBEDDING_MODEL_REVISION,
+                trust_remote_code=False,
+                device=_device,
+            )
 
     own_qdrant = False
     if qdrant_client is None:

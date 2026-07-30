@@ -42,6 +42,101 @@ EMBEDDING_MODEL_REVISION = (
 # thread-pool executor, so this blocking call never touches the event loop.
 _HTTP_TIMEOUT_S = float(os.environ.get("EMBEDDING_SERVICE_TIMEOUT_S", "30") or "30")
 
+# ---------------------------------------------------------------------------
+# Azure AI Foundry (Cohere Embed v4) backend — EMBEDDING_BACKEND=foundry
+# ---------------------------------------------------------------------------
+# Takes precedence over EMBEDDING_SERVICE_URL below. No local model, no
+# sidecar, at all. Reuses the same Azure AI Services resource as the LLM/
+# reranker (AZURE_FOUNDRY_ENDPOINT/API_KEY) with its own deployment name.
+EMBEDDING_BACKEND = (os.environ.get("EMBEDDING_BACKEND") or "local").strip().lower()
+AZURE_FOUNDRY_EMBED_DEPLOYMENT = (os.environ.get("AZURE_FOUNDRY_EMBED_DEPLOYMENT") or "").strip()
+# Cohere Embed v4 supports Matryoshka-truncated output at 256/512/1024/1536
+# dims. Request 1024 to match the existing georag_chunks collection schema
+# exactly — no Qdrant migration needed. MUST match settings.EMBEDDING_DIMENSION.
+AZURE_FOUNDRY_EMBED_DIMENSION = int(os.environ.get("AZURE_FOUNDRY_EMBED_DIMENSION", "1024"))
+AZURE_FOUNDRY_EMBED_TIMEOUT_S = float(os.environ.get("AZURE_FOUNDRY_EMBED_TIMEOUT_S", "30"))
+
+
+class _FoundryEmbedding:
+    """Cohere Embed v4 (Azure AI Foundry) behind the SentenceTransformer surface.
+
+    Mirrors ``SentenceTransformer.encode(str|list, normalize_embeddings=...)
+    -> np.ndarray`` and ``.get_sentence_embedding_dimension()`` — same
+    contract as ``_RemoteEmbedding`` above, so it's a drop-in wherever the
+    query-path or ingestion code holds an embedding-model reference.
+
+    Wire shape empirically verified 2026-07-30 against a live deployment:
+        POST {endpoint}/providers/cohere/v2/embed
+        api-key: <key>
+        body: {"model": "<deployment>", "texts": [str, ...],
+               "input_type": "search_document"|"search_query",
+               "embedding_types": ["float"], "output_dimension": 1024}
+        -> {"embeddings": {"float": [[...], ...]}}
+
+    Cohere recommends asymmetric embedding: ``input_type="search_document"``
+    for indexed corpus chunks, ``"search_query"`` for retrieval-time
+    queries — a real quality lever the plain SentenceTransformer interface
+    doesn't have a slot for. ``encode()`` defaults to "search_document"
+    (correct for every ingestion call site, which never overrides it);
+    query-time callers should use :meth:`embed_query` instead, which sets
+    "search_query". Call sites that don't know about this distinction (or
+    run against a different backend without it) safely fall back to
+    ``encode()`` via a ``hasattr(model, "embed_query")`` check.
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str,
+        deployment: str,
+        *,
+        dimension: int = AZURE_FOUNDRY_EMBED_DIMENSION,
+        timeout_s: float = AZURE_FOUNDRY_EMBED_TIMEOUT_S,
+    ) -> None:
+        self._url = endpoint.rstrip("/") + "/providers/cohere/v2/embed"
+        self._api_key = api_key
+        self._deployment = deployment
+        self._dimension = dimension
+        self._timeout_s = timeout_s
+
+    def _post(self, texts: list[str], input_type: str) -> np.ndarray:
+        import httpx  # noqa: PLC0415
+
+        resp = httpx.post(
+            self._url,
+            headers={"api-key": self._api_key},
+            timeout=self._timeout_s,
+            json={
+                "model": self._deployment,
+                "texts": texts,
+                "input_type": input_type,
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            },
+        )
+        resp.raise_for_status()
+        vectors = resp.json()["embeddings"]["float"]
+        return np.asarray(vectors, dtype=np.float32)
+
+    def encode(
+        self,
+        sentences: str | list[str],
+        normalize_embeddings: bool = False,  # noqa: ARG002 — Cohere vectors are pre-normalized
+        input_type: str = "search_document",
+        **_kwargs: Any,  # absorbs show_progress_bar, batch_size, prompt_name, etc.
+    ) -> np.ndarray:
+        single = isinstance(sentences, str)
+        texts = [sentences] if single else list(sentences)
+        arr = self._post(texts, input_type)
+        return arr[0] if single else arr
+
+    def embed_query(self, text: str) -> np.ndarray:
+        """Query-time embedding using Cohere's recommended input_type="search_query"."""
+        return self._post([text], "search_query")[0]
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
 
 class _RemoteEmbedding:
     """HTTP proxy to the shared embedding sidecar.
@@ -95,9 +190,23 @@ def get_embedding_model(
 ) -> Any:
     """Return the embedding model for the FastAPI query path.
 
-    A shared-sidecar HTTP proxy when ``EMBEDDING_SERVICE_URL`` is set, else a
-    locally-loaded ``SentenceTransformer`` on CPU (the prior behaviour).
+    Precedence: EMBEDDING_BACKEND=foundry (Cohere Embed v4, no local model at
+    all) > a shared-sidecar HTTP proxy when EMBEDDING_SERVICE_URL is set >
+    locally-loaded SentenceTransformer on CPU (the prior default).
     """
+    if EMBEDDING_BACKEND == "foundry":
+        endpoint = (os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
+        api_key = (os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
+        if not (endpoint and api_key and AZURE_FOUNDRY_EMBED_DEPLOYMENT):
+            raise RuntimeError(
+                "EMBEDDING_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/API_KEY/"
+                "AZURE_FOUNDRY_EMBED_DEPLOYMENT not fully set"
+            )
+        logger.info(
+            "Embedding model via Azure AI Foundry: deployment=%s dim=%d",
+            AZURE_FOUNDRY_EMBED_DEPLOYMENT, AZURE_FOUNDRY_EMBED_DIMENSION,
+        )
+        return _FoundryEmbedding(endpoint, api_key, AZURE_FOUNDRY_EMBED_DEPLOYMENT)
     if EMBEDDING_SERVICE_URL:
         logger.info("Embedding model via shared sidecar: %s", EMBEDDING_SERVICE_URL)
         return _RemoteEmbedding(EMBEDDING_SERVICE_URL)

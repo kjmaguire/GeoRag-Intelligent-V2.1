@@ -798,11 +798,25 @@ services:
       # HTTP proxy when this is set. Unset to fall back to per-worker load.
       # Ignored entirely when RERANKER_BACKEND=foundry above.
       RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
+      # EMBEDDING_BACKEND=foundry (Cohere Embed v4 on Azure AI Foundry) takes
+      # precedence over EMBEDDING_SERVICE_URL below — no local model, no
+      # sidecar. Reuses AZURE_FOUNDRY_ENDPOINT/API_KEY from the LLM config;
+      # needs its own deployment name. Requests output_dimension=1024 to
+      # match the existing georag_chunks collection exactly — no Qdrant
+      # migration needed, though a full re-embed of the corpus still is
+      # (different model = different vector space regardless of dims
+      # matching). Empirically verified 2026-07-30 against a live Cohere
+      # Embed v4 deployment — see app/services/embedding.py.
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-local}
+      AZURE_FOUNDRY_EMBED_DEPLOYMENT: ${AZURE_FOUNDRY_EMBED_DEPLOYMENT:-}
+      AZURE_FOUNDRY_EMBED_DIMENSION: ${AZURE_FOUNDRY_EMBED_DIMENSION:-1024}
+      AZURE_FOUNDRY_EMBED_TIMEOUT_S: ${AZURE_FOUNDRY_EMBED_TIMEOUT_S:-30}
       # 2026-06-24 — share ONE embedding model via the `embedding` sidecar
       # instead of one ~2.4 GiB Qwen3-Embedding copy per uvicorn worker (a PSS
       # measurement showed it duplicated per worker — the dominant host-RAM
       # term). app/services/embedding.get_embedding_model() returns an HTTP
       # proxy when this is set; empty → each worker loads its own (legacy).
+      # Ignored entirely when EMBEDDING_BACKEND=foundry above.
       EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embedding:8000}
       # 2026-06-24 — share ONE SPLADE++ model via the `sparse` sidecar. SPLADE
       # was the last GPU user in the workers; routing it to a CPU sidecar lets
@@ -1773,6 +1787,17 @@ services:
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
       EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
+      # EMBEDDING_BACKEND=foundry (Cohere Embed v4) — passage_embedder.py
+      # (the ingestion embedder that runs in THIS service) checks this
+      # directly; must be set here too, not just on fastapi, or ingestion
+      # keeps loading the local model regardless of the query-path setting.
+      # AZURE_FOUNDRY_ENDPOINT/API_KEY are the same resource as the LLM.
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-local}
+      AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
+      AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
+      AZURE_FOUNDRY_EMBED_DEPLOYMENT: ${AZURE_FOUNDRY_EMBED_DEPLOYMENT:-}
+      AZURE_FOUNDRY_EMBED_DIMENSION: ${AZURE_FOUNDRY_EMBED_DIMENSION:-1024}
+      AZURE_FOUNDRY_EMBED_TIMEOUT_S: ${AZURE_FOUNDRY_EMBED_TIMEOUT_S:-30}
       # CPU thread budget for PyTorch ops that fall back to CPU (reranker,
       # SPLADE++). OMP/MKL defaults to all host threads which causes
       # oversubscription when vLLM also runs CPU work. 6 threads matches

@@ -1690,13 +1690,22 @@ async def search_documents(
         # NOTE: applied WITHOUT a golden-eval pass — flag for eval validation
         # before treating retrieval-quality numbers as final.
         _embed_input = _expanded_query
+
+        def _encode_query() -> list[float]:
+            # Cohere Embed v4 (Azure AI Foundry backend) wants
+            # input_type="search_query" for retrieval-time queries, distinct
+            # from "search_document" used at ingestion — a real asymmetric-
+            # embedding quality lever the plain SentenceTransformer interface
+            # doesn't expose. Backends without this distinction (local
+            # SentenceTransformer, the sidecar proxy) don't define
+            # embed_query, so this falls back to the prior .encode() call.
+            _model = ctx.deps.embedding_model
+            if hasattr(_model, "embed_query"):
+                return _model.embed_query(_embed_input).tolist()
+            return _model.encode(_embed_input, normalize_embeddings=True).tolist()
+
         # Dense query embedding (sync inference, off the event loop).
-        query_vector: list[float] = await loop.run_in_executor(
-            None,
-            lambda: ctx.deps.embedding_model.encode(
-                _embed_input, normalize_embeddings=True
-            ).tolist(),
-        )
+        query_vector: list[float] = await loop.run_in_executor(None, _encode_query)
         # Sparse query encoding via SPLADE++ (sync inference, off the event loop).
         # GI-11: if SPLADE fails, this raises and the outer wait_for propagates
         # the exception -- no silent dense-only fallback.
