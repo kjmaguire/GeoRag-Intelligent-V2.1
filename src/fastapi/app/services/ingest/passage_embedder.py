@@ -189,6 +189,17 @@ async def embed_pending_passages(
             pg_conn, workspace_id=workspace_id, site="passage_embedder",
         )
         if project_id:
+            # Session-scoped (false) is correct here, not a hazard: `pg_conn`
+            # is a dedicated, non-pooled connection with no wrapping
+            # transaction, so `is_local=true`/SET LOCAL would be silently
+            # discarded before the next statement runs (Postgres: "SET LOCAL
+            # used outside a transaction block will appear to have no
+            # effect"). Session scope persists for this connection's life,
+            # which is exactly what's needed. Also: no RLS policy anywhere
+            # in this codebase reads app.project_id (verified 2026-07-30) —
+            # project filtering here uses an explicit $1::uuid query param,
+            # not this GUC — so this value is set defensively/for
+            # completeness, not for tenant-isolation enforcement.
             await pg_conn.execute(
                 "SELECT set_config('app.project_id', $1, false)", project_id,
             )
