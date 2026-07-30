@@ -107,8 +107,13 @@ dependencies = [
     #   CVE-2026-53540 (DoS)                 fix 0.0.31
     # urllib3 (>=2.7.0) + authlib (>=1.6.12) re-checked — both floors are
     # still above all current advisories, left unchanged.
+    # 2026-07-29 re-audit:
+    #   starlette          GHSA-82w8-qh3p-5jfq (urlencoded form DoS) fix 1.3.1
+    #   cryptography       GHSA-537c-gmf6-5ccf (bundled OpenSSL)      fix 48.0.1
     "urllib3>=2.7.0,<3.0",
     "python-multipart>=0.0.31",
+    "starlette>=1.3.1",
+    "cryptography>=48.0.1,<49",
     "authlib>=1.6.12",
     # §04p Phase 1.A — PDF Ingestion Subsystem
     # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
@@ -257,7 +262,10 @@ dependencies = [
     # multiple concurrent PDF parses on the ingestion worker. Already
     # transitively present via dagster; this is the explicit pin.
     "psutil>=7.0",
-    "pyjwt>=2.9",
+    # GHSA-xgmm-8j9v-c9wx: mixed-family JWK/HMAC confusion fixed in 2.13.
+    # GeoRAG already pins HS256 at every decode call, but the patched floor
+    # keeps the library safe if a future verifier is misconfigured.
+    "pyjwt>=2.13,<3",
 
     # Master-plan §5 (doc-phase 71) — spatial pipeline + drillhole visuals.
     # geopandas + rasterio bring GeoJSON/GeoTIFF read/write + CRS reprojection
