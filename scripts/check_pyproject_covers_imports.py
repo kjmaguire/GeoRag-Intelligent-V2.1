@@ -51,13 +51,20 @@ MODULE_TO_DISTRIBUTION: dict[str, str] = {
     "jose": "python-jose",
     "magic": "python-magic",
     "google": "google-cloud-storage",  # heuristic; rarely needed
+    # `azure` is a namespace package spread across several dists (azure-core,
+    # azure-ai-documentintelligence, ...) — azure-core is the one that
+    # actually provides the `azure` top-level namespace, so map to it.
+    "azure": "azure-core",
     "pkg_resources": "setuptools",
     "_pytest": "pytest",
     "tomllib": "<stdlib>",
     "hatchet_sdk": "hatchet-sdk",
     "qdrant_client": "qdrant-client",
     "sentence_transformers": "sentence-transformers",
-    "pydantic_ai": "pydantic-ai",
+    # 2026-06-23 deps-rot fix switched pyproject from the `pydantic-ai` meta
+    # package to `pydantic-ai-slim[anthropic,openai]` (boto3-range conflict
+    # with aioboto3) — both expose the same `pydantic_ai` import path.
+    "pydantic_ai": "pydantic-ai-slim",
     "pydantic_settings": "pydantic-settings",
     "prometheus_client": "prometheus-client",
     "prometheus_fastapi_instrumentator": "prometheus-fastapi-instrumentator",
@@ -114,6 +121,21 @@ ALLOWED_NON_PYPROJECT: set[str] = {
     "langdetect",        # pdf_report.py wraps `from langdetect import DetectorFactory`
     "pdf2image",         # pdf_report.py:917 — gracefully degrades on absence
     "pytesseract",       # pdf_report.py:918 — same pattern as pdf2image
+    # data_dictionary_dump.py: optional ERD rendering, explicitly falls
+    # back to a hand-rolled Graphviz DOT when eralchemy2 isn't installed.
+    "eralchemy2",
+    # pymupdf was deliberately removed from dependencies (CC-1 audit
+    # 2026-05-27, AGPL-3.0 licensing). Its one remaining call site
+    # (pdf_report.py _classify_pages_from_pdf) wraps the import in
+    # try/except ImportError and returns {} on absence — same
+    # gracefully-degrading pattern as pdf2image/pytesseract above.
+    "pymupdf",
+    # opentelemetry: observability/otel.py wraps every otel import in
+    # try/except ImportError and only activates when
+    # OTEL_EXPORTER_OTLP_ENDPOINT is set; the trim plan's Phase B3
+    # dropped the otel-collector/monitoring stack, so nothing in this
+    # deployment actually sets that endpoint today.
+    "opentelemetry",
 }
 
 

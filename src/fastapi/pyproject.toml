@@ -275,9 +275,14 @@ dependencies = [
     # geopandas + rasterio bring GeoJSON/GeoTIFF read/write + CRS reprojection
     # into the FastAPI ingestion path (already in src/dagster/pyproject.toml).
     # mplstereonet renders stereonets for §5.8 structure visualizations.
+    # matplotlib itself is a hard dep of the static-PNG renderers
+    # (cross_section.py, stereonet.py, strip_log.py — Report Builder PDF
+    # output) — declared explicitly rather than relying on it arriving as
+    # mplstereonet's transitive dependency.
     "geopandas>=1.0",
     "rasterio>=1.4",
     "mplstereonet>=0.6",
+    "matplotlib>=3.11,<4.0",
 
     # Master-plan §7 (doc-phase 122) — Reporting + report bundle generation.
     # weasyprint → PDF rendering from HTML+CSS (§7.9 primary). Needs Pango /
