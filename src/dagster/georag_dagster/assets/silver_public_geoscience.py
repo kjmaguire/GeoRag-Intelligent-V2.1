@@ -52,9 +52,10 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
-from typing import Any, Callable, Iterable
+from datetime import UTC, date, datetime
+from typing import Any
 
 import psycopg2.extras
 import shapely.geometry
@@ -68,7 +69,7 @@ from dagster import (
 )
 from pyproj import Transformer
 
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +242,7 @@ def _find_latest_bronze(
             if mod is None:
                 continue
             if mod.tzinfo is None:
-                mod = mod.replace(tzinfo=timezone.utc)
+                mod = mod.replace(tzinfo=UTC)
             if latest_mod is None or mod > latest_mod:
                 latest_mod = mod
                 latest_name = key
@@ -637,7 +638,7 @@ def _parse_date(value: Any) -> date | None:
     # ArcGIS FeatureServer emits dates as ms-since-epoch integers.
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc).date()
+            return datetime.fromtimestamp(value / 1000.0, tz=UTC).date()
         except (OSError, ValueError, OverflowError):
             return None
     s = str(value).strip()

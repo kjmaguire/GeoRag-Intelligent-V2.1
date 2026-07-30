@@ -8,7 +8,6 @@ import uuid
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Lazy import: the module imports psycopg2 + dagster at module level.
 # A pytest collection environment without those should not break test

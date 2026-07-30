@@ -48,7 +48,7 @@ import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.parsers.raster_parser import parse_raster_file
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 BRONZE_BUCKET = "bronze"
 RASTERS_PREFIX = "rasters"
@@ -280,7 +280,7 @@ def silver_raster(
             }
         )
     finally:
-        try:  # noqa: SIM105
+        try:
             os.unlink(tmp_path)
         except OSError:
             pass

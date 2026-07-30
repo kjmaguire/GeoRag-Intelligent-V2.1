@@ -7,7 +7,6 @@ the resolution contract.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
@@ -20,8 +19,8 @@ SAMPLES_PREFIX = "samples"
 
 
 class BronzeSamplesConfig(Config):
-    object_key: Optional[str] = None
-    csv_file_path: Optional[str] = None
+    object_key: str | None = None
+    csv_file_path: str | None = None
 
 
 def _count_csv_rows(path: str) -> int:
@@ -71,7 +70,7 @@ def bronze_samples(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

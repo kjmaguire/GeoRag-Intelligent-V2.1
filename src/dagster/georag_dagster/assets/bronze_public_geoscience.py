@@ -45,7 +45,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from dagster import (
@@ -62,7 +62,7 @@ from georag_dagster.clients.arcgis_rest import (
     fetch_layer_metadata,
     fetch_service_metadata,
 )
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 BRONZE_BUCKET = "bronze"
 ROOT_PREFIX = "public_geoscience"
@@ -262,7 +262,7 @@ def _slugify_commodity(name: str) -> str:
     """
     cleaned = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     # Drop trailing 'Potential', 'Map', 'Resource Potential' style suffixes.
-    cleaned = re.sub(r"\b(resource potential|potential|map)\b", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\b(resource potential|potential|map)\b", "", cleaned, flags=re.IGNORECASE)
     token = re.split(r"[^A-Za-z0-9]+", cleaned.strip())[0] or "UNKNOWN"
     return token.upper()
 
@@ -300,7 +300,7 @@ def _write_bronze_artifacts(
         "source_id": source_id,
         "jurisdiction_code": jurisdiction_code,
         "run_id": run_id,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(UTC).isoformat(),
         "service_url": source_row["service_url"],
         "canonical_type": source_row["canonical_type"],
         "source_crs": source_row.get("source_crs") or source_row.get("jurisdiction_default_crs"),

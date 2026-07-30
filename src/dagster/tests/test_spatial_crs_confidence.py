@@ -16,26 +16,24 @@ Run with:  pytest tests/test_spatial_crs_confidence.py -v
 
 from __future__ import annotations
 
-
 import pytest
 
 # GeoPandas is a heavy import — skip entire module if unavailable.
 geopandas = pytest.importorskip("geopandas", reason="geopandas not installed")
 shapely = pytest.importorskip("shapely", reason="shapely not installed")
 
-from shapely.geometry import Point  # noqa: E402
+from shapely.geometry import Point
 
-from georag_dagster.parsers.spatial_parser import (  # noqa: E402
+from georag_dagster.parsers.spatial_parser import (
     _score_crs_confidence,
     parse_spatial_file,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_point_gdf(coords: list[tuple[float, float]], crs) -> "geopandas.GeoDataFrame":
+def _make_point_gdf(coords: list[tuple[float, float]], crs) -> geopandas.GeoDataFrame:
     """Build a minimal GeoDataFrame from a list of (x, y) tuples."""
     geoms = [Point(x, y) for x, y in coords]
     return geopandas.GeoDataFrame({"name": [f"pt{i}" for i in range(len(geoms))]},

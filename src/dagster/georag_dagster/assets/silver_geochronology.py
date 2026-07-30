@@ -33,7 +33,6 @@ from georag_dagster.parsers.csv_geochronology import (
 )
 from georag_dagster.resources import PostgresResource, S3Resource
 
-
 BRONZE_BUCKET = "bronze"
 GEOCHRON_PREFIX = "geochronology"
 

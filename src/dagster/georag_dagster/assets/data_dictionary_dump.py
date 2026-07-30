@@ -64,8 +64,8 @@ import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from dagster import (
     AssetCheckExecutionContext,
@@ -80,7 +80,6 @@ from dagster import (
 )
 
 from georag_dagster.resources import PostgresResource, S3Resource
-
 
 logger = logging.getLogger(__name__)
 
@@ -454,12 +453,12 @@ def compare_dictionaries(
 def _today_utc() -> str:
     """Return today's UTC date in YYYY-MM-DD. Indirection lets the
     tests freeze ``data_dictionary_dump._today_utc`` cheaply."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 def _yesterday_utc() -> str:
     """Return yesterday's UTC date in YYYY-MM-DD."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     from datetime import timedelta
     return (today - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -469,7 +468,7 @@ def _yesterday_utc() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _try_eralchemy2(database_url: str, out_dir: str) -> Optional[dict[str, str]]:
+def _try_eralchemy2(database_url: str, out_dir: str) -> dict[str, str] | None:
     """Attempt to render an ERD with eralchemy2.
 
     Returns a dict of ``{kind: path}`` for the files actually
@@ -478,7 +477,7 @@ def _try_eralchemy2(database_url: str, out_dir: str) -> Optional[dict[str, str]]
     asset surfaces the error rather than silently swallowing it.
     """
     try:
-        from eralchemy2 import render_er  # type: ignore[import-not-found]  # noqa: PLC0415
+        from eralchemy2 import render_er  # type: ignore[import-not-found]
     except ImportError:
         logger.info(
             "eralchemy2 not installed in this environment — falling back to "
@@ -503,7 +502,7 @@ def _try_eralchemy2(database_url: str, out_dir: str) -> Optional[dict[str, str]]
     return produced or None
 
 
-def _maybe_render_dot_to_svg(dot_path: str) -> Optional[str]:
+def _maybe_render_dot_to_svg(dot_path: str) -> str | None:
     """If ``dot`` (Graphviz CLI) is on PATH, render the .dot to .svg.
 
     Returns the .svg path on success, ``None`` otherwise. The
@@ -568,23 +567,22 @@ def data_dictionary_dump(
     schemas = list(config.schemas)
 
     # ---- 1. Pull metadata from PostgreSQL ----
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(SELECT_TABLES_SQL, (schemas,))
-            tcols = [d[0] for d in cur.description]
-            tables = [dict(zip(tcols, r)) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(SELECT_TABLES_SQL, (schemas,))
+        tcols = [d[0] for d in cur.description]
+        tables = [dict(zip(tcols, r)) for r in cur.fetchall()]
 
-            cur.execute(SELECT_COLUMNS_SQL, (schemas,))
-            ccols = [d[0] for d in cur.description]
-            columns = [dict(zip(ccols, r)) for r in cur.fetchall()]
+        cur.execute(SELECT_COLUMNS_SQL, (schemas,))
+        ccols = [d[0] for d in cur.description]
+        columns = [dict(zip(ccols, r)) for r in cur.fetchall()]
 
-            cur.execute(SELECT_PRIMARY_KEYS_SQL, (schemas,))
-            pcols = [d[0] for d in cur.description]
-            primary_keys = [dict(zip(pcols, r)) for r in cur.fetchall()]
+        cur.execute(SELECT_PRIMARY_KEYS_SQL, (schemas,))
+        pcols = [d[0] for d in cur.description]
+        primary_keys = [dict(zip(pcols, r)) for r in cur.fetchall()]
 
-            cur.execute(SELECT_FOREIGN_KEYS_SQL, (schemas,))
-            fcols = [d[0] for d in cur.description]
-            foreign_keys = [dict(zip(fcols, r)) for r in cur.fetchall()]
+        cur.execute(SELECT_FOREIGN_KEYS_SQL, (schemas,))
+        fcols = [d[0] for d in cur.description]
+        foreign_keys = [dict(zip(fcols, r)) for r in cur.fetchall()]
 
     dictionary = build_dictionary(tables, columns, primary_keys, foreign_keys)
     erd_groups = build_erd_groups(dictionary)
@@ -602,7 +600,7 @@ def data_dictionary_dump(
     groups_key = f"{prefix}/{ERD_GROUPS_OBJECT_NAME}"
 
     payload = {
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": datetime.now(UTC).isoformat(),
         "schemas": schemas,
         "table_count": len(dictionary),
         "tables": dictionary,
@@ -623,8 +621,8 @@ def data_dictionary_dump(
     groups_url = f"s3://{S3_BUCKET}/{groups_key}"
 
     # ---- 3. ERD (optional, best-effort) ----
-    erd_svg_url: Optional[str] = None
-    erd_dot_url: Optional[str] = None
+    erd_svg_url: str | None = None
+    erd_dot_url: str | None = None
     erd_kind = "none"
     if config.generate_erd:
         with tempfile.TemporaryDirectory(prefix="ddict_erd_") as tmp:

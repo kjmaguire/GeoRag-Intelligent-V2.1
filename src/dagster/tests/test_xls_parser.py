@@ -25,12 +25,11 @@ import pytest
 
 xlrd = pytest.importorskip("xlrd", reason="xlrd not installed")
 
-from georag_dagster.parsers.xlsx_parser import (  # noqa: E402
+from georag_dagster.parsers.xlsx_parser import (
     ExcelParseResult,
     XlsxParseResult,
     parse_xlsx_sheet,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — XLS fixture builder using xlwt
@@ -39,7 +38,7 @@ from georag_dagster.parsers.xlsx_parser import (  # noqa: E402
 def _require_xlwt():
     """Skip test if xlwt is unavailable (xlwt is write-only; only needed for fixtures)."""
     try:
-        import xlwt  # noqa: PLC0415
+        import xlwt
         return xlwt
     except ImportError:
         pytest.skip("xlwt not installed — cannot create .xls fixtures")
@@ -111,7 +110,7 @@ class TestBackwardCompatAlias:
         assert XlsxParseResult is ExcelParseResult
 
     def test_excelparseresult_has_format_field(self):
-        import dataclasses  # noqa: PLC0415
+        import dataclasses
         fields = {f.name for f in dataclasses.fields(ExcelParseResult)}
         assert "format" in fields
 

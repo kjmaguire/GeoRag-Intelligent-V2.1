@@ -35,8 +35,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 from georag_dagster.assets.bronze_reports import BRONZE_BUCKET, REPORTS_PREFIX, bronze_reports
 from georag_dagster.hooks.shadow_v149 import emit_v149_audits, record_v149_for_shadow
 from georag_dagster.parsers.pdf_report import parse_pdf_report
-from georag_dagster.resources import S3Resource, PostgresResource
-
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # ---------------------------------------------------------------------------
 # SQL

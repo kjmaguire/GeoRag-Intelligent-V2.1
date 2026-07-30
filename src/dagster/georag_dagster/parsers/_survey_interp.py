@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -235,7 +234,7 @@ def minimum_curvature(
 def interpolate_sample_xyz(
     sample_depth: float,
     station_xyz: list[tuple[float, XYZ]],
-) -> Optional[XYZ]:
+) -> XYZ | None:
     """Linearly interpolate an XYZ at *sample_depth* from pre-computed station XYZs.
 
     Uses the output of :func:`minimum_curvature` directly.  No extrapolation —

@@ -84,14 +84,14 @@ def enumerate_sheets(path: str) -> list[SheetMeta]:
     header → type rules apply everywhere.
     """
     # Deferred import — keeps the parser module lightweight at load.
-    from georag_dagster.parsers._sheet_classifier import classify_sheet_type  # noqa: PLC0415
+    from georag_dagster.parsers._sheet_classifier import classify_sheet_type
 
     ext = Path(path).suffix.lower()
     out: list[SheetMeta] = []
 
     if ext in _XLSX_EXTS:
         try:
-            import openpyxl  # noqa: PLC0415
+            import openpyxl
         except ImportError as exc:  # pragma: no cover — openpyxl is in the image
             raise RuntimeError(
                 "openpyxl unavailable — required for XLSX sheet enumeration"
@@ -131,7 +131,7 @@ def enumerate_sheets(path: str) -> list[SheetMeta]:
 
     if ext in _XLS_EXTS:
         try:
-            import xlrd  # noqa: PLC0415
+            import xlrd
         except ImportError as exc:
             raise RuntimeError(
                 "xlrd unavailable — required for legacy .xls enumeration"
@@ -259,7 +259,7 @@ def _xls_to_polars_df(path: str, sheet_name: str) -> tuple[pl.DataFrame, str, li
     All cell values are converted to strings for downstream CSV parser compatibility
     (matching the behaviour of polars.write_csv / read_csv round-trip used for xlsx).
     """
-    import xlrd  # noqa: PLC0415 — optional dep; guarded by file extension check
+    import xlrd
 
     xls_warnings: list[dict] = []
 
@@ -432,7 +432,7 @@ def parse_xlsx_sheet(
                 df = pl.read_excel(path_str)
                 resolved_sheet_name = "Sheet1"
                 try:
-                    import openpyxl  # noqa: PLC0415
+                    import openpyxl
                     wb = openpyxl.load_workbook(path_str, read_only=True, data_only=True)
                     resolved_sheet_name = wb.sheetnames[0]
                     wb.close()
@@ -469,19 +469,19 @@ def parse_xlsx_sheet(
 
     # --- Delegate to the matching CSV parser ---
     if sheet_type == "collar":
-        from georag_dagster.parsers.csv_collar import parse_csv_collars  # noqa: PLC0415
+        from georag_dagster.parsers.csv_collar import parse_csv_collars
         result = parse_csv_collars(csv_buffer)
         assay_columns: list = []
     elif sheet_type == "survey":
-        from georag_dagster.parsers.csv_survey import parse_csv_surveys  # noqa: PLC0415
+        from georag_dagster.parsers.csv_survey import parse_csv_surveys
         result = parse_csv_surveys(csv_buffer)
         assay_columns = []
     elif sheet_type == "lithology":
-        from georag_dagster.parsers.csv_lithology import parse_csv_lithology  # noqa: PLC0415
+        from georag_dagster.parsers.csv_lithology import parse_csv_lithology
         result = parse_csv_lithology(csv_buffer)
         assay_columns = []
     elif sheet_type == "sample":
-        from georag_dagster.parsers.csv_sample import parse_csv_samples  # noqa: PLC0415
+        from georag_dagster.parsers.csv_sample import parse_csv_samples
         result = parse_csv_samples(csv_buffer)
         assay_columns = getattr(result, "assay_columns", [])
     else:

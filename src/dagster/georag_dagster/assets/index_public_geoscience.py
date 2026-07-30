@@ -57,10 +57,6 @@ from dagster import (
     asset,
 )
 
-from georag_dagster.assets.sparse_encoder import (
-    SPARSE_MODEL_VERSION,
-    encode_sparse_batch,
-)
 from georag_dagster.assets.silver_public_geoscience import (
     silver_pg_ca_sk_assessment_airborne,
     silver_pg_ca_sk_assessment_ground,
@@ -71,8 +67,11 @@ from georag_dagster.assets.silver_public_geoscience import (
     silver_pg_ca_sk_rock_samples,
     silver_pg_ca_sk_smdi,
 )
+from georag_dagster.assets.sparse_encoder import (
+    SPARSE_MODEL_VERSION,
+    encode_sparse_batch,
+)
 from georag_dagster.resources import PostgresResource, QdrantResource
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -141,9 +140,9 @@ _MODEL = None
 
 
 def _get_model():
-    global _MODEL  # noqa: PLW0603
+    global _MODEL
     if _MODEL is None:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        from sentence_transformers import SentenceTransformer
         _MODEL = SentenceTransformer(EMBED_MODEL_NAME)
     return _MODEL
 
@@ -187,7 +186,7 @@ def _ensure_collection(client, collection_name: str, context: AssetExecutionCont
            missed retrieval = wrong answer, the ~2× graph-RAM cost pays
            back in +5% recall@10 on ms-marco benchmarks.
     """
-    from qdrant_client.models import (  # noqa: PLC0415
+    from qdrant_client.models import (
         Distance,
         HnswConfigDiff,
         OptimizersConfigDiff,
@@ -739,10 +738,9 @@ def _resource_potential_payload(row: dict, summary: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _fetch_dicts(postgres: PostgresResource, sql: str) -> list[dict]:
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql)
-            return [dict(r) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql)
+        return [dict(r) for r in cur.fetchall()]
 
 
 def _embed_batched(texts: list[str], context: AssetExecutionContext) -> list:
@@ -812,7 +810,7 @@ def _run_canonical_type(
         sum(len(sv) for sv in sparse_vecs) / max(len(sparse_vecs), 1),
     )
 
-    from qdrant_client.models import PointStruct, SparseVector  # noqa: PLC0415
+    from qdrant_client.models import PointStruct, SparseVector
 
     points = []
     for i in range(len(rows)):

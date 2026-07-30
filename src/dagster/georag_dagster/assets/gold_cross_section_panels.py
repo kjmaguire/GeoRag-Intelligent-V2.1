@@ -41,7 +41,6 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.resources import PostgresResource
 
-
 COLLARS_IN_CORRIDOR_SQL = """
 SELECT
     c.collar_id,

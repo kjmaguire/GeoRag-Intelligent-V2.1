@@ -9,12 +9,10 @@ Target: 717 existing + 14 new tests green, 0 xfails.
 
 import logging
 
-
 from georag_dagster.definitions import (
     _build_sensor_run_config,
     _extract_vendor_profile_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests for _extract_vendor_profile_id

@@ -22,13 +22,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from georag_dagster.parsers.pdf_report import parse_pdf_report
 
 from georag_dagster.parsers.csv_collar import parse_csv_collars
 from georag_dagster.parsers.csv_lithology import parse_csv_lithology
 from georag_dagster.parsers.csv_sample import parse_csv_samples
 from georag_dagster.parsers.csv_survey import parse_csv_surveys
-from georag_dagster.parsers.pdf_report import parse_pdf_report
-
 
 # ---------------------------------------------------------------------------
 # Minimal-PDF fixture (duplicated from test_pdf_warnings.py)

@@ -29,7 +29,6 @@ NOTE: Do NOT add ``from __future__ import annotations`` to this file.
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
@@ -38,7 +37,6 @@ from georag_dagster.assets._minio_bronze_helpers import (
     stream_minio_to_temp,
 )
 from georag_dagster.resources import S3Resource
-
 
 BRONZE_BUCKET = "bronze"
 GEOPHYSICS_PREFIX = "geophysics"
@@ -53,8 +51,8 @@ class BronzeGeophysicsConfig(Config):
     sensor-driven flow uses the key Laravel already wrote.
     """
 
-    object_key: Optional[str] = None
-    json_file_path: Optional[str] = None
+    object_key: str | None = None
+    json_file_path: str | None = None
     project_id: str = ""
 
 
@@ -152,7 +150,7 @@ def bronze_geophysics(
         )
     finally:
         if cleanup_path:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(cleanup_path)
             except OSError:
                 pass

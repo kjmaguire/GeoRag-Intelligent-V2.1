@@ -22,12 +22,12 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from georag_dagster.parsers.pdf_report import (
-    ReportSection,
     _COLUMN_HEADER_TOKENS,
     _RESOURCE_TABLE_TRIGGERS,
+    ReportSection,
     _detect_page_language,
     _extract_authors,
     _extract_commodity,
@@ -53,14 +53,14 @@ class DocxParseResult:
     """Complete result of parsing a NI 43-101 Word document (DOCX or DOC)."""
 
     full_text: str
-    title: Optional[str]
+    title: str | None
     sections: list[ReportSection]
-    company: Optional[str]
-    filing_date: Optional[str]      # ISO 8601 string: YYYY-MM-DD
-    commodity: Optional[str]
+    company: str | None
+    filing_date: str | None      # ISO 8601 string: YYYY-MM-DD
+    commodity: str | None
     authors: list[str]
-    project_name: Optional[str]
-    region: Optional[str]
+    project_name: str | None
+    region: str | None
     warnings: list[dict] = field(default_factory=list)
     provenance: dict[str, Any] = field(default_factory=dict)
     resource_tables: list[dict] = field(default_factory=list)
@@ -108,7 +108,7 @@ def _extract_tables_from_docx(doc) -> list[dict]:
 
         # Flatten table text to check for resource triggers
         all_text = " ".join(cell for row in raw_rows for cell in row).lower()
-        matched_trigger: Optional[str] = None
+        matched_trigger: str | None = None
         for trigger in _RESOURCE_TABLE_TRIGGERS:
             if trigger in all_text:
                 matched_trigger = trigger
@@ -150,7 +150,7 @@ def _extract_tables_from_docx(doc) -> list[dict]:
 
 def _parse_quality_from_sections(sections: list[ReportSection]) -> float:
     """Compute parse quality as fraction of 17 expected NI 43-101 sections found."""
-    from georag_dagster.parsers.pdf_report import NI43_BASELINE_SECTIONS  # noqa: PLC0415
+    from georag_dagster.parsers.pdf_report import NI43_BASELINE_SECTIONS
     numbered = [s for s in sections if s.section_number is not None]
     return round(len(numbered) / NI43_BASELINE_SECTIONS, 4)
 

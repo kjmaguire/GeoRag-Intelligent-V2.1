@@ -30,7 +30,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 from georag_dagster.assets.bronze_xlsx import BRONZE_BUCKET, EXCEL_PREFIX
 from georag_dagster.parsers._hole_id import canonicalize
 from georag_dagster.parsers.xlsx_parser import parse_xlsx_sheet
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # Default project CRS — WGS 84 / UTM zone 13N (matches silver_collars)
 PROJECT_EPSG = 32613
@@ -358,14 +358,13 @@ def _resolve_collar_fk(
         project_id,
     )
     collar_map: dict = {}
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(COLLAR_LOOKUP_SQL, {
-                "hole_ids":   all_hole_ids,
-                "project_id": project_id,
-            })
-            for row in cur.fetchall():
-                collar_map[row["hole_id"]] = str(row["collar_id"])
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(COLLAR_LOOKUP_SQL, {
+            "hole_ids":   all_hole_ids,
+            "project_id": project_id,
+        })
+        for row in cur.fetchall():
+            collar_map[row["hole_id"]] = str(row["collar_id"])
     context.log.info(
         "Collar lookup resolved %d / %d hole_id(s)",
         len(collar_map),
@@ -582,7 +581,7 @@ def silver_xlsx(
 
     # --- Download from Bronze to a temp file ---
     # polars.read_excel / xlrd need a real file path with the correct extension.
-    import os as _os  # noqa: PLC0415
+    import os as _os
     _src_ext = _os.path.splitext(config.xlsx_filename)[1].lower() or ".xlsx"
     file_bytes = minio.download_bytes(BRONZE_BUCKET, object_name)
 
@@ -703,7 +702,7 @@ def _silver_xlsx_auto_dispatch(
     say, a 'Notes' tab that was deliberately ignored). The asset
     aggregates per-sheet metrics into the returned MaterializeResult.
     """
-    from georag_dagster.parsers.xlsx_parser import enumerate_sheets  # noqa: PLC0415
+    from georag_dagster.parsers.xlsx_parser import enumerate_sheets
 
     sheets = enumerate_sheets(tmp_path)
     context.log.info(

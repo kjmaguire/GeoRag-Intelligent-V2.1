@@ -25,7 +25,7 @@ from georag_dagster.clients.review_queue_writer import (
     write_review_queue_rows,
 )
 from georag_dagster.parsers.csv_sample import parse_csv_samples
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 PROVENANCE_INSERT_SQL = """
 INSERT INTO bronze.provenance (
@@ -205,14 +205,13 @@ def silver_samples(
     )
 
     collar_map: dict = {}
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(COLLAR_LOOKUP_SQL, {
-                "hole_ids":   all_hole_ids,
-                "project_id": config.project_id,
-            })
-            for row in cur.fetchall():
-                collar_map[row["hole_id"]] = str(row["collar_id"])
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(COLLAR_LOOKUP_SQL, {
+            "hole_ids":   all_hole_ids,
+            "project_id": config.project_id,
+        })
+        for row in cur.fetchall():
+            collar_map[row["hole_id"]] = str(row["collar_id"])
 
     context.log.info(
         "Collar lookup resolved %d / %d hole_id(s)",

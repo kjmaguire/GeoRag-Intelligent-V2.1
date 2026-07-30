@@ -48,7 +48,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.assets.bronze_spatial import BRONZE_BUCKET, SPATIAL_PREFIX, bronze_spatial
 from georag_dagster.parsers.spatial_parser import parse_spatial_file
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # CC-03 Item 4 — QField → Geology / field_observation tag.
 # sub_type_id 218 is seeded by migration 2026_05_24_020000.

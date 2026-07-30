@@ -43,10 +43,9 @@ def silver_collars_check_collar_count_positive(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.collars has at least one row after materialization."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.collars;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.collars;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -88,10 +87,9 @@ def silver_collars_check_schema_conformance(
     silver.collars.  If bronze.provenance is empty (no runs yet) the check
     passes by convention — there is nothing to fail on a clean slate.
     """
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Count total collars vs total provenance rows for the latest ingest_run_id
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        # Count total collars vs total provenance rows for the latest ingest_run_id
+        cur.execute("""
                 SELECT
                     p.ingest_run_id,
                     p.parser_name,
@@ -104,7 +102,7 @@ def silver_collars_check_schema_conformance(
                 ORDER BY MAX(p.created_at) DESC
                 LIMIT 1;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     if row is None:
         # No provenance rows — clean-slate or first run. Pass by convention.
@@ -170,16 +168,15 @@ def silver_collars_check_crs_srid_populated(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify all collar geometries are non-null with a valid SRID."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) FILTER (WHERE geom IS NULL)      AS null_geom,
                     COUNT(*) FILTER (WHERE ST_SRID(geom) = 0) AS zero_srid,
                     COUNT(*)                                   AS total
                 FROM silver.collars;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     null_geom = row[0] if row else 0
     zero_srid = row[1] if row else 0
@@ -227,10 +224,9 @@ def silver_surveys_check_parse_total_positive(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.surveys has at least one row."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.surveys;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.surveys;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -270,10 +266,9 @@ def silver_lithology_check_parse_total_positive(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.lithology_logs has at least one row."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.lithology_logs;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.lithology_logs;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -313,10 +308,9 @@ def silver_samples_check_parse_total_positive(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.assay_samples has at least one row."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.assay_samples;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.assay_samples;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -356,10 +350,9 @@ def silver_well_logs_check_parse_total_positive(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.well_logs has at least one row."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.well_logs;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.well_logs;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -400,15 +393,14 @@ def silver_spatial_check_geom_not_null(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify no NULL geometries in silver.spatial_features."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) FILTER (WHERE geom IS NULL) AS null_geom,
                     COUNT(*) AS total
                 FROM silver.spatial_features;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     null_geom = row[0] if row else 0
     total = row[1] if row else 0
     passed = null_geom == 0
@@ -449,15 +441,14 @@ def silver_spatial_check_srid_populated(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify all non-null geometries in silver.spatial_features have SRID != 0."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) FILTER (WHERE geom IS NOT NULL AND ST_SRID(geom) = 0) AS zero_srid,
                     COUNT(*) AS total
                 FROM silver.spatial_features;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     zero_srid = row[0] if row else 0
     total = row[1] if row else 0
     passed = zero_srid == 0
@@ -497,10 +488,9 @@ def silver_reports_check_parse_total_positive(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.reports has at least one row."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.reports;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.reports;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -538,9 +528,8 @@ def silver_reports_check_schema_conformance(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify at least one report has populated sections_text."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (
@@ -550,7 +539,7 @@ def silver_reports_check_schema_conformance(
                     ) AS with_sections
                 FROM silver.reports;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     total = row[0] if row else 0
     with_sections = row[1] if row else 0
     failed = total - with_sections
@@ -601,14 +590,13 @@ def silver_xlsx_check_parse_total_positive(
     We check the combined total across both tables as a proxy for XLSX parse success.
     A dedicated silver.xlsx_staging table does not exist in the current schema.
     """
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     (SELECT COUNT(*) FROM silver.collars) +
                     (SELECT COUNT(*) FROM silver.assay_samples) AS combined_count;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -666,10 +654,9 @@ def silver_seismic_check_parse_total_positive(
     This is the minimum acceptable gate per §B1 guidance: 'emit at minimum
     a parse_total > 0 blocking check'.
     """
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.seismic_surveys;")
-            row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.seismic_surveys;")
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -714,15 +701,14 @@ def silver_seismic_check_schema_conformance(
     the survey geometry (2D vs 3D).  A populated survey_type confirms the
     parser extracted meaningful metadata.
     """
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (WHERE survey_type IS NOT NULL AND survey_type != '') AS with_type
                 FROM silver.seismic_surveys;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     total = row[0] if row else 0
     with_type = row[1] if row else 0
     failed = total - with_type
@@ -787,12 +773,11 @@ def silver_xyz_check_parse_total_positive(
     GeoPackage features inserted by silver_spatial.  This avoids a false-pass
     when the spatial table has rows but they all came from a different asset.
     """
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT COUNT(*) FROM silver.spatial_features WHERE source = 'xyz';
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
 
@@ -840,16 +825,15 @@ def silver_xyz_check_schema_conformance(
     not appear as committed rows (the asset skips the insert for degenerate lines).
     This check confirms that invariant holds in the database.
     """
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (WHERE geom IS NOT NULL) AS with_geom
                 FROM silver.spatial_features
                 WHERE source = 'xyz';
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     total = row[0] if row else 0
     with_geom = row[1] if row else 0
     failed = total - with_geom

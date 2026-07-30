@@ -31,7 +31,6 @@ import uuid
 from typing import Any
 from uuid import UUID
 
-
 log = logging.getLogger("georag_dagster.shadow_v149")
 
 
@@ -158,7 +157,7 @@ def record_v149_for_shadow(
     except Exception as e:
         # Roll back the failed UPDATE so the surrounding asset transaction
         # can continue with a clean connection state.
-        try:  # noqa: SIM105
+        try:
             postgres_conn.rollback()
         except Exception:  # pragma: no cover
             pass
@@ -342,11 +341,11 @@ def emit_v149_audits(
         _log("v149_audits: emitted parse.complete + reports.write for report_id=%s",
              report_id)
     except Exception as e:
-        try:  # noqa: SIM105
+        try:
             postgres_conn.rollback()
         except Exception:  # pragma: no cover
             pass
         log.warning("v149_audits: INSERT failed report_id=%s err=%s", report_id, e)
 
 
-__all__ = ["record_v149_for_shadow", "emit_v149_audits"]
+__all__ = ["emit_v149_audits", "record_v149_for_shadow"]

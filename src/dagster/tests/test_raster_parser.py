@@ -15,20 +15,18 @@ Run with:  pytest tests/test_raster_parser.py -v
 
 from __future__ import annotations
 
-
 import numpy as np
 import pytest
 
 rasterio = pytest.importorskip("rasterio", reason="rasterio not installed")
 
-from rasterio.transform import from_bounds  # noqa: E402
+from rasterio.transform import from_bounds
 
-from georag_dagster.parsers.raster_parser import (  # noqa: E402
+from georag_dagster.parsers.raster_parser import (
     RasterBandStats,
     RasterParseResult,
     parse_raster_file,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,8 +48,8 @@ def _write_gtiff(
     has_alpha: bool = False,
 ) -> None:
     """Write a minimal GeoTIFF fixture to *path*."""
-    import rasterio  # noqa: PLC0415
-    import rasterio.enums  # noqa: PLC0415
+    import rasterio
+    import rasterio.enums
 
     transform = from_bounds(west, south, east, north, width, height)
     total_bands = count + (1 if has_alpha else 0)
@@ -122,8 +120,8 @@ class TestRasterParserGeoTiff:
 
     def test_crs_utm(self, tmp_path):
         """UTM CRS should be returned as EPSG string."""
-        import rasterio  # noqa: PLC0415
-        from rasterio.transform import from_bounds as fb  # noqa: PLC0415
+        import rasterio
+        from rasterio.transform import from_bounds as fb
         p = str(tmp_path / "utm.tif")
         transform = fb(400000, 6100000, 650000, 6400000, 20, 20)
         data = np.ones((1, 20, 20), dtype="float32")
@@ -228,7 +226,7 @@ class TestRasterBandStats:
 class TestRasterTooLargeForStats:
     def test_large_raster_emits_warning(self, tmp_path):
         """Raster over 25 Mpx → raster_too_large_for_stats warning."""
-        import rasterio  # noqa: PLC0415
+        import rasterio
         p = str(tmp_path / "large.tif")
         # 5001 * 5001 = 25_010_001 > 25_000_000
         w, h = 5001, 5001
@@ -249,7 +247,7 @@ class TestRasterTooLargeForStats:
 
     def test_large_raster_band_stats_are_none(self, tmp_path):
         """Band stats are None when raster is too large."""
-        import rasterio  # noqa: PLC0415
+        import rasterio
         p = str(tmp_path / "large2.tif")
         w, h = 5001, 5001
         transform = from_bounds(-111, 58, -110, 59, w, h)
@@ -267,7 +265,7 @@ class TestRasterTooLargeForStats:
 
     def test_large_raster_parse_still_succeeds(self, tmp_path):
         """Oversized raster must return a result, not raise."""
-        import rasterio  # noqa: PLC0415
+        import rasterio
         p = str(tmp_path / "large3.tif")
         w, h = 5001, 5001
         transform = from_bounds(-111, 58, -110, 59, w, h)
@@ -293,8 +291,7 @@ class TestRasterNoCrs:
             f.write("yllcorner 58.0\n")
             f.write("cellsize 0.1\n")
             f.write("NODATA_value -9999\n")
-            for row in range(5):
-                f.write(" ".join(str(row * 5 + col + 1) for col in range(5)) + "\n")
+            f.writelines(" ".join(str(row * 5 + col + 1) for col in range(5)) + "\n" for row in range(5))
 
     def test_asc_parses_without_exception(self, tmp_path):
         p = str(tmp_path / "dem.asc")

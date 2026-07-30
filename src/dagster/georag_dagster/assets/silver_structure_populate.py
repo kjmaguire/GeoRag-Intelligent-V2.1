@@ -34,13 +34,12 @@ NOTE: Do NOT add ``from __future__ import annotations`` — Dagster 1.13.
 import logging
 import re
 import uuid
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.resources import PostgresResource
-
 
 logger = logging.getLogger(__name__)
 
@@ -194,9 +193,9 @@ INSERT INTO silver.structure (
 
 def _classify_structure_type(
     window_text: str,
-    kind_hint: Optional[str] = None,
+    kind_hint: str | None = None,
     *,
-    pivot: Optional[int] = None,
+    pivot: int | None = None,
 ) -> str:
     """Pick a canonical structure_type from a hint or surrounding text.
 
@@ -247,10 +246,10 @@ def _classify_structure_type(
 
 
 def _resolve_dip_direction(
-    strike_deg: Optional[float],
-    dip_deg: Optional[float],
-    quadrant: Optional[str],
-) -> tuple[Optional[float], Optional[float]]:
+    strike_deg: float | None,
+    dip_deg: float | None,
+    quadrant: str | None,
+) -> tuple[float | None, float | None]:
     """Return (true_dip, true_dip_dir) when we have enough to project a planar
     measurement directly. Falls back to (None, None) when the dip direction
     can't be resolved (no quadrant).
@@ -309,8 +308,8 @@ def _window_with_pivot(
 def extract_structure_candidates(
     *,
     text: str,
-    collar_id: Optional[str],
-    depth: Optional[float],
+    collar_id: str | None,
+    depth: float | None,
 ) -> list[dict]:
     """Scan ``text`` and return a list of candidate structure rows.
 
@@ -653,10 +652,10 @@ def silver_structure_populate(
 __all__ = [
     "VALID_STRUCTURE_TYPES",
     "SilverStructurePopulateConfig",
-    "silver_structure_populate",
-    "extract_structure_candidates",
     "_classify_structure_type",
-    "_resolve_dip_direction",
     "_dedupe_candidates",
     "_flatten_sections_text",
+    "_resolve_dip_direction",
+    "extract_structure_candidates",
+    "silver_structure_populate",
 ]

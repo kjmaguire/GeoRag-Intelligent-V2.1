@@ -14,7 +14,6 @@ No data transformation happens in the Bronze asset. Its only job is:
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
@@ -38,8 +37,8 @@ class BronzeCollarsConfig(Config):
     land in MinIO; admin/backfill flows still pass ``csv_file_path``.
     """
 
-    object_key: Optional[str] = None
-    csv_file_path: Optional[str] = None
+    object_key: str | None = None
+    csv_file_path: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +115,7 @@ def bronze_collars(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

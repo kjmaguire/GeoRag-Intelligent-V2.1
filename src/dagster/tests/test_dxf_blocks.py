@@ -20,12 +20,11 @@ import pytest
 ezdxf = pytest.importorskip("ezdxf", reason="ezdxf not installed")
 geopandas = pytest.importorskip("geopandas", reason="geopandas not installed")
 
-from georag_dagster.parsers.spatial_parser import (  # noqa: E402
+from georag_dagster.parsers.spatial_parser import (
     SpatialParseResult,
     _extract_dxf_blocks,
     parse_spatial_file,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

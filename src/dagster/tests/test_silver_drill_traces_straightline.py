@@ -18,10 +18,9 @@ import pytest
 from pyproj import Transformer
 
 from georag_dagster.assets.silver_drill_traces import (
-    _compute_collar_orientation_hash,
     _build_straight_line_wkt,
+    _compute_collar_orientation_hash,
 )
-
 
 # ---------------------------------------------------------------------------
 # _compute_collar_orientation_hash — deterministic + sensitive to changes

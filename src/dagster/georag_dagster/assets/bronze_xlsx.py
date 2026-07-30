@@ -8,7 +8,6 @@ NOTE: Do NOT add ``from __future__ import annotations`` to this file.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
@@ -20,8 +19,8 @@ EXCEL_PREFIX = "excel"
 
 
 class BronzeXlsxConfig(Config):
-    object_key: Optional[str] = None
-    xlsx_file_path: Optional[str] = None
+    object_key: str | None = None
+    xlsx_file_path: str | None = None
 
 
 @asset(
@@ -63,7 +62,7 @@ def bronze_xlsx(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

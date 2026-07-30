@@ -43,9 +43,9 @@ import json
 import math
 import os
 import tempfile
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
+from botocore.exceptions import ClientError
 from dagster import (
     AssetCheckExecutionContext,
     AssetCheckResult,
@@ -56,16 +56,15 @@ from dagster import (
     asset,
     asset_check,
 )
-from botocore.exceptions import ClientError
 from pydantic import BaseModel, field_validator
 
 from georag_dagster.resources import S3Resource
 
 # Verify rio_cogeo is importable — will fail fast if the image was not rebuilt
 try:
+    import rio_cogeo as _rio_cogeo_mod
     from rio_cogeo.cogeo import cog_translate
     from rio_cogeo.profiles import cog_profiles
-    import rio_cogeo as _rio_cogeo_mod
     _RIO_COGEO_VERSION = _rio_cogeo_mod.__version__
 except ImportError as _cog_err:
     cog_translate = None  # type: ignore[assignment]
@@ -104,9 +103,9 @@ class CogSidecarMetadata(BaseModel):
     """
     bounds_wgs84: list[float]           # [minx, miny, maxx, maxy] in EPSG:4326
     native_crs: str                      # EPSG code or proj4 string
-    pixel_resolution_m: Optional[float]  # approximate, may be None for non-metric CRS
+    pixel_resolution_m: float | None  # approximate, may be None for non-metric CRS
     band_count: int
-    nodata: Optional[float]
+    nodata: float | None
     data_type: str                       # e.g. 'uint16', 'float32'
     cog_url: str                         # s3://bronze-raster/cog/<project>/<id>/cog.tif
     source_url: str                      # s3://bronze-raster/source/<project>/<id>/source.tif
@@ -216,7 +215,7 @@ def bronze_raster_sources_discoverable_check(
 # silver_cog_rasters asset
 # ---------------------------------------------------------------------------
 
-def _object_etag(s3: S3Resource, bucket: str, object_name: str) -> Optional[str]:
+def _object_etag(s3: S3Resource, bucket: str, object_name: str) -> str | None:
     """Return the ETag of an object, or None on failure."""
     try:
         stat = s3.stat_object(bucket, object_name)
@@ -225,7 +224,7 @@ def _object_etag(s3: S3Resource, bucket: str, object_name: str) -> Optional[str]
         return None
 
 
-def _load_existing_sidecar(s3: S3Resource, bucket: str, sidecar_path: str) -> Optional[dict]:
+def _load_existing_sidecar(s3: S3Resource, bucket: str, sidecar_path: str) -> dict | None:
     """Load and parse an existing sidecar JSON, returning None on any error."""
     try:
         data = s3.download_bytes(bucket, sidecar_path)
@@ -234,7 +233,7 @@ def _load_existing_sidecar(s3: S3Resource, bucket: str, sidecar_path: str) -> Op
         return None
 
 
-def _compute_pixel_resolution_m(src) -> Optional[float]:
+def _compute_pixel_resolution_m(src) -> float | None:
     """Approximate pixel resolution in metres.
 
     For projected CRS (metric), returns the mean of |pixel_size_x|, |pixel_size_y|.
@@ -265,7 +264,7 @@ def _compute_pixel_resolution_m(src) -> Optional[float]:
         return None
 
 
-def _bounds_wgs84(src) -> Optional[list[float]]:
+def _bounds_wgs84(src) -> list[float] | None:
     """Reproject source raster bounds to EPSG:4326 [minx, miny, maxx, maxy]."""
     try:
         from rasterio.warp import transform_bounds
@@ -448,7 +447,7 @@ def silver_cog_rasters(
                 data_type=str(data_type),
                 cog_url=cog_url,
                 source_url=source_url,
-                generated_at=datetime.now(tz=timezone.utc).isoformat(),
+                generated_at=datetime.now(tz=UTC).isoformat(),
                 rio_cogeo_version=_RIO_COGEO_VERSION,
                 source_etag=source_etag,
             )
@@ -589,7 +588,7 @@ def cog_readable_check(
         except Exception as exc:
             failures.append(f"{cog_object}: rasterio.open() failed: {exc}")
         finally:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(tmp_path)
             except OSError:
                 pass

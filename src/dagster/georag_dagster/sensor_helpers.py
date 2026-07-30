@@ -6,9 +6,6 @@ config-building logic without triggering the full asset import chain
 """
 from __future__ import annotations
 
-from typing import Optional
-
-
 # Maps bronze asset keys to their paired silver asset key. Used by the
 # sensor to populate run_config with vendor_profile_id.
 BRONZE_TO_SILVER: dict[str, str] = {
@@ -29,7 +26,7 @@ BRONZE_TO_SILVER: dict[str, str] = {
 def build_sensor_run_config(
     triggered_assets: set[str],
     asset_vendor_profile: dict[str, int | None],
-    asset_object_key: Optional[dict[str, str]] = None,
+    asset_object_key: dict[str, str] | None = None,
 ) -> dict:
     """Build the run_config ops dict for a minio_upload_sensor RunRequest.
 

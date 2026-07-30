@@ -54,7 +54,6 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.resources import PostgresResource
 
-
 SELECT_PENDING_SQL = """
 SELECT
     s.id,

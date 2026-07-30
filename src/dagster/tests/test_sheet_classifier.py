@@ -6,11 +6,9 @@ a multi-sheet workbook to the right CSV parser.
 """
 from __future__ import annotations
 
-
 from georag_dagster.parsers._sheet_classifier import (
     classify_sheet_type,
 )
-
 
 # ---------------------------------------------------------------------------
 # Happy paths — each sheet type with canonical headers

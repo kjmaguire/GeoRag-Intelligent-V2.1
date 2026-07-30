@@ -20,16 +20,15 @@ import json
 import logging
 from dataclasses import dataclass
 
-
 logger = logging.getLogger(__name__)
 
 
 __all__ = [
+    "ALLOWED_RECORD_TYPES",
+    "ALLOWED_SEVERITIES",
     "DataQualityFlag",
     "upsert_flag_sync",
     "upsert_flags_sync",
-    "ALLOWED_RECORD_TYPES",
-    "ALLOWED_SEVERITIES",
 ]
 
 

@@ -32,12 +32,12 @@ _DAGSTER_APP_ROOT = Path(__file__).resolve().parent.parent
 if str(_DAGSTER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_DAGSTER_APP_ROOT))
 
-import psycopg2  # noqa: E402
-import psycopg2.extras  # noqa: E402
-from qdrant_client import QdrantClient  # noqa: E402
-from qdrant_client.models import PointStruct, SparseVector  # noqa: E402
+import psycopg2
+import psycopg2.extras
+from qdrant_client import QdrantClient
+from qdrant_client.models import PointStruct, SparseVector
 
-from georag_dagster.assets.index_document_passages import (  # noqa: E402
+from georag_dagster.assets.index_document_passages import (
     EMBED_BATCH_SIZE,
     EMBED_MODEL_NAME,
     PAYLOAD_TEXT_LIMIT,
@@ -47,10 +47,9 @@ from georag_dagster.assets.index_document_passages import (  # noqa: E402
     _ensure_collection,
     _get_model,
 )
-from georag_dagster.assets.sparse_encoder import (  # noqa: E402
+from georag_dagster.assets.sparse_encoder import (
     encode_sparse_batch,
 )
-
 
 BATCH_SIZE = 320  # passages per dense+sparse+upsert cycle
 
@@ -108,10 +107,9 @@ def main() -> int:
         "\nWHERE p.ocr_status IS NULL OR p.ocr_status != 'pending_reocr'"
         "\nORDER BY p.document_id, p.ordinal"
     )
-    with psycopg2.connect(pg_dsn) as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql)
-            all_rows = [dict(r) for r in cur.fetchall()]
+    with psycopg2.connect(pg_dsn) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql)
+        all_rows = [dict(r) for r in cur.fetchall()]
     ctx.log.info(
         "scanned %d passages across %d documents",
         len(all_rows), len({r["document_id"] for r in all_rows}),

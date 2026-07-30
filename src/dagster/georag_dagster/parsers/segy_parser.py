@@ -77,7 +77,7 @@ def parse_segy_file(path: str) -> SegyParseResult:
     SegyParseResult
         Metadata dict ready for insertion into silver.seismic_surveys.
     """
-    import segyio  # noqa: PLC0415
+    import segyio
 
     if not os.path.isfile(path):
         raise FileNotFoundError(f"segy_parser: file not found at '{path}'")

@@ -484,7 +484,11 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          # `load: true` (PR builds) puts the image in the local Docker
+          # daemon so Trivy can scan it — the daemon's image store can't
+          # hold a multi-platform manifest list, so PR builds are pinned
+          # to a single platform. Only pushes to GHCR (main) build both.
+          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ github.ref == 'refs/heads/main' }}
           load: ${{ github.ref != 'refs/heads/main' }}
           tags: |

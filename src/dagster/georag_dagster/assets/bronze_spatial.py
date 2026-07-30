@@ -10,7 +10,6 @@ the caller's responsibility.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
@@ -22,8 +21,8 @@ SPATIAL_PREFIX = "spatial"
 
 
 class BronzeSpatialConfig(Config):
-    object_key: Optional[str] = None
-    spatial_file_path: Optional[str] = None
+    object_key: str | None = None
+    spatial_file_path: str | None = None
 
 
 def _detect_content_type(filename: str) -> str:
@@ -82,7 +81,7 @@ def bronze_spatial(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

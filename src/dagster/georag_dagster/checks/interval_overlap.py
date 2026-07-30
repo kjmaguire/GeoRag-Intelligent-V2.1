@@ -328,9 +328,9 @@ def summarize_overlaps_as_dq_flags(
 __all__ = [
     "INTERVAL_OVERLAP_RULE_VERSION",
     "OverlapPair",
-    "find_overlaps_sql",
     "find_overlaps",
-    "write_overlaps_to_review_queue",
-    "summarize_overlaps_as_dq_flags",
+    "find_overlaps_sql",
     "resolve_workspace_for_project",
+    "summarize_overlaps_as_dq_flags",
+    "write_overlaps_to_review_queue",
 ]

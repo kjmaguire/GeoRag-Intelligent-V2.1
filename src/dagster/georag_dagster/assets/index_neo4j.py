@@ -29,7 +29,6 @@ from georag_dagster.assets.silver import silver_collars
 from georag_dagster.assets.silver_lithology import silver_lithology
 from georag_dagster.resources import Neo4jResource, PostgresResource
 
-
 # ---------------------------------------------------------------------------
 # Lithology-code → Formation type lookup
 #
@@ -268,12 +267,11 @@ def index_neo4j(
     context.log.info("Step 1: querying silver.projects for project_id='%s'", project_id)
 
     project_row: dict | None = None
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(PROJECT_SQL, {"project_id": project_id})
-            row = cur.fetchone()
-            if row:
-                project_row = dict(row)
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(PROJECT_SQL, {"project_id": project_id})
+        row = cur.fetchone()
+        if row:
+            project_row = dict(row)
 
     if project_row is None:
         context.log.warning(
@@ -306,10 +304,9 @@ def index_neo4j(
     context.log.info("Step 2: querying silver.collars for project_id='%s'", project_id)
 
     collar_rows: list[dict] = []
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(COLLARS_SQL, {"project_id": project_id})
-            collar_rows = [dict(r) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(COLLARS_SQL, {"project_id": project_id})
+        collar_rows = [dict(r) for r in cur.fetchall()]
 
     context.log.info("Step 2: found %d collar(s)", len(collar_rows))
 

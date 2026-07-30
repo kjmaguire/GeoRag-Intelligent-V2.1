@@ -15,7 +15,6 @@ Run with:
 
 from __future__ import annotations
 
-
 import pytest
 
 from georag_dagster.assets.silver_drill_traces import (

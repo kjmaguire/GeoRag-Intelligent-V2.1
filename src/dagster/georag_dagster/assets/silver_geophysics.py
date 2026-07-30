@@ -48,8 +48,7 @@ import uuid
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
-from georag_dagster.resources import S3Resource, PostgresResource
-
+from georag_dagster.resources import PostgresResource, S3Resource
 
 BRONZE_BUCKET = "georag-bronze"
 GEOPHYSICS_PREFIX = "geophysics"

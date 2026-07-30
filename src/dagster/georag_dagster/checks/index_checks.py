@@ -37,9 +37,8 @@ def index_reports_check_embedding_id_present(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify all silver.reports rows have at least one embedding_id."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (
@@ -48,7 +47,7 @@ def index_reports_check_embedding_id_present(
                     ) AS missing_embeddings
                 FROM silver.reports;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     total = row[0] if row else 0
     missing = row[1] if row else 0
@@ -94,9 +93,8 @@ def index_reports_check_parser_quality_floor(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Block only when the embedding pass rate is exactly 0%."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (
@@ -105,7 +103,7 @@ def index_reports_check_parser_quality_floor(
                     ) AS embedded_count
                 FROM silver.reports;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     total = row[0] if row else 0
     embedded = row[1] if row else 0

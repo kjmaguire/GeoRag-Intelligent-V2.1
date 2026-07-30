@@ -42,7 +42,11 @@ return new class extends Migration
 {
     public function getConnection(): ?string
     {
-        return config('database.default') === 'sqlite' ? null : 'pgsql_migrations';
+        // Only route to the dedicated owner connection when it's actually
+        // opted into (MIGRATE_DB_CONNECTION) — the unconditional
+        // `!== 'sqlite'` check broke CI/local test DBs, where
+        // `pgsql_migrations` defaults to an unreachable host.
+        return config('database.migrations.connection') === 'pgsql_migrations' ? 'pgsql_migrations' : null;
     }
 
     public function up(): void

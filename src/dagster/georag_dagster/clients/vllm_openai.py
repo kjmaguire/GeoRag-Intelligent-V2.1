@@ -25,9 +25,10 @@ classes.
 import json
 import logging
 import time
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ class VllmOpenAIClient:
                     raw_text=raw_text,
                     latency_ms=latency_ms,
                 )
-            except Exception as exc:  # noqa: BLE001 — retry on any transport-level failure
+            except Exception as exc:
                 last_exc = exc
                 if attempt + 1 < self._max_retries:
                     sleep_s = self._retry_backoff_s * (2 ** attempt)
@@ -185,6 +186,6 @@ def build_default_client(base_url: str, api_key: str, timeout_s: float) -> Any:
     Kept as a module-level helper (rather than a method on VllmResource)
     so unit tests can instantiate a client without spinning up Dagster.
     """
-    from openai import OpenAI  # noqa: PLC0415 — defer import; openai is an optional dep
+    from openai import OpenAI
 
     return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s)

@@ -62,21 +62,29 @@ def _load_schemas() -> dict[str, tuple[dict[str, list[str]], frozenset[str]]]:
     Done lazily inside the function so any single parser's import failure
     doesn't crash the classifier at module-load time.
     """
-    from georag_dagster.parsers.csv_collar import (  # noqa: PLC0415
+    from georag_dagster.parsers.csv_collar import (
         COLUMN_ALIASES as COLLAR_ALIASES,
+    )
+    from georag_dagster.parsers.csv_collar import (
         REQUIRED_FIELDS as COLLAR_REQUIRED,
     )
-    from georag_dagster.parsers.csv_survey import (  # noqa: PLC0415
-        COLUMN_ALIASES as SURVEY_ALIASES,
-        REQUIRED_FIELDS as SURVEY_REQUIRED,
-    )
-    from georag_dagster.parsers.csv_lithology import (  # noqa: PLC0415
+    from georag_dagster.parsers.csv_lithology import (
         COLUMN_ALIASES as LITH_ALIASES,
+    )
+    from georag_dagster.parsers.csv_lithology import (
         REQUIRED_FIELDS as LITH_REQUIRED,
     )
-    from georag_dagster.parsers.csv_sample import (  # noqa: PLC0415
+    from georag_dagster.parsers.csv_sample import (
         COLUMN_ALIASES as SAMPLE_ALIASES,
+    )
+    from georag_dagster.parsers.csv_sample import (
         REQUIRED_FIELDS as SAMPLE_REQUIRED,
+    )
+    from georag_dagster.parsers.csv_survey import (
+        COLUMN_ALIASES as SURVEY_ALIASES,
+    )
+    from georag_dagster.parsers.csv_survey import (
+        REQUIRED_FIELDS as SURVEY_REQUIRED,
     )
 
     return {
@@ -188,6 +196,6 @@ def classify_sheet_type(
 
 
 __all__ = [
-    "classify_sheet_type",
     "MIN_REQUIRED_COVERAGE",
+    "classify_sheet_type",
 ]

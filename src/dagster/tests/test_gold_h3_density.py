@@ -143,13 +143,13 @@ def test_h3_density_in_workspace_id_exempt() -> None:
     geoscience is shared infrastructure."""
     # Test lives in src/fastapi/tests but the assertion is on the
     # shared exemption set; spawn the import here so we catch removal.
-    import sys
     import pathlib
+    import sys
     fastapi_tests = pathlib.Path(__file__).parents[2] / "fastapi" / "tests"
     if str(fastapi_tests) not in sys.path:
         sys.path.insert(0, str(fastapi_tests))
     try:
-        from test_tenant_isolation_auditor import _WORKSPACE_ID_EXEMPT, _RLS_EXEMPT
+        from test_tenant_isolation_auditor import _RLS_EXEMPT, _WORKSPACE_ID_EXEMPT
     except ImportError:
         pytest.skip("fastapi tests not on import path in this env")
     assert ("gold", "h3_density_mineral") in _WORKSPACE_ID_EXEMPT

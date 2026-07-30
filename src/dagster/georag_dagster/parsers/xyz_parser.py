@@ -192,7 +192,7 @@ def parse_xyz_file(path: str) -> XyzParseResult:
     FileNotFoundError
         If the file does not exist at the given path.
     """
-    import os  # noqa: PLC0415
+    import os
 
     if not os.path.isfile(path):
         raise FileNotFoundError(f"xyz_parser: file not found at '{path}'")

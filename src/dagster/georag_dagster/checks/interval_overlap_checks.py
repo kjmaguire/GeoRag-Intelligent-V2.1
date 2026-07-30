@@ -34,7 +34,6 @@ from georag_dagster.checks.interval_overlap import (
 from georag_dagster.dq_writer import upsert_flags_sync
 from georag_dagster.resources import PostgresResource
 
-
 # ---------------------------------------------------------------------------
 # Internal — shared between both checks
 # ---------------------------------------------------------------------------

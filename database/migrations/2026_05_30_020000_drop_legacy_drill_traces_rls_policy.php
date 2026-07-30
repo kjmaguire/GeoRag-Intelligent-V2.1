@@ -7,13 +7,16 @@ return new class extends Migration
 {
     public function getConnection(): ?string
     {
-        // Pin to the dedicated owner role only on PostgreSQL, where DROP
-        // POLICY requires table-owner privileges. Under the SQLite test
-        // connection there is no `pgsql_migrations` server to reach (it
-        // would resolve to host `postgresql` / database `:memory:` and hang
-        // on a TCP timeout); fall back to the default connection so the
-        // SQLite compatibility hook can no-op the DROP POLICY statement.
-        return config('database.default') === 'sqlite' ? null : 'pgsql_migrations';
+        // Pin to the dedicated owner role only when the `pgsql_migrations`
+        // connection is actually opted into (MIGRATE_DB_CONNECTION, set in
+        // docker-compose.yml) — config/database.php documents this
+        // connection as opt-in with `pgsql` as the "legacy behaviour"
+        // fallback. The previous `!== 'sqlite'` check ignored that and
+        // routed here unconditionally on any Postgres connection, which
+        // breaks on CI/local test DBs: `pgsql_migrations` defaults to
+        // host `postgresql` (the docker-compose service name), which
+        // doesn't resolve outside that network.
+        return config('database.migrations.connection') === 'pgsql_migrations' ? 'pgsql_migrations' : null;
     }
 
     public function up(): void

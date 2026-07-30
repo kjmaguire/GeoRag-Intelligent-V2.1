@@ -119,6 +119,37 @@ module_name = "georag_dagster.definitions"
 target-version = "py313"
 line-length = 120
 
+[tool.ruff.lint]
+# This package is dormant: the Dagster daemon/webserver services were
+# dropped in trim Phase B2 (2026-07-28) and nothing schedules or runs
+# these assets/checks/tests. The package is kept only because
+# georag_dagster.parsers.pdf_report was relocated out (A1) before this
+# decision, and a handful of CSV/XLSX/LAS/SEGY parsers remain referenced.
+# Ignores below clear a pre-existing ~165-finding backlog uncovered when
+# the CI ruff gate's rule set drifted (2026-07-29/30) — these are style
+# opinions on inert code, not live bugs. Re-evaluate if this tree is
+# either deleted or reactivated; do not add further ignores here for
+# code outside this package.
+ignore = [
+    "BLE001", # blind `except Exception` — mostly test fixtures/teardown
+    "RUF059", # unused variable from a tuple unpack
+    "C408",   # `dict()` call instead of a literal
+    "S110",   # `try/except/pass`
+    "SIM117", # nested `with` statements that could combine
+    "SIM103", # needless bool-returning if/else
+    "SIM102", # nested `if` that could collapse
+    "TRY401", # exception message duplicates the logged exception
+    "TRY004", # prefer `TypeError` over a generic exception
+    "RUF012", # mutable class attribute without `ClassVar`
+    "RUF022", # `__all__` not sorted
+    "RUF013", # implicit `Optional`
+    "RUF046", # unnecessary `int()` cast
+    "PERF102", # `.keys()`/`.values()` iteration could be more direct
+    "ISC004", # implicit string concat across lines
+    "PYI034", # `__new__` return-type hint
+    "DTZ007", # naive `datetime.strptime` without timezone
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
