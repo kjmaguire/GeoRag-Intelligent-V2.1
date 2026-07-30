@@ -256,16 +256,18 @@ async def _call_openai_compatible_llm(
     """Call the OpenAI-compatible chat-completions endpoint.
 
     Two backends share this function, selected by ``settings.LLM_BACKEND``:
-    ``"azure"`` (Azure AI Foundry, Cohere Command A via the Azure AI Model
-    Inference API — the default primary backend post Phase-C cutover) and
+    ``"azure"`` (Azure AI Foundry, Cohere Command A+ via the unified OpenAI
+    v1 API — the default primary backend post Phase-C cutover) and
     ``"vllm"`` (a self-hosted or external OpenAI-compatible endpoint,
     retained for operators who keep running their own). Azure gets
-    `api-key` header auth, an `?api-version=` query param, and loose
-    `response_format: json_object` only (Cohere Command A documents
-    Text-only formats on Foundry — no JSON Schema/guided decoding); vLLM
-    gets its Qwen3 sampling extensions (top_p/top_k/min_p/presence_penalty)
-    and schema-constrained `guided_json`. See the `backend_kind` branch
-    below for the exact payload differences.
+    `api-key` header auth, no `?api-version=` query param, and loose
+    `response_format: json_object` (confirmed working against a live
+    Command A+ deployment 2026-07-30 — response arrives wrapped in Cohere
+    sentinel tokens, stripped below); vLLM gets its Qwen3 sampling
+    extensions (top_p/top_k/min_p/presence_penalty) and schema-constrained
+    `guided_json`, which Azure doesn't support (silently ignored there,
+    same as the Anthropic path). See the `backend_kind` branch below for
+    the exact payload differences.
 
     Historical note: this helper also drove an Ollama backend prior to the
     2026-05-17 vLLM cutover, and vLLM prior to the 2026-07-30 Azure
@@ -414,21 +416,20 @@ async def _call_openai_compatible_llm(
     request_headers: dict[str, str] = {}
     url_query_suffix = ""
     if backend_kind == "azure":
-        # Azure AI Model Inference API (Cohere-on-Foundry): auth via
-        # `api-key` header, version pinned via query param. Cohere Command
-        # A's Foundry catalog listing documents Text-only response formats
-        # (no JSON Schema / guided decoding support) — so unlike the vLLM
-        # branch, `guided_json` is NOT translated to a schema-constrained
-        # request here; it's silently ignored (same "forwarded for
-        # symmetry, backend doesn't support it" contract as the Anthropic
-        # path). Only the loose `response_format: json_object` mode is
-        # sent, and only when the caller asked for JSON at all. If a future
-        # deployment swaps to a model with confirmed JSON-schema support,
-        # revisit this. No Qwen3-specific sampling knobs
-        # (top_p/top_k/min_p/presence_penalty) or chat_template_kwargs —
-        # those are vLLM/Qwen extensions this API doesn't recognize.
+        # Azure OpenAI v1 API (Cohere Command A+ on Foundry): auth via
+        # `api-key` header, no `?api-version=` query param needed on this
+        # surface (empirically confirmed 2026-07-30 — see effective_llm_url
+        # docstring). `response_format: json_object` IS supported (Cohere's
+        # own docs list Command A+ under Structured Outputs; confirmed
+        # working against the live endpoint) — unlike the vLLM branch's
+        # `guided_json` schema-constrained mode, this is loose JSON-object
+        # mode only. `guided_json` is silently ignored here (same
+        # "forwarded for symmetry, backend doesn't support schema-
+        # constrained decoding" contract as the Anthropic path). No
+        # Qwen3-specific sampling knobs (top_p/top_k/min_p/presence_penalty)
+        # or chat_template_kwargs — those are vLLM/Qwen extensions this API
+        # doesn't recognize.
         request_headers["api-key"] = settings.AZURE_FOUNDRY_API_KEY
-        url_query_suffix = f"?api-version={settings.AZURE_FOUNDRY_API_VERSION}"
         if structured_output:
             request_payload["response_format"] = {"type": "json_object"}
     else:
@@ -654,19 +655,41 @@ async def _call_openai_compatible_llm(
                 len(stripped),
             )
             content = stripped or content  # never empty the answer
-    # `reasoning` is a vendor extension some backends place on
-    # message.reasoning (separate from `content`). Not part of the OpenAI
-    # spec so we guard carefully.
-    reasoning: str = (
-        (data.get("choices") or [{}])[0]
-        .get("message", {})
-        .get("reasoning") or ""
-    )
+
+    # Cohere Command A+ (azure backend) wraps JSON-mode output in sentinel
+    # tokens: `<|START_TEXT|>{"...":...}<|END_TEXT|>`. Empirically confirmed
+    # 2026-07-30 against a live deployment. Strip before returning so the
+    # caller's json.loads() (or any plain-text consumer) sees a clean
+    # payload. Harmless no-op on backends that never emit these tokens.
+    if backend_kind == "azure" and "<|START_TEXT|>" in content:
+        stripped = re.sub(
+            r"<\|START_TEXT\|>|<\|END_TEXT\|>",
+            "",
+            content,
+        ).strip()
+        if stripped != content:
+            logger.debug(
+                "_call_openai_compatible_llm: stripped Cohere sentinel tokens "
+                "(%d -> %d chars)",
+                len(content),
+                len(stripped),
+            )
+            content = stripped or content
+
+    # `reasoning` / `reasoning_content` are vendor extensions some backends
+    # place on the message, separate from `content`. Not part of the OpenAI
+    # spec so we check both field names and guard carefully. `reasoning` is
+    # the vLLM/Qwen3 convention; `reasoning_content` is Cohere Command A+'s
+    # (confirmed 2026-07-30 against a live deployment — same "budget eaten
+    # by thinking" failure mode as Qwen3 reproduces here too).
+    _message = (data.get("choices") or [{}])[0].get("message", {})
+    reasoning: str = _message.get("reasoning") or _message.get("reasoning_content") or ""
     if not content and reasoning.strip():
         logger.warning(
             "budget_exhausted_by_thinking: empty content with %d-char reasoning. "
             "backend=%s model=%s max_tokens=%d prompt_tokens~%d. "
-            "Consider raising VLLM_MAX_MODEL_LEN or disabling thinking on this call site.",
+            "Consider raising the backend's max-context setting or disabling "
+            "thinking/reasoning on this call site.",
             len(reasoning), backend_label, effective_model, max_output, prompt_tokens,
         )
         # Return a structured fallback so downstream citation/response assembly
@@ -674,8 +697,8 @@ async def _call_openai_compatible_llm(
         content = (
             "The model returned no content for this query due to token budget "
             "exhaustion during its internal reasoning pass. This typically happens "
-            "on very large projects. Please retry, or raise VLLM_MAX_MODEL_LEN if the "
-            "problem persists."
+            "on very large projects. Please retry, or raise the configured max "
+            "output/context budget if the problem persists."
         )
 
     # Phase 5 follow-up — Langfuse generation observation. Until 2026-05-19

@@ -240,46 +240,65 @@ class Settings(BaseSettings):
     VLLM_TEMPERATURE: float = 0.1
 
     # Azure AI Foundry — used when LLM_BACKEND=azure (the default primary
-    # backend post Phase-C cutover). Deployed model is Cohere Command A
-    # (Cohere-command-a in the Foundry catalog; 256K in / 8K out, native
-    # tool-calling — see the Azure migration plan). Cohere-on-Foundry is
-    # served via the **Azure AI Model Inference API**, NOT the Azure OpenAI
-    # resource-deployment API — a materially different wire shape:
-    #   POST {endpoint}/models/chat/completions?api-version=2024-05-01-preview
-    #   api-key: <key>
-    #   body: {"model": "<deployment-name>", "messages": [...], ...}
-    # (vs. Azure OpenAI's `{endpoint}/openai/deployments/{name}/chat/
-    # completions` with the deployment in the URL path). `effective_llm_url`
-    # builds the `/models` base; `_call_openai_compatible_llm` appends
-    # `/chat/completions` + api-version, same as the vLLM path. Confirmed
-    # against Microsoft Learn 2026-07-30 (Azure AI Model Inference REST API
-    # reference + Foundry Models Cohere catalog page) rather than assumed.
+    # backend post Phase-C cutover). Deployed model is Cohere Command A+
+    # (Cohere-command-a-plus-05-2026, Preview; 128K in / 64K out, tool
+    # calling, reasoning content — see the Azure migration plan).
     #
-    # Also per the Foundry catalog: Cohere-command-a documents Text-only
-    # response formats (no JSON Schema / guided decoding) — see the
-    # structured-output handling in `_call_openai_compatible_llm`, which
-    # only sends `response_format: json_object` on this backend, never
-    # `json_schema`.
+    # 2026-07-30 — wire shape EMPIRICALLY VERIFIED against a live deployment
+    # (not assumed from docs, which disagreed with each other — the Foundry
+    # catalog table said "Text only" response formats for this model, while
+    # Cohere's own docs list it under Structured Outputs support; a real
+    # test call settled it). Confirmed contract:
+    #   POST {endpoint}/openai/v1/chat/completions
+    #   api-key: <key>
+    #   body: {"model": "<deployment-name>", "messages": [...],
+    #          "response_format": {"type": "json_object"}, ...}
+    # This is the newer unified **OpenAI v1 API** surface
+    # (`/openai/v1/...`, no `?api-version=` query param needed) — NOT the
+    # `/models/chat/completions` Azure AI Model Inference API path an
+    # earlier pass of this code assumed from documentation alone, and NOT
+    # the classic `/openai/deployments/{name}/chat/completions?api-
+    # version=...` path either. `effective_llm_url` builds the
+    # `{endpoint}/openai/v1` base; `_call_openai_compatible_llm` appends
+    # `/chat/completions` with no version suffix.
+    #
+    # Two response-shape quirks confirmed by the live test call, both
+    # handled in `_call_openai_compatible_llm`:
+    #   1. Reasoning lives in a separate `reasoning_content` message field
+    #      (not inline `<think>` tags like Qwen3) — cleaner to strip, but a
+    #      different code path than the vLLM branch's regex strip.
+    #   2. JSON-mode output arrives wrapped in Cohere sentinel tokens:
+    #      `<|START_TEXT|>{"...":...}<|END_TEXT|>` — must be stripped
+    #      before the caller's `json.loads()`.
+    #   3. Same "reasoning ate the whole token budget" failure mode as
+    #      Qwen3 is reproducible here too (empty `content`, partial
+    #      `reasoning_content`, `finish_reason: "length"`) — same class of
+    #      defensive handling applies, wired to the new field.
     #
     # AZURE_FOUNDRY_ENDPOINT: Azure AI Services / Foundry resource endpoint,
-    # e.g. https://<resource-name>.services.ai.azure.com — NOT the
-    # `.openai.azure.com` Azure-OpenAI-specific hostname. No trailing slash,
-    # no `/models` or `/openai/...` suffix — that's built by
-    # `effective_llm_url`.
+    # e.g. https://<resource-name>.services.ai.azure.com — no trailing
+    # slash, no `/openai/v1` suffix — that's built by `effective_llm_url`.
     AZURE_FOUNDRY_ENDPOINT: str = ""
     AZURE_FOUNDRY_API_KEY: str = ""
-    # Deployment name as created in the Foundry portal (e.g. the Cohere
-    # Command A deployment's chosen name) — sent as the body `model` field.
+    # Deployment name as created in the Foundry portal — sent as the body
+    # `model` field. Note: some Foundry model cards (this one included)
+    # don't let you choose a custom deployment name; it defaults to the
+    # catalog model ID itself (e.g. "Cohere-command-a-plus-05-2026").
     AZURE_FOUNDRY_DEPLOYMENT: str = ""
-    # Azure AI Model Inference API version. 2024-05-01-preview is the
-    # documented stable preview version as of 2026-07-30; bump deliberately
-    # after testing against a newer one.
+    # Unused on the confirmed /openai/v1 path (no api-version query param
+    # needed) — kept for operators who fall back to the classic
+    # /openai/deployments/{name} or /models/chat/completions surfaces,
+    # which DO require it.
     AZURE_FOUNDRY_API_VERSION: str = "2024-05-01-preview"
-    # Cohere Command A: 256K input / 8K output tokens (Foundry catalog spec).
-    # MUST be retuned if the deployed model differs from Command A.
-    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 256_000
+    # Cohere Command A+: 128K input / 64K output tokens (Foundry catalog
+    # spec). MUST be retuned if the deployed model differs.
+    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 128_000
     AZURE_FOUNDRY_MAX_TOKENS: int = 4096
     AZURE_FOUNDRY_TEMPERATURE: float = 0.1
+    # Preview-model risk: Command A+ is a Preview SKU (05-2026). Azure
+    # previews carry no SLA and can change wire shape without notice.
+    # Re-verify this contract with a live test call after any Azure/Cohere
+    # announcement before assuming it still holds.
 
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
@@ -769,17 +788,19 @@ class Settings(BaseSettings):
         Raises when LLM_BACKEND=anthropic, because the Anthropic path does
         not use a base URL — it goes through the native SDK.
 
-        For LLM_BACKEND=azure this returns the Azure AI Model Inference
-        API's base path (``{endpoint}/models``) — the shape Cohere-on-
-        Foundry deployments use, NOT the Azure-OpenAI-specific
-        ``/openai/deployments/{name}`` path (that's a different Azure
-        product surface; Cohere isn't served through it). The caller
-        (`_call_openai_compatible_llm`) appends ``/chat/completions`` plus
-        the ``?api-version=`` query param; the deployment name goes in the
+        For LLM_BACKEND=azure this returns the unified OpenAI v1 API's
+        base path (``{endpoint}/openai/v1``) — empirically confirmed
+        2026-07-30 against a live Cohere Command A+ deployment (this is
+        what Azure's own portal hands you as the connection endpoint for
+        this model, not the ``/models/chat/completions`` Model Inference
+        API path an earlier pass of this code assumed from docs). The
+        caller (`_call_openai_compatible_llm`) appends ``/chat/
+        completions`` with no version suffix — this API surface needs no
+        ``?api-version=`` query param. The deployment name goes in the
         request body's `model` field, not the URL.
         """
         if self.LLM_BACKEND == "azure":
-            return f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}/models"
+            return f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}/openai/v1"
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_URL
         if self.LLM_BACKEND == "anthropic":
@@ -1149,11 +1170,11 @@ class Settings(BaseSettings):
     # surfaces as 400-class errors from vLLM, not silent truncation.
     MAX_CONTEXT_TOKENS: int = 22_000              # A4500 / qwen3-14b-awq (16K model_len)
     MAX_CONTEXT_TOKENS_ANTHROPIC: int = 200_000   # Claude 1M ctx, 200K leaves response headroom
-    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (256K default — Cohere
-    # Command A's documented input ceiling) for the 8K output + system
-    # prompt + safety margin. Retune alongside AZURE_FOUNDRY_MAX_MODEL_LEN
-    # if the deployed model differs from Command A.
-    MAX_CONTEXT_TOKENS_AZURE: int = 220_000
+    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (128K default — Cohere
+    # Command A+'s documented input ceiling) for the up-to-64K output +
+    # reasoning_content overhead + system prompt + safety margin. Retune
+    # alongside AZURE_FOUNDRY_MAX_MODEL_LEN if the deployed model differs.
+    MAX_CONTEXT_TOKENS_AZURE: int = 100_000
 
 
     @property
