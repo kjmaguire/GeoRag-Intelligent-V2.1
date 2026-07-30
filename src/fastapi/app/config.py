@@ -181,14 +181,17 @@ class Settings(BaseSettings):
     # /v1/chat/completions endpoint; Anthropic uses its native messages API.
     # -------------------------------------------------------------------------
 
-    LLM_BACKEND: str = "vllm"  # "vllm" | "anthropic"
+    # Phase C (Azure lift) — "azure" is now the default primary backend,
+    # replacing self-hosted vLLM. "vllm" remains supported for operators who
+    # keep running their own OpenAI-compatible endpoint (the docker-compose
+    # `vllm` service itself was removed; point VLLM_URL at an external
+    # instance if you need this path). "anthropic" remains the optional
+    # cross-vendor fallback (see LLM_BACKEND_FALLBACK).
+    LLM_BACKEND: str = "azure"  # "azure" | "vllm" | "anthropic"
 
-    # Primary OpenAI-compatible target. With LLM_BACKEND=vllm (the only
-    # local-LLM option post-cutover), the VLLM_* values below are
-    # authoritative via `effective_llm_url` / `effective_llm_model`.
-    # LLM_PRIMARY_URL / LLM_PRIMARY_MODEL remain as the canonical OpenAI-shaped
-    # target indirection so failover paths can be retargeted via env without
-    # touching code.
+    # Legacy OpenAI-compatible target, retained for the "vllm" backend value
+    # and as the last-resort default in `effective_llm_url`/`effective_llm_model`
+    # if LLM_BACKEND is set to something unrecognized.
     LLM_PRIMARY_URL: str = "http://vllm:8000/v1"
     LLM_PRIMARY_MODEL: str = "Qwen/Qwen3-14B-AWQ"
 
@@ -235,6 +238,31 @@ class Settings(BaseSettings):
     # backends.
     VLLM_MAX_TOKENS: int = 4096
     VLLM_TEMPERATURE: float = 0.1
+
+    # Azure AI Foundry — used when LLM_BACKEND=azure (the default primary
+    # backend post Phase-C cutover). Talks the Azure OpenAI chat-completions
+    # wire format, which differs from a plain OpenAI-compatible endpoint in
+    # two ways `effective_llm_url` / `_call_openai_compatible_llm` account
+    # for: auth is an `api-key` header (not `Authorization: Bearer`), and
+    # the deployment name is part of the URL path rather than the `model`
+    # body field.
+    #
+    # AZURE_FOUNDRY_ENDPOINT: resource endpoint only, e.g.
+    #   https://<resource-name>.openai.azure.com
+    # No trailing slash, no `/openai/deployments/...` suffix — that's built
+    # by `effective_llm_url`.
+    AZURE_FOUNDRY_ENDPOINT: str = ""
+    AZURE_FOUNDRY_API_KEY: str = ""
+    AZURE_FOUNDRY_DEPLOYMENT: str = ""
+    # Azure OpenAI is versioned by query param, not by Accept header. Bump
+    # deliberately after testing against a new preview/GA version.
+    AZURE_FOUNDRY_API_VERSION: str = "2026-01-01-preview"
+    # Context window ceiling for the configured deployment. MUST be tuned to
+    # the deployment's actual context length before production use — this
+    # default is a conservative placeholder, not a measured value.
+    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 128_000
+    AZURE_FOUNDRY_MAX_TOKENS: int = 4096
+    AZURE_FOUNDRY_TEMPERATURE: float = 0.1
 
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
@@ -723,7 +751,17 @@ class Settings(BaseSettings):
 
         Raises when LLM_BACKEND=anthropic, because the Anthropic path does
         not use a base URL — it goes through the native SDK.
+
+        For LLM_BACKEND=azure this returns the deployment-scoped base path
+        (``{endpoint}/openai/deployments/{deployment}``); the caller
+        (`_call_openai_compatible_llm`) appends ``/chat/completions`` plus
+        the ``?api-version=`` query param.
         """
+        if self.LLM_BACKEND == "azure":
+            return (
+                f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}"
+                f"/openai/deployments/{self.AZURE_FOUNDRY_DEPLOYMENT}"
+            )
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_URL
         if self.LLM_BACKEND == "anthropic":
@@ -735,7 +773,14 @@ class Settings(BaseSettings):
 
     @property
     def effective_llm_model(self) -> str:
-        """Return the LLM model name based on the active backend."""
+        """Return the LLM model name based on the active backend.
+
+        For LLM_BACKEND=azure this is the deployment name — Azure OpenAI
+        routes by deployment (in the URL path), so the `model` body field
+        is informational only, but we still pass it for log/metric labels.
+        """
+        if self.LLM_BACKEND == "azure":
+            return self.AZURE_FOUNDRY_DEPLOYMENT
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_MODEL
         if self.LLM_BACKEND == "anthropic":
@@ -1086,19 +1131,26 @@ class Settings(BaseSettings):
     # surfaces as 400-class errors from vLLM, not silent truncation.
     MAX_CONTEXT_TOKENS: int = 22_000              # A4500 / qwen3-14b-awq (16K model_len)
     MAX_CONTEXT_TOKENS_ANTHROPIC: int = 200_000   # Claude 1M ctx, 200K leaves response headroom
+    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (128K default deployment
+    # ceiling) for the response + system prompt. Retune alongside
+    # AZURE_FOUNDRY_MAX_MODEL_LEN if the deployment's real window differs.
+    MAX_CONTEXT_TOKENS_AZURE: int = 100_000
 
 
     @property
     def effective_max_context_tokens(self) -> int:
         """Return the token budget appropriate for the active LLM_BACKEND.
 
-        Anthropic gets the generous budget (Claude 1M ctx); local
-        OpenAI-compatible backends keep the 24K ceiling to match their
-        window. Callers that truncate context should use this property
-        rather than the raw MAX_CONTEXT_TOKENS setting.
+        Anthropic and Azure Foundry get generous budgets matching their
+        much larger context windows; the legacy local vLLM path keeps the
+        22K ceiling sized for an 8K/16K-context deployment. Callers that
+        truncate context should use this property rather than the raw
+        MAX_CONTEXT_TOKENS setting.
         """
         if self.LLM_BACKEND == "anthropic":
             return self.MAX_CONTEXT_TOKENS_ANTHROPIC
+        if self.LLM_BACKEND == "azure":
+            return self.MAX_CONTEXT_TOKENS_AZURE
         return self.MAX_CONTEXT_TOKENS
 
     # Per-category row caps inside _build_context.

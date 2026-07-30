@@ -66,7 +66,7 @@ doc for the reading order.
 - **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
 - **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (with PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.17, Redis 8.6, SeaweedFS (S3-compatible, replaces MinIO per ADR-0001)
 - **Ingestion**: Dagster, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002)
-- **LLM**: vLLM + `Qwen/Qwen3-14B-AWQ` (dev + prod — Ollama cutover complete; legacy Ollama Modelfiles archived under `docker/_deprecated/ollama/`). The earlier Qwen3-30B-A3B MoE was reverted to the 14B dense AWQ in 2026-05 to free VRAM for hatchet-worker-ai (bge-small / bge-reranker-base / SPLADE++) co-tenanting on the dev A4500. Anthropic Claude is wired as optional fallback.
+- **LLM**: Azure AI Foundry (dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Anthropic Claude is wired as optional fallback. Embedding/reranker stay self-hosted on hatchet-worker-ai (bge-small / bge-reranker-base / SPLADE++) — unaffected by the LLM-serving swap.
 
 ## Agent delegation
 

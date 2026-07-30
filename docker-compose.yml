@@ -83,10 +83,8 @@ volumes:
   georag-phase-b-extract:
     external: true
   # ollama_models volume removed 2026-05-17 along with the ollama service.
-  # vLLM model download cache (HuggingFace). Named volume so container
-  # restarts don't re-download tens of GB of weights.
-  vllm_hf_cache:
-    driver: local
+  # vllm_hf_cache volume removed 2026-07-30 along with the vllm service
+  # (Azure AI Foundry cutover — see the vllm-removal note further below).
   fastapi_hf_cache:
     driver: local
   # Hatchet engine config (TLS certs, server config) persisted across restarts.
@@ -862,25 +860,33 @@ services:
       AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD:?S3_SECRET_KEY or MINIO_ROOT_PASSWORD must be set in .env}}
       AWS_DEFAULT_REGION: us-east-1
       S3_ENDPOINT_URL: ${S3_ENDPOINT:-${MINIO_ENDPOINT:-http://minio:8333}}
-      # LLM — backend selection + primary OpenAI-compat target.
-      # vLLM is the single inference runtime per master-plan §12.
-      LLM_BACKEND: ${LLM_BACKEND:-vllm}
+      # LLM — backend selection + primary target.
+      # Azure AI Foundry is the default primary backend post Phase-C
+      # cutover (2026-07-30), replacing self-hosted vLLM.
+      LLM_BACKEND: ${LLM_BACKEND:-azure}
       LLM_BACKEND_FALLBACK: ${LLM_BACKEND_FALLBACK:-downshift}
       LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-http://vllm:8000/v1}
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
       LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
       LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
-      # vLLM (primary when LLM_BACKEND=vllm — the cutover-target default
-      # post-2026-05-08; also the failover target when
-      # LLM_BACKEND_FALLBACK=local_llm). Defaults align with the vllm
-      # service's own command flags so FastAPI's view of the served model
-      # matches what vLLM is actually serving.
+      # Azure AI Foundry — used when LLM_BACKEND=azure. Set these three in
+      # .env; there is no sensible default endpoint/deployment.
+      AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
+      AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
+      AZURE_FOUNDRY_DEPLOYMENT: ${AZURE_FOUNDRY_DEPLOYMENT:-}
+      AZURE_FOUNDRY_API_VERSION: ${AZURE_FOUNDRY_API_VERSION:-2026-01-01-preview}
+      AZURE_FOUNDRY_MAX_MODEL_LEN: ${AZURE_FOUNDRY_MAX_MODEL_LEN:-128000}
+      # vLLM — retained only for operators who point LLM_BACKEND=vllm at an
+      # external OpenAI-compatible endpoint; the local `vllm` compose
+      # service was removed 2026-07-30 along with its GPU reservation.
       VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
       VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
-      # §04p VL parser (ADR-0015). Default v2 (Qwen2.5-VL) uses the main
-      # vLLM endpoint.
+      # §04p VL parser (ADR-0015). FIGURE_VL_DESCRIPTIONS is already false
+      # (B4 trim) so this backend URL has no live consumer; left as a
+      # legacy default rather than deleted since re-enabling VL descriptions
+      # only requires standing up an endpoint here, no code change.
       PDF_VL_MODEL_VERSION: ${PDF_VL_MODEL_VERSION:-2}
       PDF_VL_MODEL_ID_V3: ${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}
       PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-http://vllm:8000/v1}
@@ -1044,10 +1050,11 @@ services:
           memory: 5g
           # 2026-05-19: GPU passthrough added for in-process LoRA fine-tuning
           # of the reranker (src/fastapi/scripts/train_reranker_lora.py).
-          # Shared with vllm — fastapi only uses GPU during training windows;
-          # for normal RAG operations the embedding model + reranker run on CPU.
-          # NB: when both containers compete, vllm's 0.92 mem util leaves
-          # ~1.6 GB free; trigger a vllm stop before running training.
+          # fastapi only uses GPU during training windows; for normal RAG
+          # operations the embedding model + reranker run on CPU. Previously
+          # shared with the local vllm container (removed 2026-07-30, Azure
+          # AI Foundry cutover) — the GPU is now free for training whenever
+          # hatchet-worker-ai's embed/rerank load allows.
           devices:
             - driver: nvidia
               count: 1
@@ -1469,224 +1476,17 @@ services:
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
-  # vLLM — LLM inference server (PROD primary OR cross-backend failover target)
+  # vLLM — REMOVED 2026-07-30 (Phase C, Azure AI Foundry cutover). The LLM
+  # inference runtime moved off self-hosted vLLM to Azure AI Foundry
+  # (LLM_BACKEND=azure by default — see src/fastapi/app/config.py
+  # AZURE_FOUNDRY_* settings). This also removes the only consumer of the
+  # ingestion worker's GPU reservation from the LLM side (docling/§04p paddle
+  # were already off — see the trim plan). LLM_BACKEND=vllm remains supported
+  # in code for operators who want to point at an external OpenAI-compatible
+  # endpoint; nothing runs one locally anymore. Legacy service block + env
+  # vars archived in git history (see the trim/phase-a-deletions branch
+  # history and feature/azure-foundry-llm for the cutover).
   # ---------------------------------------------------------------------------
-  # Hosts an OpenAI-compatible /v1/chat/completions endpoint. Used by the
-  # FastAPI orchestrator either:
-  #   (a) as PRIMARY when LLM_BACKEND=vllm + LLM_PRIMARY_URL=http://vllm:8000/v1
-  #   (b) as FAILOVER target when LLM_BACKEND=anthropic +
-  #       LLM_BACKEND_FALLBACK=vllm. The cross-backend failover routes
-  #       Anthropic-429s through `_call_openai_compatible_llm` against
-  #       VLLM_URL/VLLM_MODEL — see app/agent/orchestrator.py.
-  #
-  # Canonical V1 prod model is `Qwen/Qwen3-14B-AWQ` — a 30B-param
-  # MoE model with ~3B active params/token:
-  #   - FP16:           ~60 GB VRAM   (1 × H100 80GB or 2 × A6000)
-  #   - INT8:           ~32 GB VRAM   (1 × A6000 or 2 × A5000)
-  #   - 4-bit quant:    ~16 GB VRAM   (RTX 4090 / 4080 16GB OK)
-  # The 16-GB-Q4 path makes Qwen 3 14B viable on dev workstations
-  # while the same model scales to prod GPUs.
-  #
-  # Workstation-friendly fits on a single GPU:
-  #   VLLM_MODEL=Qwen/Qwen3-14B-AWQ                  # 30B MoE / ~16 GB Q4 (CANONICAL V1)
-  #   VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct                  # 7B VL  / ~16 GB FP16 (§04p Stage-6)
-  #   VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct             # 8B     / ~16 GB FP16 (alternative)
-  #
-  # Bring vLLM up explicitly when prod-shaped testing is needed:
-  #   docker compose --profile gpu-llm-prod up -d vllm
-  # ---------------------------------------------------------------------------
-  vllm:
-    # Pinned to current stable release. Check https://hub.docker.com/r/vllm/vllm-openai/tags
-    # vLLM releases frequently; pin to the version validated against your CUDA toolkit.
-    #
-    # SMOKE TEST REQUIREMENT (Hard Rule #5 — hallucination prevention):
-    # When this pin is bumped, the prod deployer MUST re-run the golden query
-    # set against the new image before flipping production traffic. The dev
-    # workstation (RTX A4500 / 20 GB VRAM, Ampere SM 8.6) hosts
-    # Qwen3-14B-AWQ at INT4 (~17 GB weights). KV cache at FP8 (E4M3
-    # storage, FP16 compute) ≈48 KiB/token — supported on Ampere via
-    # emulation (storage-only; compute stays FP16). FP8 *weights/compute*
-    # is NOT viable on Ampere (Ada SM 8.9+ required); BF16 30B does not fit.
-    # Larger GPUs (L40S 48 GB, A100 80 GB) unlock BF16 and longer context.
-    # 2026-05-18 — bumped v0.19.1 → v0.21.0 for MoE scheduler + speculative
-    # decoding improvements. Digest pinned post-pull-and-validate.
-    # 2026-06-26 — bumped v0.21.0 → v0.23.0. ~29% E2E latency win (0.22
-    # CUTLASS FP8 batch-invariant path). VALIDATED on the live A4500:
-    # all tuned flags accepted unchanged (speculative-config ngram +
-    # compilation-config cudagraph_capture_sizes/max_cudagraph_capture_size
-    # both honored), engine init OK, no OOM (KV cache 3.28 GiB / 43k
-    # tokens at the .env mem-util 0.72), health green, smoke chat
-    # completion served. Two 0.23 behaviors noted: (1) Qwen3 dense now
-    # runs Model Runner V2 by default (since 0.22) — re-validate KV
-    # headroom if VLLM_GPU_MEM_UTIL is raised back toward 0.93; (2) vLLM
-    # auto-downgrades cudagraph_mode FULL_AND_PIECEWISE -> PIECEWISE under
-    # spec-decode+FlashInfer (handled internally, non-fatal). Image ships
-    # CUDA 13.0/torch 2.11 — host driver is CUDA 13.2, compatible.
-    image: vllm/vllm-openai:v0.23.0@sha256:6d8429e38e3747723ca07ee1b17972e09bb9c51c4032b266f24fb1cc3b22ed8f
-    container_name: georag-vllm
-    restart: unless-stopped
-    ports:
-      - "${VLLM_PORT:-8001}:8000"
-    environment:
-      # HF_TOKEN required for gated models (Llama 3.x; not needed for Qwen 3
-      # family which is openly licensed). Set anyway for forward-compat with
-      # model swaps to gated repos.
-      HF_TOKEN: ${HF_TOKEN:-}
-      # Cache HF model downloads in a named volume so container restarts
-      # don't re-download tens of GB.
-      HF_HOME: /root/.cache/huggingface
-      # Quiet the noisy first-time tokenizer parallelism warning.
-      TOKENIZERS_PARALLELISM: "false"
-      # v0.21 introduced a CUDA-graph memory profiler that pre-reserves
-      # VRAM for each captured graph size, shrinking the KV pool by ~10
-      # GiB at default capture range. Disable here: graphs are still
-      # captured and used at runtime; only the *accounting* changes so
-      # the KV pool can claim memory the profiler was over-reserving.
-      # Risk: if true graph memory exceeds KV's leftover, runtime OOM —
-      # but on this rig the profiler over-estimates substantially.
-      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
-    # NOTE: list-form (not folded scalar `>`) — folded form is split by
-    # docker compose like shell argv, which silently strips `"` characters.
-    # Speculative-config JSON needs `"` preserved, so each argv element
-    # gets its own YAML string. Single-quoted YAML strings are literal.
-    command:
-      - '--model'
-      - '${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}'
-      - '--served-model-name'
-      - '${VLLM_SERVED_MODEL_NAME:-Qwen/Qwen3-14B-AWQ}'
-      - '--quantization'
-      - '${VLLM_QUANTIZATION:-awq_marlin}'
-      - '--port'
-      - '8000'
-      - '--host'
-      - '0.0.0.0'
-      - '--max-model-len'
-      - '${VLLM_MAX_MODEL_LEN:-16384}'
-      - '--gpu-memory-utilization'
-      - '${VLLM_GPU_MEM_UTIL:-0.93}'
-      - '--kv-cache-dtype'
-      - '${VLLM_KV_CACHE_DTYPE:-fp8}'
-      - '--max-num-batched-tokens'
-      - '${VLLM_MAX_NUM_BATCHED_TOKENS:-8192}'
-      # Concurrency cap. vLLM defaults to ~256 which is sized for H100/A100;
-      # on the A4500 (20 GB VRAM, ADR-0001) every concurrent sequence
-      # claims KV-pool slots and pushes the engine into swap or OOM (exit
-      # 137). Floor matches the burst target (2 sustained / 4-6 burst).
-      - '--max-num-seqs'
-      - '${VLLM_MAX_NUM_SEQS:-12}'
-      - '--enable-prefix-caching'
-      - '--enable-chunked-prefill'
-      # NOTE: v0.21 made xgrammar the default guided-decoding backend
-      # and dropped the launch-time --guided-decoding-backend flag.
-      # Per-request override via extra_body.guided_decoding_backend.
-      - '--speculative-config'
-      # 2026-05-19 — dropped 4 → 2 to recover KV budget after capping
-      # --max-num-seqs at 8 (Phase 5 quality-eval fix). At spec_tokens=4,
-      # vLLM reported `Available KV cache memory: -0.58 GiB` at 8K context
-      # on the A4500. Position 1-2 carry the bulk of the speedup anyway
-      # (~0.94/0.88 accept on RAG quotes); positions 3-4 (~0.85/0.78)
-      # contributed less per slot of KV they required. Original tuning
-      # comment kept below for reference:
-      #   num_speculative_tokens=4: positions 1-2 hit ~0.94/0.88 accept on
-      #   RAG quotes, 3-4 sit at ~0.85/0.78. Re-tested at 4 after the
-      #   cudagraph cap freed enough KV (16.8K → 27.6K) that the c=128
-      #   cliff no longer needs spec-tokens reduction to recover.
-      - '{"method":"ngram","num_speculative_tokens":2,"prompt_lookup_max":4,"prompt_lookup_min":2}'
-      # With VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 (above) the
-      # profiler no longer charges KV pool for cudagraph reservations,
-      # so we can leave the default capture range (full kernel coverage
-      # = best single-stream throughput) AND get the larger KV pool the
-      # cap tested above would have given us.
-      #
-      # 2026-05-19 — Cap captured graph sizes to match the live
-      # --max-num-seqs floor. vLLM v0.21 defaults the capture set to
-      # [1,2,4,8,16,24,32,40,48]; on the A4500 with max-num-seqs ≤ 8
-      # the graphs for batch ≥ 16 are buffer reservations we can never
-      # use. Trimming the set frees the unused graph buffers (estimate
-      # ~1-3 GiB) and clears the "Available KV cache memory: -0.6 GiB"
-      # startup error reported by the engine core under the post-Phase-5
-      # config. If you raise --max-num-seqs back above 8, raise this too.
-      - '--compilation-config'
-      - '{"max_cudagraph_capture_size":12,"cudagraph_capture_sizes":[1,2,4,8,12]}'
-      - '--tensor-parallel-size'
-      - '${VLLM_TENSOR_PARALLEL:-1}'
-    # Larger SHM than docker's 64 MiB default — vLLM uses SHM for inter-
-    # worker tensor staging (when tensor-parallel > 1) and for prefix-cache
-    # shards. Generous on the dev box; raise on multi-GPU prod.
-    shm_size: "4gb"
-    # Use the host IPC namespace so tokenizer worker subprocesses can share
-    # memory with the main vLLM process without hitting the default
-    # container IPC limit. vLLM's startup log warns when this is missing.
-    ipc: host
-    volumes:
-      - vllm_hf_cache:/root/.cache/huggingface
-    networks:
-      - georag
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              # Bump to match VLLM_TENSOR_PARALLEL when sharding across
-              # multiple GPUs.
-              count: ${VLLM_GPU_COUNT:-1}
-              capabilities: [gpu]
-    healthcheck:
-      # vllm-openai images dropped the `python` symlink at v0.19.1 — only
-      # `python3` is on PATH. `curl` is shipped, more portable, and gives
-      # a non-zero exit on any non-2xx response, which is exactly what
-      # docker healthchecks want.
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health -o /dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      # Cold weight-load takes ~60-90s on the A4500 first run, ~10s warm
-      # (cached via the named volume). 600s start_period leaves headroom
-      # for cold first-pull on a fresh host (~17 GB AWQ download from HF).
-      start_period: 600s
-    # SG-01 fix: allow vLLM to drain in-flight generation requests before shutdown
-    stop_grace_period: 30s
-    # Profile renamed gpu-llm-prod → gpu-llm during the cutover (vLLM is
-    # now the dev + prod default, not a prod-only profile). The old name
-    # is preserved as an alias below for back-compat with deploy scripts.
-    profiles: ["gpu-llm", "gpu-llm-prod"]
-
-  # ---------------------------------------------------------------------------
-  # vllm-warmup — one-shot sidecar.
-  # ---------------------------------------------------------------------------
-  # The first request after a vLLM container start pays a 3-5× FlashInfer
-  # kernel JIT compilation tax (measured: 28 tok/s cold vs 154 tok/s warm
-  # on single-stream RAG, A4500 + Qwen3-14B-AWQ-AWQ). This sidecar fires
-  # 5 throwaway completions as soon as vllm reports healthy, so the first
-  # real user never sees the cold path. Exits 0 when done; `restart: "no"`
-  # prevents looping. Profile-gated to track the vllm service.
-  vllm-warmup:
-    # 2026-06-24 re-audit: 8.10.1 -> 8.21.0 + digest. 8.10.1 was ~10
-    # releases stale with credential-leak CVEs (CVE-2024-11053 .netrc,
-    # CVE-2026-8927 cross-proxy Digest leak). Non-critical sidecar but
-    # easy to keep current.
-    image: curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
-    container_name: georag-vllm-warmup
-    profiles: ["gpu-llm", "gpu-llm-prod"]
-    depends_on:
-      vllm:
-        condition: service_healthy
-    networks:
-      - georag
-    restart: "no"
-    environment:
-      VLLM_SERVED_MODEL_NAME: ${VLLM_SERVED_MODEL_NAME:-Qwen/Qwen3-14B-AWQ}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        echo "vllm-warmup: priming FlashInfer kernels..."
-        for i in 1 2 3 4 5; do
-          curl -sf -X POST http://vllm:8000/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -d "{\"model\":\"${VLLM_SERVED_MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with a single word.\"}],\"max_tokens\":16,\"temperature\":0.1}" \
-            -o /dev/null && echo "  warmup $$i/5 done" || echo "  warmup $$i/5 failed"
-        done
-        echo "vllm-warmup: complete."
 
   # ===========================================================================
   # PROFILE: dev-ingest — REMOVED 2026-07-28 (B2)
