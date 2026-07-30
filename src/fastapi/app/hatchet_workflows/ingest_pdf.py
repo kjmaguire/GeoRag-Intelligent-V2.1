@@ -837,7 +837,14 @@ def _build_ocr_review_rows(
         if warning.get("routing_decision") != "review_required":
             continue
 
-        page_number = int(warning.get("page") or 0)
+        try:
+            page_number = int(warning.get("page") or 0)
+        except (TypeError, ValueError):
+            log.warning(
+                "ingest_pdf.persist: ignored OCR review warning with invalid page=%r",
+                warning.get("page"),
+            )
+            continue
         if page_number <= 0:
             continue
         signals = dict(warning.get("signals") or {})

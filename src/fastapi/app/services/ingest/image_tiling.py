@@ -71,6 +71,7 @@ class ReconstructedWord:
     text: str
     confidence: float
     polygon: tuple[float, ...]
+    tile_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,7 @@ def reconstruct_words(
             text=word.text.strip(),
             confidence=max(0.0, min(1.0, word.confidence)),
             polygon=polygon,
+            tile_id=word.tile_id,
         )
         if not candidate.text:
             continue
@@ -238,11 +240,18 @@ def _find_duplicate(
     candidate: ReconstructedWord,
 ) -> int | None:
     normalized = _normalize_word(candidate.text)
+    if not normalized:
+        return None
     candidate_box = _polygon_box(candidate.polygon)
     candidate_height = max(1.0, candidate_box[3] - candidate_box[1])
 
     for index in range(len(accepted) - 1, -1, -1):
         existing = accepted[index]
+        # Repeated words within one tile are real OCR output, not seam
+        # duplicates. Only observations from distinct overlapping tiles can
+        # represent the same source word.
+        if existing.tile_id == candidate.tile_id:
+            continue
         if _normalize_word(existing.text) != normalized:
             continue
         existing_box = _polygon_box(existing.polygon)

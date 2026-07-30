@@ -71,7 +71,9 @@ class TestOcrPage:
         with patch.object(di, "_build_client", return_value=mock_client):
             result = await di.ocr_page(b"%PDF-1.4 fake bytes", page_num=1)
 
-        assert result == di.PageOcrResult("", 0.0)
+        assert result.text == ""
+        assert result.request_succeeded is False
+        assert result.error == "boom"
 
     async def test_extracts_text_and_mean_confidence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(di.ENDPOINT_ENV, "https://example.cognitiveservices.azure.com")
@@ -102,6 +104,7 @@ class TestOcrPage:
             result = await di.ocr_page(b"%PDF-1.4 fake bytes", page_num=3)
 
         assert result.text == "Patterson Lake"
+        assert result.request_succeeded is True
         assert result.mean_confidence == pytest.approx((0.98 + 0.92) / 2)
         assert result.words[0].polygon == (
             10.0,

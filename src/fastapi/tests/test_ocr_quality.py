@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
+import pytest
+
 from app.services.ingest.ocr_quality import (
     ROUTING_THRESHOLDS_ENV,
     OcrRoutingThresholds,
@@ -110,8 +114,36 @@ def test_thresholds_load_only_from_explicit_json(
     assert load_routing_thresholds_from_env() is None
 
     import json
-    from dataclasses import asdict
 
     monkeypatch.setenv(ROUTING_THRESHOLDS_ENV, json.dumps(asdict(_thresholds())))
 
     assert load_routing_thresholds_from_env() == _thresholds()
+
+
+def test_rejects_inverted_routing_bands() -> None:
+    values = asdict(_thresholds())
+    values["spot_check_min_mean_confidence"] = 0.50
+
+    with pytest.raises(ValueError, match="catastrophic <= mandatory <= spot_check"):
+        OcrRoutingThresholds(**values)
+
+
+def test_rejects_invalid_low_confidence_cutoff() -> None:
+    with pytest.raises(ValueError, match=r"must be in \[0, 1\]"):
+        calculate_ocr_quality(
+            "text",
+            [0.9],
+            detected_region_count=1,
+            low_confidence_word_threshold=1.1,
+        )
+
+
+def test_negative_duplicate_count_cannot_create_negative_ratio() -> None:
+    signals = calculate_ocr_quality(
+        "valid text",
+        [0.9, 0.9],
+        detected_region_count=2,
+        seam_duplicate_count=-5,
+    )
+
+    assert signals.seam_duplicate_ratio == 0.0

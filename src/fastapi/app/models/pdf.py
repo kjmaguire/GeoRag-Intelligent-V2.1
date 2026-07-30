@@ -53,9 +53,15 @@ class PdfProvenance(BaseModel):
     Directly supports §04i Citation completeness and Numeric grounding guards:
     any LLM claim must resolve back to one or more (pdf_id, page, bbox) tuples.
 
-    source_method is limited to the methods implemented in Phase 1.A.
-    Phase 1.B (text+layout) will extend the enum with pdfminer / pdfplumber /
-    paddle_ocr / paddle_structure values.
+    ``paddle_ocr`` and ``paddle_structure`` are retained as read-compatible
+    legacy values even though the Paddle writers were removed in 2026-07.
+    They mirror deployed §04p provenance constraints and may still appear in
+    historical API payloads or external reporting consumers. A live read-only
+    audit on 2026-07-29 also confirmed that the eight-table §04p group is not
+    disposable as a unit (``pdf_text_blocks``, ``ocr_page_quality``, and
+    ``low_confidence_page_reviews`` contain rows, while active services still
+    reference ``pdf_layout_regions``). Remove these two values only with a
+    dedicated compatibility migration and consumer inventory.
     """
 
     pdf_id: str = Field(..., description="SHA-256 hex of the original PDF bytes (Bronze archive key)")

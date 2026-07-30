@@ -73,6 +73,8 @@ class PageOcrResult:
     mean_confidence: float  # 0.0-1.0, averaged over word-level confidences
     words: tuple[OcrWord, ...] = ()
     detected_region_count: int = 0
+    request_succeeded: bool = True
+    error: str | None = None
 
 
 def _build_client():
@@ -135,7 +137,12 @@ async def _analyze_document(
             f" on page {log_page}" if log_page is not None else "",
             exc,
         )
-        return PageOcrResult("", 0.0)
+        return PageOcrResult(
+            "",
+            0.0,
+            request_succeeded=False,
+            error=str(exc),
+        )
 
     pages = getattr(result, "pages", None) or []
     sdk_words = [word for page in pages for word in (page.words or [])]

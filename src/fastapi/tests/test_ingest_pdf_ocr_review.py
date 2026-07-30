@@ -167,3 +167,25 @@ def test_invalid_or_missing_page_is_not_enqueued() -> None:
     )
 
     assert rows == []
+
+
+def test_non_numeric_page_is_not_allowed_to_break_persistence() -> None:
+    parsed = {
+        "warnings": [
+            {
+                "code": "ocr_quality_assessment",
+                "page": "not-a-page",
+                "routing_decision": "review_required",
+            }
+        ]
+    }
+
+    rows = _build_ocr_review_rows(
+        parsed,
+        report_id="5c896a88-5fd8-48e3-a93f-3805490b39c5",
+        workspace_id="29188735-7bb5-4262-8b3c-6a236ed90bf0",
+        project_id="f96f7413-4f1e-4f84-8baf-c3bd3ea027ee",
+        bronze_uri="s3://bronze/reports/project/scan.pdf",
+    )
+
+    assert rows == []

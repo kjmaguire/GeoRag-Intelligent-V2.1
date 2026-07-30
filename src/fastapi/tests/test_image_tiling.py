@@ -49,6 +49,25 @@ def test_both_axes_are_tiled_when_both_exceed_azure_limit() -> None:
     assert all(tile.width <= 9_000 and tile.height <= 9_000 for tile in tiles)
 
 
+def test_exact_multiple_and_one_pixel_over_limit_never_create_empty_tiles() -> None:
+    exact = split_image(
+        Image.new("L", (9_000, 18_000)),
+        tile_side_px=9_000,
+        overlap_px=180,
+    )
+    barely_oversized = split_image(
+        Image.new("L", (9_001, 100)),
+        tile_side_px=9_000,
+        overlap_px=180,
+    )
+
+    assert len(exact) == 3
+    assert len(barely_oversized) == 2
+    assert all(tile.width > 0 and tile.height > 0 for tile in (*exact, *barely_oversized))
+    assert all(tile.width <= 9_000 and tile.height <= 9_000 for tile in (*exact, *barely_oversized))
+    assert barely_oversized[-1].right == 9_001
+
+
 def test_reconstruction_offsets_polygons_and_deduplicates_overlap() -> None:
     image = Image.new("L", (500, 900))
     tiles = split_image(image, tile_side_px=600, overlap_px=300)
@@ -83,6 +102,20 @@ def test_reconstruction_offsets_polygons_and_deduplicates_overlap() -> None:
     seam = next(word for word in result.words if word.text == "Seam")
     assert seam.confidence == 0.95
     assert seam.polygon[1] == 490
+
+
+def test_reconstruction_preserves_legitimate_repeated_words_in_one_tile() -> None:
+    image = Image.new("L", (300, 100))
+    tiles = split_image(image)
+    words = [
+        TileWord("very", 0.9, (10, 10, 40, 10, 40, 30, 10, 30), tiles[0].tile_id),
+        TileWord("very", 0.9, (42, 10, 72, 10, 72, 30, 42, 30), tiles[0].tile_id),
+    ]
+
+    result = reconstruct_words(tiles, words)
+
+    assert result.text == "very very"
+    assert result.seam_duplicate_count == 0
 
 
 def test_reconstruction_rejects_unknown_tile_id() -> None:

@@ -245,6 +245,25 @@ class ReportParseResult:
     figure_manifest: list[dict] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class OcrPageAttempt:
+    """One page produced by a full-document OCR attempt."""
+
+    page_number: int
+    text: str
+    mean_confidence: float
+    assessment: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class OcrAttemptResult:
+    """Full-document OCR output with truthful engine and page provenance."""
+
+    text: str
+    parser_used: str
+    pages: tuple[OcrPageAttempt, ...] = ()
+
+
 # ---------------------------------------------------------------------------
 # Date parsing helpers
 # ---------------------------------------------------------------------------
@@ -1297,6 +1316,13 @@ def _parse_with_fitz(
                 )
             except Exception:
                 continue
+            warnings.append(
+                _ocr_quality_warning(
+                    page_number=n,
+                    text=ocr_text,
+                    assessment=assessment,
+                )
+            )
             if ocr_text and len(ocr_text.strip()) >= PER_PAGE_MIN_CHARS:
                 ocr_recovered += 1
                 pages_text.append(ocr_text)
@@ -1312,19 +1338,6 @@ def _parse_with_fitz(
                     "code": "page_ocr_recovered_fitz",
                     "page": n,
                     "ocr_confidence": round(mean_conf, 4),
-                })
-                warnings.append({
-                    "code": "ocr_quality_assessment",
-                    "page": n,
-                    "parser_version": PARSER_VERSION,
-                    "ocr_method": (
-                        "document_intelligence"
-                        if os.environ.get("OCR_ENGINE", "").strip().lower()
-                        == "azure_document_intelligence"
-                        else "tesseract"
-                    ),
-                    "extracted_text": ocr_text,
-                    **assessment,
                 })
         if ocr_recovered:
             logger.info(
@@ -1414,6 +1427,7 @@ def _ocr_single_page(
                     or [result.mean_confidence],
                     detected_region_count=result.detected_region_count,
                 )
+                assessment["ocr_method"] = "document_intelligence"
                 return _format_ocr_page_return(
                     result.text,
                     result.mean_confidence,
@@ -1509,6 +1523,7 @@ def _ocr_single_page(
                     [confidence / 100.0 for _word, confidence in words],
                     detected_region_count=len(data.get("text", [])),
                 )
+                assessment["ocr_method"] = "tesseract"
                 return _format_ocr_page_return(
                     processed_text,
                     mean_conf,
@@ -1536,6 +1551,7 @@ def _ocr_single_page(
             [],
             detected_region_count=0,
         )
+        assessment["ocr_method"] = "tesseract"
         return _format_ocr_page_return(
             out_text,
             0.0,
@@ -1587,6 +1603,18 @@ def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
 
     for tile in tiles:
         result = _di.ocr_image_sync(encode_tile_png(tile))
+        if not result.request_succeeded:
+            raise RuntimeError(
+                f"document_intelligence tile {tile.tile_id} failed: "
+                f"{result.error or 'unknown error'}"
+            )
+        if result.text.strip() and (
+            not result.words or any(not word.polygon for word in result.words)
+        ):
+            raise RuntimeError(
+                f"document_intelligence tile {tile.tile_id} returned text "
+                "without complete word polygons"
+            )
         detected_region_count += result.detected_region_count
         if result.text.strip():
             fallback_tile_texts.append(result.text.strip())
@@ -1615,6 +1643,7 @@ def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
         detected_region_count=detected_region_count,
         seam_duplicate_count=reconstruction.seam_duplicate_count,
     )
+    assessment["ocr_method"] = "document_intelligence"
     words = tuple(
         _di.OcrWord(word.text, word.confidence, word.polygon)
         for word in reconstruction.words
@@ -1682,6 +1711,28 @@ def _assess_ocr_result(
     }
 
 
+def _ocr_quality_warning(
+    *,
+    page_number: int,
+    text: str,
+    assessment: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the persisted page-quality warning for every OCR attempt."""
+
+    return {
+        "code": "ocr_quality_assessment",
+        "page": page_number,
+        "parser_version": PARSER_VERSION,
+        "ocr_method": str(assessment.get("ocr_method") or "unknown"),
+        "extracted_text": text,
+        **{
+            key: value
+            for key, value in assessment.items()
+            if key != "ocr_method"
+        },
+    }
+
+
 def _format_ocr_page_return(
     text: str,
     mean_confidence: float,
@@ -1702,6 +1753,7 @@ def _empty_ocr_page_return(
     return_assessment: bool,
 ):
     assessment = _assess_ocr_result("", [], detected_region_count=0)
+    assessment["ocr_method"] = "tesseract"
     return _format_ocr_page_return(
         "",
         0.0,
@@ -1748,25 +1800,19 @@ def _extract_page_worker(args: tuple) -> dict:
                     return_confidence=True,
                     return_assessment=True,
                 )
+                out["warnings"].append(
+                    _ocr_quality_warning(
+                        page_number=page_num,
+                        text=ocr_text,
+                        assessment=assessment,
+                    )
+                )
                 if len(ocr_text.strip()) > len(text.strip()):
                     text = ocr_text
                     out["ocr_recovered"] = True
                     out["warnings"].append({
                         "code": "page_ocr_recovered",
                         "page": page_num,
-                    })
-                    out["warnings"].append({
-                        "code": "ocr_quality_assessment",
-                        "page": page_num,
-                        "parser_version": PARSER_VERSION,
-                        "ocr_method": (
-                            "document_intelligence"
-                            if os.environ.get("OCR_ENGINE", "").strip().lower()
-                            == "azure_document_intelligence"
-                            else "tesseract"
-                        ),
-                        "extracted_text": ocr_text,
-                        **assessment,
                     })
 
             if text and text.strip():
@@ -2057,7 +2103,7 @@ def _ocr_page_confidence(text: str) -> float:
     return round(min(1.0, confidence), 2)
 
 
-def _attempt_ocr_document_intelligence(path: str) -> str:
+def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     """Full-document OCR via Azure Document Intelligence, one call per page.
 
     Mirrors `_attempt_ocr`'s page-count discovery, no-page-cap policy, and
@@ -2089,6 +2135,7 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
     texts: list[str] = []
     page_confidences: list[float] = []
     low_confidence_pages: list[int] = []
+    page_attempts: list[OcrPageAttempt] = []
 
     for page_num in range(1, total_pages + 1):
         page_text, mean_confidence, assessment = _ocr_single_page(
@@ -2097,8 +2144,16 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
             return_confidence=True,
             return_assessment=True,
         )
+        cleaned = _postprocess_ocr_text(page_text) if page_text.strip() else ""
+        page_attempts.append(
+            OcrPageAttempt(
+                page_number=page_num,
+                text=cleaned,
+                mean_confidence=mean_confidence,
+                assessment=assessment,
+            )
+        )
         if page_text.strip():
-            cleaned = _postprocess_ocr_text(page_text)
             page_confidences.append(mean_confidence)
             if assessment["routing_decision"] == "review_required":
                 low_confidence_pages.append(page_num)
@@ -2136,10 +2191,25 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
         raise RuntimeError(
             f"document_intelligence produced no text across {total_pages} pages"
         )
-    return result_text
+    output_methods = {
+        str(page.assessment.get("ocr_method") or "unknown")
+        for page in page_attempts
+        if page.text.strip()
+    }
+    if output_methods == {"document_intelligence"}:
+        parser_used = "ocr_document_intelligence"
+    elif output_methods == {"tesseract"}:
+        parser_used = "ocr_tesseract"
+    else:
+        parser_used = "ocr_mixed"
+    return OcrAttemptResult(
+        text=result_text,
+        parser_used=parser_used,
+        pages=tuple(page_attempts),
+    )
 
 
-def _attempt_ocr(path: str) -> str | None:
+def _attempt_ocr(path: str) -> OcrAttemptResult:
     """Attempt OCR on a scanned PDF using Tesseract via pdf2image + pytesseract.
 
     Strategy:
@@ -2148,7 +2218,7 @@ def _attempt_ocr(path: str) -> str | None:
       3. NO PAGE CAP — process every page so we don't silently drop data
       4. Log progress every 10 pages
 
-    Returns extracted text or empty string if OCR libraries are unavailable.
+    Returns extracted text, truthful engine provenance, and per-page quality.
     """
     from . import document_intelligence_client as _di
 
@@ -2170,7 +2240,7 @@ def _attempt_ocr(path: str) -> str | None:
             "pdf_report: OCR libraries (pdf2image, pytesseract) not installed — "
             "install with: pip install pdf2image pytesseract"
         )
-        return ""
+        return OcrAttemptResult("", "ocr_unavailable")
 
     # 2026-05-22 — removed the MAX_OCR_PAGES=100 cap. A 500-page scanned
     # NI 43-101 lost pages 101-500 silently before this change. The
@@ -2212,6 +2282,7 @@ def _attempt_ocr(path: str) -> str | None:
         texts = []
         page_confidences = []
         low_confidence_pages = []
+        page_attempts: list[OcrPageAttempt] = []
 
         for i, img in enumerate(images):
             # Preprocess image for better OCR accuracy
@@ -2248,14 +2319,26 @@ def _attempt_ocr(path: str) -> str | None:
                 word_confidences = []
                 detected_region_count = 0
 
-            if page_text.strip():
-                # Post-process to fix common OCR artifacts
-                cleaned = _postprocess_ocr_text(page_text)
-                assessment = _assess_ocr_result(
-                    cleaned,
-                    word_confidences,
-                    detected_region_count=detected_region_count,
+            # Post-process to fix common OCR artifacts, then assess even an
+            # empty page so catastrophic OCR failures reach review routing.
+            cleaned = _postprocess_ocr_text(page_text) if page_text.strip() else ""
+            assessment = _assess_ocr_result(
+                cleaned,
+                word_confidences,
+                detected_region_count=detected_region_count,
+            )
+            assessment["ocr_method"] = "tesseract"
+            page_attempts.append(
+                OcrPageAttempt(
+                    page_number=i + 1,
+                    text=cleaned,
+                    mean_confidence=float(
+                        assessment["signals"]["mean_confidence"]
+                    ),
+                    assessment=assessment,
                 )
+            )
+            if cleaned:
                 conf = float(assessment["signals"]["mean_confidence"])
                 page_confidences.append(conf)
 
@@ -2287,11 +2370,15 @@ def _attempt_ocr(path: str) -> str | None:
             len(images), len(result), avg_confidence * 100,
             len(low_confidence_pages),
         )
-        return result
+        return OcrAttemptResult(
+            text=result,
+            parser_used="ocr_tesseract",
+            pages=tuple(page_attempts),
+        )
 
     except Exception as exc:
         logger.warning("pdf_report: OCR failed: %s", exc)
-        return ""
+        return OcrAttemptResult("", "ocr_tesseract")
 
 
 def parse_pdf_report(path: str) -> ReportParseResult:
@@ -2456,12 +2543,43 @@ def parse_pdf_report(path: str) -> ReportParseResult:
                 len(full_text.strip()),
                 Path(path).name,
             )
-            ocr_text = _attempt_ocr(path)
+            ocr_result = _attempt_ocr(path)
+            ocr_text = ocr_result.text
+            extraction_warnings.extend(
+                _ocr_quality_warning(
+                    page_number=page.page_number,
+                    text=page.text,
+                    assessment=page.assessment,
+                )
+                for page in ocr_result.pages
+            )
             _span.set_attribute("ocr.input_chars", len(full_text.strip()))
-            _span.set_attribute("ocr.output_chars", len(ocr_text or ""))
+            _span.set_attribute("ocr.output_chars", len(ocr_text))
             if ocr_text and len(ocr_text.strip()) > len(full_text.strip()):
                 full_text = ocr_text
-                parser_used = "ocr_tesseract"
+                parser_used = ocr_result.parser_used
+                per_page_text = [
+                    (page.page_number, page.text)
+                    for page in ocr_result.pages
+                    if page.text.strip()
+                ]
+                per_page_method = {
+                    page.page_number: str(
+                        page.assessment.get("ocr_method") or "unknown"
+                    )
+                    for page in ocr_result.pages
+                    if page.text.strip()
+                }
+                per_page_confidence = {
+                    page.page_number: page.mean_confidence
+                    for page in ocr_result.pages
+                    if page.text.strip()
+                }
+                page_languages = [
+                    _detect_page_language(page.text)
+                    for page in ocr_result.pages
+                    if page.text.strip()
+                ]
                 _span.set_attribute("ocr.recovered", True)
                 logger.info(
                     "pdf_report: OCR recovered %d chars from '%s'",

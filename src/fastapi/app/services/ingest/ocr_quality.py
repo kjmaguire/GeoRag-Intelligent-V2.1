@@ -68,6 +68,53 @@ class OcrRoutingThresholds:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1]")
 
+        ordered_minimums = (
+            (
+                "mean_confidence",
+                self.catastrophic_max_mean_confidence,
+                self.mandatory_min_mean_confidence,
+                self.spot_check_min_mean_confidence,
+            ),
+            (
+                "coverage_ratio",
+                self.catastrophic_max_coverage_ratio,
+                self.mandatory_min_coverage_ratio,
+                self.spot_check_min_coverage_ratio,
+            ),
+        )
+        for name, catastrophic, mandatory, spot_check in ordered_minimums:
+            if not catastrophic <= mandatory <= spot_check:
+                raise ValueError(f"{name} thresholds must satisfy catastrophic <= mandatory <= spot_check")
+
+        if self.mandatory_min_median_confidence > self.spot_check_min_median_confidence:
+            raise ValueError("median_confidence thresholds must satisfy mandatory <= spot_check")
+
+        ordered_maximums = (
+            (
+                "low_confidence_word_ratio",
+                self.mandatory_max_low_confidence_word_ratio,
+                self.spot_check_max_low_confidence_word_ratio,
+            ),
+            (
+                "gibberish_word_ratio",
+                self.mandatory_max_gibberish_word_ratio,
+                self.spot_check_max_gibberish_word_ratio,
+            ),
+            (
+                "repeated_character_ratio",
+                self.mandatory_max_repeated_character_ratio,
+                self.spot_check_max_repeated_character_ratio,
+            ),
+            (
+                "seam_duplicate_ratio",
+                self.mandatory_max_seam_duplicate_ratio,
+                self.spot_check_max_seam_duplicate_ratio,
+            ),
+        )
+        for name, mandatory, spot_check in ordered_maximums:
+            if mandatory < spot_check:
+                raise ValueError(f"{name} thresholds must satisfy mandatory >= spot_check")
+
 
 @dataclass(frozen=True, slots=True)
 class OcrQualityAssessment:
@@ -95,6 +142,9 @@ def calculate_ocr_quality(
 ) -> OcrQualitySignals:
     """Calculate independent OCR confidence and text-quality signals."""
 
+    if not 0.0 <= low_confidence_word_threshold <= 1.0:
+        raise ValueError("low_confidence_word_threshold must be in [0, 1]")
+
     confidences = tuple(max(0.0, min(1.0, float(confidence))) for confidence in word_confidences)
     words = _WORD_RE.findall(text)
     word_count = len(words)
@@ -108,8 +158,9 @@ def calculate_ocr_quality(
     output_coverage_ratio = (
         min(1.0, word_count / detected_region_count) if detected_region_count > 0 else (1.0 if word_count > 0 else 0.0)
     )
-    seam_duplicate_ratio = seam_duplicate_count / max(
-        word_count + seam_duplicate_count,
+    bounded_duplicate_count = max(0, seam_duplicate_count)
+    seam_duplicate_ratio = bounded_duplicate_count / max(
+        word_count + bounded_duplicate_count,
         1,
     )
     gibberish_word_ratio = sum(_is_gibberish_word(word) for word in words) / word_count if words else 1.0

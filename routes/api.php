@@ -58,6 +58,10 @@ Route::prefix('v1')->group(function () {
         // Client must first GET /sanctum/csrf-cookie to prime XSRF-TOKEN.
         Route::post('spa-login', [AuthController::class, 'spaLogin'])
             ->middleware('throttle:auth-login');
+        Route::post('forgot-password', [AuthController::class, 'forgotPassword'])
+            ->middleware('throttle:3,1');
+        Route::post('reset-password', [AuthController::class, 'resetPassword'])
+            ->middleware('throttle:5,1');
     });
 
     // ── Protected routes (require valid Sanctum token) ───────────────────
