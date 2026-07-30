@@ -7,7 +7,7 @@ dependencies = [
     # Security floor for the OpenSSL bundled in PyPI wheels
     # (GHSA-537c-gmf6-5ccf). Keep this dormant package on the same
     # compatible cryptography line as the production FastAPI service.
-    "cryptography>=48.0.1,<49",
+    "cryptography>=49.0.0,<50",
     "dagster>=1.13",
     "dagster-postgres>=0.29",
     "dagster-docker>=0.29",
