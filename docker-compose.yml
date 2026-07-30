@@ -781,10 +781,22 @@ services:
       # instead. Used for A/B benches comparing fine-tuned candidates
       # against the stock baseline without rebuilding the image.
       RERANKER_MODEL_PATH: ${RERANKER_MODEL_PATH:-}
+      # RERANKER_BACKEND=foundry (Cohere Rerank v4 on Azure AI Foundry) takes
+      # precedence over RERANKER_SERVICE_URL below — no local model, no
+      # sidecar, at all. Unset/"cross_encoder" (default) keeps the existing
+      # self-hosted Qwen3-Reranker-0.6B behavior. Reuses AZURE_FOUNDRY_
+      # ENDPOINT/API_KEY from the LLM config (same Azure AI Services
+      # resource); needs its own deployment name since rerank is deployed
+      # separately. Empirically verified 2026-07-30 against a live Cohere
+      # Rerank v4 Pro deployment — see app/services/reranker.py.
+      RERANKER_BACKEND: ${RERANKER_BACKEND:-cross_encoder}
+      AZURE_FOUNDRY_RERANK_DEPLOYMENT: ${AZURE_FOUNDRY_RERANK_DEPLOYMENT:-}
+      AZURE_FOUNDRY_RERANK_TIMEOUT_S: ${AZURE_FOUNDRY_RERANK_TIMEOUT_S:-8.0}
       # 2026-06-24 — share ONE reranker model via the `reranker` sidecar
       # instead of each of the 6 uvicorn workers loading its own CrossEncoder
       # copy (that was the OOM driver). app/services/reranker.py returns an
       # HTTP proxy when this is set. Unset to fall back to per-worker load.
+      # Ignored entirely when RERANKER_BACKEND=foundry above.
       RERANKER_SERVICE_URL: ${RERANKER_SERVICE_URL:-http://reranker:8000}
       # 2026-06-24 — share ONE embedding model via the `embedding` sidecar
       # instead of one ~2.4 GiB Qwen3-Embedding copy per uvicorn worker (a PSS

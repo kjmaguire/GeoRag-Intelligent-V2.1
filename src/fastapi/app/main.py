@@ -653,42 +653,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # log + continue with RRF order. Do not fail the query.
     _t1 = time.perf_counter()
     try:
-        import os as _os  # noqa: PLC0415
-
         from app.services.reranker import (  # noqa: PLC0415
-            RERANKER_VERSION,
-            _get_reranker,
-            _RemoteReranker,
+            RERANKER_BACKEND,
+            active_reranker_version,
+            get_reranker_or_none,
         )
 
-        # 2026-06-24: when the shared reranker sidecar is configured
-        # (RERANKER_SERVICE_URL), point app.state.reranker at an HTTP proxy
-        # instead of loading a per-worker CrossEncoder copy. 6 uvicorn workers
-        # each loading a ~1 GiB model was the OOM driver; the proxy keeps the
-        # identical .predict() interface the query path already uses.
-        _svc_url = (_os.environ.get("RERANKER_SERVICE_URL") or "").strip()
-        if _svc_url:
-            _timeout = float(_os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
-            app.state.reranker = _RemoteReranker(_svc_url, _timeout)
-            app.state.reranker_version = RERANKER_VERSION
-            logger.info(
-                "Reranker via shared sidecar %s (%s) — no local model loaded",
-                _svc_url, RERANKER_VERSION,
+        # get_reranker_or_none() implements the full backend precedence:
+        # RERANKER_BACKEND=foundry (Cohere Rerank v4, no local model at all)
+        # > RERANKER_SERVICE_URL (shared sidecar HTTP proxy, avoids the
+        # per-worker OOM from 6 uvicorn workers each loading a ~1 GiB model)
+        # > in-process CrossEncoder singleton. Delegating here instead of
+        # duplicating the sidecar-vs-local branch keeps this single source
+        # of truth in services/reranker.py.
+        reranker = get_reranker_or_none()
+        _elapsed_r = time.perf_counter() - _t1
+        _version = active_reranker_version()
+        app.state.reranker = reranker
+        app.state.reranker_version = _version if reranker is not None else None
+        if reranker is None:
+            logger.warning(
+                "Reranker unavailable (backend=%s) — rerank step will be "
+                "skipped (RRF order used)",
+                RERANKER_BACKEND,
             )
         else:
             logger.info(
-                "Loading cross-encoder reranker: %s version=%s",
-                "BAAI/bge-reranker-base",
-                RERANKER_VERSION,
-            )
-            reranker = _get_reranker()  # warms the lru_cache singleton
-            _elapsed_r = time.perf_counter() - _t1
-            app.state.reranker = reranker
-            app.state.reranker_version = RERANKER_VERSION
-            logger.info(
-                "Reranker model ready: %s loaded in %.2fs",
-                RERANKER_VERSION,
-                _elapsed_r,
+                "Reranker ready: backend=%s version=%s loaded in %.2fs",
+                RERANKER_BACKEND, _version, _elapsed_r,
             )
     except Exception:
         logger.exception(
