@@ -98,8 +98,10 @@ def test_get_embedding_model_loads_local_cpu_when_unset(monkeypatch):
     fake_st = types.ModuleType("sentence_transformers")
 
     class FakeST:
-        def __init__(self, name, device=None):
+        def __init__(self, name, revision=None, trust_remote_code=None, device=None):
             called["name"] = name
+            called["revision"] = revision
+            called["trust_remote_code"] = trust_remote_code
             called["device"] = device
 
     fake_st.SentenceTransformer = FakeST
@@ -107,4 +109,9 @@ def test_get_embedding_model_loads_local_cpu_when_unset(monkeypatch):
 
     m = emb.get_embedding_model("some-model")
     assert isinstance(m, FakeST)
-    assert called == {"name": "some-model", "device": "cpu"}  # local load stays CPU
+    assert called == {
+        "name": "some-model",
+        "revision": emb.EMBEDDING_MODEL_REVISION,
+        "trust_remote_code": False,
+        "device": "cpu",
+    }

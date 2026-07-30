@@ -24,7 +24,6 @@ object move is gated on the source still existing in tier-{source_tier}.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,24 +32,6 @@ from app.agents.runtime import get_runtime
 from app.audit import emit_audit
 
 logger = logging.getLogger(__name__)
-
-
-def _s3_endpoint() -> str:
-    return os.environ.get("S3_ENDPOINT_URL") or os.environ.get(
-        "MINIO_ENDPOINT", "http://minio:8333"
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    # Match `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` from .env (SeaweedFS
-    # keeps the MINIO_ prefix per ADR-0001 compatibility).
-    access = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get(
-        "MINIO_ROOT_USER", "georag-admin"
-    )
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get(
-        "MINIO_ROOT_PASSWORD", ""
-    )
-    return access, secret
 
 
 @georag_agent(
@@ -88,13 +69,14 @@ async def storage_tiering_run(
         "per_rule": [],
     }
 
-    # Lazy-import aioboto3 so the rest of the FastAPI app boots even if the
-    # dep hasn't been re-installed yet (CI sequencing safety).
+    # Lazy-import so the rest of the FastAPI app boots even if the dep
+    # hasn't been re-installed yet (CI sequencing safety).
     try:
-        import aioboto3  # type: ignore[import-not-found]
+        import aioboto3
+        from georag_object_storage import StorageConfig, async_client_kwargs
     except ImportError as exc:  # pragma: no cover — captured in summary
         summary["errors"] += 1
-        summary["fatal"] = f"aioboto3 not installed: {exc}"
+        summary["fatal"] = f"aioboto3/georag_object_storage not installed: {exc}"
         return summary
 
     rules = await rt.pg_pool.fetch(
@@ -113,18 +95,29 @@ async def storage_tiering_run(
         summary["note"] = "no active storage_tier_policy rows — nothing to do"
         return summary
 
-    access, secret = _s3_credentials()
-    endpoint = _s3_endpoint()
+    # src_bucket/dst_bucket below are tier-{name} strings derived from
+    # silver.storage_tier_policy rows — genuinely dynamic, not one of
+    # georag_object_storage's four fixed logical Bucket members, so this
+    # uses the raw-client escape hatch (async_client_kwargs) rather than
+    # the higher-level AsyncObjectStorage interface.
+    #
+    # StorageConfig.from_env() raises eagerly if no credentials are
+    # configured anywhere (unlike the old code's client construction,
+    # which never validated until the first actual request) — resolved
+    # here, before the per-rule loop, and guarded the same way the
+    # ImportError above is: a missing-credentials environment degrades to
+    # summary["fatal"] instead of crashing the whole agent run.
+    try:
+        client_kwargs = async_client_kwargs(StorageConfig.from_env())
+    except ValueError as exc:
+        summary["errors"] += 1
+        summary["fatal"] = f"object-storage credentials not configured: {exc}"
+        return summary
 
-    session = aioboto3.Session(
-        aws_access_key_id=access,
-        aws_secret_access_key=secret,
-        region_name="us-east-1",
-    )
-
+    session = aioboto3.Session()
     now = datetime.now(UTC)
 
-    async with session.client("s3", endpoint_url=endpoint) as s3:
+    async with session.client("s3", **client_kwargs) as s3:
         for rule in rules:
             summary["rules_evaluated"] += 1
             src_bucket = f"tier-{rule['source_tier']}"

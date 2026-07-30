@@ -17,21 +17,11 @@ column; the writer reads it from the trace payload's optional
 
 Design
 ------
-The orchestrator assembles a trace dict by node, ending in the
-``persist_node`` of ``agentic_retrieval/graph.py`` which calls
-``enqueue_trace(pool, trace_dict)``. Writes are fire-and-forget:
-failures log at WARNING and never propagate. This preserves the
-invariant that observability never fails a user query.
-
-Wiring TODO (NOT in this commit — depends on Kyle's WIP):
-  1. Add ``trace_payload_builder: dict`` field to
-     ``AgenticRetrievalState`` (state.py).
-  2. Each node mutates ``state.trace_payload_builder`` with its slice
-     of the trace.
-  3. ``persist_node`` (graph.py:50) calls
-     ``await enqueue_trace(deps.pg_pool, state.trace_payload_builder)``
-     before returning.
-  4. Start the flush coroutine at FastAPI lifespan startup (main.py).
+The agentic-retrieval ``persist_node`` assembles and enqueues a typed
+``RetrievalTrace`` after answer persistence. The FastAPI lifespan starts
+the flush loop after the PostgreSQL pool is ready. Writes are
+fire-and-forget: failures log at WARNING and never propagate. This
+preserves the invariant that observability never fails a user query.
 """
 
 from __future__ import annotations

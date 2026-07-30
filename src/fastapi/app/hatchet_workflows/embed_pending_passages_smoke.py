@@ -161,7 +161,12 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
         )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME, device=device)
+    model = SentenceTransformer(
+        settings.EMBEDDING_MODEL_NAME,
+        revision=settings.EMBEDDING_MODEL_REVISION,
+        trust_remote_code=False,
+        device=device,
+    )
     # Qwen3-Embedding query template via prompt_name (no manual prefix —
     # the model card publishes the canonical instruction template). Empty
     # config value falls back to raw encoding for A-B.

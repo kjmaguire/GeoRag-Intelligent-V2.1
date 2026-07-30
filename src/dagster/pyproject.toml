@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "GeoRAG Intelligence — Dagster ingestion pipeline"
 requires-python = ">=3.13"
 dependencies = [
+    # Security floor for the OpenSSL bundled in PyPI wheels
+    # (GHSA-537c-gmf6-5ccf). Keep this dormant package on the same
+    # compatible cryptography line as the production FastAPI service.
+    "cryptography>=48.0.1,<49",
     "dagster>=1.13",
     "dagster-postgres>=0.29",
     "dagster-docker>=0.29",
@@ -19,6 +23,10 @@ dependencies = [
     "obspy>=1.4",
     "boto3>=1.35",
     "botocore>=1.35",
+    # Storage-abstraction plan PR1 — vendor-neutral object storage interface,
+    # shared with src/fastapi via a uv path dependency (see [tool.uv.sources]
+    # below). Local package, not published; version is unused by uv sources.
+    "georag-object-storage",
     "psycopg2-binary>=2.9",
     "asyncpg>=0.30",
     "httpx>=0.28",
@@ -96,6 +104,13 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.sources]
+# editable = false (the default) deliberately — see src/fastapi/pyproject.toml's
+# [tool.uv.sources] comment: the multi-stage Docker build only copies
+# site-packages into the runtime stage, so an editable install (which
+# redirects back to the source tree) would break at runtime.
+georag-object-storage = { path = "../georag_object_storage" }
 
 [tool.dagster]
 module_name = "georag_dagster.definitions"

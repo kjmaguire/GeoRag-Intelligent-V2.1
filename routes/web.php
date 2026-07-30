@@ -44,6 +44,13 @@ Route::get('/forgot-password', function () {
     return Inertia::render('ForgotPassword');
 })->name('password.request');
 
+Route::get('/reset-password/{token}', function (Request $request, string $token) {
+    return Inertia::render('ResetPassword', [
+        'token' => $token,
+        'email' => $request->string('email')->toString(),
+    ]);
+})->name('password.reset');
+
 // ── Authenticated routes (require Sanctum session or token) ─────────────
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects', [ProjectsIndexController::class, 'show'])

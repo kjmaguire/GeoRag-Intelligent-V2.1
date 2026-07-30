@@ -105,8 +105,25 @@ WORKDIR /app
 # We install from pyproject.toml via uv with a lockfile when available,
 # otherwise fall back to direct pip install of the package list.
 # ---------------------------------------------------------------------------
-COPY pyproject.toml ./
-COPY uv.lock* ./
+# Storage-abstraction plan PR1 — build context widened to ./src (see
+# docker-compose.yml) so this sibling path dependency is reachable.
+# Copied to /georag_object_storage so the relative path in
+# src/dagster/pyproject.toml's [tool.uv.sources] ("../georag_object_storage",
+# relative to /app/pyproject.toml) resolves the same way here as it does
+# in the host checkout.
+COPY georag_object_storage /georag_object_storage
+
+COPY dagster/pyproject.toml ./
+COPY dagster/uv.lock* ./
+
+# Install the local path dependency FIRST, explicitly. The main install
+# below uses uv's PIP interface (`uv pip install -r pyproject.toml`), which
+# does NOT apply [tool.uv.sources] (only uv's project interface — uv
+# sync/lock — honors it; see astral-sh/uv#8846, #15634). Without this step
+# the bare `georag-object-storage` name in project.dependencies would be
+# resolved against PyPI, where it doesn't exist, and the build would fail.
+RUN uv pip install --system --no-cache /georag_object_storage \
+    || pip install --no-cache-dir /georag_object_storage
 
 # Install all dependencies from pyproject.toml without editable mode.
 # Source isn't copied yet, so -r reads [project.dependencies] directly.
@@ -117,7 +134,7 @@ d = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); \
 print(' '.join(d['project']['dependencies']))")
 
 # Copy pipeline code after deps to preserve the dep cache layer.
-COPY . .
+COPY dagster/ .
 
 # Register the package itself (entry points, module resolution).
 RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true

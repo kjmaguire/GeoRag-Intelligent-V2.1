@@ -136,7 +136,10 @@ async def embed_pending_passages(
         log.info("embed_pending.loading_embedding_model name=%s device=%s",
                  settings.EMBEDDING_MODEL_NAME, _device)
         embedding_model = SentenceTransformer(
-            settings.EMBEDDING_MODEL_NAME, device=_device,
+            settings.EMBEDDING_MODEL_NAME,
+            revision=settings.EMBEDDING_MODEL_REVISION,
+            trust_remote_code=False,
+            device=_device,
         )
 
     own_qdrant = False

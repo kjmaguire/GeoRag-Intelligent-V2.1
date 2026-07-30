@@ -101,9 +101,10 @@ Two OOM fixes landed as optional sidecar services:
 
 ## 3. §04p OCR/VL upgrades (ADR-0015/0016/0017)
 
-Patches [Ch 05](05-pdf-stack.md). The §04p pipeline order is unchanged
-(Docling primary → PaddleOCR secondary → Tesseract fallback); the
-engines under each tier were upgraded.
+> **Historical record:** the OCR choices in §3.1 were superseded on
+> 2026-07-29. Docling and PaddleOCR were removed; the current pipeline is
+> Azure Document Intelligence with tiled oversized-page reconstruction and
+> Tesseract as the last-resort fallback. See [Ch 05](05-pdf-stack.md).
 
 ### 3.1 PaddleOCR 2.10 → 3.7 (ADR-0016, Accepted Phase 1)
 

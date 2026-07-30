@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 from pathlib import Path
 from uuid import UUID
 
-import boto3
-from botocore.config import Config as BotoConfig
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.sync_client import S3CompatibleStorage
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -36,7 +35,6 @@ from app.services.ingest.tiff_to_pdf import (
 log = logging.getLogger("georag.hatchet.tiff_normalize")
 
 
-_BRONZE_BUCKET = os.environ.get("S3_BUCKET_BRONZE", "bronze")
 _REPORTS_PREFIX = "reports"
 _TIFF_DERIVED_TAG = "x-georag-derived-from-tiff-sha256"
 
@@ -92,25 +90,6 @@ class TiffNormalizeOutput(BaseModel):
     ingest_pdf_workflow_run_id: str | None = None
 
 
-def _s3_client():
-    s3_endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get("MINIO_ENDPOINT")
-    aws_key = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("MINIO_ROOT_USER")
-    aws_secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("MINIO_ROOT_PASSWORD")
-    if not (s3_endpoint and aws_key and aws_secret):
-        raise RuntimeError(
-            "tiff_normalize: S3 endpoint / credentials not configured "
-            "(S3_ENDPOINT_URL + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)",
-        )
-    return boto3.client(
-        "s3",
-        endpoint_url=s3_endpoint,
-        aws_access_key_id=aws_key,
-        aws_secret_access_key=aws_secret,
-        region_name="us-east-1",
-        config=BotoConfig(signature_version="s3v4"),
-    )
-
-
 _SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -132,7 +111,7 @@ def derived_pdf_key(
 
 
 def _derived_already_present(
-    s3,
+    store: S3CompatibleStorage,
     derived_key: str,
     source_sha256: str,
 ) -> bool:
@@ -143,10 +122,10 @@ def _derived_already_present(
     collision blocking re-ingest.
     """
     try:
-        head = s3.head_object(Bucket=_BRONZE_BUCKET, Key=derived_key)
+        head = store.head(Bucket.BRONZE, derived_key)
     except Exception:
         return False
-    meta = head.get("Metadata") or {}
+    meta = head.get("metadata") or {}
     return meta.get(_TIFF_DERIVED_TAG) == source_sha256
 
 
@@ -172,19 +151,18 @@ async def normalize(
         input.workspace_id, input.project_id, input.minio_key, input.file_size,
     )
 
-    s3 = _s3_client()
+    store = S3CompatibleStorage(StorageConfig.from_env())
 
     # 1. Stream the source TIFF down.
-    resp = s3.get_object(Bucket=_BRONZE_BUCKET, Key=input.minio_key)
-    source_bytes = resp["Body"].read()
+    source_bytes = store.get_bytes(Bucket.BRONZE, input.minio_key)
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
 
     derived_key = derived_pdf_key(input.project_id, input.minio_key, source_sha256)
 
-    # 2. Idempotency — if the derived PDF is already in MinIO with the
+    # 2. Idempotency — if the derived PDF is already in SeaweedFS with the
     # matching source-sha tag, skip the wrap and trigger ingest_pdf
     # directly. This makes Hatchet retries safe.
-    normalize_skipped = _derived_already_present(s3, derived_key, source_sha256)
+    normalize_skipped = _derived_already_present(store, derived_key, source_sha256)
     page_count = 0
     truncated = False
 
@@ -203,12 +181,12 @@ async def normalize(
         truncated = result.truncated_at_cap
 
         # 4. Upload derived PDF with provenance metadata.
-        s3.put_object(
-            Bucket=_BRONZE_BUCKET,
-            Key=derived_key,
-            Body=result.pdf_bytes,
-            ContentType="application/pdf",
-            Metadata={
+        store.put_bytes(
+            Bucket.BRONZE,
+            derived_key,
+            result.pdf_bytes,
+            content_type="application/pdf",
+            metadata={
                 _TIFF_DERIVED_TAG: source_sha256,
                 "x-georag-tiff-source-key": input.minio_key,
                 "x-georag-tiff-frames": str(result.page_count),
@@ -226,8 +204,8 @@ async def normalize(
             derived_key, source_sha256[:8],
         )
         # Pull frame count from the metadata for a complete output record.
-        head = s3.head_object(Bucket=_BRONZE_BUCKET, Key=derived_key)
-        meta = head.get("Metadata") or {}
+        head = store.head(Bucket.BRONZE, derived_key)
+        meta = head.get("metadata") or {}
         try:
             page_count = int(meta.get("x-georag-tiff-frames", "0"))
         except (TypeError, ValueError):
@@ -238,8 +216,8 @@ async def normalize(
     # workspace_id / project_id / vendor_profile_id / actor_id /
     # correlation_token unchanged; the only delta is minio_key (now the
     # derived PDF) and file_size (derived PDF size).
-    head = s3.head_object(Bucket=_BRONZE_BUCKET, Key=derived_key)
-    derived_size = int(head.get("ContentLength") or 0)
+    head = store.head(Bucket.BRONZE, derived_key)
+    derived_size = int(head.get("size") or 0)
 
     downstream_input = IngestPdfInput(
         workspace_id=input.workspace_id,

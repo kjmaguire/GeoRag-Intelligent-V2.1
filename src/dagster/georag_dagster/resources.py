@@ -13,14 +13,13 @@ introspection and that import breaks runtime annotation evaluation.
 
 import contextlib
 import io
-from typing import Generator, Iterator
+from collections.abc import Generator, Iterator
 
-import boto3
 import psycopg2
 import psycopg2.extras
-from botocore.client import Config
 from botocore.exceptions import ClientError
 from dagster import ConfigurableResource, get_dagster_logger
+from georag_object_storage import StorageConfig, build_boto3_client
 
 logger = get_dagster_logger()
 
@@ -59,7 +58,7 @@ class PostgresResource(ConfigurableResource):
         return conn
 
     @contextlib.contextmanager
-    def get_connection(self) -> Generator[psycopg2.extensions.connection, None, None]:
+    def get_connection(self) -> Generator[psycopg2.extensions.connection]:
         """Yield a psycopg2 connection; commit on clean exit, rollback on exception."""
         conn = self._connect()
         try:
@@ -75,27 +74,24 @@ class PostgresResource(ConfigurableResource):
     def get_cursor(
         self,
         cursor_factory=psycopg2.extras.RealDictCursor,
-    ) -> Generator[psycopg2.extensions.cursor, None, None]:
+    ) -> Generator[psycopg2.extensions.cursor]:
         """Yield a cursor inside a managed connection.
 
         Uses RealDictCursor by default so SELECT results come back as dicts.
         """
-        with self.get_connection() as conn:
-            with conn.cursor(cursor_factory=cursor_factory) as cur:
-                yield cur
+        with self.get_connection() as conn, conn.cursor(cursor_factory=cursor_factory) as cur:
+            yield cur
 
     def execute(self, sql: str, params=None) -> None:
         """Execute a single statement and commit. Convenience wrapper."""
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
+        with self.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
 
     def execute_many(self, sql: str, params_seq: list) -> int:
         """Execute a statement for each item in params_seq. Returns row count."""
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                psycopg2.extras.execute_batch(cur, sql, params_seq, page_size=500)
-                return cur.rowcount
+        with self.get_connection() as conn, conn.cursor() as cur:
+            psycopg2.extras.execute_batch(cur, sql, params_seq, page_size=500)
+            return cur.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +111,16 @@ class S3Resource(ConfigurableResource):
         MINIO_ROOT_PASSWORD  — S3 secret key (reused from existing compose env)
 
     Configured in definitions.py under the "s3" resource key.
+
+    Storage-abstraction plan PR3: client construction now delegates to
+    georag_object_storage's build_boto3_client() so this resource and the
+    shared package's S3CompatibleStorage build the client identically — one
+    source of truth for the endpoint/credentials/signature-version wiring.
+    The methods below keep their existing raw-bucket-string signatures
+    (rather than the shared package's Bucket-enum interface) because Dagster
+    callers pass dynamic bucket names — e.g. get_client() is used directly
+    for paginator/list_objects_v2 calls in index_reports.py and
+    silver_public_geoscience.py — that don't map onto a fixed logical set.
     """
 
     endpoint_url: str = "http://minio:8333"  # from S3_ENDPOINT_URL
@@ -124,13 +130,14 @@ class S3Resource(ConfigurableResource):
 
     def get_client(self):
         """Return a boto3 S3 client configured for the project endpoint."""
-        return boto3.client(
-            "s3",
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key,
-            aws_secret_access_key=self.secret_key,
-            region_name=self.region,
-            config=Config(signature_version="s3v4"),
+        return build_boto3_client(
+            StorageConfig(
+                endpoint_url=self.endpoint_url,
+                access_key=self.access_key,
+                secret_key=self.secret_key,
+                region=self.region,
+                bucket_names={},  # unused — this class's methods take raw bucket strings
+            )
         )
 
     def bucket_exists(self, bucket: str) -> bool:
@@ -265,7 +272,7 @@ class QdrantResource(ConfigurableResource):
         qdrant-client being installed in environments that never run the index
         asset (e.g., lightweight CI).
         """
-        from qdrant_client import QdrantClient  # noqa: PLC0415
+        from qdrant_client import QdrantClient
 
         return QdrantClient(host=self.host, port=self.port)
 
@@ -304,7 +311,7 @@ class Neo4jResource(ConfigurableResource):
         called even on errors; Dagster assets have one driver lifetime per
         materialisation.
         """
-        from neo4j import GraphDatabase  # noqa: PLC0415
+        from neo4j import GraphDatabase
 
         auth = (self.username, self.password) if self.auth_enabled else None
         return GraphDatabase.driver(
@@ -341,7 +348,7 @@ class VllmResource(ConfigurableResource):
 
     def get_client(self):
         """Return a configured ``openai.OpenAI`` client targeting vLLM."""
-        from georag_dagster.clients.vllm_openai import build_default_client  # noqa: PLC0415
+        from georag_dagster.clients.vllm_openai import build_default_client
 
         return build_default_client(
             base_url=self.base_url,

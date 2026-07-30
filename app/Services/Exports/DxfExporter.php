@@ -38,6 +38,11 @@ use Illuminate\Support\Facades\DB;
  */
 class DxfExporter
 {
+    /**
+     * @param array<string, mixed> $filters
+     *
+     * @return array{path: string, size: int}
+     */
     public function export(string $projectId, array $filters = []): array
     {
         $reviewStatus = (string) ($filters['review_status'] ?? 'accepted');
@@ -68,14 +73,21 @@ class DxfExporter
             fclose($handle);
         }
 
+        $size = filesize($tmpPath);
+        if ($size === false) {
+            throw new \RuntimeException("Cannot determine exported file size: {$tmpPath}");
+        }
+
         return [
             'path' => $tmpPath,
-            'size' => filesize($tmpPath),
+            'size' => $size,
         ];
     }
 
     /**
      * Fetch collar rows honouring the review-status filter.
+     *
+     * @param array<string, mixed> $filters
      *
      * @return Collection<int, object>
      */
@@ -93,6 +105,11 @@ class DxfExporter
         return $silver->concat($pending);
     }
 
+    /**
+     * @param array<string, mixed> $filters
+     *
+     * @return Collection<int, Collar>
+     */
     private function fetchSilverCollars(string $projectId, array $filters): Collection
     {
         $query = Collar::where('project_id', $projectId);
@@ -107,6 +124,8 @@ class DxfExporter
     }
 
     /**
+     * @param array<string, mixed> $filters
+     *
      * @return Collection<int, object>
      */
     private function fetchPendingCollars(string $projectId, array $filters): Collection

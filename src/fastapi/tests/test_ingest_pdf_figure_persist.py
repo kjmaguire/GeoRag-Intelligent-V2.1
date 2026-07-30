@@ -1,7 +1,9 @@
 """Phase 1 (2026-05-22) — figure manifest persist-side handoff tests.
 
 The persist task in ingest_pdf.py consumes ParseOut.figures (a manifest
-list produced by _parse_with_docling in the parse subprocess) and:
+list that would be produced by a figure_manifest producer in the parse
+subprocess — currently always empty; docling, the previous producer,
+was removed 2026-07-29) and:
   1. copies each pending S3 key (figures/_pending/{sha}/...) to its
      final location figures/{report_id}/...
   2. deletes the pending object
@@ -11,8 +13,10 @@ list produced by _parse_with_docling in the parse subprocess) and:
 
 These tests exercise the rename + section-build logic in isolation
 (no real Postgres, no real S3) by re-implementing the manifest-consumption
-loop inline against a MagicMock boto3 client. The implementation under
-test lives in ingest_pdf.persist (the loop between
+loop inline against a MagicMock georag_object_storage.S3CompatibleStorage
+client (storage-abstraction plan PR5a — was a MagicMock boto3 client
+before this file's S3 calls migrated off raw boto3). The implementation
+under test lives in ingest_pdf.persist (the loop between
 "pending_manifest = parsed.get('figures')" and the
 "resource_estimate['figures'] = ..." block).
 
@@ -31,7 +35,7 @@ from __future__ import annotations
 import contextlib
 from unittest.mock import MagicMock, patch
 
-import pytest
+from georag_object_storage import Bucket
 
 # A1 (2026-07-28): the parser is first-party now. This used to be a fabricated
 # sys.modules entry for georag_dagster.parsers.pdf_report because the FastAPI
@@ -50,13 +54,19 @@ from app.services.ingest import pdf_report as _pdf_report_module
 
 
 def consume_figure_manifest(
-    s3,
+    store,
     pending_manifest,
     report_id,
     project_id,
-    default_bucket="bronze",
 ):
     """Re-implementation of the persist-task block under test.
+
+    Mirrors ingest_pdf.py's figure-manifest consumption loop, which calls
+    a georag_object_storage.sync_client.S3CompatibleStorage-shaped
+    ``store``'s copy()/delete()/get_bytes() (all scoped to Bucket.BRONZE —
+    pending figure uploads always land there, per the docling extractor
+    in georag_dagster/parsers/pdf_report.py, the only producer of this
+    manifest) rather than a raw boto3 client's copy_object()/delete_object().
 
     Returns (figure_sections_out, figure_manifest_final).
     """
@@ -68,28 +78,27 @@ def consume_figure_manifest(
         page_no = entry.get("page")
         caption = (entry.get("caption") or "").strip()
         pending_key = entry.get("pending_key")
-        bucket = entry.get("bucket") or default_bucket
         img_sha = entry.get("sha256")
 
         final_key = None
         if pending_key:
             final_key = f"figures/{report_id}/figure_{int(idx):04d}_page_{page_no}.png"
             try:
-                s3.copy_object(
-                    Bucket=bucket,
-                    Key=final_key,
-                    CopySource={"Bucket": bucket, "Key": pending_key},
-                    MetadataDirective="REPLACE",
-                    ContentType="image/png",
-                    Metadata={
+                store.copy(
+                    Bucket.BRONZE,
+                    pending_key,
+                    Bucket.BRONZE,
+                    final_key,
+                    metadata={
                         "report_id": str(report_id),
                         "project_id": str(project_id or ""),
                         "page": str(page_no),
                         "sha256": str(img_sha or ""),
                     },
+                    content_type="image/png",
                 )
                 with contextlib.suppress(Exception):
-                    s3.delete_object(Bucket=bucket, Key=pending_key)
+                    store.delete(Bucket.BRONZE, pending_key)
             except Exception:
                 final_key = None
 
@@ -97,7 +106,7 @@ def consume_figure_manifest(
         if caption:
             section_lines.append(f"Caption: {caption}")
         if final_key:
-            section_lines.append(f"Image: s3://{bucket}/{final_key}")
+            section_lines.append(f"Image: s3://bronze/{final_key}")
 
         figure_sections_out.append({
             "section_number": None,
@@ -123,14 +132,13 @@ def consume_figure_manifest(
 # ---------------------------------------------------------------------------
 
 def test_persist_copies_and_renames_each_figure():
-    s3 = MagicMock()
+    store = MagicMock()
     pending = [
         {
             "idx": 0,
             "page": 3,
             "caption": "Cross section A",
             "pending_key": "figures/_pending/sha0/figure_0000_page_3.png",
-            "bucket": "bronze",
             "sha256": "img-sha-0",
             "bbox": [1, 2, 3, 4],
         },
@@ -139,30 +147,30 @@ def test_persist_copies_and_renames_each_figure():
             "page": 7,
             "caption": "Drill plan",
             "pending_key": "figures/_pending/sha0/figure_0001_page_7.png",
-            "bucket": "bronze",
             "sha256": "img-sha-1",
             "bbox": None,
         },
     ]
 
     sections, manifest = consume_figure_manifest(
-        s3, pending, report_id="rid-123", project_id="pid-9"
+        store, pending, report_id="rid-123", project_id="pid-9"
     )
 
-    assert s3.copy_object.call_count == 2
-    assert s3.delete_object.call_count == 2
+    assert store.copy.call_count == 2
+    assert store.delete.call_count == 2
 
-    first_copy = s3.copy_object.call_args_list[0]
-    assert first_copy.kwargs["Bucket"] == "bronze"
-    assert first_copy.kwargs["Key"] == "figures/rid-123/figure_0000_page_3.png"
-    assert first_copy.kwargs["CopySource"] == {
-        "Bucket": "bronze", "Key": "figures/_pending/sha0/figure_0000_page_3.png"
-    }
-    assert first_copy.kwargs["Metadata"]["report_id"] == "rid-123"
-    assert first_copy.kwargs["Metadata"]["project_id"] == "pid-9"
+    first_copy = store.copy.call_args_list[0]
+    assert first_copy.args == (
+        Bucket.BRONZE,
+        "figures/_pending/sha0/figure_0000_page_3.png",
+        Bucket.BRONZE,
+        "figures/rid-123/figure_0000_page_3.png",
+    )
+    assert first_copy.kwargs["metadata"]["report_id"] == "rid-123"
+    assert first_copy.kwargs["metadata"]["project_id"] == "pid-9"
 
-    first_delete = s3.delete_object.call_args_list[0]
-    assert first_delete.kwargs["Key"] == "figures/_pending/sha0/figure_0000_page_3.png"
+    first_delete = store.delete.call_args_list[0]
+    assert first_delete.args == (Bucket.BRONZE, "figures/_pending/sha0/figure_0000_page_3.png")
 
     assert manifest[0]["minio_key"] == "figures/rid-123/figure_0000_page_3.png"
     assert manifest[1]["minio_key"] == "figures/rid-123/figure_0001_page_7.png"
@@ -177,15 +185,15 @@ def test_persist_copies_and_renames_each_figure():
 # ---------------------------------------------------------------------------
 
 def test_persist_handles_empty_manifest():
-    s3 = MagicMock()
+    store = MagicMock()
     sections, manifest = consume_figure_manifest(
-        s3, pending_manifest=[], report_id="rid-1", project_id=None
+        store, pending_manifest=[], report_id="rid-1", project_id=None
     )
 
     assert sections == []
     assert manifest == []
-    s3.copy_object.assert_not_called()
-    s3.delete_object.assert_not_called()
+    store.copy.assert_not_called()
+    store.delete.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -194,22 +202,21 @@ def test_persist_handles_empty_manifest():
 # ---------------------------------------------------------------------------
 
 def test_persist_records_section_when_pending_key_missing():
-    s3 = MagicMock()
+    store = MagicMock()
     pending = [{
         "idx": 0, "page": 4,
         "caption": "Caption only",
         "pending_key": None,
-        "bucket": "bronze",
         "sha256": None,
         "bbox": None,
     }]
 
     sections, manifest = consume_figure_manifest(
-        s3, pending, report_id="rid-z", project_id=None
+        store, pending, report_id="rid-z", project_id=None
     )
 
-    s3.copy_object.assert_not_called()
-    s3.delete_object.assert_not_called()
+    store.copy.assert_not_called()
+    store.delete.assert_not_called()
     assert len(sections) == 1
     assert "Caption: Caption only" in sections[0]["text"]
     assert "Image: " not in sections[0]["text"]
@@ -222,26 +229,26 @@ def test_persist_records_section_when_pending_key_missing():
 # ---------------------------------------------------------------------------
 
 def test_persist_recovers_from_copy_failure():
-    s3 = MagicMock()
-    s3.copy_object.side_effect = [Exception("AccessDenied"), {"CopyObjectResult": {}}]
+    store = MagicMock()
+    store.copy.side_effect = [Exception("AccessDenied"), None]
 
     pending = [
         {"idx": 0, "page": 1, "caption": "A",
          "pending_key": "figures/_pending/sha/figure_0000_page_1.png",
-         "bucket": "bronze", "sha256": "x", "bbox": None},
+         "sha256": "x", "bbox": None},
         {"idx": 1, "page": 2, "caption": "B",
          "pending_key": "figures/_pending/sha/figure_0001_page_2.png",
-         "bucket": "bronze", "sha256": "y", "bbox": None},
+         "sha256": "y", "bbox": None},
     ]
 
     sections, manifest = consume_figure_manifest(
-        s3, pending, report_id="rid-r", project_id="p"
+        store, pending, report_id="rid-r", project_id="p"
     )
 
     assert manifest[0]["minio_key"] is None  # copy failed
     assert manifest[1]["minio_key"] == "figures/rid-r/figure_0001_page_2.png"
     # delete only called for successful copy
-    assert s3.delete_object.call_count == 1
+    assert store.delete.call_count == 1
     # Both captions still made it into sections
     assert "Caption: A" in sections[0]["text"]
     assert "Caption: B" in sections[1]["text"]
@@ -252,22 +259,22 @@ def test_persist_recovers_from_copy_failure():
 # ---------------------------------------------------------------------------
 
 def test_persist_tolerates_delete_failure():
-    s3 = MagicMock()
-    s3.delete_object.side_effect = Exception("transient minio 500")
+    store = MagicMock()
+    store.delete.side_effect = Exception("transient object-storage 500")
 
     pending = [{
         "idx": 0, "page": 1, "caption": "C",
         "pending_key": "figures/_pending/sha/figure_0000_page_1.png",
-        "bucket": "bronze", "sha256": "z", "bbox": None,
+        "sha256": "z", "bbox": None,
     }]
 
     sections, manifest = consume_figure_manifest(
-        s3, pending, report_id="rid-d", project_id=None
+        store, pending, report_id="rid-d", project_id=None
     )
 
     # Copy ran once, delete ran once (even though it raised)
-    assert s3.copy_object.call_count == 1
-    assert s3.delete_object.call_count == 1
+    assert store.copy.call_count == 1
+    assert store.delete.call_count == 1
     # Final key still recorded — copy succeeded, that's what matters
     assert manifest[0]["minio_key"] == "figures/rid-d/figure_0000_page_1.png"
     assert "Image: s3://bronze/figures/rid-d/figure_0000_page_1.png" in sections[0]["text"]
@@ -278,14 +285,14 @@ def test_persist_tolerates_delete_failure():
 # ---------------------------------------------------------------------------
 
 def test_persist_final_key_naming_convention():
-    s3 = MagicMock()
+    store = MagicMock()
     pending = [{
         "idx": 17, "page": 142, "caption": "",
         "pending_key": "figures/_pending/sha/figure_0017_page_142.png",
-        "bucket": "bronze", "sha256": "h", "bbox": None,
+        "sha256": "h", "bbox": None,
     }]
     _, manifest = consume_figure_manifest(
-        s3, pending, report_id="rid-naming", project_id=None
+        store, pending, report_id="rid-naming", project_id=None
     )
     assert manifest[0]["minio_key"] == "figures/rid-naming/figure_0017_page_142.png"
 
@@ -296,14 +303,14 @@ def test_persist_final_key_naming_convention():
 # ---------------------------------------------------------------------------
 
 def test_persist_metadata_handles_none_project_id():
-    s3 = MagicMock()
+    store = MagicMock()
     pending = [{
         "idx": 0, "page": 1, "caption": "x",
         "pending_key": "figures/_pending/sha/figure_0000_page_1.png",
-        "bucket": "bronze", "sha256": "s", "bbox": None,
+        "sha256": "s", "bbox": None,
     }]
-    consume_figure_manifest(s3, pending, report_id="rid-m", project_id=None)
-    md = s3.copy_object.call_args.kwargs["Metadata"]
+    consume_figure_manifest(store, pending, report_id="rid-m", project_id=None)
+    md = store.copy.call_args.kwargs["metadata"]
     assert md["project_id"] == ""
     assert md["report_id"] == "rid-m"
     assert md["page"] == "1"
@@ -314,13 +321,13 @@ def test_persist_metadata_handles_none_project_id():
 # ---------------------------------------------------------------------------
 
 def test_persist_section_body_always_has_page_line():
-    s3 = MagicMock()
+    store = MagicMock()
     pending = [{
         "idx": 0, "page": 8, "caption": "",
-        "pending_key": None, "bucket": "bronze", "sha256": None, "bbox": None,
+        "pending_key": None, "sha256": None, "bbox": None,
     }]
     sections, _ = consume_figure_manifest(
-        s3, pending, report_id="rid-p", project_id=None
+        store, pending, report_id="rid-p", project_id=None
     )
     assert sections[0]["text"].startswith("Figure on page 8.")
     assert sections[0]["page_first"] == 8
@@ -390,72 +397,11 @@ def test_run_parser_subprocess_returns_figures_key(tmp_path):
     assert out["figures"][0]["pending_key"] == "figures/_pending/aa/figure_0000_page_1.png"
 
 
-# ---------------------------------------------------------------------------
-# 11. _run_parser_subprocess cleans up the figure tempdir in finally
-# ---------------------------------------------------------------------------
-
-def test_run_parser_subprocess_cleans_figure_tempdir():
-    import os
-
-    from app.hatchet_workflows import ingest_pdf as mod
-    from app.services.ingest.pdf_report import _figure_tempdir
-
-    sha = "cc" * 32
-
-    # Seed a fake tempdir so we can observe its removal
-    d = _figure_tempdir(sha)
-    sentinel = os.path.join(d, "fake.png")
-    with open(sentinel, "wb") as f:
-        f.write(b"junk")
-    assert os.path.isfile(sentinel)
-
-    stub = MagicMock()
-    for attr in (
-        "title", "company", "filing_date", "commodity", "project_name", "region",
-    ):
-        setattr(stub, attr, None)
-    stub.authors = []
-    stub.sections = []
-    stub.parse_quality_pct = 0.0
-    stub.parser_used = "stub"
-    stub.skipped_elements = 0
-    stub.warnings = []
-    stub.page_languages = []
-    stub.resource_tables = []
-    stub.is_scanned = False
-    stub.figure_manifest = []
-
-    with patch.object(
-        _pdf_report_module,
-        "parse_pdf_report",
-        MagicMock(return_value=stub),
-    ):
-        mod._run_parser_subprocess(b"%PDF-1.4 fake", sha256=sha)
-
-    assert not os.path.exists(d)
-
-
-# ---------------------------------------------------------------------------
-# 12. Tempdir cleanup still runs when parse raises
-# ---------------------------------------------------------------------------
-
-def test_run_parser_subprocess_cleans_tempdir_on_parse_error():
-    import os
-
-    from app.hatchet_workflows import ingest_pdf as mod
-    from app.services.ingest.pdf_report import _figure_tempdir
-
-    sha = "dd" * 32
-    d = _figure_tempdir(sha)
-    with open(os.path.join(d, "x.png"), "wb") as f:
-        f.write(b"junk")
-
-    with patch.object(
-        _pdf_report_module,
-        "parse_pdf_report",
-        MagicMock(side_effect=RuntimeError("boom")),
-    ):
-        with pytest.raises(RuntimeError):
-            mod._run_parser_subprocess(b"%PDF-1.4 fake", sha256=sha)
-
-    assert not os.path.exists(d)
+# NOTE: the _figure_tempdir-based cleanup tests that used to live here
+# (_run_parser_subprocess cleaning up a per-sha figure tempdir in its
+# `finally` block) were removed 2026-07-29 along with docling. That
+# tempdir mechanism only existed because _parse_with_docling rendered
+# figure PNGs to local disk before uploading them to S3 — with docling
+# gone, nothing writes to a local figure tempdir any more, so
+# `_figure_tempdir` and the cleanup call were deleted from
+# app.services.ingest.pdf_report / app.hatchet_workflows.ingest_pdf.

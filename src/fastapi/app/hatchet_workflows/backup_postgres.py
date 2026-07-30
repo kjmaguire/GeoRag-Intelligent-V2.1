@@ -202,30 +202,23 @@ async def _stream_pg_dump_to_seaweedfs(
 async def _put_s3(bucket: str, key: str, body: bytes) -> None:
     """Upload to SeaweedFS via its S3 API using aioboto3.
 
-    Configuration knobs (env vars, with safe dev defaults):
-      - SEAWEEDFS_S3_ENDPOINT     — e.g. http://seaweedfs:8333
-      - SEAWEEDFS_S3_ACCESS_KEY   — bucket policy IAM key
-      - SEAWEEDFS_S3_SECRET_KEY   — paired secret
-      - SEAWEEDFS_S3_REGION       — defaults to us-east-1 (SeaweedFS ignores)
+    ``bucket`` is a workflow-input string (default "georag-backups",
+    overridable per BackupPostgresInput's own docstring) — genuinely
+    dynamic, not one of georag_object_storage's four fixed logical Bucket
+    members, so this uses the raw-client escape hatch (async_client_kwargs)
+    rather than the higher-level AsyncObjectStorage interface. Credentials/
+    endpoint/region come from StorageConfig.from_env() — canonical AWS_*
+    env vars, falling back through S3_*/MINIO_*/SEAWEEDFS_*/SEAWEEDFS_S3_*
+    names (see georag_object_storage.config for the full chain).
 
     Bucket must exist (SeaweedFS S3 returns NoSuchBucket otherwise).
     Production deploys pre-create the bucket via the operator runbook.
     """
     import aioboto3
-
-    endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "http://seaweedfs:8333")
-    access_key = os.environ.get("SEAWEEDFS_S3_ACCESS_KEY", "georag")
-    secret_key = os.environ.get("SEAWEEDFS_S3_SECRET_KEY", "georag")
-    region = os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1")
+    from georag_object_storage import StorageConfig, async_client_kwargs
 
     session = aioboto3.Session()
-    async with session.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=region,
-    ) as s3:
+    async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
         await s3.put_object(Bucket=bucket, Key=key, Body=body)
 
 

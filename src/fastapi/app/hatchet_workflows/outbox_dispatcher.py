@@ -181,7 +181,12 @@ async def _dispatch_neo4j(row: asyncpg.Record) -> tuple[str, str | None]:
 
 
 async def _dispatch_seaweedfs(row: asyncpg.Record) -> tuple[str, str | None]:
-    import boto3
+    # bucket is genuinely dynamic here (payload-, or target_collection-,
+    # or default-derived) — not one of georag_object_storage's four fixed
+    # logical Bucket members, so this uses build_boto3_client() directly
+    # rather than the higher-level Bucket-enum ObjectStorage interface
+    # (the same escape hatch Dagster's S3Resource uses for the same reason).
+    from georag_object_storage import StorageConfig, build_boto3_client
 
     payload = _payload(row)
     bucket = (
@@ -196,22 +201,8 @@ async def _dispatch_seaweedfs(row: asyncpg.Record) -> tuple[str, str | None]:
     if isinstance(body, str):
         body = body.encode("utf-8")
 
-    endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "http://minio:8333")
-    access_key = os.environ.get(
-        "SEAWEEDFS_ACCESS_KEY", os.environ.get("MINIO_ROOT_USER", "")
-    )
-    secret_key = os.environ.get(
-        "SEAWEEDFS_SECRET_KEY", os.environ.get("MINIO_ROOT_PASSWORD", "")
-    )
-
     def _put() -> None:
-        client = boto3.client(
-            "s3",
-            endpoint_url=endpoint,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name="us-east-1",
-        )
+        client = build_boto3_client(StorageConfig.from_env())
         if row["operation"] == "delete":
             client.delete_object(Bucket=bucket, Key=key)
         else:

@@ -95,24 +95,8 @@ volumes:
   # Phase 3 Step 7 — activepieces_cache volume removed (sunset).
   # Kestra storage volume — flow execution data + internal storage. Phase 3 Step 2.
   # Kestra working directory (subprocess tasks, scratch).
-  # Phase 2.0 (2026-05-22) — rapidocr ONNX model cache. Docling's OCR
-  # backend (rapidocr) downloads ~150 MB of per-language ONNX models on
-  # first use. Default cache path is inside site-packages which is read-
-  # only for www-data, so we redirect to /tmp/rapidocr_models via env
-  # and mount this named volume so the models survive container
-  # restarts (one download per host, not per container start).
-  # Mounted on: hatchet-worker.
-  #
-  # ⚠️ ONE-TIME SETUP: Docker creates new named volumes as root:root.
-  # Chown to www-data once after the volume is created, then the
-  # ownership persists across container restarts:
-  #     docker exec -u 0 georag-hatchet-worker \
-  #         chown -R 33:33 /tmp/rapidocr_models
-  # If the volume is ever destroyed (`docker volume rm
-  # georagintelligencev10_rapidocr_models`), repeat this chown step
-  # before re-enabling DOCLING_OCR_ENABLED.
-  rapidocr_models:
-    driver: local
+  # rapidocr_models volume removed 2026-07-29 along with docling (its only
+  # consumer) — docling never ran in production.
   # Caddy /data — holds the internal CA + issued certs (Phase 7 Step 3).
   # Persisting this keeps the dev cert stable across container restarts,
   # so clients that trust it once don't have to re-import every reboot.
@@ -729,8 +713,11 @@ services:
   # ---------------------------------------------------------------------------
   fastapi:
     build:
-      context: ./src/fastapi
-      dockerfile: ../../docker/fastapi.Dockerfile
+      # The FastAPI image installs the sibling georag_object_storage package,
+      # so its build context must include both source trees. Runtime storage
+      # endpoint and credential settings remain unchanged below.
+      context: ./src
+      dockerfile: ../docker/fastapi.Dockerfile
     image: georag/fastapi:latest
     container_name: georag-fastapi
     restart: unless-stopped
@@ -820,6 +807,7 @@ services:
       # 1024-dim georag_chunks collection. Keep this in lockstep with the
       # `embedding` sidecar and `hatchet-worker` — all three must agree.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3}
       # Pinned explicitly rather than left to the app.config default so the
       # dimension is visible next to the model that produces it.
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
@@ -955,12 +943,12 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      # 2026-06-23 sweep — PaddleOCR 3.x (ADR-0016) calls Path.mkdir on
-      # $HOME/.paddlex/temp at IMPORT time (not first-use). www-data's
-      # default HOME (/var/www) doesn't exist in this image, so the
-      # mkdir explodes with PermissionError before any startup code
-      # runs. Redirect HOME to /tmp so the cache dir lands somewhere
-      # writable. Matches the Hatchet worker's HOME=/tmp pin.
+      # 2026-06-23 sweep — several import-time cache mkdirs (numba,
+      # matplotlib, HF) target $HOME, which doesn't exist for www-data
+      # in this image. Redirect HOME to /tmp so those caches land
+      # somewhere writable. Matches the Hatchet worker's HOME=/tmp pin.
+      # (PaddleOCR/paddlex, the original trigger for this pin, was
+      # removed 2026-07-29 — orphaned /pdf/ocr_region endpoint.)
       HOME: /tmp
       # Sentry observability — same project as Laravel side. Blank DSN
       # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
@@ -1172,6 +1160,7 @@ services:
       # the query path expects. Default is Qwen3 (1024-dim) — see the fastapi
       # service for why the old 384-dim bge default was a landmine.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3}
       # Audit 2026-06-27: service-to-service auth — /embed checks X-Service-Key
       # against this shared secret (app.sidecar_auth). Same key the main fastapi
       # + Laravel bridge use; the embedding proxy in the workers sends it.
@@ -1727,9 +1716,11 @@ services:
 
   # ---------------------------------------------------------------------------
   # RAGFlow removed in §04p Phase 3 — replaced by the in-process PDF Ingestion
-  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Docling, PaddleOCR,
-  # Qwen-VL on vLLM) that lives entirely inside the FastAPI deployment unit.
-  # See georag-architecture.html §04p (v1.43+) for the locked stack.
+  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Azure Document
+  # Intelligence OCR, Tesseract fallback, Qwen-VL on vLLM) that lives
+  # entirely inside the FastAPI deployment unit. Docling was also part of
+  # this stack until removed 2026-07-29 (never ran in production). See
+  # georag-architecture.html §04p (v1.43+) for the locked stack.
   # ---------------------------------------------------------------------------
 
   # ===========================================================================
@@ -1914,25 +1905,21 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      # 2026-06-23 sweep — PaddleOCR 3.x calls Path.mkdir on
-      # $HOME/.paddlex/temp at IMPORT time; redirect HOME to /tmp so
-      # the worker can import pdf_ocr.py without crashing.
+      # 2026-06-23 sweep — several import-time cache mkdirs (numba,
+      # matplotlib, HF) target $HOME, which doesn't exist for www-data
+      # in this image. Redirect HOME to /tmp so those caches land
+      # somewhere writable.
       HOME: /tmp
       # Ingest parser and OCR configuration.
-      PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
-      DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
-      RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
       PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
       PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
       PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}
       PARSE_SUBPROCESS_MAX_WORKERS: ${PARSE_SUBPROCESS_MAX_WORKERS:-}
-      # A measured Docling/OCR parse needs 3-4 GB resident. Keep these
+      # A measured OCR-heavy parse needs 3-4 GB resident. Keep these
       # ingestion guards on the merged worker.
       PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
       PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
-      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-}
-      PADDLEOCR_MIN_FREE_VRAM_MB: ${PADDLEOCR_MIN_FREE_VRAM_MB:-1024}
       FLAGS_logging_dir: /tmp
       S3_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-bronze}
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
@@ -1967,6 +1954,7 @@ services:
       # Default is Qwen3 (1024-dim); see the fastapi service for why the old
       # 384-dim bge default was a silent-corruption landmine.
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
+      EMBEDDING_MODEL_REVISION: ${EMBEDDING_MODEL_REVISION:-97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3}
       EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
       # CPU thread budget for PyTorch ops that fall back to CPU (reranker,
       # SPLADE++). OMP/MKL defaults to all host threads which causes
@@ -1983,9 +1971,6 @@ services:
       # and its OTel bootstrap now live in app/services/ingest/pdf_report.py
       # and app/observability/, so the FastAPI image is self-contained.
       - georag-phase-b-extract:/extract
-      # Phase 2.0 (2026-05-22) — shared rapidocr model cache. Same
-      # named volume retained across worker restarts.
-      - rapidocr_models:/tmp/rapidocr_models
     user: "33:33"
     healthcheck:
       test: ["CMD-SHELL", "grep -q app.hatchet_workflows.worker /proc/1/cmdline || exit 1"]

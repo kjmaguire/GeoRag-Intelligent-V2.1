@@ -40,11 +40,13 @@ class DecisionLessonLearned extends Model
 
     protected $casts = ['captured_at' => 'datetime'];
 
+    /** @return BelongsTo<DecisionRecord, $this> */
     public function decision(): BelongsTo
     {
         return $this->belongsTo(DecisionRecord::class, 'decision_id', 'decision_id');
     }
 
+    /** @return BelongsTo<User, $this> */
     public function capturedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'captured_by_user_id', 'id');

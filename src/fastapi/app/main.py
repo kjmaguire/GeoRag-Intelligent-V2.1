@@ -102,12 +102,10 @@ from app.routers import maps as maps_router  # CC-01 Item 3 (stub) — map inges
 from app.routers import metrics_ingestion_events as metrics_ingestion_events_router
 from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
 from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
-from app.routers import ocr_render as ocr_render_router
 from app.routers import outlier_assist as outlier_assist_router
 from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
-from app.routers import re_ocr_trigger as re_ocr_trigger_router
 from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
@@ -540,7 +538,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # before. See app.services.embedding.
         from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        embedding_model = get_embedding_model(settings.EMBEDDING_MODEL_NAME)
+        embedding_model = get_embedding_model(
+            settings.EMBEDDING_MODEL_NAME,
+            settings.EMBEDDING_MODEL_REVISION,
+        )
         # Warm up: encode a dummy string so the first real request does not
         # pay the JIT/model-init penalty (a no-op round-trip for the sidecar
         # proxy, which also validates connectivity at startup).
@@ -726,15 +727,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # -------------------------------------------------------------------------
     # PdfRenderService holds a ProcessPoolExecutor (process workers, not threads,
     # per §04p Stage 2 PDFium thread-safety requirement) and an LRU render cache.
-    # LocalFsBronzeStore is a Phase 1.A stub; replace with SeaweedFsBronzeStore
-    # in a follow-up phase when the S3-compatible API is integrated.
+    # S3BronzeStore (SeaweedFS) is the production Bronze store as of the
+    # storage-abstraction plan's PR4; LocalFsBronzeStore is a fallback for a
+    # bare dev shell that isn't running the full docker-compose stack.
     try:
-        from app.services.bronze_store import LocalFsBronzeStore  # noqa: PLC0415
+        from georag_object_storage import StorageConfig  # noqa: PLC0415
+
+        from app.services.bronze_store import LocalFsBronzeStore, S3BronzeStore  # noqa: PLC0415
         from app.services.pdf_render import PdfRenderService  # noqa: PLC0415
 
         app.state.pdf_render_service = PdfRenderService()
-        app.state.bronze_store = LocalFsBronzeStore()
-        logger.info("PDF render service and Bronze store ready (§04p Phase 1.A)")
+        try:
+            app.state.bronze_store = S3BronzeStore(StorageConfig.from_env())
+            logger.info("PDF render service ready; Bronze store backed by SeaweedFS")
+        except ValueError:
+            # No object-storage credentials in this environment (AWS_ACCESS_KEY_ID/
+            # AWS_SECRET_ACCESS_KEY, or a legacy S3_*/MINIO_*/SEAWEEDFS_* fallback,
+            # are all unset) — expected in a bare dev shell, not in any environment
+            # actually running SeaweedFS. Fall back to local disk rather than
+            # failing PDF render entirely.
+            logger.warning(
+                "No object-storage credentials found — Bronze store falling back to "
+                "local disk. Fine for a bare dev shell; any environment with more than "
+                "one FastAPI instance needs SeaweedFS-backed storage to work correctly."
+            )
+            app.state.bronze_store = LocalFsBronzeStore()
+            logger.info("PDF render service and Bronze store ready (local-disk fallback)")
     except Exception:
         logger.exception(
             "§04p PDF subsystem init failed — /pdf/* endpoints will return 503. "
@@ -765,71 +783,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "uv pip install 'pdfminer.six>=20240706' 'pdfplumber>=0.11'"
         )
         app.state.pdf_extract_service = None
-
-    # -------------------------------------------------------------------------
-    # 10. §04p PDF Ingestion Subsystem — Stage 4 layout service (Phase 1.C-i)
-    # -------------------------------------------------------------------------
-    # PdfLayoutService holds a dedicated ProcessPoolExecutor (separate from
-    # the render + extract pools) for Docling document conversion.  Docling's
-    # first inference call is heavy (ONNX model load); process isolation
-    # prevents it from starving lighter workers under concurrent load.
-    # Results are cached durably in silver.pdf_layout_regions.
-    #
-    # Defensive try/except: if docling is not installed the service is set to
-    # None and /pdf/find_legends returns 503.  The rest of the app is unaffected.
-    try:
-        from app.services.pdf_layout import PdfLayoutService  # noqa: PLC0415
-
-        app.state.pdf_layout_service = PdfLayoutService(pool=pg_pool)
-        logger.info("PDF layout service ready (§04p Phase 1.C-i — Docling)")
-    except Exception:
-        logger.exception(
-            "§04p Phase 1.C-i layout service init failed — "
-            "/pdf/find_legends will return 503. "
-            "Ensure docling is installed: uv pip install 'docling>=2.13'"
-        )
-        app.state.pdf_layout_service = None
-
-    # -------------------------------------------------------------------------
-    # 11. §04p PDF Ingestion Subsystem — Stage 5 OCR service (Phase 1.C-ii)
-    # -------------------------------------------------------------------------
-    # PdfOcrService holds a dedicated ProcessPoolExecutor (separate from the
-    # render, extract, and layout pools) for PaddleOCR PP-OCRv5 calls.
-    # PaddleOCR's first inference is heavy (model load + PaddlePaddle JIT) and
-    # benefits from process isolation so it cannot starve lighter workers.
-    # Results are cached durably in silver.pdf_ocr_results.
-    #
-    # Defensive try/except: if paddleocr or paddlepaddle is not installed the
-    # service is set to None and /pdf/ocr_region returns 503.  The rest of the
-    # app is unaffected.
-    #
-    # NOTE for operator: PaddlePaddle is heavy (~500 MB CPU-only wheel).
-    # Run `uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'` or rebuild
-    # the fastapi Docker image before using the /pdf/ocr_region endpoint.
-    # Both packages are Apache 2.0 — clean per §04p license-posture table.
-    app.state.pdf_ocr_service = None
-    _render_svc = getattr(app.state, "pdf_render_service", None)
-    if _render_svc is not None:
-        try:
-            from app.services.pdf_ocr import PdfOcrService  # noqa: PLC0415
-
-            app.state.pdf_ocr_service = PdfOcrService(
-                pool=pg_pool,
-                render_service=_render_svc,
-            )
-            logger.info("PDF OCR service ready (§04p Phase 1.C-ii — PaddleOCR PP-OCRv5)")
-        except Exception:
-            logger.exception(
-                "§04p Phase 1.C-ii OCR service init failed — "
-                "/pdf/ocr_region will return 503. "
-                "Ensure paddlepaddle and paddleocr are installed: "
-                "uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'"
-            )
-    else:
-        logger.warning(
-            "§04p Phase 1.C-ii OCR service skipped — pdf_render_service is None. "
-            "Render service must initialise successfully before the OCR service."
-        )
 
     # -------------------------------------------------------------------------
     # 12. §04p PDF Ingestion Subsystem — Stage 6 VL service (Phase 1.D)
@@ -996,27 +949,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.debug("PDF extract service shutdown failed", exc_info=True)
 
-    # §04p Phase 1.C-i — shut down the layout detection process pool before DB pools.
-    # Same rationale as the extract pool shutdown above.
-    pdf_layout_service = getattr(app.state, "pdf_layout_service", None)
-    if pdf_layout_service is not None:
-        try:
-            await pdf_layout_service.shutdown()
-            logger.info("PDF layout service shut down")
-        except Exception:
-            logger.debug("PDF layout service shutdown failed", exc_info=True)
-
-    # §04p Phase 1.C-ii — shut down the OCR process pool before DB pools.
-    # PaddleOCR workers may have in-flight cache writes; drain them before
-    # the pg_pool is closed.
-    pdf_ocr_service = getattr(app.state, "pdf_ocr_service", None)
-    if pdf_ocr_service is not None:
-        try:
-            await pdf_ocr_service.shutdown()
-            logger.info("PDF OCR service shut down")
-        except Exception:
-            logger.debug("PDF OCR service shutdown failed", exc_info=True)
-
     # Anthropic first (no pool, just an httpx client; symmetric teardown order).
     anthropic_client = getattr(app.state, "anthropic_client", None)
     if anthropic_client is not None:
@@ -1145,7 +1077,7 @@ if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
 # (enforced per-router via the verify_service_key dependency).
 app.include_router(queries.router, prefix="/internal")
 app.include_router(projects.router, prefix="/internal")
-app.include_router(exports_router.router, prefix="/internal")
+app.include_router(exports_router.router)
 # Track A.1 Phase 4.B-ii — LLM-assist outlier endpoint called by the
 # Dagster outlier detector. /internal/outlier-assist is the path the
 # Dagster helper expects (OUTLIER_LLM_ASSIST_ENDPOINT env var defaults
@@ -1165,8 +1097,6 @@ app.include_router(shadow_trigger_router.router)
 app.include_router(mv_refresh_trigger_router.router)  # Phase 2 reliability spec
 app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliability spec
 app.include_router(integrations_trigger_router.router)
-app.include_router(ocr_render_router.router)
-app.include_router(re_ocr_trigger_router.router)
 app.include_router(visualizations_router.router)  # Phase H4 §5 — strip-log / cross-section / stereonet
 app.include_router(ml_training_router.router)     # Phase H4 §12 UI — ML training runs
 app.include_router(citation_feedback_router.router)  # Phase H4 §12.8 UI — citation 👍/👎

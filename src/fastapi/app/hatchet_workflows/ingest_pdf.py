@@ -7,8 +7,9 @@ mirror the v1.49 contract:
     1. preflight    — S3 GET, magic bytes, sha256, page count, size cap
     2. parse        — calls app.services.ingest.pdf_report.parse_pdf_report()
                       which is the canonical v1.49 entry point — runs the
-                      full pipeline (fitz → docling/tesseract OCR routing,
-                      OCR if scanned, metadata, sections, resource tables)
+                      full pipeline (fitz → Tesseract/Azure Document
+                      Intelligence OCR routing, OCR if scanned, metadata,
+                      sections, resource tables)
     3. persist      — writes silver.reports + silver.shadow_runs + audit
 
 Step 4A originally decomposed parse into 5 sub-steps; that was unnecessary
@@ -35,6 +36,9 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.async_client import AsyncS3CompatibleStorage
+from georag_object_storage.sync_client import S3CompatibleStorage
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -53,8 +57,8 @@ log = logging.getLogger("georag.hatchet.ingest_pdf")
 
 
 # Subprocess pool used to run the (CPU-heavy, GIL-holding) PDF parse work
-# off the main asyncio loop. With `asyncio.to_thread`, parses like docling
-# or pdfplumber+OCR on 500-page PDFs hold the GIL so long that Hatchet's
+# off the main asyncio loop. With `asyncio.to_thread`, parses like
+# pdfplumber+OCR on 500-page PDFs hold the GIL so long that Hatchet's
 # heartbeat handler (4s deadline) can't fire and the worker gets marked
 # dead, in-flight tasks get cancelled, and we lose progress. A subprocess
 # pool gives each parse its own GIL → main loop stays responsive.
@@ -204,7 +208,7 @@ def _reset_parse_pool() -> None:
 # Temporary directory for PDF bodies consumed by parser subprocesses.
 _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
-# Phase 2 (2026-06-24): when set, persist captions each docling figure with the
+# Phase 2 (2026-06-24): when set, persist captions each figure with the
 # Qwen3-VL sidecar (an S3 GET + a VL call per figure) and folds the description
 # into the figure's ReportSection text before embedding. Off by default — shares
 # the FIGURE_VL_DESCRIPTIONS switch with the standalone figure_extractor path.
@@ -219,20 +223,17 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     Returns a plain dict (not a Pydantic model) — easier to pickle across
     process boundaries; caller reconstitutes ParseOut.
 
-    Phase 1 (2026-05-22): the parser returns a `figure_manifest` listing
-    each docling-extracted figure already uploaded to
-    figures/_pending/{sha256}/... The manifest is propagated to the
-    persist task via the returned dict; persist renames each pending key
-    to figures/{report_id}/... before recording the section.
+    The parser's `figure_manifest` field would list any figure already
+    uploaded to figures/_pending/{sha256}/... by a manifest producer,
+    propagated to the persist task via the returned dict; persist renames
+    each pending key to figures/{report_id}/... before recording the
+    section. Currently always empty — see the note in
+    app.services.ingest.pdf_report.ReportParseResult.figure_manifest.
     """
     import os as _os
-    import shutil as _shutil
     import time as _time
 
-    from app.services.ingest.pdf_report import (
-        _FIGURE_TEMPDIR_ROOT,
-        parse_pdf_report,
-    )
+    from app.services.ingest.pdf_report import parse_pdf_report
 
     _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
     cached_path = f"{_PDF_BODY_CACHE_DIR}/{sha256}.pdf"
@@ -289,13 +290,6 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     finally:
         with contextlib.suppress(Exception):
             _os.unlink(cached_path)
-        # Best-effort cleanup of any per-sha figure tempdir the parser
-        # may have created. PNGs were already uploaded to S3 (figures/
-        # _pending/{sha}/...) so the on-disk copy is no longer needed.
-        try:  # noqa: SIM105
-            _shutil.rmtree(f"{_FIGURE_TEMPDIR_ROOT}/{sha256}", ignore_errors=True)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 # =============================================================================
@@ -369,12 +363,13 @@ class ParseOut(BaseModel):
     warnings: list[dict] = Field(default_factory=list)
     page_languages: list[str] = Field(default_factory=list)
     resource_tables: list[dict] = Field(default_factory=list)
-    # Phase 1 (2026-05-22): docling figure manifest. Each entry is a
-    # dict {idx, page, bbox, caption, pending_key, bucket, sha256}.
-    # Populated by _run_parser_subprocess from
+    # Figure manifest. Each entry would be a dict {idx, page, bbox, caption,
+    # pending_key, bucket, sha256}, populated by _run_parser_subprocess from
     # ReportParseResult.figure_manifest. Persist task copies each
     # pending_key to figures/{report_id}/... then deletes the pending
     # object, and builds a ReportSection per figure for chat retrieval.
+    # Currently always empty — see the note in
+    # app.services.ingest.pdf_report.ReportParseResult.figure_manifest.
     figures: list[dict] = Field(default_factory=list)
     parse_duration_ms: int = 0
     is_scanned: bool = False
@@ -422,34 +417,9 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get(
-        "S3_ENDPOINT_URL",
-        os.environ.get("MINIO_ENDPOINT", "http://minio:8333"),
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    return (
-        os.environ.get("AWS_ACCESS_KEY_ID")
-        or os.environ.get("MINIO_ROOT_USER", "georag-admin"),
-        os.environ.get("AWS_SECRET_ACCESS_KEY")
-        or os.environ.get("MINIO_ROOT_PASSWORD", ""),
-    )
-
-
 async def _download_from_s3(minio_key: str) -> bytes:
-    import aioboto3
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
-    async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        resp = await s3.get_object(Bucket=bucket, Key=minio_key)
-        body = await resp["Body"].read()
-        return body
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 
 def _sections_to_dict(sections) -> dict:
@@ -472,13 +442,16 @@ def _sections_to_dict(sections) -> dict:
 ingest_pdf = hatchet.workflow(
     name="ingest_pdf",
     input_validator=IngestPdfInput,
-    # 2026-05-23 — per-workspace singleton. The parse step loads
-    # docling/PaddleOCR/RapidOCR models (~3-4 GB resident); running
-    # multiple concurrent parses on the 36 GB host pushes total memory
-    # over the edge and the OOM killer fires SIGKILL on the youngest
-    # docling subprocess. Confirmed root cause of the
+    # 2026-05-23 — per-workspace singleton. At the time, the parse step
+    # loaded docling/PaddleOCR/RapidOCR models (~3-4 GB resident); running
+    # multiple concurrent parses on the 36 GB host pushed total memory
+    # over the edge and the OOM killer fired SIGKILL on the youngest
+    # parse subprocess. Confirmed root cause of the
     # "A child process terminated abruptly" failures observed during
-    # the 2026-05-23 TIFF smoke (see [[tiff-smoke-2026-05-23]]).
+    # the 2026-05-23 TIFF smoke (see [[tiff-smoke-2026-05-23]]). docling
+    # was removed 2026-07-29 (never ran in production), but the
+    # concurrency limit stays — same-workspace serialisation is still the
+    # right behavior for large-batch re-ingests regardless of parser cost.
     #
     # GROUP_ROUND_ROBIN queues rather than cancels — a long real PDF
     # parse can't be interrupted by a smaller upload behind it.
@@ -637,8 +610,8 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
 async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     """Call the canonical v1.49 ``parse_pdf_report`` end to end.
 
-    The parser owns: fitz-first → docling/tesseract OCR routing → pdfplumber fallback → OCR (if
-    scanned) → metadata extraction → section split → resource table extract.
+    The parser owns: fitz-first → Tesseract/Azure Document Intelligence OCR routing → pdfplumber
+    fallback → OCR (if scanned) → metadata extraction → section split → resource table extract.
     Returns a ReportParseResult; we serialise it into ParseOut.
     """
     if input.project_id and input.workspace_id:
@@ -685,15 +658,16 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
     # retries=1 will retry on a freer worker.
     # 2026-05-23 — defaults raised from (1500, 30) to (4500, 120).
     # The 1500 MB threshold was tuned in Phase 5 for the v1.49 fitz-only
-    # parser; the 5/22 overhaul made docling+PaddleOCR+RapidOCR the
-    # primary path and those each load ~3-4 GB of model weights. On the
-    # 36 GB host with the rest of the platform (vLLM cache, Neo4j,
+    # parser; the 5/22 overhaul briefly made docling+PaddleOCR+RapidOCR
+    # the primary path and those each loaded ~3-4 GB of model weights
+    # (docling was removed 2026-07-29 — never ran in production — but
+    # the raised threshold is still the right conservative default for
+    # the 36 GB host with the rest of the platform (vLLM cache, Neo4j,
     # Postgres, Qdrant, Langfuse, dagster containers) eating ~32 GB
-    # baseline, only ~4 GB is genuinely free. Starting a parse with
-    # 1.5 GB free is a guaranteed OOM. The 120 s wait budget gives a
-    # transient pressure spike room to clear before the workflow gives
-    # up and lets Hatchet retry. See [[tiff-smoke-2026-05-23]] for the
-    # root-cause analysis.
+    # baseline; only ~4 GB is genuinely free). The 120 s wait budget
+    # gives a transient pressure spike room to clear before the
+    # workflow gives up and lets Hatchet retry. See
+    # [[tiff-smoke-2026-05-23]] for the root-cause analysis.
     try:
         _min_free_mb = int(os.environ.get("PARSE_MIN_FREE_RAM_MB", "4500"))
     except ValueError:
@@ -716,10 +690,10 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
         # 2026-05-23 — kill the in-process fallback. The original
         # fallback ran the parser on the default asyncio thread pool,
         # which:
-        #   1. loaded docling/PaddleOCR/RapidOCR models in the SAME
-        #      process that just got its subprocess OOM-killed — guaranteed
-        #      to push memory over the edge again, often killing the
-        #      whole worker (cf. [[tiff-smoke-2026-05-23]] root cause);
+        #   1. loaded heavy OCR/layout models in the SAME process that
+        #      just got its subprocess OOM-killed — guaranteed to push
+        #      memory over the edge again, often killing the whole
+        #      worker (cf. [[tiff-smoke-2026-05-23]] root cause);
         #   2. blocked the Hatchet event loop on a multi-minute parse,
         #      starving heartbeats and getting the task re-queued by
         #      Hatchet's dead-worker detection.
@@ -776,7 +750,7 @@ INSERT INTO silver.document_passages (
     ocr_confidence, ocr_method, ocr_status,
     created_at, updated_at
 )
-VALUES ($1, $2::uuid, 1, $3, $4, $5, 'narrative', $6, $7, $8, $9, 'accepted', NOW(), NOW())
+VALUES ($1, $2::uuid, 1, $3, $4, $5, 'narrative', $6, $7, $8, $9, $10, NOW(), NOW())
 ON CONFLICT (document_id, revision_number, text_hash) DO UPDATE SET
     page_first     = COALESCE(EXCLUDED.page_first,     silver.document_passages.page_first),
     page_last      = COALESCE(EXCLUDED.page_last,      silver.document_passages.page_last),
@@ -785,11 +759,170 @@ ON CONFLICT (document_id, revision_number, text_hash) DO UPDATE SET
     -- confidence with NULL on a Hatchet retry of the same parse.
     ocr_confidence = COALESCE(silver.document_passages.ocr_confidence, EXCLUDED.ocr_confidence),
     ocr_method     = COALESCE(silver.document_passages.ocr_method,     EXCLUDED.ocr_method),
-    -- Phase 6 (2026-05-22): on retry, do NOT reset ocr_status — if the
-    -- quality agent already flagged it as pending_reocr, the retry should
-    -- preserve that. The default 'accepted' only applies on first insert.
+    -- Preserve agent-driven states, but allow a fail-closed OCR assessment
+    -- discovered on retry to promote an accepted passage to low_confidence.
+    ocr_status     = CASE
+        WHEN silver.document_passages.ocr_status = 'accepted'
+         AND EXCLUDED.ocr_status = 'low_confidence'
+        THEN EXCLUDED.ocr_status
+        ELSE silver.document_passages.ocr_status
+    END,
     updated_at     = NOW()
 """
+
+INSERT_OCR_REVIEW_SQL = """
+INSERT INTO silver.review_queue (
+    queue_id, workspace_id, project_id, target_table, target_record_kind,
+    bronze_uri, bronze_row_offset, payload, confidence_per_field,
+    confidence_record, parser_version, routing_decision, routing_reason,
+    outlier_flags
+)
+SELECT
+    $1::uuid, $2::uuid, $3::uuid, 'silver.document_passages', 'ocr_page',
+    $4, NULL, $5::jsonb, $6::jsonb,
+    $7, $8, 'review_required'::review_routing_enum, $9,
+    $10::jsonb
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM silver.review_queue existing
+    WHERE existing.workspace_id = $2::uuid
+      AND existing.project_id = $3::uuid
+      AND existing.target_table = 'silver.document_passages'
+      AND existing.target_record_kind = 'ocr_page'
+      AND existing.bronze_uri = $4
+      AND existing.payload->>'page_number' = $5::jsonb->>'page_number'
+      AND existing.parser_version = $8
+      AND existing.lifecycle IN ('pending', 'in_review')
+)
+ON CONFLICT (queue_id) DO NOTHING
+"""
+
+
+def _build_ocr_review_rows(
+    parsed: dict,
+    *,
+    report_id: str,
+    workspace_id: str,
+    project_id: str,
+    bronze_uri: str,
+) -> list[dict]:
+    """Translate parser assessments into the existing review-queue contract."""
+
+    rows: list[dict] = []
+    for warning in parsed.get("warnings") or []:
+        if warning.get("code") != "ocr_quality_assessment":
+            continue
+        if warning.get("routing_decision") != "review_required":
+            continue
+
+        try:
+            page_number = int(warning.get("page") or 0)
+        except (TypeError, ValueError):
+            log.warning(
+                "ingest_pdf.persist: ignored OCR review warning with invalid page=%r",
+                warning.get("page"),
+            )
+            continue
+        if page_number <= 0:
+            continue
+        signals = dict(warning.get("signals") or {})
+        mean_confidence = max(
+            0.0,
+            min(1.0, float(signals.get("mean_confidence") or 0.0)),
+        )
+        reasons = [
+            str(reason)
+            for reason in (warning.get("reasons") or [])
+            if str(reason).strip()
+        ]
+        tier = str(warning.get("tier") or "mandatory_review")
+        ocr_method = str(warning.get("ocr_method") or "unknown")
+        parser_version = (
+            f"pdf_report:{warning.get('parser_version') or 'unknown'}:"
+            f"{ocr_method}:ocr-quality-v1"
+        )[:128]
+        payload = {
+            "document_id": report_id,
+            "page_number": page_number,
+            "page_first": page_number,
+            "page_last": page_number,
+            "text": str(warning.get("extracted_text") or ""),
+            "ocr_method": ocr_method,
+            "ocr_quality_tier": tier,
+        }
+        queue_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                (
+                    f"georag:ocr-review:{workspace_id}:{project_id}:"
+                    f"{bronze_uri}:{page_number}:{parser_version}"
+                ),
+            )
+        )
+        rows.append({
+            "queue_id": queue_id,
+            "workspace_id": workspace_id,
+            "project_id": project_id,
+            "bronze_uri": bronze_uri,
+            "payload": payload,
+            "confidence_per_field": signals,
+            "confidence_record": mean_confidence,
+            "parser_version": parser_version,
+            "routing_reason": ", ".join(reasons)[:512] or tier,
+            "outlier_flags": [
+                {"field": "ocr_quality", "reason": reason}
+                for reason in reasons
+            ],
+        })
+    return rows
+
+
+def _ocr_review_pages(parsed: dict) -> set[int]:
+    """Return pages whose OCR assessment requires human review."""
+
+    pages: set[int] = set()
+    for warning in parsed.get("warnings") or []:
+        if warning.get("code") != "ocr_quality_assessment":
+            continue
+        if warning.get("routing_decision") != "review_required":
+            continue
+        try:
+            page_number = int(warning.get("page") or 0)
+        except (TypeError, ValueError):
+            continue
+        if page_number > 0:
+            pages.add(page_number)
+    return pages
+
+
+def _ocr_status_for_section(section: dict, review_pages: set[int]) -> str:
+    """Map page-level review routing onto the existing passage status enum."""
+
+    page_first = int(section.get("page_first") or 0)
+    page_last = int(section.get("page_last") or page_first)
+    if page_first <= 0:
+        return "accepted"
+    return (
+        "low_confidence"
+        if any(page_first <= page <= page_last for page in review_pages)
+        else "accepted"
+    )
+
+
+def _stable_report_id(
+    *,
+    workspace_id: str,
+    project_id: str,
+    source_identity: str,
+) -> str:
+    """Return a retry-stable report UUID for one project-scoped source."""
+
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"georag:report:{workspace_id}:{project_id}:{source_identity}",
+        )
+    )
 
 
 @ingest_pdf.task(execution_timeout="15m", schedule_timeout="2h", retries=2, parents=[parse])
@@ -820,7 +953,11 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     parsed = parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)
 
     t_start = time.monotonic()
-    report_id = str(uuid.uuid4())
+    report_id = _stable_report_id(
+        workspace_id=str(input.workspace_id or LEGACY_DEFAULT_TENANT_UUID),
+        project_id=str(input.project_id),
+        source_identity=str(pre.get("sha256") or input.minio_key),
+    )
 
     # Build resource_estimate payload to match v1.49 exactly.
     resource_estimate: dict = {}
@@ -830,37 +967,28 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             "source": "pdfplumber_v1",
         }
 
-    # Phase 1 (2026-05-22): figure manifest consumption.
-    # The parse task uploaded each docling figure to
-    # figures/_pending/{sha}/figure_{idx:04d}_page_{n}.png and returned
-    # a manifest in ParseOut.figures. Here we rename each PNG to its
-    # final figures/{report_id}/... key (S3 copy+delete), and create
-    # one ReportSection per figure so the caption text is chunked +
-    # embedded alongside narrative sections (caption hits in chat
-    # surface the figure citation).
+    # Figure manifest consumption. If the parse task's figure_manifest
+    # producer uploaded a figure to figures/_pending/{sha}/figure_
+    # {idx:04d}_page_{n}.png and returned a manifest entry in
+    # ParseOut.figures, this renames the PNG to its final
+    # figures/{report_id}/... key (S3 copy+delete) and creates one
+    # ReportSection per figure so the caption text is chunked + embedded
+    # alongside narrative sections (caption hits in chat surface the
+    # figure citation).
     #
-    # This replaces the previous module-scope cache + cross-process
-    # _extract_docling_figures call, which silently returned [] once
-    # parse moved into a subprocess (cache lived in parse-process
-    # memory, persist read it in parent process where it was always
-    # empty → all figures were lost regardless of upload success).
+    # Currently a no-op in practice: docling, the previous figure_manifest
+    # producer, was removed 2026-07-29 (it never ran in production —
+    # PDF_PARSER_DOCLING_ENABLED was false in every live deployment), and
+    # parse_pdf_report always returns figure_manifest=[] now. This block
+    # stays wired up for a future producer (see
+    # app.services.ingest.pdf_report.ReportParseResult.figure_manifest and
+    # app.agent.figure_extractor for candidates).
     figure_manifest_final: list[dict] = []
     pending_manifest = parsed.get("figures") or []
     if pending_manifest:
         try:
-            import boto3
-            from botocore.config import Config as BotoConfig
-
-            s3_endpoint = _s3_endpoint()
-            aws_key, aws_secret = _s3_credentials()
-            s3 = boto3.client(
-                "s3",
-                endpoint_url=s3_endpoint,
-                aws_access_key_id=aws_key,
-                aws_secret_access_key=aws_secret,
-                region_name="us-east-1",
-                config=BotoConfig(signature_version="s3v4"),
-            )
+            storage_config = StorageConfig.from_env()
+            store = S3CompatibleStorage(storage_config)
 
             figure_sections_out: list[dict] = []
             for entry in pending_manifest:
@@ -868,9 +996,11 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 page_no = entry.get("page")
                 caption = (entry.get("caption") or "").strip()
                 pending_key = entry.get("pending_key")
-                bucket = entry.get("bucket") or os.environ.get(
-                    "MINIO_BUCKET_BRONZE", "bronze"
-                )
+                # entry.get("bucket") is defensive legacy code — pending
+                # figure uploads always land in the bronze bucket (see
+                # georag_dagster/parsers/pdf_report.py's docling extractor,
+                # the only producer of this manifest), so Bucket.BRONZE is
+                # always correct here.
                 img_sha = entry.get("sha256")
 
                 final_key = None
@@ -884,15 +1014,14 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         # persist step runs on the Hatchet worker's asyncio loop,
                         # so the S3 round-trips must go off-loop via to_thread or
                         # they block heartbeats + other tasks. (The download path
-                        # at the top of this file already uses aioboto3.)
+                        # at the top of this file already uses the async client.)
                         await asyncio.to_thread(
-                            s3.copy_object,
-                            Bucket=bucket,
-                            Key=final_key,
-                            CopySource={"Bucket": bucket, "Key": pending_key},
-                            MetadataDirective="REPLACE",
-                            ContentType="image/png",
-                            Metadata={
+                            store.copy,
+                            Bucket.BRONZE,
+                            pending_key,
+                            Bucket.BRONZE,
+                            final_key,
+                            metadata={
                                 "report_id": str(report_id),
                                 "project_id": (
                                     str(input.project_id) if input.project_id else ""
@@ -900,11 +1029,10 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                                 "page": str(page_no),
                                 "sha256": str(img_sha or ""),
                             },
+                            content_type="image/png",
                         )
                         try:
-                            await asyncio.to_thread(
-                                s3.delete_object, Bucket=bucket, Key=pending_key
-                            )
+                            await asyncio.to_thread(store.delete, Bucket.BRONZE, pending_key)
                         except Exception as del_exc:  # noqa: BLE001
                             log.warning(
                                 "ingest_pdf.persist: pending figure delete "
@@ -921,14 +1049,13 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
 
                 # Phase 2: content-aware caption from the Qwen3-VL sidecar,
                 # folded into the section text so it's embedded with the figure.
-                # Flag-gated + best-effort: any failure keeps the docling caption.
+                # Flag-gated + best-effort: any failure keeps the manifest's
+                # own caption text.
                 vl_desc: str | None = None
                 if _FIGURE_VL_CAPTIONS and final_key:
                     try:
                         from app.agent.figure_extractor import caption_image_with_vl
-                        _img = await asyncio.to_thread(
-                            lambda: s3.get_object(Bucket=bucket, Key=final_key)["Body"].read()
-                        )
+                        _img = await asyncio.to_thread(store.get_bytes, Bucket.BRONZE, final_key)
                         vl_desc = await caption_image_with_vl(
                             _img, context=parsed.get("title"),
                         )
@@ -944,7 +1071,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 if vl_desc:
                     section_lines.append(f"Description: {vl_desc}")
                 if final_key:
-                    section_lines.append(f"Image: s3://{bucket}/{final_key}")
+                    section_lines.append(f"Image: s3://{storage_config.bucket_name(Bucket.BRONZE)}/{final_key}")
                 figure_sections_out.append({
                     "section_number": None,
                     "section_title": f"Figure (page {page_no}, #{int(idx) + 1})",
@@ -971,8 +1098,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     sum(1 for m in figure_manifest_final if m.get("minio_key")),
                 )
                 parsed.setdefault("sections", []).extend(figure_sections_out)
-        except ImportError:
-            log.warning("ingest_pdf.persist: boto3 unavailable, skipping figure rename")
         except Exception as fig_err:  # noqa: BLE001
             log.warning("ingest_pdf.persist: figure manifest consumption failed: %s", fig_err)
 
@@ -981,7 +1106,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     if figure_manifest_final:
         resource_estimate["figures"] = {
             "items": figure_manifest_final,
-            "source": "docling_v1",
+            "source": "figure_manifest_v1",
         }
 
     # Build sections_text dict (v1.49 _build_sections_dict shape).
@@ -1027,6 +1152,18 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             "falling back to default workspace. minio_key=%s",
             input.minio_key,
         )
+
+    ocr_review_rows = _build_ocr_review_rows(
+        parsed,
+        report_id=report_id,
+        workspace_id=workspace_id_str,
+        project_id=str(input.project_id),
+        bronze_uri=(
+            f"s3://{os.environ.get('MINIO_BUCKET_BRONZE', 'bronze')}/"
+            f"{input.minio_key}"
+        ),
+    )
+    ocr_review_pages = _ocr_review_pages(parsed)
 
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2, statement_cache_size=0)
     try:
@@ -1085,9 +1222,25 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         section.get("page_last"),
                         ocr_conf,
                         ocr_method,
+                        _ocr_status_for_section(section, ocr_review_pages),
                     )
                     if status.endswith(" 1"):
                         passages_written += 1
+
+                for review_row in ocr_review_rows:
+                    await conn.execute(
+                        INSERT_OCR_REVIEW_SQL,
+                        review_row["queue_id"],
+                        review_row["workspace_id"],
+                        review_row["project_id"],
+                        review_row["bronze_uri"],
+                        json.dumps(review_row["payload"]),
+                        json.dumps(review_row["confidence_per_field"]),
+                        review_row["confidence_record"],
+                        review_row["parser_version"],
+                        review_row["routing_reason"],
+                        json.dumps(review_row["outlier_flags"]),
+                    )
 
             # silver.shadow_runs was dropped in Phase 4 Step 6 (sunset of the
             # v1.49 shadow-diff harness). The persist step previously

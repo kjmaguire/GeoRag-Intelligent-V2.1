@@ -1,17 +1,25 @@
-"""Phase 2.1 (2026-05-22) — fitz-first dispatch + docling-OCR merge tests.
+"""_parse_with_fitz apply_ocr_fallback param tests.
 
-These tests exercise the top-level parse_pdf_report dispatch and the
-per-page merge between fitz's native-text output and docling's
-rapidocr-OCR output. The merge rule (chosen by Kyle 2026-05-22):
-"fitz wins where it has any text ≥ PER_PAGE_MIN_CHARS; docling only
-overrides on the pages fitz returned as image-pages."
+Originally part of the Phase 2.1 (2026-05-22) fitz-first dispatch +
+docling-OCR merge test suite. The docling merge tests (fitz-vs-docling
+per-page merge, figure_manifest propagation, table propagation, and the
+PDF_PARSER_DOCLING_ENABLED/DOCLING_OCR_ENABLED env-var dispatch behavior)
+were removed 2026-07-29 along with docling itself — the merge mechanism
+they tested no longer exists in app.services.ingest.pdf_report
+(parse_pdf_report's dispatch is now: fitz (with its internal tesseract
+loop gated by PDF_PARSER_TESSERACT_FALLBACK_ENABLED) → pdfplumber
+fallback on total failure). Docling never ran in production
+(PDF_PARSER_DOCLING_ENABLED was false in every live deployment; 1,173
+real silver.reports rows show parser_used as fitz or pdfplumber, never
+docling).
 
-No real docling / rapidocr / pdfplumber installs needed — every parser
-is patched at the module level. Tests run on the host without container
-dependencies.
+The tests below are unaffected by that removal — they exercise
+_parse_with_fitz's `apply_ocr_fallback` parameter directly, which is
+still live (it now gates the tesseract loop unconditionally rather than
+skipping it in favor of a docling merge).
 
 Run with:
-    pytest src/dagster/tests/test_pdf_dispatch_phase21.py -v
+    pytest src/fastapi/tests/test_pdf_dispatch_phase21.py -v
 """
 
 from __future__ import annotations
@@ -21,23 +29,6 @@ import types
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-# Inject fake boto3 + botocore.config so the parser module imports cleanly
-# Stub boto3/botocore ONLY when genuinely absent (running pytest on a dev host
-# rather than in the container, where they are installed for real). This used to
-# be an unconditional sys.modules.setdefault, which left a MagicMock in
-# sys.modules that unrelated modules tripped over: aioboto3 does
-# `import boto3.session`, and that raises "'boto3' is not a package" against a
-# mock. Once this file moved into the FastAPI suite it sorted ahead of
-# test_pg_partman_maintenance / test_section11_* / test_workspace_export_restore
-# and broke their collection.
-try:  # pragma: no cover - environment probe
-    import boto3  # noqa: F401
-    import botocore.config  # noqa: F401
-except ImportError:  # pragma: no cover - dev host without the AWS SDKs
-    sys.modules.setdefault("boto3", MagicMock())
-    sys.modules.setdefault("botocore", MagicMock())
-    sys.modules.setdefault("botocore.config", MagicMock())
 
 
 @pytest.fixture
@@ -86,6 +77,119 @@ def minimal_pdf(tmp_path):
     return str(p)
 
 
+def _stub_fitz(parser_module, per_page, image_pages, warnings=None,
+               per_page_method=None, per_page_confidence=None):
+    """Patch _parse_with_fitz to return the Phase-3-extended 9-tuple."""
+    full_text = "\n".join(t for _n, t in per_page)
+    page_langs = ["en" if t else "unknown" for _n, t in per_page]
+    image_set = set(image_pages)
+    default_method = {
+        n: ("tesseract" if n in image_set else "fitz_native")
+        for n, _t in per_page
+    }
+    default_conf = {
+        n: (None if n not in image_set else 0.85) for n, _t in per_page
+    }
+    method = per_page_method if per_page_method is not None else default_method
+    conf = per_page_confidence if per_page_confidence is not None else default_conf
+
+    def _fake(path, apply_ocr_fallback=True):
+        return (
+            full_text, "Test Doc", 0, list(warnings or []), page_langs,
+            list(per_page), list(image_pages),
+            dict(method), dict(conf),
+        )
+
+    return patch.object(parser_module, "_parse_with_fitz", side_effect=_fake)
+
+
+def _stub_pdfplumber(parser_module, full_text="", per_page=None):
+    per_page = per_page or []
+
+    def _fake(path):
+        return (
+            full_text, "Pdfplumber Title", 0, [],
+            ["en"] * len(per_page),
+            list(per_page),
+        )
+    return patch.object(parser_module, "_parse_with_pdfplumber", side_effect=_fake)
+
+
+# ---------------------------------------------------------------------------
+# parse_pdf_report dispatch: fitz total failure → pdfplumber fallback fires
+# ---------------------------------------------------------------------------
+
+def test_fitz_total_failure_falls_back_to_pdfplumber(
+    parser_module, minimal_pdf, monkeypatch
+):
+    pdfplumber_pages = [(1, "Pdfplumber recovered page one " * 10)]
+
+    def _fitz_explodes(path, apply_ocr_fallback=True):
+        raise RuntimeError("simulated fitz crash")
+
+    with patch.object(parser_module, "_parse_with_fitz",
+                      side_effect=_fitz_explodes), \
+            _stub_pdfplumber(
+                parser_module,
+                full_text="Pdfplumber recovered page one " * 10,
+                per_page=pdfplumber_pages,
+            ):
+        result = parser_module.parse_pdf_report(minimal_pdf)
+
+    assert result.parser_used == "pdfplumber"
+
+
+# ---------------------------------------------------------------------------
+# parse_pdf_report dispatch: PDF_PARSER_TESSERACT_FALLBACK_ENABLED controls
+# whether _parse_with_fitz's internal tesseract loop runs
+# ---------------------------------------------------------------------------
+
+def test_tesseract_fallback_enabled_recovers_image_pages(
+    parser_module, minimal_pdf, monkeypatch
+):
+    monkeypatch.setenv("PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true")
+
+    captured_apply_ocr_fallback = []
+
+    def _fake_parse_with_fitz(path, apply_ocr_fallback=True):
+        captured_apply_ocr_fallback.append(apply_ocr_fallback)
+        return (
+            "Native text " * 30, "Test Doc", 0, [], ["en"],
+            [(1, "Native text " * 30)], [],
+            {1: "fitz_native"}, {1: None},
+        )
+
+    with patch.object(parser_module, "_parse_with_fitz",
+                      side_effect=_fake_parse_with_fitz):
+        result = parser_module.parse_pdf_report(minimal_pdf)
+
+    assert captured_apply_ocr_fallback == [True]
+    assert result.parser_used == "fitz"
+
+
+def test_tesseract_fallback_disabled_skips_internal_ocr_loop(
+    parser_module, minimal_pdf, monkeypatch
+):
+    monkeypatch.setenv("PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "false")
+
+    captured_apply_ocr_fallback = []
+
+    def _fake_parse_with_fitz(path, apply_ocr_fallback=True):
+        captured_apply_ocr_fallback.append(apply_ocr_fallback)
+        return (
+            "Native text " * 30, "Test Doc", 0, [], ["en"],
+            [(1, "Native text " * 30)], [2],
+            {1: "fitz_native"}, {1: None},
+        )
+
+    with patch.object(parser_module, "_parse_with_fitz",
+                      side_effect=_fake_parse_with_fitz):
+        result = parser_module.parse_pdf_report(minimal_pdf)
+
+    assert captured_apply_ocr_fallback == [False]
+    assert result.parser_used == "fitz"
+
+
 def _install_fake_pypdfium2(monkeypatch, page_texts, *, title=None):
     """Install a fake ``pypdfium2`` whose ``PdfDocument`` yields ``page_texts``
     (one string per page via ``get_textpage().get_text_bounded()``).
@@ -130,385 +234,8 @@ def _install_fake_pypdfium2(monkeypatch, page_texts, *, title=None):
     monkeypatch.setitem(sys.modules, "pypdfium2", fake)
 
 
-def _stub_fitz(parser_module, per_page, image_pages, warnings=None,
-               per_page_method=None, per_page_confidence=None):
-    """Patch _parse_with_fitz to return the Phase-3-extended 9-tuple."""
-    full_text = "\n".join(t for _n, t in per_page)
-    page_langs = ["en" if t else "unknown" for _n, t in per_page]
-    image_set = set(image_pages)
-    default_method = {
-        n: ("tesseract" if n in image_set else "fitz_native")
-        for n, _t in per_page
-    }
-    default_conf = {
-        n: (None if n not in image_set else 0.85) for n, _t in per_page
-    }
-    method = per_page_method if per_page_method is not None else default_method
-    conf = per_page_confidence if per_page_confidence is not None else default_conf
-
-    def _fake(path, apply_ocr_fallback=True):
-        return (
-            full_text, "Test Doc", 0, list(warnings or []), page_langs,
-            list(per_page), list(image_pages),
-            dict(method), dict(conf),
-        )
-
-    return patch.object(parser_module, "_parse_with_fitz", side_effect=_fake)
-
-
-def _stub_docling(parser_module, per_page, tables=None, figures=None,
-                  warnings=None, langs=None):
-    full_text = "\n".join(t for _n, t in per_page)
-
-    def _fake(path, pdf_sha256=None):
-        return (
-            full_text, "Docling Title", 0, list(warnings or []),
-            list(langs or ["unknown"] * len(per_page)),
-            list(per_page),
-            list(tables or []),
-            list(figures or []),
-        )
-
-    return patch.object(parser_module, "_parse_with_docling", side_effect=_fake)
-
-
-def _stub_tesseract(parser_module, recovered_map, confidence_map=None):
-    """Patch _ocr_single_page so page N returns recovered_map[N].
-
-    Phase 3 (2026-05-22): when called with `return_confidence=True`,
-    returns ``(text, mean_conf)`` where mean_conf comes from
-    confidence_map (default 0.85). When called without, returns just
-    the text (legacy callers).
-    """
-    confidence_map = confidence_map or {}
-
-    def _fake(path, page_num, return_confidence=False):
-        text = recovered_map.get(page_num, "")
-        conf = confidence_map.get(page_num, 0.85)
-        return (text, conf) if return_confidence else text
-
-    return patch.object(parser_module, "_ocr_single_page", side_effect=_fake)
-
-
-def _stub_pdfplumber(parser_module, full_text="", per_page=None):
-    per_page = per_page or []
-
-    def _fake(path):
-        return (
-            full_text, "Pdfplumber Title", 0, [],
-            ["en"] * len(per_page),
-            list(per_page),
-        )
-    return patch.object(parser_module, "_parse_with_pdfplumber", side_effect=_fake)
-
-
 # ---------------------------------------------------------------------------
-# 1. Text-only PDF: fitz returns text for every page → docling NEVER fires
-# ---------------------------------------------------------------------------
-
-def test_text_only_pdf_skips_docling(parser_module, minimal_pdf, monkeypatch):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    fitz_pages = [(1, "Page one body text " * 20), (2, "Page two body text " * 20)]
-    docling_called = MagicMock()
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[]), \
-            patch.object(parser_module, "_parse_with_docling", docling_called):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "fitz"
-    docling_called.assert_not_called()
-    assert "Page one body text" in (result.sections[0].text
-                                    if result.sections else "")
-
-
-# ---------------------------------------------------------------------------
-# 2. PDF with one image page: fitz + docling merge
-# ---------------------------------------------------------------------------
-
-def test_fitz_with_image_pages_triggers_docling_merge(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    fitz_pages = [
-        (1, "Page one native text " * 20),
-        (2, ""),  # image page — fitz returned nothing
-        (3, "Page three native text " * 20),
-    ]
-    docling_pages = [
-        (1, "Docling rendered text one"),
-        (2, "Docling OCR'd image page two text"),
-        (3, "Docling rendered text three"),
-    ]
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_docling(parser_module, docling_pages,
-                          tables=[], figures=[{"idx": 0, "page": 2}]):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "fitz+docling_ocr"
-    # Phase 1 figure manifest propagates
-    assert len(result.figure_manifest) == 1
-    # Merge: fitz wins on pages 1 + 3; docling fills page 2
-    combined = "\n".join(s.text for s in result.sections)
-    assert "Page one native text" in combined
-    assert "Docling OCR'd image page two text" in combined
-    assert "Page three native text" in combined
-    # Docling text for pages 1/3 should NOT be present (fitz wins)
-    assert "Docling rendered text one" not in combined
-
-
-# ---------------------------------------------------------------------------
-# 3. All-image PDF: fitz returns nothing → all pages are image pages → docling fills
-# ---------------------------------------------------------------------------
-
-def test_all_image_pdf_full_docling(parser_module, minimal_pdf, monkeypatch):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    fitz_pages = [(1, ""), (2, ""), (3, "")]
-    docling_pages = [
-        (1, "Scanned page one OCR text here is long enough to count " * 3),
-        (2, "Scanned page two OCR text here is long enough to count " * 3),
-        (3, "Scanned page three OCR text here is long enough to count " * 3),
-    ]
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[1, 2, 3]), \
-            _stub_docling(parser_module, docling_pages):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "fitz+docling_ocr"
-    combined = "\n".join(s.text for s in result.sections)
-    assert "Scanned page one OCR text" in combined
-    assert "Scanned page two OCR text" in combined
-    assert "Scanned page three OCR text" in combined
-
-
-# ---------------------------------------------------------------------------
-# 4. Docling unavailable + tesseract fallback enabled → tesseract fires
-# ---------------------------------------------------------------------------
-
-def test_docling_disabled_falls_back_to_tesseract(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "false")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "false")
-    monkeypatch.setenv("PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true")
-
-    fitz_pages = [(1, "Native text " * 30), (2, "")]
-    docling_called = MagicMock()
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_tesseract(parser_module,
-                            {2: "Tesseract recovered image page text " * 4}), \
-            patch.object(parser_module, "_parse_with_docling", docling_called):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "fitz+tesseract_fallback"
-    docling_called.assert_not_called()
-    combined = "\n".join(s.text for s in result.sections)
-    assert "Tesseract recovered image page text" in combined
-
-
-# ---------------------------------------------------------------------------
-# 5. Docling raises → tesseract fallback recovers (no data loss)
-# ---------------------------------------------------------------------------
-
-def test_docling_failure_falls_back_to_tesseract(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-    monkeypatch.setenv("PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true")
-
-    fitz_pages = [(1, "Native " * 30), (2, "")]
-
-    def _docling_explodes(path, pdf_sha256=None):
-        raise RuntimeError("simulated docling crash")
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            patch.object(parser_module, "_parse_with_docling",
-                         side_effect=_docling_explodes), \
-            _stub_tesseract(parser_module,
-                            {2: "Tesseract saved the day " * 5}):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "fitz+tesseract_fallback"
-    combined = "\n".join(s.text for s in result.sections)
-    assert "Tesseract saved the day" in combined
-
-
-# ---------------------------------------------------------------------------
-# 6. Tesseract fallback also disabled → image page is recorded but empty
-#    (matches no-data-loss policy: empty page > missing page)
-# ---------------------------------------------------------------------------
-
-def test_no_ocr_path_keeps_native_pages(parser_module, minimal_pdf, monkeypatch):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "false")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "false")
-    monkeypatch.setenv("PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "false")
-
-    fitz_pages = [(1, "Native page text " * 30), (2, "")]
-    docling_called = MagicMock()
-    tesseract_called = MagicMock()
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            patch.object(parser_module, "_parse_with_docling", docling_called), \
-            patch.object(parser_module, "_ocr_single_page", tesseract_called):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    docling_called.assert_not_called()
-    tesseract_called.assert_not_called()
-    # Page 1 text still present
-    combined = "\n".join(s.text for s in result.sections)
-    assert "Native page text" in combined
-
-
-# ---------------------------------------------------------------------------
-# 7. Merge rule: fitz returns short non-empty text on a page → fitz still wins
-# ---------------------------------------------------------------------------
-
-def test_merge_fitz_wins_when_above_threshold(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    # Build a page with text >= MIN_EXTRACTABLE_TEXT_CHARS (200 chars).
-    # image_pages=[] means fitz reported this as a text page → never
-    # eligible for the docling override.
-    fitz_pages = [(1, "A" * 300)]
-    docling_pages = [(1, "Different docling text " * 10)]
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[]), \
-            _stub_docling(parser_module, docling_pages):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    combined = "\n".join(s.text for s in result.sections)
-    # Fitz output present
-    assert "A" * 100 in combined
-    # Docling output NOT present (docling shouldn't even have been called
-    # since image_page_nums was empty)
-    assert "Different docling text" not in combined
-    # parser_used reflects fitz-only
-    assert result.parser_used == "fitz"
-
-
-# ---------------------------------------------------------------------------
-# 8. Merge rule: image page reported by fitz, docling provides text → docling wins
-# ---------------------------------------------------------------------------
-
-def test_merge_docling_overrides_image_page(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    fitz_pages = [(1, "fitz native " * 20), (2, "")]
-    docling_pages = [(1, "docling rendered " * 5),
-                     (2, "DOCLING OCR'D IMAGE PAGE TWO" * 3)]
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_docling(parser_module, docling_pages):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    combined = "\n".join(s.text for s in result.sections)
-    assert "fitz native" in combined
-    assert "DOCLING OCR'D IMAGE PAGE TWO" in combined
-    # Docling output for page 1 should NOT win
-    assert "docling rendered" not in combined
-
-
-# ---------------------------------------------------------------------------
-# 9. Figure manifest from docling propagates into ReportParseResult
-# ---------------------------------------------------------------------------
-
-def test_figure_manifest_propagates_through_dispatch(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    fitz_pages = [(1, "text " * 30), (2, "")]
-    figures = [
-        {"idx": 0, "page": 2, "caption": "Cross section A",
-         "pending_key": "figures/_pending/abc/figure_0000_page_2.png",
-         "bucket": "bronze", "sha256": "h0"},
-    ]
-    docling_pages = [(2, "OCR text for image page two here goes  " * 3)]
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_docling(parser_module, docling_pages, figures=figures):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.figure_manifest == figures
-    assert result.parser_used == "fitz+docling_ocr"
-
-
-# ---------------------------------------------------------------------------
-# 10. Docling tables propagate when present
-# ---------------------------------------------------------------------------
-
-def test_docling_tables_propagate(parser_module, minimal_pdf, monkeypatch):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    fitz_pages = [(1, "narrative " * 30), (2, "")]
-    docling_pages = [(2, "table page text " * 10)]
-    table_section = parser_module.ReportSection(
-        section_number=None,
-        section_title="Table (docling, page 2)",
-        text="| col1 | col2 |\n|---|---|\n| a | b |",
-        page_first=2,
-        page_last=2,
-    )
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_docling(parser_module, docling_pages,
-                          tables=[table_section]):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    # The table section is appended to the result's sections
-    table_titles = [s.section_title for s in result.sections
-                    if s.section_title and "Table" in s.section_title]
-    assert any("docling" in t for t in table_titles)
-
-
-# ---------------------------------------------------------------------------
-# 11. Fitz throws entirely → pdfplumber fallback fires (no docling, no tesseract)
-# ---------------------------------------------------------------------------
-
-def test_fitz_total_failure_falls_back_to_pdfplumber(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "true")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")
-
-    pdfplumber_pages = [(1, "Pdfplumber recovered page one " * 10)]
-    docling_called = MagicMock()
-
-    def _fitz_explodes(path, apply_ocr_fallback=True):
-        raise RuntimeError("simulated fitz crash")
-
-    with patch.object(parser_module, "_parse_with_fitz",
-                      side_effect=_fitz_explodes), \
-            _stub_pdfplumber(
-                parser_module,
-                full_text="Pdfplumber recovered page one " * 10,
-                per_page=pdfplumber_pages,
-            ), \
-            patch.object(parser_module, "_parse_with_docling", docling_called):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "pdfplumber"
-    docling_called.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 12. apply_ocr_fallback param controls fitz's internal tesseract loop
+# apply_ocr_fallback param controls fitz's internal tesseract loop
 # ---------------------------------------------------------------------------
 
 def test_parse_with_fitz_apply_ocr_fallback_param_skips_loop(
@@ -540,7 +267,7 @@ def test_parse_with_fitz_apply_ocr_fallback_param_skips_loop(
 
 
 # ---------------------------------------------------------------------------
-# 13. apply_ocr_fallback=True (default) still runs tesseract loop
+# apply_ocr_fallback=True (default) still runs tesseract loop
 # ---------------------------------------------------------------------------
 
 def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
@@ -548,10 +275,19 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
 ):
     _install_fake_pypdfium2(monkeypatch, [""], title="T")
 
-    # Phase 3: return_confidence=True path; stub returns (text, conf)
+    # Quality-routing path returns text, confidence, and serialized assessment.
     monkeypatch.setattr(
         parser_module, "_ocr_single_page",
-        MagicMock(return_value=("tesseract recovered " * 10, 0.82)),
+        MagicMock(return_value=(
+            "tesseract recovered " * 10,
+            0.82,
+            {
+                "tier": "auto_accept",
+                "routing_decision": "auto_pass",
+                "reasons": [],
+                "signals": {},
+            },
+        )),
     )
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf", apply_ocr_fallback=True)
@@ -566,7 +302,7 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
 
 
 # ---------------------------------------------------------------------------
-# 14. _parse_with_fitz 7-element return shape is stable
+# _parse_with_fitz 9-element return shape is stable
 # ---------------------------------------------------------------------------
 
 def test_parse_with_fitz_returns_nine_tuple(parser_module, monkeypatch):
@@ -582,55 +318,3 @@ def test_parse_with_fitz_returns_nine_tuple(parser_module, monkeypatch):
     # since the fake doc has no pages
     assert out[7] == {}
     assert out[8] == {}
-
-
-# ---------------------------------------------------------------------------
-# 15. Default env values match Phase 2.1 cutover (docling + OCR on)
-# ---------------------------------------------------------------------------
-
-def test_default_envs_route_through_docling_ocr_path(
-    parser_module, minimal_pdf, monkeypatch
-):
-    """When no envs are set, the new Phase 2.1 dispatch should still
-    treat PDF_PARSER_DOCLING_ENABLED=true and DOCLING_OCR_ENABLED=true
-    as defaults (the module reads `(default, 'true')` in the helpers)."""
-    for k in (
-        "PDF_PARSER_DOCLING_ENABLED",
-        "DOCLING_OCR_ENABLED",
-        "PDF_PARSER_TESSERACT_FALLBACK_ENABLED",
-    ):
-        monkeypatch.delenv(k, raising=False)
-
-    fitz_pages = [(1, "text " * 20), (2, "")]
-    docling_pages = [(2, "image page two ocr text " * 5)]
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_docling(parser_module, docling_pages):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    assert result.parser_used == "fitz+docling_ocr"
-
-
-# ---------------------------------------------------------------------------
-# 16. PDF_PARSER_DOCLING_ENABLED=false explicitly → docling does NOT run even
-#     when image pages exist + tesseract fires instead
-# ---------------------------------------------------------------------------
-
-def test_explicit_docling_off_skips_docling_even_with_image_pages(
-    parser_module, minimal_pdf, monkeypatch
-):
-    monkeypatch.setenv("PDF_PARSER_DOCLING_ENABLED", "false")
-    monkeypatch.setenv("DOCLING_OCR_ENABLED", "true")  # ignored when DOCLING off
-    monkeypatch.setenv("PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true")
-
-    fitz_pages = [(1, "text " * 40), (2, "")]
-    docling_called = MagicMock()
-
-    with _stub_fitz(parser_module, fitz_pages, image_pages=[2]), \
-            _stub_tesseract(parser_module,
-                            {2: "tess recovered image page two " * 5}), \
-            patch.object(parser_module, "_parse_with_docling", docling_called):
-        result = parser_module.parse_pdf_report(minimal_pdf)
-
-    docling_called.assert_not_called()
-    assert result.parser_used == "fitz+tesseract_fallback"

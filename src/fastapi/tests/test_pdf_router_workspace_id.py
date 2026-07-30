@@ -65,7 +65,6 @@ def _make_app_with_services(user: UserContext) -> FastAPI:
     [
         ("GET", "/pdf/extract_text", {"pdf_id": _VALID_PDF_ID, "page": 1}),
         ("GET", "/pdf/find_tables", {"pdf_id": _VALID_PDF_ID, "page": 1}),
-        ("GET", "/pdf/find_legends", {"pdf_id": _VALID_PDF_ID, "page": 1}),
         ("GET", "/pdf/find_coordinates", {"pdf_id": _VALID_PDF_ID, "page": 1}),
         (
             "GET",
@@ -94,33 +93,6 @@ def test_workspace_id_missing_returns_401_on_get_endpoints(
         f"{path} returned {resp.status_code}, expected 401 "
         f"(detail: {resp.text!r})"
     )
-    assert resp.json() == {"detail": "workspace_required"}
-
-
-def test_ocr_region_post_missing_workspace_returns_401() -> None:
-    """POST /pdf/ocr_region must 401 when workspace_id is absent.
-
-    Covers the only persisting POST endpoint in the PDF router. The bbox is
-    valid (positive non-degenerate); the workspace_id guard must fire BEFORE
-    the bbox validator so the user gets the workspace error, not bbox 422.
-    """
-    user = UserContext(user_id="42", project_id="proj-abc", workspace_id=None)
-    app = _make_app(user)
-    try:
-        client = TestClient(app, raise_server_exceptions=True)
-        resp = client.post(
-            "/pdf/ocr_region",
-            json={
-                "pdf_id": _VALID_PDF_ID,
-                "page": 1,
-                "bbox": [10.0, 20.0, 100.0, 200.0],
-                "dpi": 300,
-            },
-        )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert resp.status_code == 401
     assert resp.json() == {"detail": "workspace_required"}
 
 

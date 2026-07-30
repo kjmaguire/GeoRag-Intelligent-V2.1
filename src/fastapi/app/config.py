@@ -674,24 +674,6 @@ class Settings(BaseSettings):
     # this is the broader ceiling.
     REPAIR_LOOP_MAX_ATTEMPTS: int = 2
 
-    # -------------------------------------------------------------------------
-    # Phase G overnight — §10 Customer Support Cockpit outbound integrations
-    # -------------------------------------------------------------------------
-    # Kestra dispatch for support_packet bundles. When KESTRA_URL is unset,
-    # the support_packet agent assembles + returns the bundle dict as before
-    # (in-process, no outbound call). When set, the agent POSTs the bundle
-    # to a Kestra flow execution endpoint so downstream operator workflows
-    # (Slack notify, SeaweedFS archive, audit-trail attach, etc.) can run.
-    #
-    # KESTRA_URL example: "https://kestra.geo-rag.internal" — base only.
-    # The agent appends `/api/v1/executions/{namespace}/{flowId}` per Kestra's
-    # REST API contract.
-    KESTRA_URL: str = ""
-    KESTRA_FLOW_NAMESPACE: str = "georag.support"
-    KESTRA_FLOW_ID: str = "support_packet_received"
-    KESTRA_FLOW_AUTH_TOKEN: str = ""
-    KESTRA_HTTP_TIMEOUT_S: float = 5.0
-
     # PagerDuty Events API v2 for escalation_routing. When the integration
     # key is empty, the agent returns its advisory recommendation only
     # (no outbound page). When set, the agent POSTs an Events v2 trigger
@@ -808,6 +790,10 @@ class Settings(BaseSettings):
     # model. Updating this setting alone does NOT change the runtime
     # model; production code path uses the constant in main.py.
     EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
+    # Supply-chain control: resolve the known model at an immutable Hub
+    # commit instead of following a mutable branch. Operators changing the
+    # model must update the revision alongside it.
+    EMBEDDING_MODEL_REVISION: str = "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
 
     # Vector dim of the embedding model. main.py asserts the loaded model
     # matches this at startup (fail-fast); also referenced by init_qdrant.py

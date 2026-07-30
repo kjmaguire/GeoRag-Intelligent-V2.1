@@ -99,15 +99,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 RERANKER_MODEL_NAME = "Qwen/Qwen3-Reranker-0.6B"
-# Pin by env var when an operator wants to lock to a specific upstream
-# revision; defaults to "main" (resolved by HF on first download and
-# cached locally — same byte-stable behaviour we want without forcing
-# us to hard-code a SHA in source that will rot on the next upstream
-# tag bump). When set, the runtime asserts the resolved SHA at load
-# time so a silent drift surfaces in logs.
+# Pin the known model to an immutable Hub commit. Operators changing the
+# model must deliberately update RERANKER_REVISION alongside it.
 import os as _os_pin  # noqa: E402, PLC0415
 
-RERANKER_REVISION = _os_pin.environ.get("RERANKER_REVISION", "main")
+RERANKER_REVISION = _os_pin.environ.get(
+    "RERANKER_REVISION",
+    "e61197ed45024b0ed8a2d74b80b4d909f1255473",
+)
 RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
 
 # ---------------------------------------------------------------------------
@@ -243,13 +242,19 @@ class _Qwen3CausalReranker:
         self._max_length = max_length
         self._batch_size = batch_size
 
-        self._tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            model_name_or_path,
+            revision=RERANKER_REVISION,
+            trust_remote_code=False,
+        )
         # Left padding so the final position (-1) is the real last token for
         # every sequence in a batch (required for next-token scoring).
         self._tokenizer.padding_side = "left"
         self._model = (
             AutoModelForCausalLM.from_pretrained(
                 model_name_or_path,
+                revision=RERANKER_REVISION,
+                trust_remote_code=False,
                 torch_dtype=(
                     torch.float16 if device.startswith("cuda") else torch.float32
                 ),
@@ -375,6 +380,7 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
         model = CrossEncoder(
             RERANKER_MODEL_NAME,
             revision=RERANKER_REVISION,
+            trust_remote_code=False,
             device="cpu",
         )
         active_version = RERANKER_VERSION

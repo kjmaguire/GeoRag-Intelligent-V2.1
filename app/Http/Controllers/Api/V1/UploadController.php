@@ -9,12 +9,12 @@ use App\Models\Project;
 use App\Services\FastApiJwtMinter;
 use App\Services\Ingestion\HatchetDispatchThrottle;
 use App\Services\Ingestion\ShadowRouter;
+use App\Services\StorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -31,6 +31,7 @@ class UploadController extends Controller
     public function __construct(
         private readonly ShadowRouter $shadowRouter,
         private readonly HatchetDispatchThrottle $dispatchThrottle,
+        private readonly StorageService $storage,
     ) {}
 
     /**
@@ -202,7 +203,7 @@ class UploadController extends Controller
                 throw new \RuntimeException('Unable to open uploaded file for streaming.');
             }
             try {
-                Storage::disk('s3')->put($minioKey, $handle, $putOptions);
+                $this->storage->bronze()->put($minioKey, $handle, $putOptions);
             } finally {
                 if (is_resource($handle)) {
                     fclose($handle);

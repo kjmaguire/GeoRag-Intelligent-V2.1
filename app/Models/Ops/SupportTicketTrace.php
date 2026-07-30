@@ -43,11 +43,13 @@ class SupportTicketTrace extends Model
         'added_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<SupportTicket, $this> */
     public function ticket(): BelongsTo
     {
         return $this->belongsTo(SupportTicket::class, 'ticket_id', 'ticket_id');
     }
 
+    /** @return BelongsTo<User, $this> */
     public function addedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'added_by_user_id', 'id');

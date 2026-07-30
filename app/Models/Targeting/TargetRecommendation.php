@@ -56,6 +56,8 @@ class TargetRecommendation extends Model
 
     /**
      * The project this recommendation lives in.
+     *
+     * @return BelongsTo<Project, $this>
      */
     public function project(): BelongsTo
     {
@@ -64,6 +66,8 @@ class TargetRecommendation extends Model
 
     /**
      * Review decisions logged against this recommendation (R5 sign-off).
+     *
+     * @return HasMany<TargetReviewDecision, $this>
      */
     public function reviewDecisions(): HasMany
     {
@@ -77,6 +81,8 @@ class TargetRecommendation extends Model
     /**
      * Drilled outcomes tied to this recommendation (Phase 12 training
      * input).
+     *
+     * @return HasMany<TargetOutcome, $this>
      */
     public function outcomes(): HasMany
     {

@@ -53,7 +53,12 @@ return [
             'region' => env('AWS_DEFAULT_REGION'),
             'bucket' => env('AWS_BUCKET'),
             'url' => env('AWS_URL'),
-            'endpoint' => env('AWS_ENDPOINT'),
+            // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
+            // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
+            // is Laravel's own long-standing name for the same value. Read the
+            // canonical name first so a deployment that only sets
+            // AWS_ENDPOINT_URL doesn't leave PHP pointed at the wrong endpoint.
+            'endpoint' => env('AWS_ENDPOINT_URL', env('AWS_ENDPOINT')),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
             'report' => false,
@@ -70,7 +75,12 @@ return [
             'region' => env('AWS_DEFAULT_REGION'),
             'bucket' => env('MINIO_BUCKET_BRONZE', 'bronze'),
             'url' => env('AWS_URL'),
-            'endpoint' => env('AWS_ENDPOINT'),
+            // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
+            // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
+            // is Laravel's own long-standing name for the same value. Read the
+            // canonical name first so a deployment that only sets
+            // AWS_ENDPOINT_URL doesn't leave PHP pointed at the wrong endpoint.
+            'endpoint' => env('AWS_ENDPOINT_URL', env('AWS_ENDPOINT')),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
             'report' => false,
@@ -86,7 +96,12 @@ return [
             'region' => env('AWS_DEFAULT_REGION'),
             'bucket' => env('MINIO_BUCKET_EXPORTS', 'georag-exports'),
             'url' => env('AWS_URL'),
-            'endpoint' => env('AWS_ENDPOINT'),
+            // AWS_ENDPOINT_URL is the canonical name georag_object_storage's
+            // Python side reads first (storage-abstraction plan); AWS_ENDPOINT
+            // is Laravel's own long-standing name for the same value. Read the
+            // canonical name first so a deployment that only sets
+            // AWS_ENDPOINT_URL doesn't leave PHP pointed at the wrong endpoint.
+            'endpoint' => env('AWS_ENDPOINT_URL', env('AWS_ENDPOINT')),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
             'throw' => false,
             'report' => false,

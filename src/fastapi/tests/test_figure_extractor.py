@@ -110,7 +110,7 @@ def _letter_pdf_with_block(
 
 def test_extract_figures_from_layout_crops_correct_region(tmp_path: Path) -> None:
     pdf = _letter_pdf_with_block(tmp_path / "layout.pdf")
-    # Docling coords (points, bottom-left, page 792 tall): image rows 100..250
+    # PDF coords (points, bottom-left, page 792 tall): image rows 100..250
     # from top → top=692, bottom=542; cols 100..300 → left=100, right=300.
     regions = [{"page": 1, "bbox": [100, 542, 300, 692], "layout_label": "figure"}]
     figs = extract_figures_from_layout(str(pdf), regions)

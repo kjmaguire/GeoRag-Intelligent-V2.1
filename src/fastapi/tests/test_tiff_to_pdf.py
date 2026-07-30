@@ -156,3 +156,16 @@ def test_palette_mode_converts_to_rgb_not_lost():
     result = tiff_to_pdf(tiff_bytes)
     assert result.page_count == 1
     assert result.pdf_bytes.startswith(b"%PDF-")
+
+
+def test_normalizer_restores_pillow_pixel_limit():
+    from PIL import Image
+
+    from app.services.ingest.tiff_to_pdf import tiff_to_pdf
+
+    original_limit = Image.MAX_IMAGE_PIXELS
+    tiff = _make_tiff([(300, 400)], mode="L")
+
+    tiff_to_pdf(tiff)
+
+    assert original_limit == Image.MAX_IMAGE_PIXELS

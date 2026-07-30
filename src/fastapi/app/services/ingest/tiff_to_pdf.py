@@ -94,24 +94,25 @@ def tiff_to_pdf(source_bytes: bytes) -> TiffNormalizeResult:
     except ImportError as exc:  # pragma: no cover — PIL is in fastapi image
         raise TiffNormalizeError(f"Pillow not available: {exc}") from exc
 
-    # Lift PIL's default decompression-bomb threshold; WSGS / NI 43-101
-    # scans routinely exceed it. We've already capped the *byte* size
-    # above; pixel-count guard is delegated to MAX_FRAMES + per-frame
-    # PIL behaviour (drops to None == "no limit").
-    Image.MAX_IMAGE_PIXELS = None
+    from .image_tiling import trusted_pillow_image_limit
 
-    try:
-        src = Image.open(io.BytesIO(source_bytes))
-    except Exception as exc:
-        raise TiffNormalizeError(f"PIL.Image.open failed: {exc}") from exc
+    # WSGS / NI 43-101 scans routinely exceed Pillow's default threshold.
+    # Raise it to a finite, explicit ceiling only while decoding this trusted
+    # internal upload, then restore the process-wide Pillow setting.
+    with trusted_pillow_image_limit():
+        try:
+            src = Image.open(io.BytesIO(source_bytes))
+        except Exception as exc:
+            raise TiffNormalizeError(f"PIL.Image.open failed: {exc}") from exc
 
-    frames: list[Image.Image] = []
-    truncated = False
-    for i, frame in enumerate(ImageSequence.Iterator(src)):
-        if i >= MAX_FRAMES:
-            truncated = True
-            break
-        frames.append(_normalise_frame_mode(frame))
+        frames: list[Image.Image] = []
+        truncated = False
+        for i, frame in enumerate(ImageSequence.Iterator(src)):
+            if i >= MAX_FRAMES:
+                truncated = True
+                break
+            frames.append(_normalise_frame_mode(frame))
+        source_dpi = _effective_dpi(src)
 
     if not frames:
         raise TiffNormalizeError("no frames in TIFF")
@@ -126,7 +127,7 @@ def tiff_to_pdf(source_bytes: bytes) -> TiffNormalizeResult:
             append_images=rest,
             # Resolution metadata — best-effort from the TIFF; the §04p
             # stack uses pdf2image at fixed DPI so this is informational.
-            resolution=_effective_dpi(src),
+            resolution=source_dpi,
         )
     except Exception as exc:
         raise TiffNormalizeError(f"PIL PDF write failed: {exc}") from exc

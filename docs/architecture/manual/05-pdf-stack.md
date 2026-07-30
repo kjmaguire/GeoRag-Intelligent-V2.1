@@ -6,23 +6,22 @@ Everything runs inside the `hatchet-worker-ingestion` (and occasionally the
 
 > All file paths in this chapter are relative to the repo root.
 >
-> **⚠️ OCR/VL engines upgraded 2026-06.** The Stage-4 OCR and Stage-6 VL
-> tiers changed: PaddleOCR 2.10 → **3.7** (new `.predict()` API),
-> Tesseract → **5.5.2 from source**, VL → **Qwen3-VL-8B** (gated; default
-> still Qwen2.5-VL-7B). The pipeline *shape* below is unchanged; for the
-> engine versions + call-site API see
-> [Ch 18 §3](18-model-stack-evolution.md) (ADRs 0015/0016/0017).
+> **OCR stack updated 2026-07-29.** Azure Document Intelligence is the
+> primary scanned-page OCR service, with Tesseract retained as the
+> last-resort fallback. Docling, RapidOCR, and PaddleOCR were removed.
+> Oversized pages use lossless tiling, coordinate reconstruction, seam
+> deduplication, and multi-signal quality routing.
 
 ## 1. Entry point
 
 `ingest_pdf.parse()` ([src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py))
 calls `_run_parser_subprocess()` which delegates to:
 
-[src/dagster/georag_dagster/parsers/pdf_report.py](../../../src/dagster/georag_dagster/parsers/pdf_report.py) → `parse_pdf_report(body_bytes, sha256)`
+[src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) → `parse_pdf_report(path)`
 
-Why a subprocess pool: pdfminer/PaddleOCR/docling each carry global state.
+Why a subprocess pool: PDF parsing and raster OCR are CPU- and memory-heavy.
 A crash in one PDF must not poison the worker. The pool also bounds memory
-per parse — see `_wait_for_memory_headroom()` in ingest_pdf.
+per parse — see `_wait_for_memory_headroom()` in `ingest_pdf.py`.
 
 ## 2. The seven-stage pipeline
 
@@ -54,11 +53,11 @@ body_bytes
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 4 — LAYOUT + OCR    pdf_layout.py + pdf_ocr.py                    │
-│   image-only pages, OR low-confidence fitz pages                        │
-│   PDF_PARSER_DOCLING_ENABLED=true → docling + rapidocr (GPU)            │
-│   else → tesseract (psm=3) (CPU fallback)                               │
-│   silver.ocr_page_quality + silver.low_confidence_page_reviews          │
+│ Stage 4 — OCR    services/ingest/pdf_report.py                          │
+│   image-only pages, OR low-content fitz pages                           │
+│   Azure Document Intelligence primary; Tesseract last-resort fallback   │
+│   oversized pages → lossless tiles → polygon remap + seam dedupe        │
+│   multi-signal quality routing → silver.review_queue                    │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -72,7 +71,7 @@ body_bytes
 │ Stage 6 — VISUAL-LANGUAGE PASS (opt-in)    pdf_vl.py                    │
 │   Qwen2.5-VL-7B-Instruct on vLLM (separate VLLM_MODEL config)           │
 │   describes figures + extracts numeric values from charts               │
-│   gated on DOCLING_VL_ENABLED + figure_extractor.py confidence          │
+│   gated on the visual-language feature configuration                    │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -92,12 +91,12 @@ body_bytes
 | Preflight | [src/fastapi/app/services/pdf_preflight.py](../../../src/fastapi/app/services/pdf_preflight.py) | `preflight()`, `_qpdf_check()`, `_page_count()` |
 | Native text | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) | `extract_native_text_pages()` (PyMuPDF primary; pdfminer fallback) |
 | Tables | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) + [pdf_layout.py](../../../src/fastapi/app/services/pdf_layout.py) | `extract_tables_diverse()` — pdfplumber + camelot strategies |
-| OCR | [src/fastapi/app/services/pdf_ocr.py](../../../src/fastapi/app/services/pdf_ocr.py) | `ocr_page_docling()`, `ocr_page_tesseract()`; docling primary, tesseract fallback |
+| OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [document_intelligence_client.py](../../../src/fastapi/app/services/ingest/document_intelligence_client.py) | Azure Document Intelligence primary, tiled oversized-page reconstruction, Tesseract fallback |
 | Coordinates | [src/fastapi/app/services/pdf_coordinates.py](../../../src/fastapi/app/services/pdf_coordinates.py) | Maps OCR text → page-relative bboxes for citation span resolver |
 | Rendering | [src/fastapi/app/services/pdf_render.py](../../../src/fastapi/app/services/pdf_render.py) | `render_page_png()` → uploads to SeaweedFS `bronze-raster` bucket |
 | VL pass | [src/fastapi/app/services/pdf_vl.py](../../../src/fastapi/app/services/pdf_vl.py) | `describe_figure_vl()` — calls Qwen2.5-VL on the vllm endpoint |
 | Figure linking | [src/fastapi/app/agent/figure_extractor.py](../../../src/fastapi/app/agent/figure_extractor.py) | Figure → caption nearest-text linking v1 |
-| Dagster glue | [src/dagster/georag_dagster/parsers/pdf_report.py](../../../src/dagster/georag_dagster/parsers/pdf_report.py) | `parse_pdf_report()` orchestrator |
+| Hatchet workflow | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `parse_pdf_report()` invocation and atomic Silver persistence |
 
 ## 4. Performance fixes that landed in 2026-05
 
@@ -110,7 +109,7 @@ body_bytes
 5. PDF body cached in memory per parse — no re-reads from disk.
 6. Single-pass tables — one walk over pages instead of per-table calls.
 7. Slot tuning — pool size from `min(os.cpu_count(), 4)`.
-8. Docling moved to GPU.
+8. OCR execution was isolated from the event loop in parse subprocesses.
 
 Result: 3-5× speedup on text-heavy NI 43-101 PDFs.
 
@@ -121,7 +120,7 @@ Result: 3-5× speedup on text-heavy NI 43-101 PDFs.
 - Tesseract bumped from default psm to `psm=3` (auto page seg with OSD).
 - Tables now read all pages, not just the first hit page.
 - `§04p` re-enabled after the Phase 1 freeze.
-- Docling made the opt-in primary parser; rapidocr handles OCR.
+- Azure Document Intelligence is the primary scanned-page OCR service.
 - Figure→caption linking v1 with MinIO uploads.
 
 ## 6. PDF coverage overhaul (six gaps closed 2026-05-22)
@@ -166,10 +165,10 @@ From [docker-compose.yml:2039-2065](../../../docker-compose.yml):
 
 | Env var | Default | Effect |
 |---|---|---|
-| `PDF_PARSER_DOCLING_ENABLED` | true | Docling becomes primary OCR engine |
-| `DOCLING_OCR_ENABLED` | true | rapidocr backend on (GPU) |
-| `RAPIDOCR_MODEL_DIR` | `/tmp/rapidocr_models` | Shared model cache (named volume) |
-| `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to tesseract on docling failure |
+| `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | unset | Enables Azure Document Intelligence OCR |
+| `AZURE_DOCUMENT_INTELLIGENCE_KEY` | unset | Azure OCR credential |
+| `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Azure is unavailable or empty |
+| `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated tier thresholds; unset routes uncertain OCR to review |
 | `PDF_PARSE_PAGE_WORKERS` | 4 | Page-level parallelism within a parse |
 | `PARSE_SUBPROCESS_MAX_WORKERS` | (auto) | Parallel parses per worker; empty → `min(cpu_count(), 4)` |
 | `BRONZE_LOCAL_DIR` | `/tmp/georag/bronze` | Body-bytes cache |
