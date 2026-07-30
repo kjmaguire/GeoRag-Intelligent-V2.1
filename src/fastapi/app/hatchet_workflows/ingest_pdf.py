@@ -772,7 +772,7 @@ INSERT INTO silver.document_passages (
     ocr_confidence, ocr_method, ocr_status,
     created_at, updated_at
 )
-VALUES ($1, $2::uuid, 1, $3, $4, $5, 'narrative', $6, $7, $8, $9, 'accepted', NOW(), NOW())
+VALUES ($1, $2::uuid, 1, $3, $4, $5, 'narrative', $6, $7, $8, $9, $10, NOW(), NOW())
 ON CONFLICT (document_id, revision_number, text_hash) DO UPDATE SET
     page_first     = COALESCE(EXCLUDED.page_first,     silver.document_passages.page_first),
     page_last      = COALESCE(EXCLUDED.page_last,      silver.document_passages.page_last),
@@ -781,11 +781,163 @@ ON CONFLICT (document_id, revision_number, text_hash) DO UPDATE SET
     -- confidence with NULL on a Hatchet retry of the same parse.
     ocr_confidence = COALESCE(silver.document_passages.ocr_confidence, EXCLUDED.ocr_confidence),
     ocr_method     = COALESCE(silver.document_passages.ocr_method,     EXCLUDED.ocr_method),
-    -- Phase 6 (2026-05-22): on retry, do NOT reset ocr_status — if the
-    -- quality agent already flagged it as pending_reocr, the retry should
-    -- preserve that. The default 'accepted' only applies on first insert.
+    -- Preserve agent-driven states, but allow a fail-closed OCR assessment
+    -- discovered on retry to promote an accepted passage to low_confidence.
+    ocr_status     = CASE
+        WHEN silver.document_passages.ocr_status = 'accepted'
+         AND EXCLUDED.ocr_status = 'low_confidence'
+        THEN EXCLUDED.ocr_status
+        ELSE silver.document_passages.ocr_status
+    END,
     updated_at     = NOW()
 """
+
+INSERT_OCR_REVIEW_SQL = """
+INSERT INTO silver.review_queue (
+    queue_id, workspace_id, project_id, target_table, target_record_kind,
+    bronze_uri, bronze_row_offset, payload, confidence_per_field,
+    confidence_record, parser_version, routing_decision, routing_reason,
+    outlier_flags
+)
+SELECT
+    $1::uuid, $2::uuid, $3::uuid, 'silver.document_passages', 'ocr_page',
+    $4, NULL, $5::jsonb, $6::jsonb,
+    $7, $8, 'review_required'::review_routing_enum, $9,
+    $10::jsonb
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM silver.review_queue existing
+    WHERE existing.workspace_id = $2::uuid
+      AND existing.project_id = $3::uuid
+      AND existing.target_table = 'silver.document_passages'
+      AND existing.target_record_kind = 'ocr_page'
+      AND existing.bronze_uri = $4
+      AND existing.payload->>'page_number' = $5::jsonb->>'page_number'
+      AND existing.parser_version = $8
+      AND existing.lifecycle IN ('pending', 'in_review')
+)
+ON CONFLICT (queue_id) DO NOTHING
+"""
+
+
+def _build_ocr_review_rows(
+    parsed: dict,
+    *,
+    report_id: str,
+    workspace_id: str,
+    project_id: str,
+    bronze_uri: str,
+) -> list[dict]:
+    """Translate parser assessments into the existing review-queue contract."""
+
+    rows: list[dict] = []
+    for warning in parsed.get("warnings") or []:
+        if warning.get("code") != "ocr_quality_assessment":
+            continue
+        if warning.get("routing_decision") != "review_required":
+            continue
+
+        page_number = int(warning.get("page") or 0)
+        if page_number <= 0:
+            continue
+        signals = dict(warning.get("signals") or {})
+        mean_confidence = max(
+            0.0,
+            min(1.0, float(signals.get("mean_confidence") or 0.0)),
+        )
+        reasons = [
+            str(reason)
+            for reason in (warning.get("reasons") or [])
+            if str(reason).strip()
+        ]
+        tier = str(warning.get("tier") or "mandatory_review")
+        ocr_method = str(warning.get("ocr_method") or "unknown")
+        parser_version = (
+            f"pdf_report:{warning.get('parser_version') or 'unknown'}:"
+            f"{ocr_method}:ocr-quality-v1"
+        )[:128]
+        payload = {
+            "document_id": report_id,
+            "page_number": page_number,
+            "page_first": page_number,
+            "page_last": page_number,
+            "text": str(warning.get("extracted_text") or ""),
+            "ocr_method": ocr_method,
+            "ocr_quality_tier": tier,
+        }
+        queue_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                (
+                    f"georag:ocr-review:{workspace_id}:{project_id}:"
+                    f"{bronze_uri}:{page_number}:{parser_version}"
+                ),
+            )
+        )
+        rows.append({
+            "queue_id": queue_id,
+            "workspace_id": workspace_id,
+            "project_id": project_id,
+            "bronze_uri": bronze_uri,
+            "payload": payload,
+            "confidence_per_field": signals,
+            "confidence_record": mean_confidence,
+            "parser_version": parser_version,
+            "routing_reason": ", ".join(reasons)[:512] or tier,
+            "outlier_flags": [
+                {"field": "ocr_quality", "reason": reason}
+                for reason in reasons
+            ],
+        })
+    return rows
+
+
+def _ocr_review_pages(parsed: dict) -> set[int]:
+    """Return pages whose OCR assessment requires human review."""
+
+    pages: set[int] = set()
+    for warning in parsed.get("warnings") or []:
+        if warning.get("code") != "ocr_quality_assessment":
+            continue
+        if warning.get("routing_decision") != "review_required":
+            continue
+        try:
+            page_number = int(warning.get("page") or 0)
+        except (TypeError, ValueError):
+            continue
+        if page_number > 0:
+            pages.add(page_number)
+    return pages
+
+
+def _ocr_status_for_section(section: dict, review_pages: set[int]) -> str:
+    """Map page-level review routing onto the existing passage status enum."""
+
+    page_first = int(section.get("page_first") or 0)
+    page_last = int(section.get("page_last") or page_first)
+    if page_first <= 0:
+        return "accepted"
+    return (
+        "low_confidence"
+        if any(page_first <= page <= page_last for page in review_pages)
+        else "accepted"
+    )
+
+
+def _stable_report_id(
+    *,
+    workspace_id: str,
+    project_id: str,
+    source_identity: str,
+) -> str:
+    """Return a retry-stable report UUID for one project-scoped source."""
+
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"georag:report:{workspace_id}:{project_id}:{source_identity}",
+        )
+    )
 
 
 @ingest_pdf.task(execution_timeout="15m", schedule_timeout="2h", retries=2, parents=[parse])
@@ -816,7 +968,11 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     parsed = parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)
 
     t_start = time.monotonic()
-    report_id = str(uuid.uuid4())
+    report_id = _stable_report_id(
+        workspace_id=str(input.workspace_id or LEGACY_DEFAULT_TENANT_UUID),
+        project_id=str(input.project_id),
+        source_identity=str(pre.get("sha256") or input.minio_key),
+    )
 
     # Build resource_estimate payload to match v1.49 exactly.
     resource_estimate: dict = {}
@@ -1027,6 +1183,18 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             input.minio_key,
         )
 
+    ocr_review_rows = _build_ocr_review_rows(
+        parsed,
+        report_id=report_id,
+        workspace_id=workspace_id_str,
+        project_id=str(input.project_id),
+        bronze_uri=(
+            f"s3://{os.environ.get('MINIO_BUCKET_BRONZE', 'bronze')}/"
+            f"{input.minio_key}"
+        ),
+    )
+    ocr_review_pages = _ocr_review_pages(parsed)
+
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2, statement_cache_size=0)
     try:
         async with pool.acquire() as conn:
@@ -1084,9 +1252,25 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         section.get("page_last"),
                         ocr_conf,
                         ocr_method,
+                        _ocr_status_for_section(section, ocr_review_pages),
                     )
                     if status.endswith(" 1"):
                         passages_written += 1
+
+                for review_row in ocr_review_rows:
+                    await conn.execute(
+                        INSERT_OCR_REVIEW_SQL,
+                        review_row["queue_id"],
+                        review_row["workspace_id"],
+                        review_row["project_id"],
+                        review_row["bronze_uri"],
+                        json.dumps(review_row["payload"]),
+                        json.dumps(review_row["confidence_per_field"]),
+                        review_row["confidence_record"],
+                        review_row["parser_version"],
+                        review_row["routing_reason"],
+                        json.dumps(review_row["outlier_flags"]),
+                    )
 
             # silver.shadow_runs was dropped in Phase 4 Step 6 (sunset of the
             # v1.49 shadow-diff harness). The persist step previously

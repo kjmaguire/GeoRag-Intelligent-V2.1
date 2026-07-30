@@ -1057,7 +1057,7 @@ if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
 # (enforced per-router via the verify_service_key dependency).
 app.include_router(queries.router, prefix="/internal")
 app.include_router(projects.router, prefix="/internal")
-app.include_router(exports_router.router, prefix="/internal")
+app.include_router(exports_router.router)
 # Track A.1 Phase 4.B-ii — LLM-assist outlier endpoint called by the
 # Dagster outlier detector. /internal/outlier-assist is the path the
 # Dagster helper expects (OUTLIER_LLM_ASSIST_ENDPOINT env var defaults

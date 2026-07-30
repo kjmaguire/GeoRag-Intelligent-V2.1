@@ -125,8 +125,8 @@ dependencies = [
     # this codebase only ever calls page.get_textpage().get_text_bounded(),
     # never the removed method, so the bump is a floor raise, not an API
     # migration. Capped at <6 so a future major bump doesn't land silently.
-    "pikepdf>=9.0",
-    "pypdfium2>=5.12,<6",
+    "pikepdf>=10.10.0,<11",
+    "pypdfium2>=5.12.1,<6",
     "cachetools>=5.5",
     # §04p Phase 1.B — Text + layout extraction (Stage 3)
     # pdfminer.six: MIT — lossless text extraction with bboxes + font metadata.
@@ -136,8 +136,8 @@ dependencies = [
     # NOTE for operator: run `uv pip install 'pdfminer.six>=20240706' 'pdfplumber>=0.11'`
     #   (or rebuild the fastapi Docker image) before using
     #   the /pdf/extract_text and /pdf/find_tables endpoints.
-    "pdfminer.six>=20240706",
-    "pdfplumber>=0.11",
+    "pdfminer.six>=20260107",
+    "pdfplumber>=0.11.10,<0.12",
     # polars: REMOVED 2026-07-28 (B2). It was here for exactly one reason —
     #   georag_dagster.parsers.__init__ eagerly imported xlsx_parser, so the
     #   worker's `from georag_dagster.parsers.pdf_report import ...` dragged
@@ -170,7 +170,7 @@ dependencies = [
     #   binary used by _parse_with_fitz for per-page OCR fallback.
     #   Phase 10 (2026-05-22): explicit pin so a clean image rebuild
     #   ships with it baked in.
-    "pytesseract>=0.3",
+    "pytesseract>=0.3.13,<0.4",
     # pdf2image: MIT — renders PDF pages to PIL images for the tesseract
     #   fallback path (_ocr_single_page/_attempt_ocr call convert_from_path).
     #   Was an undeclared transitive dependency until this pin (2026-07-29) —
@@ -196,13 +196,11 @@ dependencies = [
     # /pdf/find_legends). Task #17/A3 had already deleted most of §04p but
     # missed this leg.
     # #28 (2026-07-28) — Azure Document Intelligence OCR adapter (MIT).
-    # Standalone module, gated OFF by default (OCR_ENGINE=tesseract).
-    # NOT wired into pdf_report.py's live Tesseract call sites yet — that
-    # rewiring is a separate, riskier follow-up that needs a real Azure
-    # resource + a scanned-corpus regression pass, not blind autonomous
-    # editing of the fragile fitz/tesseract merge path. See
-    # app/services/ingest/document_intelligence_client.py.
-    "azure-ai-documentintelligence>=1.0.0,<2.0",
+    # Gated OFF by default (OCR_ENGINE=tesseract). When selected, the live
+    # per-page and whole-document OCR paths use Azure first, tile oversized
+    # rasters below the 10,000px service limit, and retain Tesseract as the
+    # last-resort fallback.
+    "azure-ai-documentintelligence>=1.0.2,<2.0",
     # azure-core: MIT — directly imported for AzureKeyCredential, not just a
     #   transitive dep of azure-ai-documentintelligence. Undeclared until
     #   this pin (2026-07-29).
@@ -253,7 +251,7 @@ dependencies = [
     "aioboto3>=13.0",
     # pypdfium2 pin lives once, above (§04p Phase 1.A) — duplicate entry
     # removed 2026-07-29, same package pinned twice in this list.
-    "pypdf>=5.0",
+    "pypdf>=6.14.2,<7",
     # Phase 5 (2026-05-22) — used by the parse-subprocess memory guard
     # in ingest_pdf.py. Pre-fork RAM check prevents OOM when running
     # multiple concurrent PDF parses on the ingestion worker. Already

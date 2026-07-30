@@ -275,10 +275,19 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
 ):
     _install_fake_pypdfium2(monkeypatch, [""], title="T")
 
-    # Phase 3: return_confidence=True path; stub returns (text, conf)
+    # Quality-routing path returns text, confidence, and serialized assessment.
     monkeypatch.setattr(
         parser_module, "_ocr_single_page",
-        MagicMock(return_value=("tesseract recovered " * 10, 0.82)),
+        MagicMock(return_value=(
+            "tesseract recovered " * 10,
+            0.82,
+            {
+                "tier": "auto_accept",
+                "routing_decision": "auto_pass",
+                "reasons": [],
+                "signals": {},
+            },
+        )),
     )
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf", apply_ocr_fallback=True)

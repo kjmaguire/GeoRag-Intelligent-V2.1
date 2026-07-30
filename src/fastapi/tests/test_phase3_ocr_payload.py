@@ -3,7 +3,7 @@ and the qdrant payload.
 
 These tests verify:
   - _run_parser_subprocess section dicts include ocr_confidence + ocr_method
-  - INSERT_PASSAGE_SQL has both new columns + 9-parameter binding
+  - INSERT_PASSAGE_SQL has OCR provenance/status columns + 10-parameter binding
   - ParseOut.sections shape carries the two fields
   - DocumentChunk on the agent side has ocr_confidence + ocr_method
   - passage_embedder builds qdrant payload with both fields
@@ -87,10 +87,11 @@ def test_insert_passage_sql_includes_ocr_columns():
     sql = mod.INSERT_PASSAGE_SQL
     assert "ocr_confidence" in sql
     assert "ocr_method" in sql
-    # 9 binds: document_id, workspace, text, hash, ordinal, page_first,
-    # page_last, ocr_confidence, ocr_method
+    # 10 binds: document_id, workspace, text, hash, ordinal, page_first,
+    # page_last, ocr_confidence, ocr_method, ocr_status
     assert "$9" in sql
-    assert "$10" not in sql  # don't accidentally over-bind
+    assert "$10" in sql
+    assert "$11" not in sql  # don't accidentally over-bind
 
 
 # ---------------------------------------------------------------------------

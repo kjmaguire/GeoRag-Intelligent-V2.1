@@ -218,8 +218,23 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
     _install_fake_pypdfium2(monkeypatch, ["P" * 200, ""])
 
     # Stub _ocr_single_page to return text + conf=0.72
-    def _fake_ocr(path, page_num, return_confidence=False):
+    def _fake_ocr(
+        path,
+        page_num,
+        return_confidence=False,
+        return_assessment=False,
+    ):
         assert return_confidence is True
+        assert return_assessment is True
+        assessment = {
+            "tier": "mandatory_review",
+            "routing_decision": "review_required",
+            "reasons": ["routing_thresholds_not_calibrated"],
+            "thresholds_calibrated": False,
+            "signals": {},
+        }
+        if return_assessment:
+            return "R" * 200, 0.72, assessment
         return ("R" * 200, 0.72)
     monkeypatch.setattr(parser_module, "_ocr_single_page", _fake_ocr)
 
@@ -436,3 +451,51 @@ def test_ocr_single_page_clamps_confidence(parser_module, monkeypatch):
     )
     assert 0.0 <= conf <= 1.0
     assert conf == 1.0
+
+
+def test_tiled_document_intelligence_reconstructs_oversized_page(
+    parser_module,
+    monkeypatch,
+):
+    from PIL import Image
+
+    from app.services.ingest import document_intelligence_client as di
+
+    fake_pdf2image = types.ModuleType("pdf2image")
+    fake_pdf2image.convert_from_path = MagicMock(
+        return_value=[Image.new("L", (100, 9_500))]
+    )
+    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+
+    results = iter([
+        di.PageOcrResult(
+            text="Top Seam",
+            mean_confidence=0.90,
+            words=(
+                di.OcrWord("Top", 0.90, (5, 5, 25, 5, 25, 20, 5, 20)),
+                di.OcrWord(
+                    "Seam",
+                    0.80,
+                    (5, 8_950, 35, 8_950, 35, 8_970, 5, 8_970),
+                ),
+            ),
+            detected_region_count=2,
+        ),
+        di.PageOcrResult(
+            text="Seam Bottom",
+            mean_confidence=0.95,
+            words=(
+                di.OcrWord("Seam", 0.95, (5, 130, 35, 130, 35, 150, 5, 150)),
+                di.OcrWord("Bottom", 0.95, (5, 500, 45, 500, 45, 520, 5, 520)),
+            ),
+            detected_region_count=2,
+        ),
+    ])
+    monkeypatch.setattr(di, "ocr_image_sync", lambda _body: next(results))
+
+    result, assessment = parser_module._ocr_tiled_pdf_page("/tmp/fake.pdf", 1)
+
+    assert result.text == "Top Seam Bottom"
+    assert len(result.words) == 3
+    assert next(word for word in result.words if word.text == "Seam").confidence == 0.95
+    assert assessment["signals"]["seam_duplicate_ratio"] == 0.25

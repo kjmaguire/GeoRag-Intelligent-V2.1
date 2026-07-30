@@ -42,7 +42,6 @@ import logging
 import os
 import re
 import statistics
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1290,8 +1289,11 @@ def _parse_with_fitz(
         for n in short_page_nums:
             try:
                 # Phase 3 — capture mean_conf from tesseract per-word data
-                ocr_text, mean_conf = _ocr_single_page(
-                    path, n, return_confidence=True,
+                ocr_text, mean_conf, assessment = _ocr_single_page(
+                    path,
+                    n,
+                    return_confidence=True,
+                    return_assessment=True,
                 )
             except Exception:
                 continue
@@ -1310,6 +1312,19 @@ def _parse_with_fitz(
                     "code": "page_ocr_recovered_fitz",
                     "page": n,
                     "ocr_confidence": round(mean_conf, 4),
+                })
+                warnings.append({
+                    "code": "ocr_quality_assessment",
+                    "page": n,
+                    "parser_version": PARSER_VERSION,
+                    "ocr_method": (
+                        "document_intelligence"
+                        if os.environ.get("OCR_ENGINE", "").strip().lower()
+                        == "azure_document_intelligence"
+                        else "tesseract"
+                    ),
+                    "extracted_text": ocr_text,
+                    **assessment,
                 })
         if ocr_recovered:
             logger.info(
@@ -1362,6 +1377,7 @@ def _ocr_single_page(
     pdf_path: str,
     page_num: int,
     return_confidence: bool = False,
+    return_assessment: bool = False,
 ):
     """Render one PDF page and run Tesseract on it.
 
@@ -1372,7 +1388,10 @@ def _ocr_single_page(
     ``text`` for back-compatibility with the existing pdfplumber
     fallback path.
 
-    Returns ``""`` (or ``("", 0.0)``) on any failure.
+    When ``return_assessment=True``, a third value contains the serialized
+    multi-signal quality assessment used by review routing.
+
+    Returns ``""`` (or the corresponding empty tuple) on any failure.
     """
     from . import document_intelligence_client as _di
 
@@ -1389,10 +1408,18 @@ def _ocr_single_page(
             )
         else:
             if result.text.strip():
-                return (
-                    (result.text, result.mean_confidence)
-                    if return_confidence
-                    else result.text
+                assessment = _assess_ocr_result(
+                    result.text,
+                    [word.confidence for word in result.words]
+                    or [result.mean_confidence],
+                    detected_region_count=result.detected_region_count,
+                )
+                return _format_ocr_page_return(
+                    result.text,
+                    result.mean_confidence,
+                    assessment,
+                    return_confidence=return_confidence,
+                    return_assessment=return_assessment,
                 )
             # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
             # InvalidContentDimensions on an out-of-range scan resolution —
@@ -1403,15 +1430,37 @@ def _ocr_single_page(
             # a page tesseract might actually be able to read.
             logger.info(
                 "pdf_report: document_intelligence returned empty text for "
-                "page %d of '%s' — falling back to tesseract",
+                "page %d of '%s' — trying bounded raster tiles",
                 page_num, pdf_path,
             )
+            try:
+                tiled_result, assessment = _ocr_tiled_pdf_page(
+                    pdf_path,
+                    page_num,
+                )
+            except Exception as tiled_exc:  # noqa: BLE001
+                logger.warning(
+                    "pdf_report: tiled document_intelligence OCR failed on "
+                    "page %d of '%s': %s — falling back to tesseract",
+                    page_num,
+                    pdf_path,
+                    tiled_exc,
+                )
+            else:
+                if tiled_result.text.strip():
+                    return _format_ocr_page_return(
+                        tiled_result.text,
+                        tiled_result.mean_confidence,
+                        assessment,
+                        return_confidence=return_confidence,
+                        return_assessment=return_assessment,
+                    )
 
     try:
         import pytesseract
         from pdf2image import convert_from_path
     except ImportError:
-        return ("", 0.0) if return_confidence else ""
+        return _empty_ocr_page_return(return_confidence, return_assessment)
     try:
         images = convert_from_path(
             pdf_path,
@@ -1421,12 +1470,12 @@ def _ocr_single_page(
             thread_count=1,
         )
         if not images:
-            return ("", 0.0) if return_confidence else ""
+            return _empty_ocr_page_return(return_confidence, return_assessment)
         processed = _preprocess_image_for_ocr(images[0])
         # Phase 3: image_to_data carries per-word confidence in the
         # `conf` column (range -1..100, where -1 = no detection).
         # Compute the mean of positive confidences and rescale to 0-1.
-        if return_confidence:
+        if return_confidence or return_assessment:
             try:
                 data = pytesseract.image_to_data(
                     processed,
@@ -1455,7 +1504,18 @@ def _ocr_single_page(
                     if text and text.strip()
                     else ""
                 )
-                return processed_text, mean_conf
+                assessment = _assess_ocr_result(
+                    processed_text,
+                    [confidence / 100.0 for _word, confidence in words],
+                    detected_region_count=len(data.get("text", [])),
+                )
+                return _format_ocr_page_return(
+                    processed_text,
+                    mean_conf,
+                    assessment,
+                    return_confidence=return_confidence,
+                    return_assessment=return_assessment,
+                )
             except Exception as conf_exc:  # noqa: BLE001
                 logger.debug(
                     "pdf_report: tesseract confidence capture failed on page "
@@ -1471,7 +1531,18 @@ def _ocr_single_page(
         out_text = _postprocess_ocr_text(text) if text and text.strip() else ""
         # When confidence was requested but image_to_data raised, return
         # 0.0 to signal "unknown" rather than fabricating a number.
-        return (out_text, 0.0) if return_confidence else out_text
+        assessment = _assess_ocr_result(
+            out_text,
+            [],
+            detected_region_count=0,
+        )
+        return _format_ocr_page_return(
+            out_text,
+            0.0,
+            assessment,
+            return_confidence=return_confidence,
+            return_assessment=return_assessment,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "pdf_report: per-page OCR failed on page %d of '%s': %s",
@@ -1479,7 +1550,165 @@ def _ocr_single_page(
             pdf_path,
             exc,
         )
-        return ("", 0.0) if return_confidence else ""
+        return _empty_ocr_page_return(return_confidence, return_assessment)
+
+
+def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
+    """Render one PDF page and OCR it as bounded, overlapping image tiles."""
+
+    from pdf2image import convert_from_path
+
+    from . import document_intelligence_client as _di
+    from .image_tiling import (
+        TileWord,
+        encode_tile_png,
+        reconstruct_words,
+        split_image,
+    )
+
+    images = convert_from_path(
+        pdf_path,
+        dpi=250,
+        first_page=page_num,
+        last_page=page_num,
+        thread_count=1,
+    )
+    if not images:
+        return _di.PageOcrResult("", 0.0), _assess_ocr_result(
+            "",
+            [],
+            detected_region_count=0,
+        )
+
+    tiles = split_image(images[0])
+    tile_words: list[TileWord] = []
+    detected_region_count = 0
+    fallback_tile_texts: list[str] = []
+
+    for tile in tiles:
+        result = _di.ocr_image_sync(encode_tile_png(tile))
+        detected_region_count += result.detected_region_count
+        if result.text.strip():
+            fallback_tile_texts.append(result.text.strip())
+        tile_words.extend(
+            TileWord(
+                text=word.text,
+                confidence=word.confidence,
+                polygon=word.polygon,
+                tile_id=tile.tile_id,
+            )
+            for word in result.words
+            if word.polygon
+        )
+
+    reconstruction = reconstruct_words(tiles, tile_words)
+    text = reconstruction.text or " ".join(fallback_tile_texts).strip()
+    confidences = [word.confidence for word in reconstruction.words]
+    mean_confidence = (
+        statistics.fmean(confidences)
+        if confidences
+        else 0.0
+    )
+    assessment = _assess_ocr_result(
+        text,
+        confidences,
+        detected_region_count=detected_region_count,
+        seam_duplicate_count=reconstruction.seam_duplicate_count,
+    )
+    words = tuple(
+        _di.OcrWord(word.text, word.confidence, word.polygon)
+        for word in reconstruction.words
+    )
+    logger.info(
+        "pdf_report: tiled document_intelligence page=%d tiles=%d words=%d "
+        "seam_duplicates=%d quality_tier=%s",
+        page_num,
+        len(tiles),
+        len(words),
+        reconstruction.seam_duplicate_count,
+        assessment["tier"],
+    )
+    return (
+        _di.PageOcrResult(
+            text=text,
+            mean_confidence=mean_confidence,
+            words=words,
+            detected_region_count=detected_region_count,
+        ),
+        assessment,
+    )
+
+
+def _assess_ocr_result(
+    text: str,
+    word_confidences: list[float],
+    *,
+    detected_region_count: int,
+    seam_duplicate_count: int = 0,
+) -> dict[str, Any]:
+    from .ocr_quality import (
+        assess_ocr_quality,
+        calculate_ocr_quality,
+        load_routing_thresholds_from_env,
+    )
+
+    signals = calculate_ocr_quality(
+        text,
+        word_confidences,
+        detected_region_count=detected_region_count,
+        seam_duplicate_count=seam_duplicate_count,
+    )
+    assessment = assess_ocr_quality(
+        signals,
+        load_routing_thresholds_from_env(),
+    )
+    return {
+        "tier": assessment.tier.value,
+        "routing_decision": assessment.review_queue_routing_decision,
+        "reasons": list(assessment.reasons),
+        "thresholds_calibrated": assessment.thresholds_calibrated,
+        "signals": {
+            "mean_confidence": signals.mean_confidence,
+            "median_confidence": signals.median_confidence,
+            "low_confidence_word_ratio": signals.low_confidence_word_ratio,
+            "output_coverage_ratio": signals.output_coverage_ratio,
+            "empty_output": signals.empty_output,
+            "seam_duplicate_ratio": signals.seam_duplicate_ratio,
+            "gibberish_word_ratio": signals.gibberish_word_ratio,
+            "repeated_character_ratio": signals.repeated_character_ratio,
+            "word_count": signals.word_count,
+            "detected_region_count": signals.detected_region_count,
+        },
+    }
+
+
+def _format_ocr_page_return(
+    text: str,
+    mean_confidence: float,
+    assessment: dict[str, Any],
+    *,
+    return_confidence: bool,
+    return_assessment: bool,
+):
+    if return_assessment:
+        return text, mean_confidence, assessment
+    if return_confidence:
+        return text, mean_confidence
+    return text
+
+
+def _empty_ocr_page_return(
+    return_confidence: bool,
+    return_assessment: bool,
+):
+    assessment = _assess_ocr_result("", [], detected_region_count=0)
+    return _format_ocr_page_return(
+        "",
+        0.0,
+        assessment,
+        return_confidence=return_confidence,
+        return_assessment=return_assessment,
+    )
 
 
 # Parallel pdfplumber page worker (must be module-level for multiprocessing
@@ -1513,13 +1742,31 @@ def _extract_page_worker(args: tuple) -> dict:
                 })
 
             if ocr_fallback_enabled and len(text.strip()) < PER_PAGE_MIN_CHARS:
-                ocr_text = _ocr_single_page(pdf_path, page_num)
+                ocr_text, _mean_conf, assessment = _ocr_single_page(
+                    pdf_path,
+                    page_num,
+                    return_confidence=True,
+                    return_assessment=True,
+                )
                 if len(ocr_text.strip()) > len(text.strip()):
                     text = ocr_text
                     out["ocr_recovered"] = True
                     out["warnings"].append({
                         "code": "page_ocr_recovered",
                         "page": page_num,
+                    })
+                    out["warnings"].append({
+                        "code": "ocr_quality_assessment",
+                        "page": page_num,
+                        "parser_version": PARSER_VERSION,
+                        "ocr_method": (
+                            "document_intelligence"
+                            if os.environ.get("OCR_ENGINE", "").strip().lower()
+                            == "azure_document_intelligence"
+                            else "tesseract"
+                        ),
+                        "extracted_text": ocr_text,
+                        **assessment,
                     })
 
             if text and text.strip():
@@ -1819,7 +2066,6 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
     no local rasterisation (no `convert_from_path`): Document Intelligence
     takes the raw PDF bytes directly per page.
     """
-    from . import document_intelligence_client as _di
     from pdf2image import pdfinfo_from_path
 
     try:
@@ -1835,9 +2081,6 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
         )
         raise RuntimeError("page count unavailable")
 
-    with open(path, "rb") as f:
-        pdf_bytes = f.read()
-
     logger.info(
         "pdf_report: starting document_intelligence OCR on %d pages",
         total_pages,
@@ -1848,15 +2091,22 @@ def _attempt_ocr_document_intelligence(path: str) -> str:
     low_confidence_pages: list[int] = []
 
     for page_num in range(1, total_pages + 1):
-        result = _di.ocr_page_sync(pdf_bytes, page_num)
-        if result.text.strip():
-            cleaned = _postprocess_ocr_text(result.text)
-            page_confidences.append(result.mean_confidence)
-            if result.mean_confidence < 0.3:
+        page_text, mean_confidence, assessment = _ocr_single_page(
+            path,
+            page_num,
+            return_confidence=True,
+            return_assessment=True,
+        )
+        if page_text.strip():
+            cleaned = _postprocess_ocr_text(page_text)
+            page_confidences.append(mean_confidence)
+            if assessment["routing_decision"] == "review_required":
                 low_confidence_pages.append(page_num)
                 logger.warning(
-                    "pdf_report: OCR page %d low confidence (%.0f%%) — may be image/diagram",
-                    page_num, result.mean_confidence * 100,
+                    "pdf_report: OCR page %d quality tier=%s reasons=%s",
+                    page_num,
+                    assessment["tier"],
+                    ",".join(assessment["reasons"]),
                 )
             texts.append(cleaned)
 
@@ -1967,23 +2217,55 @@ def _attempt_ocr(path: str) -> str | None:
             # Preprocess image for better OCR accuracy
             processed_img = _preprocess_image_for_ocr(img)
 
-            page_text = pytesseract.image_to_string(
-                processed_img,
-                lang='eng',
-                config='--psm 3 --oem 3',  # LSTM + legacy engine, full auto page segmentation (multi-col aware)
-            )
+            try:
+                data = pytesseract.image_to_data(
+                    processed_img,
+                    lang="eng",
+                    config="--psm 3 --oem 3",
+                    output_type=pytesseract.Output.DICT,
+                )
+                detected_region_count = len(data.get("text", []))
+                detected_words = [
+                    (str(word).strip(), int(confidence))
+                    for word, confidence in zip(
+                        data.get("text", []),
+                        data.get("conf", []),
+                        strict=False,
+                    )
+                    if str(word).strip() and int(confidence) >= 0
+                ]
+                page_text = " ".join(word for word, _confidence in detected_words)
+                word_confidences = [
+                    confidence / 100.0
+                    for _word, confidence in detected_words
+                ]
+            except Exception:  # noqa: BLE001
+                page_text = pytesseract.image_to_string(
+                    processed_img,
+                    lang="eng",
+                    config="--psm 3 --oem 3",
+                )
+                word_confidences = []
+                detected_region_count = 0
 
             if page_text.strip():
                 # Post-process to fix common OCR artifacts
                 cleaned = _postprocess_ocr_text(page_text)
-                conf = _ocr_page_confidence(cleaned)
+                assessment = _assess_ocr_result(
+                    cleaned,
+                    word_confidences,
+                    detected_region_count=detected_region_count,
+                )
+                conf = float(assessment["signals"]["mean_confidence"])
                 page_confidences.append(conf)
 
-                if conf < 0.3:
+                if assessment["routing_decision"] == "review_required":
                     low_confidence_pages.append(i + 1)
                     logger.warning(
-                        "pdf_report: OCR page %d low confidence (%.0f%%) — may be image/diagram",
-                        i + 1, conf * 100,
+                        "pdf_report: OCR page %d quality tier=%s reasons=%s",
+                        i + 1,
+                        assessment["tier"],
+                        ",".join(assessment["reasons"]),
                     )
 
                 texts.append(cleaned)

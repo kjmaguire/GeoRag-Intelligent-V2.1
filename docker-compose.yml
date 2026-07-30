@@ -1711,8 +1711,8 @@ services:
 
   # ---------------------------------------------------------------------------
   # RAGFlow removed in §04p Phase 3 — replaced by the in-process PDF Ingestion
-  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Tesseract/Azure
-  # Document Intelligence OCR, PaddleOCR, Qwen-VL on vLLM) that lives
+  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Azure Document
+  # Intelligence OCR, Tesseract fallback, Qwen-VL on vLLM) that lives
   # entirely inside the FastAPI deployment unit. Docling was also part of
   # this stack until removed 2026-07-29 (never ran in production). See
   # georag-architecture.html §04p (v1.43+) for the locked stack.
@@ -1915,8 +1915,6 @@ services:
       # ingestion guards on the merged worker.
       PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
       PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
-      PADDLEOCR_USE_GPU: ${PADDLEOCR_USE_GPU:-}
-      PADDLEOCR_MIN_FREE_VRAM_MB: ${PADDLEOCR_MIN_FREE_VRAM_MB:-1024}
       FLAGS_logging_dir: /tmp
       S3_BUCKET_BRONZE: ${S3_BUCKET_BRONZE:-bronze}
       FASTAPI_SERVICE_KEY: ${FASTAPI_SERVICE_KEY:?FASTAPI_SERVICE_KEY must be set in .env}
