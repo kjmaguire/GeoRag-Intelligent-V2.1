@@ -116,11 +116,17 @@ dependencies = [
     # pypdfium2: Apache 2.0 / BSD-3-Clause (bundles PDFium from Chromium).
     # cachetools: MIT (LRU cache for render service; falls back to built-in
     #   OrderedDict if not installed, but cachetools is more battle-tested).
-    # NOTE for operator: run `uv pip install 'pikepdf>=9.0' 'pypdfium2>=4.30'
+    # NOTE for operator: run `uv pip install 'pikepdf>=9.0' 'pypdfium2>=5.12,<6'
     #   'cachetools>=5.5'` (or rebuild the fastapi Docker image) before using
     #   the /pdf/* endpoints.
+    # pypdfium2 floor raised to 5.12 (2026-07-29) — 4.30.1 and 5.0.0b1 were
+    # both yanked from PyPI for a PDFium text-extraction regression; 5.0
+    # also removed PdfDocument.render() in favor of PdfPage.render(), but
+    # this codebase only ever calls page.get_textpage().get_text_bounded(),
+    # never the removed method, so the bump is a floor raise, not an API
+    # migration. Capped at <6 so a future major bump doesn't land silently.
     "pikepdf>=9.0",
-    "pypdfium2>=4.30",
+    "pypdfium2>=5.12,<6",
     "cachetools>=5.5",
     # §04p Phase 1.B — Text + layout extraction (Stage 3)
     # pdfminer.six: MIT — lossless text extraction with bboxes + font metadata.
@@ -165,6 +171,15 @@ dependencies = [
     #   DOCLING_OCR_ENABLED=false. Phase 10 (2026-05-22): explicit pin
     #   so a clean image rebuild ships with it baked in.
     "pytesseract>=0.3",
+    # pdf2image: MIT — renders PDF pages to PIL images for the tesseract
+    #   fallback path (_ocr_single_page/_attempt_ocr call convert_from_path).
+    #   Was an undeclared transitive dependency until this pin (2026-07-29) —
+    #   directly imported in pdf_report.py but never had its own line here.
+    "pdf2image>=1.17",
+    # Pillow: MIT-CMU — the actual image type pdf2image/pytesseract pass
+    #   around, and what the oversized-scan tiling preprocessor is built on.
+    #   Also undeclared before this pin (2026-07-29).
+    "Pillow>=12.3",
     # onnxruntime-gpu: MIT — required by docling's TableFormer + layout
     #   models for GPU inference. CPU-only `onnxruntime` falls back to
     #   docling on CPU (~5x slower). Phase 10: explicit pin so a clean
@@ -180,35 +195,11 @@ dependencies = [
     #   /pdf/find_legends endpoint.  First install may take several minutes
     #   — docling downloads ONNX layout model weights on first use.
     "docling>=2.13",
-    # Region-targeted OCR API (`POST /pdf/ocr_region`).
-    # PaddleOCR depends on paddlepaddle but does not always pull it cleanly,
-    # so the CPU runtime is pinned explicitly.
-    #   UPPER CAP <3.3 (2026-06-25): paddle 3.3.x introduced a CPU oneDNN
-    #   regression — the PIR-based oneDNN executor raises
-    #   `ConvertPirAttribute2RuntimeAttribute not support
-    #   ArrayAttribute<DoubleAttribute>` on every scanned-PDF OCR pass
-    #   (PaddlePaddle/Paddle#77340). No runtime flag dodges it: PaddleX
-    #   force-sets FLAGS_enable_pir_api=1 and the CPU predictor always calls
-    #   enable_new_executor(), so enable_new_ir=False does not help.
-    #   UPSTREAM STATUS (verified 2026-06-25): the fix is already merged to
-    #   Paddle `develop` — PR PaddlePaddle/Paddle#77430 ("fixing 77340",
-    #   merged 2026-04-16) adds the ArrayAttribute<DoubleAttribute> branch.
-    #   Verified empirically: nightly paddlepaddle==3.5.0.dev20260625 runs
-    #   enable_mkldnn=True on the PLS-2024 fixture with NO crash. BUT no
-    #   *stable* wheel carries it yet — both PyPI and the Paddle stable index
-    #   top out at the broken 3.3.1, and issue #77340 is still open (unreleased
-    #   /not backported). So we pin below 3.3 where mkldnn-on is correct AND
-    #   ~2.6x faster than eager (services/pdf_ocr.py relies on this).
-    #   UN-PIN TRIGGER: when a stable paddle >3.3 that includes #77430 ships,
-    #   raise this cap (e.g. >=3.4) and re-run
-    #   `pytest tests/test_ocr_scanned_path.py -k produces_passages` with
-    #   enable_mkldnn=True. Do NOT ride a nightly in prod. NOTE: the GPU wheel
-    #   below is still 3.3.1 — the bug is CPU-oneDNN-only so GPU inference is
-    #   unaffected, BUT a GPU host that falls back to CPU OCR (use_gpu False)
-    #   would hit it; pin the GPU wheel too if that becomes a real path.
-    "paddlepaddle>=3.1,<3.3",
-    # The full-page PaddleOCR-VL `doc-parser` extra was retired with §04p.
-    "paddleocr>=3.7,<4.0",
+    # paddlepaddle/paddleocr (region-targeted `POST /pdf/ocr_region`) removed
+    # 2026-07-29 — the endpoint, app/ocr/, and services/pdf_ocr.py had zero
+    # callers anywhere in Laravel/frontend code (same orphan pattern as
+    # /pdf/find_legends). Task #17/A3 had already deleted most of §04p but
+    # missed this leg. See docling>=2.13 above for the parallel removal pass.
     # #28 (2026-07-28) — Azure Document Intelligence OCR adapter (MIT).
     # Standalone module, gated OFF by default (OCR_ENGINE=tesseract).
     # NOT wired into pdf_report.py's live Tesseract call sites yet — that
@@ -217,6 +208,10 @@ dependencies = [
     # editing of the fragile fitz/tesseract merge path. See
     # app/services/ingest/document_intelligence_client.py.
     "azure-ai-documentintelligence>=1.0.0,<2.0",
+    # azure-core: MIT — directly imported for AzureKeyCredential, not just a
+    #   transitive dep of azure-ai-documentintelligence. Undeclared until
+    #   this pin (2026-07-29).
+    "azure-core>=1.41",
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the
@@ -261,7 +256,8 @@ dependencies = [
     # pyjwt (imports as `jwt`) → app.services.flow_jwt
     "hatchet-sdk>=1.33",
     "aioboto3>=13.0",
-    "pypdfium2>=4.30",
+    # pypdfium2 pin lives once, above (§04p Phase 1.A) — duplicate entry
+    # removed 2026-07-29, same package pinned twice in this list.
     "pypdf>=5.0",
     # Phase 5 (2026-05-22) — used by the parse-subprocess memory guard
     # in ingest_pdf.py. Pre-fork RAM check prevents OOM when running

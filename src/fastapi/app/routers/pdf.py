@@ -19,15 +19,6 @@
                             Endpoint name is §04p-specified; the agent or Phase 2
                             extractors filter for legend-shaped regions.
 
-§04p Phase 1.C-ii endpoints
-----------------------------
-  POST /pdf/ocr_region    — PaddleOCR PP-OCRv5 on a specific page region.
-                            Region-targeted only — bbox parameter is REQUIRED and
-                            must describe a positive non-degenerate rectangle.
-                            Zero-area and inverted bboxes are rejected with 422.
-                            Full-page OCR is refused per §04p "never full-page by
-                            default" — pass an explicit bbox from find_legends output.
-
 §04p Phase 1.D endpoints
 -------------------------
   GET /pdf/summarize_section — Qwen-VL vision-language section summary with
@@ -94,11 +85,6 @@ Each PdfLayoutRegion carries a ``provenance`` field with (pdf_id, page, bbox)
 and source_method='docling'.  region_confidence may be None for region types
 where Docling does not emit a confidence score.
 
-Provenance in Stage 5 responses (ocr_region)
----------------------------------------------
-OcrRegionResponse carries a ``provenance`` field with (pdf_id, page, bbox)
-and source_method='paddle_ocr'.  extraction_confidence equals mean_confidence
-(OCR is lossy — NOT hardcoded 1.0 like pdfminer/pdfplumber paths).
 """
 
 from __future__ import annotations
@@ -119,9 +105,6 @@ from app.models.pdf import (
     FindLegendsResponse,
     FindTablesResponse,
     LayoutRegionType,
-    OcrLine,
-    OcrRegionRequest,
-    OcrRegionResponse,
     PdfCoordinate,
     PdfLayoutRegion,
     PdfProvenance,
@@ -718,184 +701,6 @@ async def crop_region(
     )
 
 
-# ---------------------------------------------------------------------------
-# Helpers — Stage 5 (OCR service)
-# ---------------------------------------------------------------------------
-
-
-def _get_ocr_service(request: Request):  # type: ignore[return]
-    """Retrieve the PdfOcrService from app.state.
-
-    Raises 503 if the service is not initialised (paddleocr import failed
-    during startup or the lifespan hook was not reached).
-    """
-    service = getattr(request.app.state, "pdf_ocr_service", None)
-    if service is None:
-        logger.error("pdf_ocr_service not initialised on app.state")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pdf_ocr_service_not_ready",
-        )
-    return service
-
-
-def _validate_ocr_bbox(bbox: tuple[float, float, float, float]) -> None:
-    """Raise 422 if the bbox is zero-area or inverted.
-
-    §04p "region-targeted only, never full-page by default" — the endpoint
-    refuses any bbox that does not describe a positive non-degenerate rectangle.
-
-    Rejected cases:
-      - x0 >= x1 (zero-width or inverted in x)
-      - y0 >= y1 (zero-height or inverted in y)
-
-    The caller is responsible for supplying a meaningful region bbox (e.g.,
-    from find_legends output).  The service never falls back to full-page OCR.
-    """
-    x0, y0, x1, y1 = bbox
-    if x0 >= x1 or y0 >= y1:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="ocr_full_page_refused",
-        )
-
-
-def _build_ocr_response(result: dict, request_body: OcrRegionRequest) -> OcrRegionResponse:
-    """Convert a raw OCR service result dict to an OcrRegionResponse Pydantic model.
-
-    Parameters
-    ----------
-    result:
-        Dict returned by PdfOcrService.ocr_region().
-        Keys: ocr_id, text_content, lines, mean_confidence, source_method.
-    request_body:
-        The validated OcrRegionRequest so we can echo pdf_id, page, bbox, dpi.
-
-    Note: cache_hit is NOT set here — the caller uses model_copy to inject it
-    after receiving the (result, cache_hit) tuple from the service.
-    """
-    ocr_lines = [
-        OcrLine(
-            text=ln["text"],
-            bbox=(ln["bbox"][0], ln["bbox"][1], ln["bbox"][2], ln["bbox"][3]),
-            confidence=float(ln["confidence"]),
-        )
-        for ln in result.get("lines", [])
-    ]
-
-    mean_confidence = float(result.get("mean_confidence", 1.0))
-
-    return OcrRegionResponse(
-        ocr_id=uuid.UUID(result["ocr_id"]),
-        pdf_id=request_body.pdf_id,
-        page=request_body.page,
-        region_bbox=request_body.bbox,
-        dpi=request_body.dpi,
-        text_content=result.get("text_content", ""),
-        lines=ocr_lines,
-        mean_confidence=mean_confidence,
-        cache_hit=False,  # overwritten by model_copy in the endpoint handler
-        provenance=PdfProvenance(
-            pdf_id=request_body.pdf_id,
-            page=request_body.page,
-            bbox=list(request_body.bbox),
-            source_method="paddle_ocr",
-            # extraction_confidence reflects OCR quality — NOT hardcoded 1.0.
-            # Per §04p and §04i Layer 3 (Numeric grounding): OCR is lossy;
-            # numerical claims from OCR-derived text carry lower certainty.
-            extraction_confidence=mean_confidence,
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# POST /pdf/ocr_region
-# ---------------------------------------------------------------------------
-
-
-@router.post("/ocr_region")
-async def ocr_region(
-    body: OcrRegionRequest,
-    request: Request,
-    user: UserContext = Depends(extract_user_context),
-) -> OcrRegionResponse:
-    """Run PaddleOCR PP-OCRv5 on a specific region of a PDF page.
-
-    Region-targeted only (§04p Stage 5 — "never full-page by default").
-    The agent passes a bbox derived from ``find_legends`` output (typically a
-    figure or table region whose text was not captured by the pdfminer/pdfplumber
-    Stage 3 path).
-
-    The OCR pipeline:
-      1. Renders the cropped region via PdfRenderService.crop_region() at the
-         requested DPI (default 300).
-      2. Passes the PNG bytes to the PaddleOCR PP-OCRv5 worker in a separate
-         process (ProcessPoolExecutor — PaddleOCR is synchronous and CPU-bound).
-      3. Caches the result in silver.pdf_ocr_results keyed on
-         (pdf_id, page, bbox, dpi).  Subsequent calls for the same region+DPI
-         are served from the cache without re-running OCR.
-
-    ``bbox`` must be a positive non-degenerate rectangle in PDF user-space
-    coordinates (bottom-left origin, y increases upward, units = points).
-    Zero-area and inverted bboxes are rejected with 422 before any work begins.
-
-    ``provenance.extraction_confidence`` reflects OCR quality (mean per-line
-    confidence) — NOT a hardcoded 1.0.  OCR is lossy; use this field to gate
-    downstream numerical claim verification (§04i Layer 3).
-
-    Responses
-    ---------
-    200  application/json  — OcrRegionResponse with lines + provenance + cache_hit
-    404  application/json  — {"detail": "pdf_not_found"}
-    401  application/json  — missing / invalid service key or JWT
-    422  application/json  — {"detail": "ocr_full_page_refused"} for zero-area or
-                             inverted bbox (x0>=x1 or y0>=y1)
-    503  application/json  — Bronze store, render service, or OCR service not initialised
-    """
-    # Reject zero-area / inverted bboxes before any I/O.
-    _validate_ocr_bbox(body.bbox)
-
-    workspace_id = _require_workspace_id(user)
-    pdf_bytes = await _fetch_pdf_bytes(request, body.pdf_id)
-    ocr_service = _get_ocr_service(request)
-
-    try:
-        result, cache_hit = await ocr_service.ocr_region(
-            pdf_bytes=pdf_bytes,
-            pdf_id=body.pdf_id,
-            page=body.page,
-            bbox=body.bbox,
-            workspace_id=workspace_id,
-            dpi=body.dpi,
-        )
-    except RuntimeError as exc:
-        # RuntimeError is raised when paddleocr is not installed — surface as 503.
-        logger.error("ocr_region failed (paddleocr unavailable?): %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pdf_ocr_service_not_ready",
-        ) from exc
-    except Exception as exc:
-        logger.exception(
-            "ocr_region failed: pdf_id=%s page=%d bbox=%s dpi=%d",
-            body.pdf_id[:16], body.page, body.bbox, body.dpi,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="ocr_region_failed",
-        ) from exc
-
-    response = _build_ocr_response(result, body)
-    # Inject the actual cache_hit flag (model_copy avoids a second DB round-trip).
-    response = response.model_copy(update={"cache_hit": cache_hit})
-
-    logger.debug(
-        "ocr_region OK pdf_id=%s page=%d dpi=%d lines=%d mean_conf=%.3f cache_hit=%s",
-        body.pdf_id[:16], body.page, body.dpi,
-        len(response.lines), response.mean_confidence, cache_hit,
-    )
-
-    return response
 
 
 # ---------------------------------------------------------------------------

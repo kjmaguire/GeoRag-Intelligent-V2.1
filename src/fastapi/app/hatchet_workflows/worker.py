@@ -57,7 +57,6 @@ from app.hatchet_workflows.phase0_agents import (
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
 from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
-from app.hatchet_workflows.re_ocr_page import re_ocr_page  # doc-phase 63
 from app.hatchet_workflows.reliability_metrics_publisher import (
     reliability_metrics_publisher,  # reliability spec Phase 6
 )
@@ -92,7 +91,6 @@ POOLS = {
     "ingestion": [
         outbox_dispatcher,
         ingest_pdf,
-        re_ocr_page,
         tiff_normalize,
         stale_run_detector,
         nightly_ingestion_integrity,

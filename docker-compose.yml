@@ -955,12 +955,12 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      # 2026-06-23 sweep — PaddleOCR 3.x (ADR-0016) calls Path.mkdir on
-      # $HOME/.paddlex/temp at IMPORT time (not first-use). www-data's
-      # default HOME (/var/www) doesn't exist in this image, so the
-      # mkdir explodes with PermissionError before any startup code
-      # runs. Redirect HOME to /tmp so the cache dir lands somewhere
-      # writable. Matches the Hatchet worker's HOME=/tmp pin.
+      # 2026-06-23 sweep — several import-time cache mkdirs (numba,
+      # matplotlib, HF) target $HOME, which doesn't exist for www-data
+      # in this image. Redirect HOME to /tmp so those caches land
+      # somewhere writable. Matches the Hatchet worker's HOME=/tmp pin.
+      # (PaddleOCR/paddlex, the original trigger for this pin, was
+      # removed 2026-07-29 — orphaned /pdf/ocr_region endpoint.)
       HOME: /tmp
       # Sentry observability — same project as Laravel side. Blank DSN
       # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
@@ -1914,9 +1914,10 @@ services:
       NUMBA_CACHE_DIR: /tmp/numba_cache
       MPLCONFIGDIR: /tmp/mpl_cache
       XDG_CACHE_HOME: /tmp/xdg_cache
-      # 2026-06-23 sweep — PaddleOCR 3.x calls Path.mkdir on
-      # $HOME/.paddlex/temp at IMPORT time; redirect HOME to /tmp so
-      # the worker can import pdf_ocr.py without crashing.
+      # 2026-06-23 sweep — several import-time cache mkdirs (numba,
+      # matplotlib, HF) target $HOME, which doesn't exist for www-data
+      # in this image. Redirect HOME to /tmp so those caches land
+      # somewhere writable.
       HOME: /tmp
       # Ingest parser and OCR configuration.
       PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}

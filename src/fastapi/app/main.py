@@ -102,12 +102,10 @@ from app.routers import maps as maps_router  # CC-01 Item 3 (stub) — map inges
 from app.routers import metrics_ingestion_events as metrics_ingestion_events_router
 from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
 from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
-from app.routers import ocr_render as ocr_render_router
 from app.routers import outlier_assist as outlier_assist_router
 from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
-from app.routers import re_ocr_trigger as re_ocr_trigger_router
 from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
@@ -791,47 +789,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.pdf_layout_service = None
 
     # -------------------------------------------------------------------------
-    # 11. §04p PDF Ingestion Subsystem — Stage 5 OCR service (Phase 1.C-ii)
-    # -------------------------------------------------------------------------
-    # PdfOcrService holds a dedicated ProcessPoolExecutor (separate from the
-    # render, extract, and layout pools) for PaddleOCR PP-OCRv5 calls.
-    # PaddleOCR's first inference is heavy (model load + PaddlePaddle JIT) and
-    # benefits from process isolation so it cannot starve lighter workers.
-    # Results are cached durably in silver.pdf_ocr_results.
-    #
-    # Defensive try/except: if paddleocr or paddlepaddle is not installed the
-    # service is set to None and /pdf/ocr_region returns 503.  The rest of the
-    # app is unaffected.
-    #
-    # NOTE for operator: PaddlePaddle is heavy (~500 MB CPU-only wheel).
-    # Run `uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'` or rebuild
-    # the fastapi Docker image before using the /pdf/ocr_region endpoint.
-    # Both packages are Apache 2.0 — clean per §04p license-posture table.
-    app.state.pdf_ocr_service = None
-    _render_svc = getattr(app.state, "pdf_render_service", None)
-    if _render_svc is not None:
-        try:
-            from app.services.pdf_ocr import PdfOcrService  # noqa: PLC0415
-
-            app.state.pdf_ocr_service = PdfOcrService(
-                pool=pg_pool,
-                render_service=_render_svc,
-            )
-            logger.info("PDF OCR service ready (§04p Phase 1.C-ii — PaddleOCR PP-OCRv5)")
-        except Exception:
-            logger.exception(
-                "§04p Phase 1.C-ii OCR service init failed — "
-                "/pdf/ocr_region will return 503. "
-                "Ensure paddlepaddle and paddleocr are installed: "
-                "uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'"
-            )
-    else:
-        logger.warning(
-            "§04p Phase 1.C-ii OCR service skipped — pdf_render_service is None. "
-            "Render service must initialise successfully before the OCR service."
-        )
-
-    # -------------------------------------------------------------------------
     # 12. §04p PDF Ingestion Subsystem — Stage 6 VL service (Phase 1.D)
     # -------------------------------------------------------------------------
     # PdfVlService is async-native (httpx I/O to vLLM — no process pool).
@@ -1006,17 +963,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.debug("PDF layout service shutdown failed", exc_info=True)
 
-    # §04p Phase 1.C-ii — shut down the OCR process pool before DB pools.
-    # PaddleOCR workers may have in-flight cache writes; drain them before
-    # the pg_pool is closed.
-    pdf_ocr_service = getattr(app.state, "pdf_ocr_service", None)
-    if pdf_ocr_service is not None:
-        try:
-            await pdf_ocr_service.shutdown()
-            logger.info("PDF OCR service shut down")
-        except Exception:
-            logger.debug("PDF OCR service shutdown failed", exc_info=True)
-
     # Anthropic first (no pool, just an httpx client; symmetric teardown order).
     anthropic_client = getattr(app.state, "anthropic_client", None)
     if anthropic_client is not None:
@@ -1165,8 +1111,6 @@ app.include_router(shadow_trigger_router.router)
 app.include_router(mv_refresh_trigger_router.router)  # Phase 2 reliability spec
 app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliability spec
 app.include_router(integrations_trigger_router.router)
-app.include_router(ocr_render_router.router)
-app.include_router(re_ocr_trigger_router.router)
 app.include_router(visualizations_router.router)  # Phase H4 §5 — strip-log / cross-section / stereonet
 app.include_router(ml_training_router.router)     # Phase H4 §12 UI — ML training runs
 app.include_router(citation_feedback_router.router)  # Phase H4 §12.8 UI — citation 👍/👎
