@@ -9,6 +9,8 @@
 **/*.pyc
 **/*.pyo
 **/.venv
+fastapi/.venv/
+dagster/.venv/
 **/.env
 **/.env.*
 !**/.env.example
