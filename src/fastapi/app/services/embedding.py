@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 # Set on the FastAPI workers (NOT on the sidecar itself — the sidecar is the
 # model host). When empty, get_embedding_model() loads a local model as before.
 EMBEDDING_SERVICE_URL = (os.environ.get("EMBEDDING_SERVICE_URL") or "").strip()
+EMBEDDING_MODEL_REVISION = (
+    os.environ.get("EMBEDDING_MODEL_REVISION")
+    or "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+).strip()
 
 # Query-path encodes are single short strings; 30s is generous headroom for a
 # cold sidecar still warming the model. Callers already run encode() in a
@@ -85,7 +89,10 @@ class _RemoteEmbedding:
         return self._dim
 
 
-def get_embedding_model(model_name: str) -> Any:
+def get_embedding_model(
+    model_name: str,
+    revision: str = EMBEDDING_MODEL_REVISION,
+) -> Any:
     """Return the embedding model for the FastAPI query path.
 
     A shared-sidecar HTTP proxy when ``EMBEDDING_SERVICE_URL`` is set, else a
@@ -97,4 +104,9 @@ def get_embedding_model(model_name: str) -> Any:
 
     from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-    return SentenceTransformer(model_name, device="cpu")
+    return SentenceTransformer(
+        model_name,
+        revision=revision,
+        trust_remote_code=False,
+        device="cpu",
+    )

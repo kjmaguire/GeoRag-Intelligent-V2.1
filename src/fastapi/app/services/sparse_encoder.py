@@ -144,10 +144,12 @@ def _get_sparse_model():  # type: ignore[return]
     tokenizer = AutoTokenizer.from_pretrained(
         SPARSE_MODEL_NAME,
         revision=SPARSE_MODEL_REVISION,
+        trust_remote_code=False,
     )
     model = AutoModelForMaskedLM.from_pretrained(
         SPARSE_MODEL_NAME,
         revision=SPARSE_MODEL_REVISION,
+        trust_remote_code=False,
     )
     model.eval()
 

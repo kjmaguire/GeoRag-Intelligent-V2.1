@@ -538,7 +538,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # before. See app.services.embedding.
         from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        embedding_model = get_embedding_model(settings.EMBEDDING_MODEL_NAME)
+        embedding_model = get_embedding_model(
+            settings.EMBEDDING_MODEL_NAME,
+            settings.EMBEDDING_MODEL_REVISION,
+        )
         # Warm up: encode a dummy string so the first real request does not
         # pay the JIT/model-init penalty (a no-op round-trip for the sidecar
         # proxy, which also validates connectivity at startup).

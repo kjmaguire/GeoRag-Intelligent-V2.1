@@ -1,4 +1,8 @@
-# Phase G follow-up — Kestra + PagerDuty real dispatchers
+# Historical: Phase G follow-up — Kestra + PagerDuty real dispatchers
+
+> Superseded 2026-07-29. Kestra was retired and its dispatcher was removed.
+> This document is retained only as implementation history; do not use it as
+> an integration runbook. PagerDuty remains active.
 
 **Status:** ✅ Done. Both dispatchers wired into the §10 support
 agents behind safe-by-default env knobs. 15/15 new dispatcher tests +
