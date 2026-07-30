@@ -869,13 +869,17 @@ services:
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
       LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
       LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
-      # Azure AI Foundry — used when LLM_BACKEND=azure. Set these three in
-      # .env; there is no sensible default endpoint/deployment.
+      # Azure AI Foundry (Cohere Command A) — used when LLM_BACKEND=azure.
+      # Set these three in .env; there is no sensible default
+      # endpoint/deployment. Endpoint is the Foundry/AI Services hostname
+      # (https://<resource>.services.ai.azure.com), NOT .openai.azure.com —
+      # Cohere is served via the Azure AI Model Inference API, a different
+      # surface than Azure-OpenAI-specific deployments (see app/config.py).
       AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
       AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
       AZURE_FOUNDRY_DEPLOYMENT: ${AZURE_FOUNDRY_DEPLOYMENT:-}
-      AZURE_FOUNDRY_API_VERSION: ${AZURE_FOUNDRY_API_VERSION:-2026-01-01-preview}
-      AZURE_FOUNDRY_MAX_MODEL_LEN: ${AZURE_FOUNDRY_MAX_MODEL_LEN:-128000}
+      AZURE_FOUNDRY_API_VERSION: ${AZURE_FOUNDRY_API_VERSION:-2024-05-01-preview}
+      AZURE_FOUNDRY_MAX_MODEL_LEN: ${AZURE_FOUNDRY_MAX_MODEL_LEN:-256000}
       # vLLM — retained only for operators who point LLM_BACKEND=vllm at an
       # external OpenAI-compatible endpoint; the local `vllm` compose
       # service was removed 2026-07-30 along with its GPU reservation.

@@ -240,27 +240,44 @@ class Settings(BaseSettings):
     VLLM_TEMPERATURE: float = 0.1
 
     # Azure AI Foundry — used when LLM_BACKEND=azure (the default primary
-    # backend post Phase-C cutover). Talks the Azure OpenAI chat-completions
-    # wire format, which differs from a plain OpenAI-compatible endpoint in
-    # two ways `effective_llm_url` / `_call_openai_compatible_llm` account
-    # for: auth is an `api-key` header (not `Authorization: Bearer`), and
-    # the deployment name is part of the URL path rather than the `model`
-    # body field.
+    # backend post Phase-C cutover). Deployed model is Cohere Command A
+    # (Cohere-command-a in the Foundry catalog; 256K in / 8K out, native
+    # tool-calling — see the Azure migration plan). Cohere-on-Foundry is
+    # served via the **Azure AI Model Inference API**, NOT the Azure OpenAI
+    # resource-deployment API — a materially different wire shape:
+    #   POST {endpoint}/models/chat/completions?api-version=2024-05-01-preview
+    #   api-key: <key>
+    #   body: {"model": "<deployment-name>", "messages": [...], ...}
+    # (vs. Azure OpenAI's `{endpoint}/openai/deployments/{name}/chat/
+    # completions` with the deployment in the URL path). `effective_llm_url`
+    # builds the `/models` base; `_call_openai_compatible_llm` appends
+    # `/chat/completions` + api-version, same as the vLLM path. Confirmed
+    # against Microsoft Learn 2026-07-30 (Azure AI Model Inference REST API
+    # reference + Foundry Models Cohere catalog page) rather than assumed.
     #
-    # AZURE_FOUNDRY_ENDPOINT: resource endpoint only, e.g.
-    #   https://<resource-name>.openai.azure.com
-    # No trailing slash, no `/openai/deployments/...` suffix — that's built
-    # by `effective_llm_url`.
+    # Also per the Foundry catalog: Cohere-command-a documents Text-only
+    # response formats (no JSON Schema / guided decoding) — see the
+    # structured-output handling in `_call_openai_compatible_llm`, which
+    # only sends `response_format: json_object` on this backend, never
+    # `json_schema`.
+    #
+    # AZURE_FOUNDRY_ENDPOINT: Azure AI Services / Foundry resource endpoint,
+    # e.g. https://<resource-name>.services.ai.azure.com — NOT the
+    # `.openai.azure.com` Azure-OpenAI-specific hostname. No trailing slash,
+    # no `/models` or `/openai/...` suffix — that's built by
+    # `effective_llm_url`.
     AZURE_FOUNDRY_ENDPOINT: str = ""
     AZURE_FOUNDRY_API_KEY: str = ""
+    # Deployment name as created in the Foundry portal (e.g. the Cohere
+    # Command A deployment's chosen name) — sent as the body `model` field.
     AZURE_FOUNDRY_DEPLOYMENT: str = ""
-    # Azure OpenAI is versioned by query param, not by Accept header. Bump
-    # deliberately after testing against a new preview/GA version.
-    AZURE_FOUNDRY_API_VERSION: str = "2026-01-01-preview"
-    # Context window ceiling for the configured deployment. MUST be tuned to
-    # the deployment's actual context length before production use — this
-    # default is a conservative placeholder, not a measured value.
-    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 128_000
+    # Azure AI Model Inference API version. 2024-05-01-preview is the
+    # documented stable preview version as of 2026-07-30; bump deliberately
+    # after testing against a newer one.
+    AZURE_FOUNDRY_API_VERSION: str = "2024-05-01-preview"
+    # Cohere Command A: 256K input / 8K output tokens (Foundry catalog spec).
+    # MUST be retuned if the deployed model differs from Command A.
+    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 256_000
     AZURE_FOUNDRY_MAX_TOKENS: int = 4096
     AZURE_FOUNDRY_TEMPERATURE: float = 0.1
 
@@ -752,16 +769,17 @@ class Settings(BaseSettings):
         Raises when LLM_BACKEND=anthropic, because the Anthropic path does
         not use a base URL — it goes through the native SDK.
 
-        For LLM_BACKEND=azure this returns the deployment-scoped base path
-        (``{endpoint}/openai/deployments/{deployment}``); the caller
+        For LLM_BACKEND=azure this returns the Azure AI Model Inference
+        API's base path (``{endpoint}/models``) — the shape Cohere-on-
+        Foundry deployments use, NOT the Azure-OpenAI-specific
+        ``/openai/deployments/{name}`` path (that's a different Azure
+        product surface; Cohere isn't served through it). The caller
         (`_call_openai_compatible_llm`) appends ``/chat/completions`` plus
-        the ``?api-version=`` query param.
+        the ``?api-version=`` query param; the deployment name goes in the
+        request body's `model` field, not the URL.
         """
         if self.LLM_BACKEND == "azure":
-            return (
-                f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}"
-                f"/openai/deployments/{self.AZURE_FOUNDRY_DEPLOYMENT}"
-            )
+            return f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}/models"
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_URL
         if self.LLM_BACKEND == "anthropic":
@@ -775,9 +793,9 @@ class Settings(BaseSettings):
     def effective_llm_model(self) -> str:
         """Return the LLM model name based on the active backend.
 
-        For LLM_BACKEND=azure this is the deployment name — Azure OpenAI
-        routes by deployment (in the URL path), so the `model` body field
-        is informational only, but we still pass it for log/metric labels.
+        For LLM_BACKEND=azure this is the deployment name, sent as the
+        request body's `model` field — the Azure AI Model Inference API
+        (Cohere-on-Foundry) routes by body field, not URL path.
         """
         if self.LLM_BACKEND == "azure":
             return self.AZURE_FOUNDRY_DEPLOYMENT
@@ -1131,10 +1149,11 @@ class Settings(BaseSettings):
     # surfaces as 400-class errors from vLLM, not silent truncation.
     MAX_CONTEXT_TOKENS: int = 22_000              # A4500 / qwen3-14b-awq (16K model_len)
     MAX_CONTEXT_TOKENS_ANTHROPIC: int = 200_000   # Claude 1M ctx, 200K leaves response headroom
-    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (128K default deployment
-    # ceiling) for the response + system prompt. Retune alongside
-    # AZURE_FOUNDRY_MAX_MODEL_LEN if the deployment's real window differs.
-    MAX_CONTEXT_TOKENS_AZURE: int = 100_000
+    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (256K default — Cohere
+    # Command A's documented input ceiling) for the 8K output + system
+    # prompt + safety margin. Retune alongside AZURE_FOUNDRY_MAX_MODEL_LEN
+    # if the deployed model differs from Command A.
+    MAX_CONTEXT_TOKENS_AZURE: int = 220_000
 
 
     @property

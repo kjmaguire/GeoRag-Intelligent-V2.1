@@ -66,7 +66,7 @@ doc for the reading order.
 - **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
 - **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (with PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.17, Redis 8.6, SeaweedFS (S3-compatible, replaces MinIO per ADR-0001)
 - **Ingestion**: Dagster, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002)
-- **LLM**: Azure AI Foundry (dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Anthropic Claude is wired as optional fallback. Embedding/reranker stay self-hosted on hatchet-worker-ai (bge-small / bge-reranker-base / SPLADE++) — unaffected by the LLM-serving swap.
+- **LLM**: Azure AI Foundry, Cohere Command A (dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Cohere-on-Foundry is served via the **Azure AI Model Inference API** (`{endpoint}/models/chat/completions`), NOT the Azure-OpenAI-specific `/openai/deployments/{name}` surface — see `app/config.py` `AZURE_FOUNDRY_*` for the exact wire contract. Anthropic Claude is wired as optional fallback. Embedding/reranker stay self-hosted on hatchet-worker-ai (bge-small / bge-reranker-base / SPLADE++) — unaffected by the LLM-serving swap.
 
 ## Agent delegation
 

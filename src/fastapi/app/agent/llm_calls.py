@@ -256,14 +256,16 @@ async def _call_openai_compatible_llm(
     """Call the OpenAI-compatible chat-completions endpoint.
 
     Two backends share this function, selected by ``settings.LLM_BACKEND``:
-    ``"azure"`` (Azure AI Foundry / Azure OpenAI — the default primary
-    backend post Phase-C cutover) and ``"vllm"`` (a self-hosted or external
-    OpenAI-compatible endpoint, retained for operators who keep running
-    their own). Azure gets `api-key` header auth, an `?api-version=` query
-    param, and standard `response_format: json_schema`; vLLM gets its
-    Qwen3 sampling extensions (top_p/top_k/min_p/presence_penalty) and
-    `guided_json`. See the `backend_kind` branch below for the exact
-    payload differences.
+    ``"azure"`` (Azure AI Foundry, Cohere Command A via the Azure AI Model
+    Inference API — the default primary backend post Phase-C cutover) and
+    ``"vllm"`` (a self-hosted or external OpenAI-compatible endpoint,
+    retained for operators who keep running their own). Azure gets
+    `api-key` header auth, an `?api-version=` query param, and loose
+    `response_format: json_object` only (Cohere Command A documents
+    Text-only formats on Foundry — no JSON Schema/guided decoding); vLLM
+    gets its Qwen3 sampling extensions (top_p/top_k/min_p/presence_penalty)
+    and schema-constrained `guided_json`. See the `backend_kind` branch
+    below for the exact payload differences.
 
     Historical note: this helper also drove an Ollama backend prior to the
     2026-05-17 vLLM cutover, and vLLM prior to the 2026-07-30 Azure
@@ -412,24 +414,22 @@ async def _call_openai_compatible_llm(
     request_headers: dict[str, str] = {}
     url_query_suffix = ""
     if backend_kind == "azure":
-        # Azure OpenAI: auth via `api-key` header (not Bearer), version
-        # pinned via query param, and structured output uses the standard
-        # `response_format: {"type": "json_schema", ...}` shape rather than
-        # vLLM's non-standard top-level `guided_json`. No Qwen3-specific
-        # sampling knobs (top_p/top_k/min_p/presence_penalty) or
-        # chat_template_kwargs — Azure rejects unrecognized fields.
+        # Azure AI Model Inference API (Cohere-on-Foundry): auth via
+        # `api-key` header, version pinned via query param. Cohere Command
+        # A's Foundry catalog listing documents Text-only response formats
+        # (no JSON Schema / guided decoding support) — so unlike the vLLM
+        # branch, `guided_json` is NOT translated to a schema-constrained
+        # request here; it's silently ignored (same "forwarded for
+        # symmetry, backend doesn't support it" contract as the Anthropic
+        # path). Only the loose `response_format: json_object` mode is
+        # sent, and only when the caller asked for JSON at all. If a future
+        # deployment swaps to a model with confirmed JSON-schema support,
+        # revisit this. No Qwen3-specific sampling knobs
+        # (top_p/top_k/min_p/presence_penalty) or chat_template_kwargs —
+        # those are vLLM/Qwen extensions this API doesn't recognize.
         request_headers["api-key"] = settings.AZURE_FOUNDRY_API_KEY
         url_query_suffix = f"?api-version={settings.AZURE_FOUNDRY_API_VERSION}"
-        if guided_json is not None:
-            request_payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "response",
-                    "schema": guided_json,
-                    "strict": True,
-                },
-            }
-        elif structured_output:
+        if structured_output:
             request_payload["response_format"] = {"type": "json_object"}
     else:
         # vLLM extends the OpenAI-compatible API with top-level `top_p` /
