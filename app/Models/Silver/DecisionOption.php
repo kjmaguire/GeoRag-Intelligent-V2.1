@@ -36,6 +36,7 @@ class DecisionOption extends Model
         'payload' => 'array',
     ];
 
+    /** @return BelongsTo<DecisionRecord, $this> */
     public function decision(): BelongsTo
     {
         return $this->belongsTo(DecisionRecord::class, 'decision_id', 'decision_id');

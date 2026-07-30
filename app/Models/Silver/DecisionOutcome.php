@@ -36,6 +36,7 @@ class DecisionOutcome extends Model
         'observed_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<DecisionRecord, $this> */
     public function decision(): BelongsTo
     {
         return $this->belongsTo(DecisionRecord::class, 'decision_id', 'decision_id');

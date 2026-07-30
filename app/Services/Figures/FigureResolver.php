@@ -53,7 +53,7 @@ final class FigureResolver
      * @return list<array{
      *     idx:int,
      *     page:?int,
-     *     bbox:?array,
+     *     bbox:?array<int, int|float>,
      *     caption:string,
      *     key:string,
      *     sha256:?string,

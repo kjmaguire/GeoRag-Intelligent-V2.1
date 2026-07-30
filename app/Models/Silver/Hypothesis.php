@@ -57,6 +57,7 @@ class Hypothesis extends Model
         'created_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<User, $this> */
     public function reviewer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'reviewed_by_user_id', 'id');
@@ -65,6 +66,8 @@ class Hypothesis extends Model
     /**
      * All evidence links (supporting / contradicting / missing /
      * recommended_test) attached to this hypothesis.
+     *
+     * @return HasMany<HypothesisEvidenceLink, $this>
      */
     public function evidenceLinks(): HasMany
     {

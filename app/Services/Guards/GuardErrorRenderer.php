@@ -139,6 +139,8 @@ final class GuardErrorRenderer
     /**
      * Maps the canonical code to its degradation variant when the
      * placeholders indicate it. Otherwise returns the code unchanged.
+     *
+     * @param array<string, string|int|null> $placeholders
      */
     private function dispatchVariant(string $code, array $placeholders): string
     {

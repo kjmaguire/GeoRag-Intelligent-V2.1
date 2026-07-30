@@ -51,6 +51,7 @@ class TargetReviewDecision extends Model
         'signed_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<TargetRecommendation, $this> */
     public function recommendation(): BelongsTo
     {
         return $this->belongsTo(
@@ -60,6 +61,7 @@ class TargetReviewDecision extends Model
         );
     }
 
+    /** @return BelongsTo<User, $this> */
     public function qpUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'qp_user_id', 'id');

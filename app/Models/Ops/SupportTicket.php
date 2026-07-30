@@ -65,6 +65,8 @@ class SupportTicket extends Model
     /**
      * The user who reported this ticket (customer; may be null for
      * anonymous channels).
+     *
+     * @return BelongsTo<User, $this>
      */
     public function reporter(): BelongsTo
     {
@@ -74,6 +76,8 @@ class SupportTicket extends Model
     /**
      * The ops user this ticket is assigned to (may be null when
      * unassigned).
+     *
+     * @return BelongsTo<User, $this>
      */
     public function assignee(): BelongsTo
     {
@@ -82,6 +86,8 @@ class SupportTicket extends Model
 
     /**
      * Trace correlations attached to this ticket.
+     *
+     * @return HasMany<SupportTicketTrace, $this>
      */
     public function traces(): HasMany
     {
@@ -90,6 +96,8 @@ class SupportTicket extends Model
 
     /**
      * Replay runs initiated against this ticket.
+     *
+     * @return HasMany<SupportReplayRun, $this>
      */
     public function replayRuns(): HasMany
     {

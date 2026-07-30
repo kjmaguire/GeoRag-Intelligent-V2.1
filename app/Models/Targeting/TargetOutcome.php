@@ -44,6 +44,7 @@ class TargetOutcome extends Model
         'recorded_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<TargetRecommendation, $this> */
     public function recommendation(): BelongsTo
     {
         return $this->belongsTo(

@@ -54,6 +54,8 @@ class SavedMapView extends Model
 
     /**
      * The project this saved view belongs to.
+     *
+     * @return BelongsTo<Project, $this>
      */
     public function project(): BelongsTo
     {
@@ -62,6 +64,8 @@ class SavedMapView extends Model
 
     /**
      * The user who owns this saved view.
+     *
+     * @return BelongsTo<User, $this>
      */
     public function user(): BelongsTo
     {

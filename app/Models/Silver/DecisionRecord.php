@@ -58,6 +58,7 @@ class DecisionRecord extends Model
         'decided_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<User, $this> */
     public function decidedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'decided_by_user_id', 'id');
@@ -65,6 +66,8 @@ class DecisionRecord extends Model
 
     /**
      * Evidence chunks linked to this decision.
+     *
+     * @return HasMany<DecisionEvidenceLink, $this>
      */
     public function evidenceLinks(): HasMany
     {
@@ -77,6 +80,8 @@ class DecisionRecord extends Model
 
     /**
      * Options considered for this decision.
+     *
+     * @return HasMany<DecisionOption, $this>
      */
     public function options(): HasMany
     {
@@ -85,6 +90,8 @@ class DecisionRecord extends Model
 
     /**
      * Post-decision outcomes.
+     *
+     * @return HasMany<DecisionOutcome, $this>
      */
     public function outcomes(): HasMany
     {
@@ -93,6 +100,8 @@ class DecisionRecord extends Model
 
     /**
      * Retrospective lessons captured.
+     *
+     * @return HasMany<DecisionLessonLearned, $this>
      */
     public function lessonsLearned(): HasMany
     {
