@@ -1,30 +1,37 @@
 """PDF figure extraction + VL captioning — building blocks for the figure path.
 
-CANONICAL figure indexing lives in the ingest_pdf `persist` task: it consumes
-docling's figure_manifest, uploads each figure to S3, and builds a ReportSection
-per figure → silver.document_passages → the `georag_chunks` collection chat
-queries (ADR-0010, RETRIEVAL_USE_DOCUMENT_PASSAGES=True). Since 2026-06-24
-persist also folds a Qwen3-VL caption into that section (flag
-FIGURE_VL_DESCRIPTIONS) via caption_image_with_vl below.
+The ingest_pdf `persist` task is the canonical figure-indexing site: it reads
+`ParseOut.figures` (the parser's `figure_manifest`, currently always empty —
+see the note in pdf_report.ReportParseResult.figure_manifest), uploads each
+figure to S3, and builds a ReportSection per figure → silver.document_passages
+→ the `georag_chunks` collection chat queries (ADR-0010,
+RETRIEVAL_USE_DOCUMENT_PASSAGES=True). Since 2026-06-24 persist also folds a
+Qwen3-VL caption into that section (flag FIGURE_VL_DESCRIPTIONS) via
+caption_image_with_vl below.
 
-This module no longer indexes anything itself — it provides the reusable pieces.
-(The legacy standalone indexing to the `georag_reports` collection was removed
-2026-06-24 once that collection was confirmed empty/decommissioned under the
-ADR-0010 canonical flip — it would only have written into a dead, un-queried
-collection.)
+This module doesn't index anything itself — it provides the reusable pieces
+that a figure-manifest producer or a standalone caller can use:
 
   - extract_figures_from_pdf    — embedded RASTER images (pypdfium2, Apache-2.0;
                                   replaced the removed AGPL PyMuPDF path).
-  - extract_figures_from_layout — render page + crop §04p layout figure bboxes;
+  - extract_figures_from_layout — render page + crop layout figure bboxes;
                                   catches VECTOR figures too (cross-sections/maps).
+                                  Takes a caller-supplied list of {page, bbox,
+                                  layout_label} regions — it has no layout
+                                  detector of its own.
   - caption_image_with_vl       — shared single-image Qwen3-VL call; used by the
                                   canonical persist path AND describe_figures_with_vl.
   - describe_figures_with_vl    — caption a batch of extracted figures (VL, with
                                   the heuristic as the per-figure fallback).
   - generate_figure_descriptions — rule-based fallback when VL is unavailable.
 
-Follow-up: per-parser bbox-coord adapters for extract_figures_from_layout (it
-assumes the docling/pdfminer points/bottom-left convention).
+Figure extraction currently has no active manifest producer wired into
+parse_pdf_report (docling, the previous producer, was removed 2026-07-29 —
+it never ran in production; PDF_PARSER_DOCLING_ENABLED was false in every
+live deployment). `ParseOut.figures` is therefore always `[]` today and
+persist's figure-indexing branch is a no-op; the functions in this module
+remain available for a future producer (e.g. a layout-detector-driven
+`extract_figures_from_layout` call) to wire back in.
 """
 
 from __future__ import annotations
@@ -44,8 +51,8 @@ MIN_IMAGE_BYTES = 5_000       # 5 KB
 MIN_IMAGE_DIMENSION = 100     # 100 px width or height
 
 # Master switch for VL figure captioning, read by the ingest_pdf persist task
-# (as _FIGURE_VL_CAPTIONS) to caption docling figures with the Qwen3-VL sidecar
-# instead of the docling/heuristic caption. Off by default — the VL path adds a
+# (as _FIGURE_VL_CAPTIONS) to caption figures with the Qwen3-VL sidecar
+# instead of the heuristic caption. Off by default — the VL path adds a
 # per-figure inference call; opt in per deployment (FIGURE_VL_DESCRIPTIONS=1).
 FIGURE_VL_DESCRIPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().lower() in (
     "1", "true", "yes", "on",
@@ -148,19 +155,17 @@ def extract_figures_from_layout(
     *,
     render_scale: float = 2.0,
 ) -> list[dict]:
-    """Render + crop figure regions from §04p layout bboxes (vector + raster).
+    """Render + crop figure regions from caller-supplied layout bboxes (vector + raster).
 
     Unlike extract_figures_from_pdf (embedded RASTER images only), this renders
     the page and crops the figure's bounding box, so it captures figures drawn
     as VECTOR graphics too — most geological cross-sections, plan maps and
-    grade-tonnage curves. Feed it the layout entries whose layout_label is
-    "figure" from the §04p parse.
+    grade-tonnage curves. Feed it a list of layout entries whose layout_label
+    is "figure"; this function has no layout detector of its own.
 
-    Coordinate convention: bbox is ``[left, bottom, right, top]`` in PDF POINTS,
-    BOTTOMLEFT origin — what parse_mixed (docling) / parse_native (pdfminer)
-    emit via _bbox_from_prov. parse_scanned emits pixel-space
-    bboxes; convert those before calling (a parser-specific adapter is a
-    follow-up). Same output dict shape as extract_figures_from_pdf.
+    Coordinate convention: bbox is ``[left, bottom, right, top]`` in PDF
+    POINTS, BOTTOMLEFT origin — a caller emitting pixel-space bboxes must
+    convert before calling. Same output dict shape as extract_figures_from_pdf.
     """
     import pypdfium2 as pdfium  # noqa: PLC0415
 
@@ -303,7 +308,7 @@ async def caption_image_with_vl(
     The shared single-image VL call — used by describe_figures_with_vl and the
     ingest_pdf persist figure-captioning path. NEVER raises: returns None on any
     backend failure (down, timeout, empty reply) so callers keep their own
-    fallback (heuristic text / docling caption). Reuses pdf_vl's backend config
+    heuristic-text fallback. Reuses pdf_vl's backend config
     (PDF_VL_BACKEND_URL + resolved model id, i.e. the vllm-vl sidecar).
     """
     import httpx  # noqa: PLC0415

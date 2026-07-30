@@ -167,10 +167,10 @@ def test_document_chunk_accepts_ocr_fields():
         section_number=None, section_title=None, section=None,
         page=None, document_type="NI43", report_id="r",
         relevance_score=0.5,
-        ocr_confidence=0.65, ocr_method="docling_rapidocr",
+        ocr_confidence=0.65, ocr_method="document_intelligence",
     )
     assert c.ocr_confidence == 0.65
-    assert c.ocr_method == "docling_rapidocr"
+    assert c.ocr_method == "document_intelligence"
 
 
 # ---------------------------------------------------------------------------

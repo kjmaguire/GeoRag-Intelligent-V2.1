@@ -10,15 +10,6 @@
   GET /pdf/extract_text   — text spans + bboxes + font metadata (pdfminer.six)
   GET /pdf/find_tables    — table matrices + cell bboxes + provenance (pdfplumber)
 
-§04p Phase 1.C-i endpoints
----------------------------
-  GET /pdf/find_legends   — typed layout regions with bbox + provenance (Docling)
-                            Returns ALL layout regions (text/figure/table/header/
-                            footer/formula/title/caption/footnote/list/page_number).
-                            Optional ?region_type= filter for server-side filtering.
-                            Endpoint name is §04p-specified; the agent or Phase 2
-                            extractors filter for legend-shaped regions.
-
 §04p Phase 1.D endpoints
 -------------------------
   GET /pdf/summarize_section — Qwen-VL vision-language section summary with
@@ -30,7 +21,11 @@
                             section_kind parameter selects the section_ref variant:
                               page         — single page (requires ?page=N)
                               page_range   — page range (requires ?page_start + ?page_end)
-                              layout_region — Docling region (requires ?region_id=UUID)
+                              layout_region — a pre-existing silver.pdf_layout_regions
+                                row (requires ?region_id=UUID). NOTE: nothing currently
+                                populates silver.pdf_layout_regions (the /pdf/find_legends
+                                endpoint that used to via Docling was removed 2026-07-29);
+                                this kind only resolves against historic rows, if any.
 
 §04p Phase 2.A endpoints
 -------------------------
@@ -79,12 +74,6 @@ Provenance in Stage 3 responses (extract_text, find_tables)
 Each PdfTextBlock and PdfTable in the JSON response carries a ``provenance``
 field (PdfProvenance model) with (pdf_id, page, bbox) per §04p contract.
 
-Provenance in Stage 4 responses (find_legends)
-----------------------------------------------
-Each PdfLayoutRegion carries a ``provenance`` field with (pdf_id, page, bbox)
-and source_method='docling'.  region_confidence may be None for region types
-where Docling does not emit a confidence score.
-
 """
 
 from __future__ import annotations
@@ -102,11 +91,8 @@ from app.models.pdf import (
     CropRegionRequest,
     ExtractTextResponse,
     FindCoordinatesResponse,
-    FindLegendsResponse,
     FindTablesResponse,
-    LayoutRegionType,
     PdfCoordinate,
-    PdfLayoutRegion,
     PdfProvenance,
     PdfTable,
     PdfTextBlock,
@@ -431,8 +417,8 @@ async def find_tables(
     in silver.pdf_table_cells; subsequent calls for the same (pdf_id, page) are
     served from the cache without re-running the extraction worker.
 
-    The response is raw table structure only — Docling structure-refinement
-    (Phase 1.C) is not applied in Phase 1.B.
+    The response is raw pdfplumber table structure only — no further
+    structure-refinement pass is applied.
 
     Every table in the response carries a ``provenance`` field with
     (pdf_id, page, table_bbox) per the §04p provenance contract.
@@ -474,156 +460,6 @@ async def find_tables(
 
     return FindTablesResponse(
         tables=tables,
-        cache_hit=cache_hit,
-        pdf_id=pdf_id,
-        page=page,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Helpers — Stage 4 (layout service)
-# ---------------------------------------------------------------------------
-
-
-def _get_layout_service(request: Request):  # type: ignore[return]
-    """Retrieve the PdfLayoutService from app.state.
-
-    Raises 503 if the service is not initialised (docling import failed during
-    startup or the lifespan hook was not reached).
-    """
-    service = getattr(request.app.state, "pdf_layout_service", None)
-    if service is None:
-        logger.error("pdf_layout_service not initialised on app.state")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pdf_layout_service_not_ready",
-        )
-    return service
-
-
-def _build_layout_region(region: dict, pdf_id: str) -> PdfLayoutRegion:
-    """Convert a raw layout-worker dict to a PdfLayoutRegion Pydantic model.
-
-    Mirrors _build_text_block — the region dict comes either from the
-    _detect_layout_worker (fresh detection) or from a Silver cache read.
-    Both paths use the same key names.
-    """
-    bbox = (
-        region["bbox_x0"],
-        region["bbox_y0"],
-        region["bbox_x1"],
-        region["bbox_y1"],
-    )
-    # region_id may be present from a cache read (UUID from DB) or absent on
-    # a fresh worker result (generated here for the response model).
-    region_id_raw = region.get("region_id")
-    region_id = uuid.UUID(str(region_id_raw)) if region_id_raw else uuid.uuid4()
-
-    return PdfLayoutRegion(
-        region_id=region_id,
-        pdf_id=pdf_id,
-        page=region["page"],
-        region_index=region["region_index"],
-        region_type=region["region_type"],
-        bbox=bbox,
-        region_confidence=region.get("region_confidence"),
-        provenance=PdfProvenance(
-            pdf_id=pdf_id,
-            page=region["page"],
-            bbox=list(bbox),
-            source_method="docling",
-            extraction_confidence=region.get("region_confidence") or 1.0,
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /pdf/find_legends
-# ---------------------------------------------------------------------------
-
-
-@router.get("/find_legends")
-async def find_legends(
-    request: Request,
-    pdf_id: str = Query(..., description="SHA-256 hex of the normalised PDF in the Bronze store"),
-    page: int | None = Query(None, ge=1, description="1-indexed page to scan; omit for all pages"),
-    region_type: LayoutRegionType | None = Query(
-        None,
-        description=(
-            "Optional region type filter.  When set, only regions of this type are returned. "
-            "Applied server-side over cached Silver rows — no additional Docling inference."
-        ),
-    ),
-    user: UserContext = Depends(extract_user_context),
-) -> FindLegendsResponse:
-    """Detect typed layout regions in a PDF page using Docling.
-
-    Returns ALL layout region types (text/figure/table/header/footer/formula/
-    title/caption/footnote/list/page_number/unknown) unless the optional
-    ``region_type`` query parameter is supplied, in which case only regions
-    of that type are returned.
-
-    Despite the endpoint name, no mining-domain legend heuristics are applied
-    in Phase 1.C-i.  The agent or Phase 2 deterministic extractors filter for
-    legend-shaped regions from the typed output.
-
-    Results are cached in silver.pdf_layout_regions; subsequent calls for the
-    same (pdf_id, page) combination are served from the cache without
-    re-running Docling inference.
-
-    Every region in the response carries a ``provenance`` field with
-    (pdf_id, page, bbox) per the §04p provenance contract, feeding §04i
-    Citation completeness and Numeric grounding guards.
-
-    Responses
-    ---------
-    200  application/json  — FindLegendsResponse with regions + cache_hit
-    404  application/json  — {"detail": "pdf_not_found"}
-    401  application/json  — missing / invalid service key or JWT
-    503  application/json  — Bronze store or layout service not initialised
-    """
-    workspace_id = _require_workspace_id(user)
-    pdf_bytes = await _fetch_pdf_bytes(request, pdf_id)
-    layout_service = _get_layout_service(request)
-
-    try:
-        raw_regions, cache_hit = await layout_service.detect_layout(
-            pdf_bytes=pdf_bytes,
-            pdf_id=pdf_id,
-            workspace_id=workspace_id,
-            page=page,
-        )
-    except RuntimeError as exc:
-        # RuntimeError is raised when docling is not installed — surface as 503.
-        logger.error("detect_layout failed (docling unavailable?): %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="pdf_layout_service_not_ready",
-        ) from exc
-    except Exception as exc:
-        logger.exception(
-            "find_legends failed: pdf_id=%s page=%s",
-            pdf_id[:16], page,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="find_legends_failed",
-        ) from exc
-
-    # Build Pydantic models from raw dicts.
-    regions = [_build_layout_region(r, pdf_id) for r in raw_regions]
-
-    # Apply optional server-side type filter.
-    if region_type is not None:
-        regions = [r for r in regions if r.region_type == region_type]
-
-    logger.debug(
-        "find_legends OK pdf_id=%s page=%s regions=%d region_type=%s cache_hit=%s",
-        pdf_id[:16], page, len(regions), region_type, cache_hit,
-    )
-
-    return FindLegendsResponse(
-        regions=regions,
         cache_hit=cache_hit,
         pdf_id=pdf_id,
         page=page,

@@ -65,7 +65,6 @@ def _make_app_with_services(user: UserContext) -> FastAPI:
     [
         ("GET", "/pdf/extract_text", {"pdf_id": _VALID_PDF_ID, "page": 1}),
         ("GET", "/pdf/find_tables", {"pdf_id": _VALID_PDF_ID, "page": 1}),
-        ("GET", "/pdf/find_legends", {"pdf_id": _VALID_PDF_ID, "page": 1}),
         ("GET", "/pdf/find_coordinates", {"pdf_id": _VALID_PDF_ID, "page": 1}),
         (
             "GET",

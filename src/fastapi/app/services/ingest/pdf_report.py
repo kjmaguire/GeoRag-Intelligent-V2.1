@@ -1,17 +1,19 @@
 """
-PDF parser — pypdfium2-first dispatch with docling+rapidocr / tesseract OCR
-fallbacks and pdfplumber as the parser-of-last-resort. (The primary native-text
-path is historically called "fitz"; it was PyMuPDF until that was removed for
-its AGPL license and is now backed by pypdfium2 — see _parse_with_fitz.)
+PDF parser — pypdfium2-first dispatch with pdfplumber as the structural
+fallback and Tesseract / Azure Document Intelligence OCR for scanned or
+image-only pages. (The primary native-text path is historically called
+"fitz"; it was PyMuPDF until that was removed for its AGPL license and is
+now backed by pypdfium2 — see _parse_with_fitz.)
 
-**Canonical path**: NI 43-101 PDFs parse via RAGFlow (v0.17.2 pinned per §12).
-This parser is the explicit fallback for cases where RAGFlow parse fails or
-returns insufficient structure (tables, section hierarchy). Kyle-approved
-2026-04-20 as a fallback-only code path. Do NOT invoke unless RAGFlow has
-failed for a given document.
-
-TODO (Module 3 Phase B): add runtime guard that this parser is only called
-after a recorded RAGFlow failure for the same `bronze_sha256`.
+**Canonical path**: this module (`pdf_report.py`, §04p) is the live, primary
+PDF parser for NI 43-101 technical reports — it is not a fallback for
+anything. RAGFlow was replaced by this in-process stack per ADR-0002; there
+is no other parser in front of it. Extraction order: pypdfium2 (fitz) native
+text first, pdfplumber as the structural fallback when native text is
+insufficient, and per-page OCR (Tesseract by default, or Azure Document
+Intelligence when `OCR_ENGINE=document_intelligence`) for scanned/image
+pages. See `_attempt_ocr`, `_attempt_ocr_document_intelligence`, and
+`document_intelligence_client` for the OCR dispatch.
 
 ---
 
@@ -23,8 +25,9 @@ contents structure (up to 27 sections; 17 is the typical baseline) which this
 parser exploits for high-confidence section boundary detection.
 
 Primary extraction engine: pypdfium2 (PDFium) for native text + per-page OCR
-routing to docling+rapidocr (when enabled) or tesseract for image pages.
-Fallback engine: pdfplumber, used only when the primary crashes completely.
+routing to Tesseract (default) or Azure Document Intelligence (when
+`OCR_ENGINE=document_intelligence`) for image pages. Fallback engine:
+pdfplumber, used when the primary can't extract sufficient structure.
 
 Parse quality is reported as a float 0.0–1.0 representing the fraction of the
 17 expected NI 43-101 sections identified. The caller (silver_reports asset)
@@ -206,7 +209,7 @@ class ReportSection:
     # Phase 3 (2026-05-22) — OCR confidence + method per chunk. NULL
     # means the chunk came from the PDF text layer (no OCR). 0.0–1.0
     # means an OCR engine produced the text. ocr_method records which
-    # engine: fitz_native, pdfplumber_native, docling_rapidocr, tesseract.
+    # engine: fitz_native, pdfplumber_native, tesseract, document_intelligence.
     # When a chunk spans multiple pages with mixed methods, the minimum
     # confidence is recorded and the first-page method wins (kickoff
     # min-confidence-per-chunk semantics).
@@ -233,12 +236,13 @@ class ReportParseResult:
     provenance: dict[str, Any] = field(default_factory=dict)
     resource_tables: list[dict] = field(default_factory=list)
     page_languages: list[str] = field(default_factory=list)
-    # Phase 1 (2026-05-22): docling figure manifest. Each entry is a dict
-    # {idx, page, bbox, caption, pending_key, bucket, sha256}. Built inline
-    # by _parse_with_docling (uploads PNGs to figures/_pending/{sha}/...).
-    # Consumed by the persist Hatchet task, which copies each PNG to its
-    # final figures/{report_id}/... key and removes the pending object.
-    # Empty list when docling is disabled or no figures were extracted.
+    # Figure manifest. Each entry would be a dict {idx, page, bbox, caption,
+    # pending_key, bucket, sha256}, consumed by the persist Hatchet task
+    # (copies each PNG to its final figures/{report_id}/... key and removes
+    # the pending object). Currently always empty — docling (the only
+    # producer of this manifest) was removed 2026-07-29; figure extraction
+    # now goes through app.agent.figure_extractor instead, which does not
+    # populate this field. See figure_extractor.py for the current path.
     figure_manifest: list[dict] = field(default_factory=list)
 
 
@@ -948,108 +952,16 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
     return result
 
 
-def _extract_tables_via_docling_only(pdf_path: str) -> list[ReportSection]:
-    """Phase 4 — invoke docling with `do_ocr=False`, `do_table_structure=True`,
-    `generate_picture_images=False` and return ONLY the table sections.
-
-    Used when fitz won the text extraction (so docling didn't already
-    fire) but bordered tables exist that docling's TableFormer can
-    extract faster + with better structure than pdfplumber-lines.
-
-    Returns an empty list when docling is unavailable or fails — caller
-    falls back to pdfplumber-lines for the bordered pages.
-    """
-    try:
-        from docling.datamodel.base_models import InputFormat  # noqa: PLC0415
-        from docling.datamodel.pipeline_options import (  # noqa: PLC0415
-            AcceleratorDevice,
-            AcceleratorOptions,
-            PdfPipelineOptions,
-        )
-        from docling.document_converter import (  # noqa: PLC0415
-            DocumentConverter,
-            PdfFormatOption,
-        )
-    except ImportError:
-        logger.info("pdf_report: docling unavailable — skipping tables-only pass")
-        return []
-
-    opts = PdfPipelineOptions()
-    opts.do_ocr = False
-    opts.do_table_structure = True
-    opts.generate_picture_images = False
-    # GPU acceleration gated by DOCLING_GPU_ENABLED env to avoid VRAM
-    # contention with vLLM. See _parse_with_docling for the full note.
-    if (os.environ.get("DOCLING_GPU_ENABLED") or "").lower() in ("1", "true", "yes", "on"):
-        try:
-            import torch  # noqa: PLC0415
-            if torch.cuda.is_available():
-                opts.accelerator_options = AcceleratorOptions(
-                    device=AcceleratorDevice.CUDA,
-                )
-        except Exception:
-            pass
-
-    try:
-        conv = DocumentConverter(
-            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)},
-        )
-        result = conv.convert(pdf_path)
-        doc = result.document
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "pdf_report: docling tables-only pass failed (%s) — caller will "
-            "fall back to pdfplumber-lines for bordered pages",
-            exc,
-        )
-        return []
-
-    table_sections: list[ReportSection] = []
-    for tbl in (doc.tables or []):
-        try:
-            md = tbl.export_to_markdown(doc=doc)
-        except Exception:
-            try:
-                md = tbl.export_to_markdown()
-            except Exception:
-                continue
-        if not md or not md.strip():
-            continue
-        prov = getattr(tbl, "prov", None) or []
-        page_no = prov[0].page_no if prov else None
-        table_sections.append(
-            ReportSection(
-                section_number=None,
-                section_title=(
-                    f"Table (docling, page {page_no})"
-                    if page_no else "Table (docling)"
-                ),
-                text=md.strip(),
-                page_first=page_no,
-                page_last=page_no,
-            )
-        )
-    return table_sections
-
-
-def _extract_all_tables_as_sections(
-    pdf_path: str,
-    existing_docling_tables: list[ReportSection] | None = None,
-) -> list[ReportSection]:
+def _extract_all_tables_as_sections(pdf_path: str) -> list[ReportSection]:
     """Walk every page and extract every data-table-like table.
 
-    Phase 4 (2026-05-22) — per-page routing replaces the always-dual-pass
-    pdfplumber scan. Each page is classified as 'bordered' (has table
-    borders/lines/rectangles) or 'borderless' (whitespace-delimited)
-    using fitz drawing primitives. Bordered pages prefer docling's
-    TableFormer (~1-2 s/page on GPU vs ~3-4 s/page for pdfplumber-lines),
-    borderless pages get the pdfplumber text strategy ONLY (skipping the
-    expensive lines pass on pages that won't have ruled tables anyway).
-
-    `existing_docling_tables` — when the caller already ran a full
-    docling pass (Phase 2.1 image-page dispatch), pass its table list
-    here. We use those for the bordered pages instead of re-invoking
-    docling.
+    Each page is classified as 'bordered' (has table borders/lines/
+    rectangles) or 'borderless' (whitespace-delimited) using fitz drawing
+    primitives. Bordered pages use pdfplumber's "lines" strategy;
+    borderless pages get the pdfplumber "text" strategy ONLY (skipping
+    the more expensive lines pass on pages that won't have ruled tables
+    anyway). This pdfplumber-lines path is the sole table-extraction
+    method — there is no alternate engine for bordered pages.
 
     Each surviving table becomes its own ReportSection (one chunk per
     table; the persist + chunking layer handles sub-chunking if a table
@@ -1072,115 +984,30 @@ def _extract_all_tables_as_sections(
     # falls back to dual-pass below if requested via env override.
     _classification_failed = not page_class
 
-    _docling_enabled = os.environ.get(
-        "PDF_PARSER_DOCLING_ENABLED", "true",
-    ).lower() == "true"
-
     # ------------------------------------------------------------------
-    # 1. Bordered pages — gather table sections from docling (preferred)
-    #    or pdfplumber-lines (fallback when docling is off / unavailable
-    #    / failed). Reuse existing_docling_tables when caller already
-    #    invoked docling (Phase 2.1 image-page path).
-    # ------------------------------------------------------------------
-    bordered_sections: list[ReportSection] = []
-    used_docling_for_bordered = False
-    if existing_docling_tables:
-        # Phase 2.1 already invoked docling for this doc. Trust its
-        # table list regardless of fitz's page classifier — the cross-
-        # engine dedupe at the end of this function handles any overlap
-        # with pdfplumber on borderless pages.
-        bordered_sections = list(existing_docling_tables)
-        used_docling_for_bordered = True
-        logger.info(
-            "pdf_report: Phase 4 — reusing %d existing docling table(s)",
-            len(bordered_sections),
-        )
-    elif bordered_pages:
-        # Phase 4 threshold (2026-05-22) — only invoke docling-tables-only
-        # when the bordered page count justifies its ~30-40s model-load
-        # overhead. For small PDFs with few bordered pages, pdfplumber-
-        # lines is faster overall. Default 30 means docling fires on
-        # NI-43-101-style technical reports (typically 50-100+ bordered
-        # pages of resource/assay/drill tables) but not on slide-deck-
-        # style prospectuses with 5-15 bordered pages.
-        try:
-            docling_min_pages = int(
-                os.environ.get("PDF_PARSER_DOCLING_TABLES_MIN_BORDERED_PAGES", "30")
-            )
-        except ValueError:
-            docling_min_pages = 30
-        if _docling_enabled and len(bordered_pages) >= docling_min_pages:
-            t0 = time.monotonic()
-            all_docling_tables = _extract_tables_via_docling_only(pdf_path)
-            elapsed = time.monotonic() - t0
-            bordered_sections = [
-                s for s in all_docling_tables
-                if (s.page_first is None or s.page_first in bordered_pages)
-            ]
-            if all_docling_tables:
-                used_docling_for_bordered = True
-                logger.info(
-                    "pdf_report: Phase 4 — docling-tables-only extracted %d "
-                    "table(s) across %d bordered page(s) in %.1fs",
-                    len(bordered_sections), len(bordered_pages), elapsed,
-                )
-        elif _docling_enabled:
-            logger.info(
-                "pdf_report: Phase 4 — %d bordered page(s) < threshold %d, "
-                "using pdfplumber-lines (docling-tables-only would cost "
-                "more than it saves on this doc)",
-                len(bordered_pages), docling_min_pages,
-            )
-
-    # Fallback to pdfplumber-lines on bordered pages when docling wasn't
-    # used (disabled, unavailable, or returned nothing). Preserves the
-    # no-data-loss contract from pre-Phase-4 behavior.
-    fallback_bordered_pages: set[int] = (
-        bordered_pages if not used_docling_for_bordered else set()
-    )
-
-    # ------------------------------------------------------------------
-    # 2. Open pdfplumber once + walk every page. Run the strategies the
-    #    classifier indicated:
-    #      - bordered + fallback → pdfplumber lines AND text (safety)
-    #      - bordered + docling-handled → pdfplumber TEXT only (catches
-    #        borderless tables that co-exist on the same page; docling
-    #        already covered the bordered ones)
-    #      - borderless → pdfplumber TEXT only
-    #      - classification_failed → run dual-pass (pre-Phase-4 default)
+    # Open pdfplumber once + walk every page. Run the strategies the
+    # classifier indicated:
+    #   - bordered → pdfplumber lines AND text (safety)
+    #   - borderless → pdfplumber TEXT only
+    #   - classification_failed → run dual-pass (default)
     # ------------------------------------------------------------------
     pdfplumber_sections: list[ReportSection] = []
     try:
         import pdfplumber  # noqa: PLC0415
         _pdf_ctx = pdfplumber.open(pdf_path)
     except Exception as pdfp_exc:  # noqa: BLE001
-        # Pdfplumber unavailable / failed — return what we have from
-        # docling and let the caller log. No silent data loss because
-        # docling-tables remain in `bordered_sections`.
         logger.warning(
             "pdf_report: pdfplumber.open failed for '%s' (%s) — returning "
-            "%d docling-only table section(s)",
-            pdf_path, pdfp_exc, len(bordered_sections),
+            "no table sections",
+            pdf_path, pdfp_exc,
         )
-        # Run the cross-engine dedupe even on this short path so the
-        # output shape is identical to the normal return below.
-        out: list[ReportSection] = []
-        seen_keys: set[tuple[int | None, str]] = set()
-        for s in bordered_sections:
-            body = s.text or ""
-            sig = hashlib.sha1(body.encode("utf-8", "ignore")).hexdigest()[:16]
-            key = (s.page_first, sig)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            out.append(s)
-        return out
+        return []
 
     with _pdf_ctx as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
             run_lines = (
                 _classification_failed
-                or page_num in fallback_bordered_pages
+                or page_num in bordered_pages
             )
             run_text = (
                 _classification_failed
@@ -1233,13 +1060,12 @@ def _extract_all_tables_as_sections(
                 )
 
     # ------------------------------------------------------------------
-    # 3. Cross-engine dedupe via _table_signature. If docling-tables-only
-    #    captured the same table that pdfplumber-text also found, prefer
-    #    docling (better structure, preserved row/col coordinates).
+    # 3. Final dedupe pass via a content signature, in case the lines
+    #    and text strategies both captured the same table on a page.
     # ------------------------------------------------------------------
     out: list[ReportSection] = []
     seen_keys: set[tuple[int | None, str]] = set()
-    for s in bordered_sections + pdfplumber_sections:
+    for s in pdfplumber_sections:
         # Signature comes from a re-parse of the markdown — fast + good
         # enough as a stable dedupe key per (page, table-content) pair.
         body = s.text or ""
@@ -1371,8 +1197,7 @@ def _parse_with_fitz(
 
     `image_page_nums` — list of 1-indexed pages where fitz returned
     less than PER_PAGE_MIN_CHARS (i.e. needs OCR). Always populated
-    regardless of `apply_ocr_fallback`. Phase 2.1 dispatch consumes
-    this to decide whether to invoke docling-with-rapidocr OCR.
+    regardless of `apply_ocr_fallback`.
 
     Phase 3 (2026-05-22) — `per_page_method` and `per_page_confidence`
     are page-keyed dicts recording which engine produced the text on
@@ -1386,9 +1211,8 @@ def _parse_with_fitz(
     runs tesseract on each short page and inserts the recovered text
     into per_page_text. Image pages in an otherwise text-dense doc
     (scanned drill logs, map figures with embedded text) don't get
-    silently dropped. When `apply_ocr_fallback=False`, the caller is
-    expected to handle OCR for the returned `image_page_nums` (Phase
-    2.1 docling path does exactly this).
+    silently dropped. When `apply_ocr_fallback=False`, the caller
+    leaves those pages unfilled in `image_page_nums`.
 
     Used as the primary parser when PDF_PARSER_FITZ_ENABLED=true (default).
     Falls back to pdfplumber when fitz returns suspiciously little text.
@@ -1397,10 +1221,9 @@ def _parse_with_fitz(
     # its AGPL license. It is now backed by pypdfium2 (Apache-2.0 — already a
     # dependency, used by the figure extractor). The "fitz"/"fitz_native" labels
     # kept below are STABLE wire-identifiers, not engine names: parse_pdf_report
-    # gates the docling OCR merge on `parser_used == "fitz"`, and per_page_method
-    # feeds the Qdrant/observability payload — so the engine swap deliberately
-    # does not churn those contracts. See the "PyMuPDF removed" note near
-    # _pdfplumber_page_drawings and _build_figure_manifest_pypdfium2.
+    # gates on `parser_used == "fitz"`, and per_page_method feeds the
+    # Qdrant/observability payload — so the engine swap deliberately does
+    # not churn those contracts.
     import pypdfium2 as pdfium  # noqa: PLC0415
 
     pages_text: list[str] = []
@@ -1456,9 +1279,8 @@ def _parse_with_fitz(
     # Per-page OCR for any pages fitz returned <PER_PAGE_MIN_CHARS on.
     # Runs the same tesseract pipeline as pdfplumber's fallback, so image
     # pages in an otherwise text-dense doc don't get silently dropped.
-    # Phase 2.1 (2026-05-22): when `apply_ocr_fallback=False`, skip
-    # this loop and let the caller handle OCR (typically by routing
-    # `short_page_nums` to docling+rapidocr GPU OCR).
+    # When `apply_ocr_fallback=False`, skip this loop and leave those
+    # pages in `image_page_nums` for the caller.
     if short_page_nums and apply_ocr_fallback:
         logger.info(
             "pdf_report: fitz returned <%d chars on %d pages — running per-page OCR",
@@ -1523,465 +1345,6 @@ def _parse_with_fitz(
         full_text, title_candidate, 0, warnings, page_languages,
         per_page_text, image_page_nums,
         per_page_method, per_page_confidence,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Optional primary parser: docling (layout-aware, native table structure)
-# ---------------------------------------------------------------------------
-
-# Phase 1 (2026-05-22): the previous module-scope `_DOCLING_FIGURE_CACHE`
-# stored the docling Document + pictures keyed by PDF SHA256 so the
-# downstream `persist` Hatchet task could pull figures from it. That
-# never worked once parse moved into a subprocess (own process memory →
-# cache was always empty in the parent). Figure extraction now happens
-# INLINE inside `_parse_with_docling`, uploads PNGs to MinIO under
-# figures/_pending/{sha}/figure_{idx}_page_{n}.png, and returns the
-# manifest in ParseOut. The `persist` task renames each PNG to
-# figures/{report_id}/... via s3 copy+delete.
-
-
-# Subprocess-local tempdir root for figure renders. Cleaned up by
-# `_run_parser_subprocess` in its `finally` block. Per-sha subdir so
-# concurrent parses of different PDFs don't collide.
-_FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-
-def _nearest_text_below_figure(
-    doc,
-    pic,
-    page_no: int,
-    max_vertical_gap_pts: float = 120.0,
-    max_horizontal_offset_pts: float = 250.0,
-    min_chars: int = 6,
-    max_chars: int = 400,
-) -> str:
-    """Caption fallback when ``pic.caption_text(doc)`` returns nothing.
-
-    Docling's caption resolver relies on layout-model heuristics and
-    misses figure-caption pairs on noisy NI 43-101 pages. This walks
-    ``doc.texts`` for the same page and returns the text item whose
-    top edge is just below the figure's bottom edge and is reasonably
-    aligned horizontally with the figure's center.
-
-    Returns an empty string when nothing qualifies. Coordinate origin
-    is normalised to top-left so the "below" check is direction-agnostic.
-    """
-    if not pic.prov:
-        return ""
-    pic_prov = pic.prov[0]
-    pic_bbox_raw = pic_prov.bbox
-    page = (doc.pages or {}).get(page_no) if hasattr(doc, "pages") else None
-    page_height = None
-    if page is not None:
-        size = getattr(page, "size", None)
-        if size is not None:
-            page_height = getattr(size, "height", None)
-    try:
-        pic_bbox = pic_bbox_raw.to_top_left_origin(page_height) if page_height else pic_bbox_raw
-    except Exception:
-        pic_bbox = pic_bbox_raw
-
-    pic_cx = (pic_bbox.l + pic_bbox.r) / 2.0
-    pic_bottom = max(pic_bbox.t, pic_bbox.b)  # under top-left origin: bottom is the larger y
-
-    best_dist = float("inf")
-    best_text = ""
-    for txt in getattr(doc, "texts", None) or []:
-        prov = getattr(txt, "prov", None) or []
-        if not prov or prov[0].page_no != page_no:
-            continue
-        body = (getattr(txt, "text", "") or "").strip()
-        if len(body) < min_chars or len(body) > max_chars:
-            continue
-        if body.isdigit():
-            continue  # page-number noise
-
-        tbbox_raw = prov[0].bbox
-        try:
-            tbbox = tbbox_raw.to_top_left_origin(page_height) if page_height else tbbox_raw
-        except Exception:
-            tbbox = tbbox_raw
-
-        t_top = min(tbbox.t, tbbox.b)
-        if t_top < pic_bottom:
-            continue  # not below the figure
-
-        vgap = t_top - pic_bottom
-        if vgap > max_vertical_gap_pts:
-            continue
-
-        t_cx = (tbbox.l + tbbox.r) / 2.0
-        hoff = abs(t_cx - pic_cx)
-        if hoff > max_horizontal_offset_pts:
-            continue
-
-        # Vertical proximity dominates; horizontal alignment is a
-        # tiebreaker (a body paragraph aligned with the figure column
-        # beats one in a sidebar).
-        dist = vgap + 0.25 * hoff
-        if dist < best_dist:
-            best_dist = dist
-            best_text = body
-
-    return best_text
-
-
-def _figure_tempdir(sha256: str) -> str:
-    """Return (and ensure exists) the per-sha temp directory for figure renders."""
-    import os as _os
-    d = f"{_FIGURE_TEMPDIR_ROOT}/{sha256}"
-    _os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _parse_with_docling(
-    path: str,
-    pdf_sha256: str | None = None,
-) -> tuple[str, str, int, list, list[str], list[tuple[int, str]], list[ReportSection], list[dict]]:
-    """Extract via docling — layout-aware extractor with native table structure.
-
-    Returns (full_text, title, skipped, warnings, page_languages,
-             per_page_text, table_sections, figure_manifest).
-
-    `table_sections` — each docling-detected table as a markdown
-    ReportSection (rows + columns preserved). Merged into final section
-    list so chat retrieval matches "Au 1.23 g/t at MAD-22-001" even
-    when the value lives in a cell.
-
-    `figure_manifest` — each PictureItem extracted, PNG-rendered, and
-    uploaded to MinIO under figures/_pending/{sha}/figure_{idx}_page_{n}.png.
-    Persist (different Hatchet task) reads this list and renames the
-    keys to figures/{report_id}/... via s3 copy+delete. Empty list when
-    pdf_sha256 is None or no S3 credentials present.
-
-    Slow: ~3-5 sec/page on CPU for the layout model. Gate behind
-    PDF_PARSER_DOCLING_ENABLED in production.
-    """
-    from docling.datamodel.base_models import InputFormat  # noqa: PLC0415
-    from docling.datamodel.pipeline_options import (  # noqa: PLC0415
-        AcceleratorDevice,
-        AcceleratorOptions,
-        PdfPipelineOptions,
-    )
-    from docling.document_converter import DocumentConverter, PdfFormatOption  # noqa: PLC0415
-
-    # Phase 2.0 (2026-05-22) — docling OCR (rapidocr) is now opt-in via
-    # DOCLING_OCR_ENABLED. The rapidocr default model cache path is
-    # inside site-packages (not writable by www-data); we redirect via
-    # RAPIDOCR_MODEL_DIR + rapidocr_params so it can download the
-    # ~150 MB language packs into a writable volume. When this flag is
-    # off (default), the per-page Tesseract fallback inside _parse_with_fitz
-    # remains the OCR engine. Phase 2.1 will flip the default once the
-    # smoke test confirms rapidocr fires cleanly under the staged rollout.
-    # generate_picture_images: enables figure crop extraction for Task 19
-    # (figure ↔ caption linking + storage). Tiny overhead per figure.
-    opts = PdfPipelineOptions()
-    opts.do_ocr = False
-    opts.do_table_structure = True
-    opts.generate_picture_images = True
-    opts.images_scale = 1.5  # render figures at 1.5× for legibility
-
-    _docling_ocr_enabled = os.environ.get("DOCLING_OCR_ENABLED", "false").lower() == "true"
-    if _docling_ocr_enabled:
-        try:
-            from docling.datamodel.pipeline_options import RapidOcrOptions  # noqa: PLC0415
-            _rapidocr_model_dir = os.environ.get(
-                "RAPIDOCR_MODEL_DIR", "/tmp/rapidocr_models"
-            )
-            # Ensure the writable cache exists; rapidocr will populate it
-            # on first OCR call (downloads ~150 MB of per-language ONNX
-            # models from modelscope.cn). Subsequent parses reuse the
-            # cached files via SHA256 verification inside rapidocr.
-            try:
-                os.makedirs(_rapidocr_model_dir, exist_ok=True)
-            except Exception as mkdir_exc:  # noqa: BLE001
-                logger.warning(
-                    "pdf_report: could not create rapidocr cache dir '%s': %s — "
-                    "OCR will fall back to tesseract per-page",
-                    _rapidocr_model_dir, mkdir_exc,
-                )
-                _docling_ocr_enabled = False
-            if _docling_ocr_enabled:
-                # English-first; rapidocr supports english + chinese
-                # natively in onnxruntime backend. Tune via env if a
-                # multilingual NI 43-101 corpus needs it. Build options
-                # FIRST and only flip do_ocr=True after construction
-                # succeeds — that way a RapidOcrOptions failure can't
-                # leave do_ocr=True with ocr_options=None (which would
-                # send docling into a broken state).
-                _candidate_ocr_options = RapidOcrOptions(
-                    lang=[
-                        s.strip() for s in
-                        os.environ.get("DOCLING_OCR_LANGS", "english").split(",")
-                        if s.strip()
-                    ],
-                    backend="onnxruntime",
-                    print_verbose=False,
-                    # Pass the writable model root through rapidocr's
-                    # config-passthrough dict. Rapidocr's ParseParams
-                    # reads Global.model_root_dir; this is the only env-
-                    # independent way to redirect the cache.
-                    rapidocr_params={
-                        "Global.model_root_dir": _rapidocr_model_dir,
-                    },
-                )
-                opts.do_ocr = True
-                opts.ocr_options = _candidate_ocr_options
-                logger.info(
-                    "pdf_report: docling rapidocr OCR enabled (lang=%s, cache=%s)",
-                    opts.ocr_options.lang, _rapidocr_model_dir,
-                )
-        except ImportError as imp_exc:
-            opts.do_ocr = False
-            opts.ocr_options = None
-            logger.warning(
-                "pdf_report: DOCLING_OCR_ENABLED=true but RapidOcrOptions "
-                "not importable (%s) — falling back to do_ocr=False",
-                imp_exc,
-            )
-        except Exception as ocr_cfg_exc:  # noqa: BLE001
-            opts.do_ocr = False
-            opts.ocr_options = None
-            logger.warning(
-                "pdf_report: rapidocr config build failed (%s) — falling back "
-                "to do_ocr=False",
-                ocr_cfg_exc,
-            )
-    # GPU acceleration for TableFormer + layout model (onnxruntime-gpu CUDA
-    # path). Drops parse from 17-40 min/big PDF on CPU to ~3-5 min, BUT
-    # competes with vLLM for VRAM — vLLM runs at gpu-memory-utilization
-    # 0.93 on the A4500 (~1.5 GiB free); docling layout needs ~1-2 GiB
-    # and PaddleOCR PP-StructureV3 needs another ~1.5-2 GiB. Both
-    # together OOM vLLM. So the GPU path is OPT-IN via env flag.
-    #
-    # Recommended deployment:
-    #   * On the hatchet-worker-ai container (separate GPU pool from
-    #     vLLM), set DOCLING_GPU_ENABLED=1.
-    #   * On the vLLM host, leave DOCLING_GPU_ENABLED unset → CPU path.
-    # See [[gpu-acceleration-2026-05-22]] for the worker layout.
-    docling_gpu_enabled = (os.environ.get("DOCLING_GPU_ENABLED") or "").lower() in (
-        "1", "true", "yes", "on"
-    )
-    if docling_gpu_enabled:
-        try:
-            import torch  # noqa: PLC0415
-            if torch.cuda.is_available():
-                opts.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.CUDA)
-                logger.info(
-                    "pdf_report: docling on CUDA (DOCLING_GPU_ENABLED=1) — "
-                    "ensure vLLM gpu-memory-utilization leaves ≥3 GiB headroom",
-                )
-            else:
-                logger.info(
-                    "pdf_report: DOCLING_GPU_ENABLED set but torch.cuda.is_available()=False "
-                    "— falling back to CPU layout/tables",
-                )
-        except Exception as exc:
-            logger.warning(
-                "pdf_report: DOCLING_GPU_ENABLED set but torch import failed (%s) "
-                "— falling back to CPU",
-                exc,
-            )
-    else:
-        logger.debug(
-            "pdf_report: docling on CPU (set DOCLING_GPU_ENABLED=1 on a GPU "
-            "worker pool that does NOT share VRAM with vLLM to enable)",
-        )
-
-    conv = DocumentConverter(
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
-    )
-    result = conv.convert(path)
-    doc = result.document
-
-    full_text = doc.export_to_markdown()
-    title = ""
-
-    # Try to pull a title — first H1 in the markdown export, else
-    # the first Title item from the docling doc.
-    for line in full_text.splitlines():
-        s = line.strip()
-        if s.startswith("# "):
-            title = s.lstrip("#").strip()[:200]
-            break
-    if not title:
-        for txt in (doc.texts or []):
-            if getattr(txt, "label", None) == "title":
-                title = (txt.text or "")[:200]
-                if title:
-                    break
-
-    # Per-page text — docling stores provenance per item with a page_no;
-    # group text items by page so we can build per_page_text for the
-    # sliding-window page-tracking path.
-    per_page_buf: dict[int, list[str]] = {}
-    for item in (doc.texts or []):
-        prov = getattr(item, "prov", None) or []
-        page_no = prov[0].page_no if prov else None
-        if page_no is None:
-            continue
-        text = (item.text or "").strip()
-        if text:
-            per_page_buf.setdefault(page_no, []).append(text)
-    per_page_text: list[tuple[int, str]] = [
-        (pn, "\n".join(per_page_buf[pn]))
-        for pn in sorted(per_page_buf)
-    ]
-    page_languages = ["unknown"] * len(per_page_text)  # docling doesn't ship language detection
-
-    # Tables — each becomes its own ReportSection (markdown formatted).
-    # Docling preserves row/column structure; the markdown is much
-    # cleaner than pdfplumber's grid-fragmented output.
-    table_sections: list[ReportSection] = []
-    for tbl in (doc.tables or []):
-        try:
-            md = tbl.export_to_markdown(doc=doc)
-        except Exception:
-            try:
-                md = tbl.export_to_markdown()
-            except Exception:
-                continue
-        if not md or not md.strip():
-            continue
-        prov = getattr(tbl, "prov", None) or []
-        page_no = prov[0].page_no if prov else None
-        table_sections.append(
-            ReportSection(
-                section_number=None,
-                section_title=f"Table (docling, page {page_no})" if page_no else "Table (docling)",
-                text=md.strip(),
-                page_first=page_no,
-                page_last=page_no,
-            )
-        )
-
-    # Phase 1 (2026-05-22): inline figure extraction + S3 upload.
-    # Replaces the module-scope cache + separate _extract_docling_figures
-    # call, which silently dropped all figures once parse moved into a
-    # subprocess (cache lived in parse-process memory, persist read it in
-    # parent process where it was always empty).
-    #
-    # When pdf_sha256 is provided AND S3 credentials are present:
-    #   - render each picture to PNG (optimize=True)
-    #   - upload under figures/_pending/{sha256}/figure_{idx:04d}_page_{n}.png
-    #   - return manifest entry with `pending_key`, `caption`, `bbox`, `sha256`
-    # Persist (different Hatchet task) consumes the manifest, copies each
-    # PNG to figures/{report_id}/..., deletes the _pending key, and builds
-    # ReportSections from caption text so chat retrieval matches figure
-    # captions.
-    figure_manifest: list[dict] = []
-    pictures = list(doc.pictures or [])
-    if pdf_sha256 and pictures:
-        try:
-            from io import BytesIO  # noqa: PLC0415
-
-            import boto3  # noqa: PLC0415
-            from botocore.config import Config as BotoConfig  # noqa: PLC0415
-
-            s3_endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get("MINIO_ENDPOINT")
-            s3_bucket = os.environ.get("S3_BUCKET_BRONZE", "bronze")
-            aws_key = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("MINIO_ROOT_USER")
-            aws_secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("MINIO_ROOT_PASSWORD")
-            if s3_endpoint and aws_key and aws_secret:
-                s3 = boto3.client(
-                    "s3",
-                    endpoint_url=s3_endpoint,
-                    aws_access_key_id=aws_key,
-                    aws_secret_access_key=aws_secret,
-                    region_name="us-east-1",
-                    config=BotoConfig(signature_version="s3v4"),
-                )
-                for idx, pic in enumerate(pictures):
-                    page_no = pic.prov[0].page_no if pic.prov else None
-                    if page_no is None:
-                        continue
-                    caption = ""
-                    try:
-                        if hasattr(pic, "caption_text"):
-                            caption = (pic.caption_text(doc) or "").strip()
-                    except Exception:
-                        caption = ""
-                    if not caption:
-                        try:
-                            caption = _nearest_text_below_figure(doc, pic, page_no)
-                        except Exception as exc:
-                            logger.debug(
-                                "pdf_report: caption fallback failed idx=%d: %s",
-                                idx, exc,
-                            )
-                            caption = ""
-
-                    img_bytes: bytes | None = None
-                    try:
-                        if hasattr(pic, "get_image"):
-                            pil_img = pic.get_image(doc)
-                            if pil_img is not None:
-                                buf = BytesIO()
-                                pil_img.save(buf, format="PNG", optimize=True)
-                                img_bytes = buf.getvalue()
-                    except Exception as exc:
-                        logger.debug("pdf_report: figure %d image extract failed: %s", idx, exc)
-
-                    pending_key = None
-                    img_sha = None
-                    if img_bytes:
-                        pending_key = (
-                            f"figures/_pending/{pdf_sha256}/"
-                            f"figure_{idx:04d}_page_{page_no}.png"
-                        )
-                        img_sha = hashlib.sha256(img_bytes).hexdigest()
-                        try:
-                            s3.put_object(
-                                Bucket=s3_bucket,
-                                Key=pending_key,
-                                Body=img_bytes,
-                                ContentType="image/png",
-                                Metadata={
-                                    "pdf_sha256": pdf_sha256,
-                                    "page": str(page_no),
-                                    "sha256": img_sha,
-                                },
-                            )
-                        except Exception as exc:
-                            logger.warning("pdf_report: figure pending upload failed: %s", exc)
-                            pending_key = None
-
-                    bbox = pic.prov[0].bbox if pic.prov else None
-                    figure_manifest.append({
-                        "idx": idx,
-                        "page": page_no,
-                        "bbox": [bbox.l, bbox.t, bbox.r, bbox.b] if bbox else None,
-                        "caption": caption,
-                        "pending_key": pending_key,
-                        "bucket": s3_bucket,
-                        "sha256": img_sha,
-                    })
-                logger.info(
-                    "pdf_report: docling extracted %d figure(s), uploaded %d to pending",
-                    len(figure_manifest),
-                    sum(1 for m in figure_manifest if m.get("pending_key")),
-                )
-            else:
-                logger.info(
-                    "pdf_report: S3 credentials missing — figure manifest not built "
-                    "(%d figures discarded)",
-                    len(pictures),
-                )
-        except ImportError:
-            logger.warning("pdf_report: boto3 unavailable, skipping figure upload")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("pdf_report: figure manifest build failed: %s", exc)
-
-    return (
-        full_text,
-        title,
-        0,
-        [],
-        page_languages,
-        per_page_text,
-        table_sections,
-        figure_manifest,
     )
 
 
@@ -2665,13 +2028,15 @@ def parse_pdf_report(path: str) -> ReportParseResult:
 
     Notes
     -----
-    Phase 2.1 dispatch tree (2026-05-22):
-      fitz (PyMuPDF) → always runs first for native text extraction
-        → per-page OCR for image pages routes to docling+rapidocr
-          (PDF_PARSER_DOCLING_ENABLED + DOCLING_OCR_ENABLED) or
-          tesseract (PDF_PARSER_TESSERACT_FALLBACK_ENABLED)
+    Dispatch tree:
+      fitz (pypdfium2) → always runs first for native text extraction
+        → per-page OCR for image pages routes to tesseract
+          (PDF_PARSER_TESSERACT_FALLBACK_ENABLED)
       pdfplumber → only fires when fitz crashes completely; whole-doc
         text + table extraction as a defensive last resort
+      Whole-document OCR (when extraction is still below the minimum
+      char threshold) routes through `_attempt_ocr`, which dispatches to
+      tesseract or Azure Document Intelligence per `OCR_ENGINE`.
     The ``parser_used`` field on the result records which engine ran.
     """
     with _tracer.start_as_current_span("pdf_report.preflight") as _span:
@@ -2719,55 +2084,16 @@ def parse_pdf_report(path: str) -> ReportParseResult:
     extraction_warnings: list[dict] = []
     page_languages: list[str] = []
     per_page_text: list[tuple[int, str]] = []
-    docling_table_sections: list[ReportSection] = []
-    docling_figure_manifest: list[dict] = []
 
-    # Phase 2.1 (2026-05-22) — always-fitz-first dispatch.
-    #
-    # Previously: docling vs fitz were mutually exclusive primaries
-    # (gated by PDF_PARSER_DOCLING_ENABLED). That sent text-heavy PDFs
-    # through docling's slow path unnecessarily and made docling-OCR
-    # available only as a wholesale parser swap.
-    #
-    # Now: fitz ALWAYS runs first (~5 s for a 46-page text PDF). It
-    # reports per-page text + a list of `image_page_nums` — pages
-    # where fitz returned < PER_PAGE_MIN_CHARS. If those exist AND
-    # docling + rapidocr OCR are enabled, docling is invoked to OCR
-    # the whole doc (rapidocr handles per-page internally on GPU) and
-    # we MERGE per-page: fitz wins on pages where it returned text,
-    # docling fills the image pages. Tesseract is the fallback-of-
-    # last-resort when docling is unavailable.
-    _docling_enabled = os.environ.get(
-        "PDF_PARSER_DOCLING_ENABLED", "true"
-    ).lower() == "true"
-    _docling_ocr_enabled = os.environ.get(
-        "DOCLING_OCR_ENABLED", "true"
-    ).lower() == "true"
+    # Always-fitz-first dispatch: fitz (pypdfium2) runs first for native
+    # text extraction. When PDF_PARSER_TESSERACT_FALLBACK_ENABLED is on
+    # (the default), `_parse_with_fitz` also runs its internal per-page
+    # tesseract loop on any page it returned < PER_PAGE_MIN_CHARS on, so
+    # image pages in an otherwise text-dense doc aren't silently dropped.
     _tesseract_fallback_enabled = os.environ.get(
         "PDF_PARSER_TESSERACT_FALLBACK_ENABLED", "true"
     ).lower() == "true"
     fitz_enabled = os.environ.get("PDF_PARSER_FITZ_ENABLED", "true").lower() == "true"
-
-    # Helper: merge docling per_page_text into the fitz per_page_text
-    # using the "fitz wins when it has any text" rule the user chose.
-    # `image_page_nums` is the set of pages fitz returned < PER_PAGE_MIN_CHARS
-    # on; only those pages are eligible for the docling override.
-    def _merge_per_page(
-        fitz_per_page: list[tuple[int, str]],
-        docling_per_page: list[tuple[int, str]],
-        image_pages: list[int],
-    ) -> list[tuple[int, str]]:
-        fitz_map = {n: t for n, t in fitz_per_page}  # noqa: C416
-        image_set = set(image_pages)
-        # Fitz output is authoritative for non-image pages
-        merged = dict(fitz_map)
-        for n, t in docling_per_page:
-            if n in image_set and t and t.strip():
-                # Only overwrite when fitz's entry is empty/short
-                existing = merged.get(n, "")
-                if not existing or len(existing.strip()) < PER_PAGE_MIN_CHARS:
-                    merged[n] = t
-        return sorted(merged.items(), key=lambda kv: kv[0])
 
     fitz_failed = False
     image_page_nums: list[int] = []
@@ -2783,12 +2109,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
                  page_languages, per_page_text, image_page_nums,
                  per_page_method, per_page_confidence) = _parse_with_fitz(
                     path,
-                    # When docling-OCR is on, skip fitz's internal tesseract
-                    # fallback — image pages are routed to docling below.
-                    # Otherwise keep the legacy per-page tesseract loop so
-                    # data-loss behavior is unchanged when the new path is
-                    # disabled.
-                    apply_ocr_fallback=not (_docling_enabled and _docling_ocr_enabled),
+                    apply_ocr_fallback=_tesseract_fallback_enabled,
                 )
                 _span.set_attribute("pdf.text_chars", len(full_text))
                 _span.set_attribute("pdf.page_count", len(page_languages))
@@ -2803,115 +2124,6 @@ def parse_pdf_report(path: str) -> ReportParseResult:
             fitz_failed = True
             logger.warning(
                 "pdf_report: fitz failed (%s) — falling through to pdfplumber", exc,
-            )
-
-    # Phase 2.1 docling pass — fires only when fitz left image pages
-    # AND docling + rapidocr OCR are both enabled. Docling parses the
-    # whole doc (do_ocr=True via Phase 2.0 wiring) and we merge its
-    # per-page output into fitz's, overriding only on image pages.
-    docling_failed = False
-    if (
-        _docling_enabled
-        and not fitz_failed
-        and image_page_nums
-        and parser_used == "fitz"
-    ):
-        try:
-            with _tracer.start_as_current_span("pdf_report.docling") as _span:
-                (docling_text, docling_title, _d_skipped, docling_warnings,
-                 docling_page_langs, docling_per_page_text, docling_table_sections,
-                 docling_figure_manifest) = _parse_with_docling(
-                    path, pdf_sha256=_sha256_hex,
-                )
-                _span.set_attribute("pdf.docling_chars", len(docling_text))
-                _span.set_attribute("pdf.docling_tables", len(docling_table_sections))
-                _span.set_attribute("pdf.docling_figures", len(docling_figure_manifest))
-                logger.info(
-                    "pdf_report: docling supplied OCR for %d image pages "
-                    "(returned %d chars + %d tables + %d figures)",
-                    len(image_page_nums), len(docling_text),
-                    len(docling_table_sections), len(docling_figure_manifest),
-                )
-
-                # Merge per-page (fitz wins where it has text)
-                merged = _merge_per_page(
-                    per_page_text, docling_per_page_text, image_page_nums,
-                )
-                per_page_text = merged
-                full_text = "\n".join(t for _n, t in merged)
-                # Phase 3 — image pages docling actually filled get
-                # method='docling_rapidocr' + the conservative default
-                # 0.90 confidence (docling does not expose a per-page
-                # OCR confidence in its current API; kickoff
-                # specifies 0.90 as the safe default that lands above
-                # the Phase 6 quality threshold of 0.75).
-                _docling_per_page_map = {n: t for n, t in docling_per_page_text}  # noqa: C416
-                _DOCLING_DEFAULT_CONFIDENCE = 0.90
-                for img_page in image_page_nums:
-                    docling_text_for_page = _docling_per_page_map.get(img_page, "")
-                    if docling_text_for_page and docling_text_for_page.strip():
-                        per_page_method[img_page] = "docling_rapidocr"
-                        per_page_confidence[img_page] = _DOCLING_DEFAULT_CONFIDENCE
-                # Backfill page_languages with docling's detection on
-                # the newly-recovered image pages.
-                if docling_page_langs and len(docling_page_langs) == len(page_languages):
-                    for idx, lang in enumerate(docling_page_langs):
-                        if (
-                            page_languages[idx] == "unknown"
-                            and lang
-                            and lang != "unknown"
-                        ):
-                            page_languages[idx] = lang
-                # Forward docling's extraction warnings (e.g. low-confidence
-                # pages) so the same telemetry surface used for fitz/pdfplumber
-                # warnings stays intact.
-                extraction_warnings.extend(docling_warnings or [])
-                parser_used = "fitz+docling_ocr"
-        except Exception as exc:  # noqa: BLE001
-            docling_failed = True
-            logger.warning(
-                "pdf_report: docling OCR pass failed (%s) — falling back to "
-                "tesseract per-page", exc,
-            )
-
-    # Tesseract per-page fallback when docling didn't fire or failed.
-    # Catches the case where fitz left image pages and docling can't
-    # cover them (flag off, lib missing, GPU OOM, etc.).
-    if (
-        parser_used == "fitz"
-        and image_page_nums
-        and _tesseract_fallback_enabled
-        and (not _docling_enabled or not _docling_ocr_enabled or docling_failed)
-    ):
-        logger.info(
-            "pdf_report: docling unavailable — running tesseract on %d image pages",
-            len(image_page_nums),
-        )
-        recovered = 0
-        for n in image_page_nums:
-            try:
-                ocr_text, mean_conf = _ocr_single_page(
-                    path, n, return_confidence=True,
-                )
-            except Exception:
-                continue
-            if ocr_text and len(ocr_text.strip()) >= PER_PAGE_MIN_CHARS:
-                recovered += 1
-                per_page_text.append((n, ocr_text))
-                per_page_method[n] = "tesseract"
-                per_page_confidence[n] = mean_conf
-                extraction_warnings.append({
-                    "code": "page_ocr_recovered_tesseract_fallback",
-                    "page": n,
-                    "ocr_confidence": round(mean_conf, 4),
-                })
-        if recovered:
-            per_page_text.sort(key=lambda kv: kv[0])
-            full_text = "\n".join(t for _n, t in per_page_text)
-            parser_used = "fitz+tesseract_fallback"
-            logger.info(
-                "pdf_report: tesseract recovered %d/%d image pages",
-                recovered, len(image_page_nums),
             )
 
     # Pdfplumber fallback when fitz itself failed completely.
@@ -2994,7 +2206,6 @@ def parse_pdf_report(path: str) -> ReportParseResult:
             warnings=extraction_warnings,
             provenance=_provenance,
             page_languages=page_languages,
-            figure_manifest=docling_figure_manifest,
         )
 
     # --- Use first ~2000 chars for metadata extraction (title page) ---
@@ -3079,31 +2290,19 @@ def parse_pdf_report(path: str) -> ReportParseResult:
         )
 
     # --- All-page table extraction (assays, drill collars, geochem, etc.) ---
-    # Phase 4 (2026-05-22) — per-page classification routes bordered
-    # tables to docling's TableFormer (or pdfplumber-lines as fallback)
-    # and borderless tables to pdfplumber-text. When a docling-OCR pass
-    # already ran (Phase 2.1 image-page dispatch), its tables are reused
-    # for bordered pages instead of re-invoking docling.
-    # Each surviving table becomes a section so it gets chunked + embedded
-    # and is searchable from chat. The existing _extract_resource_tables
-    # path only catches resource-trigger pages; this is the broader net.
+    # Per-page classification routes bordered tables to pdfplumber-lines
+    # and borderless tables to pdfplumber-text. Each surviving table
+    # becomes a section so it gets chunked + embedded and is searchable
+    # from chat. The existing _extract_resource_tables path only catches
+    # resource-trigger pages; this is the broader net.
     with _tracer.start_as_current_span("pdf_report.all_tables") as _span:
         try:
-            table_sections = _extract_all_tables_as_sections(
-                path,
-                existing_docling_tables=docling_table_sections or None,
-            )
+            table_sections = _extract_all_tables_as_sections(path)
             _span.set_attribute("pdf.all_tables_found", len(table_sections))
-            _span.set_attribute(
-                "pdf.existing_docling_tables",
-                len(docling_table_sections or []),
-            )
             if table_sections:
                 logger.info(
-                    "pdf_report: Phase 4 table dispatch added %d table "
-                    "section(s) in '%s' (existing docling tables: %d)",
+                    "pdf_report: table dispatch added %d table section(s) in '%s'",
                     len(table_sections), Path(path).name,
-                    len(docling_table_sections or []),
                 )
                 sections.extend(table_sections)
         except Exception as at_exc:
@@ -3139,5 +2338,4 @@ def parse_pdf_report(path: str) -> ReportParseResult:
         provenance=_provenance,
         resource_tables=resource_tables,
         page_languages=page_languages,
-        figure_manifest=docling_figure_manifest,
     )

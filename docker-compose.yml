@@ -95,24 +95,8 @@ volumes:
   # Phase 3 Step 7 — activepieces_cache volume removed (sunset).
   # Kestra storage volume — flow execution data + internal storage. Phase 3 Step 2.
   # Kestra working directory (subprocess tasks, scratch).
-  # Phase 2.0 (2026-05-22) — rapidocr ONNX model cache. Docling's OCR
-  # backend (rapidocr) downloads ~150 MB of per-language ONNX models on
-  # first use. Default cache path is inside site-packages which is read-
-  # only for www-data, so we redirect to /tmp/rapidocr_models via env
-  # and mount this named volume so the models survive container
-  # restarts (one download per host, not per container start).
-  # Mounted on: hatchet-worker.
-  #
-  # ⚠️ ONE-TIME SETUP: Docker creates new named volumes as root:root.
-  # Chown to www-data once after the volume is created, then the
-  # ownership persists across container restarts:
-  #     docker exec -u 0 georag-hatchet-worker \
-  #         chown -R 33:33 /tmp/rapidocr_models
-  # If the volume is ever destroyed (`docker volume rm
-  # georagintelligencev10_rapidocr_models`), repeat this chown step
-  # before re-enabling DOCLING_OCR_ENABLED.
-  rapidocr_models:
-    driver: local
+  # rapidocr_models volume removed 2026-07-29 along with docling (its only
+  # consumer) — docling never ran in production.
   # Caddy /data — holds the internal CA + issued certs (Phase 7 Step 3).
   # Persisting this keeps the dev cert stable across container restarts,
   # so clients that trust it once don't have to re-import every reboot.
@@ -1727,9 +1711,11 @@ services:
 
   # ---------------------------------------------------------------------------
   # RAGFlow removed in §04p Phase 3 — replaced by the in-process PDF Ingestion
-  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Docling, PaddleOCR,
-  # Qwen-VL on vLLM) that lives entirely inside the FastAPI deployment unit.
-  # See georag-architecture.html §04p (v1.43+) for the locked stack.
+  # Subsystem (qpdf, pypdfium2, pdfminer.six, pdfplumber, Tesseract/Azure
+  # Document Intelligence OCR, PaddleOCR, Qwen-VL on vLLM) that lives
+  # entirely inside the FastAPI deployment unit. Docling was also part of
+  # this stack until removed 2026-07-29 (never ran in production). See
+  # georag-architecture.html §04p (v1.43+) for the locked stack.
   # ---------------------------------------------------------------------------
 
   # ===========================================================================
@@ -1920,15 +1906,12 @@ services:
       # somewhere writable.
       HOME: /tmp
       # Ingest parser and OCR configuration.
-      PDF_PARSER_DOCLING_ENABLED: ${PDF_PARSER_DOCLING_ENABLED:-true}
-      DOCLING_OCR_ENABLED: ${DOCLING_OCR_ENABLED:-true}
-      RAPIDOCR_MODEL_DIR: ${RAPIDOCR_MODEL_DIR:-/tmp/rapidocr_models}
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
       PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
       PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
       PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}
       PARSE_SUBPROCESS_MAX_WORKERS: ${PARSE_SUBPROCESS_MAX_WORKERS:-}
-      # A measured Docling/OCR parse needs 3-4 GB resident. Keep these
+      # A measured OCR-heavy parse needs 3-4 GB resident. Keep these
       # ingestion guards on the merged worker.
       PARSE_MIN_FREE_RAM_MB: ${PARSE_MIN_FREE_RAM_MB:-4500}
       PARSE_MEMORY_WAIT_MAX_S: ${PARSE_MEMORY_WAIT_MAX_S:-120}
@@ -1984,9 +1967,6 @@ services:
       # and its OTel bootstrap now live in app/services/ingest/pdf_report.py
       # and app/observability/, so the FastAPI image is self-contained.
       - georag-phase-b-extract:/extract
-      # Phase 2.0 (2026-05-22) — shared rapidocr model cache. Same
-      # named volume retained across worker restarts.
-      - rapidocr_models:/tmp/rapidocr_models
     user: "33:33"
     healthcheck:
       test: ["CMD-SHELL", "grep -q app.hatchet_workflows.worker /proc/1/cmdline || exit 1"]

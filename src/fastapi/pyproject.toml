@@ -164,12 +164,12 @@ dependencies = [
     # The legacy unstructured-first dispatch was supplanted by the
     # Phase 2.1 fitz-first tree. _parse_with_unstructured() and its
     # `unstructured[pdf]>=0.15` dep have been dropped — fitz +
-    # docling-OCR + tesseract-fallback + pdfplumber-last-resort
-    # provide the full coverage that unstructured did before.
+    # tesseract-fallback + pdfplumber-last-resort provide the full
+    # coverage that unstructured did before.
     # pytesseract: Apache 2.0 — Python wrapper around the tesseract OCR
-    #   binary used by _parse_with_fitz for per-page OCR fallback when
-    #   DOCLING_OCR_ENABLED=false. Phase 10 (2026-05-22): explicit pin
-    #   so a clean image rebuild ships with it baked in.
+    #   binary used by _parse_with_fitz for per-page OCR fallback.
+    #   Phase 10 (2026-05-22): explicit pin so a clean image rebuild
+    #   ships with it baked in.
     "pytesseract>=0.3",
     # pdf2image: MIT — renders PDF pages to PIL images for the tesseract
     #   fallback path (_ocr_single_page/_attempt_ocr call convert_from_path).
@@ -180,26 +180,21 @@ dependencies = [
     #   around, and what the oversized-scan tiling preprocessor is built on.
     #   Also undeclared before this pin (2026-07-29).
     "Pillow>=12.3",
-    # onnxruntime-gpu: MIT — required by docling's TableFormer + layout
-    #   models for GPU inference. CPU-only `onnxruntime` falls back to
-    #   docling on CPU (~5x slower). Phase 10: explicit pin so a clean
-    #   image rebuild ships with the GPU build.
-    "onnxruntime-gpu>=1.20; platform_system == 'Linux'",
-    # §04p Phase 1.C-i — Layout region detection (Stage 4)
-    # docling: MIT (IBM Research / LF AI & Data) — document conversion with
-    #   layout detection (text/figure/table/header/footer/formula regions).
-    #   Pulls in torch + transformers (already pinned above for SPLADE++) and
-    #   onnxruntime for the layout model inference.
-    # NOTE for operator: run `uv pip install 'docling>=2.13'`
-    #   (or rebuild the fastapi Docker image) before using the
-    #   /pdf/find_legends endpoint.  First install may take several minutes
-    #   — docling downloads ONNX layout model weights on first use.
-    "docling>=2.13",
+    # docling (and its onnxruntime-gpu dependency) removed 2026-07-29.
+    # It powered §04p Phase 1.C-i layout region detection (GET
+    # /pdf/find_legends, now also removed) plus optional OCR/table
+    # dispatch in pdf_report.py — none of it ever ran in production
+    # (PDF_PARSER_DOCLING_ENABLED was false in every live deployment;
+    # 1,173 real silver.reports rows show parser_used as fitz or
+    # pdfplumber, never docling). Azure Document Intelligence
+    # (azure-ai-documentintelligence below) is the OCR path going
+    # forward alongside tesseract.
+    #
     # paddlepaddle/paddleocr (region-targeted `POST /pdf/ocr_region`) removed
-    # 2026-07-29 — the endpoint, app/ocr/, and services/pdf_ocr.py had zero
+    # the same day — the endpoint, app/ocr/, and services/pdf_ocr.py had zero
     # callers anywhere in Laravel/frontend code (same orphan pattern as
     # /pdf/find_legends). Task #17/A3 had already deleted most of §04p but
-    # missed this leg. See docling>=2.13 above for the parallel removal pass.
+    # missed this leg.
     # #28 (2026-07-28) — Azure Document Intelligence OCR adapter (MIT).
     # Standalone module, gated OFF by default (OCR_ENGINE=tesseract).
     # NOT wired into pdf_report.py's live Tesseract call sites yet — that
@@ -262,7 +257,7 @@ dependencies = [
     # Phase 5 (2026-05-22) — used by the parse-subprocess memory guard
     # in ingest_pdf.py. Pre-fork RAM check prevents OOM when running
     # multiple concurrent PDF parses on the ingestion worker. Already
-    # transitively present via docling+dagster; this is the explicit pin.
+    # transitively present via dagster; this is the explicit pin.
     "psutil>=7.0",
     "pyjwt>=2.9",
 

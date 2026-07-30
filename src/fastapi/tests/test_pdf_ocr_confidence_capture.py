@@ -263,7 +263,7 @@ def test_assign_ocr_metadata_first_page_method_wins(parser_module):
             text="x", page_first=1, page_last=3,
         ),
     ]
-    per_page_method = {1: "fitz_native", 2: "tesseract", 3: "docling_rapidocr"}
+    per_page_method = {1: "fitz_native", 2: "tesseract", 3: "document_intelligence"}
     per_page_confidence = {1: None, 2: 0.70, 3: 0.90}
 
     parser_module._assign_ocr_metadata(sections, per_page_method, per_page_confidence)
