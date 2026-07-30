@@ -7,10 +7,10 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\QueryAuditLog;
+use App\Services\StorageService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -23,6 +23,10 @@ use Inertia\Response;
  */
 class OverviewController extends Controller
 {
+    public function __construct(
+        private readonly StorageService $storage,
+    ) {}
+
     public function show(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
@@ -141,7 +145,7 @@ class OverviewController extends Controller
         $latestMtime = 0;
 
         try {
-            $disk = Storage::disk('s3-bronze');
+            $disk = $this->storage->bronzeReadOnly();
             foreach (['reports', 'tiff'] as $prefix) {
                 foreach ($disk->files("{$prefix}/{$projectId}") as $key) {
                     $filename = basename($key);

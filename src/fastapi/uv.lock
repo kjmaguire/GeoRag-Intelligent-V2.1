@@ -966,6 +966,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "geopandas" },
+    { name = "georag-object-storage" },
     { name = "hatchet-sdk" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -1035,6 +1036,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=48.0.1,<49" },
     { name = "fastapi", specifier = ">=0.136.0" },
     { name = "geopandas", specifier = ">=1.0" },
+    { name = "georag-object-storage", directory = "../georag_object_storage" },
     { name = "gunicorn", marker = "extra == 'prod'", specifier = ">=23.0" },
     { name = "hatchet-sdk", specifier = ">=1.33" },
     { name = "httpx", specifier = ">=0.28" },
@@ -1085,6 +1087,28 @@ requires-dist = [
     { name = "xgboost", specifier = ">=2.1,<4.0" },
 ]
 provides-extras = ["prod", "dev"]
+
+[[package]]
+name = "georag-object-storage"
+version = "0.1.0"
+source = { directory = "../georag_object_storage" }
+dependencies = [
+    { name = "aioboto3" },
+    { name = "boto3" },
+    { name = "botocore" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aioboto3", specifier = ">=13.0" },
+    { name = "boto3", specifier = ">=1.35" },
+    { name = "botocore", specifier = ">=1.35" },
+    { name = "moto", extras = ["s3", "server"], marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "googleapis-common-protos"

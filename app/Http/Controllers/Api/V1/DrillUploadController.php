@@ -10,12 +10,12 @@ use App\Services\Dagster\DagsterGraphQLClient;
 use App\Services\Dagster\DrillAssetSelector;
 use App\Services\FastApiJwtMinter;
 use App\Services\Ingestion\HatchetDispatchThrottle;
+use App\Services\StorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -43,7 +43,7 @@ class DrillUploadController extends Controller
     private const ALLOWED_EXTS = ['csv', 'xlsx', 'xls', 'pdf'];
 
     /** Octane-safe: no constructor state — resolve services per request. */
-    public function store(Request $request, string $slug): JsonResponse
+    public function store(Request $request, string $slug, StorageService $storage): JsonResponse
     {
         $project = Project::where('slug', $slug)->first();
         if ($project === null) {
@@ -110,7 +110,7 @@ class DrillUploadController extends Controller
         $vendorProfileId = $validated['vendor_profile_id'] ?? null;
 
         try {
-            $this->streamToBronze($seaweedfsKey, $file->getRealPath(), $vendorProfileId);
+            $this->streamToBronze($storage, $seaweedfsKey, $file->getRealPath(), $vendorProfileId);
         } catch (Throwable $e) {
             Log::error('DrillUploadController: bronze write failed', [
                 'project_id' => $project->project_id,
@@ -329,7 +329,7 @@ class DrillUploadController extends Controller
         return $value === null ? null : (string) $value;
     }
 
-    private function streamToBronze(string $key, string $localPath, ?int $vendorProfileId): void
+    private function streamToBronze(StorageService $storage, string $key, string $localPath, ?int $vendorProfileId): void
     {
         $putOptions = [];
         if ($vendorProfileId !== null) {
@@ -343,7 +343,7 @@ class DrillUploadController extends Controller
             throw new \RuntimeException('Unable to open uploaded file for streaming.');
         }
         try {
-            Storage::disk('s3')->put($key, $handle, $putOptions);
+            $storage->bronze()->put($key, $handle, $putOptions);
         } finally {
             if (is_resource($handle)) {
                 fclose($handle);

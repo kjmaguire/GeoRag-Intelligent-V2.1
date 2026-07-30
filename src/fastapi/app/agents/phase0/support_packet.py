@@ -42,22 +42,6 @@ from app.db import bind_workspace_scope
 logger = logging.getLogger(__name__)
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get("S3_ENDPOINT_URL") or os.environ.get(
-        "MINIO_ENDPOINT", "http://minio:8333"
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    access = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get(
-        "MINIO_ROOT_USER", "georag-admin"
-    )
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get(
-        "MINIO_ROOT_PASSWORD", ""
-    )
-    return access, secret
-
-
 _TEMPO_DEFAULT = "http://tempo:3200"
 
 
@@ -236,20 +220,27 @@ async def support_packet_assemble(
     storage_uri = f"s3://{bucket}/{object_key}"
 
     try:
-        import aioboto3  # type: ignore[import-not-found]
+        import aioboto3
+        from georag_object_storage import StorageConfig, async_client_kwargs
     except ImportError as exc:
-        raise RuntimeError(f"aioboto3 not installed: {exc}") from exc
+        raise RuntimeError(f"aioboto3/georag_object_storage not installed: {exc}") from exc
 
-    access, secret = _s3_credentials()
-    session = aioboto3.Session(
-        aws_access_key_id=access,
-        aws_secret_access_key=secret,
-        region_name="us-east-1",
-    )
+    # bucket ("tier-warm") is a fixed literal but doesn't match any of
+    # georag_object_storage's four fixed logical Bucket members (storage
+    # tiers are a different concept from those buckets), so this uses the
+    # raw-client escape hatch (async_client_kwargs) rather than the
+    # higher-level AsyncObjectStorage interface.
+    session = aioboto3.Session()
     upload_ok = False
     upload_error: str | None = None
-    async with session.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        try:
+    try:
+        # StorageConfig.from_env() raises eagerly if no credentials are
+        # configured anywhere (unlike the old code's client construction,
+        # which never validated until the actual request) — kept inside
+        # this try so a missing-credentials environment still degrades
+        # gracefully to upload_error instead of crashing the whole packet
+        # assembly, matching the original resilience design below.
+        async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
             await s3.put_object(
                 Bucket=bucket,
                 Key=object_key,
@@ -257,13 +248,13 @@ async def support_packet_assemble(
                 ContentType="application/gzip",
             )
             upload_ok = True
-        except Exception as exc:  # noqa: BLE001 — IAM gap surfaced, not fatal
-            upload_error = f"{type(exc).__name__}: {exc}"
-            logger.warning(
-                "support_packet: SeaweedFS upload failed (%s) — recording row "
-                "with status='available' but flagging upload failure in payload",
-                upload_error,
-            )
+    except Exception as exc:  # noqa: BLE001 — IAM gap surfaced, not fatal
+        upload_error = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "support_packet: SeaweedFS upload failed (%s) — recording row "
+            "with status='available' but flagging upload failure in payload",
+            upload_error,
+        )
 
     # ---- Insert silver.support_packets row -------------------------------
     packet_id = uuid4()

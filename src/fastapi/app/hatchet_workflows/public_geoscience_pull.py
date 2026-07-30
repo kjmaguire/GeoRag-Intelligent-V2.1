@@ -29,6 +29,8 @@ import time
 import uuid
 
 import asyncpg
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.async_client import AsyncS3CompatibleStorage
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -75,33 +77,9 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get(
-        "S3_ENDPOINT_URL",
-        os.environ.get("MINIO_ENDPOINT", "http://minio:8333"),
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    return (
-        os.environ.get("AWS_ACCESS_KEY_ID")
-        or os.environ.get("MINIO_ROOT_USER", "georag-admin"),
-        os.environ.get("AWS_SECRET_ACCESS_KEY")
-        or os.environ.get("MINIO_ROOT_PASSWORD", ""),
-    )
-
-
 async def _download_from_s3(minio_key: str) -> bytes:
-    import aioboto3
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
-    async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        resp = await s3.get_object(Bucket=bucket, Key=minio_key)
-        return await resp["Body"].read()
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 
 async def _flag_enabled(conn: asyncpg.Connection) -> bool:

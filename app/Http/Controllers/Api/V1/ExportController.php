@@ -9,11 +9,11 @@ use App\Http\Requests\StoreExportRequest;
 use App\Jobs\GenerateExportJob;
 use App\Models\Export;
 use App\Models\Project;
+use App\Services\StorageService;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 /**
@@ -27,6 +27,10 @@ use Throwable;
  */
 class ExportController extends Controller
 {
+    public function __construct(
+        private readonly StorageService $storage,
+    ) {}
+
     // -------------------------------------------------------------------------
     // index
     // -------------------------------------------------------------------------
@@ -237,7 +241,7 @@ class ExportController extends Controller
     private function refreshSignedUrl(Export $export): Export
     {
         $expiresAt = now()->addHours(24);
-        $signedUrl = Storage::disk('s3-exports')->temporaryUrl($export->minio_path, $expiresAt);
+        $signedUrl = $this->storage->presignedUrl($this->storage->exports(), $export->minio_path, $expiresAt);
 
         $export->update([
             'download_url' => $signedUrl,

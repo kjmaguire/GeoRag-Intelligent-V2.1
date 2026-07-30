@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\Figures;
 
+use App\Services\StorageService;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 /**
@@ -32,12 +32,17 @@ use Throwable;
  * ``key`` set — pending entries are skipped (the persist task hasn't
  * caught up yet).
  *
- * Octane-safe: no instance state; all I/O per call.
+ * Octane-safe: the injected StorageService is stateless (a pure disk-
+ * selection façade, no per-request data); all I/O still happens per call.
  */
 final class FigureResolver
 {
     /** Default presign TTL in seconds (1 hour — matches MinIO STS expiry sanity). */
     private const DEFAULT_TTL_SECONDS = 3600;
+
+    public function __construct(
+        private readonly StorageService $storage,
+    ) {}
 
     /**
      * Return the figure manifest for a report with presigned PNG URLs.
@@ -77,7 +82,7 @@ final class FigureResolver
             return [];
         }
 
-        $disk = Storage::disk('s3-bronze');
+        $disk = $this->storage->bronzeReadOnly();
         $expires = now()->addSeconds($ttlSeconds);
 
         $out = [];

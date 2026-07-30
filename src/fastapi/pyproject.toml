@@ -7,6 +7,10 @@ dependencies = [
     "fastapi>=0.136.0",
     "uvicorn[standard]>=0.46.0",
     "pydantic>=2.11",
+    # Storage-abstraction plan PR1 — vendor-neutral object storage interface,
+    # shared with src/dagster via a uv path dependency (see [tool.uv.sources]
+    # below). Local package, not published; version is unused by uv sources.
+    "georag-object-storage",
     # Phase H — bumped from >=1.0 to >=1.56 to close two GHSAs flagged by
     # osv-scanner against the installed 1.38.0:
     #   GHSA-2jrp-274c-jhv3 — SSRF in URL Download Handler (fix: 1.56.0)
@@ -338,6 +342,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.uv.sources]
+# editable = false (the default) deliberately: this Dockerfile's builder
+# stage copies only /usr/local/lib/python3.13/site-packages into the
+# runtime stage, not the source tree an editable install would redirect
+# to. A non-editable path install builds a real wheel into site-packages
+# so the package survives the multi-stage copy.
+georag-object-storage = { path = "../georag_object_storage" }
 
 [tool.ruff]
 target-version = "py313"

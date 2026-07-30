@@ -15,13 +15,13 @@ use App\Services\Exports\DxfExporter;
 use App\Services\Exports\GeoPackageExporter;
 use App\Services\Exports\LasBundleExporter;
 use App\Services\Exports\ShapefileExporter;
+use App\Services\StorageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Generates a data export, uploads the resulting file(s) to MinIO, generates a
@@ -53,7 +53,7 @@ class GenerateExportJob implements ShouldQueue
         private readonly string $exportId,
     ) {}
 
-    public function handle(): void
+    public function handle(StorageService $storage): void
     {
         /** @var Export|null $export */
         $export = Export::find($this->exportId);
@@ -86,13 +86,13 @@ class GenerateExportJob implements ShouldQueue
             // Upload to MinIO via the dedicated exports disk (separate bucket
             // from the bronze layer so generated artifacts never pollute the
             // immutable raw archive).
-            Storage::disk('s3-exports')->put($minioKey, fopen($localPath, 'r'));
+            $storage->exports()->put($minioKey, fopen($localPath, 'r'));
 
             @unlink($localPath);
 
             // Generate a presigned URL valid for 24 hours.
             $expiresAt = now()->addHours(24);
-            $signedUrl = Storage::disk('s3-exports')->temporaryUrl($minioKey, $expiresAt);
+            $signedUrl = $storage->presignedUrl($storage->exports(), $minioKey, $expiresAt);
 
             $export->update([
                 'status' => 'completed',

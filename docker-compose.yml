@@ -713,8 +713,11 @@ services:
   # ---------------------------------------------------------------------------
   fastapi:
     build:
-      context: ./src/fastapi
-      dockerfile: ../../docker/fastapi.Dockerfile
+      # The FastAPI image installs the sibling georag_object_storage package,
+      # so its build context must include both source trees. Runtime storage
+      # endpoint and credential settings remain unchanged below.
+      context: ./src
+      dockerfile: ../docker/fastapi.Dockerfile
     image: georag/fastapi:latest
     container_name: georag-fastapi
     restart: unless-stopped

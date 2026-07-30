@@ -724,15 +724,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # -------------------------------------------------------------------------
     # PdfRenderService holds a ProcessPoolExecutor (process workers, not threads,
     # per §04p Stage 2 PDFium thread-safety requirement) and an LRU render cache.
-    # LocalFsBronzeStore is a Phase 1.A stub; replace with SeaweedFsBronzeStore
-    # in a follow-up phase when the S3-compatible API is integrated.
+    # S3BronzeStore (SeaweedFS) is the production Bronze store as of the
+    # storage-abstraction plan's PR4; LocalFsBronzeStore is a fallback for a
+    # bare dev shell that isn't running the full docker-compose stack.
     try:
-        from app.services.bronze_store import LocalFsBronzeStore  # noqa: PLC0415
+        from georag_object_storage import StorageConfig  # noqa: PLC0415
+
+        from app.services.bronze_store import LocalFsBronzeStore, S3BronzeStore  # noqa: PLC0415
         from app.services.pdf_render import PdfRenderService  # noqa: PLC0415
 
         app.state.pdf_render_service = PdfRenderService()
-        app.state.bronze_store = LocalFsBronzeStore()
-        logger.info("PDF render service and Bronze store ready (§04p Phase 1.A)")
+        try:
+            app.state.bronze_store = S3BronzeStore(StorageConfig.from_env())
+            logger.info("PDF render service ready; Bronze store backed by SeaweedFS")
+        except ValueError:
+            # No object-storage credentials in this environment (AWS_ACCESS_KEY_ID/
+            # AWS_SECRET_ACCESS_KEY, or a legacy S3_*/MINIO_*/SEAWEEDFS_* fallback,
+            # are all unset) — expected in a bare dev shell, not in any environment
+            # actually running SeaweedFS. Fall back to local disk rather than
+            # failing PDF render entirely.
+            logger.warning(
+                "No object-storage credentials found — Bronze store falling back to "
+                "local disk. Fine for a bare dev shell; any environment with more than "
+                "one FastAPI instance needs SeaweedFS-backed storage to work correctly."
+            )
+            app.state.bronze_store = LocalFsBronzeStore()
+            logger.info("PDF render service and Bronze store ready (local-disk fallback)")
     except Exception:
         logger.exception(
             "§04p PDF subsystem init failed — /pdf/* endpoints will return 503. "

@@ -42,6 +42,7 @@ from datetime import UTC, datetime, timedelta
 
 import aioboto3
 import asyncpg
+from georag_object_storage import StorageConfig, async_client_kwargs
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -99,21 +100,18 @@ def _build_dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def _s3_session_kwargs() -> dict[str, str]:
-    return {
-        "endpoint_url":          os.environ.get("SEAWEEDFS_S3_ENDPOINT", "http://seaweedfs:8333"),
-        "aws_access_key_id":     os.environ.get("SEAWEEDFS_S3_ACCESS_KEY", "georag"),
-        "aws_secret_access_key": os.environ.get("SEAWEEDFS_S3_SECRET_KEY", "georag"),
-        "region_name":           os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1"),
-    }
-
-
 class _SeaweedFsColdTierStore:
     """Implements the _ColdTierStore Protocol via SeaweedFS S3.
 
     The archive_window function calls `put(key, content)` once per
     chunk + once for the manifest. We use a per-run aioboto3 client
     so concurrent runs (if any) don't share connection pools.
+
+    ``bucket`` is a workflow-input string (default "audit-cold-tier",
+    overridable) — genuinely dynamic, not one of georag_object_storage's
+    four fixed logical Bucket members, so this uses the raw-client escape
+    hatch (async_client_kwargs) rather than the higher-level
+    AsyncObjectStorage interface.
     """
 
     def __init__(self, bucket: str):
@@ -121,7 +119,12 @@ class _SeaweedFsColdTierStore:
         self._session = aioboto3.Session()
 
     async def put(self, key: str, content: bytes) -> str:
-        async with self._session.client("s3", **_s3_session_kwargs()) as s3:
+        # Credential/endpoint resolution deliberately stays lazy (inside
+        # put(), not __init__) — a test constructs this class without any
+        # object-storage env vars set to check its Protocol shape, and
+        # StorageConfig.from_env() raises if none are present.
+        client_kwargs = async_client_kwargs(StorageConfig.from_env())
+        async with self._session.client("s3", **client_kwargs) as s3:
             await s3.put_object(Bucket=self._bucket, Key=key, Body=content)
         return f"s3://{self._bucket}/{key}"
 

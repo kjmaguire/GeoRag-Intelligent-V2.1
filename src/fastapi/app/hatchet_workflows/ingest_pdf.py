@@ -36,6 +36,9 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.async_client import AsyncS3CompatibleStorage
+from georag_object_storage.sync_client import S3CompatibleStorage
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -414,34 +417,9 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get(
-        "S3_ENDPOINT_URL",
-        os.environ.get("MINIO_ENDPOINT", "http://minio:8333"),
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    return (
-        os.environ.get("AWS_ACCESS_KEY_ID")
-        or os.environ.get("MINIO_ROOT_USER", "georag-admin"),
-        os.environ.get("AWS_SECRET_ACCESS_KEY")
-        or os.environ.get("MINIO_ROOT_PASSWORD", ""),
-    )
-
-
 async def _download_from_s3(minio_key: str) -> bytes:
-    import aioboto3
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
-    async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        resp = await s3.get_object(Bucket=bucket, Key=minio_key)
-        body = await resp["Body"].read()
-        return body
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 
 def _sections_to_dict(sections) -> dict:
@@ -1009,19 +987,8 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     pending_manifest = parsed.get("figures") or []
     if pending_manifest:
         try:
-            import boto3
-            from botocore.config import Config as BotoConfig
-
-            s3_endpoint = _s3_endpoint()
-            aws_key, aws_secret = _s3_credentials()
-            s3 = boto3.client(
-                "s3",
-                endpoint_url=s3_endpoint,
-                aws_access_key_id=aws_key,
-                aws_secret_access_key=aws_secret,
-                region_name="us-east-1",
-                config=BotoConfig(signature_version="s3v4"),
-            )
+            storage_config = StorageConfig.from_env()
+            store = S3CompatibleStorage(storage_config)
 
             figure_sections_out: list[dict] = []
             for entry in pending_manifest:
@@ -1029,9 +996,11 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 page_no = entry.get("page")
                 caption = (entry.get("caption") or "").strip()
                 pending_key = entry.get("pending_key")
-                bucket = entry.get("bucket") or os.environ.get(
-                    "MINIO_BUCKET_BRONZE", "bronze"
-                )
+                # entry.get("bucket") is defensive legacy code — pending
+                # figure uploads always land in the bronze bucket (see
+                # georag_dagster/parsers/pdf_report.py's docling extractor,
+                # the only producer of this manifest), so Bucket.BRONZE is
+                # always correct here.
                 img_sha = entry.get("sha256")
 
                 final_key = None
@@ -1045,15 +1014,14 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         # persist step runs on the Hatchet worker's asyncio loop,
                         # so the S3 round-trips must go off-loop via to_thread or
                         # they block heartbeats + other tasks. (The download path
-                        # at the top of this file already uses aioboto3.)
+                        # at the top of this file already uses the async client.)
                         await asyncio.to_thread(
-                            s3.copy_object,
-                            Bucket=bucket,
-                            Key=final_key,
-                            CopySource={"Bucket": bucket, "Key": pending_key},
-                            MetadataDirective="REPLACE",
-                            ContentType="image/png",
-                            Metadata={
+                            store.copy,
+                            Bucket.BRONZE,
+                            pending_key,
+                            Bucket.BRONZE,
+                            final_key,
+                            metadata={
                                 "report_id": str(report_id),
                                 "project_id": (
                                     str(input.project_id) if input.project_id else ""
@@ -1061,11 +1029,10 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                                 "page": str(page_no),
                                 "sha256": str(img_sha or ""),
                             },
+                            content_type="image/png",
                         )
                         try:
-                            await asyncio.to_thread(
-                                s3.delete_object, Bucket=bucket, Key=pending_key
-                            )
+                            await asyncio.to_thread(store.delete, Bucket.BRONZE, pending_key)
                         except Exception as del_exc:  # noqa: BLE001
                             log.warning(
                                 "ingest_pdf.persist: pending figure delete "
@@ -1088,9 +1055,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 if _FIGURE_VL_CAPTIONS and final_key:
                     try:
                         from app.agent.figure_extractor import caption_image_with_vl
-                        _img = await asyncio.to_thread(
-                            lambda: s3.get_object(Bucket=bucket, Key=final_key)["Body"].read()
-                        )
+                        _img = await asyncio.to_thread(store.get_bytes, Bucket.BRONZE, final_key)
                         vl_desc = await caption_image_with_vl(
                             _img, context=parsed.get("title"),
                         )
@@ -1106,7 +1071,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 if vl_desc:
                     section_lines.append(f"Description: {vl_desc}")
                 if final_key:
-                    section_lines.append(f"Image: s3://{bucket}/{final_key}")
+                    section_lines.append(f"Image: s3://{storage_config.bucket_name(Bucket.BRONZE)}/{final_key}")
                 figure_sections_out.append({
                     "section_number": None,
                     "section_title": f"Figure (page {page_no}, #{int(idx) + 1})",
@@ -1133,8 +1098,6 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     sum(1 for m in figure_manifest_final if m.get("minio_key")),
                 )
                 parsed.setdefault("sections", []).extend(figure_sections_out)
-        except ImportError:
-            log.warning("ingest_pdf.persist: boto3 unavailable, skipping figure rename")
         except Exception as fig_err:  # noqa: BLE001
             log.warning("ingest_pdf.persist: figure manifest consumption failed: %s", fig_err)
 
