@@ -58,6 +58,24 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
+      # FoundryRoutesSmokeTest (and any other Inertia::render() assertion)
+      # needs a real Vite manifest to resolve asset paths — without it,
+      # every such test fails with "Vite manifest not found at
+      # public/build/manifest.json". This job never built the frontend
+      # before, so that failure was masked behind the migration/role/
+      # paratest gaps that used to fail earlier in the run.
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Vite build
+        run: npm run build
+
       - name: Run Laravel Pint (lint)
         run: vendor/bin/pint --test
 
