@@ -325,7 +325,7 @@ class DocumentChunk:
     # passage was extracted from the PDF text layer (no OCR involved).
     # 0.0–1.0 = mean OCR engine confidence. ocr_method records which
     # engine produced the text: fitz_native | pdfplumber_native |
-    # docling_rapidocr | tesseract. Phase 3 exposes these in
+    # tesseract | document_intelligence. Phase 3 exposes these in
     # search_documents results WITHOUT filtering or weighting — the
     # Phase 6 OCR Quality Agent will set thresholds.
     ocr_confidence: float | None = None
@@ -1930,6 +1930,12 @@ async def traverse_knowledge_graph(
     Returns:
         GraphTraversalResult with related entities, count, and data source.
     """
+    # B1 (2026-07-28): Neo4j removed. Explicit early return rather than
+    # relying on the bare except below to catch AttributeError from
+    # None.session() — same empty-result contract, clearer intent.
+    if ctx.deps.neo4j_driver is None:
+        return GraphTraversalResult(entities=[], count=0, data_source="Neo4j knowledge graph (unavailable)")
+
     depth = min(max(depth, 1), 3)
 
     # P2 #28 — validate the LLM-supplied relationship_type before
@@ -2044,6 +2050,11 @@ async def query_graph_by_label(
         Cypher identifier allowlist (P2 #28) — rejecting an unsafe
         label is preferred over executing arbitrary Cypher.
     """
+    # B1 (2026-07-28): Neo4j removed. Same explicit-early-return rationale
+    # as traverse_knowledge_graph above.
+    if ctx.deps.neo4j_driver is None:
+        return GraphTraversalResult(entities=[], count=0, data_source="Neo4j knowledge graph (unavailable)")
+
     # P2 #28 — validate the LLM-supplied label before interpolating it.
     # Unlike `relationship_type` in traverse_knowledge_graph (which has
     # an unfiltered `[r]` fallback), `label` has no safe-fallback because

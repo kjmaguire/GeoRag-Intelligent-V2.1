@@ -26,7 +26,7 @@ def test_embed_pending_passages_has_per_workspace_singleton_concurrency():
     )
 
     expr = cfg.concurrency
-    assert expr.expression == "input.workspace_id", (
+    assert expr.expression == "input.workspace_id != '' ? input.workspace_id : 'cron'", (
         f"Expected per-workspace grouping, got {expr.expression!r}"
     )
     assert expr.max_runs == 1, (

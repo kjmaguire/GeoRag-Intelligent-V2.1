@@ -1,0 +1,31 @@
+# Per-Dockerfile build-context excludes for docker/dagster.Dockerfile
+# (BuildKit: a `<Dockerfile-name>.dockerignore` next to the Dockerfile
+# REPLACES the context root's .dockerignore for this build, so this file
+# must be complete — it cannot rely on src/.dockerignore as a base).
+#
+# Context root is ./src (see docker-compose.yml + .github/workflows/ci.yml).
+# The dagster image needs only dagster/ + georag_object_storage/; the
+# sibling fastapi/ tree (which carries a 7.7 GB .venv and 1.8 GB models/
+# on the dev workstation even before ignores) is dead weight here —
+# excluding the whole subtree is both faster and safer than relying on
+# the per-entry excludes.
+
+fastapi/
+
+**/.git
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.venv
+dagster/.venv/
+**/.env
+**/.env.*
+!**/.env.example
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/htmlcov
+**/dist
+**/*.egg-info
+**/.claude
+**/tests/fixtures

@@ -79,7 +79,7 @@ def fuzzy_match(
     if not candidates:
         return None
 
-    from rapidfuzz import fuzz  # noqa: PLC0415 — deferred, not always needed
+    from rapidfuzz import fuzz
 
     best_score = -1.0
     best_candidate: str | None = None
@@ -118,7 +118,7 @@ def suggest_collisions(ids: list[str]) -> list[dict]:
     ids:
         Raw hole ID strings from a single file (may include duplicates).
     """
-    from rapidfuzz import fuzz  # noqa: PLC0415
+    from rapidfuzz import fuzz
 
     # Build canonical → set-of-raw-forms index
     canonical_map: dict[str, set[str]] = {}

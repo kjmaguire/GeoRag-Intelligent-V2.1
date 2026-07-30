@@ -3,7 +3,7 @@ and the qdrant payload.
 
 These tests verify:
   - _run_parser_subprocess section dicts include ocr_confidence + ocr_method
-  - INSERT_PASSAGE_SQL has both new columns + 9-parameter binding
+  - INSERT_PASSAGE_SQL has OCR provenance/status columns + 10-parameter binding
   - ParseOut.sections shape carries the two fields
   - DocumentChunk on the agent side has ocr_confidence + ocr_method
   - passage_embedder builds qdrant payload with both fields
@@ -14,39 +14,11 @@ Run with:
 
 from __future__ import annotations
 
-import sys
-import types
 from unittest.mock import MagicMock, patch
 
-
-# Same dagster-parsers stub injection as Phase 1 persist tests, so the
-# fastapi ingest module can import _FIGURE_TEMPDIR_ROOT without the real
-# dagster install. The parser-side tests own the real implementation.
-def _ensure_parser_stub_module():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        import os as _os
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        _os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub_module()
-
+# A1 (2026-07-28): the parser is first-party now — see the matching note in
+# test_ingest_pdf_figure_persist.py for why the sys.modules stub had to go.
+from app.services.ingest import pdf_report as _pdf_report_module
 
 # ---------------------------------------------------------------------------
 # 1. _run_parser_subprocess section dicts include ocr_confidence + ocr_method
@@ -92,7 +64,7 @@ def test_run_parser_subprocess_includes_ocr_fields():
     stub.sections = [fitz_section, ocr_section]
 
     with patch.object(
-        sys.modules["georag_dagster.parsers.pdf_report"],
+        _pdf_report_module,
         "parse_pdf_report",
         MagicMock(return_value=stub),
     ):
@@ -115,10 +87,11 @@ def test_insert_passage_sql_includes_ocr_columns():
     sql = mod.INSERT_PASSAGE_SQL
     assert "ocr_confidence" in sql
     assert "ocr_method" in sql
-    # 9 binds: document_id, workspace, text, hash, ordinal, page_first,
-    # page_last, ocr_confidence, ocr_method
+    # 10 binds: document_id, workspace, text, hash, ordinal, page_first,
+    # page_last, ocr_confidence, ocr_method, ocr_status
     assert "$9" in sql
-    assert "$10" not in sql  # don't accidentally over-bind
+    assert "$10" in sql
+    assert "$11" not in sql  # don't accidentally over-bind
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +168,10 @@ def test_document_chunk_accepts_ocr_fields():
         section_number=None, section_title=None, section=None,
         page=None, document_type="NI43", report_id="r",
         relevance_score=0.5,
-        ocr_confidence=0.65, ocr_method="docling_rapidocr",
+        ocr_confidence=0.65, ocr_method="document_intelligence",
     )
     assert c.ocr_confidence == 0.65
-    assert c.ocr_method == "docling_rapidocr"
+    assert c.ocr_method == "document_intelligence"
 
 
 # ---------------------------------------------------------------------------

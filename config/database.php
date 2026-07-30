@@ -167,23 +167,12 @@ return [
         // Kestra logical DB + role were dropped via
         // database/raw/phase3/90-activepieces-sunset.sql.
 
-        // Phase 3 Step 6 — read-only view onto Kestra's own Postgres
-        // database. Reads the `flows` + `executions` tables to surface
-        // which flows exist + their recent run state on /admin/integrations.
-        // Same role-isolation pattern as pgsql_hatchet + pgsql_activepieces.
-        'pgsql_kestra' => [
-            'driver' => 'pgsql',
-            'host' => env('KESTRA_PG_HOST_LARAVEL', 'postgresql'),
-            'port' => env('KESTRA_PG_PORT_LARAVEL', '5432'),
-            'database' => env('KESTRA_PG_DATABASE_LARAVEL', 'kestra'),
-            'username' => env('KESTRA_PG_USER_LARAVEL', 'kestra'),
-            'password' => env('KESTRA_PG_PASSWORD', ''),
-            'charset' => env('DB_CHARSET', 'utf8'),
-            'prefix' => '',
-            'prefix_indexes' => true,
-            'search_path' => 'public',
-            'sslmode' => env('DB_SSLMODE', 'prefer'),
-        ],
+        // Phase 3 Step 6 — pgsql_kestra connection REMOVED 2026-07-28 (A7).
+        // It read Kestra's own Postgres database to surface flow listings on
+        // /admin/integrations, which no longer exists (Integrations.tsx was
+        // deleted in the reader-core trim; the dead index() method that used
+        // this connection was removed alongside it). Kestra itself was never
+        // deployed. See database/raw/phase3/95-kestra-sunset.sql.
 
         'sqlsrv' => [
             'driver' => 'sqlsrv',

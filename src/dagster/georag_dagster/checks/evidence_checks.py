@@ -47,9 +47,8 @@ def document_passages_check_no_duplicate_passage_ids(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify no duplicate passage_id values in silver.document_passages."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT COUNT(*) AS dup_count
                 FROM (
                     SELECT passage_id, COUNT(*) AS n
@@ -58,14 +57,13 @@ def document_passages_check_no_duplicate_passage_ids(
                     HAVING COUNT(*) > 1
                 ) AS dups;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
     dup_count = row[0] if row else 0
     passed = dup_count == 0
 
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM silver.document_passages;")
-            total_row = cur.fetchone()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM silver.document_passages;")
+        total_row = cur.fetchone()
     total = total_row[0] if total_row else 0
 
     return AssetCheckResult(
@@ -100,9 +98,8 @@ def document_passages_check_text_hash_sha256_valid(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify all document_passages.text_hash values match ^[0-9a-f]{64}$."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (
@@ -111,7 +108,7 @@ def document_passages_check_text_hash_sha256_valid(
                     ) AS invalid_hash_count
                 FROM silver.document_passages;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     total = row[0] if row else 0
     invalid = row[1] if row else 0
@@ -153,15 +150,14 @@ def document_revisions_check_document_id_not_null(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify silver.document_revisions has no NULL document_id values."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (WHERE document_id IS NULL) AS null_doc_id
                 FROM silver.document_revisions;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     total = row[0] if row else 0
     null_count = row[1] if row else 0
@@ -199,9 +195,8 @@ def document_revisions_check_sha256_format(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify all document_revisions.source_sha256 values are valid SHA-256."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (
@@ -209,7 +204,7 @@ def document_revisions_check_sha256_format(
                     ) AS invalid_sha256
                 FROM silver.document_revisions;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     total = row[0] if row else 0
     invalid = row[1] if row else 0
@@ -252,9 +247,8 @@ def evidence_items_check_exactly_one_ref(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify all evidence_items rows have exactly one non-null reference field."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
                 SELECT
                     COUNT(*) AS total,
                     COUNT(*) FILTER (
@@ -267,7 +261,7 @@ def evidence_items_check_exactly_one_ref(
                     ) AS bad_ref_count
                 FROM silver.evidence_items;
             """)
-            row = cur.fetchone()
+        row = cur.fetchone()
 
     total = row[0] if row else 0
     bad = row[1] if row else 0

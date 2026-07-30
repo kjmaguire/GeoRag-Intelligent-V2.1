@@ -68,7 +68,6 @@ from georag_dagster.assets.silver_public_geoscience import (
 )
 from georag_dagster.resources import Neo4jResource, PostgresResource
 
-
 # ---------------------------------------------------------------------------
 # SQL — pull canonical rows + jurisdiction/source context in one shot per
 # entity type. ST_X/ST_Y extract lon/lat for the geom property. We pass
@@ -627,10 +626,9 @@ class GoldPublicGeoscienceConfig(Config):
 
 def _fetch_dicts(postgres: PostgresResource, sql: str) -> list[dict]:
     """Run SQL → list[dict] via RealDictCursor."""
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql)
-            return [dict(r) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql)
+        return [dict(r) for r in cur.fetchall()]
 
 
 def _rows_for_cypher(rows: list[dict]) -> list[dict]:

@@ -28,7 +28,7 @@ import os
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 # Schemas that MUST be tenant-isolated. Skipping one here is a major

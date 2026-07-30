@@ -23,7 +23,6 @@ from georag_dagster.assets.silver_public_geoscience import (
     _group_string_to_enum,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------

@@ -32,16 +32,6 @@ PROMPT_REGISTRY: dict[str, PromptEntry] = {
             "canonical pattern. Not used by any agent today."
         ),
     },
-    "rephrase_system": {
-        "module": "app.agent.prompts.rephrase_system",
-        "version": "0.1.0",
-        "description": (
-            "Phase 12 Step 2 migration. Query-rewriting system prompt "
-            "consumed by app.agent.escalation when the keyword "
-            "classifier falls through to empty results. Output "
-            "contract: strict JSON of shape {\"rephrasings\": [...]}."
-        ),
-    },
     "classifier_system": {
         "module": "app.agent.prompts.classifier_system",
         "version": "0.1.0",
@@ -51,17 +41,6 @@ PROMPT_REGISTRY: dict[str, PromptEntry] = {
             "Output contract: strict JSON with seven boolean keys "
             "(spatial / documents / graph / assay / downhole / "
             "targeting / public_geo)."
-        ),
-    },
-    "agent_system": {
-        "module": "app.agent.prompts.agent_system",
-        "version": "0.1.0",
-        "description": (
-            "Phase 14 Step 1 migration. The Pydantic AI agent system "
-            "prompt that drives §04p agentic escalation — twelve tools "
-            "(4 core retrieval + 8 PDF subsystem) plus determinism "
-            "rules for coordinates, numeric claims, and citations. "
-            "Consumer: app.agent.agentic_escalation._build_agent."
         ),
     },
     "structured_answer_format": {

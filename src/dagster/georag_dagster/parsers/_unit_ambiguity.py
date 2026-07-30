@@ -237,10 +237,10 @@ def merge_flags(
 
 
 __all__ = [
+    "BARE_BASE_METAL_DEFAULT_UNIT",
     "NOBLE_METALS",
     "NOBLE_METAL_AMBIGUOUS_UNITS",
-    "BARE_BASE_METAL_DEFAULT_UNIT",
-    "detect_wide_format",
     "detect_long_format_units",
+    "detect_wide_format",
     "merge_flags",
 ]

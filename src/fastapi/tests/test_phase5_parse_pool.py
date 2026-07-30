@@ -18,38 +18,8 @@ from __future__ import annotations
 
 import sys
 import types
-from unittest.mock import MagicMock
 
 import pytest
-
-
-# Same parser-stub injection used by Phase 1/3 tests so importing
-# ingest_pdf doesn't need the real dagster install on host.
-def _ensure_parser_stub_module():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        import os as _os
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        _os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub_module()
-
 
 # ---------------------------------------------------------------------------
 # 1. PARSE_SUBPROCESS_MAX_WORKERS env override (valid int)

@@ -26,15 +26,14 @@ import pytest
 geopandas = pytest.importorskip("geopandas", reason="geopandas not installed")
 shapely = pytest.importorskip("shapely", reason="shapely not installed")
 
-from shapely.geometry import Point  # noqa: E402
+from shapely.geometry import Point
 
-from georag_dagster.parsers.spatial_parser import (  # noqa: E402
+from georag_dagster.parsers.spatial_parser import (
     _detect_qfield_layer,
     _hoist_qfield_properties,
     _list_gpkg_sqlite_tables,
     parse_spatial_file,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

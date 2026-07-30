@@ -1,8 +1,8 @@
-"""Phase G overnight — tests for the Kestra + PagerDuty dispatchers.
+"""Phase G overnight — tests for the surviving PagerDuty dispatcher.
 
-Both dispatchers are HTTP wrappers around external systems. The tests
+The dispatcher is an HTTP wrapper around an external system. The tests
 stub the httpx client with `types.SimpleNamespace` mocks so they run
-without network or a live Kestra / PagerDuty instance.
+without network or a live PagerDuty instance.
 
 Coverage matrix:
 * disabled-by-default (empty config → no-op result)
@@ -14,149 +14,16 @@ Coverage matrix:
 """
 from __future__ import annotations
 
-import json
+import importlib.util
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 import pytest
 
-# ─────────────────────── kestra ──────────────────────────────
 
-
-@pytest.mark.asyncio
-async def test_kestra_disabled_when_url_empty() -> None:
-    from app.services.dispatchers.kestra import dispatch_support_packet_to_kestra
-
-    with patch("app.services.dispatchers.kestra.settings") as m:
-        m.KESTRA_URL = ""
-        out = await dispatch_support_packet_to_kestra({"ticket_id": "t1"})
-    assert out == {
-        "dispatched": False,
-        "reason": "kestra_disabled",
-        "execution_id": None,
-        "url": None,
-        "status_code": None,
-        "error": None,
-    }
-
-
-@pytest.mark.asyncio
-async def test_kestra_happy_path_returns_execution_id() -> None:
-    from app.services.dispatchers.kestra import dispatch_support_packet_to_kestra
-
-    captured: dict = {}
-
-    class _FakeClient:
-        async def post(self, url, data=None, headers=None):
-            captured["url"] = url
-            captured["data"] = data
-            captured["headers"] = headers
-            return SimpleNamespace(
-                status_code=200,
-                json=lambda: {"id": "exec-abc-123", "state": "RUNNING"},
-            )
-
-    with patch("app.services.dispatchers.kestra.settings") as m:
-        m.KESTRA_URL = "https://kestra.example.com"
-        m.KESTRA_FLOW_NAMESPACE = "georag.support"
-        m.KESTRA_FLOW_ID = "support_packet_received"
-        m.KESTRA_FLOW_AUTH_TOKEN = "tok-secret"
-        m.KESTRA_HTTP_TIMEOUT_S = 5.0
-        out = await dispatch_support_packet_to_kestra(
-            {"ticket_id": "t1", "workspace_id": "w1"},
-            http_client=_FakeClient(),
-        )
-
-    assert out["dispatched"] is True
-    assert out["execution_id"] == "exec-abc-123"
-    assert out["status_code"] == 200
-    assert out["reason"] is None
-    assert (
-        captured["url"]
-        == "https://kestra.example.com/api/v1/executions/georag.support/support_packet_received"
-    )
-    assert captured["headers"]["Authorization"] == "Bearer tok-secret"
-    assert captured["headers"]["X-Kestra-Trigger-Source"] == "support_packet"
-    # Bundle is JSON-serialised under the `payload` form field.
-    assert "payload" in captured["data"]
-    decoded = json.loads(captured["data"]["payload"])
-    assert decoded["ticket_id"] == "t1"
-
-
-@pytest.mark.asyncio
-async def test_kestra_no_auth_header_when_token_empty() -> None:
-    from app.services.dispatchers.kestra import dispatch_support_packet_to_kestra
-
-    captured: dict = {}
-
-    class _FakeClient:
-        async def post(self, url, data=None, headers=None):
-            captured["headers"] = headers
-            return SimpleNamespace(status_code=200, json=lambda: {"id": "x"})
-
-    with patch("app.services.dispatchers.kestra.settings") as m:
-        m.KESTRA_URL = "https://kestra.example.com"
-        m.KESTRA_FLOW_NAMESPACE = "ns"
-        m.KESTRA_FLOW_ID = "flow"
-        m.KESTRA_FLOW_AUTH_TOKEN = ""
-        m.KESTRA_HTTP_TIMEOUT_S = 5.0
-        await dispatch_support_packet_to_kestra(
-            {"ticket_id": "t1"}, http_client=_FakeClient()
-        )
-
-    assert "Authorization" not in captured["headers"]
-
-
-@pytest.mark.asyncio
-async def test_kestra_records_upstream_4xx_body() -> None:
-    from app.services.dispatchers.kestra import dispatch_support_packet_to_kestra
-
-    class _FakeClient:
-        async def post(self, url, data=None, headers=None):
-            return SimpleNamespace(
-                status_code=422,
-                text="flow not found",
-                json=lambda: {},
-            )
-
-    with patch("app.services.dispatchers.kestra.settings") as m:
-        m.KESTRA_URL = "https://kestra.example.com"
-        m.KESTRA_FLOW_NAMESPACE = "ns"
-        m.KESTRA_FLOW_ID = "missing"
-        m.KESTRA_FLOW_AUTH_TOKEN = ""
-        m.KESTRA_HTTP_TIMEOUT_S = 5.0
-        out = await dispatch_support_packet_to_kestra(
-            {"ticket_id": "t1"}, http_client=_FakeClient()
-        )
-
-    assert out["dispatched"] is False
-    assert out["reason"] == "kestra_http_error"
-    assert out["status_code"] == 422
-    assert "flow not found" in (out["error"] or "")
-
-
-@pytest.mark.asyncio
-async def test_kestra_records_network_error() -> None:
-    from app.services.dispatchers.kestra import dispatch_support_packet_to_kestra
-
-    class _FakeClient:
-        async def post(self, url, data=None, headers=None):
-            raise httpx.ConnectTimeout("connection timed out")
-
-    with patch("app.services.dispatchers.kestra.settings") as m:
-        m.KESTRA_URL = "https://kestra.example.com"
-        m.KESTRA_FLOW_NAMESPACE = "ns"
-        m.KESTRA_FLOW_ID = "flow"
-        m.KESTRA_FLOW_AUTH_TOKEN = ""
-        m.KESTRA_HTTP_TIMEOUT_S = 5.0
-        out = await dispatch_support_packet_to_kestra(
-            {"ticket_id": "t1"}, http_client=_FakeClient()
-        )
-
-    assert out["dispatched"] is False
-    assert out["reason"] == "kestra_network_error"
-    assert "ConnectTimeout" in (out["error"] or "")
+def test_retired_kestra_dispatcher_is_not_importable() -> None:
+    assert importlib.util.find_spec("app.services.dispatchers.kestra") is None
 
 
 # ─────────────────────── pagerduty ───────────────────────────

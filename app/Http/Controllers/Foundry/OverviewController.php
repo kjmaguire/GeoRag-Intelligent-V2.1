@@ -7,10 +7,10 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\QueryAuditLog;
+use App\Services\StorageService;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -23,6 +23,10 @@ use Inertia\Response;
  */
 class OverviewController extends Controller
 {
+    public function __construct(
+        private readonly StorageService $storage,
+    ) {}
+
     public function show(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
@@ -42,12 +46,6 @@ class OverviewController extends Controller
                 ->where('c.project_id', $project->project_id)
                 ->count();
         } catch (\Throwable $e) { /* schema drift */
-        }
-
-        $hypothesesCount = 0;
-        try {
-            $hypothesesCount = DB::table('silver.hypotheses')->where('project_id', $project->project_id)->count();
-        } catch (\Throwable $e) { /* */
         }
 
         $reportsCount = 0;
@@ -85,9 +83,8 @@ class OverviewController extends Controller
         $nextAction = match (true) {
             $collarCount === 0 => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard'],
             $queries7d === 0 => ['title' => 'Ask your first hypothesis', 'detail' => 'The chat is the main interface — pin sources, rank candidates, save runs.', 'cta' => 'Open Chat', 'href' => "/projects/{$slug}/chat"],
-            $hypothesesCount === 0 => ['title' => 'Explore the reasoning workbench', 'detail' => 'Evidence → Reasoning → Candidates → Evidence Graph.', 'cta' => 'Open Reasoning', 'href' => "/projects/{$slug}/reasoning"],
             $reportsCount === 0 => ['title' => 'Draft a recommendation report', 'detail' => 'Block editor with live citations + version diff.', 'cta' => 'Open Reports', 'href' => "/projects/{$slug}/reports"],
-            default => ['title' => 'Inspect target recommendations', 'detail' => 'See the latest ranked drill targets with SHAP feature weights.', 'cta' => 'Open Targets', 'href' => "/projects/{$slug}/targets"],
+            default => ['title' => 'Review your document corpus', 'detail' => 'Read ingested passages and open their source reports.', 'cta' => 'Open Reader', 'href' => "/projects/{$slug}/corpus"],
         };
 
         return Inertia::render('Foundry/Overview', [
@@ -105,7 +102,7 @@ class OverviewController extends Controller
                 ['label' => 'COLLARS', 'value' => (string) $collarCount, 'sub' => number_format($totalMeters).' m drilled'],
                 ['label' => 'SAMPLES', 'value' => (string) $sampleCount],
                 ['label' => 'LOG CURVES', 'value' => (string) $logCurveCount, 'sub' => 'gamma + grade + lithology'],
-                ['label' => 'HYPOTHESES', 'value' => (string) $hypothesesCount, 'sub' => 'in reasoning workbench'],
+                ['label' => 'REPORTS', 'value' => (string) $reportsCount, 'sub' => 'in document corpus'],
                 ['label' => 'QUERIES · 7D', 'value' => (string) $queries7d, 'sub' => "{$queries24h} in 24h", 'tone' => 'accent'],
                 ['label' => 'AVG CONFIDENCE', 'value' => number_format($avgConf, 2), 'sub' => 'across answered queries'],
             ],
@@ -148,7 +145,7 @@ class OverviewController extends Controller
         $latestMtime = 0;
 
         try {
-            $disk = Storage::disk('s3-bronze');
+            $disk = $this->storage->bronzeReadOnly();
             foreach (['reports', 'tiff'] as $prefix) {
                 foreach ($disk->files("{$prefix}/{$projectId}") as $key) {
                     $filename = basename($key);

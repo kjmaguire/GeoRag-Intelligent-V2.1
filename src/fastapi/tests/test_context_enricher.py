@@ -56,7 +56,7 @@ async def test_enrich_no_pending_passages():
                 mock_settings.VLLM_URL = "http://vllm:8000/v1"
                 mock_settings.VLLM_MODEL = "Qwen/Qwen3-14B-AWQ"
                 result = await enrich_passage_context(
-                    workspace_id="ws-1", project_id=None
+                    workspace_id="11111111-1111-4111-8111-111111111111", project_id=None
                 )
 
     assert result.passages_seen == 0
@@ -90,7 +90,7 @@ async def test_enrich_writes_combined_content():
                 mock_settings.VLLM_URL = "http://vllm:8000/v1"
                 mock_settings.VLLM_MODEL = "Qwen/Qwen3-14B-AWQ"
                 result = await enrich_passage_context(
-                    workspace_id="ws-1",
+                    workspace_id="11111111-1111-4111-8111-111111111111",
                     project_id=None,
                     http_client=mock_http,
                 )

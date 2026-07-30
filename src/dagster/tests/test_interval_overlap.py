@@ -17,7 +17,6 @@ from georag_dagster.checks.interval_overlap import (
     summarize_overlaps_as_dq_flags,
 )
 
-
 # ---------------------------------------------------------------------------
 # OverlapPair shape
 # ---------------------------------------------------------------------------

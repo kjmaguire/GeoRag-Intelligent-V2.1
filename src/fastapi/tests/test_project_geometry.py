@@ -75,7 +75,7 @@ async def test_returns_bbox_column_when_populated():
     wkt = "POLYGON((-105 39, -104 39, -104 40, -105 40, -105 39))"
     pool = _MockPool(_MockConn(bbox_row={"wkt": wkt}))
     result = await get_project_bbox_wkt(
-        pool, workspace_id="ws-1", project_id="p-1",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", project_id="p-1",
     )
     assert result == wkt
 
@@ -85,7 +85,7 @@ async def test_falls_back_to_envelope_when_bbox_column_missing():
     wkt = "POLYGON((-106 38, -103 38, -103 41, -106 41, -106 38))"
     pool = _MockPool(_MockConn(bbox_row=None, envelope_row={"wkt": wkt}))
     result = await get_project_bbox_wkt(
-        pool, workspace_id="ws-1", project_id="p-1",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", project_id="p-1",
     )
     assert result == wkt
 
@@ -103,7 +103,7 @@ async def test_falls_back_to_envelope_when_bbox_column_undefined():
         ),
     )
     result = await get_project_bbox_wkt(
-        pool, workspace_id="ws-1", project_id="p-1",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", project_id="p-1",
     )
     assert result == wkt
 
@@ -117,7 +117,7 @@ async def test_falls_back_to_envelope_when_bbox_column_undefined():
 async def test_returns_none_when_no_bbox_and_no_collars():
     pool = _MockPool(_MockConn(bbox_row=None, envelope_row=None))
     result = await get_project_bbox_wkt(
-        pool, workspace_id="ws-1", project_id="p-1",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", project_id="p-1",
     )
     assert result is None
 
@@ -127,7 +127,7 @@ async def test_returns_none_when_envelope_wkt_is_null():
     """ST_Envelope(ST_Collect(...)) returns NULL when no rows match."""
     pool = _MockPool(_MockConn(bbox_row=None, envelope_row={"wkt": None}))
     result = await get_project_bbox_wkt(
-        pool, workspace_id="ws-1", project_id="p-1",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", project_id="p-1",
     )
     assert result is None
 
@@ -137,7 +137,7 @@ async def test_empty_project_id_returns_none_without_db_hit():
     conn = _MockConn()
     pool = _MockPool(conn)
     result = await get_project_bbox_wkt(
-        pool, workspace_id="ws-1", project_id="",
+        pool, workspace_id="11111111-1111-4111-8111-111111111111", project_id="",
     )
     assert result is None
     # Pool.acquire() should NOT have been entered.
@@ -169,11 +169,11 @@ async def test_sets_workspace_guc_inside_transaction():
     conn = _MockConn(bbox_row=None, envelope_row=None)
     pool = _MockPool(conn)
     await get_project_bbox_wkt(
-        pool, workspace_id="ws-tenant-7", project_id="p-1",
+        pool, workspace_id="77777777-7777-4777-8777-777777777777", project_id="p-1",
     )
     assert any(
         "set_config('app.workspace_id'" in sql
-        and args == ("ws-tenant-7",)
+        and args == ("77777777-7777-4777-8777-777777777777", True)
         for sql, args in conn.execute_calls
     )
 
@@ -198,6 +198,6 @@ async def test_returns_none_when_pool_acquire_fails():
             return _ctx()
 
     result = await get_project_bbox_wkt(
-        _BrokenPool(), workspace_id="ws-1", project_id="p-1",
+        _BrokenPool(), workspace_id="11111111-1111-4111-8111-111111111111", project_id="p-1",
     )
     assert result is None

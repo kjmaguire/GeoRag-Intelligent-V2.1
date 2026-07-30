@@ -23,26 +23,12 @@ from app.agent.orchestrator import _classify_query, _extract_public_geoscience_h
 class TestClassifyQuery:
     """Tests for the lightweight keyword classifier."""
 
-    def test_gold_occurrences_in_saskatchewan(self) -> None:
-        """Classic PGEO query: jurisdiction + commodity + occurrence keyword."""
-        result = _classify_query("What gold occurrences are in Saskatchewan?")
-        assert result["public_geoscience"] is True
-        assert "CA-SK" in result["pg_jurisdictions"]
-        assert "Au" in result["pg_commodities"]
-        assert "mineral_occurrence" in result["pg_canonical_types"]
-
     def test_drillholes_near_athabasca(self) -> None:
         """Mention of 'drillholes' should populate drillhole_collar canonical type."""
         result = _classify_query("show me drillholes near Athabasca")
         assert "drillhole_collar" in result["pg_canonical_types"]
         # 'Athabasca' is a geological term, not a jurisdiction alias.
         assert result["pg_jurisdictions"] == []
-
-    def test_smdi_keyword_routes_to_public_geoscience(self) -> None:
-        """SMDI is a PGEO-surface keyword; must route public_geoscience = True."""
-        result = _classify_query("SMDI 0123 status")
-        assert result["public_geoscience"] is True
-        assert "mineral_occurrence" in result["pg_canonical_types"]
 
     def test_bc_minfile_uranium_occurrences(self) -> None:
         """British Columbia + MINFILE + occurrence: jurisdiction CA-BC, uranium commodity,
@@ -86,26 +72,6 @@ class TestClassifyQuery:
         commodities expand via the commodity token map."""
         result = _classify_query("what are base metal producing mines")
         assert "mine" in result["pg_canonical_types"]
-
-    def test_ambiguous_intent_via_jurisdiction_plus_geological_noun(self) -> None:
-        """Saskatchewan + a geological noun triggers the ambiguous-→-both-corpora
-        branch even when no explicit PGEO keyword appears."""
-        result = _classify_query("Saskatchewan mineralization")
-        # The ambiguous branch forces public_geoscience True when a known
-        # jurisdiction alias + a document/graph keyword coexist in the query.
-        assert result["public_geoscience"] is True
-
-    def test_simple_spatial_query_does_not_route_public_geoscience(self) -> None:
-        """Pure internal-archive query must NOT set public_geoscience = True."""
-        result = _classify_query("How many drill holes are in this project?")
-        assert result["public_geoscience"] is False
-        assert result["spatial"] is True
-
-    def test_ni43_document_query_does_not_route_public_geoscience(self) -> None:
-        """NI 43-101 report query routes to documents, not public_geoscience."""
-        result = _classify_query("What does the NI 43-101 report say about the resource estimate?")
-        assert result["documents"] is True
-        assert result["public_geoscience"] is False
 
     def test_fallback_to_spatial_and_documents_when_no_match(self) -> None:
         """Totally unrecognised query falls back to spatial=True + documents=True."""

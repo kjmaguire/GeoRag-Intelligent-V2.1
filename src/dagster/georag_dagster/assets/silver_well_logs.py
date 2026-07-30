@@ -37,8 +37,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.assets.bronze_well_logs import BRONZE_BUCKET, WELL_LOGS_PREFIX, bronze_well_logs
 from georag_dagster.parsers.las_parser import parse_las_file
-from georag_dagster.resources import S3Resource, PostgresResource
-
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # ---------------------------------------------------------------------------
 # SQL
@@ -231,15 +230,14 @@ def silver_well_logs(
     )
 
     collar_id: str | None = None
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                LOOKUP_COLLAR_SQL,
-                {"hole_id": hole_id, "project_id": project_id_val},
-            )
-            row = cur.fetchone()
-            if row:
-                collar_id = str(row["collar_id"])
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            LOOKUP_COLLAR_SQL,
+            {"hole_id": hole_id, "project_id": project_id_val},
+        )
+        row = cur.fetchone()
+        if row:
+            collar_id = str(row["collar_id"])
 
     if collar_id is None:
         context.log.error(

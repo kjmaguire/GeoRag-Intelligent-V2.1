@@ -42,7 +42,7 @@ import logging
 import re
 import uuid
 from collections import Counter
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
@@ -54,7 +54,6 @@ from georag_dagster.assets.silver_structure_populate import (
 )
 from georag_dagster.parsers._hole_id import canonicalize as canonicalize_hole_id
 from georag_dagster.resources import Neo4jResource, PostgresResource
-
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +406,7 @@ def extract_hole_ids(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
-def majority(values: Iterable[Optional[str]]) -> Optional[str]:
+def majority(values: Iterable[str | None]) -> str | None:
     """Return the most-frequent non-empty string in ``values``, or None."""
     counter: Counter[str] = Counter()
     for v in values:
@@ -1014,11 +1013,11 @@ __all__ = [
     "CONTRACTOR_ALLOWLIST",
     "LAB_ALLOWLIST",
     "SilverEntityNerBackfillConfig",
-    "silver_entity_ner_backfill",
     "extract_contractors",
-    "extract_qps",
-    "extract_labs",
     "extract_hole_ids",
+    "extract_labs",
+    "extract_qps",
     "majority",
     "reanchor_candidates",
+    "silver_entity_ner_backfill",
 ]

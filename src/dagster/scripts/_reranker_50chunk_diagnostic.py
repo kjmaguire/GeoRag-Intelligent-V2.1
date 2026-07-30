@@ -34,7 +34,6 @@ from georag_dagster.clients.vllm_openai import (
     build_default_client,
 )
 
-
 # Diagnostic config — locked decisions from Kyle on 2026-05-29:
 #   • min 200 chars (filter)
 #   • 50 chunks

@@ -65,13 +65,13 @@ class UploadControllerIDORTest extends TestCase
     {
         $this->actingAs($this->userA, 'sanctum');
 
-        $file = UploadedFile::fake()->create('collars.csv', 10, 'text/csv');
+        $file = UploadedFile::fake()->create('report.pdf', 10, 'application/pdf');
 
         $response = $this->postJson(
             "/api/v1/projects/{$this->projectB->project_id}/upload",
             [
                 'file' => $file,
-                'category' => 'collars',
+                'category' => 'reports',
             ],
         );
 
@@ -100,7 +100,7 @@ class UploadControllerIDORTest extends TestCase
             "/api/v1/projects/{$this->projectB->project_id}/upload",
             [
                 'file' => $file,
-                'category' => 'surveys',
+                'category' => 'reports',
             ],
         );
 
@@ -139,7 +139,7 @@ class UploadControllerIDORTest extends TestCase
             "/api/v1/projects/{$this->projectB->project_id}/upload",
             [
                 'file' => $file,
-                'category' => 'collars',
+                'category' => 'reports',
             ],
         );
 
@@ -157,13 +157,13 @@ class UploadControllerIDORTest extends TestCase
         $projectA = Project::factory()->create();
         $this->userA->projects()->attach($projectA->project_id, ['role' => 'owner']);
 
-        $file = UploadedFile::fake()->create('collars.csv', 10, 'text/csv');
+        $file = UploadedFile::fake()->create('report.pdf', 10, 'application/pdf');
 
         $response = $this->postJson(
             "/api/v1/projects/{$projectA->project_id}/upload",
             [
                 'file' => $file,
-                'category' => 'collars',
+                'category' => 'reports',
             ],
         );
 

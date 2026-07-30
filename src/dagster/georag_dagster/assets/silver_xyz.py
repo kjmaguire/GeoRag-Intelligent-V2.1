@@ -22,6 +22,7 @@ Dagster 1.13 Config classes use Pydantic for type introspection and that import
 breaks runtime annotation evaluation.
 """
 
+import tempfile
 import uuid
 
 import psycopg2.extras
@@ -29,9 +30,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.assets.bronze_xyz import BRONZE_BUCKET, XYZ_PREFIX
 from georag_dagster.parsers.xyz_parser import XyzChannel, parse_xyz_file
-from georag_dagster.resources import S3Resource, PostgresResource
-
-import tempfile
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # Maximum points per line in the WKT LineString.  Longer lines are evenly
 # sub-sampled.  This prevents extreme WKT sizes in PostGIS.
@@ -139,7 +138,7 @@ def _reproject_points(
     Returns a list of (lon, lat) tuples.  Points where either coordinate is
     None are returned as (None, None) and should be filtered out by the caller.
     """
-    from pyproj import Transformer  # noqa: PLC0415
+    from pyproj import Transformer
 
     transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
     wgs84: list = []

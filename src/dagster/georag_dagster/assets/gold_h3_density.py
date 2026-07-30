@@ -35,7 +35,6 @@ from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, ass
 
 from georag_dagster.resources import PostgresResource
 
-
 # Default resolution set, applied to every commodity_code that ISN'T
 # in _CRITICAL_MINERAL_CODES below.
 _DEFAULT_RESOLUTIONS: tuple[int, ...] = (5, 7, 9)
@@ -169,13 +168,12 @@ def gold_h3_density_choropleth(
         _CRITICAL_RESOLUTIONS,
         sorted(_CRITICAL_MINERAL_CODES),
     )
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(_AGGREGATE_SQL)
-            conn.commit()
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(_AGGREGATE_SQL)
+        conn.commit()
 
-            cur.execute(_SUMMARY_SQL)
-            summary_rows = cur.fetchall()
+        cur.execute(_SUMMARY_SQL)
+        summary_rows = cur.fetchall()
 
     summary = {
         f"resolution_{res}": {

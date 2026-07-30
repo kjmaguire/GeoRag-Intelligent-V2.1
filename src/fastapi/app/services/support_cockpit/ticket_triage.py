@@ -36,7 +36,7 @@ import asyncpg
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
-from app.db import lookup_and_rescope
+from app.db import BareConnectionError, lookup_and_rescope, scoped_connection
 
 log = logging.getLogger("georag.support_cockpit.ticket_triage")
 
@@ -232,6 +232,10 @@ async def triage_ticket(
                 new_status=new_status,
                 triage_method="synthetic_stub",
             )
+    except BareConnectionError as exc:
+        if "lookup_sql returned no rows" in str(exc):
+            raise ValueError(f"Ticket {ticket_str} not found") from exc
+        raise
     finally:
         if owns_pool and pool is not None:
             await pool.close()
@@ -256,13 +260,16 @@ async def triage_unclassified_tickets(
         )
 
     try:
-        async with pool.acquire() as conn:
-            # Block-3 RLS — bulk triage runs across the Default
-            # Workspace by default.
-            await conn.execute(
-                "SELECT set_config('app.workspace_id', $1, false)",
-                LEGACY_DEFAULT_TENANT_UUID,
-            )
+        # Block-3 RLS — bulk triage runs across the Default Workspace by
+        # default. scoped_connection() pins the SET + query to one explicit
+        # transaction so this is safe even if a caller passes in a shared,
+        # PgBouncer-pooled connection instead of the dedicated one created
+        # above (2026-07-28, #26 — was a bare set_config(..., false)).
+        async with scoped_connection(
+            pool,
+            workspace_id=LEGACY_DEFAULT_TENANT_UUID,
+            site="support_cockpit.triage_unclassified_tickets",
+        ) as conn:
             ids = await conn.fetch(
                 """
                 SELECT ticket_id::text AS ticket_id

@@ -25,7 +25,6 @@ from dagster import (
 
 from georag_dagster.resources import PostgresResource
 
-
 # Default cutoff grades, expressed in the element's value_ppm
 # (so the silver.assays_v2.value_ppm column compares directly).
 DEFAULT_CUTOFFS_PPM = {

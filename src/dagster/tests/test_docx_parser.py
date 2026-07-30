@@ -16,9 +16,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 import docx as python_docx  # python-docx 1.2.0
+import pytest
 
 from georag_dagster.parsers.docx_parser import (
     DocxParseResult,
@@ -26,7 +25,6 @@ from georag_dagster.parsers.docx_parser import (
     parse_doc_or_docx_report,
     parse_docx_report,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: minimal .docx files built with python-docx at test time
@@ -240,28 +238,26 @@ class TestParseDocOrDocxReportLibreofficeTimeout:
         self, stub_doc: Path
     ):
         """subprocess.run raising TimeoutExpired → structured failure, no raise."""
-        with patch("shutil.which", return_value="/usr/bin/soffice"):
-            with patch(
-                "subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="soffice", timeout=120),
-            ):
-                result = parse_doc_or_docx_report(stub_doc)
+        with patch("shutil.which", return_value="/usr/bin/soffice"), patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="soffice", timeout=120),
+        ):
+            result = parse_doc_or_docx_report(stub_doc)
 
         assert isinstance(result, DocxParseResult)
         codes = [w.get("code") for w in result.warnings if isinstance(w, dict)]
         assert "libreoffice_conversion_timeout" in codes
 
     def test_timeout_does_not_raise(self, stub_doc: Path):
-        with patch("shutil.which", return_value="/usr/bin/soffice"):
-            with patch(
-                "subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="soffice", timeout=120),
-            ):
-                try:
-                    parse_doc_or_docx_report(stub_doc)
-                    did_raise = False
-                except Exception:
-                    did_raise = True
+        with patch("shutil.which", return_value="/usr/bin/soffice"), patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="soffice", timeout=120),
+        ):
+            try:
+                parse_doc_or_docx_report(stub_doc)
+                did_raise = False
+            except Exception:
+                did_raise = True
         assert not did_raise
 
 
@@ -270,32 +266,30 @@ class TestParseDocOrDocxReportLibreofficeCalledProcessError:
         self, stub_doc: Path
     ):
         """subprocess.CalledProcessError → structured failure, no raise."""
-        with patch("shutil.which", return_value="/usr/bin/soffice"):
-            with patch(
-                "subprocess.run",
-                side_effect=subprocess.CalledProcessError(
-                    returncode=1, cmd="soffice", stderr=b"conversion error"
-                ),
-            ):
-                result = parse_doc_or_docx_report(stub_doc)
+        with patch("shutil.which", return_value="/usr/bin/soffice"), patch(
+            "subprocess.run",
+            side_effect=subprocess.CalledProcessError(
+                returncode=1, cmd="soffice", stderr=b"conversion error"
+            ),
+        ):
+            result = parse_doc_or_docx_report(stub_doc)
 
         assert isinstance(result, DocxParseResult)
         codes = [w.get("code") for w in result.warnings if isinstance(w, dict)]
         assert "libreoffice_conversion_failed" in codes
 
     def test_called_process_error_does_not_raise(self, stub_doc: Path):
-        with patch("shutil.which", return_value="/usr/bin/soffice"):
-            with patch(
-                "subprocess.run",
-                side_effect=subprocess.CalledProcessError(
-                    returncode=1, cmd="soffice"
-                ),
-            ):
-                try:
-                    parse_doc_or_docx_report(stub_doc)
-                    did_raise = False
-                except Exception:
-                    did_raise = True
+        with patch("shutil.which", return_value="/usr/bin/soffice"), patch(
+            "subprocess.run",
+            side_effect=subprocess.CalledProcessError(
+                returncode=1, cmd="soffice"
+            ),
+        ):
+            try:
+                parse_doc_or_docx_report(stub_doc)
+                did_raise = False
+            except Exception:
+                did_raise = True
         assert not did_raise
 
 

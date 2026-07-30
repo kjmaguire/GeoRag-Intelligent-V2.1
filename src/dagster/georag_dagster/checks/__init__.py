@@ -20,23 +20,8 @@ Dagster 1.13 Config/ConfigurableResource classes use Pydantic for type
 introspection and that import breaks runtime annotation evaluation.
 """
 
-from georag_dagster.checks.silver_checks import (
-    silver_collars_check_collar_count_positive,
-    silver_collars_check_schema_conformance,
-    silver_collars_check_crs_srid_populated,
-    silver_surveys_check_parse_total_positive,
-    silver_lithology_check_parse_total_positive,
-    silver_samples_check_parse_total_positive,
-    silver_well_logs_check_parse_total_positive,
-    silver_spatial_check_geom_not_null,
-    silver_spatial_check_srid_populated,
-    silver_reports_check_parse_total_positive,
-    silver_reports_check_schema_conformance,
-    silver_xlsx_check_parse_total_positive,
-    silver_seismic_check_parse_total_positive,
-    silver_seismic_check_schema_conformance,
-    silver_xyz_check_parse_total_positive,
-    silver_xyz_check_schema_conformance,
+from georag_dagster.checks.drill_traces_checks import (
+    desurvey_trace_count_matches_collar_count_with_surveys,
 )
 from georag_dagster.checks.evidence_checks import (
     document_passages_check_no_duplicate_passage_ids,
@@ -49,12 +34,27 @@ from georag_dagster.checks.index_checks import (
     index_reports_check_embedding_id_present,
     index_reports_check_parser_quality_floor,
 )
-from georag_dagster.checks.drill_traces_checks import (
-    desurvey_trace_count_matches_collar_count_with_surveys,
-)
 from georag_dagster.checks.interval_overlap_checks import (
     silver_lithology_interval_overlap,
     silver_samples_assays_v2_interval_overlap,
+)
+from georag_dagster.checks.silver_checks import (
+    silver_collars_check_collar_count_positive,
+    silver_collars_check_crs_srid_populated,
+    silver_collars_check_schema_conformance,
+    silver_lithology_check_parse_total_positive,
+    silver_reports_check_parse_total_positive,
+    silver_reports_check_schema_conformance,
+    silver_samples_check_parse_total_positive,
+    silver_seismic_check_parse_total_positive,
+    silver_seismic_check_schema_conformance,
+    silver_spatial_check_geom_not_null,
+    silver_spatial_check_srid_populated,
+    silver_surveys_check_parse_total_positive,
+    silver_well_logs_check_parse_total_positive,
+    silver_xlsx_check_parse_total_positive,
+    silver_xyz_check_parse_total_positive,
+    silver_xyz_check_schema_conformance,
 )
 
 __all__ = [

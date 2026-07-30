@@ -50,11 +50,13 @@ class SupportReplayRun extends Model
         'completed_at' => 'datetime',
     ];
 
+    /** @return BelongsTo<SupportTicket, $this> */
     public function ticket(): BelongsTo
     {
         return $this->belongsTo(SupportTicket::class, 'ticket_id', 'ticket_id');
     }
 
+    /** @return BelongsTo<User, $this> */
     public function initiatedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'initiated_by_user_id', 'id');

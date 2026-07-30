@@ -54,7 +54,6 @@ interface ReportViewProps {
     passages: Passage[];
     figures?: Figure[];
     data_quality_flags?: DataQualityFlagsBadgeData | null;
-    is_admin: boolean;
     empty: boolean;
 }
 
@@ -79,7 +78,6 @@ export default function FoundryReportView({
     passages,
     figures = [],
     data_quality_flags = null,
-    is_admin,
     empty,
 }: ReportViewProps) {
     // Phase 5 real-time push — ingest_pdf re-runs / OCR re-runs /
@@ -138,19 +136,6 @@ export default function FoundryReportView({
                             >
                                 ← Back to reports
                             </Link>
-                            {is_admin && (
-                                <Link
-                                    href="/admin/reports"
-                                    className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                    style={{
-                                        color: 'var(--accent)',
-                                        background: 'var(--accent-bg)',
-                                        borderColor: 'var(--accent-dim)',
-                                    }}
-                                >
-                                    Open in admin builder →
-                                </Link>
-                            )}
                         </div>
                     }
                 />
@@ -211,10 +196,9 @@ function FiguresTab({ figures }: { figures: Figure[] }) {
             <EmptyState
                 title="No figures extracted from this report yet."
                 detail={
-                    "Figures are pulled when the §04p ingest pipeline runs with " +
-                    "PDF_PARSER_DOCLING_ENABLED=true. Once it has, each figure's " +
-                    "PNG + caption + page reference will appear here with a 1-hour " +
-                    "presigned download URL."
+                    "The current §04p ingest pipeline preserves text, tables, page " +
+                    "coordinates, and OCR provenance. Automated figure-region " +
+                    "extraction is not currently enabled."
                 }
             />
         );

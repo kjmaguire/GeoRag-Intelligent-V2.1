@@ -1,0 +1,53 @@
+# =============================================================================
+# docker-compose.smoke-isolation.yml — B5 smoke-test isolation overlay
+# =============================================================================
+# The base compose file hardcodes container_name AND a fixed (non-project-
+# scoped) bridge network name ("georag") on every service. Running a second
+# stack under a different -p project name is NOT enough to isolate it: the
+# container names collide outright, and even if they didn't, both stacks
+# would join the same "georag" bridge network and register the same
+# per-service DNS aliases (e.g. "postgresql") — Docker's embedded DNS would
+# then resolve that name ambiguously between the live and smoke Postgres
+# containers. This overlay renames every container and points the network
+# at a distinct name so the smoke stack cannot cross-talk with the live one.
+# =============================================================================
+
+networks:
+  georag:
+    name: georag-trim-smoke-net
+
+services:
+  postgresql:
+    container_name: smoke-postgresql
+  pgbouncer:
+    container_name: smoke-pgbouncer
+  redis:
+    container_name: smoke-redis
+  laravel-octane:
+    container_name: smoke-laravel-octane
+  laravel-horizon:
+    container_name: smoke-laravel-horizon
+  laravel-reverb:
+    container_name: smoke-laravel-reverb
+  fastapi:
+    container_name: smoke-fastapi
+  reranker:
+    container_name: smoke-reranker
+  embedding:
+    container_name: smoke-embedding
+  sparse:
+    container_name: smoke-sparse
+  qdrant:
+    container_name: smoke-qdrant
+  minio:
+    container_name: smoke-minio
+  minio-init:
+    container_name: smoke-minio-init
+  vllm:
+    container_name: smoke-vllm
+  vllm-warmup:
+    container_name: smoke-vllm-warmup
+  hatchet-lite:
+    container_name: smoke-hatchet
+  hatchet-worker:
+    container_name: smoke-hatchet-worker

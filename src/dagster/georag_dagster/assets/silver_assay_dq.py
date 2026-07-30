@@ -56,7 +56,6 @@ from dagster import (
 from georag_dagster.dq_writer import DataQualityFlag, upsert_flags_sync
 from georag_dagster.resources import PostgresResource
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -444,11 +443,10 @@ def silver_assay_dq(
         sql += " WHERE a.workspace_id = %s::uuid"
         params = (config.workspace_id,)
 
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
     context.log.info(
         "silver_assay_dq: scanning %d assay row(s) (workspace_filter=%s)",

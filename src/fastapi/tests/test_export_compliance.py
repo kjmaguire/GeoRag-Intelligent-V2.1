@@ -216,9 +216,7 @@ async def test_g07_missing_user_id_fails() -> None:
 
 @pytest.mark.asyncio
 async def test_g08_r4_without_geologist_signoff_warns_in_graph_pass() -> None:
-    """Graph-internal compliance_check treats sign-off gates as warnings
-    (workflow runs through to geologist_approval). The standalone export
-    agent (tested below) promotes them to blocking."""
+    """Graph-internal compliance treats sign-off gates as warnings."""
     from app.services.report_builder.nodes import compliance_check
 
     state = _happy_state("R4")
@@ -270,29 +268,6 @@ async def test_g09_r5_qp_credential_missing_warns_in_graph_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_g08_promoted_to_blocking_by_standalone_agent() -> None:
-    """Standalone export_compliance agent enforces sign-off gates as blocking.
-    The graph-internal pass would let R4 without sign-off through with a
-    warning; the export-time pass blocks it."""
-    from app.agents.phase7.export_compliance import export_compliance
-
-    payload = _happy_payload()
-    payload["risk_tier"] = "R4"
-    payload["sign_off_complete"] = False
-    payload["sign_offs"] = []
-    inner = getattr(export_compliance, "__wrapped__", export_compliance)
-    result = await inner(
-        ctx=None,
-        workspace_id=WS,
-        export_kind="report_pdf",
-        report_id=REPORT,
-        export_payload=payload,
-    )
-    assert result["passed"] is False
-    assert any("§29.2.08" in f for f in result["blocking_failures"])
-
-
-@pytest.mark.asyncio
 async def test_g10_missing_hash_chain_proof_fails() -> None:
     from app.services.report_builder.nodes import compliance_check
 
@@ -331,79 +306,3 @@ async def test_g10_accepts_evidence_sha256_proof() -> None:
     assert state.compliance_passed is True
     failed = state.compliance_checks[-1]["details"]["failed_gates"]
     assert not any(g.startswith("G10") for g in failed)
-
-
-# ──────────────────── standalone agent (R3) ──────────────────────────
-
-
-def _happy_payload() -> dict:
-    return {
-        "report_type":  "weekly_project_digest",
-        "risk_tier":    "R3",
-        "project_id":   str(PROJ),
-        "requested_by_user_id": 1,
-        "section_drafts": [{
-            "section_id":    "sec-1",
-            "title":         "Summary",
-            "template_slug": "summary",
-            "draft_text":    "Some text.",
-            "claims": [{
-                "claim_id":  "claim-1",
-                "text":      "The project has 63 drillholes.",
-                "validated": True,
-                "evidence": [{
-                    "source_chunk_id": "chunk-1",
-                    "data_visibility": "workspace",
-                }],
-            }],
-        }],
-        "citation_payload": {"total_count": 1, "by_kind": {"DATA": 1}},
-        "evidence_json_uri":     "data:application/json;base64,e30=",
-        "citation_manifest_uri": "data:application/json;base64,e30=",
-        "sign_offs": [],
-        "sign_off_complete": True,
-        "hash_chain_proof": {"anchor_id": str(uuid4()), "prev_hash": "abc"},
-    }
-
-
-@pytest.mark.asyncio
-async def test_export_compliance_agent_returns_structured_result() -> None:
-    """The standalone agent surfaces the same check outcomes as the graph node."""
-    from app.agents.phase7.export_compliance import export_compliance
-
-    # Agents use the @georag_agent decorator which sets __wrapped__ on the
-    # bare async fn. Call the wrapped fn directly to skip the
-    # circuit-breaker / idempotency / metrics scaffold the decorator adds.
-    inner = getattr(export_compliance, "__wrapped__", export_compliance)
-    result = await inner(
-        ctx=None,
-        workspace_id=WS,
-        export_kind="report_pdf",
-        report_id=REPORT,
-        export_payload=_happy_payload(),
-    )
-    assert result["passed"] is True, result
-    assert result["blocking_failures"] == []
-    # 10 §29.2 items reported even when all passed
-    label_set = {c["name"] for c in result["checks"]}
-    assert any("§29.2.01" in lbl for lbl in label_set)
-    assert any("§29.2.10" in lbl for lbl in label_set)
-
-
-@pytest.mark.asyncio
-async def test_export_compliance_agent_blocks_on_missing_hash_chain() -> None:
-    from app.agents.phase7.export_compliance import export_compliance
-
-    payload = _happy_payload()
-    payload.pop("hash_chain_proof")
-
-    inner = getattr(export_compliance, "__wrapped__", export_compliance)
-    result = await inner(
-        ctx=None,
-        workspace_id=WS,
-        export_kind="report_pdf",
-        report_id=REPORT,
-        export_payload=payload,
-    )
-    assert result["passed"] is False
-    assert any("§29.2.10" in f for f in result["blocking_failures"])

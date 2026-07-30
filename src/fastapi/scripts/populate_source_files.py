@@ -1,4 +1,4 @@
-"""Populate bronze.source_files with sha256 hashes of all ingested MinIO objects.
+"""Populate bronze.source_files with sha256 hashes of all ingested bronze-bucket objects.
 
 This script scans the bronze bucket, computes sha256 for each object,
 and upserts into bronze.source_files. Idempotent — re-running updates
@@ -14,7 +14,8 @@ import logging
 import os
 
 import asyncpg
-from minio import Minio
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.sync_client import S3CompatibleStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,11 +23,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
-
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "georag-admin")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "georag_minio_dev")
-BUCKET = os.environ.get("MINIO_BUCKET", "bronze")
 
 PG_DSN = os.environ.get(
     "DATABASE_URL",
@@ -53,19 +49,21 @@ def _mime_for(path: str) -> str:
 
 
 async def main() -> None:
-    logger.info("Connecting to MinIO at %s bucket=%s", MINIO_ENDPOINT, BUCKET)
-    client = Minio(MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, secure=False)
+    config = StorageConfig.from_env()
+    store = S3CompatibleStorage(config)
+    bucket_name = config.bucket_name(Bucket.BRONZE)
+    logger.info("Connecting to object storage at %s bucket=%s", config.endpoint_url, bucket_name)
 
-    if not client.bucket_exists(BUCKET):
-        logger.error("Bucket %s does not exist", BUCKET)
+    if not store.bucket_exists(Bucket.BRONZE):
+        logger.error("Bucket %s does not exist", bucket_name)
         return
 
     logger.info("Connecting to PostgreSQL…")
     pg = await asyncpg.connect(PG_DSN)
 
     try:
-        objects = list(client.list_objects(BUCKET, recursive=True))
-        logger.info("Found %d objects in %s", len(objects), BUCKET)
+        keys = [key for key in store.list_keys(Bucket.BRONZE) if not key.endswith("/")]
+        logger.info("Found %d objects in %s", len(keys), bucket_name)
 
         upsert_sql = """
             INSERT INTO bronze.source_files (file_path, bucket, sha256, file_size, mime_type)
@@ -78,31 +76,17 @@ async def main() -> None:
         """
 
         count = 0
-        for obj in objects:
-            # Skip directories
-            if obj.is_dir or obj.object_name.endswith("/"):
-                continue
+        for key in keys:
+            data = store.get_bytes(Bucket.BRONZE, key)
+            sha = hashlib.sha256(data).hexdigest()
+            size = len(data)
+            mime = _mime_for(key)
 
-            # Download and hash
-            response = client.get_object(BUCKET, obj.object_name)
-            hasher = hashlib.sha256()
-            size = 0
-            try:
-                for chunk in response.stream(8192):
-                    hasher.update(chunk)
-                    size += len(chunk)
-            finally:
-                response.close()
-                response.release_conn()
-
-            sha = hasher.hexdigest()
-            mime = _mime_for(obj.object_name)
-
-            await pg.execute(upsert_sql, obj.object_name, BUCKET, sha, size, mime)
+            await pg.execute(upsert_sql, key, bucket_name, sha, size, mime)
             count += 1
             logger.info(
                 "  %s  %d bytes  sha256=%s…",
-                obj.object_name,
+                key,
                 size,
                 sha[:16],
             )

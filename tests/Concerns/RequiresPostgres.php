@@ -29,25 +29,19 @@ trait RequiresPostgres
 {
     protected function setUp(): void
     {
-        // Skip BEFORE parent::setUp() so RefreshDatabase doesn't run its
-        // migrate:fresh against SQLite (where Phase 0's raw-SQL CREATE
-        // TABLE statements are no-op'd and any subsequent reference
-        // explodes). Read the connection from $_SERVER directly because
-        // the Laravel app hasn't booted yet at this point — phpunit.xml's
-        // <env force="true"> populates $_SERVER via tests/bootstrap.php.
-        $conn = $_SERVER['DB_CONNECTION']
-            ?? $_ENV['DB_CONNECTION']
-            ?? getenv('DB_CONNECTION')
-            ?: 'sqlite';
+        // The Docker service exports DB_CONNECTION=pgsql, while phpunit.xml
+        // force-overrides Laravel's test connection to SQLite. Reading the
+        // process environment before the application boots therefore sees
+        // the wrong value. Boot first and use Laravel's resolved connection;
+        // this is the only source that reflects PHPUnit's effective config.
+        parent::setUp();
 
-        if ($conn !== 'pgsql') {
+        if (config('database.default') !== 'pgsql') {
             $this->markTestSkipped(
                 'Requires the postgres test connection. Run with `-c phpunit.pgsql.xml`.',
             );
 
             return;
         }
-
-        parent::setUp();
     }
 }

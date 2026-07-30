@@ -162,24 +162,47 @@ def test_model_upgrade_watch_includes_compatibility() -> None:
 
 
 def test_tenant_isolation_emits_set_local_violations() -> None:
-    """All-nighter fix #4 — tenant_isolation_auditor now scans
-    pg_proc.prosrc for SET (non-LOCAL) GUC writes AND escalates to
-    Kestra on any violation."""
+    """All-nighter fix #4 — tenant_isolation_auditor scans pg_proc.prosrc
+    for SET (non-LOCAL) GUC writes AND escalates on any violation.
+
+    Escalation target changed 2026-07-25: the direct Kestra POST (gated on
+    an unset KESTRA_URL, so it never fired) is now an outbox enqueue.
+    """
     import inspect
 
     from app.agents.phase0 import tenant_isolation_auditor as m
     src = inspect.getsource(m)
     assert "set_local_violations" in src
     assert "set\\\\s+local" in src or "set\\s+local" in src
-    assert "kestra_escalated" in src
+    assert "escalation_enqueued" in src
+    # Regression guard — the retired direct-dispatch path must not return.
+    #
+    # Guards the CODE, not the word. The comment above the outbox enqueue
+    # deliberately records what KESTRA_URL used to gate and why the alarm
+    # was silent for months; that history earns its place. What must never
+    # come back is reading the variable at runtime, which requires the name
+    # as a quoted string literal (os.environ.get("KESTRA_URL")) or an
+    # attribute on settings. Prose mentions carry neither.
+    assert '"KESTRA_URL"' not in src
+    assert "'KESTRA_URL'" not in src
+    assert "settings.KESTRA_URL" not in src
+    assert "import httpx" not in src, (
+        "tenant_isolation_auditor should not need an HTTP client — escalation "
+        "goes through the outbox, not a direct POST."
+    )
 
 
 @pytest.mark.asyncio
-async def test_support_packet_includes_kestra_keys(
+async def test_support_packet_includes_dispatch_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """All-nighter fix #5 — support_packet returns kestra_dispatched +
-    kestra_error so the bundle handoff is auditable."""
+    """All-nighter fix #5 — support_packet reports its on-call handoff so
+    the bundle dispatch is auditable.
+
+    Key names changed 2026-07-25 (Kestra retirement): kestra_dispatched /
+    kestra_error became dispatch_enqueued / dispatch_error, now backed by
+    an outbox row rather than a fire-and-forget POST.
+    """
     _install_wrapper_stubs(monkeypatch)
     # We don't run the agent end-to-end here (it does tar + S3 upload).
     # Just confirm the module-level constant set and that the symbol is
@@ -188,6 +211,17 @@ async def test_support_packet_includes_kestra_keys(
     assert callable(getattr(m, "support_packet_assemble", None)) or callable(
         getattr(m, "support_packet_run", None)
     )
+
+    import inspect
+    src = inspect.getsource(m)
+    assert "dispatch_enqueued" in src
+    assert "outbox.pending_propagations" in src
+    # Regression guard — the retired direct-dispatch path must not return.
+    # Code, not prose: see the matching guard in
+    # test_tenant_isolation_emits_set_local_violations for why.
+    assert '"KESTRA_URL"' not in src
+    assert "'KESTRA_URL'" not in src
+    assert "settings.KESTRA_URL" not in src
 
 
 @pytest.mark.asyncio

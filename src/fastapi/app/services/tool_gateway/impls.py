@@ -212,36 +212,6 @@ async def _validate_schema(inputs: dict[str, Any]) -> dict[str, Any]:
     return {"vendor_column": col, "suggestions": suggestions}
 
 
-async def _run_evaluation(inputs: dict[str, Any]) -> dict[str, Any]:
-    """Fire the eval harness against a question_set.
-    Inputs: {question_set: str, evaluator_kind: str}
-    """
-    from uuid import uuid4
-
-    from app.hatchet_workflows.evaluate_workspace import (
-        EvaluateWorkspaceInput,
-    )
-    from app.hatchet_workflows.evaluate_workspace import (
-        run as evaluate_workspace_task,
-    )
-
-    qs = inputs.get("question_set", "refusal_correctness")
-    evaluator = inputs.get("evaluator_kind", "aio_mock")
-    inp = EvaluateWorkspaceInput(
-        eval_request_id=uuid4(),
-        evaluator_kind=evaluator,
-        question_set_filter=qs,
-        blocks_promotion=False,
-    )
-    out = await evaluate_workspace_task.aio_mock_run(inp)
-    return {
-        "run_id": str(out.run_id),
-        "pass_count": out.pass_count,
-        "fail_count": out.fail_count,
-        "question_count": out.question_count,
-    }
-
-
 # ─── Boot — call once at FastAPI startup ───────────────────────────
 def register_all_impls() -> None:
     """Register every available impl. Idempotent."""
@@ -251,8 +221,7 @@ def register_all_impls() -> None:
     register_tool("retrieve_qdrant",        _retrieve_qdrant)
     register_tool("query_public_geo",       _query_public_geo)
     register_tool("validate_schema",        _validate_schema)
-    register_tool("run_evaluation",         _run_evaluation)
-    log.info("tool_gateway: registered 7 R0/R1 impls")
+    log.info("tool_gateway: registered 6 R0/R1 impls")
 
 
 __all__ = ["register_all_impls"]

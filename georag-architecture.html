@@ -293,7 +293,7 @@ GRANT EXECUTE ON FUNCTION silver.collars_by_project, silver.traces_by_project,
 </div>
 
 <div class="section"><div class="section-label">04p &mdash; PDF Stack (ADR-0002)</div>
-<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">In-process PDF ingestion stack &mdash; <strong>canonical document parser</strong>. Lives in <code>src/dagster/georag_dagster/parsers/pdf_report.py</code> and is invoked from Hatchet's <code>ingest_pdf</code> workflow.</p>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">In-process PDF ingestion stack &mdash; <strong>canonical document parser</strong>. Lives in <code>src/fastapi/app/services/ingest/pdf_report.py</code> and is invoked from Hatchet's <code>ingest_pdf</code> workflow.</p>
 
 <p style="font-size:13px;font-weight:600;margin:8px 0 6px">Component inventory</p>
 <table class="flow-table"><thead><tr><th style="width:200px">Component</th><th>Role</th></tr></thead><tbody>
@@ -301,31 +301,29 @@ GRANT EXECUTE ON FUNCTION silver.collars_by_project, silver.traces_by_project,
 <tr><td>PyMuPDF (fitz)</td><td class="responsibilities">Primary text + page-bbox extractor (5&ndash;10&times; faster than pdfplumber for text).</td></tr>
 <tr><td>pdfplumber</td><td class="responsibilities">Parallel multiprocessing pool (4 workers default). Column-aware text extraction, dual-pass table probe (lines + text strategies, every page, SHA1-deduped).</td></tr>
 <tr><td>pypdfium2</td><td class="responsibilities">Page rendering for figure extraction + OCR rasterisation.</td></tr>
-<tr><td>Docling (opt-in primary)</td><td class="responsibilities">Layout intelligence + TableFormer. Runs on GPU via <code>onnxruntime-gpu</code> + <code>AcceleratorDevice.CUDA</code> when <code>PDF_PARSER_DOCLING_ENABLED=true</code>.</td></tr>
-<tr><td>Tesseract (per-page OCR)</td><td class="responsibilities"><code>psm=3</code> multi-column. Triggered for any page &lt; 80 chars after the primary parser; tracked via <code>ocr_confidence</code> + <code>ocr_status</code> on each passage.</td></tr>
-<tr><td>PaddleOCR PP-OCRv5 / PP-StructureV3</td><td class="responsibilities">Whole-doc OCR safety net (final fallback when no other parser yields &ge; 200 chars).</td></tr>
-<tr><td>OCR quality LangGraph</td><td class="responsibilities">Confidence-driven retry agent (<code>ocr_quality_check</code> Hatchet workflow) escalates low-confidence pages through a re-OCR cluster.</td></tr>
+<tr><td>Azure Document Intelligence</td><td class="responsibilities">Primary OCR for scanned pages. Oversized rasters are losslessly tiled below Azure's 10,000 px dimension cap; polygons are remapped and seam duplicates removed.</td></tr>
+<tr><td>Tesseract (last-resort OCR)</td><td class="responsibilities"><code>psm=3</code> multi-column fallback when Azure is unavailable or yields empty output. Word-level confidence and page provenance are retained.</td></tr>
+<tr><td>OCR quality routing</td><td class="responsibilities">Mean/median confidence, low-confidence word ratio, coverage, empty output, seam duplicates, gibberish, and repeated characters route pages into catastrophic, mandatory-review, spot-check, or auto-accept tiers. Review-required pages enter <code>silver.review_queue</code>.</td></tr>
 </tbody></table>
 
 <p style="font-size:13px;font-weight:600;margin:14px 0 6px">Dispatch order inside <code>parse_pdf_report</code></p>
 <pre>parse_pdf_report(path)
-&#9500;&#9472; Docling (if PDF_PARSER_DOCLING_ENABLED, GPU)
-&#9474;    &rarr; text + tables-with-structure + figure regions
-&#9474;    &rarr; &lt;200 chars or exception &rarr; fall through
 &#9500;&#9472; PyMuPDF / fitz (default primary)
-&#9474;    &rarr; per-page OCR on pages &lt; 80 chars (psm=3)
+&#9474;    &rarr; per-page Azure OCR on pages &lt; 80 chars
+&#9474;    &rarr; oversized raster &rarr; lossless tiles &rarr; polygon remap + seam dedupe
+&#9474;    &rarr; Azure unavailable/empty &rarr; Tesseract psm=3 fallback
 &#9474;    &rarr; &lt;200 chars total or exception &rarr; fall through
 &#9500;&#9472; pdfplumber (parallel pool, 4 workers)
-&#9474;    &rarr; per-page OCR on short pages, language detection per page
+&#9474;    &rarr; shared per-page OCR path on short pages
 &#9474;    &rarr; column-aware text extraction
-&#9492;&#9472; Whole-doc OCR (final safety net, all pages)
+&#9492;&#9472; Shared page OCR safety net (all pages)
 
 # After text extraction (regardless of parser):
 &middot; _extract_all_tables_as_sections(path)  &mdash; dual-pass tables, SHA1-deduped
 &middot; _split_into_sections(full_text, per_page_text)  &mdash; split at NI 43-101 headings;
   sliding-window fallback; sub-chunk &gt; 1500 chars with 200 overlap
 &middot; page_first / page_last + bbox tracked per passage
-&middot; ocr_quality_check sub-flow on low-confidence pages</pre>
+&middot; multi-signal OCR assessment + silver.review_queue routing</pre>
 
 <p style="font-size:13px;font-weight:600;margin:14px 0 6px">Silver Review queue</p>
 <p style="font-size:13px;margin:0 0 12px">Per-page review surface backed by <code>silver.review_queue</code>: shows the evidence (rendered page image), parser identity, confidence, extracted text. Decisions land in <code>silver.review_queue</code> + feed the XGBoost OCR-quality classifier training set.</p>
@@ -536,7 +534,7 @@ map.addLayer({
 </div>
 
 <div class="section"><div class="section-label">10 &mdash; Document Ingestion Flow (Hatchet <code>ingest_pdf</code>)</div>
-<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">PDF ingest is a 5-task Hatchet workflow. Lives in <code>src/fastapi/app/hatchet_workflows/ingest_pdf.py</code>; parser lives in <code>src/dagster/georag_dagster/parsers/pdf_report.py</code>.</p>
+<p style="font-size:14px;color:var(--muted);margin:4px 0 12px">PDF ingest is a 5-task Hatchet workflow. Lives in <code>src/fastapi/app/hatchet_workflows/ingest_pdf.py</code>; parser lives in <code>src/fastapi/app/services/ingest/pdf_report.py</code>.</p>
 
 <pre>Browser upload
    &darr; multipart POST /api/v1/projects/{id}/upload  (Laravel, 2 GB cap)
@@ -554,7 +552,7 @@ ingest_pdf workflow (5 tasks):
 <table class="flow-table"><thead><tr><th>Task</th><th>execution_timeout</th><th>retries</th><th>What it does</th></tr></thead><tbody>
 <tr><td><code>preflight</code></td><td>60 s</td><td>2</td><td class="responsibilities">sha256 + magic-byte + pikepdf open check + page count. Encrypted check permissive (only rejects password-protected).</td></tr>
 <tr><td><code>parse</code></td><td>60 min</td><td>1</td><td class="responsibilities">Runs <code>parse_pdf_report</code> in a <strong>subprocess pool</strong> (own GIL &rarr; heartbeat safety). Returns ParseOut dict.</td></tr>
-<tr><td><code>persist</code></td><td>15 min</td><td>2</td><td class="responsibilities">Atomic single transaction: <code>silver.reports</code> + <code>silver.document_passages</code> + figures (when docling on). Inline embed dispatch.</td></tr>
+<tr><td><code>persist</code></td><td>15 min</td><td>2</td><td class="responsibilities">Atomic single transaction: <code>silver.reports</code> + <code>silver.document_passages</code> + OCR review rows. Inline embed dispatch.</td></tr>
 <tr><td><code>embed_verify</code></td><td>2 min</td><td>1</td><td class="responsibilities">Polls <code>silver.document_passages</code> for unembedded count for 90 s; re-dispatches <code>embed_pending_passages</code> if anything still pending. Closes the race where Hatchet retries can lose the inline embed dispatch.</td></tr>
 <tr><td><code>p04p_dual_write</code></td><td>45 min</td><td>1</td><td class="responsibilities">Populates layout-aware silver tables via <code>app.ocr._ingest_helper.run_p04p_for_ingest</code>. Reads PDF body from local cache (no S3 re-download).</td></tr>
 </tbody></table>

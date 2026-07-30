@@ -19,12 +19,6 @@ def test_workflow_registered() -> None:
     assert bm.bc_minfile_pull.name == "bc_minfile_pull"
 
 
-def test_workflow_in_ai_pool() -> None:
-    from app.hatchet_workflows.worker import POOLS
-    names = {w.name for w in POOLS["ai"]}
-    assert "bc_minfile_pull" in names
-
-
 # ---------------------------------------------------------------------------
 # Input model contracts
 # ---------------------------------------------------------------------------
@@ -119,12 +113,6 @@ def test_nrcan_workflow_registered() -> None:
     assert ng.nrcan_geo_pull.name == "nrcan_geo_pull"
 
 
-def test_nrcan_workflow_in_ai_pool() -> None:
-    from app.hatchet_workflows.worker import POOLS
-    names = {w.name for w in POOLS["ai"]}
-    assert "nrcan_geo_pull" in names
-
-
 def test_nrcan_input_defaults_to_both_federal_sources() -> None:
     inp = ng.NrcanGeoPullInput()
     assert "nrcan_canadian_mines" in inp.source_ids
@@ -148,14 +136,14 @@ def test_canonical_table_for_known_suffixes() -> None:
     """The source_id → canonical_table mapping covers every
     canonical pg_* table currently in scope."""
     cases = [
-        ("bc_minfile_mineral_occurrence",  "public_geoscience.pg_mineral_occurrence"),
-        ("bc_minfile_drillhole_collar",    "public_geoscience.pg_drillhole_collar"),
-        ("sk_mineral_occurrence",          "public_geoscience.pg_mineral_occurrence"),
-        ("sk_drillhole_collar",            "public_geoscience.pg_drillhole_collar"),
-        ("nrcan_canadian_mines",           "public_geoscience.pg_mine"),
-        ("nrcan_geo_bedrock_geology",      "public_geoscience.pg_bedrock_geology"),
-        ("bc_aris_assessment_survey",      "public_geoscience.pg_assessment_survey"),
-        ("sk_assessment_survey",           "public_geoscience.pg_assessment_survey"),
+        ("bc_minfile_mineral_occurrence",  "public_geo.pg_mineral_occurrence"),
+        ("bc_minfile_drillhole_collar",    "public_geo.pg_drillhole_collar"),
+        ("sk_mineral_occurrence",          "public_geo.pg_mineral_occurrence"),
+        ("sk_drillhole_collar",            "public_geo.pg_drillhole_collar"),
+        ("nrcan_canadian_mines",           "public_geo.pg_mine"),
+        ("nrcan_geo_bedrock_geology",      "public_geo.pg_bedrock_geology"),
+        ("bc_aris_assessment_survey",      "public_geo.pg_assessment_survey"),
+        ("sk_assessment_survey",           "public_geo.pg_assessment_survey"),
     ]
     for source_id, expected in cases:
         got = bm._canonical_table_for(source_id)

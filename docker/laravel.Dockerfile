@@ -21,11 +21,14 @@
 # Installs all build-time dependencies, Composer packages, and Node assets.
 # Nothing from this stage bloats the final image except the outputs we COPY.
 # -----------------------------------------------------------------------------
-# 2026-06-03 sweep: digest captured from `docker pull php:8.5-cli`.
-# Re-pin via the same after a PHP 8.5.x patch. Both builder + runtime
-# stages MUST use the same digest so the PECL extensions compiled in
-# builder match the runtime PHP ABI byte-for-byte.
-FROM php:8.5-cli@sha256:1954ff5cd21f222c992b79d25e403b2600cec829678d5bb7076883f3a44c0d6e AS builder
+# 2026-07-30 re-pin: the 2026-06-03 digest (Debian 13.5) carried a
+# CRITICAL CVE (CVE-2026-53215, linux-libc-dev) that Trivy's CI gate
+# started failing the build on. Re-captured via `docker pull
+# php:8.5-cli` (Debian 13.6, same PHP 8.5 build). Re-pin the same way
+# after a future PHP 8.5.x patch. Both builder + runtime stages MUST
+# use the same digest so the PECL extensions compiled in builder match
+# the runtime PHP ABI byte-for-byte.
+FROM php:8.5-cli@sha256:58b996c35ce0511cdbaa1fc0476a194fd0221097d721ff7df5af0b6f1a3d0202 AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -125,7 +128,7 @@ RUN npm run build
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli@sha256:1954ff5cd21f222c992b79d25e403b2600cec829678d5bb7076883f3a44c0d6e AS runtime
+FROM php:8.5-cli@sha256:58b996c35ce0511cdbaa1fc0476a194fd0221097d721ff7df5af0b6f1a3d0202 AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"

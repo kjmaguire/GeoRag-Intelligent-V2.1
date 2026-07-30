@@ -27,7 +27,6 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -89,7 +88,7 @@ def stream_minio_to_temp(
                 h.update(chunk)
                 total += len(chunk)
     except Exception:
-        try:  # noqa: SIM105
+        try:
             os.unlink(tmp_path)
         except OSError:
             pass
@@ -102,8 +101,8 @@ def resolve_bronze_source(
     minio,
     bucket: str,
     prefix: str,
-    object_key: Optional[str],
-    local_path: Optional[str],
+    object_key: str | None,
+    local_path: str | None,
     upload_content_type: str,
 ) -> BronzeSource:
     """Resolve a bronze input from EITHER ``object_key`` or ``local_path``.

@@ -94,21 +94,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Martin Vector Tile Server
-    |--------------------------------------------------------------------------
-    |
-    | Martin serves MVT tiles from PostGIS views. Laravel proxies /tiles/...
-    | requests so tile fetches go through Sanctum auth. `internal_url` is
-    | the in-cluster address; clients never hit Martin directly.
-    |
-    */
-    'martin' => [
-        'internal_url' => env('MARTIN_INTERNAL_URL', 'http://martin:3000'),
-        'request_timeout' => (int) env('MARTIN_REQUEST_TIMEOUT', 15),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | Tempo (distributed tracing backend)
     |--------------------------------------------------------------------------
     |
@@ -126,18 +111,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Kestra (integration-edge orchestrator)
+    | Kestra — REMOVED 2026-07-28 (A7)
     |--------------------------------------------------------------------------
     |
-    | Phase 4 Step 2 — Sanctum-fronted reverse proxy needs the Kestra basic
-    | auth credentials to inject `Authorization: Basic …` on behalf of the
-    | authenticated operator. KestraSsoController reads these.
+    | KestraSsoController (which read this block) and the compose kestra +
+    | caddy services are gone. Kestra was never deployed — KESTRA_URL was
+    | unset in every environment. See database/raw/phase3/95-kestra-sunset.sql.
     |
     */
-    'kestra' => [
-        'basic_auth_user' => env('KESTRA_BASIC_AUTH_USER', 'admin@georag.local'),
-        'basic_auth_password' => env('KESTRA_BASIC_AUTH_PASSWORD'),
-    ],
 
     /*
     |--------------------------------------------------------------------------

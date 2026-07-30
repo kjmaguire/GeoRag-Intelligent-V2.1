@@ -11,6 +11,8 @@ from app.services.publicgeo.sk_drillhole_adapter import (
     sync_sk_drillhole_collars,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

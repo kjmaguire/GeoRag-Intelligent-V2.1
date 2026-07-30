@@ -21,8 +21,8 @@ from io import StringIO
 import pytest
 
 from georag_dagster.parsers.csv_sample import (
-    _parse_assay_value,
     _detect_qaqc_type,
+    _parse_assay_value,
     parse_csv_samples,
 )
 

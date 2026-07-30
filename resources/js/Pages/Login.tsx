@@ -12,7 +12,7 @@ import type { PageProps } from '@/types';
  * dashboard topbar (resources/js/Layouts/FoundryShell.tsx).
  *
  * Auth wiring unchanged: Sanctum CSRF cookie → /api/v1/auth/spa-login →
- * router.visit(return_to ?? '/chat').
+ * router.visit(return_to ?? '/projects').
  */
 
 interface LoginApiResponse {
@@ -65,7 +65,7 @@ export default function Login(): JSX.Element {
 
             // Honour ?return_to=... from bootstrap.ts 401 handler. Same-site
             // absolute paths only — guard against open-redirect.
-            let target = '/chat';
+            let target = '/projects';
             try {
                 const params = new URLSearchParams(window.location.search);
                 const returnTo = params.get('return_to');

@@ -17,7 +17,6 @@ Pool storage on app.state
 -------------------------
   app.state.pg_pool          — asyncpg.Pool (PostGIS via PgBouncer)
   app.state.qdrant_client    — AsyncQdrantClient
-  app.state.neo4j_driver     — neo4j.AsyncDriver
   app.state.redis_client     — redis.asyncio.Redis
   app.state.anthropic_client — anthropic.AsyncAnthropic | None (B2 — pooled
                                to avoid TLS handshake + pool churn per request;
@@ -38,12 +37,12 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
 import sentry_sdk
 from fastapi import FastAPI, HTTPException
-from neo4j import AsyncGraphDatabase
 from qdrant_client import AsyncQdrantClient
 from starlette.responses import Response  # for /metrics return-type resolution
 
@@ -86,7 +85,7 @@ if settings.SENTRY_DSN:
     )
 from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
 from app.routers import (
-    admin_tier234 as tier234_router,  # Phase H4 Tier 2/3/4 — recommendations + QP + members + settings + AP + audit + maps
+    admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
 )
 from app.routers import answer_runs as answer_runs_router
 from app.routers import (
@@ -95,7 +94,6 @@ from app.routers import (
 from app.routers import audit_findings as audit_findings_router  # Phase H4 §11.5/11.10/6.4 UI
 from app.routers import citation_feedback as citation_feedback_router  # Phase H4 §12.8 UI
 from app.routers import completeness as completeness_router  # CC-03 Item 2 — completeness audit
-from app.routers import conflicts as conflicts_router  # Phase H4 §7.4 UI
 from app.routers import coverage as coverage_router  # CC-03 Item 5 — coverage density heatmap
 from app.routers import evidence as evidence_router
 from app.routers import exports as exports_router
@@ -104,17 +102,12 @@ from app.routers import maps as maps_router  # CC-01 Item 3 (stub) — map inges
 from app.routers import metrics_ingestion_events as metrics_ingestion_events_router
 from app.routers import ml_training as ml_training_router  # Phase H4 §12 UI
 from app.routers import mv_refresh_trigger as mv_refresh_trigger_router
-from app.routers import ocr_render as ocr_render_router
 from app.routers import outlier_assist as outlier_assist_router
 from app.routers import pdf as pdf_router
 from app.routers import phase0_ops as phase0_ops_router
 from app.routers import projects, queries
-from app.routers import re_ocr_trigger as re_ocr_trigger_router
-from app.routers import report_builder as report_builder_router  # Phase H4 §7 UI
 from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
-from app.routers import support_agents as support_agents_router  # Phase G.5 follow-up
-from app.routers import target_recommendation_cockpit as trg_cockpit_router  # Phase H4 §8 UI
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 
@@ -124,6 +117,25 @@ from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
 configure_json_logging(level=settings.LOG_LEVEL.upper())
 
 logger = logging.getLogger(__name__)
+
+
+def qdrant_dense_dim(vectors_config: Any) -> int | None:
+    """Read the canonical dense vector size out of a Qdrant vectors config.
+
+    Qdrant's ``collection.config.params.vectors`` has two shapes: a bare
+    ``VectorParams`` when the collection has a single unnamed dense vector,
+    and a ``dict`` keyed by slot name once named vectors exist. georag_chunks
+    is the dict form (dense in the unnamed ``""`` slot alongside the named
+    sparse slot), but both are handled so this stays correct if the schema
+    is ever simplified.
+
+    Returns ``None`` when the dense size can't be determined — callers treat
+    that as "unknown, don't act" rather than as a mismatch.
+    """
+    if isinstance(vectors_config, dict):
+        dense = vectors_config.get("")
+        return getattr(dense, "size", None) if dense is not None else None
+    return getattr(vectors_config, "size", None)
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +163,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     in-flight requests can complete before their pools disappear.
     """
     # -------------------------------------------------------------------------
-    # 0. Logfire / OpenTelemetry — instrument BEFORE other resources so spans
+    # 0. Logfire — instrument BEFORE other resources so spans
     #    wrap pool creation, the embedding-model warmup, and the first request.
     #    See settings.LOGFIRE_* and the SECURITY.md "Observability" section
     #    for the rollout recipe.
@@ -160,8 +172,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             import logfire  # noqa: PLC0415
 
-            # Decide where spans go. Order matters: hosted backend wins,
-            # then OTLP collector, then in-process-only (debug mode).
+            # Send to the hosted backend when configured; otherwise keep
+            # spans in-process for local debugging.
             if settings.LOGFIRE_TOKEN:
                 logfire.configure(
                     token=settings.LOGFIRE_TOKEN,
@@ -174,26 +186,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     settings.LOGFIRE_SERVICE_NAME,
                     settings.LOGFIRE_ENVIRONMENT,
                 )
-            elif settings.LOGFIRE_OTEL_ENDPOINT:
-                # Logfire defers to OTel exporter env vars when
-                # send_to_logfire=False — set them here so the operator
-                # only has to set LOGFIRE_OTEL_ENDPOINT in .env.
-                import os  # noqa: PLC0415
-                os.environ.setdefault(
-                    "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    settings.LOGFIRE_OTEL_ENDPOINT,
-                )
-                logfire.configure(
-                    service_name=settings.LOGFIRE_SERVICE_NAME,
-                    environment=settings.LOGFIRE_ENVIRONMENT,
-                    send_to_logfire=False,
-                )
-                logger.info(
-                    "Logfire configured (OTLP → %s, service=%s env=%s)",
-                    settings.LOGFIRE_OTEL_ENDPOINT,
-                    settings.LOGFIRE_SERVICE_NAME,
-                    settings.LOGFIRE_ENVIRONMENT,
-                )
             else:
                 logfire.configure(
                     service_name=settings.LOGFIRE_SERVICE_NAME,
@@ -201,8 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     send_to_logfire=False,
                 )
                 logger.warning(
-                    "Logfire configured in LOCAL-ONLY mode "
-                    "(neither LOGFIRE_TOKEN nor LOGFIRE_OTEL_ENDPOINT set)"
+                    "Logfire configured in LOCAL-ONLY mode (LOGFIRE_TOKEN unset)"
                 )
 
             # Wire the four instrumentations the Pydantic team ships.
@@ -347,40 +338,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # -------------------------------------------------------------------------
-    # 3. Neo4j async driver
+    # 3. Neo4j — REMOVED 2026-07-28 (B1). app.state.neo4j_driver is gone;
+    # AgentDeps.neo4j_driver is passed as None from routers/queries.py.
+    # Every consumer (traverse_knowledge_graph, query_graph_by_label,
+    # fetch_project_graph_entities, the Layer 4 entity-resolution
+    # validators, the Phase 0 graph-health agents) already failed open on a
+    # missing/unreachable driver, so this formalizes an already-common
+    # runtime path rather than introducing a new failure mode.
     # -------------------------------------------------------------------------
-    neo4j_uri = f"bolt://{settings.NEO4J_HOST}:{settings.NEO4J_PORT}"
-    logger.info("Connecting Neo4j driver -> %s", neo4j_uri)
-    neo4j_driver = AsyncGraphDatabase.driver(
-        neo4j_uri,
-        auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
-        # FastAPI review #4 — per-worker max trimmed from 25 → 12.
-        # 4 uvicorn workers × 12 = 48 client-side total, which fits
-        # under Neo4j's `server.bolt.thread_pool_max_size=50` server
-        # ceiling. The previous 25 × 4 = 100 was double the server slot
-        # count — caused intermittent `Acquiring connection from pool
-        # timed out` errors from Neo4j under load. If you re-flatten to
-        # a single uvicorn worker, bump this back to 25.
-        max_connection_pool_size=12,
-        # Fail fast under pool contention rather than waiting the
-        # default 60 s — at that point the request has long since
-        # blown its overall deadline.
-        connection_acquisition_timeout=5.0,
-        # Interactive chat path doesn't tolerate the default 30 s
-        # transient-error retry. A failed transient (network blip,
-        # leader election) should bubble up to the FastAPI tool wrapper
-        # well within the per-tool 3 s ceiling.
-        max_transaction_retry_time=5.0,
-        # connection_timeout maps to the Section 06e Neo4j timeout;
-        # individual QUERY timeouts are now enforced via the per-call
-        # `timeout` kwarg on session.run() (Neo4j review #5) instead
-        # of the cluster-wide db.transaction.timeout setting.
-        connection_timeout=settings.TIMEOUT_NEO4J_S,
-    )
-    app.state.neo4j_driver = neo4j_driver
-    logger.info(
-        "Neo4j driver ready (max_pool=25, acquire_timeout=5s, retry=5s)"
-    )
 
     # -------------------------------------------------------------------------
     # 4. Redis async client
@@ -573,7 +538,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # before. See app.services.embedding.
         from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        embedding_model = get_embedding_model(settings.EMBEDDING_MODEL_NAME)
+        embedding_model = get_embedding_model(
+            settings.EMBEDDING_MODEL_NAME,
+            settings.EMBEDDING_MODEL_REVISION,
+        )
         # Warm up: encode a dummy string so the first real request does not
         # pay the JIT/model-init penalty (a no-op round-trip for the sidecar
         # proxy, which also validates connectivity at startup).
@@ -609,6 +577,66 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Failed to load embedding model — search_documents will return empty results"
         )
         app.state.embedding_model = None
+
+    # -------------------------------------------------------------------------
+    # 5b. Qdrant collection dimension parity
+    # -------------------------------------------------------------------------
+    # The check above compares the LOADED MODEL to EMBEDDING_DIMENSION. Both can
+    # agree with each other and still disagree with the collection we actually
+    # query — e.g. config says 1024/Qwen3 but georag_chunks was created at 384
+    # by an older bge-era run, or a re-embed was never executed. Symptom is an
+    # opaque HTTP 400 from Qdrant on every search, which surfaces to the user as
+    # a bare refusal with no cause. Dagster's index_document_passages already
+    # guards its write path this way (audit 2026-06-27 C1); the read path did
+    # not, so this closes the other half.
+    #
+    # Deliberately fail-soft: a Qdrant that is slow or still starting must not
+    # block FastAPI startup, and a missing collection is the normal state on a
+    # fresh install. Only a confirmed dimension DISAGREEMENT disables the model,
+    # which degrades search to a safe refusal rather than querying a mismatched
+    # vector space.
+    if app.state.embedding_model is not None:
+        from app.services.ingest.passage_embedder import (  # noqa: PLC0415
+            _QDRANT_COLLECTION as _CHUNKS_COLLECTION,
+        )
+
+        try:
+            _info = await qdrant_client.get_collection(_CHUNKS_COLLECTION)
+            _collection_dim = qdrant_dense_dim(_info.config.params.vectors)
+            if (
+                _collection_dim is not None
+                and _collection_dim != settings.EMBEDDING_DIMENSION
+            ):
+                logger.critical(
+                    "Qdrant collection dim mismatch: '%s' dense dim=%d but "
+                    "EMBEDDING_DIMENSION=%d (model %s). Disabling embedding "
+                    "model — every search would 400 against this collection. "
+                    "Re-embed the corpus (scripts/reembed_qdrant.py) or point "
+                    "EMBEDDING_MODEL_NAME/EMBEDDING_DIMENSION at the model the "
+                    "collection was built with.",
+                    _CHUNKS_COLLECTION,
+                    _collection_dim,
+                    settings.EMBEDDING_DIMENSION,
+                    settings.EMBEDDING_MODEL_NAME,
+                )
+                app.state.embedding_model = None
+            else:
+                logger.info(
+                    "Qdrant collection '%s' dense dim=%s matches "
+                    "EMBEDDING_DIMENSION=%d",
+                    _CHUNKS_COLLECTION,
+                    _collection_dim,
+                    settings.EMBEDDING_DIMENSION,
+                )
+        except Exception as exc:  # noqa: BLE001 — never block startup on Qdrant
+            logger.warning(
+                "Could not verify Qdrant collection '%s' dimension at startup "
+                "(%s: %s). Skipping the parity check — a mismatch will surface "
+                "as an HTTP 400 on the first search instead.",
+                _CHUNKS_COLLECTION,
+                type(exc).__name__,
+                exc,
+            )
 
     # -------------------------------------------------------------------------
     # 6. Cross-encoder reranker — BAAI/bge-reranker-base (Module 4 Chunk 3)
@@ -699,15 +727,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # -------------------------------------------------------------------------
     # PdfRenderService holds a ProcessPoolExecutor (process workers, not threads,
     # per §04p Stage 2 PDFium thread-safety requirement) and an LRU render cache.
-    # LocalFsBronzeStore is a Phase 1.A stub; replace with SeaweedFsBronzeStore
-    # in a follow-up phase when the S3-compatible API is integrated.
+    # S3BronzeStore (SeaweedFS) is the production Bronze store as of the
+    # storage-abstraction plan's PR4; LocalFsBronzeStore is a fallback for a
+    # bare dev shell that isn't running the full docker-compose stack.
     try:
-        from app.services.bronze_store import LocalFsBronzeStore  # noqa: PLC0415
+        from georag_object_storage import StorageConfig  # noqa: PLC0415
+
+        from app.services.bronze_store import LocalFsBronzeStore, S3BronzeStore  # noqa: PLC0415
         from app.services.pdf_render import PdfRenderService  # noqa: PLC0415
 
         app.state.pdf_render_service = PdfRenderService()
-        app.state.bronze_store = LocalFsBronzeStore()
-        logger.info("PDF render service and Bronze store ready (§04p Phase 1.A)")
+        try:
+            app.state.bronze_store = S3BronzeStore(StorageConfig.from_env())
+            logger.info("PDF render service ready; Bronze store backed by SeaweedFS")
+        except ValueError:
+            # No object-storage credentials in this environment (AWS_ACCESS_KEY_ID/
+            # AWS_SECRET_ACCESS_KEY, or a legacy S3_*/MINIO_*/SEAWEEDFS_* fallback,
+            # are all unset) — expected in a bare dev shell, not in any environment
+            # actually running SeaweedFS. Fall back to local disk rather than
+            # failing PDF render entirely.
+            logger.warning(
+                "No object-storage credentials found — Bronze store falling back to "
+                "local disk. Fine for a bare dev shell; any environment with more than "
+                "one FastAPI instance needs SeaweedFS-backed storage to work correctly."
+            )
+            app.state.bronze_store = LocalFsBronzeStore()
+            logger.info("PDF render service and Bronze store ready (local-disk fallback)")
     except Exception:
         logger.exception(
             "§04p PDF subsystem init failed — /pdf/* endpoints will return 503. "
@@ -738,71 +783,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "uv pip install 'pdfminer.six>=20240706' 'pdfplumber>=0.11'"
         )
         app.state.pdf_extract_service = None
-
-    # -------------------------------------------------------------------------
-    # 10. §04p PDF Ingestion Subsystem — Stage 4 layout service (Phase 1.C-i)
-    # -------------------------------------------------------------------------
-    # PdfLayoutService holds a dedicated ProcessPoolExecutor (separate from
-    # the render + extract pools) for Docling document conversion.  Docling's
-    # first inference call is heavy (ONNX model load); process isolation
-    # prevents it from starving lighter workers under concurrent load.
-    # Results are cached durably in silver.pdf_layout_regions.
-    #
-    # Defensive try/except: if docling is not installed the service is set to
-    # None and /pdf/find_legends returns 503.  The rest of the app is unaffected.
-    try:
-        from app.services.pdf_layout import PdfLayoutService  # noqa: PLC0415
-
-        app.state.pdf_layout_service = PdfLayoutService(pool=pg_pool)
-        logger.info("PDF layout service ready (§04p Phase 1.C-i — Docling)")
-    except Exception:
-        logger.exception(
-            "§04p Phase 1.C-i layout service init failed — "
-            "/pdf/find_legends will return 503. "
-            "Ensure docling is installed: uv pip install 'docling>=2.13'"
-        )
-        app.state.pdf_layout_service = None
-
-    # -------------------------------------------------------------------------
-    # 11. §04p PDF Ingestion Subsystem — Stage 5 OCR service (Phase 1.C-ii)
-    # -------------------------------------------------------------------------
-    # PdfOcrService holds a dedicated ProcessPoolExecutor (separate from the
-    # render, extract, and layout pools) for PaddleOCR PP-OCRv5 calls.
-    # PaddleOCR's first inference is heavy (model load + PaddlePaddle JIT) and
-    # benefits from process isolation so it cannot starve lighter workers.
-    # Results are cached durably in silver.pdf_ocr_results.
-    #
-    # Defensive try/except: if paddleocr or paddlepaddle is not installed the
-    # service is set to None and /pdf/ocr_region returns 503.  The rest of the
-    # app is unaffected.
-    #
-    # NOTE for operator: PaddlePaddle is heavy (~500 MB CPU-only wheel).
-    # Run `uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'` or rebuild
-    # the fastapi Docker image before using the /pdf/ocr_region endpoint.
-    # Both packages are Apache 2.0 — clean per §04p license-posture table.
-    app.state.pdf_ocr_service = None
-    _render_svc = getattr(app.state, "pdf_render_service", None)
-    if _render_svc is not None:
-        try:
-            from app.services.pdf_ocr import PdfOcrService  # noqa: PLC0415
-
-            app.state.pdf_ocr_service = PdfOcrService(
-                pool=pg_pool,
-                render_service=_render_svc,
-            )
-            logger.info("PDF OCR service ready (§04p Phase 1.C-ii — PaddleOCR PP-OCRv5)")
-        except Exception:
-            logger.exception(
-                "§04p Phase 1.C-ii OCR service init failed — "
-                "/pdf/ocr_region will return 503. "
-                "Ensure paddlepaddle and paddleocr are installed: "
-                "uv pip install 'paddlepaddle>=3.1' 'paddleocr>=2.10'"
-            )
-    else:
-        logger.warning(
-            "§04p Phase 1.C-ii OCR service skipped — pdf_render_service is None. "
-            "Render service must initialise successfully before the OCR service."
-        )
 
     # -------------------------------------------------------------------------
     # 12. §04p PDF Ingestion Subsystem — Stage 6 VL service (Phase 1.D)
@@ -969,27 +949,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             logger.debug("PDF extract service shutdown failed", exc_info=True)
 
-    # §04p Phase 1.C-i — shut down the layout detection process pool before DB pools.
-    # Same rationale as the extract pool shutdown above.
-    pdf_layout_service = getattr(app.state, "pdf_layout_service", None)
-    if pdf_layout_service is not None:
-        try:
-            await pdf_layout_service.shutdown()
-            logger.info("PDF layout service shut down")
-        except Exception:
-            logger.debug("PDF layout service shutdown failed", exc_info=True)
-
-    # §04p Phase 1.C-ii — shut down the OCR process pool before DB pools.
-    # PaddleOCR workers may have in-flight cache writes; drain them before
-    # the pg_pool is closed.
-    pdf_ocr_service = getattr(app.state, "pdf_ocr_service", None)
-    if pdf_ocr_service is not None:
-        try:
-            await pdf_ocr_service.shutdown()
-            logger.info("PDF OCR service shut down")
-        except Exception:
-            logger.debug("PDF OCR service shutdown failed", exc_info=True)
-
     # Anthropic first (no pool, just an httpx client; symmetric teardown order).
     anthropic_client = getattr(app.state, "anthropic_client", None)
     if anthropic_client is not None:
@@ -1010,9 +969,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await redis_client.aclose()
     logger.info("Redis client closed")
-
-    await neo4j_driver.close()
-    logger.info("Neo4j driver closed")
 
     await qdrant_client.close()
     logger.info("Qdrant client closed")
@@ -1121,7 +1077,7 @@ if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
 # (enforced per-router via the verify_service_key dependency).
 app.include_router(queries.router, prefix="/internal")
 app.include_router(projects.router, prefix="/internal")
-app.include_router(exports_router.router, prefix="/internal")
+app.include_router(exports_router.router)
 # Track A.1 Phase 4.B-ii — LLM-assist outlier endpoint called by the
 # Dagster outlier detector. /internal/outlier-assist is the path the
 # Dagster helper expects (OUTLIER_LLM_ASSIST_ENDPOINT env var defaults
@@ -1141,37 +1097,26 @@ app.include_router(shadow_trigger_router.router)
 app.include_router(mv_refresh_trigger_router.router)  # Phase 2 reliability spec
 app.include_router(metrics_ingestion_events_router.router)  # Phase 6 reliability spec
 app.include_router(integrations_trigger_router.router)
-app.include_router(ocr_render_router.router)
-app.include_router(re_ocr_trigger_router.router)
-app.include_router(support_agents_router.router)  # Phase G.5 follow-up
 app.include_router(visualizations_router.router)  # Phase H4 §5 — strip-log / cross-section / stereonet
-app.include_router(trg_cockpit_router.router)     # Phase H4 §8 UI — TRG cockpit + R5 sign-off
-app.include_router(report_builder_router.router)  # Phase H4 §7 UI — Report Builder cockpit
 app.include_router(ml_training_router.router)     # Phase H4 §12 UI — ML training runs
 app.include_router(citation_feedback_router.router)  # Phase H4 §12.8 UI — citation 👍/👎
-app.include_router(conflicts_router.router)       # Phase H4 §7.4 UI — Conflict Resolver review queue
 app.include_router(audit_findings_router.router)  # Phase H4 §11.5/11.10/6.4 UI — audit findings
 app.include_router(what_changed_router.router)    # Phase H4 §9.9 UI — what-changed digest viewer
 app.include_router(tier1_misc_router.source_trust_router)
 app.include_router(tier1_misc_router.export_gate_router)
 app.include_router(tier1_misc_router.k6_router)
-app.include_router(tier234_router.rec_router)
-app.include_router(tier234_router.qp_router)
-app.include_router(tier234_router.ws_members_router)
-app.include_router(tier234_router.ws_settings_router)
-# tier234_router.ap_router (Kestra channels) removed 2026-05-17.
+# tier234_router.{rec,qp,ws_members,ws_settings,audit_explorer,saved_maps,
+# alerts,phase_h4_health}_router — REMOVED 2026-07-28 (task #31). Zero
+# Laravel-side callers for any of the 8; the admin pages that reached them
+# were deleted in the reader-core trim. See admin_tier234.py's module
+# docstring. tier234_router.ap_router (Kestra channels) was already removed
+# 2026-05-17.
 app.include_router(assessment_summary_router.router)  # CC-01 Item 5 — assessment report structured summary
 app.include_router(maps_router.router)  # CC-01 Item 3 (stub) — map ingest scaffold
 app.include_router(coverage_router.router)  # CC-03 Item 5 — coverage density heatmap
 app.include_router(smdi_router.router)  # SMDI ingestion plan v1.1 Phase 6 — /public-geo/smdi/features
 app.include_router(completeness_router.router)  # CC-03 Item 2 — completeness audit
-app.include_router(tier234_router.audit_explorer_router)
-app.include_router(tier234_router.saved_maps_router)
-app.include_router(tier234_router.alerts_router)
-app.include_router(tier234_router.phase_h4_health_router)
-app.include_router(tier234_router.backups_router)
-app.include_router(tier234_router.eval_promotion_router)  # §10.6 promotion gate
-app.include_router(tier234_router.eval_questions_router)  # §10-v2 authoring CRUD
+app.include_router(tier234_router.backups_router)  # Phase H4 §11.1/§11.10 — backup / cold-tier ops
 
 # §19.3 Interpretation Workspace — notes / section-lines / target-zones / comments
 from app.routers import interpretation as interpretation_router  # noqa: E402
@@ -1227,13 +1172,9 @@ async def ready() -> dict[str, str]:
     except Exception as exc:
         checks["qdrant"] = f"error: {exc}"
 
-    # Neo4j
-    try:
-        async with app.state.neo4j_driver.session() as session:
-            await session.run("RETURN 1")
-        checks["neo4j"] = "ok"
-    except Exception as exc:
-        checks["neo4j"] = f"error: {exc}"
+    # Neo4j — REMOVED 2026-07-28 (B1). Was checked here; an Azure readiness
+    # probe reading this endpoint would otherwise mark the pod perpetually
+    # unhealthy for a store that no longer exists.
 
     # Redis
     try:

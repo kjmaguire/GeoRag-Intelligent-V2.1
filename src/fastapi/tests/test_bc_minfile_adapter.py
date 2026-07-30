@@ -12,6 +12,8 @@ from app.services.publicgeo.bc_minfile_adapter import (
     sync_bc_minfile_mineral_occurrences,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

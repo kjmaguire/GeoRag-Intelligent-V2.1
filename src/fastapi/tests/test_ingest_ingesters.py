@@ -199,15 +199,8 @@ def test_pdf_chunk_pages_respects_page_boundary():
     assert len(page2_chunks) >= 1
 
 
-# ───────────────────────────── kg_sync ────────────────────────────
-
-def test_kg_sync_wyoming_basin_deposit_mapping():
-    from app.services.ingest.kg_sync import _WYOMING_BASIN_DEPOSITS
-    # Shirley Basin maps to sandstone-hosted roll-front
-    assert _WYOMING_BASIN_DEPOSITS["SHIRLEY BASIN"] == "sandstone-hosted roll-front uranium"
-    assert "POWDER RIVER BASIN" in _WYOMING_BASIN_DEPOSITS
-    assert "WIND RIVER BASIN" in _WYOMING_BASIN_DEPOSITS
-
+# kg_sync tests removed 2026-07-28 (B1) — the module was deleted along with
+# Neo4j.
 
 # ───────────────────── passage_embedder ───────────────────────────
 
@@ -291,17 +284,4 @@ def test_chunk_quality_filter_stopword_threshold_env_driven(monkeypatch):
     assert reason is not None and reason.startswith("stopword_ratio_low")
 
 
-# ───────────────────────── kg_sync regex ──────────────────────────
-
-def test_kg_sync_field_detection_in_project_name():
-    """The kg_sync `_WYOMING_BASIN_DEPOSITS` keys should be detectable
-    case-insensitively when present in a project name (the sync code's
-    `if basin in upper:` pattern)."""
-    from app.services.ingest.kg_sync import _WYOMING_BASIN_DEPOSITS
-    proj_name_upper = "CAMECO RESOURCES — SHIRLEY BASIN"
-    matched = None
-    for basin in _WYOMING_BASIN_DEPOSITS:
-        if basin in proj_name_upper:
-            matched = basin
-            break
-    assert matched == "SHIRLEY BASIN"
+# kg_sync regex test removed 2026-07-28 (B1) — same module deletion as above.

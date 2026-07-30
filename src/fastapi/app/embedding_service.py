@@ -45,7 +45,18 @@ _MAX_TOTAL_CHARS = int(os.environ.get("EMBED_MAX_TOTAL_CHARS", "1000000"))
 # etc. that this lean model-host has no business needing (the reranker sidecar
 # avoids the same trap). The compose env passes EMBEDDING_MODEL_NAME to match the
 # fastapi service, so the shared model has the dimension the query path expects.
-_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
+#
+# The fallback MUST stay in lockstep with settings.EMBEDDING_DIMENSION (1024).
+# It used to be BAAI/bge-small-en-v1.5 — 384-dim — while app/config.py already
+# defaulted the dimension to 1024. Because this module deliberately avoids
+# importing Settings, nothing reconciled the two: a sidecar started without
+# EMBEDDING_MODEL_NAME in its env served 384-dim vectors to a query path that
+# believed they were 1024-dim.
+_MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B")
+_MODEL_REVISION = os.environ.get(
+    "EMBEDDING_MODEL_REVISION",
+    "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+)
 
 _model = None  # the single shared SentenceTransformer (loaded at startup)
 
@@ -57,7 +68,12 @@ def _load_model():
     if _model is None:
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-        model = SentenceTransformer(_MODEL_NAME, device="cpu")
+        model = SentenceTransformer(
+            _MODEL_NAME,
+            revision=_MODEL_REVISION,
+            trust_remote_code=False,
+            device="cpu",
+        )
         # Warm-up so the first real /embed doesn't pay the JIT/model-init cost.
         model.encode("warm-up", normalize_embeddings=True)
         _model = model

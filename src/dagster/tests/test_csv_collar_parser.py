@@ -20,7 +20,6 @@ import textwrap
 from io import StringIO
 from pathlib import Path
 
-
 from georag_dagster.parsers.csv_collar import (
     _build_column_map,
     parse_csv_collars,

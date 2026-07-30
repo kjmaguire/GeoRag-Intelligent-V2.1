@@ -376,63 +376,6 @@ async def post_user_inbox_updated(
         )
 
 
-async def post_public_geoscience_tiles_invalidated(
-    *,
-    jurisdiction_epoch: int,
-    source_ids: list[str] | None = None,
-) -> None:
-    """Push a PublicGeoscienceTilesInvalidated event into Laravel for Reverb fan-out.
-
-    Phase 4 — fires when public_geoscience_pull (or SMDI overnight, P3
-    follow-up) refreshes public_geo.* data. The browser-side
-    PublicGeoscienceMap re-issues MapLibre setTiles() with the new
-    ?v={jurisdiction_epoch} cache-bust, forcing the in-memory tile
-    cache to drop and the proxy's ETag check to fire on the next fetch.
-
-    `jurisdiction_epoch` should be the post-write MAX(updated_at)
-    epoch_s from public_geo.jurisdictions — the same value
-    TileProxyController::computePgeoEtag uses for the server ETag. Keeping
-    them aligned guarantees: new event → new URL → new ETag → real refetch.
-
-    `source_ids` (optional) limits the invalidation to specific PGEO
-    sources (e.g. ['pg_mines'] when a SMDI-style workflow only touched
-    one view). Null = invalidate every source the map subscribes to.
-
-    Best-effort: a broadcast failure must not cascade — the durable
-    record is the upstream public_geo.* write that triggered it.
-    """
-    key = _service_key()
-    if not key:
-        log.debug(
-            "laravel_bridge: FASTAPI_SERVICE_KEY not set; skipping pgeo.tiles_invalidated broadcast",
-        )
-        return
-
-    url = f"{_laravel_base()}/api/internal/v1/public-geoscience-tiles-invalidated"
-    body: dict[str, Any] = {"jurisdiction_epoch": int(jurisdiction_epoch)}
-    if source_ids is not None:
-        body["source_ids"] = source_ids
-
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.post(
-                url,
-                json=body,
-                headers={"X-Service-Key": key, "Accept": "application/json"},
-            )
-        if r.status_code >= 400:
-            log.warning(
-                "laravel_bridge: pgeo.tiles_invalidated broadcast non-2xx "
-                "epoch=%s http=%s body=%s",
-                jurisdiction_epoch, r.status_code, r.text[:200],
-            )
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "laravel_bridge: pgeo.tiles_invalidated broadcast failed epoch=%s err=%s",
-            jurisdiction_epoch, exc,
-        )
-
-
 __all__ = [
     "post_report_build_progress",
     "post_ingestion_progress",
@@ -440,5 +383,4 @@ __all__ = [
     "post_admin_surface_updated",
     "post_workspace_activity",
     "post_user_inbox_updated",
-    "post_public_geoscience_tiles_invalidated",
 ]

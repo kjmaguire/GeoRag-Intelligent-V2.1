@@ -19,14 +19,12 @@ from __future__ import annotations
 
 from io import StringIO
 
-
 from georag_dagster.parsers._unit_ambiguity import (
     detect_long_format_units,
     detect_wide_format,
     merge_flags,
 )
 from georag_dagster.parsers.csv_sample import parse_csv_samples
-
 
 # ---------------------------------------------------------------------------
 # Wide-format detector

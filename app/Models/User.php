@@ -19,13 +19,15 @@ use Laravel\Sanctum\HasApiTokens;
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
-    /** @use HasFactory<UserFactory> */
     use HasApiTokens;
+    /** @use HasFactory<UserFactory> */
     use HasFactory;
     use Notifiable;
 
     /**
      * The projects this user has access to.
+     *
+     * @return BelongsToMany<Project, $this>
      */
     public function projects(): BelongsToMany
     {

@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 import psycopg2.extras
 

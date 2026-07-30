@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID, WorkspaceContext
 from app.agent.workspace_dependency import OptionalWorkspace
+from app.db.scoped_pool import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.auth import verify_service_key
 from app.services.visualizations import (
@@ -145,10 +146,9 @@ async def _fetch_strip_log_intervals(
     `app.workspace_id` GUC that the orchestrator sets on every
     connection — RLS denies cross-tenant access by default.
     """
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_strip_log_intervals"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT
@@ -280,10 +280,9 @@ async def _fetch_cross_section_panels(
     section_line_id: UUID,
 ) -> list[CrossSectionPanel]:
     """Pull pre-projected panels from gold.cross_section_panels."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_cross_section_panels"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT
@@ -400,10 +399,9 @@ async def _fetch_stereonet_points(
 ) -> list[StereonetPoint]:
     """Pull pre-aggregated structural measurements from
     gold.structure_measurements_visual."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_stereonet_points"
+    ) as conn:
         if measurement_kind:
             rows = await conn.fetch(
                 """
@@ -546,10 +544,9 @@ async def _fetch_long_section_collars(
     reference_azimuth_deg: float | None = None,
 ) -> dict[str, Any]:
     """Pull silver.collars for one project shaped for long_section_figure."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_long_section_collars"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT hole_id,
@@ -575,10 +572,9 @@ async def _fetch_target_heatmap_cells(
     *, pg_pool, workspace_id: str, commodity: str | None,
 ) -> dict[str, Any]:
     """Pull gold.h3_density_mineral cells, convert h3 → lng/lat for plot."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_target_heatmap_cells"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT silver.h3_cell_to_latlng(h3_index) AS center,
@@ -616,10 +612,9 @@ async def _fetch_harker_samples(
     y_oxide: str = "Al2O3",
 ) -> dict[str, Any]:
     """Pull SiO2 + y_oxide per sample for Harker diagram."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_harker_samples"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT s.rock_type,
@@ -651,10 +646,9 @@ async def _fetch_geochem_samples_by_element(
     elements: list[str], limit_samples: int = 5,
 ) -> list[dict[str, Any]]:
     """Pull samples × element matrix (for spider / REE)."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_geochem_samples_by_element"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT s.sample_code, a.assay_element, a.assay_value
@@ -687,10 +681,9 @@ async def _fetch_grade_tonnage_samples(
     tonnes_per_sample: float = 1000.0,
 ) -> dict[str, Any]:
     """Pull (grade, tonnes) tuples for grade-tonnage curve."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_grade_tonnage_samples"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT a.assay_value AS grade
@@ -720,10 +713,9 @@ async def _fetch_anomaly_map_samples(
     a real wiring would use silver.assays once that table lands. This
     is honest fallback behaviour the chart can demonstrate against
     actual project data."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
+    async with scoped_connection(
+        pg_pool, workspace_id=workspace_id, site="viz._fetch_anomaly_map_samples"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat,
@@ -884,243 +876,14 @@ async def render_chart_endpoint(
 
 
 # ============================================================================
-# §5.10 + §5.11 — Visual QA + Visual Readiness agent endpoints (B8 + B9)
-# ============================================================================
+# §5.10 + §5.11 — Visual QA + Visual Readiness agent endpoints — REMOVED
+# 2026-07-28 (task #31).
 #
-# The agents themselves live at app/agents/phase5/{drillhole_visual_qa,
-# visual_readiness}.py — pure-function classifiers that take a pre-built
-# inventory dict. These endpoints fetch the inventory from PG, then run the
-# agent. Output is the operator-readable envelope the §5.12 Drillhole Detail
-# page (and any future chat-router viz pre-check) calls before rendering.
-
-from app.agents import AgentContext  # noqa: E402
-from app.agents.phase5.drillhole_visual_qa import drillhole_visual_qa  # noqa: E402
-from app.agents.phase5.visual_readiness import visual_readiness  # noqa: E402
-from app.services.auth import UserContext, extract_user_context  # noqa: E402
-
-
-async def _fetch_visual_qa_inventory(
-    *, pg_pool, workspace_id: str, collar_id: UUID,
-) -> dict[str, Any]:
-    """Build the §5.10 visual-QA inventory dict for one collar.
-
-    All queries scoped via RLS (`app.workspace_id` GUC); cross-tenant
-    collars return as has_collar=False because RLS denies the row.
-    """
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
-        collar_row = await conn.fetchrow(
-            """
-            SELECT total_depth, azimuth, dip
-              FROM silver.collars
-             WHERE collar_id = $1::uuid
-            """,
-            str(collar_id),
-        )
-        interval_row = await conn.fetchrow(
-            """
-            SELECT
-                COUNT(*)                                          AS n,
-                COUNT(*) FILTER (WHERE lithology_code IS NOT NULL) AS n_litho
-              FROM gold.drillhole_intervals_visual
-             WHERE collar_id = $1::uuid
-            """,
-            str(collar_id),
-        )
-        # drill_traces is one row per collar (UNIQUE on collar_id) carrying
-        # a LineStringZ geometry. Presence = 1 trace; absence = 0.
-        trace_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM silver.drill_traces WHERE collar_id = $1::uuid",
-            str(collar_id),
-        )
-
-    has_collar = collar_row is not None
-    total_depth = collar_row["total_depth"] if has_collar else None
-    azimuth = collar_row["azimuth"] if has_collar else None
-    dip = collar_row["dip"] if has_collar else None
-    return {
-        "has_collar":          has_collar,
-        "has_total_depth":     has_collar and total_depth is not None and total_depth > 0,
-        "has_azimuth_dip":     has_collar and azimuth is not None and dip is not None,
-        "interval_count":      int(interval_row["n"] or 0) if interval_row else 0,
-        "has_lithology_codes": bool(interval_row and (interval_row["n_litho"] or 0) > 0),
-        "trace_point_count":   int(trace_count or 0),
-    }
-
-
-async def _fetch_readiness_inventory(
-    *, pg_pool, workspace_id: str, viz_kind: str,
-    collar_id: UUID | None, project_id: UUID | None,
-) -> dict[str, Any]:
-    """Build the §5.11 readiness inventory dict per viz_kind."""
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            "SELECT set_config('app.workspace_id', $1, false)", workspace_id,
-        )
-
-        if viz_kind == "strip_log":
-            row = await conn.fetchrow(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM gold.drillhole_intervals_visual WHERE collar_id = $1::uuid) AS interval_count,
-                    (SELECT (total_depth IS NOT NULL AND total_depth > 0)::int
-                       FROM silver.collars WHERE collar_id = $1::uuid)                                AS has_total_depth
-                """,
-                str(collar_id),
-            )
-            return {
-                "interval_count":  int(row["interval_count"] or 0),
-                "has_total_depth": int(row["has_total_depth"] or 0),
-            }
-
-        if viz_kind == "stereonet":
-            n = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM gold.structure_measurements_visual
-                 WHERE collar_id = $1::uuid
-                """,
-                str(collar_id),
-            )
-            return {"structure_count": int(n or 0)}
-
-        if viz_kind == "cross_section":
-            collar_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM silver.collars WHERE project_id = $1::uuid",
-                str(project_id),
-            )
-            section_line_present = await conn.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM gold.cross_section_panels
-                     WHERE project_id = $1::uuid
-                )
-                """,
-                str(project_id),
-            )
-            interval_count = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM gold.drillhole_intervals_visual
-                 WHERE project_id = $1::uuid
-                """,
-                str(project_id),
-            )
-            return {
-                "collar_count":         int(collar_count or 0),
-                "section_line_present": 1 if section_line_present else 0,
-                "interval_count":       int(interval_count or 0),
-            }
-
-    return {}
-
-
-class VizQaRequest(BaseModel):
-    collar_id: UUID
-    workspace_id: UUID | None = None
-
-
-@router.post(
-    "/qa",
-    summary="§5.10 Drillhole Visual QA — audit visualization readiness for one collar",
-)
-async def viz_qa(
-    body: VizQaRequest,
-    request: Request,
-    user: UserContext = Depends(extract_user_context),
-) -> dict[str, Any]:
-    pg_pool = getattr(request.app.state, "pg_pool", None)
-    if pg_pool is None:
-        raise HTTPException(503, "pg_pool not bound on app.state")
-
-    if body.workspace_id is not None:
-        ws_id = str(body.workspace_id)
-    else:
-        ws_uuid = await resolve_workspace_id(user, request, pg_pool, None)
-        ws_id = str(ws_uuid)
-
-    inventory = await _fetch_visual_qa_inventory(
-        pg_pool=pg_pool, workspace_id=ws_id, collar_id=body.collar_id,
-    )
-
-    ctx = AgentContext(
-        workspace_id=UUID(ws_id),
-        actor_kind="user",
-    )
-    result = await drillhole_visual_qa(
-        ctx=ctx, collar_id=body.collar_id, inventory=inventory,
-    )
-    payload = result.value if hasattr(result, "value") else result
-    return {
-        "outcome":        getattr(result, "outcome", "ok"),
-        "duration_ms":    getattr(result, "duration_ms", 0),
-        "invocation_id":  str(getattr(getattr(result, "ctx", None), "invocation_id", "")),
-        "inventory":      inventory,
-        "qa":             payload,
-    }
-
-
-class VizReadinessRequest(BaseModel):
-    viz_kind: Literal["strip_log", "cross_section", "stereonet"]
-    collar_id: UUID | None = None
-    project_id: UUID | None = None
-    workspace_id: UUID | None = None
-
-
-@router.post(
-    "/readiness",
-    summary="§5.11 Visual Readiness — pre-check whether a visualization is feasible",
-)
-async def viz_readiness(
-    body: VizReadinessRequest,
-    request: Request,
-    user: UserContext = Depends(extract_user_context),
-) -> dict[str, Any]:
-    import time as _time
-    _readiness_t0 = _time.monotonic()
-
-    if body.viz_kind in ("strip_log", "stereonet") and body.collar_id is None:
-        raise HTTPException(400, f"{body.viz_kind} requires collar_id")
-    if body.viz_kind == "cross_section" and body.project_id is None:
-        raise HTTPException(400, "cross_section requires project_id")
-
-    pg_pool = getattr(request.app.state, "pg_pool", None)
-    if pg_pool is None:
-        raise HTTPException(503, "pg_pool not bound on app.state")
-
-    if body.workspace_id is not None:
-        ws_id = str(body.workspace_id)
-    else:
-        ws_uuid = await resolve_workspace_id(user, request, pg_pool, None)
-        ws_id = str(ws_uuid)
-    inventory = await _fetch_readiness_inventory(
-        pg_pool=pg_pool, workspace_id=ws_id, viz_kind=body.viz_kind,
-        collar_id=body.collar_id, project_id=body.project_id,
-    )
-
-    ctx = AgentContext(workspace_id=UUID(ws_id), actor_kind="user")
-    result = await visual_readiness(
-        ctx=ctx, viz_kind=body.viz_kind,
-        collar_id=body.collar_id, project_id=body.project_id,
-        inventory=inventory,
-    )
-    payload = result.value if hasattr(result, "value") else result
-
-    # Phase 6 — readiness-probe latency histogram. Labelled by whether
-    # the call carried an explicit workspace_id (real backing data) or
-    # fell through to resolution (typically the empty-state probe path).
-    try:
-        from app.metrics import READINESS_PROBE_DURATION
-        READINESS_PROBE_DURATION.labels(
-            workspace_scoped="true" if body.workspace_id is not None else "false",
-        ).observe(_time.monotonic() - _readiness_t0)
-    except Exception:
-        pass
-
-    return {
-        "outcome":        getattr(result, "outcome", "ok"),
-        "duration_ms":    getattr(result, "duration_ms", 0),
-        "invocation_id":  str(getattr(getattr(result, "ctx", None), "invocation_id", "")),
-        "inventory":      inventory,
-        "readiness":      payload,
-    }
+# These backed app/agents/phase5/{drillhole_visual_qa,visual_readiness}.py,
+# gated on "the §5.12 Drillhole Detail page" per this module's own prior
+# docstring — but no page by that name (or any variant) exists anywhere in
+# resources/js/, and nothing in app/ (Laravel) or resources/js/ calls
+# /v1/viz/qa or /v1/viz/readiness. Confirmed dead on both sides before
+# removal; phase5 (the whole directory) had no other caller and was deleted
+# alongside this.
+# ============================================================================

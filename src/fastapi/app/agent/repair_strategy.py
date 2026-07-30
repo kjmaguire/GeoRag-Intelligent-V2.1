@@ -175,6 +175,9 @@ STRATEGY_FOR_CODE: dict[GuardErrorCode, tuple[RepairStrategy, ...]] = {
     GuardErrorCode.SOURCE_SCOPE_VIOLATION: (
         RepairStrategy.REFUSE_OUT_OF_SCOPE,
     ),
+    GuardErrorCode.EGRESS_BLOCKED: (
+        RepairStrategy.REFUSE_OUT_OF_SCOPE,
+    ),
     # Query-failure
     GuardErrorCode.UNSUPPORTED_QUERY_TYPE: (
         RepairStrategy.REFUSE_OUT_OF_SCOPE,

@@ -39,7 +39,10 @@ async def test_r3_report_completes_end_to_end() -> None:
     """R3 risk tier auto-approves; report completes through all 12 nodes."""
     graph = build_report_builder_graph()
     initial = _seed_state("weekly_project_digest")
-    raw = await graph.ainvoke(initial)
+    raw = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.report_id)}},
+    )
     final = ReportBuilderState.model_validate(raw)
 
     # Pipeline reaches export + delivery.
@@ -132,7 +135,10 @@ async def test_export_bundle_contains_citation_section() -> None:
     """
     graph = build_report_builder_graph()
     initial = _seed_state("weekly_project_digest")
-    raw = await graph.ainvoke(initial)
+    raw = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.report_id)}},
+    )
     final = ReportBuilderState.model_validate(raw)
     if not final.pdf_uri.startswith("data:text/markdown"):
         pytest.skip("PDF rendering active — skipping markdown content assertion")
@@ -145,7 +151,10 @@ async def test_evidence_json_uri_is_valid_base64_json() -> None:
     """The evidence_json_uri decodes to a valid JSON document."""
     graph = build_report_builder_graph()
     initial = _seed_state("ingestion_quality")
-    raw = await graph.ainvoke(initial)
+    raw = await graph.ainvoke(
+        initial,
+        config={"configurable": {"thread_id": str(initial.report_id)}},
+    )
     final = ReportBuilderState.model_validate(raw)
     assert final.evidence_json_uri.startswith("data:application/json;base64,")
     payload = base64.b64decode(final.evidence_json_uri.split(",", 1)[1])

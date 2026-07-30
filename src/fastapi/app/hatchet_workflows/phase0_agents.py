@@ -1,4 +1,4 @@
-"""Phase 1 step 2 — Hatchet workflow wrappers for the 10 Phase 0 agents.
+"""Hatchet workflow wrappers for the retained Phase 0 agents.
 
 Each wrapper:
   - declares a workflow with name + (where applicable) cron schedule
@@ -34,8 +34,8 @@ Pool assignment for the worker pool split (Step 2):
         model_cost_summary_run, llm_incident_diagnosis_run,
         support_packet_assemble
 
-Total registered with the engine: 10 agent workflows + 2 system workflows
-(audit_ledger_verify + outbox_dispatcher) = 12, matching the kickoff.
+Only ``app.agents.phase0`` modules are exported here. Later domain-agent
+phases are not worker workflows and must not be added to these pool lists.
 """
 
 from __future__ import annotations
@@ -159,9 +159,9 @@ class TenantIsolationAuditOutput(BaseModel):
 
     Mirrors the agent summary dict in
     ``app.agents.phase0.tenant_isolation_auditor.tenant_isolation_audit``.
-    Conditional keys (``note``, ``kestra_error``, ``kestra_skip_reason``)
-    are accepted via ``extra="allow"`` since they only appear on specific
-    branches (no workspaces, kestra failure, etc).
+    Conditional keys (``note``, ``escalation_enqueued``,
+    ``escalation_error``) are accepted via ``extra="allow"`` since they
+    only appear on specific branches (no workspaces, enqueue failure, etc).
     """
 
     model_config = ConfigDict(extra="allow")
@@ -514,8 +514,11 @@ class SupportPacketAssembleOutput(BaseModel):
     counts: dict[str, Any] = Field(default_factory=dict)
     upload_ok: bool = False
     upload_error: str | None = None
-    kestra_dispatched: bool = False
-    kestra_error: str | None = None
+    # Renamed 2026-07-25 (Kestra retirement) — the on-call handoff now goes
+    # through the outbox `external_webhook` target rather than a direct POST
+    # to Kestra's execution API.
+    dispatch_enqueued: bool = False
+    dispatch_error: str | None = None
 
 
 support_packet_assemble = hatchet.workflow(
@@ -536,13 +539,13 @@ async def _run_support_packet(
 # =============================================================================
 # Pool routing — worker.py looks these up by WORKER_POOL env.
 # =============================================================================
-INGESTION_AGENT_WORKFLOWS = [
+INGESTION_AGENT_WORKFLOWS: tuple = (
     storage_tiering_run,
     index_health_check,
     store_reconciliation_run,
-]
+)
 
-AI_AGENT_WORKFLOWS = [
+AI_AGENT_WORKFLOWS: tuple = (
     tenant_isolation_audit,
     graph_tenant_audit,
     lineage_walk,
@@ -551,7 +554,7 @@ AI_AGENT_WORKFLOWS = [
     model_cost_summary_run,
     llm_incident_diagnosis_run,
     support_packet_assemble,
-]
+)
 
 ALL_AGENT_WORKFLOWS = INGESTION_AGENT_WORKFLOWS + AI_AGENT_WORKFLOWS
 

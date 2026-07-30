@@ -15,6 +15,8 @@ from app.hatchet_workflows.what_changed_detector import (
     execute as what_changed_execute,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

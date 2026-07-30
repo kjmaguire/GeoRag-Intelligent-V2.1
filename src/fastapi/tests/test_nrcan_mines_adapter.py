@@ -11,6 +11,8 @@ from app.services.publicgeo.nrcan_mines_adapter import (
     sync_nrcan_canadian_mines,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

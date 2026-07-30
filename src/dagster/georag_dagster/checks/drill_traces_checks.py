@@ -45,27 +45,26 @@ def desurvey_trace_count_matches_collar_count_with_surveys(
     postgres: PostgresResource,
 ) -> AssetCheckResult:
     """Verify trace count = surveyed + straight-line eligible collars."""
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            # Distinct collars that have at least one survey row.
-            cur.execute(
-                "SELECT COUNT(DISTINCT collar_id) FROM silver.surveys;"
-            )
-            row = cur.fetchone()
-            collars_with_surveys = int(row[0]) if row else 0
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        # Distinct collars that have at least one survey row.
+        cur.execute(
+            "SELECT COUNT(DISTINCT collar_id) FROM silver.surveys;"
+        )
+        row = cur.fetchone()
+        collars_with_surveys = int(row[0]) if row else 0
 
-            # Traces written.
-            cur.execute("SELECT COUNT(*) FROM silver.drill_traces;")
-            row = cur.fetchone()
-            trace_count = int(row[0]) if row else 0
+        # Traces written.
+        cur.execute("SELECT COUNT(*) FROM silver.drill_traces;")
+        row = cur.fetchone()
+        trace_count = int(row[0]) if row else 0
 
-            # ADR-0007 PR-4 — collars with no surveys but a positive
-            # total_depth produce a straight-line trace. Missing
-            # azimuth/dip default to vertical (az=0, dip=-90) per the
-            # asset's industry-standard fallback. The only collars we
-            # skip are the ones with no usable total_depth.
-            cur.execute(
-                """
+        # ADR-0007 PR-4 — collars with no surveys but a positive
+        # total_depth produce a straight-line trace. Missing
+        # azimuth/dip default to vertical (az=0, dip=-90) per the
+        # asset's industry-standard fallback. The only collars we
+        # skip are the ones with no usable total_depth.
+        cur.execute(
+            """
                 SELECT COUNT(*)
                 FROM silver.collars c
                 WHERE NOT EXISTS (
@@ -75,14 +74,14 @@ def desurvey_trace_count_matches_collar_count_with_surveys(
                   AND c.total_depth IS NOT NULL
                   AND c.total_depth > 0;
                 """
-            )
-            row = cur.fetchone()
-            straight_line_eligible = int(row[0]) if row else 0
+        )
+        row = cur.fetchone()
+        straight_line_eligible = int(row[0]) if row else 0
 
-            # Collars with no surveys AND no usable total_depth —
-            # legitimately skipped. Reported for diagnostics.
-            cur.execute(
-                """
+        # Collars with no surveys AND no usable total_depth —
+        # legitimately skipped. Reported for diagnostics.
+        cur.execute(
+            """
                 SELECT COUNT(*)
                 FROM silver.collars c
                 WHERE NOT EXISTS (
@@ -91,9 +90,9 @@ def desurvey_trace_count_matches_collar_count_with_surveys(
                 )
                   AND (c.total_depth IS NULL OR c.total_depth <= 0);
                 """
-            )
-            row = cur.fetchone()
-            unusable_collars = int(row[0]) if row else 0
+        )
+        row = cur.fetchone()
+        unusable_collars = int(row[0]) if row else 0
 
     expected = collars_with_surveys + straight_line_eligible
     passed = trace_count == expected

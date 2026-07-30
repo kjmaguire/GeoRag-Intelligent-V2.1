@@ -19,11 +19,10 @@ interface Report {
 interface ReportProps {
     project: { project_id: string; project_name: string; slug: string };
     reports: Report[];
-    is_admin: boolean;
     empty: boolean;
 }
 
-export default function FoundryReport({ project, reports, is_admin, empty }: ReportProps) {
+export default function FoundryReport({ project, reports, empty }: ReportProps) {
     // Phase 3 real-time push — ingest_pdf and generate_report both write
     // new silver.reports rows; the parse_quality_pct + sections_count fields
     // also change as the pipeline progresses. Refresh on 'reports' affected_type.
@@ -45,28 +44,13 @@ export default function FoundryReport({ project, reports, is_admin, empty }: Rep
                     eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · REPORTS`}
                     title="Ingested filings & NI 43-101 drafts"
                     sub={`${reports.length} report${reports.length === 1 ? '' : 's'} linked to this project`}
-                    actions={
-                        is_admin ? (
-                            <Link
-                                href="/admin/reports"
-                                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
-                                style={{
-                                    color: 'var(--accent)',
-                                    background: 'var(--accent-bg)',
-                                    borderColor: 'var(--accent-dim)',
-                                }}
-                            >
-                                + New draft (admin)
-                            </Link>
-                        ) : undefined
-                    }
                 />
 
                 {empty ? (
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No reports linked to this project yet."
-                            detail="Drop a PDF or XLSX filing into the Import Wizard — once ingested, it lands in silver.reports and surfaces here. Admins can also draft a new NI 43-101 from scratch in the admin builder."
+                            detail="Drop a PDF or XLSX filing into the Import Wizard — once ingested, it lands in silver.reports and surfaces here."
                         />
                     </div>
                 ) : (

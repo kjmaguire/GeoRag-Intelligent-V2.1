@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Asset module shape
 # ---------------------------------------------------------------------------
@@ -276,7 +275,7 @@ class _FakeCursor:
         self.description: list[Any] = []
         self._rows: list[tuple] = []
 
-    def execute(self, sql: str, params: Any = None) -> None:  # noqa: ARG002
+    def execute(self, sql: str, params: Any = None) -> None:
         cols, rows = self._fixtures.pop(0)
         self.description = [(c,) for c in cols]
         self._rows = rows
@@ -295,7 +294,7 @@ class _FakeConn:
     def __init__(self, cur: _FakeCursor) -> None:
         self._cur = cur
 
-    def cursor(self, *a, **kw):  # noqa: ARG002
+    def cursor(self, *a, **kw):
         return self._cur
 
     def __enter__(self):
@@ -352,7 +351,7 @@ def test_smoke_materialise_writes_json_to_s3(monkeypatch: pytest.MonkeyPatch) ->
 
     minio = MagicMock()
 
-    def _upload(bucket: str, object_name: str, data: bytes, content_type: str = "application/octet-stream") -> str:  # noqa: ARG001
+    def _upload(bucket: str, object_name: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         uploads.append((bucket, object_name, data))
         return f"{bucket}/{object_name}"
 
@@ -404,7 +403,7 @@ def test_drift_check_returns_warn_when_no_yesterday_snapshot(
 
     minio = MagicMock()
     # Today exists, yesterday does not.
-    minio.object_exists.side_effect = lambda bucket, key: key.endswith("2026-05-29/data_dictionary.json")  # noqa: ARG005
+    minio.object_exists.side_effect = lambda bucket, key: key.endswith("2026-05-29/data_dictionary.json")
 
     from dagster import build_asset_check_context
     ctx = build_asset_check_context()
@@ -439,7 +438,7 @@ def test_drift_check_fails_when_columns_removed(monkeypatch: pytest.MonkeyPatch)
 
     minio = MagicMock()
     minio.object_exists.return_value = True
-    minio.download_bytes.side_effect = lambda bucket, key: (  # noqa: ARG005
+    minio.download_bytes.side_effect = lambda bucket, key: (
         json.dumps(today_doc).encode("utf-8")
         if "2026-05-29" in key
         else json.dumps(yest_doc).encode("utf-8")

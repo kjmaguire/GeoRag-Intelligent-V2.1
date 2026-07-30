@@ -3,13 +3,13 @@
 namespace App\Console\Commands\Ingestion;
 
 use App\Services\FastApiJwtMinter;
+use App\Services\StorageService;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -17,7 +17,7 @@ use RuntimeException;
 #[Description('Re-ingest every PDF currently sitting in bronze (S3) under reports/{projectId}/. Deletes existing silver.reports rows for the project (cascades to document_passages) and the corresponding Qdrant points, then fires ingest_pdf Hatchet workflows for each S3 object so the new chunker reprocesses them end-to-end.')]
 class ReingestProject extends Command
 {
-    public function handle(FastApiJwtMinter $jwtMinter): int
+    public function handle(FastApiJwtMinter $jwtMinter, StorageService $storage): int
     {
         $projectId = (string) $this->argument('projectId');
         if (! Str::isUuid($projectId)) {
@@ -61,7 +61,7 @@ class ReingestProject extends Command
         $this->info("Project: {$project->slug} (workspace={$workspaceId})");
 
         $prefix = "reports/{$projectId}/";
-        $disk = Storage::disk('s3');
+        $disk = $storage->bronze();
         $keys = $disk->files($prefix);
         if (empty($keys)) {
             $this->warn("No PDFs found in s3://{$disk->getConfig()['bucket']}/{$prefix} — nothing to re-ingest.");

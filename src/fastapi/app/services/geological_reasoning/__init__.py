@@ -7,8 +7,7 @@ Workspace admin surface (doc-phase 131).
 The orchestration is fully live (RLS-aware DB writes, audit anchors,
 idempotency keys on parent_question). The per-question hypothesis
 generator (`_synthetic_hypothesis_set`) is a deterministic stub
-until the real LLM reasoning agent graduates — same pattern
-doc-phase 132 used for `evaluate_workspace`.
+until the real LLM reasoning agent graduates.
 """
 from app.services.geological_reasoning.hypothesis_generator import (
     EvidenceLinkDraft,

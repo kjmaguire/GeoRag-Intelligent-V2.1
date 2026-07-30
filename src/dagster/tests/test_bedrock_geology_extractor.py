@@ -31,7 +31,6 @@ from georag_dagster.assets.silver_public_geoscience import (
     _stage_column_type,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

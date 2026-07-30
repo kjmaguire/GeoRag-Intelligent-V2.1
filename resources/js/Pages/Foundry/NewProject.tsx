@@ -514,7 +514,7 @@ export default function FoundryNewProject() {
                                 <div
                                     className="flex items-center gap-2 rounded border px-3 py-2"
                                     style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)', opacity: 0.6 }}
-                                    title="Cloud URL fetch isn't wired yet. Use the OAuth connectors at /oauth/connections for SharePoint / OneDrive / Google Drive sync."
+                                    title="Cloud URL fetch isn't wired yet. Upload local files through the import wizard."
                                 >
                                     <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Cloud URL</span>
                                     <input

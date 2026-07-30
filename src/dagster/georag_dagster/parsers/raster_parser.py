@@ -151,7 +151,7 @@ def _score_crs_confidence(crs, bounds_4326) -> float:
     if crs is None or bounds_4326 is None:
         return 0.0
     try:
-        from pyproj import CRS as ProjCRS  # noqa: PLC0415
+        from pyproj import CRS as ProjCRS
         crs_obj = ProjCRS.from_user_input(crs)
         area = crs_obj.area_of_use
         if area is None:
@@ -206,10 +206,10 @@ def parse_raster_file(path: str | Path) -> RasterParseResult:
         rasterio.errors.RasterioIOError: if the file is not a readable raster.
         FileNotFoundError: if the path does not exist.
     """
-    import rasterio  # noqa: PLC0415 — deferred; avoids cost in non-raster envs
-    import rasterio.enums  # noqa: PLC0415
-    import rasterio.errors  # noqa: PLC0415
-    from rasterio.warp import transform_bounds  # noqa: PLC0415
+    import rasterio
+    import rasterio.enums
+    import rasterio.errors
+    from rasterio.warp import transform_bounds
 
     path = str(path)
 

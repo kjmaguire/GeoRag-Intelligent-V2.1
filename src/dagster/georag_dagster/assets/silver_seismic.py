@@ -23,8 +23,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.assets.bronze_seismic import BRONZE_BUCKET, SEISMIC_PREFIX
 from georag_dagster.parsers.segy_parser import parse_segy_file
-from georag_dagster.resources import S3Resource, PostgresResource
-
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # ---------------------------------------------------------------------------
 # Asset config

@@ -33,7 +33,6 @@ from georag_dagster.assets.silver_public_geoscience import (
     _split_list,
 )
 
-
 # ---------------------------------------------------------------------------
 # _collect_commodity_values
 # ---------------------------------------------------------------------------

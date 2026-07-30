@@ -26,7 +26,6 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 from georag_dagster.parsers._hole_id import canonicalize
 from georag_dagster.resources import PostgresResource
 
-
 logger = logging.getLogger(__name__)
 
 

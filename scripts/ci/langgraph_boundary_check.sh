@@ -7,18 +7,25 @@
 # Hard rule from §1: LangGraph owns AI agent reasoning steps. It MUST NOT
 # duplicate concerns owned by other orchestrators:
 #
-#   Hatchet           — multi-step durable workflow + retries + schedule
-#   Dagster           — data pipelines with lineage
-#   Kestra            — external SaaS / outbound webhook delivery
+#   Hatchet           — multi-step durable workflow + retries + schedule +
+#                       outbound webhook delivery (via the `outbox` schema's
+#                       external_webhook target — HMAC-signed, retried,
+#                       dead-lettered; see app/hatchet_workflows/outbox_dispatcher.py)
 #   Laravel Horizon   — single Laravel-internal background job
 #
+# Kestra was retired 2026-07-28 (A7) — it was never actually deployed, so
+# "outbound webhook via Kestra" was already a fiction this script enforced.
+# The real owner of that concern was always Hatchet + the outbox dispatcher.
+# Dagster's data-pipeline role was retired 2026-07-28 (B2).
+#
 # This check fails the build when LangGraph code tries to act like
-# Hatchet (schedule, retry policy, durable state machine across hours
-# of work) or like Kestra (outbound webhook with HMAC).
+# Hatchet: schedule, retry policy, durable state machine across hours of
+# work, or outbound webhook delivery with HMAC (all Hatchet's job via the
+# outbox, not LangGraph's).
 #
 # Patterns flagged (case-insensitive):
 #   LangGraph + (retry|schedule|cron|every_hours|interval=)  → use Hatchet
-#   LangGraph + (webhook|http_post|outbound_call)            → use Kestra
+#   LangGraph + (webhook|http_post|outbound_call)            → use Hatchet + outbox
 #   LangGraph + (run_id|workflow_run|long_running)           → use Hatchet
 #
 # False-positive escape hatch: add  # langgraph-boundary-ok: <reason>
@@ -48,8 +55,8 @@ PATTERNS=(
     "cron_expression|Hatchet"
     "schedule_every|Hatchet"
     "@hatchet\.schedule|Hatchet (use directly, don't wrap in LangGraph)"
-    "httpx\.AsyncClient.*post.*webhook|Kestra"
-    "webhook_url.*hmac|Kestra"
+    "httpx\.AsyncClient.*post.*webhook|Hatchet + outbox (app/hatchet_workflows/outbox_dispatcher.py)"
+    "webhook_url.*hmac|Hatchet + outbox (app/hatchet_workflows/outbox_dispatcher.py)"
     "long_running_workflow|Hatchet"
 )
 

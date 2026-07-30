@@ -22,7 +22,7 @@ def detect_encoding(data: bytes) -> str:
     when the library is unavailable.
     """
     try:
-        from charset_normalizer import from_bytes  # noqa: PLC0415
+        from charset_normalizer import from_bytes
     except ImportError:
         logger.debug("charset_normalizer not available — defaulting to utf-8")
         return "utf-8"

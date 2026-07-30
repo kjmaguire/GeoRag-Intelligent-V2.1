@@ -40,13 +40,11 @@ NOTE: Do NOT add ``from __future__ import annotations`` — Dagster 1.13.
 
 import math
 import uuid
-from typing import Optional
 
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
 from georag_dagster.resources import PostgresResource
-
 
 SELECT_STRUCTURES_SQL = """
 SELECT
@@ -113,7 +111,7 @@ def _project_planar_pole(
     return x, y
 
 
-def _classify_structure_type(raw: Optional[str]) -> str:
+def _classify_structure_type(raw: str | None) -> str:
     if not raw:
         return "other"
     norm = raw.strip().lower()

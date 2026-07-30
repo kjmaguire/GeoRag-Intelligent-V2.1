@@ -7,6 +7,10 @@ dependencies = [
     "fastapi>=0.136.0",
     "uvicorn[standard]>=0.46.0",
     "pydantic>=2.11",
+    # Storage-abstraction plan PR1 — vendor-neutral object storage interface,
+    # shared with src/dagster via a uv path dependency (see [tool.uv.sources]
+    # below). Local package, not published; version is unused by uv sources.
+    "georag-object-storage",
     # Phase H — bumped from >=1.0 to >=1.56 to close two GHSAs flagged by
     # osv-scanner against the installed 1.38.0:
     #   GHSA-2jrp-274c-jhv3 — SSRF in URL Download Handler (fix: 1.56.0)
@@ -107,8 +111,13 @@ dependencies = [
     #   CVE-2026-53540 (DoS)                 fix 0.0.31
     # urllib3 (>=2.7.0) + authlib (>=1.6.12) re-checked — both floors are
     # still above all current advisories, left unchanged.
+    # 2026-07-29 re-audit:
+    #   starlette          GHSA-82w8-qh3p-5jfq (urlencoded form DoS) fix 1.3.1
+    #   cryptography       GHSA-537c-gmf6-5ccf (bundled OpenSSL)      fix 48.0.1
     "urllib3>=2.7.0,<3.0",
     "python-multipart>=0.0.31",
+    "starlette>=1.3.1",
+    "cryptography>=48.0.1,<49",
     "authlib>=1.6.12",
     # §04p Phase 1.A — PDF Ingestion Subsystem
     # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
@@ -116,11 +125,17 @@ dependencies = [
     # pypdfium2: Apache 2.0 / BSD-3-Clause (bundles PDFium from Chromium).
     # cachetools: MIT (LRU cache for render service; falls back to built-in
     #   OrderedDict if not installed, but cachetools is more battle-tested).
-    # NOTE for operator: run `uv pip install 'pikepdf>=9.0' 'pypdfium2>=4.30'
+    # NOTE for operator: run `uv pip install 'pikepdf>=9.0' 'pypdfium2>=5.12,<6'
     #   'cachetools>=5.5'` (or rebuild the fastapi Docker image) before using
     #   the /pdf/* endpoints.
-    "pikepdf>=9.0",
-    "pypdfium2>=4.30",
+    # pypdfium2 floor raised to 5.12 (2026-07-29) — 4.30.1 and 5.0.0b1 were
+    # both yanked from PyPI for a PDFium text-extraction regression; 5.0
+    # also removed PdfDocument.render() in favor of PdfPage.render(), but
+    # this codebase only ever calls page.get_textpage().get_text_bounded(),
+    # never the removed method, so the bump is a floor raise, not an API
+    # migration. Capped at <6 so a future major bump doesn't land silently.
+    "pikepdf>=10.10.0,<11",
+    "pypdfium2>=5.12.1,<6",
     "cachetools>=5.5",
     # §04p Phase 1.B — Text + layout extraction (Stage 3)
     # pdfminer.six: MIT — lossless text extraction with bboxes + font metadata.
@@ -130,104 +145,75 @@ dependencies = [
     # NOTE for operator: run `uv pip install 'pdfminer.six>=20240706' 'pdfplumber>=0.11'`
     #   (or rebuild the fastapi Docker image) before using
     #   the /pdf/extract_text and /pdf/find_tables endpoints.
-    "pdfminer.six>=20240706",
-    "pdfplumber>=0.11",
-    # polars: MIT — required by georag_dagster.parsers.__init__ which eagerly
-    #   imports xlsx_parser (uses polars). Worker startup fails without it,
-    #   which manifests as ingest_pdf:parse ModuleNotFoundError in the logs
-    #   even on PDF-only ingests. Hot-patched on 2026-05-21; making permanent.
-    "polars>=1.0",
+    "pdfminer.six>=20260107",
+    "pdfplumber>=0.11.10,<0.12",
+    # polars: REMOVED 2026-07-28 (B2). It was here for exactly one reason —
+    #   georag_dagster.parsers.__init__ eagerly imported xlsx_parser, so the
+    #   worker's `from georag_dagster.parsers.pdf_report import ...` dragged
+    #   polars in and startup failed without it (surfacing as an
+    #   ingest_pdf:parse ModuleNotFoundError even on PDF-only ingests;
+    #   hot-patched 2026-05-21). A1 moved the parser to
+    #   app/services/ingest/pdf_report.py, so nothing in src/fastapi imports
+    #   georag_dagster any more and nothing imports polars directly. Verified
+    #   with a repo-wide grep over app/, scripts/ and tests/.
+    # langdetect: Apache 2.0 — per-page language detection in
+    #   pdf_report._detect_page_language, which feeds ReportParseResult
+    #   .page_languages and the `mixed_language` warning.
+    #
+    #   A1 (2026-07-28): added when the parser moved out of the Dagster tree.
+    #   It was NEVER declared by either package — it only reached the Dagster
+    #   image transitively via unstructured[pdf], and unstructured was dropped
+    #   in Phase 10 (see the note below). _detect_page_language catches
+    #   ImportError and returns "unknown", so on the live Hatchet ingest path
+    #   language detection has silently reported "unknown" for every page and
+    #   the mixed_language warning could never fire. Declaring it here restores
+    #   the feature; the image must be rebuilt for it to take effect.
+    "langdetect>=1.0.9",
     # Phase 10 (2026-05-22) — unstructured removed.
     # The legacy unstructured-first dispatch was supplanted by the
     # Phase 2.1 fitz-first tree. _parse_with_unstructured() and its
     # `unstructured[pdf]>=0.15` dep have been dropped — fitz +
-    # docling-OCR + tesseract-fallback + pdfplumber-last-resort
-    # provide the full coverage that unstructured did before.
+    # tesseract-fallback + pdfplumber-last-resort provide the full
+    # coverage that unstructured did before.
     # pytesseract: Apache 2.0 — Python wrapper around the tesseract OCR
-    #   binary used by _parse_with_fitz for per-page OCR fallback when
-    #   DOCLING_OCR_ENABLED=false. Phase 10 (2026-05-22): explicit pin
-    #   so a clean image rebuild ships with it baked in.
-    "pytesseract>=0.3",
-    # onnxruntime-gpu: MIT — required by docling's TableFormer + layout
-    #   models for GPU inference. CPU-only `onnxruntime` falls back to
-    #   docling on CPU (~5x slower). Phase 10: explicit pin so a clean
-    #   image rebuild ships with the GPU build.
-    "onnxruntime-gpu>=1.20; platform_system == 'Linux'",
-    # §04p Phase 1.C-i — Layout region detection (Stage 4)
-    # docling: MIT (IBM Research / LF AI & Data) — document conversion with
-    #   layout detection (text/figure/table/header/footer/formula regions).
-    #   Pulls in torch + transformers (already pinned above for SPLADE++) and
-    #   onnxruntime for the layout model inference.
-    # NOTE for operator: run `uv pip install 'docling>=2.13'`
-    #   (or rebuild the fastapi Docker image) before using the
-    #   /pdf/find_legends endpoint.  First install may take several minutes
-    #   — docling downloads ONNX layout model weights on first use.
-    "docling>=2.13",
-    # §04p Phase 1.C-ii — Region-targeted OCR (Stage 5)
-    # paddlepaddle: Apache 2.0 — PaddlePaddle deep-learning framework.
-    #   Phase 9 (2026-05-22) — GPU build preferred for the ingestion
-    #   worker (which has NVIDIA passthrough). pyproject.toml pins the
-    #   CPU build because PyPI doesn't host paddlepaddle-gpu directly;
-    #   the GPU wheel ships from the Paddle index at
-    #   https://www.paddlepaddle.org.cn/packages/stable/cu126/
-    #   The Dockerfile + worker command bootstrap install paddlepaddle-gpu
-    #   from that index when running on a GPU host. CPU pin here is the
-    #   safe fallback for environments without CUDA passthrough.
-    #   Wheel size: ~500 MB (CPU) to ~2 GB (GPU).  Install time is significant.
-    #   PaddleOCR depends on paddlepaddle but does not always pull it cleanly
-    #   via its own transitive deps, so we pin it explicitly here.
-    #   UPPER CAP <3.3 (2026-06-25): paddle 3.3.x introduced a CPU oneDNN
-    #   regression — the PIR-based oneDNN executor raises
-    #   `ConvertPirAttribute2RuntimeAttribute not support
-    #   ArrayAttribute<DoubleAttribute>` on every scanned-PDF OCR pass
-    #   (PaddlePaddle/Paddle#77340). No runtime flag dodges it: PaddleX
-    #   force-sets FLAGS_enable_pir_api=1 and the CPU predictor always calls
-    #   enable_new_executor(), so enable_new_ir=False does not help.
-    #   UPSTREAM STATUS (verified 2026-06-25): the fix is already merged to
-    #   Paddle `develop` — PR PaddlePaddle/Paddle#77430 ("fixing 77340",
-    #   merged 2026-04-16) adds the ArrayAttribute<DoubleAttribute> branch.
-    #   Verified empirically: nightly paddlepaddle==3.5.0.dev20260625 runs
-    #   enable_mkldnn=True on the PLS-2024 fixture with NO crash. BUT no
-    #   *stable* wheel carries it yet — both PyPI and the Paddle stable index
-    #   top out at the broken 3.3.1, and issue #77340 is still open (unreleased
-    #   /not backported). So we pin below 3.3 where mkldnn-on is correct AND
-    #   ~2.6x faster than eager (ocr/parse_scanned.py relies on this).
-    #   UN-PIN TRIGGER: when a stable paddle >3.3 that includes #77430 ships,
-    #   raise this cap (e.g. >=3.4) and re-run
-    #   `pytest tests/test_ocr_scanned_path.py -k produces_passages` with
-    #   enable_mkldnn=True. Do NOT ride a nightly in prod. NOTE: the GPU wheel
-    #   below is still 3.3.1 — the bug is CPU-oneDNN-only so GPU inference is
-    #   unaffected, BUT a GPU host that falls back to CPU OCR (use_gpu False)
-    #   would hit it; pin the GPU wheel too if that becomes a real path.
-    # paddleocr: Apache 2.0 — PP-OCRv5 text recognition engine.
-    #   Downloads model weights (~50–150 MB) on first use per lang code.
-    #   Default lang is 'en' (overridable via env PDF_OCR_LANG).
-    # NOTE for operator: DO NOT run `uv sync` after adding these deps — see
-    #   the §04p Phase 1.C-ii implementation report.  PaddlePaddle is heavy
-    #   (~500 MB CPU wheel, ~2 GB GPU wheel).  Either rebuild the fastapi
-    #   Docker image or run:
-    #     # CPU (laptops, CI):
-    #     uv pip install 'paddlepaddle>=3.1,<3.3' 'paddleocr[doc-parser]>=3.7,<4.0'
-    #     # GPU (production workers with CUDA passthrough):
-    #     pip install 'paddlepaddle-gpu==3.3.1' \\
-    #         --index-url https://www.paddlepaddle.org.cn/packages/stable/cu126/ \\
-    #         --extra-index-url https://pypi.org/simple/
-    "paddlepaddle>=3.1,<3.3",
-    # 2026-06-23 sweep: paddleocr 2.10 -> 3.7+ (currently resolves 3.7.0).
-    # Major bump: 3.x ships PP-OCRv5/v6 as default + new `.predict()` API
-    # surface + renamed constructor kwargs (`use_angle_cls` ->
-    # `use_textline_orientation`, `use_gpu` -> `device`, etc.).
-    # Call sites updated in lockstep — see ADR-0016 for the migration
-    # rationale and rollout. Cap held below 4.0 so a future 4.x cut is a
-    # deliberate decision, not an accidental resolver pickup.
-    # 2026-06-23 sweep — Phase 2 scaffolding (ADR-0016): `[doc-parser]`
-    # extra pulls in `PaddleOCRVL` + a special safetensors build for
-    # the PaddleOCR-VL-1.6 end-to-end full-page parser. Wiring lives
-    # behind the PDF_DOCPARSER_BACKEND env flag (default `docling`).
-    # Adding the extra here means the weights/dep chain are installed
-    # at image build time; flipping the flag at runtime is a zero-rebuild
-    # cutover once shadow eval gates pass.
-    "paddleocr[doc-parser]>=3.7,<4.0",
+    #   binary used by _parse_with_fitz for per-page OCR fallback.
+    #   Phase 10 (2026-05-22): explicit pin so a clean image rebuild
+    #   ships with it baked in.
+    "pytesseract>=0.3.13,<0.4",
+    # pdf2image: MIT — renders PDF pages to PIL images for the tesseract
+    #   fallback path (_ocr_single_page/_attempt_ocr call convert_from_path).
+    #   Was an undeclared transitive dependency until this pin (2026-07-29) —
+    #   directly imported in pdf_report.py but never had its own line here.
+    "pdf2image>=1.17",
+    # Pillow: MIT-CMU — the actual image type pdf2image/pytesseract pass
+    #   around, and what the oversized-scan tiling preprocessor is built on.
+    #   Also undeclared before this pin (2026-07-29).
+    "Pillow>=12.3",
+    # docling (and its onnxruntime-gpu dependency) removed 2026-07-29.
+    # It powered §04p Phase 1.C-i layout region detection (GET
+    # /pdf/find_legends, now also removed) plus optional OCR/table
+    # dispatch in pdf_report.py — none of it ever ran in production
+    # (PDF_PARSER_DOCLING_ENABLED was false in every live deployment;
+    # 1,173 real silver.reports rows show parser_used as fitz or
+    # pdfplumber, never docling). Azure Document Intelligence
+    # (azure-ai-documentintelligence below) is the OCR path going
+    # forward alongside tesseract.
+    #
+    # paddlepaddle/paddleocr (region-targeted `POST /pdf/ocr_region`) removed
+    # the same day — the endpoint, app/ocr/, and services/pdf_ocr.py had zero
+    # callers anywhere in Laravel/frontend code (same orphan pattern as
+    # /pdf/find_legends). Task #17/A3 had already deleted most of §04p but
+    # missed this leg.
+    # #28 (2026-07-28) — Azure Document Intelligence OCR adapter (MIT).
+    # Gated OFF by default (OCR_ENGINE=tesseract). When selected, the live
+    # per-page and whole-document OCR paths use Azure first, tile oversized
+    # rasters below the 10,000px service limit, and retain Tesseract as the
+    # last-resort fallback.
+    "azure-ai-documentintelligence>=1.0.2,<2.0",
+    # azure-core: MIT — directly imported for AzureKeyCredential, not just a
+    #   transitive dep of azure-ai-documentintelligence. Undeclared until
+    #   this pin (2026-07-29).
+    "azure-core>=1.41",
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the
@@ -260,7 +246,7 @@ dependencies = [
     # app.ocr. The OLD image must have had these transitively or via a
     # working-tree drift that wasn't in HEAD.
     # hatchet-sdk → app.hatchet_workflows.* uses Hatchet client class
-    # aioboto3 → re_ocr_page + ingest_pdf S3 download helpers
+    # aioboto3 → ingest_pdf S3 download helpers
     # PDF stack (CC-1 audit 2026-05-27): pymupdf REMOVED — AGPL-3.0 is
     # on the project's permanent-reject list (plan §"What is deliberately
     # not in this plan"). Replaced with permissive alternatives:
@@ -272,22 +258,31 @@ dependencies = [
     # pyjwt (imports as `jwt`) → app.services.flow_jwt
     "hatchet-sdk>=1.33",
     "aioboto3>=13.0",
-    "pypdfium2>=4.30",
-    "pypdf>=5.0",
+    # pypdfium2 pin lives once, above (§04p Phase 1.A) — duplicate entry
+    # removed 2026-07-29, same package pinned twice in this list.
+    "pypdf>=6.14.2,<7",
     # Phase 5 (2026-05-22) — used by the parse-subprocess memory guard
     # in ingest_pdf.py. Pre-fork RAM check prevents OOM when running
     # multiple concurrent PDF parses on the ingestion worker. Already
-    # transitively present via docling+dagster; this is the explicit pin.
+    # transitively present via dagster; this is the explicit pin.
     "psutil>=7.0",
-    "pyjwt>=2.9",
+    # GHSA-xgmm-8j9v-c9wx: mixed-family JWK/HMAC confusion fixed in 2.13.
+    # GeoRAG already pins HS256 at every decode call, but the patched floor
+    # keeps the library safe if a future verifier is misconfigured.
+    "pyjwt>=2.13,<3",
 
     # Master-plan §5 (doc-phase 71) — spatial pipeline + drillhole visuals.
     # geopandas + rasterio bring GeoJSON/GeoTIFF read/write + CRS reprojection
     # into the FastAPI ingestion path (already in src/dagster/pyproject.toml).
     # mplstereonet renders stereonets for §5.8 structure visualizations.
+    # matplotlib itself is a hard dep of the static-PNG renderers
+    # (cross_section.py, stereonet.py, strip_log.py — Report Builder PDF
+    # output) — declared explicitly rather than relying on it arriving as
+    # mplstereonet's transitive dependency.
     "geopandas>=1.0",
     "rasterio>=1.4",
     "mplstereonet>=0.6",
+    "matplotlib>=3.11,<4.0",
 
     # Master-plan §7 (doc-phase 122) — Reporting + report bundle generation.
     # weasyprint → PDF rendering from HTML+CSS (§7.9 primary). Needs Pango /
@@ -352,6 +347,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.uv.sources]
+# editable = false (the default) deliberately: this Dockerfile's builder
+# stage copies only /usr/local/lib/python3.13/site-packages into the
+# runtime stage, not the source tree an editable install would redirect
+# to. A non-editable path install builds a real wheel into site-packages
+# so the package survives the multi-stage copy.
+georag-object-storage = { path = "../georag_object_storage" }
 
 [tool.ruff]
 target-version = "py313"

@@ -28,9 +28,14 @@ return new class extends Migration
     public function getConnection(): ?string
     {
         // DDL here (ALTER ... ROW LEVEL SECURITY, CREATE EVENT TRIGGER) needs
-        // the owner/superuser role. On the SQLite test connection there is no
-        // pgsql_migrations server; fall back so the guard no-ops cleanly.
-        return config('database.default') === 'sqlite' ? null : 'pgsql_migrations';
+        // the owner/superuser role — but only route there when
+        // `pgsql_migrations` is actually opted into (MIGRATE_DB_CONNECTION,
+        // set in docker-compose.yml; config/database.php documents `pgsql`
+        // as the "legacy behaviour" fallback when unset). Unconditionally
+        // routing here on any non-sqlite connection breaks CI/local test
+        // DBs, where `pgsql_migrations` defaults to host `postgresql` (the
+        // docker-compose service name) and doesn't resolve.
+        return config('database.migrations.connection') === 'pgsql_migrations' ? 'pgsql_migrations' : null;
     }
 
     public function up(): void

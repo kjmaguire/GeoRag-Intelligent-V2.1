@@ -33,8 +33,13 @@ breaks runtime annotation evaluation.
 """
 
 import hashlib
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg2.extras
@@ -45,13 +50,7 @@ from georag_dagster.assets.sparse_encoder import (
     SPARSE_MODEL_VERSION,
     encode_sparse_batch,
 )
-from georag_dagster.resources import S3Resource, PostgresResource, QdrantResource
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-import os
+from georag_dagster.resources import PostgresResource, QdrantResource, S3Resource
 
 QDRANT_COLLECTION = "georag_reports"
 
@@ -81,9 +80,9 @@ _MODEL = None
 
 def _get_model():
     """Return the cached SentenceTransformer, loading it on first call."""
-    global _MODEL  # noqa: PLW0603
+    global _MODEL
     if _MODEL is None:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        from sentence_transformers import SentenceTransformer
 
         _MODEL = SentenceTransformer(EMBED_MODEL_NAME)
     return _MODEL
@@ -292,7 +291,7 @@ def _ensure_collection(client: Any, context: AssetExecutionContext) -> None:
       - document_type (keyword)-- NI43 vs PUB vs PGEO
       - section_number (integer)
     """
-    from qdrant_client.models import (  # noqa: PLC0415
+    from qdrant_client.models import (
         Distance,
         HnswConfigDiff,
         OptimizersConfigDiff,
@@ -413,18 +412,17 @@ def index_reports(
 
     # --- Fetch report row from silver ---
     row: dict | None = None
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                FETCH_REPORT_SQL,
-                {
-                    "report_id":     report_id_filter or "",
-                    "title_pattern": title_filter,
-                },
-            )
-            result = cur.fetchone()
-            if result:
-                row = dict(result)
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            FETCH_REPORT_SQL,
+            {
+                "report_id":     report_id_filter or "",
+                "title_pattern": title_filter,
+            },
+        )
+        result = cur.fetchone()
+        if result:
+            row = dict(result)
 
     if row is None:
         context.log.warning(
@@ -485,7 +483,7 @@ def index_reports(
         # The key itself is used when we don't have the title separately
         # (sections_text stores body only; title was not persisted to the dict).
         # The chunk format remains informative even without a separate title.
-        if section_key.isdigit():  # noqa: SIM108
+        if section_key.isdigit():
             section_label = f"Section {section_key}"
         else:
             section_label = section_key.capitalize()
@@ -547,7 +545,7 @@ def index_reports(
         pass
 
     # --- Build Qdrant PointStructs (multi-vector: dense "" + sparse "text") ---
-    from qdrant_client.models import PointStruct, SparseVector  # noqa: PLC0415
+    from qdrant_client.models import PointStruct, SparseVector
 
     points: list[PointStruct] = []
     for section_key, chunk_text, embedding, sparse_vec in zip(
@@ -557,7 +555,7 @@ def index_reports(
 
         # section_number payload field must be int when the key is numeric;
         # keep as string for named keys (Qdrant payload is schema-less).
-        if section_key.isdigit():  # noqa: SIM108
+        if section_key.isdigit():
             section_number_payload = int(section_key)
         else:
             section_number_payload = section_key  # type: ignore[assignment]
@@ -594,7 +592,7 @@ def index_reports(
                     "project_name":    project_name,
                     "document_type":   "NI43",
                     "document_title":  title,
-                    "indexed_at":      datetime.now(timezone.utc).isoformat(),
+                    "indexed_at":      datetime.now(UTC).isoformat(),
                     "embed_model":     EMBED_MODEL_NAME,
                     "parser_version":  SPARSE_MODEL_VERSION,  # for cache invalidation
                 },
@@ -701,7 +699,7 @@ def index_reports(
                                     "document_type": "NI43",
                                     "document_title": title,
                                     "content_type": "figure_description",
-                                    "indexed_at": datetime.now(timezone.utc).isoformat(),
+                                    "indexed_at": datetime.now(UTC).isoformat(),
                                     "embed_model": EMBED_MODEL_NAME,
                                     "parser_version": SPARSE_MODEL_VERSION,
                                 },

@@ -1,11 +1,9 @@
-"""Pydantic models for the §04p PDF Ingestion Subsystem — Phase 1.A + 1.B + 1.C-i + 1.C-ii + 1.D + 2.A.
+"""Pydantic models for the §04p PDF Ingestion Subsystem — Phase 1.A + 1.B + 1.D + 2.A.
 
 This module owns the data contracts shared across:
   - app/services/pdf_preflight.py    (Stage 1 — qpdf via pikepdf)
   - app/services/pdf_render.py       (Stage 2 — pypdfium2)
   - app/services/pdf_extract.py      (Stage 3 — pdfminer.six + pdfplumber)
-  - app/services/pdf_layout.py       (Stage 4 — Docling layout detection)
-  - app/services/pdf_ocr.py          (Stage 5 — PaddleOCR PP-OCRv5)
   - app/services/pdf_vl.py           (Stage 6 — Qwen-VL vision-language reasoning)
   - app/services/pdf_coordinates.py  (Phase 2.A — deterministic coordinate extraction)
   - app/routers/pdf.py               (HTTP endpoints)
@@ -16,16 +14,13 @@ Phase 1.B additions (text+layout):
   - ExtractTextResponse  — list[PdfTextBlock] + cache_hit flag
   - FindTablesResponse   — list[PdfTable] + cache_hit flag
 
-Phase 1.C-i additions (Docling layout detection):
-  - LayoutRegionType     — Literal type alias matching the silver.pdf_layout_regions CHECK enum
-  - PdfLayoutRegion      — one layout region with typed bbox + provenance + confidence
-  - FindLegendsResponse  — list[PdfLayoutRegion] + cache_hit flag + optional page filter
-
-Phase 1.C-ii additions (PaddleOCR PP-OCRv5):
-  - OcrSourceMethod      — Literal type alias for the source_method CHECK enum values
-  - OcrLine              — one OCR line with pixel-space bbox + confidence
-  - OcrRegionRequest     — POST /pdf/ocr_region request body (pdf_id, page, bbox, dpi)
-  - OcrRegionResponse    — per-region OCR output with provenance + cache_hit
+NOTE: Stage 4 (Docling layout detection — LayoutRegionType, PdfLayoutRegion,
+FindLegendsResponse, GET /pdf/find_legends) was removed 2026-07-29. Docling
+never ran in production (PDF_PARSER_DOCLING_ENABLED was false in every live
+deployment); see app/services/ingest/pdf_report.py's module docstring for
+the full removal rationale. Stage 5 (PaddleOCR — pdf_ocr.py, OcrLine,
+OcrRegionRequest/Response, POST /pdf/ocr_region) was removed the same day —
+same orphan pattern, zero callers anywhere in Laravel/frontend.
 
 Phase 1.D additions (Qwen-VL vision-language reasoning):
   - VlBackend            — Literal type alias for allowed VL backend names
@@ -58,9 +53,15 @@ class PdfProvenance(BaseModel):
     Directly supports §04i Citation completeness and Numeric grounding guards:
     any LLM claim must resolve back to one or more (pdf_id, page, bbox) tuples.
 
-    source_method is limited to the methods implemented in Phase 1.A.
-    Phase 1.B (text+layout) will extend the enum with pdfminer / pdfplumber /
-    docling / paddle_ocr / paddle_structure values.
+    ``paddle_ocr`` and ``paddle_structure`` are retained as read-compatible
+    legacy values even though the Paddle writers were removed in 2026-07.
+    They mirror deployed §04p provenance constraints and may still appear in
+    historical API payloads or external reporting consumers. A live read-only
+    audit on 2026-07-29 also confirmed that the eight-table §04p group is not
+    disposable as a unit (``pdf_text_blocks``, ``ocr_page_quality``, and
+    ``low_confidence_page_reviews`` contain rows, while active services still
+    reference ``pdf_layout_regions``). Remove these two values only with a
+    dedicated compatibility migration and consumer inventory.
     """
 
     pdf_id: str = Field(..., description="SHA-256 hex of the original PDF bytes (Bronze archive key)")
@@ -76,7 +77,6 @@ class PdfProvenance(BaseModel):
         "paddle_ocr",
         "paddle_structure",
         "qwen_vl",
-        "docling",
         "regex",
     ] = Field(..., description="Extraction method — determines confidence semantics. 'regex' covers deterministic pattern extraction (Phase 2.A find_coordinates) layered on top of an upstream text source — extraction_confidence reflects the regex+bounds-check certainty (1.0 when bounds pass).")
     extraction_confidence: float = Field(
@@ -296,249 +296,6 @@ class FindTablesResponse(BaseModel):
     cache_hit: bool = Field(
         ...,
         description="True if results were served from the Silver cache; False on fresh extraction",
-    )
-    pdf_id: str = Field(..., description="pdf_id echoed from the request")
-    page: int | None = Field(
-        None,
-        description="1-indexed page filter from the request; None = all pages",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Stage 4 — Layout region detection models (Phase 1.C-i)
-# ---------------------------------------------------------------------------
-
-# Literal type alias matching the CHECK constraint vocabulary in
-# silver.pdf_layout_regions.  Must stay in sync with the migration.
-LayoutRegionType = Literal[
-    "text",
-    "figure",
-    "table",
-    "header",
-    "footer",
-    "formula",
-    "title",
-    "caption",
-    "footnote",
-    "list",
-    "page_number",
-    "unknown",
-]
-
-
-class PdfLayoutRegion(BaseModel):
-    """A single layout region detected by Docling in a PDF page.
-
-    Carries the full §04p provenance tuple (pdf_id, page, bbox) so the
-    FastAPI citation pipeline can satisfy §04i Citation completeness and
-    Numeric grounding guards.
-
-    bbox is (x0, y0, x1, y1) in PDF user-space coordinates
-    (origin = bottom-left, y increases upward, units = points).
-
-    region_confidence is nullable because some Docling DocItem types (e.g.,
-    section headers detected by heuristic rules rather than visual detection)
-    do not carry a confidence score.
-    """
-
-    region_id: uuid.UUID = Field(
-        ...,
-        description="Stable identifier for this region in silver.pdf_layout_regions",
-    )
-    pdf_id: str = Field(..., description="SHA-256 hex of the Bronze-stored normalised PDF")
-    page: int = Field(..., ge=1, description="1-indexed page number")
-    region_index: int = Field(
-        ...,
-        ge=0,
-        description="0-indexed position of this region within the page (Docling DocItem walk order)",
-    )
-    region_type: LayoutRegionType = Field(
-        ...,
-        description="Typed layout label — matches the silver.pdf_layout_regions CHECK enum",
-    )
-    bbox: tuple[float, float, float, float] = Field(
-        ...,
-        description="(x0, y0, x1, y1) in PDF user-space points (bottom-left origin, y-up)",
-    )
-    region_confidence: float | None = Field(
-        None,
-        ge=0.0,
-        le=1.0,
-        description="Docling detection confidence [0.0, 1.0]; None when not available",
-    )
-    provenance: PdfProvenance = Field(
-        ...,
-        description="Full provenance tuple per §04p contract",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Stage 4 — Response envelope
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Stage 5 — PaddleOCR PP-OCRv5 models (Phase 1.C-ii)
-# ---------------------------------------------------------------------------
-
-# Literal type alias matching the source_method CHECK constraint in
-# silver.pdf_ocr_results.  'paddle_structure' is reserved for Phase 1.D
-# (PP-StructureV3 for table/form cell-level extraction).
-OcrSourceMethod = Literal["paddle_ocr", "paddle_structure"]
-
-
-class OcrLine(BaseModel):
-    """A single OCR-detected text line within a rendered crop.
-
-    bbox is in PIXEL coordinates relative to the rendered crop image
-    (origin = top-left, y increases downward, units = pixels at the stored dpi).
-
-    This is intentionally different from the PDF user-space bbox carried by
-    PdfTextBlock and PdfLayoutRegion (which use PDF points with a bottom-left
-    origin).  Phase 2 deterministic extractors that need absolute PDF coordinates
-    combine the parent OcrRegionResponse.region_bbox (PDF user-space) with
-    the line's relative pixel bbox using the dpi scaling factor (dpi / 72.0).
-    """
-
-    text: str = Field(..., description="Text content of this OCR line")
-    bbox: tuple[float, float, float, float] = Field(
-        ...,
-        description=(
-            "[x0, y0, x1, y1] in PIXEL coordinates relative to the rendered crop "
-            "(origin = top-left, y-down, units = pixels at the stored dpi). "
-            "NOT in PDF user-space — see module docstring for coordinate conversion."
-        ),
-    )
-    confidence: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="PaddleOCR per-line confidence score [0.0, 1.0]",
-    )
-
-
-class OcrRegionRequest(BaseModel):
-    """Request body for POST /pdf/ocr_region.
-
-    bbox must describe a positive non-degenerate rectangle in PDF user-space
-    coordinates (origin = bottom-left, y increases upward, units = points).
-    The router rejects zero-area bboxes (x0 >= x1 or y0 >= y1) before any
-    OCR work is dispatched — per §04p "region-targeted only, never full-page".
-
-    The PDF must have already passed Stage 1 preflight and its normalised bytes
-    stored in the Bronze store at pdfs/{pdf_id}.pdf.
-    """
-
-    pdf_id: str = Field(
-        ...,
-        description="SHA-256 hex identifying the normalised PDF in the Bronze store",
-    )
-    page: int = Field(..., ge=1, description="1-indexed page number")
-    bbox: tuple[float, float, float, float] = Field(
-        ...,
-        description=(
-            "[x0, y0, x1, y1] in PDF user-space points (bottom-left origin, y-up). "
-            "Must be a positive rectangle: x1 > x0 and y1 > y0."
-        ),
-    )
-    dpi: int = Field(
-        300,
-        ge=72,
-        le=600,
-        description=(
-            "DPI at which the region is rendered before OCR. "
-            "Higher DPI improves recognition of small text at the cost of memory. "
-            "300 is a good default for geological report figures."
-        ),
-    )
-
-
-class OcrRegionResponse(BaseModel):
-    """Response envelope for POST /pdf/ocr_region.
-
-    Every response carries a ``provenance`` field with (pdf_id, page, bbox) and
-    source_method='paddle_ocr' per the §04p provenance contract, feeding §04i
-    Citation completeness and Numeric grounding guards.
-
-    extraction_confidence reflects OCR quality (mean per-line confidence) — NOT
-    a hardcoded 1.0.  OCR is lossy unlike pdfminer/pdfplumber lossless text
-    extraction; callers must treat numerical claims from OCR with lower
-    confidence than claims from lossless text blocks.
-
-    cache_hit is exposed for observability — operators can verify the Silver
-    cache is being populated correctly.
-    """
-
-    ocr_id: uuid.UUID = Field(
-        ...,
-        description="Stable identifier for this OCR result in silver.pdf_ocr_results",
-    )
-    pdf_id: str = Field(..., description="SHA-256 hex of the Bronze-stored normalised PDF")
-    page: int = Field(..., ge=1, description="1-indexed page number")
-    region_bbox: tuple[float, float, float, float] = Field(
-        ...,
-        description="[x0, y0, x1, y1] of the OCR'd region in PDF user-space points (bottom-left origin, y-up)",
-    )
-    dpi: int = Field(..., description="DPI at which the region was rendered before OCR")
-    text_content: str = Field(
-        ...,
-        description="Full OCR text concatenation, newline-separated lines",
-    )
-    lines: list[OcrLine] = Field(
-        default_factory=list,
-        description=(
-            "Per-line OCR detail.  Each line carries text, a pixel-space bbox "
-            "relative to the rendered crop, and a confidence score."
-        ),
-    )
-    mean_confidence: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Mean of per-line PaddleOCR confidence scores [0.0, 1.0]. "
-            "1.0 when no lines were detected (empty region). "
-            "Use this to gate downstream numerical claim verification (§04i Layer 3)."
-        ),
-    )
-    cache_hit: bool = Field(
-        ...,
-        description="True if results were served from the Silver cache; False on fresh OCR",
-    )
-    provenance: PdfProvenance = Field(
-        ...,
-        description=(
-            "Full provenance tuple per §04p contract. "
-            "source_method='paddle_ocr', extraction_confidence=mean_confidence "
-            "(reflects OCR quality — NOT hardcoded 1.0)."
-        ),
-    )
-
-
-class FindLegendsResponse(BaseModel):
-    """Response envelope for GET /pdf/find_legends.
-
-    Despite the endpoint name ('find_legends'), this response carries ALL
-    detected layout regions for the requested page(s).  Mining-domain
-    heuristics to identify legend-specific regions belong in Phase 2's
-    deterministic extractors; Phase 1.C-i returns the raw typed regions so
-    the agent (or any downstream consumer) can filter client-side.
-
-    The optional region_type filter query parameter allows server-side
-    filtering when the caller only needs regions of a specific type (e.g.,
-    ?region_type=figure for all figure bboxes in a PDF).  The filter is
-    applied over the cached Silver rows — no additional Docling inference.
-
-    cache_hit semantics match ExtractTextResponse and FindTablesResponse.
-    """
-
-    regions: list[PdfLayoutRegion] = Field(
-        default_factory=list,
-        description="Layout regions detected in the requested page(s), optionally filtered by region_type",
-    )
-    cache_hit: bool = Field(
-        ...,
-        description="True if results were served from the Silver cache; False on fresh Docling detection",
     )
     pdf_id: str = Field(..., description="pdf_id echoed from the request")
     page: int | None = Field(

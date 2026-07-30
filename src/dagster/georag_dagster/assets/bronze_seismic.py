@@ -8,7 +8,6 @@ NOTE: Do NOT add ``from __future__ import annotations`` to this file.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
@@ -20,8 +19,8 @@ SEISMIC_PREFIX = "seismic"
 
 
 class BronzeSeismicConfig(Config):
-    object_key: Optional[str] = None
-    segy_file_path: Optional[str] = None
+    object_key: str | None = None
+    segy_file_path: str | None = None
 
 
 @asset(
@@ -61,7 +60,7 @@ def bronze_seismic(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

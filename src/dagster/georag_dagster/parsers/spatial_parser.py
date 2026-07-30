@@ -210,7 +210,7 @@ def _safe_str(val) -> str | None:
     if val is None:
         return None
     try:
-        import pandas as pd  # noqa: PLC0415 — deferred, only used here
+        import pandas as pd
         if pd.isna(val):
             return None
     except (TypeError, ImportError):
@@ -233,7 +233,7 @@ def _sanitise_properties(row_dict: dict) -> dict:
             continue
         # Convert pandas NA, numpy scalars, etc. to Python natives
         try:
-            import pandas as pd  # noqa: PLC0415
+            import pandas as pd
             if pd.isna(v):
                 continue
         except (TypeError, ImportError):
@@ -266,7 +266,7 @@ def _score_crs_confidence(gdf) -> tuple[float, str]:
         return 0.0, "no CRS declared"
 
     try:
-        from pyproj import CRS  # noqa: PLC0415
+        from pyproj import CRS
         crs_obj = CRS.from_user_input(gdf.crs)
         area = crs_obj.area_of_use
         if area is None:
@@ -324,7 +324,7 @@ def _list_gpkg_sqlite_tables(path: str) -> list[str]:
     Returns an empty list on any IO/sqlite error — detection is best-effort
     and never blocks the main parse path.
     """
-    import sqlite3  # noqa: PLC0415
+    import sqlite3
 
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
@@ -385,7 +385,7 @@ def _hoist_qfield_properties(
     for ts_col in ("timestamp", "captured_at"):
         actual = next((c for c in row_dict if c.lower() == ts_col), None)
         if actual and row_dict.get(actual) is not None:
-            try:  # noqa: SIM105
+            try:
                 out["_qfield_timestamp"] = str(row_dict[actual])
             except Exception:
                 pass
@@ -436,8 +436,8 @@ def _read_all_layers(
 
     Falls back to geopandas.read_file for single-layer paths.
     """
-    import geopandas as gpd  # noqa: PLC0415
-    import pyogrio  # noqa: PLC0415
+    import geopandas as gpd
+    import pyogrio
 
     raw_layers = pyogrio.list_layers(path)
     # list_layers returns an ndarray of shape (N, 2): [[name, geom_type], ...]
@@ -476,7 +476,7 @@ def _read_all_layers(
     if not frames:
         return gpd.GeoDataFrame(), layer_names, per_layer_cols
 
-    import pandas as pd  # noqa: PLC0415
+    import pandas as pd
     combined = pd.concat(frames, ignore_index=True)
     return (
         gpd.GeoDataFrame(combined, crs=frames[0].crs if frames else None),
@@ -588,8 +588,9 @@ def _extract_dxf_blocks(path: str | Path) -> list[dict]:
     Raises:
         Any ezdxf exception on malformed files — caller wraps in try/except.
     """
-    import ezdxf  # noqa: PLC0415 — lazy import; non-DXF callers pay no import cost
-    from collections import Counter  # noqa: PLC0415
+    from collections import Counter
+
+    import ezdxf
 
     doc = ezdxf.readfile(str(path))
 
@@ -910,7 +911,7 @@ def parse_spatial_file(path: str, feature_type: str | None = None) -> SpatialPar
     dxf_blocks_out: list[dict] = []
     if ext == ".dxf":
         try:
-            import ezdxf as _ezdxf_probe  # noqa: PLC0415, F401 — probe import only
+            import ezdxf as _ezdxf_probe  # noqa: F401 — probe import only
             dxf_blocks_out = _extract_dxf_blocks(path)
             # Block extraction succeeded — remove from deferred list
             if "dxf_blocks" in deferred_capabilities:

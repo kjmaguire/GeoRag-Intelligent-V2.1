@@ -35,8 +35,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 from georag_dagster.assets.bronze_reports import BRONZE_BUCKET, REPORTS_PREFIX, bronze_reports
 from georag_dagster.hooks.shadow_v149 import emit_v149_audits, record_v149_for_shadow
 from georag_dagster.parsers.pdf_report import parse_pdf_report
-from georag_dagster.resources import S3Resource, PostgresResource
-
+from georag_dagster.resources import PostgresResource, S3Resource
 
 # ---------------------------------------------------------------------------
 # SQL
@@ -175,11 +174,6 @@ def silver_reports(
     )
 
     # --- Parse ---
-    # TODO (Module 3 Phase B): invoke RAGFlow as the primary parser here.
-    # parse_pdf_report is the fallback-only path (fitz-first + pdfplumber).
-    # It must only be called after a recorded RAGFlow failure for the same
-    # bronze_sha256. See parsers/pdf_report.py module docstring for details.
-    # Kyle-approved 2026-04-20 as temporary fallback-only invocation.
     _parse_started = time.monotonic()
     parse_result = parse_pdf_report(tmp_path)
     _parse_duration_ms = int((time.monotonic() - _parse_started) * 1000)

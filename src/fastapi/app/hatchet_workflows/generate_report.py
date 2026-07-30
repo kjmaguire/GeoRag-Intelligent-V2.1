@@ -152,7 +152,10 @@ async def execute(input: GenerateReportInput, ctx: Context) -> GenerateReportOut
     )
 
     graph = build_report_builder_graph()
-    raw = await graph.ainvoke(initial_state)
+    raw = await graph.ainvoke(
+        initial_state,
+        config={"configurable": {"thread_id": str(report_id)}},
+    )
     final = ReportBuilderState.model_validate(raw)
 
     evidence_items = sum(

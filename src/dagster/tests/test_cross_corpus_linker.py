@@ -38,7 +38,6 @@ from georag_dagster.assets.gold_cross_corpus_linker import (
     _surrounding_context,
 )
 
-
 # ---------------------------------------------------------------------------
 # _normalize_smdi
 # ---------------------------------------------------------------------------
@@ -365,7 +364,7 @@ class TestScanDocument:
         smdi_lookup = {"10": "uuid-10", "20": "uuid-20"}
         links = _scan_document(doc, smdi_lookup=smdi_lookup, drillhole_lookup={})
         assert len(links) == 2
-        entity_ids = {l.entity_id for l in links}  # noqa: E741
+        entity_ids = {l.entity_id for l in links}
         assert entity_ids == {"uuid-10", "uuid-20"}
 
     def test_link_confidence_is_deterministic_value(self):
@@ -391,7 +390,7 @@ class TestScanDocument:
         dh_lookup = {"GOS_999": "uuid-dh-999"}
         links = _scan_document(doc, smdi_lookup=smdi_lookup, drillhole_lookup=dh_lookup)
         assert len(links) == 2
-        types = {l.canonical_type for l in links}  # noqa: E741
+        types = {l.canonical_type for l in links}
         assert types == {"mineral_occurrence", "drillhole_collar"}
 
 

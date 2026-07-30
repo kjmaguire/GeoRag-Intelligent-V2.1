@@ -58,24 +58,8 @@ class HandleInertiaRequests extends Middleware
             ],
             'basemap_styles' => config('services.basemap.styles'),
 
-            // Plan §4d — share the guard-error i18n catalog with the React
-            // side so client-side code (e.g. the GuardErrorMessage primitive)
-            // can render template strings without a server round-trip. Map
-            // is small (~20 keys × ~150 chars = ~3 KB) so it's cheap to
-            // include on every Inertia response. Lazy closure keeps it off
-            // partial reloads that don't request it.
-            'guard_errors' => fn () => trans('guard_errors'),
-
-            // ── Foundry shell rail data (project-scoped lists) ───────────────
-            // These hydrate FoundryShell's left rail (project-scoped chat threads
-            // and saved map views) and the top-bar badge counts (inbox + reviews).
-            // All are lazy closures so they only run on requests that need them
-            // (Inertia partial reloads will skip ones that aren't selected).
-
+            // Foundry shell project-scoped chat threads.
             'project_threads' => fn () => $this->resolveProjectThreads($request),
-            'project_saved_views' => fn () => $this->resolveSavedViews($request),
-            'inbox_count' => fn () => $this->resolveInboxCount($request),
-            'review_count' => fn () => $this->resolveReviewCount($request),
         ];
     }
 
@@ -130,78 +114,6 @@ class HandleInertiaRequests extends Middleware
                 ])->all();
         } catch (\Throwable $e) {
             return [];
-        }
-    }
-
-    /**
-     * @return list<array{id:string,name:string,scope:string}>
-     */
-    private function resolveSavedViews(Request $request): array
-    {
-        $user = $request->user();
-        if (! $user) {
-            return [];
-        }
-        $projectId = $this->currentProjectId($request);
-        if (! $projectId) {
-            return [];
-        }
-        try {
-            return DB::table('silver.saved_map_views')
-                ->where(function ($q) use ($projectId, $user) {
-                    $q->where('project_id', $projectId)->orWhere('created_by', $user->id);
-                })
-                ->orderByDesc('updated_at')
-                ->limit(20)
-                ->get(['view_id', 'name', 'project_id', 'workspace_id'])
-                ->map(function ($v) {
-                    $scope = 'user';
-                    if (isset($v->workspace_id) && $v->workspace_id !== null && $v->project_id === null) {
-                        $scope = 'workspace';
-                    } elseif (isset($v->project_id) && $v->project_id !== null) {
-                        $scope = 'project';
-                    }
-
-                    return [
-                        'id' => (string) $v->view_id,
-                        'name' => (string) ($v->name ?? 'Untitled view'),
-                        'scope' => $scope,
-                    ];
-                })->all();
-        } catch (\Throwable $e) {
-            return [];
-        }
-    }
-
-    private function resolveInboxCount(Request $request): int
-    {
-        $user = $request->user();
-        if (! $user) {
-            return 0;
-        }
-        try {
-            return (int) DB::table('silver.collaboration_mentions')
-                ->where('user_id', $user->id)
-                ->whereNull('read_at')
-                ->count();
-        } catch (\Throwable $e) {
-            return 0;
-        }
-    }
-
-    private function resolveReviewCount(Request $request): int
-    {
-        $user = $request->user();
-        if (! $user) {
-            return 0;
-        }
-        try {
-            return (int) DB::table('silver.collaboration_review_requests')
-                ->where('requested_to', $user->id)
-                ->where('status', 'pending')
-                ->count();
-        } catch (\Throwable $e) {
-            return 0;
         }
     }
 }

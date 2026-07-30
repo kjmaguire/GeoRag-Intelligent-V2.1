@@ -9,15 +9,14 @@ import type { PageProps } from '@/types';
  *
  * Three tiers of navigation:
  *   1. ORG bar (top, always)
- *        LEFT:  Brand · Portfolio · Projects · Public Geo · + New
- *        RIGHT: Search · Review · Inbox · User menu · Theme
+ *        LEFT:  Brand · Projects · + New
+ *        RIGHT: Search · User menu · Theme
  *   2. PROJECT sub-bar (horizontal, only when in-project)
- *        Overview · Workspace · Chat · Reasoning · Targets · Data · Reader · Reports · Audit
+ *        Overview · Chat · Data · Ingestion · Quality · Reader · Reports
  *   3. PROJECT left rail (vertical, only when in-project)
- *        Same nav as sub-bar, plus chat-threads + saved-views lists below.
+ *        Same nav as sub-bar, plus chat threads below.
  *
  * Chat lives INSIDE projects only (/projects/{slug}/chat) — no standalone /chat.
- * Admin surfaces live behind the user menu, not in the main top bar.
  */
 
 interface FoundryShellProps {
@@ -26,57 +25,27 @@ interface FoundryShellProps {
 }
 
 const ORG_NAV: Array<{ id: string; href: string; label: string }> = [
-    { id: 'portfolio', href: '/dashboard', label: 'Portfolio' },
     { id: 'projects', href: '/projects', label: 'Projects' },
-    { id: 'publicgeo', href: '/foundry/public-geoscience', label: 'Public Geo' },
 ];
 
 const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: string }> = [
     { id: 'overview', suffix: '', label: 'Overview', icon: 'home' },
-    { id: 'workspace', suffix: '/workspace', label: 'Workspace', icon: 'map' },
     { id: 'chat', suffix: '/chat', label: 'Chat', icon: 'chat' },
-    { id: 'reasoning', suffix: '/reasoning', label: 'Reasoning', icon: 'flask' },
-    { id: 'targets', suffix: '/targets', label: 'Targets', icon: 'zap' },
     { id: 'data', suffix: '/sources', label: 'Data', icon: 'db' },
-    // Live per-file ingestion progress for this project. Sibling of Data so
-    // users see "what I uploaded" (Data) vs "where is it in the pipeline"
-    // (Ingestion Runs) side by side. Surface owned by IngestionRunsController.
     { id: 'ingestion-runs', suffix: '/ingestion-runs', label: 'Ingestion Runs', icon: 'pulse' },
-    // Lakehouse — bronze/silver/gold inventory of every ingested layer for
-    // this project. Direct-URL entrypoint to per-hole DrillholeDetail
-    // (§5.12) lives inside the Lakehouse + Workspace pages.
-    { id: 'lakehouse', suffix: '/lakehouse', label: 'Lakehouse', icon: 'db' },
+    { id: 'ingest-quality', suffix: '/imports/quality', label: 'Quality', icon: 'shield' },
     { id: 'reader', suffix: '/corpus', label: 'Reader', icon: 'doc' },
     { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
-    // CC-01 Item 1 Slice 4 — Silver Review Queue surface for drill data
-    // (lithology / assays / collars pending review). Sibling of Data so
-    // geologists see "Data" (already accepted) vs "Review" (pending) at a glance.
-    { id: 'drill-review', suffix: '/drill-review', label: 'Review', icon: 'shield' },
-    { id: 'audit', suffix: '/audit', label: 'Audit', icon: 'shield' },
-];
-
-const ADMIN_NAV: Array<{ href: string; label: string }> = [
-    { href: '/support-cockpit', label: 'Support Cockpit' },
-    { href: '/admin/eval-dashboard', label: 'Eval Dashboard' },
-    { href: '/admin/decision-history', label: 'Decision History' },
-    { href: '/admin/hypothesis-workspace', label: 'Hypothesis Workspace' },
-    { href: '/admin/cluster-ingest', label: 'Cluster Ingest' },
 ];
 
 interface SharedRailData {
     project_threads?: Array<{ id: string; title: string; updated: string }>;
-    project_saved_views?: Array<{ id: string; name: string; scope: string }>;
-    inbox_count?: number;
-    review_count?: number;
 }
 
 function Icon({ name, size = 12 }: { name: string; size?: number }) {
     const paths: Record<string, React.ReactNode> = {
         home: <path d="M3 11 12 4l9 7v9h-6v-6h-6v6H3z" />,
-        map: <path d="M9 4 3 6v14l6-2m0-14 6 2m-6-2v14m6-12 6-2v14l-6 2m0-14v14" />,
         chat: <path d="M4 5h16v11H9l-5 4V5z" />,
-        flask: <path d="M9 3h6 M10 3v6l-5 9 1 2h12l1-2-5-9V3" />,
-        zap: <path d="M13 3 4 14h7l-1 7 9-11h-7z" />,
         db: (
             <>
                 <ellipse cx="12" cy="5" rx="8" ry="2.5" />
@@ -88,10 +57,7 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
         report: <path d="M6 3h12v18H6z M9 8h6 M9 12h6 M9 16h4" />,
         shield: <path d="M12 3 L20 7 L20 12 C20 16 16 20 12 22 C8 20 4 16 4 12 L4 7 Z" />,
         search: <path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4" />,
-        inbox: <path d="M4 13h5l1 3h4l1-3h5 M4 5h16v14H4z" />,
-        review: <path d="M5 12l4 4 10-10" />,
         plus: <path d="M12 5v14 M5 12h14" />,
-        bookmark: <path d="M6 4h12v17l-6-4-6 4z" />,
         chevron: <path d="M9 6 L15 12 L9 18" />,
         bell: <path d="M6 14v-3a6 6 0 0 1 12 0v3l1.5 3h-15z M10 20a2 2 0 0 0 4 0" />,
         pulse: <path d="M3 12h4l2-7 4 14 2-7h6" />,
@@ -107,7 +73,6 @@ function UserMenu() {
     const { auth } = usePage<PageProps>().props;
     const user = auth?.user ?? null;
     const [open, setOpen] = useState(false);
-    const isAdmin = Boolean(auth?.user?.is_admin);
 
     function handleLogout() {
         const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -117,12 +82,12 @@ function UserMenu() {
             headers: { Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}) },
         }).catch(() => {});
         try { localStorage.removeItem('georag_user'); } catch { /* */ }
-        router.visit('/foundry/login');
+        router.visit('/login');
     }
 
     if (!user) {
         return (
-            <Link href="/foundry/login" className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-[var(--line-1)] text-[var(--fg-3)] hover:text-[var(--fg-0)] hover:border-[var(--line-2)]">
+            <Link href="/login" className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-[var(--line-1)] text-[var(--fg-3)] hover:text-[var(--fg-0)] hover:border-[var(--line-2)]">
                 Sign in
             </Link>
         );
@@ -154,19 +119,6 @@ function UserMenu() {
                         <div className="text-xs" style={{ color: 'var(--fg-0)' }}>{user.name}</div>
                         <div className="text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>{user.email}</div>
                     </div>
-                    <Link href="/settings" onClick={() => setOpen(false)} role="menuitem" className="block px-3 py-2 text-xs hover:bg-[var(--bg-2)]" style={{ color: 'var(--fg-1)' }}>
-                        Workspace settings
-                    </Link>
-                    {isAdmin && (
-                        <>
-                            <div className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-wider border-t" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>Admin</div>
-                            {ADMIN_NAV.map((a) => (
-                                <Link key={a.href} href={a.href} onClick={() => setOpen(false)} role="menuitem" className="block px-3 py-1.5 text-[11px] hover:bg-[var(--bg-2)]" style={{ color: 'var(--fg-1)' }}>
-                                    {a.label}
-                                </Link>
-                            ))}
-                        </>
-                    )}
                     <button
                         type="button"
                         onClick={handleLogout}
@@ -229,18 +181,14 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
     const currentSubpath = inProject ? (projectMatch![2] ?? '') : '';
 
     const orgActive = (href: string) => {
-        if (href === '/dashboard') return url === '/dashboard';
         if (href === '/projects') return url === '/projects' || url.startsWith('/projects?');
         return url.startsWith(href);
     };
 
-    // Threads + saved views shown in the rail, hydrated by controllers
+    // Threads shown in the rail, hydrated by controllers
     // that opt-in via Inertia shared props. Default to empty arrays so the
     // shell renders cleanly for pages that don't provide them.
     const threads = railData.project_threads ?? [];
-    const savedViews = railData.project_saved_views ?? [];
-    const inboxCount = railData.inbox_count ?? 0;
-    const reviewCount = railData.review_count ?? 0;
 
     const rootClass = ['foundry', theme === 'light' ? 'light' : ''].filter(Boolean).join(' ');
     const layoutGrid = inProject
@@ -265,7 +213,7 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                     style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
                 >
                     {/* Brand */}
-                    <Link href="/dashboard" className="flex items-center gap-2 select-none">
+                    <Link href="/projects" className="flex items-center gap-2 select-none">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="text-[var(--accent)]">
                             <path d="M12 3 L21 8 L21 16 L12 21 L3 16 L3 8 Z" />
                             <path d="M12 3 L12 21 M3 8 L21 16 M21 8 L3 16" opacity="0.35" />
@@ -273,7 +221,7 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                         <span className="text-[11px] font-mono font-semibold tracking-[0.12em] text-[var(--fg-0)]">GEORAG</span>
                     </Link>
 
-                    {/* LEFT — Portfolio · Projects · Public Geo · + New */}
+                    {/* LEFT — Projects · + New */}
                     <nav className="hidden sm:flex items-center gap-1 ml-2" aria-label="Org navigation">
                         {ORG_NAV.map((n) => (
                             <Link key={n.id} href={n.href} className={orgNavClass(orgActive(n.href))}>
@@ -296,7 +244,7 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
 
                     <div className="flex-1" />
 
-                    {/* RIGHT — Search · Review · Inbox */}
+                    {/* RIGHT — Search */}
                     <button
                         type="button"
                         onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))}
@@ -308,36 +256,6 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                         Search
                         <span className="ml-1 px-1 rounded text-[9px]" style={{ background: 'var(--bg-3)', color: 'var(--fg-3)' }}>⌘K</span>
                     </button>
-
-                    <Link
-                        href="/inbox?tab=reviews"
-                        className="relative flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded"
-                        style={{ color: 'var(--fg-2)' }}
-                        title="Review queue"
-                    >
-                        <Icon name="review" size={11} />
-                        Review
-                        {reviewCount > 0 && (
-                            <span className="text-[9px] px-1 rounded" style={{ background: 'var(--warn)', color: 'var(--bg-0)' }}>
-                                {reviewCount}
-                            </span>
-                        )}
-                    </Link>
-
-                    <Link
-                        href="/inbox"
-                        className="relative flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded"
-                        style={{ color: 'var(--fg-2)' }}
-                        title="Inbox"
-                    >
-                        <Icon name="inbox" size={11} />
-                        Inbox
-                        {inboxCount > 0 && (
-                            <span className="text-[9px] px-1 rounded" style={{ background: 'var(--accent)', color: 'var(--bg-0)' }}>
-                                {inboxCount}
-                            </span>
-                        )}
-                    </Link>
 
                     {/* Theme toggle */}
                     <div className="flex p-0.5 rounded border" style={{ background: 'var(--bg-2)', borderColor: 'var(--line-1)' }}>
@@ -449,39 +367,6 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                                 )}
                             </div>
 
-                            {/* Saved views (project-scoped) */}
-                            <div className="border-t mt-2 pt-3" style={{ borderColor: 'var(--line-1)' }}>
-                                <div className="flex items-center justify-between px-3 pb-1.5">
-                                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
-                                        Saved views
-                                    </span>
-                                    <Link href={`/projects/${currentSlug}/saved-views`} className="text-[10px] font-mono" style={{ color: 'var(--accent)' }}>
-                                        view all
-                                    </Link>
-                                </div>
-                                {savedViews.length === 0 ? (
-                                    <div className="px-3 py-1 text-[10px] font-mono" style={{ color: 'var(--fg-4)' }}>
-                                        no saved views
-                                    </div>
-                                ) : (
-                                    savedViews.slice(0, 6).map((v) => (
-                                        <button
-                                            key={v.id}
-                                            type="button"
-                                            onClick={() => window.dispatchEvent(new CustomEvent('georag:map:restore', { detail: { view_id: v.id } }))}
-                                            className="w-full text-left block px-3 py-1.5 text-[11px] truncate hover:bg-[var(--bg-2)]"
-                                            style={{ color: 'var(--fg-2)' }}
-                                            title={v.name}
-                                        >
-                                            <Icon name="bookmark" size={9} />
-                                            <span className="ml-2">{v.name}</span>
-                                            <span className="ml-2 text-[9px] uppercase" style={{ color: 'var(--fg-4)' }}>
-                                                {v.scope}
-                                            </span>
-                                        </button>
-                                    ))
-                                )}
-                            </div>
                         </aside>
                     </>
                 )}

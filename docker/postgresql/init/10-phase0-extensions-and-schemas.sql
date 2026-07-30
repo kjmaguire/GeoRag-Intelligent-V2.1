@@ -57,6 +57,14 @@ CREATE EXTENSION IF NOT EXISTS hypopg;
 -- pg_stat_kcache: kernel-level CPU + I/O stats per query. Pairs with
 -- pg_stat_statements for actual-resource attribution (track_io_timing alone
 -- gives DB-side timing; kcache adds OS-side context-switch + CPU time).
+-- pg_stat_kcache's control file hard-requires pg_stat_statements to already
+-- be registered. init-postgis.sql is normally the one that creates it, but
+-- (2026-07-28, B5 smoke test) that script runs AFTER this one on a fresh
+-- volume — same '1' < 'i' lexical-ordering trap this file's own header
+-- warns about for postgis, just missed for this dependency. Create it here
+-- too, idempotently, so a truly fresh volume doesn't die on this line and
+-- silently skip every init script after it (including 20-hatchet-database.sql).
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 CREATE EXTENSION IF NOT EXISTS pg_stat_kcache;
 
 -- pg_partman: declarative partition maintenance. Phase 0 uses it for

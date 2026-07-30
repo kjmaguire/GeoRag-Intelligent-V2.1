@@ -64,7 +64,7 @@ from pyproj import Transformer
 
 # Verify wellpathpy is installed — smoke-test only; math uses _survey_interp
 try:
-    import wellpathpy  # noqa: F401  (installation verification per §04d-tile spec)
+    import wellpathpy
     _WELLPATHPY_VERSION = getattr(wellpathpy, "__version__", "unknown")
 except ImportError as _wp_err:
     _WELLPATHPY_VERSION = f"MISSING: {_wp_err}"
@@ -72,9 +72,9 @@ except ImportError as _wp_err:
         "silver_drill_traces: wellpathpy import failed — rebuild Dagster image: %s", _wp_err
     )
 
-from georag_dagster.parsers._survey_interp import SurveyStation, minimum_curvature
 from georag_dagster.assets.silver import silver_collars
 from georag_dagster.assets.silver_surveys import silver_surveys
+from georag_dagster.parsers._survey_interp import SurveyStation, minimum_curvature
 from georag_dagster.resources import PostgresResource
 
 # ---------------------------------------------------------------------------
@@ -350,8 +350,7 @@ def _max_dogleg(stations: list[dict]) -> float:
             s_curr["azimuth"], s_curr["dip"],
             dl,
         )
-        if dls > max_dls:
-            max_dls = dls
+        max_dls = max(max_dls, dls)
     return max_dls
 
 
@@ -485,10 +484,9 @@ def silver_drill_traces(
                 azimuth_f, dip_f, total_depth,
             )
             try:
-                with postgres.get_connection() as conn:
-                    with conn.cursor() as h_cur:
-                        h_cur.execute(_EXISTING_HASH_SQL, {"collar_id": collar_id})
-                        existing_sl = h_cur.fetchone()
+                with postgres.get_connection() as conn, conn.cursor() as h_cur:
+                    h_cur.execute(_EXISTING_HASH_SQL, {"collar_id": collar_id})
+                    existing_sl = h_cur.fetchone()
             except Exception as exc:
                 context.log.warning(
                     "silver_drill_traces: hash check failed for collar %s: %s — "
@@ -527,20 +525,19 @@ def silver_drill_traces(
             # (straight_line counter) lets operators tell the two
             # populations apart.
             try:
-                with postgres.get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            _UPSERT_SQL,
-                            {
-                                "collar_id":    collar_id,
-                                "workspace_id": workspace_id,
-                                "project_id":   project_id,
-                                "wkt":          wkt,
-                                "survey_hash":  sl_hash,
-                                "dogleg_max_deg": None,
-                                "trace_quality": "single_survey_vertical",
-                            },
-                        )
+                with postgres.get_connection() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        _UPSERT_SQL,
+                        {
+                            "collar_id":    collar_id,
+                            "workspace_id": workspace_id,
+                            "project_id":   project_id,
+                            "wkt":          wkt,
+                            "survey_hash":  sl_hash,
+                            "dogleg_max_deg": None,
+                            "trace_quality": "single_survey_vertical",
+                        },
+                    )
             except Exception as exc:
                 context.log.error(
                     "silver_drill_traces: DB upsert failed for collar %s "
@@ -584,10 +581,9 @@ def silver_drill_traces(
         # --- Idempotency: hash comparison ---
         survey_hash = _compute_survey_hash(valid_surveys)
         try:
-            with postgres.get_connection() as conn:
-                with conn.cursor() as h_cur:
-                    h_cur.execute(_EXISTING_HASH_SQL, {"collar_id": collar_id})
-                    existing = h_cur.fetchone()
+            with postgres.get_connection() as conn, conn.cursor() as h_cur:
+                h_cur.execute(_EXISTING_HASH_SQL, {"collar_id": collar_id})
+                existing = h_cur.fetchone()
         except Exception as exc:
             context.log.warning(
                 "silver_drill_traces: hash check failed for collar %s: %s — proceeding with write.",
@@ -622,20 +618,19 @@ def silver_drill_traces(
                 continue
 
             try:
-                with postgres.get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            _UPSERT_SQL,
-                            {
-                                "collar_id":    collar_id,
-                                "workspace_id": workspace_id,
-                                "project_id":   project_id,
-                                "wkt":          wkt,
-                                "survey_hash":  survey_hash,
-                                "dogleg_max_deg": None,
-                                "trace_quality": "single_survey_vertical",
-                            },
-                        )
+                with postgres.get_connection() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        _UPSERT_SQL,
+                        {
+                            "collar_id":    collar_id,
+                            "workspace_id": workspace_id,
+                            "project_id":   project_id,
+                            "wkt":          wkt,
+                            "survey_hash":  survey_hash,
+                            "dogleg_max_deg": None,
+                            "trace_quality": "single_survey_vertical",
+                        },
+                    )
             except Exception as exc:
                 context.log.error(
                     "silver_drill_traces: DB upsert failed for collar %s: %s",
@@ -704,20 +699,19 @@ def silver_drill_traces(
 
         # Upsert into silver.drill_traces
         try:
-            with postgres.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        _UPSERT_SQL,
-                        {
-                            "collar_id":     collar_id,
-                            "workspace_id":  workspace_id,
-                            "project_id":    project_id,
-                            "wkt":           wkt,
-                            "survey_hash":   survey_hash,
-                            "dogleg_max_deg": round(dogleg_max, 3) if dogleg_max is not None else None,
-                            "trace_quality": trace_quality,
-                        },
-                    )
+            with postgres.get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    _UPSERT_SQL,
+                    {
+                        "collar_id":     collar_id,
+                        "workspace_id":  workspace_id,
+                        "project_id":    project_id,
+                        "wkt":           wkt,
+                        "survey_hash":   survey_hash,
+                        "dogleg_max_deg": round(dogleg_max, 3) if dogleg_max is not None else None,
+                        "trace_quality": trace_quality,
+                    },
+                )
         except Exception as exc:
             context.log.error(
                 "silver_drill_traces: DB upsert failed for collar %s: %s",

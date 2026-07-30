@@ -76,9 +76,8 @@ async def test_restore_workspace_unknown_workspace_returns_failure():
 
 
 @pytest.mark.asyncio
-async def test_restore_workspace_real_mode_is_explicitly_gated():
-    """`dry_run=False` must return failure with explicit message —
-    never silently silently destructive."""
+async def test_restore_workspace_real_mode_reports_restore_failure():
+    """`dry_run=False` reports a failed manifest restore explicitly."""
     inp = RestoreWorkspaceInput(
         workspace_id=UUID("a0000000-0000-0000-0000-000000000001"),
         snapshot_manifest_uri="s3://nope.json",
@@ -88,8 +87,8 @@ async def test_restore_workspace_real_mode_is_explicitly_gated():
     )
     out = await restore_workspace_execute.aio_mock_run(inp)
     assert out.success is False
-    assert out.failure_stage == "precheck"
-    assert "backup infrastructure" in (out.failure_reason or "")
+    assert out.failure_stage == "pg_restore"
+    assert "PG restore" in (out.failure_reason or "")
 
 
 @pytest.mark.asyncio

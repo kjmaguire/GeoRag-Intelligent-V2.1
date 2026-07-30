@@ -21,14 +21,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
 from georag_dagster.assets.silver_raster import (
-    _build_bbox_wkt,
     _RASTER_EXTENSIONS,
-    INSERT_RASTER_WITH_BBOX_SQL,
     INSERT_RASTER_NULL_BBOX_SQL,
+    INSERT_RASTER_WITH_BBOX_SQL,
+    _build_bbox_wkt,
 )
-
 
 # ---------------------------------------------------------------------------
 # _build_bbox_wkt

@@ -1,7 +1,9 @@
 """§19.3 Interpretation Workspace — CRUD for notes / section_lines /
 target_zones / comments.
 
-All routes are workspace-scoped via RLS (`set_config('app.workspace_id', $1, false)`).
+All routes are workspace-scoped via RLS, via the canonical
+``scoped_connection()`` helper (transaction-scoped ``set_config``, safe
+under PgBouncer transaction pooling).
 Authentication uses the standard X-Service-Key + Bearer JWT contract.
 """
 from __future__ import annotations
@@ -11,10 +13,10 @@ import logging
 from typing import Any
 from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.db.scoped_pool import scoped_connection
 from app.services.auth import UserContext, extract_user_context, verify_service_key
 from app.services.workspace_resolution import resolve_workspace_id
 
@@ -117,13 +119,6 @@ _VALID_TARGET_TABLES = {
 _VALID_CONFIDENCES = {"low", "medium", "high"}
 
 
-async def _scope(conn: asyncpg.Connection, workspace_id: UUID) -> None:
-    """Set the RLS GUC for this connection."""
-    await conn.execute(
-        "SELECT set_config('app.workspace_id', $1, false)", str(workspace_id),
-    )
-
-
 def _jsonb(value: Any, default: Any) -> Any:
     if value is None:
         return default
@@ -155,8 +150,9 @@ async def list_notes(
     if pool is None:
         raise HTTPException(503, "pg_pool not initialised")
 
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp._scope"
+    ) as conn:
         where = "TRUE"
         params: list[Any] = []
         if project_id:
@@ -201,8 +197,9 @@ async def create_note(
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
 
     geom_json = json.dumps(body.anchor_geojson) if body.anchor_geojson else None
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.create_note"
+    ) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO interpretation.interpretation_notes
@@ -241,8 +238,9 @@ async def delete_note(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.delete_note"
+    ) as conn:
         await conn.execute(
             "DELETE FROM interpretation.interpretation_notes WHERE note_id = $1::uuid",
             note_id,
@@ -259,8 +257,9 @@ async def list_section_lines(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.list_section_lines"
+    ) as conn:
         where = "TRUE"
         params: list[Any] = []
         if project_id:
@@ -303,8 +302,9 @@ async def create_section_line(
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
     geom_json = json.dumps(body.geojson)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.create_section_line"
+    ) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO interpretation.interpretation_section_lines
@@ -341,8 +341,9 @@ async def delete_section_line(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.delete_section_line"
+    ) as conn:
         await conn.execute(
             "DELETE FROM interpretation.interpretation_section_lines WHERE section_id = $1::uuid",
             section_id,
@@ -359,8 +360,9 @@ async def list_target_zones(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.list_target_zones"
+    ) as conn:
         where = "TRUE"
         params: list[Any] = []
         if project_id:
@@ -411,8 +413,9 @@ async def create_target_zone(
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
     geom_json = json.dumps(body.geojson)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.create_target_zone"
+    ) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO interpretation.interpretation_target_zones
@@ -454,8 +457,9 @@ async def accept_target_zone(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.accept_target_zone"
+    ) as conn:
         row = await conn.fetchrow(
             """
             UPDATE interpretation.interpretation_target_zones
@@ -497,8 +501,9 @@ async def delete_target_zone(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.delete_target_zone"
+    ) as conn:
         await conn.execute(
             "DELETE FROM interpretation.interpretation_target_zones WHERE zone_id = $1::uuid",
             zone_id,
@@ -518,8 +523,9 @@ async def list_comments(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.list_comments"
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT comment_id::text, parent_comment_id::text,
@@ -556,8 +562,9 @@ async def create_comment(
     pool = getattr(request.app.state, "pg_pool", None)
     redis = getattr(request.app.state, "redis_client", None)
     workspace_id = await resolve_workspace_id(user, request, pool, redis)
-    async with pool.acquire() as conn:
-        await _scope(conn, workspace_id)
+    async with scoped_connection(
+        pool, workspace_id=workspace_id, site="interp.create_comment"
+    ) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO interpretation.interpretation_comments

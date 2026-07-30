@@ -31,7 +31,6 @@ Config/ConfigurableResource classes use Pydantic for type introspection.
 
 import logging
 import math
-from typing import Optional
 
 import psycopg2.extras
 from dagster import (
@@ -43,7 +42,6 @@ from dagster import (
 
 from georag_dagster.assets.silver import silver_collars
 from georag_dagster.resources import PostgresResource
-
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +86,7 @@ _DEFAULT_MINERALISATION_THRESHOLDS: dict[str, float] = {
 }
 
 
-def _color_for(lithology_code: Optional[str]) -> Optional[str]:
+def _color_for(lithology_code: str | None) -> str | None:
     """Resolve the default palette colour from a lithology code prefix."""
     if not lithology_code:
         return None
@@ -99,7 +97,7 @@ def _color_for(lithology_code: Optional[str]) -> Optional[str]:
     return None
 
 
-def _is_mineralised(element: Optional[str], value: Optional[float]) -> bool:
+def _is_mineralised(element: str | None, value: float | None) -> bool:
     """SME-default mineralisation flag."""
     if element is None or value is None or math.isnan(value):
         return False

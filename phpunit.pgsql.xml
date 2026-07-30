@@ -12,7 +12,7 @@
   Note that this config bypasses PgBouncer and connects to PG directly at
   postgresql:5432. PgBouncer is pinned to a single database (`georag`) and
   in transaction pooling mode, which can't handle RefreshDatabase's
-  migrate:fresh workflow. Martin does the same (see docker-compose.yml).
+  migrate:fresh workflow.
 
   The `georag_test` DB is provisioned by docker/postgresql/init/init-test-db.sh
   on first boot (or manually — see that script's header for the CLI recipe).
@@ -54,13 +54,6 @@
             -->
             <file>tests/Feature/Api/V1/CollarControllerTest.php</file>
             <file>tests/Feature/Api/V1/CollarCrudTest.php</file>
-            <!-- Module 8 Chunk 8.4 — Tile proxy ETag + 304 + cache-control tests -->
-            <file>tests/Feature/TileProxyTest.php</file>
-            <!-- Doc-phase 157 — Inertia route-smoke for the 4 Track-3 admin
-                 surfaces. Uses RefreshDatabase so georag_test has a clean
-                 users table for the factory; controllers themselves are
-                 read-only against silver/ops/audit/eval schemas. -->
-            <file>tests/Feature/Admin/Track3DashboardsTest.php</file>
             <!-- Phase 3 / Step 3.2 — context envelope validation tests.
                  Uses RefreshDatabase + Project::factory(), so it runs
                  against PG (the silver.* migrations don't work on SQLite). -->
@@ -79,7 +72,6 @@
               never mutate application tables.
             -->
             <file>tests/Feature/Api/V1/PublicGeoscience/BedrockGeologyMigrationTest.php</file>
-            <file>tests/Feature/Api/V1/PublicGeoscience/MvtViewNullNumericRegressionTest.php</file>
         </testsuite>
     </testsuites>
     <source>
@@ -110,6 +102,22 @@
              postgresql service. Was stale `georag_dev_password` from an
              early dev cut. Read via `docker exec georag-postgresql env`. -->
         <env name="DB_PASSWORD" value="OMljaORhiA7RGQN3ilfemNWpezF9waU" force="true"/>
+
+        <!--
+          2026-07-28 (#32) — several raw-SQL migrations (silver tenant
+          isolation audit, drill-traces RLS policy drop, audit partition
+          RLS, collar spatial uncertainty backfill) call
+          `DB::connection('pgsql_migrations')` directly, independent of
+          the `migrations.connection` config toggle. That connection's
+          password (config/database.php) comes from MIGRATE_DB_PASSWORD,
+          which this file never set — it silently defaulted to '', and
+          RefreshDatabase's migrate:fresh failed with "fe_sendauth: no
+          password supplied" the moment it hit one of those migrations.
+          The main `pgsql` connection was never actually broken; only
+          this second connection was missing credentials. Reuses the
+          same DB_PASSWORD value above (same Postgres role/password).
+        -->
+        <env name="MIGRATE_DB_PASSWORD" value="OMljaORhiA7RGQN3ilfemNWpezF9waU" force="true"/>
 
         <!--
           Expand search_path so RefreshDatabase's migrate:fresh can find

@@ -29,6 +29,8 @@ import time
 import uuid
 
 import asyncpg
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.async_client import AsyncS3CompatibleStorage
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -75,33 +77,9 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get(
-        "S3_ENDPOINT_URL",
-        os.environ.get("MINIO_ENDPOINT", "http://minio:8333"),
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    return (
-        os.environ.get("AWS_ACCESS_KEY_ID")
-        or os.environ.get("MINIO_ROOT_USER", "georag-admin"),
-        os.environ.get("AWS_SECRET_ACCESS_KEY")
-        or os.environ.get("MINIO_ROOT_PASSWORD", ""),
-    )
-
-
 async def _download_from_s3(minio_key: str) -> bytes:
-    import aioboto3
-    sess = aioboto3.Session(
-        aws_access_key_id=_s3_credentials()[0],
-        aws_secret_access_key=_s3_credentials()[1],
-        region_name="us-east-1",
-    )
-    bucket = os.environ.get("MINIO_BUCKET_BRONZE", "bronze")
-    async with sess.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        resp = await s3.get_object(Bucket=bucket, Key=minio_key)
-        return await resp["Body"].read()
+    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 
 async def _flag_enabled(conn: asyncpg.Connection) -> bool:
@@ -263,33 +241,6 @@ async def pull(
             #
             # Reads the post-write MAX(updated_at) directly so the broadcast
             # carries the same epoch value TileProxyController will compute
-            # for the next tile fetch's ETag. Falls back to wall-clock
-            # epoch when the jurisdictions table isn't updated by the pull
-            # (the `?v=` cache-bust still does its job; the server ETag will
-            # match the post-write value on the next request).
-            should_broadcast = existing is None and feature_count > 0
-            if should_broadcast:
-                try:
-                    epoch_row = await conn.fetchrow(
-                        "SELECT EXTRACT(EPOCH FROM MAX(updated_at))::bigint AS epoch_s "
-                        "FROM public_geo.jurisdictions",
-                    )
-                    epoch_s = int(epoch_row["epoch_s"]) if epoch_row and epoch_row["epoch_s"] else int(time.time())
-
-                    from app.services.laravel_bridge import post_public_geoscience_tiles_invalidated
-                    await post_public_geoscience_tiles_invalidated(
-                        jurisdiction_epoch=epoch_s,
-                        # source_ids omitted — a public_geoscience_pull may
-                        # touch any of the 8 PGEO views; let the receiver
-                        # invalidate them all. SMDI overnight (P3) will pass
-                        # source_ids=['smdi_deposits'] when it lands.
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning(
-                        "public_geoscience_pull: tile invalidation broadcast failed "
-                        "key=%s err=%s", input.minio_key, exc,
-                    )
-
     finally:
         await pool.close()
 

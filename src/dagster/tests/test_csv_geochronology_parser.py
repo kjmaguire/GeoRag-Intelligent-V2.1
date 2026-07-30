@@ -20,7 +20,6 @@ from georag_dagster.parsers.csv_geochronology import (
     parse_csv_geochronology,
 )
 
-
 GOOD_CSV = textwrap.dedent("""\
     sample_id,isotopic_system,mineral_dated,age_ma,age_uncertainty_ma,uncertainty_kind,analytical_method,laboratory,publication_ref,rock_type,latitude,longitude
     BR-2018-01,U-Pb,zircon,1742.3,4.1,2sigma,LA-ICP-MS,PCIGR,doi:10.1234/foo,granodiorite,55.12345,-105.67890

@@ -89,7 +89,6 @@ from dagster import (
 from georag_dagster.assets.gold_public_geoscience import gold_public_geoscience_neo4j
 from georag_dagster.resources import Neo4jResource, PostgresResource
 
-
 LINKER_VERSION = "linker-v1"
 DETERMINISTIC_CONFIDENCE = 0.95
 
@@ -166,32 +165,32 @@ _NTS_TILE_RE = re.compile(
 # The conservative strategy: match the alpha prefix + optional separator +
 # digits; gate on the capture group being 3+ digits so short license numbers
 # don't false-match common non-disposition strings.
-_MINING_DISPOSITION_RE = re.compile(  # noqa: F841 — reserved, see header above
+_MINING_DISPOSITION_RE = re.compile(
     r"\b(CBS|MC|P|KP|CL|CBL|CP|ALK|Q|QR)[-\s]?(\d{3,6})\b",
     re.IGNORECASE,
 )
 
 # BC MINFILE numbers have the form NN[A-Z] NNN, e.g. "093A 123", "082F 456".
 # Tightly anchored to avoid over-matching general NTS tile patterns.
-_MINFILE_RE = re.compile(  # noqa: F841 — reserved, see header above
+_MINFILE_RE = re.compile(
     r"\b(\d{2,3}[A-P])[-\s]?(\d{3,4})\b",
 )
 
 # UWI (Dominion Land Survey) for petroleum wells — "101/01-23-045-06W3/0"
 # or variants without slashes. The canonical SK form uses 'W' followed by
 # the meridian digit. Tightly anchored because it's a distinctive shape.
-_UWI_RE = re.compile(  # noqa: F841 — reserved, see header above
+_UWI_RE = re.compile(
     r"\b(\d{3})[/\s-](\d{2})-(\d{2})-(\d{3})-(\d{2})W(\d)(?:[/\s-](\d))?\b",
 )
 
 # SGS report + map references. Fields in pg_geoscience_publication are
 # REPORT_NUMBER ("Rep 123", "R-123", "SGS-R-123") and MAP_NUMBER
 # ("Map 100-10", "Map 99-1"). Match both with a loose join.
-_REPORT_NUMBER_RE = re.compile(  # noqa: F841 — reserved, see header above
+_REPORT_NUMBER_RE = re.compile(
     r"\b(?:Report|Rep|R)[-\s]?(\d{1,4}(?:-\d{1,4})?)\b",
     re.IGNORECASE,
 )
-_MAP_NUMBER_RE = re.compile(  # noqa: F841 — reserved, see header above
+_MAP_NUMBER_RE = re.compile(
     r"\bMap[-\s]?(\d{1,4}-\d{1,4})\b",
     re.IGNORECASE,
 )
@@ -247,10 +246,9 @@ def _load_documents(postgres: PostgresResource) -> list[DocumentRow]:
     we return [] and the asset becomes a no-op (plan §07e).
     """
     out: list[DocumentRow] = []
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT
                     report_id::text   AS report_id,
                     title,
@@ -258,8 +256,8 @@ def _load_documents(postgres: PostgresResource) -> list[DocumentRow]:
                   FROM silver.reports
                  ORDER BY filing_date DESC NULLS LAST, title
                 """
-            )
-            rows = cur.fetchall()
+        )
+        rows = cur.fetchall()
 
     for r in rows:
         title = str(r.get("title") or "")
@@ -310,21 +308,20 @@ def _load_smdi_lookup(postgres: PostgresResource) -> dict[str, str]:
     `_load_minfile_lookup` + `_MINFILE_RE` rather than reshaping this.
     """
     lookup: dict[str, str] = {}
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT id::text AS id, external_id
                   FROM public_geo.pg_mineral_occurrence
                  WHERE external_id IS NOT NULL
                    AND external_id <> ''
                    AND jurisdiction_code = 'CA-SK'
                 """
-            )
-            for row in cur.fetchall():
-                key = _normalize_smdi(row["external_id"])
-                if key:
-                    lookup[key] = row["id"]
+        )
+        for row in cur.fetchall():
+            key = _normalize_smdi(row["external_id"])
+            if key:
+                lookup[key] = row["id"]
     return lookup
 
 
@@ -335,19 +332,18 @@ def _load_drillhole_lookup(postgres: PostgresResource) -> dict[str, str]:
     We store a case-insensitive key with separator stripped.
     """
     lookup: dict[str, str] = {}
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT id::text AS id, drillhole_id
                   FROM public_geo.pg_drillhole_collar
                  WHERE drillhole_id IS NOT NULL AND drillhole_id <> ''
                 """
-            )
-            for row in cur.fetchall():
-                key = _normalize_drillhole_id(row["drillhole_id"])
-                if key:
-                    lookup[key] = row["id"]
+        )
+        for row in cur.fetchall():
+            key = _normalize_drillhole_id(row["drillhole_id"])
+            if key:
+                lookup[key] = row["id"]
     return lookup
 
 
@@ -362,10 +358,9 @@ def _fetch_existing_active_links(
     out: dict[tuple[str, str, str], dict[str, Any]] = {}
     if not document_ids:
         return out
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT id, document_id::text AS document_id,
                        canonical_type,
                        entity_id::text     AS entity_id,
@@ -375,11 +370,11 @@ def _fetch_existing_active_links(
                  WHERE superseded_at IS NULL
                    AND document_id = ANY(%s::uuid[])
                 """,
-                (document_ids,),
-            )
-            for r in cur.fetchall():
-                key = (r["document_id"], r["canonical_type"], r["entity_id"])
-                out[key] = dict(r)
+            (document_ids,),
+        )
+        for r in cur.fetchall():
+            key = (r["document_id"], r["canonical_type"], r["entity_id"])
+            out[key] = dict(r)
     return out
 
 
@@ -397,10 +392,9 @@ def _load_all_active_links(postgres: PostgresResource) -> list[ProposedLink]:
     cheap and a failed mirror self-heals on the next materialization.
     """
     out: list[ProposedLink] = []
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT document_id::text AS document_id,
                        document_filename,
                        canonical_type,
@@ -412,19 +406,19 @@ def _load_all_active_links(postgres: PostgresResource) -> list[ProposedLink]:
                   FROM public_geo.document_entity_links
                  WHERE superseded_at IS NULL
                 """
-            )
-            for r in cur.fetchall():
-                out.append(
-                    ProposedLink(
-                        document_id=r["document_id"],
-                        document_filename=r.get("document_filename"),
-                        canonical_type=r["canonical_type"],
-                        entity_id=r["entity_id"],
-                        confidence=float(r["confidence"] or 0.0),
-                        signals=list(r.get("signals") or []),
-                        extracted_context=r.get("extracted_context"),
-                    )
+        )
+        for r in cur.fetchall():
+            out.append(
+                ProposedLink(
+                    document_id=r["document_id"],
+                    document_filename=r.get("document_filename"),
+                    canonical_type=r["canonical_type"],
+                    entity_id=r["entity_id"],
+                    confidence=float(r["confidence"] or 0.0),
+                    signals=list(r.get("signals") or []),
+                    extracted_context=r.get("extracted_context"),
                 )
+            )
     return out
 
 

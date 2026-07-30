@@ -49,7 +49,7 @@ def test_manifest_shape() -> None:
             "silver_hypotheses": [],
         },
     )
-    assert m["manifest_version"] == "1.0"
+    assert m["manifest_version"] == "2.0"
     assert m["format"] == "workspace_export"
     assert m["workspace_id"] == "11111111-1111-1111-1111-111111111111"
     assert m["table_row_counts"] == {"silver_workspaces": 1, "silver_hypotheses": 0}

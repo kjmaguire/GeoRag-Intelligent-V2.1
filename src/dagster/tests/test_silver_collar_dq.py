@@ -16,7 +16,8 @@ def _import_evaluator():
     doesn't fail when the dagster package isn't on sys.path (e.g. an
     accidental run from the FastAPI container where it isn't mounted)."""
     from georag_dagster.assets.silver_collar_dq import (
-        evaluate_collar_row, RULE_VERSION,
+        RULE_VERSION,
+        evaluate_collar_row,
     )
     return evaluate_collar_row, RULE_VERSION
 

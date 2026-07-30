@@ -29,34 +29,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-# Parser-stub injection (same pattern as other Phase tests so ingest_pdf
-# imports cleanly outside the dagster install).
-def _ensure_parser_stub_module():
-    if "georag_dagster.parsers.pdf_report" in sys.modules:
-        return
-    pkg_root = sys.modules.get("georag_dagster") or types.ModuleType("georag_dagster")
-    pkg_parsers = types.ModuleType("georag_dagster.parsers")
-    mod = types.ModuleType("georag_dagster.parsers.pdf_report")
-    mod._FIGURE_TEMPDIR_ROOT = "/tmp/georag_figures"
-
-    def _figure_tempdir(sha256: str) -> str:
-        import os as _os
-        d = f"{mod._FIGURE_TEMPDIR_ROOT}/{sha256}"
-        _os.makedirs(d, exist_ok=True)
-        return d
-
-    mod._figure_tempdir = _figure_tempdir
-    mod.parse_pdf_report = MagicMock()
-    pkg_parsers.pdf_report = mod
-    pkg_root.parsers = pkg_parsers
-    sys.modules["georag_dagster"] = pkg_root
-    sys.modules["georag_dagster.parsers"] = pkg_parsers
-    sys.modules["georag_dagster.parsers.pdf_report"] = mod
-
-
-_ensure_parser_stub_module()
-
-
 def _get_embed_verify_func():
     """Pull the underlying coroutine function out of the Hatchet task
     decorator wrapper so we can call it directly with mocked inputs."""
@@ -99,8 +71,7 @@ def test_embed_verify_no_poll_loop_in_source():
     src = inspect.getsource(mod)
     # Locate the embed_verify function body
     start = src.index("async def embed_verify")
-    end = src.index("async def p04p_dual_write", start)
-    body = src[start:end]
+    body = src[start:]
     assert "asyncio.sleep(15)" not in body
     assert "for _ in range(6)" not in body
     assert "unembedded_history" not in body
@@ -287,4 +258,8 @@ async def test_embed_verify_single_select_roundtrip():
     with patch.object(mod.asyncpg, "create_pool", AsyncMock(return_value=fake_pool)):
         await embed_verify(_make_input(), _make_ctx())
 
-    assert len(fetch_calls) == 1
+    unembedded_fetches = [
+        call for call in fetch_calls
+        if "count(*) AS unembedded" in call[0][0]
+    ]
+    assert len(unembedded_fetches) == 1

@@ -38,9 +38,9 @@ from georag_dagster.clients.arcgis_rest import (
     _extract_wkid_from_crs,
     _safe_headers,
     _strip_layer_index,
+    fetch_layer_geojson,
     fetch_layer_metadata,
     fetch_service_metadata,
-    fetch_layer_geojson,
     iter_layers,
 )
 

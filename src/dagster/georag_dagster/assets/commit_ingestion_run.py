@@ -77,19 +77,18 @@ introspection and that import breaks runtime annotation evaluation.
 
 import os
 import time
-from typing import Optional
 
 import httpx
 import psycopg2.extras
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
-from georag_dagster.assets.index_reports import index_reports
 from georag_dagster.assets.index_neo4j import index_neo4j
+from georag_dagster.assets.index_reports import index_reports
 from georag_dagster.assets.silver import silver_collars
+from georag_dagster.assets.silver_cog_rasters import silver_cog_rasters
+from georag_dagster.assets.silver_drill_traces import silver_drill_traces
 from georag_dagster.assets.silver_reports import silver_reports
 from georag_dagster.assets.silver_spatial import silver_spatial
-from georag_dagster.assets.silver_drill_traces import silver_drill_traces
-from georag_dagster.assets.silver_cog_rasters import silver_cog_rasters
 from georag_dagster.resources import PostgresResource
 
 # ---------------------------------------------------------------------------
@@ -175,62 +174,61 @@ def _bump_data_version(
         "project_versions": [],
     }
 
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Bump workspace
-            cur.execute(
-                """
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        # Bump workspace
+        cur.execute(
+            """
                 UPDATE silver.workspaces
                    SET data_version = data_version + 1
                  WHERE workspace_id = %(workspace_id)s
                 RETURNING data_version;
                 """,
-                {"workspace_id": workspace_id},
+            {"workspace_id": workspace_id},
+        )
+        ws_row = cur.fetchone()
+        if ws_row is None:
+            raise ValueError(
+                f"commit_ingestion_run: workspace_id {workspace_id!r} not found "
+                "in silver.workspaces — cannot bump data_version."
             )
-            ws_row = cur.fetchone()
-            if ws_row is None:
-                raise ValueError(
-                    f"commit_ingestion_run: workspace_id {workspace_id!r} not found "
-                    "in silver.workspaces — cannot bump data_version."
-                )
-            result["workspace_data_version"] = int(ws_row["data_version"])
-            context.log.info(
-                "commit_ingestion_run: workspace %s data_version → %d",
-                workspace_id,
-                result["workspace_data_version"],
-            )
+        result["workspace_data_version"] = int(ws_row["data_version"])
+        context.log.info(
+            "commit_ingestion_run: workspace %s data_version → %d",
+            workspace_id,
+            result["workspace_data_version"],
+        )
 
-            # Bump projects (if any)
-            if project_ids:
-                cur.execute(
-                    """
+        # Bump projects (if any)
+        if project_ids:
+            cur.execute(
+                """
                     UPDATE silver.projects
                        SET data_version = data_version + 1
                      WHERE project_id::text = ANY(%(ids)s::text[])
                     RETURNING project_id, data_version;
                     """,
-                    {"ids": project_ids},
+                {"ids": project_ids},
+            )
+            rows = cur.fetchall()
+            result["project_versions"] = [
+                {"project_id": str(r["project_id"]), "data_version": int(r["data_version"])}
+                for r in rows
+            ]
+            for pv in result["project_versions"]:
+                context.log.info(
+                    "commit_ingestion_run: project %s data_version → %d",
+                    pv["project_id"],
+                    pv["data_version"],
                 )
-                rows = cur.fetchall()
-                result["project_versions"] = [
-                    {"project_id": str(r["project_id"]), "data_version": int(r["data_version"])}
-                    for r in rows
-                ]
-                for pv in result["project_versions"]:
-                    context.log.info(
-                        "commit_ingestion_run: project %s data_version → %d",
-                        pv["project_id"],
-                        pv["data_version"],
-                    )
 
-                found = {pv["project_id"] for pv in result["project_versions"]}
-                missing = set(project_ids) - found
-                if missing:
-                    context.log.warning(
-                        "commit_ingestion_run: %d project_ids not found in projects table: %s",
-                        len(missing),
-                        missing,
-                    )
+            found = {pv["project_id"] for pv in result["project_versions"]}
+            missing = set(project_ids) - found
+            if missing:
+                context.log.warning(
+                    "commit_ingestion_run: %d project_ids not found in projects table: %s",
+                    len(missing),
+                    missing,
+                )
 
         # Transaction commits here (get_connection() commits on clean exit)
 
@@ -301,7 +299,7 @@ def _broadcast_ingestion_completed(
             )
             return False
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         context.log.warning(
             "commit_ingestion_run: broadcast failed project=%s err=%s",
             project_id, exc,
@@ -314,7 +312,7 @@ def _broadcast_admin_surface(
     affected_props: list,
     payload: dict,
     context: AssetExecutionContext,
-    surface_id: Optional[str] = None,
+    surface_id: str | None = None,
 ) -> bool:
     """POST to Laravel's admin-surface-updated bridge (Phase 2).
 
@@ -350,7 +348,7 @@ def _broadcast_admin_surface(
             )
             return False
         return True
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         context.log.warning(
             "commit_ingestion_run: admin-surface broadcast failed surface=%s err=%s",
             surface, exc,
@@ -362,7 +360,7 @@ def _run_tune_target(
     postgres: PostgresResource,
     table: str,
     index: str,
-    matview: Optional[str],
+    matview: str | None,
     context: AssetExecutionContext,
 ) -> dict:
     """Execute CLUSTER + ANALYZE + optional MV REFRESH for one table.
@@ -424,9 +422,8 @@ def _run_tune_target(
     # --- ANALYZE ---
     t1 = time.monotonic()
     try:
-        with postgres.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"ANALYZE {table};")
+        with postgres.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(f"ANALYZE {table};")
         outcome["analyze_ok"] = True
         context.log.info(
             "commit_ingestion_run: ANALYZE %s — %.2fs", table, time.monotonic() - t1

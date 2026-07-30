@@ -24,7 +24,6 @@ from dagster import (
 
 from georag_dagster.resources import PostgresResource
 
-
 _ELEMENT_ALIASES = {
     # Map free-text element strings the lab might emit → canonical symbol.
     "gold": "Au", "au": "Au", "au_ppm": "Au", "au_ppb": "Au",

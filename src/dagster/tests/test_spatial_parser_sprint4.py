@@ -25,14 +25,13 @@ import pytest
 geopandas = pytest.importorskip("geopandas", reason="geopandas not installed")
 shapely = pytest.importorskip("shapely", reason="shapely not installed")
 
-from shapely.geometry import LineString, Point  # noqa: E402
+from shapely.geometry import LineString, Point
 
-from georag_dagster.parsers.spatial_parser import (  # noqa: E402
+from georag_dagster.parsers.spatial_parser import (
     SpatialParseResult,
     _detect_format,
     parse_spatial_file,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -173,7 +172,7 @@ class TestGeoPackageMultiLayer:
     @pytest.fixture()
     def two_layer_gpkg(self, tmp_path):
         """Create a GPKG with two layers."""
-        import geopandas as gpd  # noqa: PLC0415
+        import geopandas as gpd
         path = str(tmp_path / "test.gpkg")
         gdf1 = gpd.GeoDataFrame(
             {"name": ["alpha", "beta"]},
@@ -219,7 +218,7 @@ class TestGeoPackageMultiLayer:
 
     def test_single_layer_gpkg_no_multi_layer_warning(self, tmp_path):
         """A single-layer GPKG should not emit the multi-layer warning."""
-        import geopandas as gpd  # noqa: PLC0415
+        import geopandas as gpd
         path = str(tmp_path / "single.gpkg")
         gdf = gpd.GeoDataFrame(
             {"name": ["x"]},
@@ -305,7 +304,7 @@ EOF
         # If ezdxf is installed (which it is in this environment), the extraction
         # ran and 'dxf_blocks' should NOT be in deferred_capabilities.
         try:
-            import ezdxf  # noqa: F401, PLC0415
+            import ezdxf  # noqa: F401
             assert "dxf_blocks" not in result.deferred_capabilities, (
                 f"Expected 'dxf_blocks' removed after successful extraction; "
                 f"got: {result.deferred_capabilities}"
@@ -357,7 +356,7 @@ class TestFileGdbDeferred:
         Instead we confirm the code paths compile and the deferred list is correct
         by inspecting the module-level constant.
         """
-        from georag_dagster.parsers.spatial_parser import _DEFERRED_FILEGDB  # noqa: PLC0415
+        from georag_dagster.parsers.spatial_parser import _DEFERRED_FILEGDB
         assert "filegdb_domains" in _DEFERRED_FILEGDB
         assert "filegdb_subtypes" in _DEFERRED_FILEGDB
         assert "filegdb_relationship_classes" in _DEFERRED_FILEGDB
@@ -394,7 +393,7 @@ class TestBackwardCompatibility:
 
     def test_parse_spatial_file_signature_unchanged(self):
         """Signature must still accept (path, feature_type=None)."""
-        import inspect  # noqa: PLC0415
+        import inspect
         sig = inspect.signature(parse_spatial_file)
         params = list(sig.parameters.keys())
         assert params[0] == "path"

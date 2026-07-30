@@ -14,6 +14,8 @@ from app.services.publicgeo.assessment_survey_adapters import (
     sync_sk_assessment_surveys,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

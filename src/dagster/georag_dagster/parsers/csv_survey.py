@@ -260,7 +260,7 @@ def parse_csv_surveys(
     global_warnings: list = []
     detected_encoding = "utf-8"
 
-    if isinstance(source, (str, Path)):  # noqa: SIM108
+    if isinstance(source, (str, Path)):
         source_file_str = str(source)
     else:
         source_file_str = "<stream>"

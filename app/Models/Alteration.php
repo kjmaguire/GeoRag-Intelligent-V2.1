@@ -51,6 +51,9 @@ class Alteration extends Model
     // PG text[] surfaces as the literal '{quartz,sericite}' over PDO. Parse on
     // read so the JSON response carries a real array; accept array-or-null on
     // write and let the driver bind it natively.
+    /**
+     * @return Attribute<list<string>, list<string>|null>
+     */
     protected function minerals(): Attribute
     {
         return Attribute::make(

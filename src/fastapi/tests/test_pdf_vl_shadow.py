@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.eval.pdf_vl_shadow import (
+from app.services.pdf_vl_shadow import (
     LINK_RATE_REGRESSION_TOLERANCE_PP,
     MIN_OBSERVATIONS_FOR_GATE,
     SCHEMA_VALID_RATE_MIN,

@@ -8,11 +8,9 @@ criteria) and a packet-producing callable, the harness:
   2. Evaluates each ``EvaluationCriterion`` against the produced packet
   3. Returns an aggregated :class:`EvaluationReport`
 
-The harness is deliberately separate from the Hatchet workflow
-``eval_real_rag_nightly`` — that's the in-cluster, live-corpus eval
-that needs real PostgreSQL + Qdrant + LLM. THIS harness runs offline,
-against the pure-function context-prep pipeline, using mocked or
-deterministic packet inputs. Use case: lock the diversity quotas /
+This harness runs offline against the pure-function context-prep
+pipeline, using mocked or deterministic packet inputs. Use case:
+lock the diversity quotas /
 authority ranking behaviour before flipping the
 ``CONTEXT_PREP_ENABLED`` flag on for live traffic.
 

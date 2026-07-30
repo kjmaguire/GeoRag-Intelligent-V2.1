@@ -27,7 +27,7 @@ class AppServiceProvider extends ServiceProvider
     {
         // PooledHttpClient — Guzzle client pool with TCP keep-alive per base
         // URL. Survives between requests in the same Octane worker so curl
-        // sockets stay open to Martin / FastAPI / etc. State is bounded
+        // sockets stay open to FastAPI and other internal services. State is bounded
         // (≤16 base URLs, LRU eviction); no per-request data is retained.
         // See app/Support/Http/PooledHttpClient.php for the Octane-safety note.
         $this->app->singleton(PooledHttpClient::class, fn ($app) => new PooledHttpClient(
@@ -50,20 +50,6 @@ class AppServiceProvider extends ServiceProvider
 
         // ── Rate limiters ────────────────────────────────────────────
         //
-        // public-geoscience-tiles: 600 req/min per authenticated user.
-        // MapLibre pan+zoom fires bursts of 40-80 tile GETs; 600/min
-        // absorbs ~10 bursts/min sustained without letting a malicious
-        // or misconfigured client drown Martin. Unauthenticated fallback
-        // uses the client IP so a broken SPA can't starve everyone else
-        // via a shared session cookie.
-        RateLimiter::for('public-geoscience-tiles', function (Request $request): Limit {
-            $key = $request->user()?->id
-                ?? $request->ip()
-                ?? 'anonymous-unknown';
-
-            return Limit::perMinute(600)->by((string) $key);
-        });
-
         // auth-login: 5 attempts / minute PER credential + IP combination.
         // The previous `throttle:5,1` middleware keyed on IP only, which
         // meant (a) shared-NAT users throttled each other, and (b) an

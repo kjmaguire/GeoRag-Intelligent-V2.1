@@ -38,45 +38,12 @@ from georag_dagster.observability import install_tracer_provider
 
 install_tracer_provider(default_service_name="georag-dagster-daemon")
 
-from georag_dagster.assets.bronze import bronze_collars  # noqa: E402
-from georag_dagster.assets.silver import silver_collars  # noqa: E402
-from georag_dagster.assets.bronze_surveys import bronze_surveys  # noqa: E402
-from georag_dagster.assets.silver_surveys import silver_surveys  # noqa: E402
-from georag_dagster.assets.bronze_lithology import bronze_lithology  # noqa: E402
-from georag_dagster.assets.silver_lithology import silver_lithology  # noqa: E402
-from georag_dagster.assets.bronze_samples import bronze_samples  # noqa: E402
-from georag_dagster.assets.silver_samples import silver_samples  # noqa: E402
-from georag_dagster.assets.bronze_well_logs import bronze_well_logs  # noqa: E402
-from georag_dagster.assets.silver_well_logs import silver_well_logs  # noqa: E402
-from georag_dagster.assets.bronze_spatial import bronze_spatial  # noqa: E402
-from georag_dagster.assets.silver_spatial import silver_spatial  # noqa: E402
-from georag_dagster.assets.index_neo4j import index_neo4j  # noqa: E402
-from georag_dagster.assets.bronze_reports import bronze_reports  # noqa: E402
-from georag_dagster.assets.silver_reports import silver_reports  # noqa: E402
-# index_reports retired 2026-05-28 per ADR-0010 Session C — the
-# georag_reports collection it populated was dropped after the full
-# 119-question per-slice benchmark confirmed georag_chunks (fed by
-# index_document_passages) was functionally equivalent: identical
-# pass count on every question_set, latency drift on 111/119 questions
-# confirming the new code path was active.
-from georag_dagster.assets.index_document_passages import index_document_passages  # noqa: E402
-# ADR-0012 — synthesize NL summary passages from structured silver tables
-# so the reranker training corpus includes the assays / lithology /
-# collars data, not just PDF prose. Each asset UPSERTs into
-# silver.document_passages with chunk_kind='structured_summary'.
-from georag_dagster.assets.silver_nl_summaries import (  # noqa: E402
-    silver_assays_v2_nl_summary,
-    silver_collars_nl_summary,
-    silver_lithology_nl_summary,
-)
-from georag_dagster.assets.bronze_xlsx import bronze_xlsx  # noqa: E402
-from georag_dagster.assets.silver_xlsx import silver_xlsx  # noqa: E402
-from georag_dagster.assets.bronze_seismic import bronze_seismic  # noqa: E402
-from georag_dagster.assets.silver_seismic import silver_seismic  # noqa: E402
-from georag_dagster.assets.bronze_xyz import bronze_xyz  # noqa: E402
-from georag_dagster.assets.silver_xyz import silver_xyz  # noqa: E402
-from georag_dagster.assets.silver_raster import silver_raster  # noqa: E402
-from georag_dagster.assets.bronze_public_geoscience import (  # noqa: E402
+from georag_dagster.assets.bronze import bronze_collars
+
+# §B/S/G build-out 2026-05-22 — five new assets across the three layers.
+from georag_dagster.assets.bronze_geophysics import bronze_geophysics
+from georag_dagster.assets.bronze_lithology import bronze_lithology
+from georag_dagster.assets.bronze_public_geoscience import (
     bronze_pg_ca_bc_minfile,
     bronze_pg_ca_sk_assessment_airborne,
     bronze_pg_ca_sk_assessment_ground,
@@ -89,7 +56,91 @@ from georag_dagster.assets.bronze_public_geoscience import (  # noqa: E402
     bronze_pg_ca_sk_rock_samples,
     bronze_pg_ca_sk_smdi,
 )
-from georag_dagster.assets.silver_public_geoscience import (  # noqa: E402
+from georag_dagster.assets.bronze_reports import bronze_reports
+from georag_dagster.assets.bronze_samples import bronze_samples
+from georag_dagster.assets.bronze_seismic import bronze_seismic
+from georag_dagster.assets.bronze_spatial import bronze_spatial
+from georag_dagster.assets.bronze_surveys import bronze_surveys
+from georag_dagster.assets.bronze_well_logs import bronze_well_logs
+from georag_dagster.assets.bronze_xlsx import bronze_xlsx
+from georag_dagster.assets.bronze_xyz import bronze_xyz
+from georag_dagster.assets.commit_ingestion_run import commit_ingestion_run
+
+# Appendix F-data-dictionary / Z.7 — per-table JSON dump + ERD groupings
+# + CI drift guard. Lands snapshots in S3 under
+# catalogs/data_dictionary/<UTC date>/.
+from georag_dagster.assets.data_dictionary_dump import (
+    data_dictionary_drift_check,
+    data_dictionary_dump,
+)
+from georag_dagster.assets.gold_cross_corpus_linker import (
+    gold_cross_corpus_linker,
+)
+from georag_dagster.assets.gold_cross_section_panels import gold_cross_section_panels
+from georag_dagster.assets.gold_drillhole_intervals_visual import (
+    gold_drillhole_intervals_visual,
+)
+from georag_dagster.assets.gold_h3_density import (
+    gold_h3_density_choropleth,
+)
+from georag_dagster.assets.gold_public_geoscience import (
+    gold_public_geoscience_neo4j,
+)
+from georag_dagster.assets.gold_structure_measurements_visual import (
+    gold_structure_measurements_visual,
+)
+
+# index_reports retired 2026-05-28 per ADR-0010 Session C — the
+# georag_reports collection it populated was dropped after the full
+# 119-question per-slice benchmark confirmed georag_chunks (fed by
+# index_document_passages) was functionally equivalent: identical
+# pass count on every question_set, latency drift on 111/119 questions
+# confirming the new code path was active.
+from georag_dagster.assets.index_document_passages import index_document_passages
+from georag_dagster.assets.index_neo4j import index_neo4j
+from georag_dagster.assets.index_public_geoscience import (
+    index_public_geoscience_qdrant,
+)
+from georag_dagster.assets.reranker_labels import (
+    reranker_chunk_population,
+    reranker_chunk_sample,
+    reranker_generated_queries,
+    reranker_label_dataset,
+    reranker_label_dataset_minimum_size_check,
+    reranker_mined_negatives,
+)
+from georag_dagster.assets.silver import silver_collars
+from georag_dagster.assets.silver_assay_dq import silver_assay_dq
+from georag_dagster.assets.silver_cog_rasters import (
+    bronze_raster_sources_discoverable_check,
+    bronze_raster_uploads,
+    cog_readable_check,
+    silver_cog_rasters,
+)
+from georag_dagster.assets.silver_collar_dq import silver_collar_dq
+from georag_dagster.assets.silver_collars_canonicalize_backfill import (
+    silver_collars_canonicalize_backfill,
+)
+from georag_dagster.assets.silver_crs_dq import silver_crs_dq
+from georag_dagster.assets.silver_drill_traces import silver_drill_traces
+from georag_dagster.assets.silver_entity_ner_backfill import silver_entity_ner_backfill
+
+# CC-03 Item 3 — radiometric age samples (silver-only; bronze landing is a
+# generic CSV upload, no dedicated bronze asset).
+from georag_dagster.assets.silver_geochronology import silver_geochronology_samples
+from georag_dagster.assets.silver_geophysics import silver_geophysics
+from georag_dagster.assets.silver_lithology import silver_lithology
+
+# ADR-0012 — synthesize NL summary passages from structured silver tables
+# so the reranker training corpus includes the assays / lithology /
+# collars data, not just PDF prose. Each asset UPSERTs into
+# silver.document_passages with chunk_kind='structured_summary'.
+from georag_dagster.assets.silver_nl_summaries import (
+    silver_assays_v2_nl_summary,
+    silver_collars_nl_summary,
+    silver_lithology_nl_summary,
+)
+from georag_dagster.assets.silver_public_geoscience import (
     silver_pg_ca_bc_minfile,
     silver_pg_ca_sk_assessment_airborne,
     silver_pg_ca_sk_assessment_ground,
@@ -102,84 +153,24 @@ from georag_dagster.assets.silver_public_geoscience import (  # noqa: E402
     silver_pg_ca_sk_rock_samples,
     silver_pg_ca_sk_smdi,
 )
-from georag_dagster.assets.gold_public_geoscience import (  # noqa: E402
-    gold_public_geoscience_neo4j,
-)
-from georag_dagster.assets.gold_h3_density import (  # noqa: E402
-    gold_h3_density_choropleth,
-)
-from georag_dagster.assets.gold_cross_corpus_linker import (  # noqa: E402
-    gold_cross_corpus_linker,
-)
-from georag_dagster.assets.gold_drillhole_intervals_visual import (  # noqa: E402
-    gold_drillhole_intervals_visual,
-)
-# §B/S/G build-out 2026-05-22 — five new assets across the three layers.
-from georag_dagster.assets.bronze_geophysics import bronze_geophysics  # noqa: E402
-from georag_dagster.assets.silver_geophysics import silver_geophysics  # noqa: E402
-# CC-03 Item 3 — radiometric age samples (silver-only; bronze landing is a
-# generic CSV upload, no dedicated bronze asset).
-from georag_dagster.assets.silver_geochronology import silver_geochronology_samples  # noqa: E402
-from georag_dagster.assets.silver_structure_derive import silver_structure_derive  # noqa: E402
-from georag_dagster.assets.silver_structure_populate import silver_structure_populate  # noqa: E402
-from georag_dagster.assets.silver_entity_ner_backfill import silver_entity_ner_backfill  # noqa: E402
-from georag_dagster.assets.silver_collars_canonicalize_backfill import (  # noqa: E402
-    silver_collars_canonicalize_backfill,
-)
-from georag_dagster.assets.silver_collar_dq import silver_collar_dq  # noqa: E402
-from georag_dagster.assets.silver_assay_dq import silver_assay_dq  # noqa: E402
-from georag_dagster.assets.silver_crs_dq import silver_crs_dq  # noqa: E402
-from georag_dagster.assets.silver_unit_consistency_dq import (  # noqa: E402
+from georag_dagster.assets.silver_raster import silver_raster
+from georag_dagster.assets.silver_reports import silver_reports
+from georag_dagster.assets.silver_samples import silver_samples
+from georag_dagster.assets.silver_seismic import silver_seismic
+from georag_dagster.assets.silver_spatial import silver_spatial
+from georag_dagster.assets.silver_structure_derive import silver_structure_derive
+from georag_dagster.assets.silver_structure_populate import silver_structure_populate
+from georag_dagster.assets.silver_surveys import silver_surveys
+from georag_dagster.assets.silver_unit_consistency_dq import (
     silver_unit_consistency_dq,
 )
-from georag_dagster.assets.gold_cross_section_panels import gold_cross_section_panels  # noqa: E402
-from georag_dagster.assets.gold_structure_measurements_visual import (  # noqa: E402
-    gold_structure_measurements_visual,
-)
-from georag_dagster.assets.index_public_geoscience import (  # noqa: E402
-    index_public_geoscience_qdrant,
-)
-from georag_dagster.assets.smdi_deposits import smdi_deposits_refresh  # noqa: E402
-from georag_dagster.assets.commit_ingestion_run import commit_ingestion_run  # noqa: E402
-# Appendix F-data-dictionary / Z.7 — per-table JSON dump + ERD groupings
-# + CI drift guard. Lands snapshots in S3 under
-# catalogs/data_dictionary/<UTC date>/.
-from georag_dagster.assets.data_dictionary_dump import (  # noqa: E402
-    data_dictionary_dump,
-    data_dictionary_drift_check,
-)
-from georag_dagster.assets.silver_drill_traces import silver_drill_traces  # noqa: E402
-from georag_dagster.assets.silver_cog_rasters import (  # noqa: E402
-    bronze_raster_uploads,
-    silver_cog_rasters,
-    bronze_raster_sources_discoverable_check,
-    cog_readable_check,
-)
-from georag_dagster.checks import (  # noqa: E402
-    # Silver — collars
-    silver_collars_check_collar_count_positive,
-    silver_collars_check_schema_conformance,
-    silver_collars_check_crs_srid_populated,
-    # Silver — tabular
-    silver_surveys_check_parse_total_positive,
-    silver_lithology_check_parse_total_positive,
-    silver_samples_check_parse_total_positive,
-    silver_well_logs_check_parse_total_positive,
-    # CC-01 Item 1 Slice 3 — interval-overlap checks (WARN, non-blocking)
-    silver_lithology_interval_overlap,
-    silver_samples_assays_v2_interval_overlap,
-    # Silver — spatial
-    silver_spatial_check_geom_not_null,
-    silver_spatial_check_srid_populated,
-    # Silver — reports/xlsx
-    silver_reports_check_parse_total_positive,
-    silver_reports_check_schema_conformance,
-    silver_xlsx_check_parse_total_positive,
-    # Silver — seismic + xyz (Silver-trapped, DAG-05)
-    silver_seismic_check_parse_total_positive,
-    silver_seismic_check_schema_conformance,
-    silver_xyz_check_parse_total_positive,
-    silver_xyz_check_schema_conformance,
+from georag_dagster.assets.silver_well_logs import silver_well_logs
+from georag_dagster.assets.silver_xlsx import silver_xlsx
+from georag_dagster.assets.silver_xyz import silver_xyz
+from georag_dagster.assets.smdi_deposits import smdi_deposits_refresh
+from georag_dagster.checks import (
+    # Drill traces
+    desurvey_trace_count_matches_collar_count_with_surveys,
     # Evidence model
     document_passages_check_no_duplicate_passage_ids,
     document_passages_check_text_hash_sha256_valid,
@@ -189,25 +180,38 @@ from georag_dagster.checks import (  # noqa: E402
     # Index
     index_reports_check_embedding_id_present,
     index_reports_check_parser_quality_floor,
-    # Drill traces
-    desurvey_trace_count_matches_collar_count_with_surveys,
+    # Silver — collars
+    silver_collars_check_collar_count_positive,
+    silver_collars_check_crs_srid_populated,
+    silver_collars_check_schema_conformance,
+    silver_lithology_check_parse_total_positive,
+    # CC-01 Item 1 Slice 3 — interval-overlap checks (WARN, non-blocking)
+    silver_lithology_interval_overlap,
+    # Silver — reports/xlsx
+    silver_reports_check_parse_total_positive,
+    silver_reports_check_schema_conformance,
+    silver_samples_assays_v2_interval_overlap,
+    silver_samples_check_parse_total_positive,
+    # Silver — seismic + xyz (Silver-trapped, DAG-05)
+    silver_seismic_check_parse_total_positive,
+    silver_seismic_check_schema_conformance,
+    # Silver — spatial
+    silver_spatial_check_geom_not_null,
+    silver_spatial_check_srid_populated,
+    # Silver — tabular
+    silver_surveys_check_parse_total_positive,
+    silver_well_logs_check_parse_total_positive,
+    silver_xlsx_check_parse_total_positive,
+    silver_xyz_check_parse_total_positive,
+    silver_xyz_check_schema_conformance,
 )
-from georag_dagster.assets.reranker_labels import (  # noqa: E402
-    reranker_chunk_population,
-    reranker_chunk_sample,
-    reranker_generated_queries,
-    reranker_label_dataset,
-    reranker_label_dataset_minimum_size_check,
-    reranker_mined_negatives,
-)
-from georag_dagster.resources import (  # noqa: E402
+from georag_dagster.resources import (
     Neo4jResource,
     PostgresResource,
     QdrantResource,
     S3Resource,
     VllmResource,
 )
-
 
 # ---------------------------------------------------------------------------
 # Placeholder downstream assets (Gold and Index layers)
@@ -513,7 +517,9 @@ _PREFIX_TO_ASSET = {
 # tests can exercise the run-config builder without dragging the full
 # asset import chain. The module-level alias preserves the back-compat
 # private names referenced by sensor code below.
-from georag_dagster.sensor_helpers import (  # noqa: E402
+from datetime import UTC
+
+from georag_dagster.sensor_helpers import (
     build_sensor_run_config as _build_sensor_run_config,
 )
 
@@ -536,7 +542,7 @@ def minio_upload_sensor(context: SensorEvaluationContext):
     The parser does not consume it yet (Phase 2).  If the header is absent
     (uploads without a vendor profile) vendor_profile_id is None — backward-compat.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     try:
         s3_resource: S3Resource = context.resources.minio  # type: ignore[attr-defined]
@@ -575,9 +581,9 @@ def minio_upload_sensor(context: SensorEvaluationContext):
                 continue
             # Ensure timezone-aware comparison
             if mod_time.tzinfo is None:
-                mod_time = mod_time.replace(tzinfo=timezone.utc)
+                mod_time = mod_time.replace(tzinfo=UTC)
             if last_seen.tzinfo is None:
-                last_seen = last_seen.replace(tzinfo=timezone.utc)
+                last_seen = last_seen.replace(tzinfo=UTC)
 
             if mod_time > last_seen:
                 # Find which asset this file maps to.
@@ -617,8 +623,7 @@ def minio_upload_sensor(context: SensorEvaluationContext):
                             vendor_id,
                         )
 
-            if mod_time > new_max:
-                new_max = mod_time
+            new_max = max(new_max, mod_time)
 
     if triggered_assets:
         context.log.info(

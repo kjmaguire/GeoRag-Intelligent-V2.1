@@ -32,7 +32,7 @@ import io
 import json
 import random
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
@@ -62,12 +62,26 @@ from georag_dagster.assets.reranker_labels_helpers import (
     PROMPT_VERSION,
     SOURCE_BUCKETS,
     TARGET_SAMPLE_SIZE,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     compute_doc_class as _compute_doc_class,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     leakage_ratio as _leakage_ratio,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     prompt_sha256 as _prompt_sha256,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     seed_from_run_id as _seed_from_run_id,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     sqrt_proportional_allocation as _sqrt_proportional_allocation,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     strata_key as _strata_key,
+)
+from georag_dagster.assets.reranker_labels_helpers import (
     train_val_test_split_by_report as _train_val_test_split_by_report,
 )
 from georag_dagster.assets.silver_reports import silver_reports
@@ -232,39 +246,37 @@ def _fetch_doc_class_map(
     if not report_ids:
         return {}
 
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            try:
-                cur.execute(
-                    _FETCH_DOC_CLASS_INPUT_SQL,
-                    {"report_ids": report_ids},
-                )
-                rows = cur.fetchall()
-                return {
-                    r["report_id"]: _compute_doc_class(
-                        r["title"],
-                        bool(r.get("has_drill_traces", False)),
-                        bool(r.get("has_samples", False)),
-                    )
-                    for r in rows
-                }
-            except psycopg2.errors.UndefinedColumn:
-                # Fallback for deployments where silver.collars.report_id
-                # has not yet been added. We rollback and retry on a fresh
-                # connection because the failed query aborts the txn.
-                conn.rollback()
-
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        try:
             cur.execute(
-                _FETCH_DOC_CLASS_TITLE_ONLY_SQL,
+                _FETCH_DOC_CLASS_INPUT_SQL,
                 {"report_ids": report_ids},
             )
             rows = cur.fetchall()
             return {
-                r["report_id"]: _compute_doc_class(r["title"], False, False)
+                r["report_id"]: _compute_doc_class(
+                    r["title"],
+                    bool(r.get("has_drill_traces", False)),
+                    bool(r.get("has_samples", False)),
+                )
                 for r in rows
             }
+        except psycopg2.errors.UndefinedColumn:
+            # Fallback for deployments where silver.collars.report_id
+            # has not yet been added. We rollback and retry on a fresh
+            # connection because the failed query aborts the txn.
+            conn.rollback()
+
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            _FETCH_DOC_CLASS_TITLE_ONLY_SQL,
+            {"report_ids": report_ids},
+        )
+        rows = cur.fetchall()
+        return {
+            r["report_id"]: _compute_doc_class(r["title"], False, False)
+            for r in rows
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -362,10 +374,9 @@ def reranker_chunk_population(
         "(canonical chunked-content corpus per ADR-0010)"
     )
 
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(_FETCH_DOCUMENT_PASSAGES_SQL)
-            rows = [dict(r) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(_FETCH_DOCUMENT_PASSAGES_SQL)
+        rows = [dict(r) for r in cur.fetchall()]
 
     context.log.info(
         "reranker_chunk_population: fetched %d rows from silver.document_passages",
@@ -504,7 +515,7 @@ def reranker_chunk_sample(
         "strata_counts":     strata_counts,
         "allocations":       allocations,
         "drawn":             sample.height,
-        "captured_at":       datetime.now(timezone.utc).isoformat(),
+        "captured_at":       datetime.now(UTC).isoformat(),
     }
 
     minio.ensure_bucket(S3_BUCKET)
@@ -608,8 +619,8 @@ def reranker_generated_queries(
     # consecutive-window pairs with wrap-around so chunk_0 also pairs with
     # chunk_C-1. This gives exactly C pairs per report at C ≥ 2 (only 1
     # pair at C = 2 since the wrap-around is the same pair).
-    import hashlib as _hashlib  # noqa: PLC0415 — keep import-locality
-    import uuid as _uuid  # noqa: PLC0415
+    import hashlib as _hashlib
+    import uuid as _uuid
 
     multihop_pairs: list[tuple[dict[str, Any], dict[str, Any], str]] = []
     for report_id, chunks in chunks_by_report.items():
@@ -776,7 +787,7 @@ def reranker_mined_negatives(
     # We need to embed the query string with the same dense encoder used
     # for the index, then call Qdrant `search`. Reuse the cached model
     # from index_reports for vector-space parity.
-    from georag_dagster.assets.index_document_passages import _embed_in_batches  # noqa: PLC0415
+    from georag_dagster.assets.index_document_passages import _embed_in_batches
 
     sample_indexed = sample.select(["chunk_id", "report_id", "page", "chunk_text"]).unique(
         subset=["chunk_id"]
@@ -811,7 +822,7 @@ def reranker_mined_negatives(
                 limit=50,
                 with_payload=True,
             ).points
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             context.log.warning("reranker_mined_negatives: qdrant search failed for %s: %s", chunk_id, exc)
             continue
 
@@ -1070,7 +1081,7 @@ def reranker_label_dataset(
         "splits": {k: len(v) for k, v in splits.items()},
         "leakage_warn_rate": leakage_rate,
         "files":             written,
-        "captured_at":       datetime.now(timezone.utc).isoformat(),
+        "captured_at":       datetime.now(UTC).isoformat(),
     }
     manifest_key = f"{out_prefix}/manifest.json"
     minio.upload_bytes(
@@ -1119,7 +1130,7 @@ def reranker_label_dataset_minimum_size_check(
     manifest_key = f"{_run_output_prefix(context.run.run_id)}/manifest.json"
     try:
         raw = minio.download_bytes(S3_BUCKET, manifest_key)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return AssetCheckResult(
             passed=False,
             severity=AssetCheckSeverity.ERROR,

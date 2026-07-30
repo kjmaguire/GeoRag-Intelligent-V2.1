@@ -4,6 +4,12 @@ Returns the full SMDI FeatureCollection (~6,012 points, ~300 KB gzipped)
 served from the local `public.smdi_deposits` table populated by the
 `smdi_deposits_refresh` Dagster asset.
 
+⚠️ B2 (2026-07-28): the Dagster services were removed, so nothing refreshes
+that table any more. This endpoint keeps serving whatever was last loaded —
+the data is frozen, not missing, which is the failure mode that looks fine
+until someone checks the dates. Re-point the refresh at a Hatchet cron (or
+restore Dagster) before treating this as live. See src/dagster/DORMANT.md.
+
 The plan's original intent was to proxy + cache the paginated upstream
 ArcGIS REST response. Since Dagster already pulls upstream daily into
 PostGIS, this endpoint reads from the local copy:

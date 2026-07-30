@@ -36,7 +36,7 @@ import breaks runtime annotation evaluation.
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg2.extras
@@ -53,7 +53,6 @@ from georag_dagster.assets.sparse_encoder import (
     encode_sparse_batch,
 )
 from georag_dagster.resources import PostgresResource, QdrantResource
-
 
 # ---------------------------------------------------------------------------
 # Constants — keep in lockstep with index_reports.py so the vector space is
@@ -113,9 +112,9 @@ _MODEL = None
 
 def _get_model():
     """Return the cached SentenceTransformer, loading it on first call."""
-    global _MODEL  # noqa: PLW0603
+    global _MODEL
     if _MODEL is None:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        from sentence_transformers import SentenceTransformer
 
         _MODEL = SentenceTransformer(EMBED_MODEL_NAME)
     return _MODEL
@@ -217,7 +216,7 @@ def _ensure_collection(client: Any, context: AssetExecutionContext) -> None:
     Payload indices ensured every run (Qdrant create_payload_index is
     idempotent — re-create is a no-op).
     """
-    from qdrant_client.models import (  # noqa: PLC0415
+    from qdrant_client.models import (
         Distance,
         HnswConfigDiff,
         OptimizersConfigDiff,
@@ -335,7 +334,7 @@ def _ensure_collection(client: Any, context: AssetExecutionContext) -> None:
                 field_name=field,
                 field_schema="keyword",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Qdrant returns a non-error if the index already exists, but
             # some versions raise. Log + continue.
             context.log.debug(
@@ -349,7 +348,7 @@ def _ensure_collection(client: Any, context: AssetExecutionContext) -> None:
                 field_name=field,
                 field_schema="integer",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             context.log.debug(
                 "index_document_passages: payload index %s (integer) — %s",
                 field, exc,
@@ -463,7 +462,7 @@ def _build_payload(row: dict, payload_text: str) -> dict:
         "license_url":       row.get("license_url"),
         "attribution_text":  row.get("attribution_text"),
         "source_url":        row.get("source_url"),
-        "indexed_at":        datetime.now(timezone.utc).isoformat(),
+        "indexed_at":        datetime.now(UTC).isoformat(),
         "embed_model":       EMBED_MODEL_NAME,
         "parser_version":    SPARSE_MODEL_VERSION,
     }
@@ -515,10 +514,9 @@ def index_document_passages(
         config.skip_ocr_pending,
     )
 
-    with postgres.get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = [dict(r) for r in cur.fetchall()]
+    with postgres.get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        rows = [dict(r) for r in cur.fetchall()]
 
     if not rows:
         context.log.warning(
@@ -562,7 +560,7 @@ def index_document_passages(
     )
 
     # --- Build PointStructs ---
-    from qdrant_client.models import PointStruct, SparseVector  # noqa: PLC0415
+    from qdrant_client.models import PointStruct, SparseVector
 
     points: list[PointStruct] = []
     skipped_empty = 0

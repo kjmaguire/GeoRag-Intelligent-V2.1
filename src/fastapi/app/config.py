@@ -84,29 +84,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # -------------------------------------------------------------------------
-    # §04p PDF doc-parser backend — ADR-0016 Phase 2 (PaddleOCR-VL)
-    # -------------------------------------------------------------------------
-    # Selects the full-page, layout-aware parser used by the §04p stack's
-    # "Stage-6-style" parse slot. `docling` is the production default
-    # (parse_mixed / parse_table_heavy via Docling). `paddleocr-vl` routes that
-    # slot through app.ocr.parse_docparser_vl (PaddleOCR-VL-1.6). Additive +
-    # flag-gated per ADR-0016 — the default keeps current behaviour; promotion
-    # is gated on the Phase 2 shadow-run eval (ADR-0016 step 4).
-    PDF_DOCPARSER_BACKEND: str = "docling"
-
-    @field_validator("PDF_DOCPARSER_BACKEND")
-    @classmethod
-    def _validate_docparser_backend(cls, v: str) -> str:
-        allowed = {"docling", "paddleocr-vl"}
-        normalized = v.strip().lower()
-        if normalized not in allowed:
-            raise ValueError(
-                f"PDF_DOCPARSER_BACKEND must be one of {sorted(allowed)}, "
-                f"got {v!r}."
-            )
-        return normalized
-
-    # -------------------------------------------------------------------------
     # Sentry — error tracking, traces, profiling, logs
     # -------------------------------------------------------------------------
     # Same Sentry project as the Laravel side ("georag"). Leave blank to
@@ -155,13 +132,16 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
 
     # -------------------------------------------------------------------------
-    # Neo4j
+    # Neo4j — REMOVED 2026-07-28 (B1). NEO4J_HOST/PORT/USER/PASSWORD were only
+    # read by main.py's driver construction, which is gone. The handful of
+    # standalone Phase 0 monitoring agents and backup/restore workflows that
+    # still probe Neo4j directly (graph_tenant_auditor.py, index_health.py,
+    # store_reconciliation.py, tool_gateway/impls.py, outbox_dispatcher.py,
+    # restore_workspace.py, _export_extras.py, _restore_extras.py) read raw
+    # NEO4J_* env vars via os.environ.get(...) with hardcoded fallbacks, not
+    # through this settings object, so removing these fields doesn't affect
+    # them — they already fail open on a connection error.
     # -------------------------------------------------------------------------
-
-    NEO4J_HOST: str = "neo4j"
-    NEO4J_PORT: int = 7687
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = "neo4j"
 
     # -------------------------------------------------------------------------
     # Qdrant
@@ -306,16 +286,6 @@ class Settings(BaseSettings):
     LLM_FALLBACK_MODEL: str = ""
     LLM_FALLBACK_API_KEY: str = ""
 
-    # R9 — bounded escalation via LLM query rephrasing. When a query
-    # hits the "classifier_fallback + all tools empty" signature, the
-    # orchestrator asks the LLM for up to MAX_REPHRASINGS alternative
-    # phrasings and retries the deterministic tool dispatch on each
-    # until one returns something. Latency cost is one extra LLM
-    # round-trip + up to N retry passes of tool fan-out. Disable to
-    # revert to the old straight-through "empty is empty" behaviour.
-    AGENTIC_ESCALATION_ENABLED: bool = True
-    AGENTIC_ESCALATION_MAX_REPHRASINGS: int = 2
-
     # LLM-based classifier fallback tier (→ A grade).
     # When the keyword classifier hits classifier_fallback, ask a FAST-tier
     # LLM to re-classify BEFORE the deterministic fan-out runs. Recovers
@@ -323,28 +293,6 @@ class Settings(BaseSettings):
     # to the rephrasing retry. Off by default only if operators want to
     # isolate pure keyword routing during an evaluation pass.
     LLM_CLASSIFIER_FALLBACK_ENABLED: bool = True
-
-    # R9-full — second-tier Pydantic AI agentic escalation. Fires ONLY when
-    # both the deterministic dispatch AND the R9-lite rephrasing retry
-    # returned empty. Off by default because the signal-harvesting
-    # dashboard (Phase 4 #1) needs to show the R9-lite success rate drop
-    # below ~50% before this tier adds net value. Turn on per-deploy via
-    # env when telemetry justifies it.
-    AGENTIC_FULL_ESCALATION_ENABLED: bool = False
-    # §04p Phase 2.B-i — raised from 3 to 8 to budget for PDF chaining.
-    # PDF chains like find_legends → crop_region → ocr_region → summarize
-    # need at least 4 retrieval calls before verify_numerical_claim.
-    # Non-PDF queries pay nothing extra: the agent stops once it has enough
-    # context regardless of remaining budget.
-    # Override per-deploy via AGENTIC_MAX_TOOL_CALLS env var.
-    AGENTIC_MAX_TOOL_CALLS: int = 8
-    # P1 #11 — verify_numerical_claim is registered alongside the retrieval
-    # tools but should NOT eat into the discovery budget. Give it dedicated
-    # headroom so a verification-happy model can still explore.
-    # Pydantic AI's UsageLimits.tool_calls_limit is global, so the agent's
-    # actual ceiling is AGENTIC_MAX_TOOL_CALLS + this value.
-    AGENTIC_MAX_VERIFY_CALLS: int = 3
-    AGENTIC_TIMEOUT_S: float = 10.0
 
     # P1 #14 — global per-query LLM-call cap. A single user query can
     # invoke the LLM many times: classifier escalation, query rephrasing,
@@ -363,28 +311,22 @@ class Settings(BaseSettings):
     # Default 8 leaves headroom; lower for cost-sensitive deploys.
     MAX_LLM_CALLS_PER_QUERY: int = 8
 
-    # P1 #9 — Logfire / OpenTelemetry instrumentation for the Pydantic AI
-    # agent. Logfire is the Pydantic team's OTel provider; it auto-traces
+    # P1 #9 — Logfire instrumentation for the Pydantic AI agent. It auto-traces
     # every agent run (system prompt, tool calls, tool returns, retries)
-    # and emits spans either to Pydantic's hosted backend (LOGFIRE_TOKEN)
-    # OR to a local OTel collector (LOGFIRE_OTEL_ENDPOINT). Default off so
-    # no surprise outbound traffic.
+    # and can emit spans to Pydantic's hosted backend (LOGFIRE_TOKEN).
+    # Default off so there is no surprise outbound traffic.
     #
     # Enable for production-grade triage:
     #   LOGFIRE_ENABLED=true
-    #   LOGFIRE_TOKEN=<pylogfire_xxx>            # hosted backend OR
-    #   LOGFIRE_OTEL_ENDPOINT=http://tempo:4317  # local collector
+    #   LOGFIRE_TOKEN=<pylogfire_xxx>
     #
     # When LOGFIRE_TOKEN is set we send spans to logfire.pydantic.dev.
-    # When LOGFIRE_OTEL_ENDPOINT is set we send to that OTLP endpoint
-    # (Tempo / Jaeger / Honeycomb / Grafana Cloud) via the OTel exporter.
-    # When both are unset BUT LOGFIRE_ENABLED=true we configure with
+    # When it is unset BUT LOGFIRE_ENABLED=true we configure with
     # send_to_logfire=False so spans are still created locally for
     # in-process inspection — useful for `logfire.span(...)` debugging
     # without shipping data anywhere.
     LOGFIRE_ENABLED: bool = False
     LOGFIRE_TOKEN: str = ""
-    LOGFIRE_OTEL_ENDPOINT: str = ""
     LOGFIRE_SERVICE_NAME: str = "georag-fastapi"
     LOGFIRE_ENVIRONMENT: str = "dev"
 
@@ -409,12 +351,7 @@ class Settings(BaseSettings):
     # 1.0 = effectively drop stale public_geo. Operator-tunable.
     FRESHNESS_RANKING_WEIGHT: float = 0.0
 
-    # Model-tier routing (B1). When enabled, the orchestrator picks a model
-    # per query based on classifier output: factoid lookups go to FAST,
-    # narrative synthesis to STANDARD, and multi-hop / retries to DEEP.
-    # Set MODEL_ROUTING_ENABLED=False to pin every query to DEEP (the
-    # pre-B1 behaviour) for A/B comparison against the golden set.
-    MODEL_ROUTING_ENABLED: bool = True
+    # Model identifiers used by the live classifier and pricing telemetry.
     MODEL_TIER_FAST: str = "claude-haiku-4-5"
     MODEL_TIER_STANDARD: str = "claude-sonnet-4-6"
     MODEL_TIER_DEEP: str = "claude-opus-4-8"
@@ -539,24 +476,6 @@ class Settings(BaseSettings):
     # Default false — Chunk 2 is staged; senior-reviewer approval required
     # before flipping. See docs/module-6-chunk-2-design.md.
     CITATION_SPAN_RESOLVER_ENABLED: bool = False
-
-    # 2026-06-24: defensive flag for the citation-first salvage path. The
-    # orchestrator (run_deterministic_rag) gates a salvage block on
-    # `settings.CITATION_FIRST_ENABLED`, but the flag, its 3 companion timeout/
-    # concurrency settings, AND the app.services.atomic_claim_extractor service
-    # were never committed (lost uncommitted work — the live pieces are on the
-    # pr/w01 slice, and even there the config is missing). Without this field the
-    # reference is a latent AttributeError if that path is ever reached. Pinned
-    # OFF so the block is skipped cleanly and the absent service is never
-    # imported. To actually enable citation-first, restore the service + the
-    # CITATION_FIRST_{EXTRACTOR_TIMEOUT_S,EXTRACTOR_CONCURRENCY,COMPOSER_TIMEOUT_S}
-    # settings as a deliberate unit (or deploy pr/w01 whole).
-    CITATION_FIRST_ENABLED: bool = False
-    # Audit 2026-06-28: defined explicitly (default off) so the orchestrator's
-    # `settings.SENTENCE_GROUNDING_ENABLED` access can't raise AttributeError.
-    # The sentence_grounding service source is not committed (pr/w01 slice), so
-    # leave OFF — flipping it on requires restoring that module first.
-    SENTENCE_GROUNDING_ENABLED: bool = False
 
     # Audit 2026-06-27: prompt-injection hardening. When ON, untrusted document
     # body text (NI 43-101 chunks, public-geoscience snippets) is wrapped in
@@ -755,24 +674,6 @@ class Settings(BaseSettings):
     # this is the broader ceiling.
     REPAIR_LOOP_MAX_ATTEMPTS: int = 2
 
-    # -------------------------------------------------------------------------
-    # Phase G overnight — §10 Customer Support Cockpit outbound integrations
-    # -------------------------------------------------------------------------
-    # Kestra dispatch for support_packet bundles. When KESTRA_URL is unset,
-    # the support_packet agent assembles + returns the bundle dict as before
-    # (in-process, no outbound call). When set, the agent POSTs the bundle
-    # to a Kestra flow execution endpoint so downstream operator workflows
-    # (Slack notify, SeaweedFS archive, audit-trail attach, etc.) can run.
-    #
-    # KESTRA_URL example: "https://kestra.geo-rag.internal" — base only.
-    # The agent appends `/api/v1/executions/{namespace}/{flowId}` per Kestra's
-    # REST API contract.
-    KESTRA_URL: str = ""
-    KESTRA_FLOW_NAMESPACE: str = "georag.support"
-    KESTRA_FLOW_ID: str = "support_packet_received"
-    KESTRA_FLOW_AUTH_TOKEN: str = ""
-    KESTRA_HTTP_TIMEOUT_S: float = 5.0
-
     # PagerDuty Events API v2 for escalation_routing. When the integration
     # key is empty, the agent returns its advisory recommendation only
     # (no outbound page). When set, the agent POSTs an Events v2 trigger
@@ -793,28 +694,6 @@ class Settings(BaseSettings):
     #     hit-path rehydration was design-incomplete. Every hit
     #     produced empty tool_results → "(no data retrieved)" context
     #     → model refused on sequential identical queries.
-    #   Phase H (2026-05-15) SHIPPED the rehydration in
-    #     `orchestrator/run_cache.py::rehydrate_tool_results`:
-    #     - postgis candidates now serialise the full CollarRecord
-    #       dataclass payload (was just `{store, canonical_id}`)
-    #     - qdrant candidates already serialised DocumentChunk payloads
-    #     - rehydration groups by store and rebuilds the original
-    #       SpatialQueryResult / DocumentSearchResult dataclasses
-    #     - neo4j candidates are skipped cleanly (no clean dataclass
-    #       roundtrip for graph entity wrappers — the orchestrator's
-    #       graph branch re-fires when needed)
-    #
-    # Default flipped to True. Empirical speedup on the smoke test:
-    # first call 1.7s (cache miss + write), subsequent 0.85s
-    # (cache hit + rehydrate + synthesize fresh) — half the latency
-    # because retrieval + RRF + reranker are all skipped on hit.
-    # Synthesis ALWAYS runs fresh per Global Invariant 12.
-    #
-    # Tests: tests/test_run_cache_rehydration.py (13 cases) +
-    # explicit cache-hit smoke against the live LLM in
-    # tests/test_cache_scope.py / test_cache_key_versioning.py.
-    RETRIEVAL_CACHE_ENABLED: bool = True
-
     @model_validator(mode="after")
     def _validate_tenant_enforcement(self) -> Settings:
         """Module 9 Chunk 9.4 (A2-03) — refuse to start in an unsafe configuration.
@@ -911,6 +790,10 @@ class Settings(BaseSettings):
     # model. Updating this setting alone does NOT change the runtime
     # model; production code path uses the constant in main.py.
     EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
+    # Supply-chain control: resolve the known model at an immutable Hub
+    # commit instead of following a mutable branch. Operators changing the
+    # model must update the revision alongside it.
+    EMBEDDING_MODEL_REVISION: str = "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
 
     # Vector dim of the embedding model. main.py asserts the loaded model
     # matches this at startup (fail-fast); also referenced by init_qdrant.py
@@ -1088,6 +971,14 @@ class Settings(BaseSettings):
     NUMERIC_RETRY_THRESHOLD: int = 3
 
     # Layer 4: resolve drill-hole IDs and quoted entity names against PostGIS / Neo4j.
+    # Left True after B1 (2026-07-28, Neo4j removal): this flag gates BOTH the
+    # hole-ID check (PostGIS — unaffected by removing Neo4j) and the quoted-
+    # name check (Neo4j). Flipping it False would have silenced the PostGIS
+    # half of Layer 4 hallucination prevention for no reason. Instead,
+    # _resolve_names_in_neo4j already fails open (returns no unresolved
+    # names) when neo4j_driver is None — same path it already took whenever
+    # the graph was merely unpopulated — so this flag stays True and Layer 4
+    # keeps validating drill-hole IDs against real data.
     ENTITY_RESOLUTION_ENABLED: bool = True
 
     # Layer 6: apply SME-defined geological constraint rules to numerical claims.

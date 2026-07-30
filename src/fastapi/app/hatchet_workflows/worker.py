@@ -1,6 +1,7 @@
-"""Hatchet worker entrypoint — supports two pool variants.
+"""Hatchet worker entrypoint.
 
-Reads ``WORKER_POOL`` env var (Phase 1 Step 2):
+The demo compose stack runs the merged ``all`` pool. The narrower pool
+selectors remain available for deployments that still split workers:
 
   ``ingestion``  — registers ``outbox_dispatcher`` + ingestion-class agent
                    workflows (storage tiering, index health, store
@@ -38,8 +39,6 @@ from app.hatchet_workflows.continuous_learning_loop import continuous_learning_l
 from app.hatchet_workflows.cost_burn_watcher import cost_burn_watcher  # §5
 from app.hatchet_workflows.embed_pending_passages import embed_pending_passages_wf  # doc-phase 183
 from app.hatchet_workflows.enrich_passage_context import enrich_passage_context_wf  # contextual retrieval
-from app.hatchet_workflows.eval_real_rag_nightly import eval_real_rag_nightly  # doc-phase 170
-from app.hatchet_workflows.evaluate_workspace import evaluate_workspace  # doc-phase 98
 from app.hatchet_workflows.external_notification import external_notification
 from app.hatchet_workflows.field_outcome_learning import field_outcome_learning  # doc-phase 94
 from app.hatchet_workflows.flow_jwt_key_reaper import flow_jwt_key_reaper
@@ -49,8 +48,8 @@ from app.hatchet_workflows.ingest_pdf import ingest_pdf
 from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
-from app.hatchet_workflows.ocr_quality_check import ocr_quality_check_wf  # Phase 6 (2026-05-22)
 from app.hatchet_workflows.outbox_dispatcher import outbox_dispatcher
+from app.hatchet_workflows.pg_partman_maintenance import pg_partman_maintenance
 from app.hatchet_workflows.phase0_agents import (
     AI_AGENT_WORKFLOWS,
     INGESTION_AGENT_WORKFLOWS,
@@ -58,22 +57,16 @@ from app.hatchet_workflows.phase0_agents import (
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
 from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
-from app.hatchet_workflows.re_ocr_page import re_ocr_page  # doc-phase 63
 from app.hatchet_workflows.reliability_metrics_publisher import (
     reliability_metrics_publisher,  # reliability spec Phase 6
 )
 from app.hatchet_workflows.repair_shadow_aggregate import repair_shadow_aggregate
 from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
-from app.hatchet_workflows.score_answer_quality import score_answer_quality_wf  # answer quality eval
 from app.hatchet_workflows.score_targets import score_targets  # doc-phase 88
 from app.hatchet_workflows.stale_run_detector import stale_run_detector  # reliability spec Fix 1e
 from app.hatchet_workflows.support_replay import support_replay  # doc-phase 98
-from app.hatchet_workflows.sync_silver_to_kg import sync_silver_to_kg  # doc-phase 183
 from app.hatchet_workflows.tiff_normalize import (
     tiff_normalize,  # ADR-0005: lossless TIFF→PDF wrap, route through ingest_pdf
-)
-from app.hatchet_workflows.tiff_ocr_cluster import (
-    tiff_ocr_cluster,  # Phase E.1 replacement for the one-off georag-phase-e-ocr container (DEPRECATED 2026-05-23 by tiff_normalize per ADR-0005)
 )
 from app.hatchet_workflows.train_source_trust import train_source_trust  # doc-phase 102
 from app.hatchet_workflows.train_target_model import train_target_model  # doc-phase 101
@@ -92,11 +85,19 @@ from app.hatchet_workflows.workspace_export import workspace_export  # §11.3
 # external_notification (inbound webhook). Phase 4 Step 6 retired the
 # Phase 1 shadow_diff + shadow_diff_scan workflows along with the
 # silver.shadow_runs table.
-#   ingestion : outbox_dispatcher + ingest_pdf + 3 agent workflows = 5
-#   ai        : audit_ledger_verify + phase2_smoke + public_geoscience_pull
-#               + external_notification + 7 agent workflows = 11
+# Phase 0 workflow tuples are unpacked directly so the registered boot set
+# is visible here. Later ``app.agents`` domain phases are not Hatchet pools.
 POOLS = {
-    "ingestion": [outbox_dispatcher, ingest_pdf, re_ocr_page, ocr_quality_check_wf, tiff_ocr_cluster, tiff_normalize, stale_run_detector, nightly_ingestion_integrity, reliability_metrics_publisher, ingest_zip_archive] + INGESTION_AGENT_WORKFLOWS,
+    "ingestion": [
+        outbox_dispatcher,
+        ingest_pdf,
+        tiff_normalize,
+        stale_run_detector,
+        nightly_ingestion_integrity,
+        reliability_metrics_publisher,
+        ingest_zip_archive,
+        *INGESTION_AGENT_WORKFLOWS,
+    ],
     "ai": [
         audit_ledger_verify,
         # Plan §4b Stage 1 follow-up — nightly aggregator of repair-loop
@@ -118,9 +119,7 @@ POOLS = {
         mv_refresh_silver,
         # Doc-phase 83 / Master-plan §7.10 — generate_report wraps the
         # §15.1 Report Builder Graph in a durable Hatchet workflow.
-        # Currently a skeleton (raises NotImplementedError); registered
-        # here so worker startup imports + Hatchet engine sees the
-        # workflow name registered.
+        # Runs the report-builder planning pipeline.
         generate_report,
         # Doc-phase 88 / Master-plan §8.6 — score_targets wraps the
         # §18.2 Target Recommendation Graph in a durable Hatchet
@@ -143,20 +142,8 @@ POOLS = {
         # every Monday at 06:00 UTC. Emits a workspace.what_changed.
         # weekly_digest audit anchor (system-wide, NULL workspace_id).
         what_changed_weekly,
-        # Doc-phase 98 / Master-plan §10.4 — evaluate_workspace runs
-        # the golden-question eval suite + promotion gating. Skeleton.
-        evaluate_workspace,
-        # Doc-phase 170 / Master-plan §10.6 — eval_real_rag_nightly is
-        # the cron wrapper that fires real_rag_v1 against
-        # refusal_correctness nightly @ 05:15 UTC. Wraps
-        # evaluate_workspace because evaluate_workspace requires a
-        # non-default eval_request_id (incompatible with empty cron
-        # payload). Generates a fresh UUID per fire.
-        eval_real_rag_nightly,
-        # Doc-phase 183 — silver → Neo4j sync. Wraps the kg_sync
-        # service so cluster ingests can trigger KG population from a
-        # workflow rather than out-of-band script.
-        sync_silver_to_kg,
+        # sync_silver_to_kg (doc-phase 183, silver → Neo4j sync) removed
+        # 2026-07-28 (B1) along with Neo4j itself.
         # Doc-phase 183 — silver.document_passages → Qdrant embedding
         # sync. Runs BGE + SPLADE++ embeddings + upserts to the
         # georag_reports collection.
@@ -175,22 +162,17 @@ POOLS = {
         # executes failed workflows in dry-run mode for diagnosis.
         # Skeleton.
         support_replay,
-        # Doc-phase 100 / Master-plan §11.3 — restore_workspace runs
-        # cross-store consistency restore for one workspace.
-        # Graduated Phase G.2 — dry-run path counts rows in all five
-        # stores (Postgres + Neo4j + Qdrant + Redis + SeaweedFS-future)
-        # and verifies snapshot manifest. Real restore (dry_run=False)
-        # still gated on §11.1 backup infrastructure.
+        # Doc-phase 100 / Master-plan §11.3 — cross-store consistency
+        # checks plus manifest-backed workspace restore.
         restore_workspace,
         # Doc-phase 101 / Master-plan §12.3 — train_target_model trains
-        # an XGBoost target-scoring model on accumulated target_outcomes.
-        # Skeleton (waits on xgboost dep + outcome accumulation).
+        # a target-scoring model on accumulated target_outcomes.
         train_target_model,
         # Doc-phase 102 / Master-plan §12.7 — train_source_trust trains
-        # per-workspace source-trust XGBoost model. Skeleton.
+        # per-workspace source-trust weights.
         train_source_trust,
         # Doc-phase 102 / Master-plan §12.10 — continuous_learning_loop
-        # cron orchestrator triggers model retraining + eval. Skeleton.
+        # cron orchestrator tracks retraining readiness.
         continuous_learning_loop,
         # Master-plan §11.1 — nightly backup crons. Staggered 15 min
         # apart starting 02:00 UTC (per kickoff locked defaults).
@@ -199,6 +181,9 @@ POOLS = {
         backup_qdrant,      # 02:30 UTC
         backup_redis,       # 02:45 UTC
         backup_seaweedfs,   # 03:00 UTC
+        # 2026-06-27 audit T5 — advance the three monthly-partitioned
+        # ledgers before their p_premake=3 window expires. 04:15 UTC.
+        pg_partman_maintenance,
         # Master-plan §11.10 — nightly cold-tier archive (04:00 UTC,
         # after the backup window closes). Writes-only; pruning is
         # operator-gated.
@@ -208,10 +193,6 @@ POOLS = {
         # per-workspace threshold. Cron every 5 min; idempotent within
         # the window so operators see one alert per breach, not 12.
         cost_burn_watcher,
-        # Answer quality eval — Qwen3-as-judge faithfulness + context
-        # precision scoring. Nightly catch-up at 06:00 UTC; scores
-        # audit.query_audit_log rows where faithfulness_score IS NULL.
-        score_answer_quality_wf,
         # bc_minfile_pull (§6.2) + nrcan_geo_pull (§6.3) retired 2026-05-25 —
         # superseded by Dagster Bronze→Silver pipeline. Stale cron entries on
         # the Hatchet engine side were cleared via the de-registration sweep
@@ -221,7 +202,8 @@ POOLS = {
         # Produces the JSONL.gz manifest that restore_workspace
         # dry_run=False consumes.
         workspace_export,
-    ] + AI_AGENT_WORKFLOWS,
+        *AI_AGENT_WORKFLOWS,
+    ],
 }
 POOLS["all"] = POOLS["ingestion"] + POOLS["ai"]
 
@@ -284,12 +266,18 @@ def main() -> int:
     # pool (-ingestion / -ai) and the exporter starts before the first
     # workflow run. install_tracer_provider() is a no-op when
     # OTEL_EXPORTER_OTLP_ENDPOINT isn't set.
+    #
+    # Moved 2026-07-28 (A1): this used to import from the bind-mounted
+    # georag_dagster package, so an ImportError was the normal case when the
+    # mount was absent. app.observability is first-party now, so an ImportError
+    # here means opentelemetry itself is missing — still non-fatal (tracing is
+    # optional), but worth logging as a warning rather than an info.
     try:
-        from georag_dagster.observability import install_tracer_provider
+        from app.observability import install_tracer_provider
         installed = install_tracer_provider(default_service_name=worker_name)
         log.info("otel: tracer install -> %s", installed)
-    except ImportError:
-        log.info("otel: georag_dagster.observability not on path; skipping bootstrap")
+    except ImportError as exc:
+        log.warning("otel: bootstrap unavailable (%s); continuing untraced", exc)
 
     log.info(
         "starting Hatchet worker pool=%s name=%s slots=%d workflows=[%s]",

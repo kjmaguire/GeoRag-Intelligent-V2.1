@@ -1,0 +1,36 @@
+# Per-Dockerfile build-context excludes for docker/fastapi.Dockerfile
+# (BuildKit: a `<Dockerfile-name>.dockerignore` next to the Dockerfile
+# REPLACES the context root's .dockerignore for this build, so this file
+# must be complete — it cannot rely on src/.dockerignore as a base).
+#
+# Context root is ./src (see docker-compose.yml + .github/workflows/ci.yml).
+# The fastapi image needs only fastapi/ + georag_object_storage/; the
+# sibling dagster/ tree is dead weight in this build's context.
+
+dagster/
+
+**/.git
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.venv
+fastapi/.venv/
+**/.env
+**/.env.*
+!**/.env.example
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/htmlcov
+**/dist
+**/*.egg-info
+**/.claude
+**/tests/fixtures
+
+# fastapi-specific — see src/.dockerignore for the history of each entry.
+fastapi/C:
+fastapi/models/
+fastapi/data/
+fastapi/bench_results/
+fastapi/retrieval_threshold_sweep.csv
+fastapi/run_eval*.py

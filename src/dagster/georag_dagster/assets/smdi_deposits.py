@@ -19,7 +19,7 @@ unification question (collapse into pg_mineral_occurrence or keep
 parallel) is documented in the handoff doc — Kyle's call.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import psycopg2.extras
@@ -63,14 +63,14 @@ class SmdiRefreshConfig(Config):
     force: bool = False
     page_size: int = SMDI_PAGE_SIZE
     http_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
-    override_service_url: Optional[str] = None
+    override_service_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _yes_no_to_bool(value: Any) -> Optional[bool]:
+def _yes_no_to_bool(value: Any) -> bool | None:
     """Source emits 'Yes' / 'No' (mixed case observed). Anything else → None."""
     if value is None:
         return None
@@ -146,7 +146,7 @@ ON CONFLICT (objectid) DO UPDATE SET
 """
 
 
-def _feature_to_row(feature: dict[str, Any]) -> Optional[dict]:
+def _feature_to_row(feature: dict[str, Any]) -> dict | None:
     """Map a single GeoJSON feature to a UPSERT_SQL param dict.
 
     Returns None if the feature is missing the required geometry or objectid —
@@ -204,9 +204,8 @@ def _upsert_features(
     if not rows:
         return 0, skipped
 
-    with postgres.get_connection() as conn:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_batch(cur, UPSERT_SQL, rows, page_size=500)
+    with postgres.get_connection() as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_batch(cur, UPSERT_SQL, rows, page_size=500)
     return len(rows), skipped
 
 

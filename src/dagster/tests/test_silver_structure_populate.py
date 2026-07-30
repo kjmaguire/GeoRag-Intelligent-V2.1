@@ -20,7 +20,6 @@ from georag_dagster.assets.silver_structure_populate import (
     extract_structure_candidates,
 )
 
-
 # ---------------------------------------------------------------------------
 # classify_structure_type
 # ---------------------------------------------------------------------------

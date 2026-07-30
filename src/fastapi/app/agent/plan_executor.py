@@ -360,7 +360,8 @@ async def _dispatch_entity_traversal(
         )
         paths.append(GraphPath(nodes=[start_node, end_node], edges=[edge]))
 
-    # TODO(phase-1c-ii): wire real provenance from Neo4j element IDs
+    # TODO(phase-1c-ii): replace the legacy synthetic graph identifier with
+    # stable source provenance if graph traversal is restored.
     source_chunk_id = (
         f"neo4j:{inp.start_entity}:{inp.hop_count}"
         if result.entities

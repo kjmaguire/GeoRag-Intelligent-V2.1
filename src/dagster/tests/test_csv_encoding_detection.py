@@ -15,12 +15,10 @@ from __future__ import annotations
 
 from io import BytesIO, StringIO
 
-
-from georag_dagster.parsers._encoding import detect_encoding, open_csv_bytes
 from georag_dagster.parsers._csv_io import open_csv_with_encoding
+from georag_dagster.parsers._encoding import detect_encoding, open_csv_bytes
 from georag_dagster.parsers.csv_collar import parse_csv_collars
 from georag_dagster.parsers.csv_sample import parse_csv_samples
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,7 +46,7 @@ def _make_sample_csv(text_in_field: str = "Core") -> str:
 
 class TestDetectEncoding:
     def test_utf8_bytes_detected_as_utf8_or_ascii(self):
-        data = "HoleID,Easting,Northing\nDH-01,495000,6200000\n".encode("utf-8")
+        data = b"HoleID,Easting,Northing\nDH-01,495000,6200000\n"
         result = detect_encoding(data)
         assert result.lower().replace("-", "").replace("_", "") in (
             "utf8", "ascii"

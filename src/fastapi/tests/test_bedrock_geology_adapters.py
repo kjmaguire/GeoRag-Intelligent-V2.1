@@ -12,6 +12,8 @@ from app.services.publicgeo.bedrock_geology_adapters import (
     sync_nrcan_geo_bedrock_geology,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

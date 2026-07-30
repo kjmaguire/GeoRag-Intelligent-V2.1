@@ -22,7 +22,7 @@ from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataVa
 
 from georag_dagster.assets.bronze import BRONZE_BUCKET, COLLARS_PREFIX
 from georag_dagster.parsers.csv_collar import parse_csv_collars
-from georag_dagster.resources import S3Resource, PostgresResource
+from georag_dagster.resources import PostgresResource, S3Resource
 
 PROVENANCE_INSERT_SQL = """
 INSERT INTO bronze.provenance (

@@ -9,7 +9,6 @@ Dagster 1.13 Config classes rely on runtime annotation evaluation.
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
@@ -21,8 +20,8 @@ WELL_LOGS_PREFIX = "well_logs"
 
 
 class BronzeWellLogsConfig(Config):
-    object_key: Optional[str] = None
-    las_file_path: Optional[str] = None
+    object_key: str | None = None
+    las_file_path: str | None = None
 
 
 @asset(
@@ -62,7 +61,7 @@ def bronze_well_logs(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

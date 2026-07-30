@@ -61,8 +61,9 @@ Env vars [docker-compose.yml:975-985](../../../docker-compose.yml):
 ### Qwen2.5-VL (figures)
 
 `VLLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct` is supported as a §04p Stage-6
-config. The VL pass over figure pages is gated on
-`DOCLING_VL_ENABLED` and goes through `pdf_vl.py::describe_figure_vl()`.
+config. The optional VL pass goes through
+`pdf_vl.py::describe_figure_vl()`; automated figure-region production is
+currently disabled.
 
 ---
 
@@ -281,6 +282,5 @@ Agents in use:
 | bge-small-en | `hatchet-worker-ai` | `/tmp/hf_cache` (fastapi_hf_cache shared) | ~135 MB |
 | bge-reranker-base | `fastapi` | `/tmp/hf_cache` (fastapi_hf_cache) | ~280 MB |
 | SPLADE++ | `hatchet-worker-ai` | `/tmp/hf_cache` | ~440 MB |
-| rapidocr ONNX | `hatchet-worker-ingestion` + `hatchet-worker-ai` | `/tmp/rapidocr_models` (rapidocr_models named volume) | ~150 MB |
 | Tesseract | both workers | system path | ~30 MB lang data |
-| Docling | both workers | site-packages | bundled |
+| Azure Document Intelligence | external managed service | n/a | n/a |

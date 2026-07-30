@@ -45,6 +45,7 @@ class HypothesisEvidenceLink extends Model
         'payload' => 'array',
     ];
 
+    /** @return BelongsTo<Hypothesis, $this> */
     public function hypothesis(): BelongsTo
     {
         return $this->belongsTo(Hypothesis::class, 'hypothesis_id', 'hypothesis_id');

@@ -1,9 +1,8 @@
 """§7.4 Claim Ledger service.
 
 Records the structured claims an LLM makes in an answer + their
-verification status. Callers (the orchestrator's response_assembler +
-post-hoc claim_validator) write to this table; the Trust Inspector
-reads from it.
+verification status. The response assembler writes to this table;
+the Trust Inspector reads from it.
 
 Usage from response_assembler::
 
@@ -20,8 +19,8 @@ Usage from response_assembler::
         source_passage_id=passage_id,
     )
 
-The claim_validator agent later sweeps pending rows + flips
-verification_status to verified / failed / insufficient.
+Pending-row verification requires an explicit caller; there is no
+registered background claim-validator workflow.
 """
 from __future__ import annotations
 

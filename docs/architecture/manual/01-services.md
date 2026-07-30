@@ -118,23 +118,19 @@ Every container in the stack, grouped by tier. All line references point into
 
 ### hatchet-worker-ingestion ([docker-compose.yml:1924](../../../docker-compose.yml))
 - **Image** `georag/fastapi:latest` (reused; same Python + dependency surface)
-- **Command** Bootstrap shell that pip-installs polars/pytesseract if missing,
-  then optionally pulls the CUDA-12.6 PaddlePaddle wheel when
-  `PADDLEOCR_USE_GPU=true` ([docker-compose.yml:1942-1952](../../../docker-compose.yml)),
-  then `exec python3 -m app.hatchet_workflows.worker`.
+- **Command** Bootstrap shell that ensures the retained ingestion tools are
+  available, then `exec python3 -m app.hatchet_workflows.worker`.
 - **Env** `WORKER_POOL=ingestion` ([docker-compose.yml:1967](../../../docker-compose.yml))
   — selects which workflows this pool registers.
 - **Auth** `HATCHET_CLIENT_TOKEN` from `hatchet-admin token create`
   ([docker-compose.yml:1918-1923](../../../docker-compose.yml)).
 - **Direct DB** Uses `POSTGRES_DIRECT_HOST=postgresql` not pgbouncer — needed
   for transactions and `SET LOCAL` GUCs to work cleanly.
-- **OCR / PDF env** `PDF_PARSER_DOCLING_ENABLED=true`,
-  `DOCLING_OCR_ENABLED=true`, `RAPIDOCR_MODEL_DIR=/tmp/rapidocr_models`,
-  `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`, `PDF_PARSE_PAGE_WORKERS=4`,
-  `PARSE_SUBPROCESS_MAX_WORKERS` (empty default → `min(os.cpu_count(), 4)`)
-  ([docker-compose.yml:2039-2061](../../../docker-compose.yml)).
-- **Volumes** Source tree bind-mount at `/app`, the shared rapidocr ONNX
-  model cache.
+- **OCR / PDF env** Azure Document Intelligence endpoint/key,
+  `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`,
+  `OCR_ROUTING_THRESHOLDS_JSON`, `PDF_PARSE_PAGE_WORKERS=4`, and
+  `PARSE_SUBPROCESS_MAX_WORKERS` (empty default → `min(os.cpu_count(), 4)`).
+- **Volumes** Source tree bind-mount at `/app`.
 - **Healthcheck** `grep -q app.hatchet_workflows.worker /proc/1/cmdline`.
 
 ### hatchet-worker-ai ([docker-compose.yml:2139](../../../docker-compose.yml))

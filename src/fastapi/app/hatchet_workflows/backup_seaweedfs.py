@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 
 import aioboto3
 import asyncpg
+from georag_object_storage import StorageConfig, async_client_kwargs
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -156,15 +157,6 @@ async def _record_failure(
     )
 
 
-def _s3_session_kwargs() -> dict[str, str]:
-    return {
-        "endpoint_url":          os.environ.get("SEAWEEDFS_S3_ENDPOINT", "http://seaweedfs:8333"),
-        "aws_access_key_id":     os.environ.get("SEAWEEDFS_S3_ACCESS_KEY", "georag"),
-        "aws_secret_access_key": os.environ.get("SEAWEEDFS_S3_SECRET_KEY", "georag"),
-        "region_name":           os.environ.get("SEAWEEDFS_S3_REGION", "us-east-1"),
-    }
-
-
 @backup_seaweedfs.task(execution_timeout="120m")
 async def run_backup(input: BackupSeaweedFsInput, ctx: Context) -> BackupSeaweedFsOutput:
     started_at = datetime.now(tz=UTC)
@@ -180,8 +172,14 @@ async def run_backup(input: BackupSeaweedFsInput, ctx: Context) -> BackupSeaweed
         run_id = await _record_start(conn)
         snapshot_prefix = _snapshot_prefix(input.prefix, run_id, started_at)
 
+        # source_bucket/dest_bucket are workflow-input strings (defaults
+        # "georag-bronze"/"georag-backups", overridable) — genuinely
+        # dynamic, not one of georag_object_storage's four fixed logical
+        # Bucket members, so this uses the raw-client escape hatch
+        # (async_client_kwargs) rather than the higher-level
+        # AsyncObjectStorage interface.
         session = aioboto3.Session()
-        async with session.client("s3", **_s3_session_kwargs()) as s3:
+        async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
             paginator = s3.get_paginator("list_objects_v2")
             async for page in paginator.paginate(Bucket=input.source_bucket):
                 for obj in page.get("Contents", []) or []:

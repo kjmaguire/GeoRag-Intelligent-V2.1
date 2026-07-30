@@ -33,8 +33,8 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-import boto3
-from botocore.config import Config as BotoConfig
+from georag_object_storage import Bucket, StorageConfig
+from georag_object_storage.sync_client import S3CompatibleStorage
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
@@ -49,8 +49,6 @@ from app.hatchet_workflows.tiff_normalize import TiffNormalizeInput, tiff_normal
 # to prevent the worker from registering the other workflows.
 
 log = logging.getLogger("georag.hatchet.ingest_zip_archive")
-
-_BRONZE_BUCKET = os.environ.get("S3_BUCKET_BRONZE", "bronze")
 
 
 class IngestZipArchiveInput(BaseModel):
@@ -88,28 +86,6 @@ class IngestZipArchiveInput(BaseModel):
             )
         return v
 
-
-# ---------------------------------------------------------------------------
-# S3 helpers — reuse the same client-factory pattern as tiff_normalize.py
-# ---------------------------------------------------------------------------
-
-def _s3_client():
-    s3_endpoint = os.environ.get("S3_ENDPOINT_URL") or os.environ.get("MINIO_ENDPOINT")
-    aws_key = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("MINIO_ROOT_USER")
-    aws_secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get("MINIO_ROOT_PASSWORD")
-    if not (s3_endpoint and aws_key and aws_secret):
-        raise RuntimeError(
-            "ingest_zip_archive: S3 endpoint / credentials not configured "
-            "(S3_ENDPOINT_URL + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)"
-        )
-    return boto3.client(
-        "s3",
-        endpoint_url=s3_endpoint,
-        aws_access_key_id=aws_key,
-        aws_secret_access_key=aws_secret,
-        region_name="us-east-1",
-        config=BotoConfig(signature_version="s3v4"),
-    )
 
 
 def _build_dsn() -> str:
@@ -160,7 +136,7 @@ async def run_zip_ingest(
         input.minio_key,
     )
 
-    s3 = _s3_client()
+    store = S3CompatibleStorage(StorageConfig.from_env())
 
     async with _archive_progress.archive_lifecycle(
         workspace_id=input.workspace_id,
@@ -174,13 +150,11 @@ async def run_zip_ingest(
         with tempfile.TemporaryDirectory(prefix="georag_zip_") as tmpdir:
             zip_path = Path(tmpdir) / "archive.zip"
 
-            log.info("ingest_zip_archive: downloading %s from %s", input.minio_key, _BRONZE_BUCKET)
+            log.info("ingest_zip_archive: downloading %s", input.minio_key)
             if archive_run_id:
                 await _archive_progress.mark_extracting(archive_run_id=archive_run_id)
             # Hard rule 2 — boto3 is sync; keep it off the asyncio event loop.
-            await asyncio.to_thread(
-                s3.download_file, _BRONZE_BUCKET, input.minio_key, str(zip_path)
-            )
+            await asyncio.to_thread(store.get_file, Bucket.BRONZE, input.minio_key, str(zip_path))
 
             # ── 2. Extract all entries ────────────────────────────────────────
             extract_dir = Path(tmpdir) / "extracted"
@@ -276,7 +250,7 @@ async def run_zip_ingest(
                             file_path=file_path,
                             ext=ext,
                             conn=conn,
-                            s3=s3,
+                            store=store,
                             input=input,
                             counts=counts,
                         )
@@ -353,7 +327,7 @@ async def _ingest_one(
     file_path: Path,
     ext: str,
     conn: asyncpg.Connection,
-    s3: Any,
+    store: S3CompatibleStorage,
     input: IngestZipArchiveInput,
     counts: dict[str, int],
 ) -> None:
@@ -408,9 +382,7 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         tiff_key = f"tiff/{input.project_id}/{ts}_{safe_name}"
         file_bytes = file_path.read_bytes()
-        await asyncio.to_thread(
-            s3.put_object, Bucket=_BRONZE_BUCKET, Key=tiff_key, Body=file_bytes
-        )
+        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, tiff_key, file_bytes)
         await tiff_normalize.aio_run_no_wait(
             TiffNormalizeInput(
                 workspace_id=input.workspace_id,  # type: ignore[arg-type]
@@ -444,9 +416,7 @@ async def _ingest_one(
         safe_name = _safe_filename(file_path.name)
         pdf_key = f"reports/{input.project_id}/{ts}_{safe_name}"
         file_bytes = file_path.read_bytes()
-        await asyncio.to_thread(
-            s3.put_object, Bucket=_BRONZE_BUCKET, Key=pdf_key, Body=file_bytes
-        )
+        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, pdf_key, file_bytes)
         await ingest_pdf.aio_run_no_wait(
             IngestPdfInput(
                 workspace_id=input.workspace_id,

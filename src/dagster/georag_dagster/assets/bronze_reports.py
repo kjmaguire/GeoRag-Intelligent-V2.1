@@ -6,7 +6,6 @@ Accepts either a MinIO ``object_key`` (sensor-driven) or a local
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
 
@@ -18,8 +17,8 @@ REPORTS_PREFIX = "reports"
 
 
 class BronzeReportsConfig(Config):
-    object_key: Optional[str] = None
-    pdf_file_path: Optional[str] = None
+    object_key: str | None = None
+    pdf_file_path: str | None = None
 
 
 @asset(
@@ -59,7 +58,7 @@ def bronze_reports(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

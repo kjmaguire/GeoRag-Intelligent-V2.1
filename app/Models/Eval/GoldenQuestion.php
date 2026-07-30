@@ -72,6 +72,8 @@ class GoldenQuestion extends Model
 
     /**
      * The user who authored this question.
+     *
+     * @return BelongsTo<User, $this>
      */
     public function author(): BelongsTo
     {
@@ -80,6 +82,8 @@ class GoldenQuestion extends Model
 
     /**
      * The user who reviewed this question (may be null on drafts).
+     *
+     * @return BelongsTo<User, $this>
      */
     public function reviewer(): BelongsTo
     {

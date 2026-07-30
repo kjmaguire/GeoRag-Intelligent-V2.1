@@ -62,7 +62,6 @@ class AdminSurfaceUpdatedBridgeController extends Controller
         // 6 deferred live updates) so a future tightening doesn't have to
         // edit two files. All others have a subscribing admin page.
         'cache-telemetry',
-        'eval-dashboard',
         'conflicts',
         'audit-explorer',
         'backups',
@@ -75,8 +74,7 @@ class AdminSurfaceUpdatedBridgeController extends Controller
         // Phase 6 — closeout for the 2 Dashboards pages without a natural
         // existing-surface fit (EvidenceQuality reads silver.answer_runs
         // rejection stats; VisualReadiness reads MV-refreshed viz coverage).
-        // The other 3 Dashboards pages (PublicGeoOverlay, TargetRecommendation,
-        // Reporting) reuse existing surfaces — see channels.php notes.
+        // TargetRecommendation and Reporting reuse existing surfaces.
         'dashboards-evidence-quality',
         'dashboards-visual-readiness',
     ];

@@ -58,6 +58,19 @@ class QueryAuditLog extends Model
         'context_precision_score',
     ];
 
+    public function getTable()
+    {
+        $table = parent::getTable();
+
+        if ($this->getConnection()->getDriverName() === 'sqlite') {
+            return str_contains($table, '.')
+                ? substr($table, (int) strrpos($table, '.') + 1)
+                : $table;
+        }
+
+        return $table;
+    }
+
     protected $casts = [
         'query_text' => 'encrypted',
         'response_text' => 'encrypted',

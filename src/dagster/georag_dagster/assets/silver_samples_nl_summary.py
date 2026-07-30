@@ -45,7 +45,6 @@ from georag_dagster.assets.silver_nl_summaries import (
 )
 from georag_dagster.resources import PostgresResource
 
-
 # ---------------------------------------------------------------------------
 # Source SQL — silver.samples joined to silver.collars + silver.projects for
 # hole + project context. LEFT JOINs so a sample with a stale collar FK still

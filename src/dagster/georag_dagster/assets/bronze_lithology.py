@@ -13,7 +13,6 @@ The actual source can be either a sensor-detected MinIO object (via
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 from dagster import AssetExecutionContext, Config, MaterializeResult, MetadataValue, asset
@@ -31,8 +30,8 @@ class BronzeLithologyConfig(Config):
     Exactly one of ``object_key`` / ``csv_file_path`` must be set.
     """
 
-    object_key: Optional[str] = None
-    csv_file_path: Optional[str] = None
+    object_key: str | None = None
+    csv_file_path: str | None = None
 
 
 def _count_csv_rows(path: str) -> int:
@@ -90,7 +89,7 @@ def bronze_lithology(
         )
     finally:
         if source.sourced_from_minio:
-            try:  # noqa: SIM105
+            try:
                 os.unlink(source.local_path)
             except OSError:
                 pass

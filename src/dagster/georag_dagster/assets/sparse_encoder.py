@@ -102,7 +102,7 @@ SPARSE_SERVICE_URL = (os.environ.get("SPARSE_SERVICE_URL") or "").strip()
 def _remote_encode_sparse(texts: list[str]) -> list[dict[int, float]]:
     """Encode via the shared SPLADE sidecar. JSON object keys are strings, so
     the int token-ids round-trip as strings and are restored to int here."""
-    import httpx  # noqa: PLC0415
+    import httpx
 
     timeout_s = float(os.environ.get("SPARSE_SERVICE_TIMEOUT_S", "30") or "30")
     resp = httpx.post(

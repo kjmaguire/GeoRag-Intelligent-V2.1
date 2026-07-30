@@ -173,7 +173,6 @@ final class AdminSurfaceUpdatedBridgeControllerTest extends TestCase
             'llm-cost',
             // Phase 5 additions
             'cache-telemetry',
-            'eval-dashboard',
             'conflicts',
             'audit-explorer',
             'backups',

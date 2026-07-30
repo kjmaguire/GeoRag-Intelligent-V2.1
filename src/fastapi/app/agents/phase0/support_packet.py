@@ -42,22 +42,6 @@ from app.db import bind_workspace_scope
 logger = logging.getLogger(__name__)
 
 
-def _s3_endpoint() -> str:
-    return os.environ.get("S3_ENDPOINT_URL") or os.environ.get(
-        "MINIO_ENDPOINT", "http://minio:8333"
-    )
-
-
-def _s3_credentials() -> tuple[str, str]:
-    access = os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get(
-        "MINIO_ROOT_USER", "georag-admin"
-    )
-    secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or os.environ.get(
-        "MINIO_ROOT_PASSWORD", ""
-    )
-    return access, secret
-
-
 _TEMPO_DEFAULT = "http://tempo:3200"
 
 
@@ -236,20 +220,27 @@ async def support_packet_assemble(
     storage_uri = f"s3://{bucket}/{object_key}"
 
     try:
-        import aioboto3  # type: ignore[import-not-found]
+        import aioboto3
+        from georag_object_storage import StorageConfig, async_client_kwargs
     except ImportError as exc:
-        raise RuntimeError(f"aioboto3 not installed: {exc}") from exc
+        raise RuntimeError(f"aioboto3/georag_object_storage not installed: {exc}") from exc
 
-    access, secret = _s3_credentials()
-    session = aioboto3.Session(
-        aws_access_key_id=access,
-        aws_secret_access_key=secret,
-        region_name="us-east-1",
-    )
+    # bucket ("tier-warm") is a fixed literal but doesn't match any of
+    # georag_object_storage's four fixed logical Bucket members (storage
+    # tiers are a different concept from those buckets), so this uses the
+    # raw-client escape hatch (async_client_kwargs) rather than the
+    # higher-level AsyncObjectStorage interface.
+    session = aioboto3.Session()
     upload_ok = False
     upload_error: str | None = None
-    async with session.client("s3", endpoint_url=_s3_endpoint()) as s3:
-        try:
+    try:
+        # StorageConfig.from_env() raises eagerly if no credentials are
+        # configured anywhere (unlike the old code's client construction,
+        # which never validated until the actual request) — kept inside
+        # this try so a missing-credentials environment still degrades
+        # gracefully to upload_error instead of crashing the whole packet
+        # assembly, matching the original resilience design below.
+        async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
             await s3.put_object(
                 Bucket=bucket,
                 Key=object_key,
@@ -257,13 +248,13 @@ async def support_packet_assemble(
                 ContentType="application/gzip",
             )
             upload_ok = True
-        except Exception as exc:  # noqa: BLE001 — IAM gap surfaced, not fatal
-            upload_error = f"{type(exc).__name__}: {exc}"
-            logger.warning(
-                "support_packet: SeaweedFS upload failed (%s) — recording row "
-                "with status='available' but flagging upload failure in payload",
-                upload_error,
-            )
+    except Exception as exc:  # noqa: BLE001 — IAM gap surfaced, not fatal
+        upload_error = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "support_packet: SeaweedFS upload failed (%s) — recording row "
+            "with status='available' but flagging upload failure in payload",
+            upload_error,
+        )
 
     # ---- Insert silver.support_packets row -------------------------------
     packet_id = uuid4()
@@ -324,42 +315,71 @@ async def support_packet_assemble(
         trace_id=ctx.trace_id,
     )
 
-    # All-nighter 2026-05-21 — Kestra dispatch.
-    # The Phase 0 rubric expects the agent to trigger the Kestra
-    # `support_packet_dispatch` flow when the bundle is available, so the
-    # on-call handler can route to email / Slack / ticketing per workspace
-    # policy. Kestra is the integration-boundary owner post-Activepieces
-    # sunset; the agent itself stays "build-the-bundle only".
-    kestra_dispatched = False
-    kestra_error: str | None = None
+    # Outbound on-call dispatch — 2026-07-25 (Kestra retirement).
+    #
+    # The rubric expects the agent to notify the on-call handler once the
+    # bundle is available, so it can route to email / Slack / ticketing per
+    # workspace policy. The agent itself stays "build-the-bundle only".
+    #
+    # This used to POST directly to Kestra's execution API. That leg was
+    # fire-and-forget: no retry, no dead-letter, no audit trail, and it
+    # no-op'd silently whenever KESTRA_URL was unset (which was the default
+    # — the var appears in no .env.example). Kestra's own receiving flow
+    # then tried to email via `globals.georag.smtp_host`, a variable never
+    # defined in either Kestra config, so the notification could not have
+    # been delivered in any environment.
+    #
+    # It now enqueues onto the existing outbox instead. `external_webhook`
+    # already gives HMAC-signed delivery, bounded-concurrency dispatch,
+    # retry with dead-lettering, and one audit row per attempt — and the
+    # outbox dispatcher already mapped `kestra` to that same handler, so
+    # this is the mechanism that was doing the real work regardless.
+    #
+    # Routing: target_collection 'support_packet' resolves to
+    # EXTERNAL_WEBHOOK_URL_SUPPORT_PACKET, falling back to
+    # EXTERNAL_WEBHOOK_URL_DEFAULT. With neither set the dispatcher
+    # dead-letters the row with an explicit reason — a visible failure
+    # rather than the silent no-op this replaces.
+    dispatch_enqueued = False
+    dispatch_error: str | None = None
     if upload_ok:
-        kestra_url = os.environ.get("KESTRA_URL", "").strip()
-        flow_id = os.environ.get(
-            "KESTRA_SUPPORT_PACKET_FLOW", "support_packet_dispatch"
-        )
-        if kestra_url:
-            try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    r = await client.post(
-                        f"{kestra_url.rstrip('/')}/api/v1/executions/georag/{flow_id}",
-                        json={
-                            "packet_id": str(packet_id),
-                            "incident_id": incident_id,
-                            "workspace_id": str(ctx.workspace_id),
-                            "storage_uri": storage_uri,
-                            "bundle_bytes": len(bundle_bytes),
-                            "counts": manifest["counts"],
-                            "requested_by": requested_by,
-                        },
-                    )
-                    if 200 <= r.status_code < 300:
-                        kestra_dispatched = True
-                    else:
-                        kestra_error = f"kestra http {r.status_code}"
-            except httpx.HTTPError as exc:
-                kestra_error = f"{type(exc).__name__}:{exc}"
-        else:
-            kestra_error = "KESTRA_URL unset"
+        try:
+            await rt.pg_pool.execute(
+                """
+                INSERT INTO outbox.pending_propagations
+                    (workspace_id, source_schema, source_table, source_id,
+                     target_store, target_collection, operation,
+                     payload, idempotency_key)
+                VALUES ($1::uuid, 'silver', 'support_packets', $2,
+                        'external_webhook', 'support_packet', 'upsert',
+                        $3::jsonb, $4)
+                ON CONFLICT (target_store, idempotency_key)
+                    WHERE status IN ('pending', 'in_flight')
+                    DO NOTHING
+                """,
+                str(ctx.workspace_id),
+                str(packet_id),
+                json.dumps({
+                    "packet_id": str(packet_id),
+                    "incident_id": incident_id,
+                    "workspace_id": str(ctx.workspace_id),
+                    "storage_uri": storage_uri,
+                    "bundle_bytes": len(bundle_bytes),
+                    "counts": manifest["counts"],
+                    "requested_by": requested_by,
+                }),
+                # R2 idempotency — the agent is already idempotent on
+                # incident_id, so re-assembly of the same incident must not
+                # produce a second notification.
+                f"support_packet:{incident_id}",
+            )
+            dispatch_enqueued = True
+        except Exception as exc:  # noqa: BLE001 — never fail assembly on notify
+            dispatch_error = f"{type(exc).__name__}:{exc}"
+            logger.warning(
+                "support_packet: outbox enqueue failed incident=%s err=%s",
+                incident_id, exc,
+            )
 
     return {
         "packet_id": str(packet_id),
@@ -369,6 +389,6 @@ async def support_packet_assemble(
         "counts": manifest["counts"],
         "upload_ok": upload_ok,
         "upload_error": upload_error,
-        "kestra_dispatched": kestra_dispatched,
-        "kestra_error": kestra_error,
+        "dispatch_enqueued": dispatch_enqueued,
+        "dispatch_error": dispatch_error,
     }
