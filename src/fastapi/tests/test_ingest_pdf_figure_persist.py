@@ -1,7 +1,9 @@
 """Phase 1 (2026-05-22) — figure manifest persist-side handoff tests.
 
 The persist task in ingest_pdf.py consumes ParseOut.figures (a manifest
-list produced by _parse_with_docling in the parse subprocess) and:
+list that would be produced by a figure_manifest producer in the parse
+subprocess — currently always empty; docling, the previous producer,
+was removed 2026-07-29) and:
   1. copies each pending S3 key (figures/_pending/{sha}/...) to its
      final location figures/{report_id}/...
   2. deletes the pending object
@@ -390,72 +392,11 @@ def test_run_parser_subprocess_returns_figures_key(tmp_path):
     assert out["figures"][0]["pending_key"] == "figures/_pending/aa/figure_0000_page_1.png"
 
 
-# ---------------------------------------------------------------------------
-# 11. _run_parser_subprocess cleans up the figure tempdir in finally
-# ---------------------------------------------------------------------------
-
-def test_run_parser_subprocess_cleans_figure_tempdir():
-    import os
-
-    from app.hatchet_workflows import ingest_pdf as mod
-    from app.services.ingest.pdf_report import _figure_tempdir
-
-    sha = "cc" * 32
-
-    # Seed a fake tempdir so we can observe its removal
-    d = _figure_tempdir(sha)
-    sentinel = os.path.join(d, "fake.png")
-    with open(sentinel, "wb") as f:
-        f.write(b"junk")
-    assert os.path.isfile(sentinel)
-
-    stub = MagicMock()
-    for attr in (
-        "title", "company", "filing_date", "commodity", "project_name", "region",
-    ):
-        setattr(stub, attr, None)
-    stub.authors = []
-    stub.sections = []
-    stub.parse_quality_pct = 0.0
-    stub.parser_used = "stub"
-    stub.skipped_elements = 0
-    stub.warnings = []
-    stub.page_languages = []
-    stub.resource_tables = []
-    stub.is_scanned = False
-    stub.figure_manifest = []
-
-    with patch.object(
-        _pdf_report_module,
-        "parse_pdf_report",
-        MagicMock(return_value=stub),
-    ):
-        mod._run_parser_subprocess(b"%PDF-1.4 fake", sha256=sha)
-
-    assert not os.path.exists(d)
-
-
-# ---------------------------------------------------------------------------
-# 12. Tempdir cleanup still runs when parse raises
-# ---------------------------------------------------------------------------
-
-def test_run_parser_subprocess_cleans_tempdir_on_parse_error():
-    import os
-
-    from app.hatchet_workflows import ingest_pdf as mod
-    from app.services.ingest.pdf_report import _figure_tempdir
-
-    sha = "dd" * 32
-    d = _figure_tempdir(sha)
-    with open(os.path.join(d, "x.png"), "wb") as f:
-        f.write(b"junk")
-
-    with patch.object(
-        _pdf_report_module,
-        "parse_pdf_report",
-        MagicMock(side_effect=RuntimeError("boom")),
-    ):
-        with pytest.raises(RuntimeError):
-            mod._run_parser_subprocess(b"%PDF-1.4 fake", sha256=sha)
-
-    assert not os.path.exists(d)
+# NOTE: the _figure_tempdir-based cleanup tests that used to live here
+# (_run_parser_subprocess cleaning up a per-sha figure tempdir in its
+# `finally` block) were removed 2026-07-29 along with docling. That
+# tempdir mechanism only existed because _parse_with_docling rendered
+# figure PNGs to local disk before uploading them to S3 — with docling
+# gone, nothing writes to a local figure tempdir any more, so
+# `_figure_tempdir` and the cleanup call were deleted from
+# app.services.ingest.pdf_report / app.hatchet_workflows.ingest_pdf.

@@ -767,30 +767,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.pdf_extract_service = None
 
     # -------------------------------------------------------------------------
-    # 10. §04p PDF Ingestion Subsystem — Stage 4 layout service (Phase 1.C-i)
-    # -------------------------------------------------------------------------
-    # PdfLayoutService holds a dedicated ProcessPoolExecutor (separate from
-    # the render + extract pools) for Docling document conversion.  Docling's
-    # first inference call is heavy (ONNX model load); process isolation
-    # prevents it from starving lighter workers under concurrent load.
-    # Results are cached durably in silver.pdf_layout_regions.
-    #
-    # Defensive try/except: if docling is not installed the service is set to
-    # None and /pdf/find_legends returns 503.  The rest of the app is unaffected.
-    try:
-        from app.services.pdf_layout import PdfLayoutService  # noqa: PLC0415
-
-        app.state.pdf_layout_service = PdfLayoutService(pool=pg_pool)
-        logger.info("PDF layout service ready (§04p Phase 1.C-i — Docling)")
-    except Exception:
-        logger.exception(
-            "§04p Phase 1.C-i layout service init failed — "
-            "/pdf/find_legends will return 503. "
-            "Ensure docling is installed: uv pip install 'docling>=2.13'"
-        )
-        app.state.pdf_layout_service = None
-
-    # -------------------------------------------------------------------------
     # 11. §04p PDF Ingestion Subsystem — Stage 5 OCR service (Phase 1.C-ii)
     # -------------------------------------------------------------------------
     # PdfOcrService holds a dedicated ProcessPoolExecutor (separate from the
@@ -995,16 +971,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("PDF extract service shut down")
         except Exception:
             logger.debug("PDF extract service shutdown failed", exc_info=True)
-
-    # §04p Phase 1.C-i — shut down the layout detection process pool before DB pools.
-    # Same rationale as the extract pool shutdown above.
-    pdf_layout_service = getattr(app.state, "pdf_layout_service", None)
-    if pdf_layout_service is not None:
-        try:
-            await pdf_layout_service.shutdown()
-            logger.info("PDF layout service shut down")
-        except Exception:
-            logger.debug("PDF layout service shutdown failed", exc_info=True)
 
     # §04p Phase 1.C-ii — shut down the OCR process pool before DB pools.
     # PaddleOCR workers may have in-flight cache writes; drain them before

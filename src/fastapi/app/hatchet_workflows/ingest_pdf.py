@@ -7,8 +7,9 @@ mirror the v1.49 contract:
     1. preflight    — S3 GET, magic bytes, sha256, page count, size cap
     2. parse        — calls app.services.ingest.pdf_report.parse_pdf_report()
                       which is the canonical v1.49 entry point — runs the
-                      full pipeline (fitz → docling/tesseract OCR routing,
-                      OCR if scanned, metadata, sections, resource tables)
+                      full pipeline (fitz → Tesseract/Azure Document
+                      Intelligence OCR routing, OCR if scanned, metadata,
+                      sections, resource tables)
     3. persist      — writes silver.reports + silver.shadow_runs + audit
 
 Step 4A originally decomposed parse into 5 sub-steps; that was unnecessary
@@ -53,8 +54,8 @@ log = logging.getLogger("georag.hatchet.ingest_pdf")
 
 
 # Subprocess pool used to run the (CPU-heavy, GIL-holding) PDF parse work
-# off the main asyncio loop. With `asyncio.to_thread`, parses like docling
-# or pdfplumber+OCR on 500-page PDFs hold the GIL so long that Hatchet's
+# off the main asyncio loop. With `asyncio.to_thread`, parses like
+# pdfplumber+OCR on 500-page PDFs hold the GIL so long that Hatchet's
 # heartbeat handler (4s deadline) can't fire and the worker gets marked
 # dead, in-flight tasks get cancelled, and we lose progress. A subprocess
 # pool gives each parse its own GIL → main loop stays responsive.
@@ -204,7 +205,7 @@ def _reset_parse_pool() -> None:
 # Temporary directory for PDF bodies consumed by parser subprocesses.
 _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
-# Phase 2 (2026-06-24): when set, persist captions each docling figure with the
+# Phase 2 (2026-06-24): when set, persist captions each figure with the
 # Qwen3-VL sidecar (an S3 GET + a VL call per figure) and folds the description
 # into the figure's ReportSection text before embedding. Off by default — shares
 # the FIGURE_VL_DESCRIPTIONS switch with the standalone figure_extractor path.
@@ -219,20 +220,17 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     Returns a plain dict (not a Pydantic model) — easier to pickle across
     process boundaries; caller reconstitutes ParseOut.
 
-    Phase 1 (2026-05-22): the parser returns a `figure_manifest` listing
-    each docling-extracted figure already uploaded to
-    figures/_pending/{sha256}/... The manifest is propagated to the
-    persist task via the returned dict; persist renames each pending key
-    to figures/{report_id}/... before recording the section.
+    The parser's `figure_manifest` field would list any figure already
+    uploaded to figures/_pending/{sha256}/... by a manifest producer,
+    propagated to the persist task via the returned dict; persist renames
+    each pending key to figures/{report_id}/... before recording the
+    section. Currently always empty — see the note in
+    app.services.ingest.pdf_report.ReportParseResult.figure_manifest.
     """
     import os as _os
-    import shutil as _shutil
     import time as _time
 
-    from app.services.ingest.pdf_report import (
-        _FIGURE_TEMPDIR_ROOT,
-        parse_pdf_report,
-    )
+    from app.services.ingest.pdf_report import parse_pdf_report
 
     _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
     cached_path = f"{_PDF_BODY_CACHE_DIR}/{sha256}.pdf"
@@ -289,13 +287,6 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     finally:
         with contextlib.suppress(Exception):
             _os.unlink(cached_path)
-        # Best-effort cleanup of any per-sha figure tempdir the parser
-        # may have created. PNGs were already uploaded to S3 (figures/
-        # _pending/{sha}/...) so the on-disk copy is no longer needed.
-        try:  # noqa: SIM105
-            _shutil.rmtree(f"{_FIGURE_TEMPDIR_ROOT}/{sha256}", ignore_errors=True)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 # =============================================================================
@@ -369,12 +360,13 @@ class ParseOut(BaseModel):
     warnings: list[dict] = Field(default_factory=list)
     page_languages: list[str] = Field(default_factory=list)
     resource_tables: list[dict] = Field(default_factory=list)
-    # Phase 1 (2026-05-22): docling figure manifest. Each entry is a
-    # dict {idx, page, bbox, caption, pending_key, bucket, sha256}.
-    # Populated by _run_parser_subprocess from
+    # Figure manifest. Each entry would be a dict {idx, page, bbox, caption,
+    # pending_key, bucket, sha256}, populated by _run_parser_subprocess from
     # ReportParseResult.figure_manifest. Persist task copies each
     # pending_key to figures/{report_id}/... then deletes the pending
     # object, and builds a ReportSection per figure for chat retrieval.
+    # Currently always empty — see the note in
+    # app.services.ingest.pdf_report.ReportParseResult.figure_manifest.
     figures: list[dict] = Field(default_factory=list)
     parse_duration_ms: int = 0
     is_scanned: bool = False
@@ -472,13 +464,16 @@ def _sections_to_dict(sections) -> dict:
 ingest_pdf = hatchet.workflow(
     name="ingest_pdf",
     input_validator=IngestPdfInput,
-    # 2026-05-23 — per-workspace singleton. The parse step loads
-    # docling/PaddleOCR/RapidOCR models (~3-4 GB resident); running
-    # multiple concurrent parses on the 36 GB host pushes total memory
-    # over the edge and the OOM killer fires SIGKILL on the youngest
-    # docling subprocess. Confirmed root cause of the
+    # 2026-05-23 — per-workspace singleton. At the time, the parse step
+    # loaded docling/PaddleOCR/RapidOCR models (~3-4 GB resident); running
+    # multiple concurrent parses on the 36 GB host pushed total memory
+    # over the edge and the OOM killer fired SIGKILL on the youngest
+    # parse subprocess. Confirmed root cause of the
     # "A child process terminated abruptly" failures observed during
-    # the 2026-05-23 TIFF smoke (see [[tiff-smoke-2026-05-23]]).
+    # the 2026-05-23 TIFF smoke (see [[tiff-smoke-2026-05-23]]). docling
+    # was removed 2026-07-29 (never ran in production), but the
+    # concurrency limit stays — same-workspace serialisation is still the
+    # right behavior for large-batch re-ingests regardless of parser cost.
     #
     # GROUP_ROUND_ROBIN queues rather than cancels — a long real PDF
     # parse can't be interrupted by a smaller upload behind it.
@@ -637,8 +632,8 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
 async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     """Call the canonical v1.49 ``parse_pdf_report`` end to end.
 
-    The parser owns: fitz-first → docling/tesseract OCR routing → pdfplumber fallback → OCR (if
-    scanned) → metadata extraction → section split → resource table extract.
+    The parser owns: fitz-first → Tesseract/Azure Document Intelligence OCR routing → pdfplumber
+    fallback → OCR (if scanned) → metadata extraction → section split → resource table extract.
     Returns a ReportParseResult; we serialise it into ParseOut.
     """
     if input.project_id and input.workspace_id:
@@ -685,15 +680,16 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
     # retries=1 will retry on a freer worker.
     # 2026-05-23 — defaults raised from (1500, 30) to (4500, 120).
     # The 1500 MB threshold was tuned in Phase 5 for the v1.49 fitz-only
-    # parser; the 5/22 overhaul made docling+PaddleOCR+RapidOCR the
-    # primary path and those each load ~3-4 GB of model weights. On the
-    # 36 GB host with the rest of the platform (vLLM cache, Neo4j,
+    # parser; the 5/22 overhaul briefly made docling+PaddleOCR+RapidOCR
+    # the primary path and those each loaded ~3-4 GB of model weights
+    # (docling was removed 2026-07-29 — never ran in production — but
+    # the raised threshold is still the right conservative default for
+    # the 36 GB host with the rest of the platform (vLLM cache, Neo4j,
     # Postgres, Qdrant, Langfuse, dagster containers) eating ~32 GB
-    # baseline, only ~4 GB is genuinely free. Starting a parse with
-    # 1.5 GB free is a guaranteed OOM. The 120 s wait budget gives a
-    # transient pressure spike room to clear before the workflow gives
-    # up and lets Hatchet retry. See [[tiff-smoke-2026-05-23]] for the
-    # root-cause analysis.
+    # baseline; only ~4 GB is genuinely free). The 120 s wait budget
+    # gives a transient pressure spike room to clear before the
+    # workflow gives up and lets Hatchet retry. See
+    # [[tiff-smoke-2026-05-23]] for the root-cause analysis.
     try:
         _min_free_mb = int(os.environ.get("PARSE_MIN_FREE_RAM_MB", "4500"))
     except ValueError:
@@ -716,10 +712,10 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
         # 2026-05-23 — kill the in-process fallback. The original
         # fallback ran the parser on the default asyncio thread pool,
         # which:
-        #   1. loaded docling/PaddleOCR/RapidOCR models in the SAME
-        #      process that just got its subprocess OOM-killed — guaranteed
-        #      to push memory over the edge again, often killing the
-        #      whole worker (cf. [[tiff-smoke-2026-05-23]] root cause);
+        #   1. loaded heavy OCR/layout models in the SAME process that
+        #      just got its subprocess OOM-killed — guaranteed to push
+        #      memory over the edge again, often killing the whole
+        #      worker (cf. [[tiff-smoke-2026-05-23]] root cause);
         #   2. blocked the Hatchet event loop on a multi-minute parse,
         #      starving heartbeats and getting the task re-queued by
         #      Hatchet's dead-worker detection.
@@ -830,20 +826,22 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             "source": "pdfplumber_v1",
         }
 
-    # Phase 1 (2026-05-22): figure manifest consumption.
-    # The parse task uploaded each docling figure to
-    # figures/_pending/{sha}/figure_{idx:04d}_page_{n}.png and returned
-    # a manifest in ParseOut.figures. Here we rename each PNG to its
-    # final figures/{report_id}/... key (S3 copy+delete), and create
-    # one ReportSection per figure so the caption text is chunked +
-    # embedded alongside narrative sections (caption hits in chat
-    # surface the figure citation).
+    # Figure manifest consumption. If the parse task's figure_manifest
+    # producer uploaded a figure to figures/_pending/{sha}/figure_
+    # {idx:04d}_page_{n}.png and returned a manifest entry in
+    # ParseOut.figures, this renames the PNG to its final
+    # figures/{report_id}/... key (S3 copy+delete) and creates one
+    # ReportSection per figure so the caption text is chunked + embedded
+    # alongside narrative sections (caption hits in chat surface the
+    # figure citation).
     #
-    # This replaces the previous module-scope cache + cross-process
-    # _extract_docling_figures call, which silently returned [] once
-    # parse moved into a subprocess (cache lived in parse-process
-    # memory, persist read it in parent process where it was always
-    # empty → all figures were lost regardless of upload success).
+    # Currently a no-op in practice: docling, the previous figure_manifest
+    # producer, was removed 2026-07-29 (it never ran in production —
+    # PDF_PARSER_DOCLING_ENABLED was false in every live deployment), and
+    # parse_pdf_report always returns figure_manifest=[] now. This block
+    # stays wired up for a future producer (see
+    # app.services.ingest.pdf_report.ReportParseResult.figure_manifest and
+    # app.agent.figure_extractor for candidates).
     figure_manifest_final: list[dict] = []
     pending_manifest = parsed.get("figures") or []
     if pending_manifest:
@@ -921,7 +919,8 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
 
                 # Phase 2: content-aware caption from the Qwen3-VL sidecar,
                 # folded into the section text so it's embedded with the figure.
-                # Flag-gated + best-effort: any failure keeps the docling caption.
+                # Flag-gated + best-effort: any failure keeps the manifest's
+                # own caption text.
                 vl_desc: str | None = None
                 if _FIGURE_VL_CAPTIONS and final_key:
                     try:
@@ -981,7 +980,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     if figure_manifest_final:
         resource_estimate["figures"] = {
             "items": figure_manifest_final,
-            "source": "docling_v1",
+            "source": "figure_manifest_v1",
         }
 
     # Build sections_text dict (v1.49 _build_sections_dict shape).

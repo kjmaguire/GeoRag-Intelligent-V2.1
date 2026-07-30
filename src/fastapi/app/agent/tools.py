@@ -325,7 +325,7 @@ class DocumentChunk:
     # passage was extracted from the PDF text layer (no OCR involved).
     # 0.0–1.0 = mean OCR engine confidence. ocr_method records which
     # engine produced the text: fitz_native | pdfplumber_native |
-    # docling_rapidocr | tesseract. Phase 3 exposes these in
+    # tesseract | document_intelligence. Phase 3 exposes these in
     # search_documents results WITHOUT filtering or weighting — the
     # Phase 6 OCR Quality Agent will set thresholds.
     ocr_confidence: float | None = None

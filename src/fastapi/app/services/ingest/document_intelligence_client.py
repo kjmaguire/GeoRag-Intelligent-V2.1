@@ -10,7 +10,7 @@ Why this exists now anyway: it lets the engine swap be prepped (config
 seam, client wrapper, dependency, tests) without touching
 `pdf_report.py`'s fragile fitz/tesseract merge logic, which the file's
 own comments warn is easy to break silently (wire identifiers like
-``parser_used == "fitz"`` gate the docling merge).
+``parser_used == "fitz"`` feed the Qdrant/observability payload).
 
 Gated by ``OCR_ENGINE`` (default ``"tesseract"`` — i.e. this module is
 inert unless something explicitly opts in), mirroring the
