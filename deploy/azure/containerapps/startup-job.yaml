@@ -1,0 +1,46 @@
+# Azure Container Apps Job — morning restore (plan C6). Companion to
+# shutdown-job.yaml — see that file's header for the UTC/DST cron caveat.
+# 0 10 * * * = 6:00am US Eastern during EDT (UTC-4). Switch to `0 11 * * *`
+# when DST ends in November.
+#
+# Restores each app to min-replicas 1 and starts the Postgres server.
+# Per-app max-replicas values match what each app was created with —
+# hardcoded here rather than read back dynamically, since Container Apps
+# Jobs have no state store between runs; if an app's real max-replicas
+# changes, update this file to match.
+#
+# Region migration note (2026-07-31): live resource names carry a `-cc`
+# suffix (`georag-pg-cc`, `redis-cc`, `qdrant-cc`) — an artifact of the
+# eastus->canadacentral migration, see the plan's "Region migration to
+# canadacentral" section. Updated below to match the live names. The
+# still-undeployed app tier (fastapi/laravel-*/hatchet*, C8) keeps its
+# plain names since those were never created in eastus and so never
+# collided.
+properties:
+  configuration:
+    triggerType: Schedule
+    replicaTimeout: 300
+    replicaRetryLimit: 1
+    scheduleTriggerConfig:
+      cronExpression: "0 10 * * *"
+      parallelism: 1
+      replicaCompletionCount: 1
+  template:
+    containers:
+      - image: mcr.microsoft.com/azure-cli:latest
+        name: startup
+        command:
+          - /bin/bash
+          - -c
+        args:
+          - >-
+            set -euo pipefail;
+            az login --identity;
+            az postgres flexible-server start -g georag -n georag-pg-cc || echo "skip postgres (not deployed yet)";
+            for app in redis-cc qdrant-cc hatchet hatchet-worker fastapi laravel-octane laravel-horizon laravel-reverb; do
+              az containerapp update -g georag -n "$app" --min-replicas 1 --max-replicas 1 || echo "skip $app (not deployed yet)";
+            done;
+            echo "startup sweep complete"
+        resources:
+          cpu: 0.5
+          memory: 1Gi

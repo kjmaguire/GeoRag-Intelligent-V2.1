@@ -111,3 +111,7 @@ src/fastapi/scripts/
 
 # Claude Code agent scratch worktrees (never commit)
 .claude/worktrees/
+
+# Generated Azure deploy secrets (e.g. redis/qdrant passwords dumped to
+# disk during provisioning) — never commit, live in Container Apps secrets
+deploy/**/*.local
