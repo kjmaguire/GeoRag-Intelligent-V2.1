@@ -102,19 +102,23 @@ class _FoundryEmbedding:
     def _post(self, texts: list[str], input_type: str) -> np.ndarray:
         import httpx  # noqa: PLC0415
 
-        resp = httpx.post(
-            self._url,
-            headers={"api-key": self._api_key},
-            timeout=self._timeout_s,
-            json={
-                "model": self._deployment,
-                "texts": texts,
-                "input_type": input_type,
-                "embedding_types": ["float"],
-                "output_dimension": self._dimension,
-            },
-        )
-        resp.raise_for_status()
+        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
+
+        def _do() -> httpx.Response:
+            return httpx.post(
+                self._url,
+                headers={"api-key": self._api_key},
+                timeout=self._timeout_s,
+                json={
+                    "model": self._deployment,
+                    "texts": texts,
+                    "input_type": input_type,
+                    "embedding_types": ["float"],
+                    "output_dimension": self._dimension,
+                },
+            )
+
+        resp = with_foundry_retry(_do, label="foundry_embed")
         vectors = resp.json()["embeddings"]["float"]
         return np.asarray(vectors, dtype=np.float32)
 

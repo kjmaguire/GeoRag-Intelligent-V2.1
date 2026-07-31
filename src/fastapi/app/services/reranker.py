@@ -275,6 +275,8 @@ class _FoundryReranker:
     def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
         import httpx  # noqa: PLC0415
 
+        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
+
         groups: dict[str, list[int]] = {}
         for i, (query, _passage) in enumerate(pairs):
             groups.setdefault(str(query), []).append(i)
@@ -283,17 +285,20 @@ class _FoundryReranker:
         with httpx.Client(timeout=self._timeout_s) as client:
             for query, indices in groups.items():
                 documents = [str(pairs[i][1]) for i in indices]
-                resp = client.post(
-                    self._url,
-                    headers={"api-key": self._api_key},
-                    json={
-                        "model": self._deployment,
-                        "query": query,
-                        "documents": documents,
-                        "top_n": len(documents),
-                    },
-                )
-                resp.raise_for_status()
+
+                def _do(query: str = query, documents: list[str] = documents) -> httpx.Response:
+                    return client.post(
+                        self._url,
+                        headers={"api-key": self._api_key},
+                        json={
+                            "model": self._deployment,
+                            "query": query,
+                            "documents": documents,
+                            "top_n": len(documents),
+                        },
+                    )
+
+                resp = with_foundry_retry(_do, label="foundry_rerank")
                 for result in resp.json()["results"]:
                     scores[indices[result["index"]]] = float(result["relevance_score"])
         return scores
