@@ -342,14 +342,6 @@ class Settings(BaseSettings):
     # for development; turn on in production if 429s from standard tier bite.
     ANTHROPIC_USE_PRIORITY_TIER: bool = False
 
-    # Legacy OpenAI-compatible fallback (pre-Anthropic integration). Kept for
-    # back-compat when users already configured LLM_FALLBACK_URL against an
-    # OpenAI-shaped proxy. For new installs, prefer LLM_BACKEND=anthropic.
-    LLM_FALLBACK_ENABLED: bool = False
-    LLM_FALLBACK_URL: str = ""
-    LLM_FALLBACK_MODEL: str = ""
-    LLM_FALLBACK_API_KEY: str = ""
-
     # LLM-based classifier fallback tier (→ A grade).
     # When the keyword classifier hits classifier_fallback, ask a FAST-tier
     # LLM to re-classify BEFORE the deterministic fan-out runs. Recovers
