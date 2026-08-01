@@ -32,6 +32,7 @@ from app.agent.agentic_retrieval.nodes import (
     classify_node,
     execute_node,
     route_node,
+    validate_node,
 )
 
 # ---------------------------------------------------------------------------
@@ -715,6 +716,118 @@ async def test_run_agentic_retrieval_threads_callbacks_through_state(monkeypatch
     assert "Classifying query…" in statuses
     assert "Querying PostGIS + Qdrant…" in statuses
     assert "Synthesizing answer…" in statuses
+
+
+# ---------------------------------------------------------------------------
+# Hard rule #5 — Layer 5 (chunk provenance) now runs on the live path
+# ---------------------------------------------------------------------------
+
+
+def _minimal_response():
+    from app.models.rag import Citation, GeoRAGResponse
+
+    return GeoRAGResponse(
+        text="The collar is at 45m depth. [DATA-1]",
+        citations=[
+            Citation(
+                citation_id="[DATA-1]",
+                citation_type="DATA",
+                source_chunk_id="silver.collars:count=1:first=abc",
+                document_title="Collar data",
+                relevance_score=0.9,
+            )
+        ],
+        sources_used=["[DATA-1]"],
+        confidence=0.8,
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_node_calls_layer5_enrichment_when_pg_pool_present(monkeypatch) -> None:
+    """Layer 5 (chunk provenance) was defined but never called anywhere on
+    the live agentic path — this pins it to actually running now."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    captured: dict = {}
+
+    async def fake_enrich(resp, pg_pool):
+        captured["response"] = resp
+        captured["pg_pool"] = pg_pool
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    fake_pool = object()
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=fake_pool))
+    state = state.model_copy(update={"response": response})
+    await validate_node(state)
+
+    assert captured.get("pg_pool") is fake_pool
+    assert captured.get("response") is response
+
+
+@pytest.mark.asyncio
+async def test_validate_node_skips_layer5_when_no_pg_pool(monkeypatch) -> None:
+    """No pg_pool (e.g. certain test/eval callers) must not crash — Layer 5
+    is a best-effort enrichment, never a hard requirement."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    called = False
+
+    async def fake_enrich(resp, pg_pool):
+        nonlocal called
+        called = True
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=None))
+    state = state.model_copy(update={"response": response})
+    result = await validate_node(state)
+
+    assert called is False
+    assert result["response"] is response
+
+
+@pytest.mark.asyncio
+async def test_validate_node_swallows_layer5_failure(monkeypatch) -> None:
+    """A Layer 5 lookup failure must degrade gracefully, not break the answer."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    async def broken_enrich(resp, pg_pool):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", broken_enrich)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=object()))
+    state = state.model_copy(update={"response": response})
+    result = await validate_node(state)  # must not raise
+
+    assert result["response"] is response
 
 
 # ---------------------------------------------------------------------------

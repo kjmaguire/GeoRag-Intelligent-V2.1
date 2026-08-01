@@ -32,6 +32,7 @@ from app.agent.agentic_retrieval.retrieval_profile import (
     profile_for_intent,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
+from app.models.rag import GeoRAGResponse
 
 logger = logging.getLogger(__name__)
 
@@ -1354,15 +1355,36 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
          we FLOOR the answer's confidence and surface a loud warning so a
          fabrication- or constraint-flagged answer can never ship at normal
          confidence. (Follow-up: a real validate→execute retry edge.)
+
+    CLAUDE.md hard rule #5 audit (post Step 2.5): Layer 5 (chunk provenance)
+    was defined in layer5_provenance.py but never called anywhere on the
+    live agentic path — its only prior caller lived in the deleted legacy
+    orchestrator body. Wired in here, last, since it's a pure enrichment
+    pass (never rejects/mutates the answer text, only appends source-file
+    provenance onto Citation.section) and is cheapest to run once the
+    response is otherwise final.
     """
     from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
         validate_and_repair,
+    )
+    from app.agent.hallucination.layer5_provenance import (  # noqa: PLC0415
+        enrich_provenance,
     )
     from app.agent.hallucination.orchestrator_validators import (  # noqa: PLC0415
         run_post_assembly_validation,
     )
 
     assert state.response is not None, "assemble_node must run before validate_node"
+
+    async def _enrich_provenance_safely(resp: GeoRAGResponse) -> GeoRAGResponse:
+        pg_pool = getattr(state.deps, "pg_pool", None)
+        if pg_pool is None:
+            return resp
+        try:
+            return await enrich_provenance(resp, pg_pool)
+        except Exception:  # pragma: no cover — defensive, enrich_provenance already never raises
+            logger.debug("agentic_retrieval.validate: layer5 enrichment failed", exc_info=True)
+            return resp
 
     # Layer 2 — typed-output repair (sync, never raises).
     response = validate_and_repair(state.response)
@@ -1376,6 +1398,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "agentic_retrieval.validate: post-assembly validation failed; "
             "returning the un-validated response"
         )
+        response = await _enrich_provenance_safely(response)
         return {"response": response, "validation_warnings": []}
 
     if should_retry:
@@ -1400,6 +1423,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 exc_info=True,
             )
 
+    response = await _enrich_provenance_safely(response)
     return {"response": response, "validation_warnings": warnings}
 
 
