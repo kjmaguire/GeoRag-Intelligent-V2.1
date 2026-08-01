@@ -475,18 +475,11 @@ services:
       HATCHET_PG_USER: hatchet
       HATCHET_PG_PASSWORD: ${HATCHET_DB_PASSWORD:-hatchet}
       # Phase 3 Step 7 — Activepieces sunset. ACTIVEPIECES_PG_* removed.
-      # Phase 3 Step 6 — read-only secondary connection onto Kestra's
-      # own database (mirrors pgsql_hatchet pattern).
-      KESTRA_PG_HOST_LARAVEL: postgresql
-      KESTRA_PG_PORT_LARAVEL: 5432
-      KESTRA_PG_DATABASE_LARAVEL: kestra
-      KESTRA_PG_USER_LARAVEL: kestra
-      KESTRA_PG_PASSWORD: ${KESTRA_PG_PASSWORD:?KESTRA_PG_PASSWORD must be set in .env}
-      # Phase 4 Step 2 — Kestra basic auth, consumed by KestraSsoController
-      # which reverse-proxies /admin/integrations/kestra/* to Kestra with
-      # `Authorization: Basic …` injected on behalf of the Sanctum operator.
-      KESTRA_BASIC_AUTH_USER: ${KESTRA_BASIC_AUTH_USER:-admin@georag.local}
-      KESTRA_BASIC_AUTH_PASSWORD: ${KESTRA_BASIC_AUTH_PASSWORD:?KESTRA_BASIC_AUTH_PASSWORD must be set in .env}
+      # Kestra + KestraSsoController were removed 2026-07-28 (A7) — this
+      # block used to wire KESTRA_PG_*_LARAVEL/KESTRA_BASIC_AUTH_* for that
+      # controller. Confirmed zero PHP references before deleting (the
+      # required `${VAR:?...}` vars forced every operator to fill in
+      # values nothing consumed).
       # Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
