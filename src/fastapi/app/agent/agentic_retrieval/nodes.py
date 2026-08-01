@@ -143,6 +143,11 @@ async def resolve_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
 async def classify_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Run the 6-intent classifier; populate ``intent`` + ``intent_result``."""
+    if state.status_callback is not None:
+        try:
+            await state.status_callback("Classifying query…")
+        except Exception:  # pragma: no cover — status is a UX affordance
+            logger.debug("agentic_retrieval.classify: status_callback raised", exc_info=True)
     openai_client = getattr(state.deps, "openai_http_client", None)
     result = await classify_intent(state.query, openai_http_client=openai_client)
     logger.info(
@@ -488,6 +493,11 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     assert state.retrieval_profile is not None, (
         "route_node must run before execute_node"
     )
+    if state.status_callback is not None:
+        try:
+            await state.status_callback("Querying PostGIS + Qdrant…")
+        except Exception:  # pragma: no cover — status is a UX affordance
+            logger.debug("agentic_retrieval.execute: status_callback raised", exc_info=True)
     profile: RetrievalProfile = state.retrieval_profile
     filters = state.retrieval_filters
 
@@ -930,6 +940,19 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     openai_client = getattr(state.deps, "openai_http_client", None)
     anthropic_client = getattr(state.deps, "anthropic_client", None)
 
+    # Step 2.5 — real token streaming. Previously this call passed no
+    # token_callback at all, so _call_llm always took the blocking path
+    # and queries.py's word-split synthetic-delta fallback ran on EVERY
+    # query regardless of backend. _call_llm already knows how to stream
+    # both Anthropic and OpenAI-compatible (incl. Azure Foundry) backends
+    # once token_callback is set — the gap was purely that nothing in the
+    # LangGraph path forwarded it.
+    if state.status_callback is not None:
+        try:
+            await state.status_callback("Synthesizing answer…")
+        except Exception:  # pragma: no cover — status is a UX affordance
+            logger.debug("agentic_retrieval.assemble: status_callback raised", exc_info=True)
+
     try:
         text = await _call_llm(
             query=state.query,
@@ -939,6 +962,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             openai_http_client=openai_client,
             system_prompt=system_prompt,
             audit_label="agentic_retrieval",
+            token_callback=state.token_callback,
         )
     except Exception:
         logger.exception("agentic_retrieval.assemble: LLM call failed")

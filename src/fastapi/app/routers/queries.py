@@ -345,11 +345,15 @@ async def _agent_rag_stream(
             return
         await status_queue.put(("status", message))
 
-    # P0 #5 — sequence counter + token pump. The Anthropic streaming path
-    # calls this once per `text_delta` chunk; we re-emit each chunk as an
-    # SSE `delta` event so the frontend can render progressively. On the
-    # OpenAI-compatible backend this callback is never invoked and the
-    # Phase-3 fallback below still synthesises deltas from the final text.
+    # P0 #5 — sequence counter + token pump. Both the Anthropic streaming
+    # path and the OpenAI-compatible path (incl. Azure Foundry/Cohere
+    # Command A+) call this once per chunk — as of the agentic_retrieval
+    # Step 2.5 wiring, assemble_node forwards this straight into
+    # app.agent.llm_calls._call_llm's token_callback param, which flips
+    # `stream: true` on the request regardless of backend. The Phase-3
+    # fallback below still exists for backends/paths that genuinely don't
+    # stream (or a callback that raised/no-op'd), but it's no longer the
+    # normal path.
     token_seq = 0
 
     async def _push_token(chunk: str) -> None:

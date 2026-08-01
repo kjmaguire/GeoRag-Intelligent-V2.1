@@ -536,6 +536,188 @@ async def test_run_agentic_retrieval_returns_geo_rag_response(monkeypatch) -> No
 
 
 # ---------------------------------------------------------------------------
+# Step 2.5 — status_callback/token_callback actually reach the graph nodes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_forwards_token_callback_to_call_llm(monkeypatch) -> None:
+    """The whole point of Step 2.5: assemble_node must pass state.token_callback
+    straight into _call_llm so the SSE stream gets real per-chunk deltas
+    instead of the queries.py synthetic word-split fallback."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    async def fake_token_cb(chunk: str) -> None:
+        pass
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(), token_callback=fake_token_cb)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert captured_kwargs.get("token_callback") is fake_token_cb
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_omits_token_callback_when_none(monkeypatch) -> None:
+    """Non-streaming callers (tests, batch/eval paths) must not accidentally
+    flip _call_llm into streaming mode — token_callback stays None."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps())
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert captured_kwargs.get("token_callback") is None
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_emits_synthesizing_status(monkeypatch) -> None:
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    async def fake_call_llm(*args, **kwargs):
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    statuses: list[str] = []
+
+    async def fake_status_cb(message: str) -> None:
+        statuses.append(message)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(), status_callback=fake_status_cb)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert "Synthesizing answer…" in statuses
+
+
+@pytest.mark.asyncio
+async def test_classify_node_emits_classifying_status() -> None:
+    statuses: list[str] = []
+
+    async def fake_status_cb(message: str) -> None:
+        statuses.append(message)
+
+    state = AgenticRetrievalState(
+        query="what is the collar depth", deps=_FakeDeps(), status_callback=fake_status_cb,
+    )
+    await classify_node(state)
+    assert "Classifying query…" in statuses
+
+
+@pytest.mark.asyncio
+async def test_execute_node_emits_querying_status(monkeypatch) -> None:
+    async def fake_search_documents(ctx, query_text: str, project_id: str):
+        return {"chunks": [], "count": 0}
+
+    import app.agent.tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "search_documents", fake_search_documents, raising=False)
+
+    statuses: list[str] = []
+
+    async def fake_status_cb(message: str) -> None:
+        statuses.append(message)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(), status_callback=fake_status_cb)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+    })
+    await execute_node(state)
+    assert "Querying PostGIS + Qdrant…" in statuses
+
+
+@pytest.mark.asyncio
+async def test_run_agentic_retrieval_threads_callbacks_through_state(monkeypatch) -> None:
+    """End-to-end: callbacks passed into run_agentic_retrieval() actually
+    reach the nodes — not just accepted-and-dropped like before Step 2.5."""
+
+    async def fake_search_documents(ctx, query_text: str, project_id: str):
+        return {"chunks": [], "count": 0}
+
+    async def fake_project_id_only(ctx, project_id: str):
+        return {"chunks": [], "count": 0}
+
+    import app.agent.tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "search_documents", fake_search_documents, raising=False)
+    for t in ("query_spatial_collars", "query_assay_data", "query_project_overview"):
+        monkeypatch.setattr(_tools_mod, t, fake_project_id_only, raising=False)
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "I don't have data on that in this project. [DATA-1]"
+
+    import app.agent.llm_calls as _llm_mod
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    async def fake_validate(response, tool_results, deps):
+        return response, [], False
+
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    statuses: list[str] = []
+
+    async def status_cb(message: str) -> None:
+        statuses.append(message)
+
+    async def token_cb(chunk: str) -> None:
+        pass
+
+    response = await run_agentic_retrieval(
+        "What is the deepest hole in this project?",
+        _FakeDeps(),
+        status_callback=status_cb,
+        token_callback=token_cb,
+    )
+    from app.models.rag import GeoRAGResponse
+
+    assert isinstance(response, GeoRAGResponse)
+    assert captured_kwargs.get("token_callback") is token_cb
+    assert "Classifying query…" in statuses
+    assert "Querying PostGIS + Qdrant…" in statuses
+    assert "Synthesizing answer…" in statuses
+
+
+# ---------------------------------------------------------------------------
 # Regression — dispatcher passes the args every legacy tool actually declares
 # ---------------------------------------------------------------------------
 
