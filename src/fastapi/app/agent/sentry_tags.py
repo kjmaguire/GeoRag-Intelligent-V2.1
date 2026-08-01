@@ -384,7 +384,6 @@ _KNOWN_CARD_TYPES: frozenset[str] = frozenset({
     "coverage_table",
     "assay_histogram",
     "cross_section",
-    "graph_viz",
 })
 
 

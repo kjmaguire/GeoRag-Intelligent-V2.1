@@ -167,7 +167,6 @@ export type VizChartType =
     | 'downhole_strip'
     | 'assay_histogram'
     | 'cross_section'
-    | 'graph_viz'
     | 'drill_trace_3d'
     // ADR-0007 PR-1 — project_summary + coverage_gap intents
     | 'technique_timeline'
@@ -186,7 +185,6 @@ export const KNOWN_VIZ_CHART_TYPES = [
     'downhole_strip',
     'assay_histogram',
     'cross_section',
-    'graph_viz',
     'drill_trace_3d',
     'technique_timeline',
     'coverage_table',
@@ -214,10 +212,6 @@ export interface VizPayloadMeta {
     project_id?: string;
     hole_id?: string;
     collar_id?: string;
-
-    // graph_viz — KnowledgeGraph card
-    nodes?: unknown[];
-    edges?: unknown[];
 
     // drill_trace_3d — DrillTrace3D card
     collars?: unknown[];

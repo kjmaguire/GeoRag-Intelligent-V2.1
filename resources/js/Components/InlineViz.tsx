@@ -7,14 +7,12 @@ import { lazy, Suspense, useState } from 'react';
 import type { MapPayload, VizPayload, VizPayloadMeta } from '@/types';
 import type { CollarPoint, IntervalPoint, StructurePoint } from './DrillTrace3D';
 import type { CoverageRow, IngestGap } from './CoverageTableCard';
-import type { GraphNode, GraphEdge } from './KnowledgeGraph';
 import type { StereonetMeta } from './StereonetCard';
 import type { TimelineSwimlane } from './TimelineCard';
 
 const MapView = lazy(() => import('./MapView'));
 const StripLogViewer = lazy(() => import('./StripLogViewer'));
 const GeoPlot = lazy(() => import('./GeoPlot'));
-const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'));
 const DrillTrace3D = lazy(() => import('./DrillTrace3D'));
 const TimelineCard = lazy(() => import('./TimelineCard'));
 const CoverageTableCard = lazy(() => import('./CoverageTableCard'));
@@ -88,8 +86,6 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
     const hasPlotly = !vizHidden
         && (vizType === 'assay_histogram' || vizType === 'cross_section')
         && (plotlyData?.length ?? 0) > 0;
-    const graphNodes = meta.nodes ?? [];
-    const hasGraphViz = !vizHidden && vizType === 'graph_viz' && graphNodes.length > 0;
     const traceCollars = meta.collars ?? [];
     const traceIntervals = meta.intervals ?? [];
     const traceStructures = meta.structures ?? [];
@@ -103,7 +99,7 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
         && vizType === 'stereonet'
         && typeof stereonetImage === 'string'
         && stereonetImage.length > 0;
-    const hasViz = hasStripLog || hasPlotly || hasGraphViz || has3DTrace || hasTimeline || hasCoverage || hasStereonet;
+    const hasViz = hasStripLog || hasPlotly || has3DTrace || hasTimeline || hasCoverage || hasStereonet;
 
     if (!hasMap && !hasViz) return null;
 
@@ -143,20 +139,6 @@ export default function InlineViz({ mapPayload, vizPayload, projectId }: InlineV
                 <VizCard title={vizPayload?.title || 'Assay Data'} badge="Chart" onClose={() => setVizHidden(true)} heightClass="h-80">
                     <Suspense fallback={<LoadingPanel label="Loading chart…" />}>
                         <GeoPlot data={plotlyData!} layout={vizPayload!.plotly_layout!} />
-                    </Suspense>
-                </VizCard>
-            )}
-
-            {hasGraphViz && (
-                <VizCard title={vizPayload?.title || 'Knowledge Graph'} badge="Graph" onClose={() => setVizHidden(true)} heightClass="h-96">
-                    <Suspense fallback={<LoadingPanel label="Loading graph…" />}>
-                        {/* Wire shape is unknown[] from FastAPI; child component
-                            owns the runtime narrowing. Cast at the boundary
-                            documents the contract. */}
-                        <KnowledgeGraph
-                            graphNodes={graphNodes as GraphNode[]}
-                            graphEdges={(meta.edges ?? []) as GraphEdge[]}
-                        />
                     </Suspense>
                 </VizCard>
             )}

@@ -36,11 +36,6 @@ vi.mock('../StripLogViewer', () => ({
 vi.mock('../GeoPlot', () => ({
     default: () => <div data-testid="mock-geo-plot">plot</div>,
 }));
-vi.mock('../KnowledgeGraph', () => ({
-    default: ({ graphNodes }: { graphNodes: unknown[] }) => (
-        <div data-testid="mock-knowledge-graph">graph:{graphNodes?.length ?? 0}</div>
-    ),
-}));
 vi.mock('../DrillTrace3D', () => ({
     default: ({ collars }: { collars: unknown[] }) => (
         <div data-testid="mock-drill-trace-3d">trace:{collars?.length ?? 0}</div>
@@ -94,11 +89,6 @@ const VIZ_HISTOGRAM: VizPayload = {
     chart_type: 'assay_histogram',
     plotly_data: [{ x: [1, 2, 3], type: 'histogram' }],
     plotly_layout: { meta: {} },
-};
-
-const VIZ_GRAPH: VizPayload = {
-    chart_type: 'graph_viz',
-    plotly_layout: { meta: { nodes: [{ id: 'a' }, { id: 'b' }], edges: [] } },
 };
 
 const VIZ_3D: VizPayload = {
@@ -200,7 +190,6 @@ describe('InlineViz — chart_type → card dispatch', () => {
         ['downhole_strip',     VIZ_STRIP,      'mock-strip-log'],
         ['assay_histogram',    VIZ_HISTOGRAM,  'mock-geo-plot'],
         ['cross_section',      { ...VIZ_HISTOGRAM, chart_type: 'cross_section' as const }, 'mock-geo-plot'],
-        ['graph_viz',          VIZ_GRAPH,      'mock-knowledge-graph'],
         ['drill_trace_3d',     VIZ_3D,         'mock-drill-trace-3d'],
         ['technique_timeline', VIZ_TIMELINE,   'mock-timeline'],
         ['coverage_table',     VIZ_COVERAGE,   'mock-coverage-table'],
@@ -216,7 +205,7 @@ describe('InlineViz — chart_type → card dispatch', () => {
         // tag drift check) — this test pins both sides in sync.
         expect(new Set(KNOWN_VIZ_CHART_TYPES)).toEqual(new Set([
             'downhole_strip', 'assay_histogram', 'cross_section',
-            'graph_viz', 'drill_trace_3d', 'technique_timeline',
+            'drill_trace_3d', 'technique_timeline',
             'coverage_table', 'stereonet',
         ]));
     });
