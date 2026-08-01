@@ -6,7 +6,8 @@ import { PageHeader, Card, Pill, Stat, EmptyState, ProgressBar } from '@/Compone
 /**
  * IngestionRuns — per-project pipeline progress.
  *
- * Phase A: data is derived from silver.reports + bronze MinIO listing on each
+ * Phase A: data is derived from silver.reports + a bronze object-storage
+ * listing (STORAGE_BACKEND-agnostic — SeaweedFS/MinIO or Azure Blob) on each
  * request. The .json endpoint is polled every 5s while the tab is visible so
  * users can watch a file move from "in flight" to "completed" without having
  * to refresh manually.
@@ -243,7 +244,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No ingestion activity for this project yet."
-                            detail="Upload a PDF, drill log, or other source on the Data page. As soon as a file lands in MinIO it will show up here, and you can watch it move through parse → tables → embed."
+                            detail="Upload a PDF, drill log, or other source on the Data page. As soon as a file is uploaded it will show up here, and you can watch it move through parse → tables → embed."
                         />
                     </div>
                 )}

@@ -662,16 +662,14 @@ export default function Login(): JSX.Element {
                     }}
                 >
                     <span>© 2026 GeoRAG Intelligence</span>
+                    {/* No Privacy/Terms/Status pages exist yet — these were
+                        `href="#"` (click, nothing happens) rather than real
+                        links. Shown as plain text until those pages exist,
+                        rather than a dead-click affordance. */}
                     <span style={{ display: 'flex', gap: 14 }}>
-                        <a href="#" style={{ color: 'var(--fg-3)', textDecoration: 'none' }}>
-                            Privacy
-                        </a>
-                        <a href="#" style={{ color: 'var(--fg-3)', textDecoration: 'none' }}>
-                            Terms
-                        </a>
-                        <a href="#" style={{ color: 'var(--fg-3)', textDecoration: 'none' }}>
-                            Status ●
-                        </a>
+                        <span style={{ color: 'var(--fg-3)' }}>Privacy</span>
+                        <span style={{ color: 'var(--fg-3)' }}>Terms</span>
+                        <span style={{ color: 'var(--fg-3)' }}>Status ●</span>
                     </span>
                 </div>
             </div>
