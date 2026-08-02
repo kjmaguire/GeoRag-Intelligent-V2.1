@@ -549,8 +549,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _elapsed = time.perf_counter() - _t0
         app.state.embedding_model = embedding_model
         _loaded_dim = embedding_model.get_sentence_embedding_dimension()
+        # %s, not %d — the remote-sidecar proxy returns None for the dimension
+        # when the sidecar can't be reached, and %d would blow up the log call.
         logger.info(
-            "Embedding model ready: %s (dim=%d) loaded in %.2fs",
+            "Embedding model ready: %s (dim=%s) loaded in %.2fs",
             settings.EMBEDDING_MODEL_NAME,
             _loaded_dim,
             _elapsed,
