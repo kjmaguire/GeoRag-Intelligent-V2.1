@@ -2,7 +2,12 @@
 -- tile worker doesn't reject the whole tile on null-in-typed-numeric.
 -- Adds has_total_length bool so the popup can distinguish "0 m recorded"
 -- from "no depth available".
-CREATE OR REPLACE VIEW public_geoscience.v_pg_drillhole_collars_mvt AS
+--
+-- This revision also introduces the date_drilled column. Inserting a column
+-- mid-list means a plain CREATE OR REPLACE VIEW fails ("cannot change name of
+-- view column"), so drop-then-create. No other views depend on this one.
+DROP VIEW IF EXISTS public_geo.v_pg_drillhole_collars_mvt;
+CREATE VIEW public_geo.v_pg_drillhole_collars_mvt AS
 SELECT
     d.id,
     d.jurisdiction_code,
@@ -20,4 +25,4 @@ SELECT
     d.core_availability,
     d.last_seen_at,
     d.geom
-FROM public_geoscience.pg_drillhole_collar d;
+FROM public_geo.pg_drillhole_collar d;

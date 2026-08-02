@@ -1,3 +1,22 @@
+-- ARCHIVED 2026-07-02 — never applied to any cluster; do NOT run.
+--
+-- This Phase H4 (doc-phase 186) rewrite defines a per-(section_line, interval)
+-- shape plus a silver.section_lines table. It silently no-oped on live/test
+-- clusters because gold.cross_section_panels already existed with the
+-- 2026_05_13_080001 migration shape (one row per (project_id, section_name)
+-- with collars_projected JSONB), and both DDLs use CREATE TABLE IF NOT EXISTS.
+-- The migration shape is canonical: it is what the Dagster
+-- gold_cross_section_panels asset writes and what DrillholeDetailController,
+-- WorkspaceController, and the Martin pg_cross_section_lines_by_project MVT
+-- function read. On a fresh cluster this file would have won the race and
+-- broken all of them, so it is archived out of the raw/phase[0-9]* rollup glob.
+--
+-- The per-interval consumers built against this shape
+-- (src/fastapi/app/routers/visualizations.py /v1/viz/cross_section,
+-- src/fastapi/app/services/visualizations/cross_section.py) are dormant —
+-- reviving this shape requires an ADR plus a coordinated rewrite of the
+-- Dagster asset, the Laravel controllers, and the Martin function.
+
 -- Master-plan §5 — gold.cross_section_panels
 -- Phase H4 (doc-phase 186). Pre-projects every drillhole interval onto a
 -- named section line so the cross-section renderer can produce 2-D

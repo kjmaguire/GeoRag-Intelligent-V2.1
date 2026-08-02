@@ -1,3 +1,40 @@
+-- ARCHIVED 2026-07-03 — never applied to any cluster; do NOT run.
+--
+-- This Phase H4 (doc-phase 186) file has TWO problems, both making it dead:
+--
+-- 1. gold.structure_measurements_visual here is a different shape than the one
+--    that actually shipped:
+--      * this file:  PK measurement_id, measurement_kind, depth_m, confidence,
+--                    pole_trend_deg/pole_plunge_deg, display_color/display_symbol.
+--      * migration 2026_05_13_080002_create_gold_structure_measurements_visual.php
+--                    (canonical, live): PK visual_id, structure_type (+ CHECK),
+--                    depth, dip_direction_deg/plunge_deg/trend_deg, stereonet_x/_y,
+--                    projection. Verified against live 2026-07-03 (16 columns,
+--                    PK visual_id). Live stereonet consumers read this migration
+--                    shape: the Dagster gold_structure_measurements_visual asset
+--                    and src/fastapi/app/services/visualizations/stereonet.py.
+--
+-- 2. It also CREATEs silver.structure_measurements, which does NOT exist in live
+--    (to_regclass NULL, verified 2026-07-02 and again 2026-07-03) and is never
+--    created by any migration. The real structural silver table is
+--    silver.structures; the gold asset populates from there
+--    (src/dagster/.../assets/silver_structure_populate.py). The only remaining
+--    references to silver.structure_measurements are dormant doc-strings
+--    (visualizations.py Query description for the broken /v1/viz cross_section
+--    path, the phase5 visual_readiness probe label, and a couple of
+--    architecture docs) — nothing reads or writes the table.
+--
+-- Both DDLs use CREATE TABLE IF NOT EXISTS, so on a fresh cluster whichever ran
+-- first would win and the other would silently no-op. scripts/
+-- phase4_step7_build_rollup.sh globs database/raw/phase[0-9]* into
+-- current-rollup.sql, so this file could have won the race against the
+-- migration and broken the live stereonet path — plus it would have created a
+-- phantom silver.structure_measurements table. Archiving it (not just
+-- documenting it) removes it from the rollup glob.
+--
+-- Reviving this shape would require an ADR plus a coordinated rewrite of the
+-- Dagster asset and the FastAPI stereonet renderer.
+
 -- Master-plan §5 — gold.structure_measurements_visual
 -- Phase H4 (doc-phase 186). Pre-aggregated structural measurements for
 -- the stereonet renderer. Each row carries strike + dip in standard
