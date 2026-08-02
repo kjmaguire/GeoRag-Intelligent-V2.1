@@ -167,6 +167,12 @@ def main() -> None:
     parser.add_argument("--workspace-id", default=os.environ.get("DEFAULT_WORKSPACE_ID", ""))
     parser.add_argument("--baseline", default="")
     parser.add_argument("--output-dir", default="/app/bench_results")
+    # CI eval gate (audit 2026-06-29): exit non-zero when NDCG@10 regresses
+    # below the --baseline by more than this absolute delta. Lets a CI job run
+    #   bench_retrieval_ndcg.py --baseline bench_results/retrieval_ndcg_baseline.json \
+    #     --gate-regression 0.03
+    # and FAIL a retrieval-touching PR that drops quality. No-op without --baseline.
+    parser.add_argument("--gate-regression", type=float, default=None)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -312,6 +318,22 @@ def main() -> None:
         print(f"  vs baseline:  {c['baseline_ndcg']:.4f} → {c['current_ndcg']:.4f}"
               f"  ({c['delta_pct']:+.1f}%)")
     print(f"{'='*60}\n")
+
+    # CI eval gate — fail the job on a real NDCG regression vs baseline.
+    if args.gate_regression is not None:
+        if "comparison" not in report:
+            log.error("--gate-regression requires a valid --baseline file; none loaded.")
+            sys.exit(3)
+        delta = report["comparison"]["delta"]
+        if delta < -abs(args.gate_regression):
+            log.error(
+                "EVAL GATE FAILED: NDCG@10 regressed %.4f (baseline %.4f → %.4f), "
+                "worse than the allowed -%.4f.",
+                delta, baseline_mean, mean_ndcg, abs(args.gate_regression),
+            )
+            sys.exit(2)
+        log.info("EVAL GATE PASSED: NDCG@10 delta %.4f within -%.4f tolerance.",
+                 delta, abs(args.gate_regression))
 
 
 if __name__ == "__main__":
