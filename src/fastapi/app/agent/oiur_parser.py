@@ -20,6 +20,7 @@ import logging
 import re
 from typing import Final
 
+from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.agent.schemas import (
     ConfidenceBlock,
     ConfidenceLevel,
@@ -52,7 +53,7 @@ _OBS_LINE_RE = re.compile(r"^\(O(\d+)\)\s+(.+)$")
 _INTERP_LINE_RE = re.compile(r"^\(I(\d+)\)\s+(.+)$")
 _SUPPORTS_RE = re.compile(r"^supports:\s*([^.]+)\.\s*(.*)$", re.IGNORECASE)
 _COMPETES_RE = re.compile(r"^competes-with:\s*([^.]+)\.\s*(.*)$", re.IGNORECASE)
-_CITATION_MARKER_RE = re.compile(r"\[(?:NI43|DATA|PUB|PGEO)[:\-]\d+\]")
+_CITATION_MARKER_RE = CITATION_MARKER_RE
 _CONFIDENCE_RE = re.compile(
     r"\*\*\s*Confidence\s*:\s*(High|Medium|Low)\s*\*\*", re.IGNORECASE
 )

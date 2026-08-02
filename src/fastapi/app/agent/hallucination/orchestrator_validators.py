@@ -23,6 +23,11 @@ import time
 from typing import Any
 
 from app.agent.deps import AgentDeps
+from app.agent.hallucination.citation_markers import (
+    ALL_MARKER_RE,
+    CITATION_MARKER_RE,
+    CITATION_PREFIXES,
+)
 from app.config import settings
 from app.models.rag import GeoRAGResponse
 
@@ -116,12 +121,9 @@ async def _get_known_formations(
 # ---------------------------------------------------------------------------
 
 _NUMBER_RE = re.compile(r"[-+]?\d+\.?\d*")
-# Audit 2026-06-27 (T3): this is the marker regex the AGENTIC path's
-# verify_numbers uses. Accept both the colon form ([DATA:1]) the prompts
-# instruct the model to emit (canonical, Kyle 2026-04-22) and the dash form
-# the assembler appends, plus the PGEO prefix — otherwise colon citation
-# indices (e.g. [PUB:23]) leak through as ungrounded "numbers" / false retries.
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)[:-]\d+\]")
+# Marker regex the AGENTIC path's verify_numbers uses (shared pattern —
+# see citation_markers.py for the colon/dash + PGEO rationale).
+_CITATION_MARKER_RE = CITATION_MARKER_RE
 _SMALL_NUMBERS = {0.0, 1.0, 2.0, 3.0}  # too common to verify
 
 # ────────────────────────────────────────────────────────────────────────
@@ -467,7 +469,7 @@ def verify_numbers(text: str, tool_results: list[tuple[str, Any]]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 _HOLE_ID_RE = re.compile(r"\b([A-Z]{1,8}-\d{1,6}-\d{1,6})\b")
-_CITATION_PREFIX_SET = frozenset({"DATA", "NI43", "PUB", "PGEO"})
+_CITATION_PREFIX_SET = CITATION_PREFIXES
 
 # Known commodity codes (Module 4 identifier-boost list).
 # Any of these tokens, if mentioned bare, must appear in the cited evidence.
@@ -482,7 +484,7 @@ _COMMODITY_CODES: frozenset[str] = frozenset({
 _TITLE_CASE_RE = re.compile(r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*)\b")
 
 # Colon-form and dash-form citation markers — stripped before entity extraction.
-_ALL_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB|PGEO|ev)[:-][A-Za-z0-9-]+\]")
+_ALL_MARKER_RE = ALL_MARKER_RE
 
 
 # Phase F.6+ (Layer 4 tolerance fix).

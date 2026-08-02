@@ -41,12 +41,13 @@ from __future__ import annotations
 import logging
 import re
 
+from app.agent.hallucination.citation_markers import (
+    CITATION_MARKER_CAPTURE_RE,
+    canonical_marker,
+)
 from app.models.rag import GeoRAGResponse
 
 logger = logging.getLogger(__name__)
-
-# All supported citation marker patterns.
-_CITATION_MARKER_RE = re.compile(r"\[(DATA|NI43|PUB)-(\d+)\]")
 
 
 def validate_and_repair(response: GeoRAGResponse) -> GeoRAGResponse:
@@ -62,13 +63,14 @@ def validate_and_repair(response: GeoRAGResponse) -> GeoRAGResponse:
 
     # ── Check 1: citation marker ↔ citation list consistency ──────────────
     known_ids = {c.citation_id for c in response.citations}
-    markers_in_text = _CITATION_MARKER_RE.findall(response.text)
+    markers_in_text = CITATION_MARKER_CAPTURE_RE.findall(response.text)
 
     orphan_markers: list[str] = []
-    for prefix, num in markers_in_text:
-        marker = f"[{prefix}-{num}]"
-        if marker not in known_ids:
-            orphan_markers.append(marker)
+    for prefix, sep, num in markers_in_text:
+        # citation_ids are always dash-form; the text may use the colon form.
+        # Compare canonically, but strip the marker as it appears in the text.
+        if canonical_marker(prefix, num) not in known_ids:
+            orphan_markers.append(f"[{prefix}{sep}{num}]")
 
     if orphan_markers:
         issues.append(

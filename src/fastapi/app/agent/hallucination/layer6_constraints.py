@@ -54,6 +54,7 @@ from pathlib import Path
 from pydantic_ai import ModelRetry, RunContext
 
 from app.agent.deps import AgentDeps
+from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.config import settings
 from app.models.rag import GeoRAGResponse
 
@@ -136,10 +137,10 @@ GEOLOGICAL_CONSTRAINTS: list[GeologicalConstraint] = _load_constraints_from_json
 # Captures: optional sign, digits, optional decimal.
 _NUMBER_WITH_CONTEXT_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
 
-# Citation marker pattern — numbers inside [DATA-X], [NI43-X], [PUB-X] are
-# never content numbers and must not be checked against geological constraints.
-# The Layer 3 numerical verifier uses the same exclusion logic.
-_CITATION_MARKER_RE = re.compile(r"\[(?:DATA|NI43|PUB)-\d+\]")
+# Citation marker pattern — numbers inside citation markers are never content
+# numbers and must not be checked against geological constraints. The Layer 3
+# numerical verifier uses the same exclusion logic (shared pattern).
+_CITATION_MARKER_RE = CITATION_MARKER_RE
 
 
 # ---------------------------------------------------------------------------
