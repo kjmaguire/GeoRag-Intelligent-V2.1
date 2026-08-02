@@ -160,6 +160,14 @@ describe('DrillTrace3D — baseline (collars only)', () => {
         expect(tube!.zs).toEqual([1000, 800]); // elevation → elevation - total_depth
     });
 
+    it('escapes hole_id before it reaches Plotly hovertemplate (stored-XSS guard)', () => {
+        // Plotly's hovertemplate renders %{text} as pseudo-HTML (<b>, <br>, …).
+        // hole_id is ingested data — a hostile value must not inject markup.
+        render(<DrillTrace3D collars={[{ ...COLLAR_BASIC, hole_id: '<img src=x onerror=alert(1)>' }]} />);
+        const markers = getTraces().find((t) => t.mode === 'markers+text');
+        expect(markers!.text).toEqual(['&lt;img src=x onerror=alert(1)&gt;']);
+    });
+
     it('emits no extra traces when intervals & structures are empty arrays', () => {
         render(<DrillTrace3D collars={[COLLAR_BASIC]} intervals={[]} structures={[]} />);
         expect(getTraceCount()).toBe(2);
