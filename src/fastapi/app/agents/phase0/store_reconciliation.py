@@ -172,6 +172,19 @@ async def store_reconciliation_run(
         pg_passages = pg_projects = None
 
     qdrant_count = None
+    # ADR-0010: canonical collection is georag_chunks when
+    # RETRIEVAL_USE_DOCUMENT_PASSAGES is true (the default since 2026-05-28).
+    # Hardcoded "georag_reports" reported false drift post-cutover because
+    # passages now land in chunks. Use the same flag the live retrieval path
+    # consults. Computed unconditionally (not inside the qdrant-client try
+    # block below) so the summary key below is always defined, even when
+    # qdrant-client is missing or the query fails.
+    from app.config import settings  # noqa: PLC0415 — local import to avoid cycle
+    _collection = (
+        "georag_chunks"
+        if settings.RETRIEVAL_USE_DOCUMENT_PASSAGES
+        else "georag_reports"
+    )
     try:
         from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
 
@@ -182,17 +195,6 @@ async def store_reconciliation_run(
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue  # noqa: PLC0415
 
-            # ADR-0010: canonical collection is georag_chunks when
-            # RETRIEVAL_USE_DOCUMENT_PASSAGES is true (the default since
-            # 2026-05-28). Hardcoded "georag_reports" reported false drift
-            # post-cutover because passages now land in chunks. Use the
-            # same flag the live retrieval path consults.
-            from app.config import settings  # local import to avoid cycle
-            _collection = (
-                "georag_chunks"
-                if settings.RETRIEVAL_USE_DOCUMENT_PASSAGES
-                else "georag_reports"
-            )
             r = await qc.count(
                 collection_name=_collection,
                 count_filter=Filter(must=[
@@ -251,7 +253,10 @@ async def store_reconciliation_run(
         }
 
     summary["cross_store_drift"] = {
-        "qdrant_georag_reports": _drift_finding(pg_passages, qdrant_count),
+        # Key name follows _collection above — the counting logic already
+        # targets georag_chunks post-ADR-0010; the label used to still say
+        # "georag_reports" even when the count was against georag_chunks.
+        f"qdrant_{_collection}": _drift_finding(pg_passages, qdrant_count),
         "neo4j_project_nodes": _drift_finding(pg_projects, neo4j_count),
     }
 
