@@ -20,6 +20,7 @@ from typing import Any
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.db import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
+from app.services.qdrant_conn import qdrant_client_kwargs
 from app.services.tool_gateway.gateway import register_tool
 
 log = logging.getLogger("georag.tool_gateway.impls")
@@ -119,8 +120,6 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
     except ImportError:
         return {"error": "qdrant client not installed"}
-    host = os.environ.get("QDRANT_HOST", "qdrant")
-    port = int(os.environ.get("QDRANT_HTTP_PORT", "6333"))
     collection = inputs.get("collection", "georag_reports")
     workspace_id = inputs.get("workspace_id")
     k = int(inputs.get("k", 10))
@@ -129,7 +128,7 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
     # encoder, but as a starting point return points filtered by payload
     # match-string rather than vector similarity. Real embedding wiring
     # is wave 2 (would call services/qdrant_service.retrieve()).
-    client = AsyncQdrantClient(host=host, port=port)
+    client = AsyncQdrantClient(**qdrant_client_kwargs())
     try:
         flt = None
         if workspace_id:

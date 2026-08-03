@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import hatchet
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.hatchet.restore_workspace")
 
@@ -216,10 +217,8 @@ async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:
     except ImportError:
         return -1, "qdrant client not available"
 
-    host = os.environ.get("QDRANT_HOST", "qdrant")
-    port = int(os.environ.get("QDRANT_HTTP_PORT", "6333"))
     try:
-        client = AsyncQdrantClient(host=host, port=port)
+        client = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
             # Filter on workspace_id payload field. We use count
             # (exact=True) so the result is deterministic.

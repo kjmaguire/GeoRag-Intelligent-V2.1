@@ -26,6 +26,8 @@ import logging
 import os
 from typing import Any
 
+from app.services.qdrant_conn import qdrant_client_kwargs
+
 log = logging.getLogger("georag.hatchet.workspace_export.extras")
 
 
@@ -127,12 +129,10 @@ async def export_qdrant_workspace(
     except ImportError:
         return [], "qdrant client not available"
 
-    host = os.environ.get("QDRANT_HOST", "qdrant")
-    port = int(os.environ.get("QDRANT_HTTP_PORT", "6333"))
 
     points: list[dict[str, Any]] = []
     try:
-        client = AsyncQdrantClient(host=host, port=port)
+        client = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
             scroll_filter = Filter(must=[
                 FieldCondition(

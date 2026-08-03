@@ -25,6 +25,8 @@ import logging
 import os
 from typing import Any
 
+from app.services.qdrant_conn import qdrant_client_kwargs
+
 log = logging.getLogger("georag.hatchet.restore_workspace.extras")
 
 
@@ -183,12 +185,10 @@ async def restore_qdrant(
     except ImportError:
         return {"points_upserted": 0, "error": "qdrant client missing"}
 
-    host = os.environ.get("QDRANT_HOST", "qdrant")
-    port = int(os.environ.get("QDRANT_HTTP_PORT", "6333"))
 
     upserted = 0
     try:
-        client = AsyncQdrantClient(host=host, port=port)
+        client = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
             # Batch in chunks of 100 to keep payloads reasonable.
             for i in range(0, len(points), 100):

@@ -158,6 +158,13 @@ class Settings(BaseSettings):
     # QDRANT_API_KEY in .env — the value is passed to both the FastAPI
     # AsyncQdrantClient AND the Qdrant container itself via compose.
     QDRANT_API_KEY: str = ""
+    # Azure Container Apps internal ingress (transport=Auto, i.e. HTTP) only
+    # fronts the app on 80/443 via its Envoy proxy — the container's own
+    # target port (6333) is not reachable directly through the environment's
+    # internal DNS, even with the bare app name. Set QDRANT_HTTPS=true and
+    # QDRANT_PORT=443 there; leave both at their plain-HTTP/6333 defaults for
+    # local compose (Qdrant is reached directly, no ingress in the way).
+    QDRANT_HTTPS: bool = False
 
     # -------------------------------------------------------------------------
     # Redis

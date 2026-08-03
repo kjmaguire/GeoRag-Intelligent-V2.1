@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
 from app.hatchet_workflows import hatchet
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 
 class OutboxDispatcherInput(BaseModel):
@@ -116,12 +117,7 @@ async def _dispatch_qdrant(row: asyncpg.Record) -> tuple[str, str | None]:
         or os.environ.get("QDRANT_DEFAULT_COLLECTION", "georag_default")
     )
 
-    client = AsyncQdrantClient(
-        host=os.environ.get("QDRANT_HOST", "qdrant"),
-        port=int(os.environ.get("QDRANT_PORT", "6333")),
-        api_key=os.environ.get("QDRANT_API_KEY") or None,
-        prefer_grpc=False,
-    )
+    client = AsyncQdrantClient(**qdrant_client_kwargs(), prefer_grpc=False)
     try:
         if row["operation"] == "upsert":
             vector = payload.get("vector")

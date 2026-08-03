@@ -48,6 +48,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import PointStruct, SparseVector
 
 from app.db import bind_workspace_scope
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.ingest.passage_embedder")
 
@@ -170,10 +171,7 @@ async def embed_pending_passages(
 
     own_qdrant = False
     if qdrant_client is None:
-        qdrant_client = AsyncQdrantClient(
-            host=os.environ.get("QDRANT_HOST", "qdrant"),
-            port=int(os.environ.get("QDRANT_PORT", "6333")),
-        )
+        qdrant_client = AsyncQdrantClient(**qdrant_client_kwargs())
         own_qdrant = True
 
     # ── Load passage rows ─────────────────────────────────────────

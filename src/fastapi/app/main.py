@@ -323,6 +323,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     qdrant_client = AsyncQdrantClient(
         host=settings.QDRANT_HOST,
         port=settings.QDRANT_PORT,
+        https=settings.QDRANT_HTTPS,
         # Qdrant review #9 — optional API key for prod. Empty string in
         # single-tenant dev posture (network isolation handles auth) —
         # the qdrant-client lib treats "" as "no auth header", which is
@@ -726,15 +727,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # storage-abstraction plan's PR4; LocalFsBronzeStore is a fallback for a
     # bare dev shell that isn't running the full docker-compose stack.
     try:
-        from georag_object_storage import StorageConfig  # noqa: PLC0415
+        import os as _os  # noqa: PLC0415
 
         from app.services.bronze_store import LocalFsBronzeStore, S3BronzeStore  # noqa: PLC0415
         from app.services.pdf_render import PdfRenderService  # noqa: PLC0415
 
         app.state.pdf_render_service = PdfRenderService()
         try:
-            app.state.bronze_store = S3BronzeStore(StorageConfig.from_env())
-            logger.info("PDF render service ready; Bronze store backed by SeaweedFS")
+            app.state.bronze_store = S3BronzeStore()
+            logger.info(
+                "PDF render service ready; Bronze store backed by object storage (STORAGE_BACKEND=%s)",
+                _os.environ.get("STORAGE_BACKEND", "s3_compatible"),
+            )
         except ValueError:
             # No object-storage credentials in this environment (AWS_ACCESS_KEY_ID/
             # AWS_SECRET_ACCESS_KEY, or a legacy S3_*/MINIO_*/SEAWEEDFS_* fallback,

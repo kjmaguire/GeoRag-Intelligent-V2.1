@@ -23,6 +23,7 @@ from typing import Any
 
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +194,7 @@ async def index_health_check(
     try:
         from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
 
-        qc = AsyncQdrantClient(
-            host=os.environ.get("QDRANT_HOST", "qdrant"),
-            port=int(os.environ.get("QDRANT_PORT", "6333")),
-        )
+        qc = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
             collections = (await qc.get_collections()).collections
             reach_results: dict[str, Any] = {}

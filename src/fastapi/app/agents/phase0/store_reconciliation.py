@@ -26,6 +26,7 @@ from typing import Any
 
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -188,10 +189,7 @@ async def store_reconciliation_run(
     try:
         from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
 
-        qc = AsyncQdrantClient(
-            host=os.environ.get("QDRANT_HOST", "qdrant"),
-            port=int(os.environ.get("QDRANT_PORT", "6333")),
-        )
+        qc = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
             from qdrant_client.models import FieldCondition, Filter, MatchValue  # noqa: PLC0415
 
