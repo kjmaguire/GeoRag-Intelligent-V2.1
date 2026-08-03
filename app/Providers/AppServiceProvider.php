@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Policies\DashboardPolicy;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Filesystem\FilesystemAdapter as LaravelFilesystemAdapter;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
 use Illuminate\Log\Events\MessageLogged;
@@ -16,7 +17,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\ServiceProvider;
+use League\Flysystem\AzureBlobStorage\AzureBlobStorageAdapter;
+use League\Flysystem\Filesystem as Flysystem;
+use MicrosoftAzure\Storage\Blob\BlobRestProxy;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -40,6 +45,17 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Azure Blob disk driver — mirrors STORAGE_BACKEND=azure_blob on the
+        // Python side (georag_object_storage/factory.py). Registered
+        // unconditionally; it's only instantiated when a disk config actually
+        // resolves 'driver' => 'azure' (see config/filesystems.php).
+        Storage::extend('azure', function ($app, $config) {
+            $client = BlobRestProxy::createBlobService($config['connection_string']);
+            $adapter = new AzureBlobStorageAdapter($client, $config['container']);
+
+            return new LaravelFilesystemAdapter(new Flysystem($adapter), $adapter, $config);
+        });
+
         Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);
         Gate::define('viewProject', [DashboardPolicy::class, 'viewProject']);
 
