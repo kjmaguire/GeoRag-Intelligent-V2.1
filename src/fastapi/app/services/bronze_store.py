@@ -19,7 +19,7 @@ object-storage credentials configured (production, and any dev environment
 running the full docker-compose stack), falling back to LocalFsBronzeStore
 otherwise (a bare dev shell without SeaweedFS running). See app/main.py::
 
-    app.state.bronze_store = S3BronzeStore(StorageConfig.from_env())  # or LocalFsBronzeStore()
+    app.state.bronze_store = S3BronzeStore()  # or LocalFsBronzeStore()
 
     # In route handlers:
     store: BronzeStore = request.app.state.bronze_store
@@ -42,8 +42,7 @@ import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from georag_object_storage import Bucket, ObjectNotFoundError, StorageConfig
-from georag_object_storage.async_client import AsyncS3CompatibleStorage
+from georag_object_storage import Bucket, ObjectNotFoundError, get_async_storage_client
 
 logger = logging.getLogger(__name__)
 
@@ -190,16 +189,15 @@ class LocalFsBronzeStore:
 
 
 class S3BronzeStore:
-    """Bronze store backed by SeaweedFS (or any S3-compatible endpoint).
+    """Bronze store backed by SeaweedFS/Azure Blob (STORAGE_BACKEND-aware).
 
-    Wraps georag_object_storage's AsyncS3CompatibleStorage, scoped to the
-    Bucket.BRONZE logical bucket, and adapts its exception-raising
+    Wraps georag_object_storage's factory-selected async client, scoped to
+    the Bucket.BRONZE logical bucket, and adapts its exception-raising
     get_bytes() to this module's None-on-missing BronzeStore contract.
     """
 
-    def __init__(self, config: StorageConfig | None = None) -> None:
-        self._config = config or StorageConfig.from_env()
-        self._storage = AsyncS3CompatibleStorage(self._config)
+    def __init__(self) -> None:
+        self._storage = get_async_storage_client()
 
     async def put(self, key: str, content: bytes) -> str:
         """Write ``content`` at ``key``.
@@ -210,7 +208,7 @@ class S3BronzeStore:
         at the returned-URI level.
         """
         await self._storage.put_bytes(Bucket.BRONZE, key, content)
-        uri = f"s3://{self._config.bucket_name(Bucket.BRONZE)}/{key}"
+        uri = f"s3://{Bucket.BRONZE.value}/{key}"
         logger.debug("BronzeStore PUT key=%s uri=%s bytes=%d", key, uri, len(content))
         return uri
 

@@ -20,8 +20,7 @@ import re
 from pathlib import Path
 from uuid import UUID
 
-from georag_object_storage import Bucket, StorageConfig
-from georag_object_storage.sync_client import S3CompatibleStorage
+from georag_object_storage import Bucket, ObjectStorage, get_storage_client
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -111,7 +110,7 @@ def derived_pdf_key(
 
 
 def _derived_already_present(
-    store: S3CompatibleStorage,
+    store: ObjectStorage,
     derived_key: str,
     source_sha256: str,
 ) -> bool:
@@ -151,7 +150,7 @@ async def normalize(
         input.workspace_id, input.project_id, input.minio_key, input.file_size,
     )
 
-    store = S3CompatibleStorage(StorageConfig.from_env())
+    store = get_storage_client()
 
     # 1. Stream the source TIFF down.
     source_bytes = store.get_bytes(Bucket.BRONZE, input.minio_key)
