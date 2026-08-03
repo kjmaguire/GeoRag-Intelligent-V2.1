@@ -233,6 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     pg_dsn = (
         f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
         f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+        f"?sslmode={settings.POSTGRES_SSLMODE}"
     )
     logger.info(
         "Connecting asyncpg pool -> %s:%s/%s",

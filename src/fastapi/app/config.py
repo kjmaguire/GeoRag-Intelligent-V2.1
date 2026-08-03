@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = "georag"
     POSTGRES_USER: str = "georag"
     POSTGRES_PASSWORD: str
+    # Local pgbouncer needs no TLS; Azure Database for PostgreSQL Flexible
+    # Server requires it. asyncpg accepts this as a DSN query param directly.
+    POSTGRES_SSLMODE: str = "prefer"
 
     # -------------------------------------------------------------------------
     # Neo4j — REMOVED 2026-07-28 (B1). NEO4J_HOST/PORT/USER/PASSWORD were only
