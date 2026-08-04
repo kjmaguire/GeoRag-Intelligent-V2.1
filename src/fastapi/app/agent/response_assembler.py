@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
+from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.agent.public_geoscience_tool import (
     PublicGeoscienceRecord,
     PublicGeoscienceSearchResult,
@@ -37,7 +38,6 @@ from app.agent.tools import (
     SpatialQueryResult,
     StereonetResult,
 )
-from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
 from app.config import settings
 from app.models.rag import Citation, GeoRAGResponse, MapPayload, VizPayload
 

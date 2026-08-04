@@ -23,7 +23,6 @@ from fastapi import HTTPException
 
 import app.sidecar_auth as sidecar_auth
 
-
 # ---------------------------------------------------------------------------
 # require_service_key — enforcement
 # ---------------------------------------------------------------------------
@@ -105,9 +104,9 @@ def test_client_headers_fall_back_to_settings_when_env_unset(monkeypatch) -> Non
     try:
         monkeypatch.delenv("FASTAPI_SERVICE_KEY", raising=False)
         mod = importlib.reload(sidecar_auth)
-        assert mod.SERVICE_KEY_HEADERS == {
+        assert {
             "X-Service-Key": settings.FASTAPI_SERVICE_KEY.strip()
-        }
+        } == mod.SERVICE_KEY_HEADERS
         # Server-side key is env-only → unset here (fail-closed 503 behavior).
         assert mod._SERVICE_KEY == ""
     finally:

@@ -29,7 +29,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.reranker import active_reranker_version, _get_reranker
+from app.services.reranker import _get_reranker, active_reranker_version
 from app.sidecar_auth import (
     enforce_batch_limits,
     install_body_size_limit,

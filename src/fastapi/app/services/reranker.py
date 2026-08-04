@@ -116,20 +116,6 @@ RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
 _ACTIVE_VERSION: str | None = None
 
 
-def active_reranker_version() -> str:
-    """Version of the loaded reranker backend (derived from env if not loaded).
-
-    Mirrors the branch order in :func:`_get_reranker` so the pre-load answer
-    matches what a subsequent load will report.
-    """
-    if _ACTIVE_VERSION is not None:
-        return _ACTIVE_VERSION
-    model_path = (os.environ.get("RERANKER_MODEL_PATH") or "").strip()
-    if RERANKER_BACKEND == "qwen3_causal":
-        return f"qwen3-causal:{model_path or QWEN3_RERANKER_MODEL}"
-    if model_path:
-        return f"local:{model_path}"
-    return RERANKER_VERSION
 
 # ---------------------------------------------------------------------------
 # Qwen3-Reranker causal-LM backend (audit 2026-06-28, OPT-IN, NOT deployed)
@@ -179,14 +165,24 @@ AZURE_FOUNDRY_RERANK_TIMEOUT_S = float(
 def active_reranker_version() -> str:
     """Return the version string to persist to answer_runs.reranker_version.
 
-    RERANKER_VERSION is a module-level constant fixed to the Qwen3 identity —
-    accurate for the cross_encoder (default) backend, but wrong when
-    RERANKER_BACKEND=foundry. Callers that need an audit-trail-accurate
-    label (main.py's lifespan hook) should use this instead of the raw
-    constant.
+    RERANKER_VERSION is a module-level constant fixed to the Qwen3 cross-
+    encoder identity — accurate for the cross_encoder (default) backend, but
+    wrong for foundry/qwen3_causal/local-path overrides. Checks
+    _ACTIVE_VERSION first so a caller after the model has actually loaded
+    gets the exact loaded identity (e.g. the resolved qwen3_causal model_id)
+    rather than a pre-load guess; falls back to guessing from env vars for
+    callers before load (or when foundry, which never sets _ACTIVE_VERSION
+    since it loads no local model).
     """
     if RERANKER_BACKEND == "foundry":
         return f"cohere-foundry:{AZURE_FOUNDRY_RERANK_DEPLOYMENT or 'unset'}"
+    if _ACTIVE_VERSION is not None:
+        return _ACTIVE_VERSION
+    model_path = (os.environ.get("RERANKER_MODEL_PATH") or "").strip()
+    if RERANKER_BACKEND == "qwen3_causal":
+        return f"qwen3-causal:{model_path or QWEN3_RERANKER_MODEL}"
+    if model_path:
+        return f"local:{model_path}"
     return RERANKER_VERSION
 
 # ---------------------------------------------------------------------------
