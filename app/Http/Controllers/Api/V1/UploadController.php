@@ -318,8 +318,10 @@ class UploadController extends Controller
     /**
      * Resolve the workspace_id for this project_id and pass to the ShadowRouter.
      *
-     * If workspace lookup fails or the router throws, log + continue — the
-     * v1.49 Dagster path still runs from the bronze upload sensor regardless.
+     * If workspace lookup fails or the router throws, log + continue — this
+     * dispatch below is the ONLY live path (see RETIRED_CATEGORIES above):
+     * the Dagster minio_upload_sensor this docblock used to describe as a
+     * fallback was confirmed STOPPED as of the 2026-07-28 (B2) trim.
      *
      * @param array<string, mixed> $responseData
      */

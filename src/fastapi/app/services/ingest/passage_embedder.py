@@ -12,11 +12,15 @@ Collection georag_reports doesn't exist``.
 For every passage row in `silver.document_passages` where
 `embedding_id IS NULL`:
 
-  1. Encode the text via Qwen3-Embedding-0.6B (dense, 1024-dim, normalized).
-     Documents are encoded RAW — the query-side "Instruct: ...\nQuery: ..."
-     template is asymmetric and applied only on retrieval (see
-     tools.search_documents). Documents must NOT carry the query template
-     or the query/document vectors live in different subspaces.
+  1. Encode the text (dense, 1024-dim, normalized), branching inline on
+     EMBEDDING_BACKEND: "foundry" -> Cohere Embed v4
+     (input_type="search_document"), else the self-hosted
+     Qwen/Qwen3-Embedding-0.6B fallback. Documents are encoded RAW — the
+     query-side "Instruct: ...\nQuery: ..." template (self-hosted path) /
+     input_type="search_query" (foundry path) is asymmetric and applied only
+     on retrieval (see tools.search_documents). Documents must NOT carry the
+     query-side treatment or the query/document vectors live in different
+     subspaces.
   2. Encode via SPLADE++ (sparse, named "text")
   3. Upsert to Qdrant `georag_chunks` with payload:
        { report_id, project_id, workspace_id,

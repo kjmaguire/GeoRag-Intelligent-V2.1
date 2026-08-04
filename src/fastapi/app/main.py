@@ -521,14 +521,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # -------------------------------------------------------------------------
-    # 5. SentenceTransformer embedding model — bge-small-en-v1.5
+    # 5. Query-time embedding model
     # -------------------------------------------------------------------------
-    # BAAI/bge-small-en-v1.5 replaces all-MiniLM-L6-v2 (same 384-dim cosine,
-    # no collection recreation needed).  BGE scores 10-15% higher than MiniLM
-    # on mineral/geological queries.  The model runs on CPU — the FastAPI
-    # container has no GPU passthrough.  A single encode() call per request
-    # (query embedding only) is fast enough at CPU speeds; batch document
-    # indexing runs in the Dagster container via scripts/reembed_qdrant.py.
+    # get_embedding_model() branches on EMBEDDING_BACKEND: "foundry" returns a
+    # lightweight Cohere Embed v4 proxy (no local model, no download) — the
+    # live default (config.py's Qwen/Qwen3-Embedding-0.6B, 1024-dim, is the
+    # self-hosted fallback for operators without a Foundry backend). Batch
+    # document indexing runs through the Hatchet ingest_pdf workflow's
+    # passage_embedder, which reads the same EMBEDDING_BACKEND flag — Dagster
+    # dropped from this deployment entirely in Phase B2.
     logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL_NAME)
     _t0 = time.perf_counter()
     try:
