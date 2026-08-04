@@ -22,6 +22,8 @@ use Illuminate\Support\ServiceProvider;
 use League\Flysystem\AzureBlobStorage\AzureBlobStorageAdapter;
 use League\Flysystem\Filesystem as Flysystem;
 use MicrosoftAzure\Storage\Blob\BlobRestProxy;
+use MicrosoftAzure\Storage\Blob\BlobSharedAccessSignatureHelper;
+use MicrosoftAzure\Storage\Blob\Internal\BlobResources;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -53,7 +55,43 @@ class AppServiceProvider extends ServiceProvider
             $client = BlobRestProxy::createBlobService($config['connection_string']);
             $adapter = new AzureBlobStorageAdapter($client, $config['container']);
 
-            return new LaravelFilesystemAdapter(new Flysystem($adapter), $adapter, $config);
+            $disk = new LaravelFilesystemAdapter(new Flysystem($adapter), $adapter, $config);
+
+            // AzureBlobStorageAdapter implements neither getTemporaryUrl() nor
+            // League's TemporaryUrlGenerator interface, so temporaryUrl() would
+            // otherwise throw "This driver does not support creating temporary
+            // URLs" — breaking every presigned-download call site (report/
+            // figure exports, GenerateExportJob, FigureResolver). Register a
+            // SAS-token callback so it behaves the same as the s3 disks it
+            // replaces under STORAGE_BACKEND=azure_blob.
+            if (str_contains((string) $config['connection_string'], 'AccountName=')) {
+                preg_match('/AccountName=([^;]+)/', (string) $config['connection_string'], $nameMatch);
+                preg_match('/AccountKey=([^;]+)/', (string) $config['connection_string'], $keyMatch);
+                $accountName = $nameMatch[1] ?? null;
+                $accountKey = $keyMatch[1] ?? null;
+
+                if ($accountName && $accountKey) {
+                    $sasHelper = new BlobSharedAccessSignatureHelper($accountName, $accountKey);
+                    $container = $config['container'];
+
+                    $disk->buildTemporaryUrlsUsing(
+                        function (string $path, \DateTimeInterface $expiration, array $options = []) use (
+                            $sasHelper, $accountName, $container
+                        ): string {
+                            $token = $sasHelper->generateBlobServiceSharedAccessSignatureToken(
+                                BlobResources::RESOURCE_TYPE_BLOB,
+                                "{$container}/{$path}",
+                                'r',
+                                $expiration,
+                            );
+
+                            return "https://{$accountName}.blob.core.windows.net/{$container}/{$path}?{$token}";
+                        },
+                    );
+                }
+            }
+
+            return $disk;
         });
 
         Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);
