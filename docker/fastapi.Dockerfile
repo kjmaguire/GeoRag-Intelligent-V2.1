@@ -232,12 +232,11 @@ RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true
 # convention above and sidesteps relying on /tmp surviving into the runtime
 # container. The deployed Container Apps env vars must point HF_HOME /
 # TRANSFORMERS_CACHE at this same path for the bake to actually be read.
-RUN python3 -c "\
-from transformers import AutoModelForMaskedLM, AutoTokenizer; \
-name = 'naver/splade-cocondenser-ensembledistil'; \
-rev = '49cf4c7b0db5b870a401ddf5e2669993ef3699c7'; \
-AutoTokenizer.from_pretrained(name, revision=rev, trust_remote_code=False, cache_dir='/opt/hf_cache'); \
-AutoModelForMaskedLM.from_pretrained(name, revision=rev, trust_remote_code=False, cache_dir='/opt/hf_cache')"
+#
+# A standalone script rather than an inline `python -c` — ACR's dependency
+# scanner chokes on a multi-line backslash-continued python -c inside a RUN
+# instruction ("unable to understand line ...: exit status 1").
+RUN python3 scripts/bake_splade_cache.py
 
 
 # =============================================================================
