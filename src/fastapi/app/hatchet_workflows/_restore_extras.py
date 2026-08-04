@@ -17,7 +17,6 @@ already-decoded — the caller is responsible for the S3 GET).
 from __future__ import annotations
 
 import base64
-import contextlib
 import gzip
 import io
 import json
@@ -81,90 +80,17 @@ async def restore_neo4j(
     then MERGE relationships keyed on the (source, target, type) tuple.
 
     Returns ``{nodes_merged: int, rels_merged: int, error: str | None}``.
+
+    B1 (2026-07-28): Neo4j was removed from the stack. This helper stays
+    in place for the restore workflow's call signature but now returns
+    the same fail-open shape the try/except used to produce when the
+    driver was unreachable, without the wasted connection attempt.
     """
-    try:
-        from neo4j import AsyncGraphDatabase
-    except ImportError:
-        return {"nodes_merged": 0, "rels_merged": 0, "error": "neo4j driver missing"}
-
-    host = os.environ.get("NEO4J_HOST", "neo4j")
-    port = int(os.environ.get("NEO4J_PORT", "7687"))
-    user = os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "")
-    if not password:
-        return {"nodes_merged": 0, "rels_merged": 0, "error": "NEO4J_PASSWORD not set"}
-
-    driver = AsyncGraphDatabase.driver(f"bolt://{host}:{port}", auth=(user, password))
-    nodes_merged = 0
-    rels_merged = 0
-    # Map: source neo4j_id → freshly-MERGEd target neo4j_id
-    id_map: dict[int, int] = {}
-    try:
-        async with driver.session() as session:
-            for n in nodes:
-                src_nid = int(n["neo4j_id"])
-                labels = n.get("labels") or []
-                props = dict(n.get("properties") or {})
-                # Force workspace_id property even if upstream forgot it
-                props["workspace_id"] = workspace_id
-
-                # Build a label string (escaped). Without labels, default to :Node.
-                label_str = ":".join(labels) if labels else "Node"
-
-                # MERGE on natural id if present, else fall back to a
-                # synthetic "export_origin_id" so re-imports converge.
-                merge_key = props.get("id") or f"export-{src_nid}"
-                props["import_origin_id"] = merge_key
-
-                result = await session.run(
-                    f"""
-                    MERGE (n:{label_str} {{ import_origin_id: $merge_key, workspace_id: $ws }})
-                    SET n = $props
-                    RETURN id(n) AS nid
-                    """,
-                    merge_key=merge_key, ws=workspace_id, props=props,
-                )
-                row = await result.single()
-                if row and row.get("nid") is not None:
-                    id_map[src_nid] = int(row["nid"])
-                    nodes_merged += 1
-
-            for r in rels:
-                sid = int(r["start_neo4j_id"])
-                eid = int(r["end_neo4j_id"])
-                rtype = str(r["type"])
-                # Skip if either endpoint didn't merge (filter referred to a
-                # node outside the workspace scope, which shouldn't happen
-                # given the export filter but guard anyway).
-                if sid not in id_map or eid not in id_map:
-                    continue
-                # Cypher doesn't parameterise relationship type — sanitize.
-                if not rtype.replace("_", "").isalnum():
-                    continue
-                target_sid = id_map[sid]
-                target_eid = id_map[eid]
-                await session.run(
-                    f"""
-                    MATCH (a) WHERE id(a) = $sid
-                    MATCH (b) WHERE id(b) = $eid
-                    MERGE (a)-[r:{rtype}]->(b)
-                    SET r = $props
-                    """,
-                    sid=target_sid, eid=target_eid,
-                    props=dict(r.get("properties") or {}),
-                )
-                rels_merged += 1
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "nodes_merged": nodes_merged,
-            "rels_merged":  rels_merged,
-            "error":        f"neo4j_restore_failed: {type(exc).__name__}: {exc}",
-        }
-    finally:
-        with contextlib.suppress(Exception):
-            await driver.close()
-
-    return {"nodes_merged": nodes_merged, "rels_merged": rels_merged, "error": None}
+    return {
+        "nodes_merged": 0,
+        "rels_merged": 0,
+        "error": "neo4j was removed from the stack (B1, 2026-07-28)",
+    }
 
 
 # ---------------------------------------------------------------------------

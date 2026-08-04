@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
 from app.agents import AgentContext, georag_agent
@@ -211,31 +210,11 @@ async def store_reconciliation_run(
     except Exception as exc:
         logger.warning("cross_store_drift: qdrant query failed: %s", exc)
 
+    # B1 (2026-07-28): Neo4j was removed from the stack. neo4j_count stays
+    # None (the same fail-open value the try/except used to produce when
+    # the driver was unreachable) so the drift finding below degrades to
+    # "no comparison possible" instead of attempting a doomed connection.
     neo4j_count = None
-    try:
-        from neo4j import AsyncGraphDatabase  # noqa: PLC0415
-
-        driver = AsyncGraphDatabase.driver(
-            os.environ.get("NEO4J_URI", "bolt://neo4j:7687"),
-            auth=(
-                os.environ.get("NEO4J_USERNAME", "neo4j"),
-                os.environ.get("NEO4J_PASSWORD", ""),
-            ),
-        )
-        try:
-            async with driver.session() as session:
-                res = await session.run(
-                    "MATCH (n:Project {workspace_id: $ws}) RETURN count(n) AS c",
-                    ws=str(ctx.workspace_id),
-                )
-                rec = await res.single()
-                neo4j_count = rec["c"] if rec else 0
-        finally:
-            await driver.close()
-    except ImportError:
-        logger.info("cross_store_drift: neo4j driver not installed — skip")
-    except Exception as exc:
-        logger.warning("cross_store_drift: neo4j query failed: %s", exc)
 
     def _drift_finding(pg: int | None, store: int | None) -> dict[str, Any]:
         if pg is None or store is None:

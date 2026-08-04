@@ -28,7 +28,6 @@ This graduation lands two slices:
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -158,56 +157,14 @@ async def _count_neo4j_nodes(workspace_str: str) -> tuple[int, str | None]:
     Per the Phase F graph_entities reference: nodes carry `project_id`
     not `workspace_id`, but indirectly belong to a workspace via the
     Project node. We count by either property when present.
+
+    B1 (2026-07-28): Neo4j was removed from the stack. This helper stays
+    in place for the dry-run consistency check's call signature but now
+    returns the same fail-open ``(-1, reason)`` shape the try/except used
+    to produce when the driver was unreachable, without the wasted
+    connection attempt.
     """
-    try:
-        from neo4j import AsyncGraphDatabase
-    except ImportError:
-        return -1, "neo4j driver not available in this worker pool"
-
-    host = os.environ.get("NEO4J_HOST", "neo4j")
-    port = int(os.environ.get("NEO4J_PORT", "7687"))
-    user = os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "")
-    if not password:
-        return -1, "NEO4J_PASSWORD not set"
-
-    driver = AsyncGraphDatabase.driver(
-        f"bolt://{host}:{port}", auth=(user, password)
-    )
-    try:
-        async with driver.session() as session:
-            # Count any node that names this workspace (direct or via project).
-            result = await session.run(
-                """
-                MATCH (n)
-                WHERE n.workspace_id = $ws OR n.project_id IN [
-                    p.project_id |
-                    p IN [
-                        x IN [(x:Project {workspace_id: $ws}) | x] | x
-                    ]
-                ]
-                RETURN count(DISTINCT n) AS n
-                """,
-                ws=workspace_str,
-            )
-            row = await result.single()
-            return int(row["n"] if row and row.get("n") is not None else 0), None
-    except Exception:
-        # Try a simpler fallback — count nodes whose workspace_id literally matches.
-        try:
-            async with driver.session() as session:
-                result = await session.run(
-                    "MATCH (n) WHERE n.workspace_id = $ws "
-                    "RETURN count(n) AS n",
-                    ws=workspace_str,
-                )
-                row = await result.single()
-                return int(row["n"] if row and row.get("n") is not None else 0), None
-        except Exception as exc2:
-            return -1, f"neo4j_count_failed: {type(exc2).__name__}: {exc2}"
-    finally:
-        with contextlib.suppress(Exception):
-            await driver.close()
+    return -1, "neo4j was removed from the stack (B1, 2026-07-28)"
 
 
 async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:

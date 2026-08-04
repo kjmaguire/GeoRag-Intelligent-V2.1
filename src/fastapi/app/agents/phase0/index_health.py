@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
 from app.agents import AgentContext, georag_agent
@@ -243,51 +242,10 @@ async def index_health_check(
         logger.warning("qdrant reachability probe failed: %s", exc)
 
     # ---- 6. Neo4j page-cache hit ratio -------------------------------------
-    try:
-        from neo4j import AsyncGraphDatabase  # noqa: PLC0415
-
-        driver = AsyncGraphDatabase.driver(
-            os.environ.get("NEO4J_URI", "bolt://neo4j:7687"),
-            auth=(
-                os.environ.get("NEO4J_USERNAME", "neo4j"),
-                os.environ.get("NEO4J_PASSWORD", ""),
-            ),
-        )
-        try:
-            async with driver.session() as session:
-                # The page cache MBean in Neo4j 5+ is at
-                # org.neo4j:instance=kernel#0,name=Page cache.
-                res = await session.run(
-                    "CALL dbms.queryJmx('org.neo4j:instance=kernel#0,name=Page cache')"
-                    " YIELD attributes RETURN attributes['PageCacheHitRatio'] AS r"
-                )
-                rec = await res.single()
-                ratio = (rec["r"]["value"] if rec and rec["r"] else None)
-                summary["neo4j_page_cache_hit_ratio"] = (
-                    round(float(ratio), 4) if ratio is not None else None
-                )
-                if ratio is not None and float(ratio) < 0.90:
-                    await rt.pg_pool.execute(
-                        """
-                        INSERT INTO silver.corpus_health_findings
-                            (workspace_id, finding_type, severity, target_schema, target_table,
-                             payload, status)
-                        VALUES ($1, 'neo4j_page_cache_low', 'medium', 'neo4j', 'page_cache',
-                                $2::jsonb, 'open')
-                        """,
-                        ctx.workspace_id,
-                        json.dumps({
-                            "hit_ratio": round(float(ratio), 4),
-                            "threshold": 0.90,
-                            "suggested_action": "increase NEO4J_PAGECACHE_SIZE",
-                        }),
-                    )
-        finally:
-            await driver.close()
-    except ImportError:
-        summary["neo4j_page_cache_hit_ratio"] = "neo4j driver not installed"
-    except Exception as exc:
-        summary["neo4j_page_cache_hit_ratio"] = f"error: {exc}"
-        logger.warning("neo4j page-cache probe failed: %s", exc)
+    # B1 (2026-07-28): Neo4j was removed from the stack. This probe stays
+    # in the summary shape callers expect but is now a permanent no-op —
+    # same fail-open value the try/except used to produce on failure,
+    # without the wasted connection attempt.
+    summary["neo4j_page_cache_hit_ratio"] = "neo4j was removed from the stack (B1, 2026-07-28)"
 
     return summary

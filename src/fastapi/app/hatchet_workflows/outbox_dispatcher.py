@@ -150,30 +150,14 @@ async def _dispatch_qdrant(row: asyncpg.Record) -> tuple[str, str | None]:
 
 
 async def _dispatch_neo4j(row: asyncpg.Record) -> tuple[str, str | None]:
-    from neo4j import AsyncGraphDatabase
-
-    payload = _payload(row)
-    cypher = payload.get("cypher")
-    if cypher is None:
-        return "permanent_failure", "missing 'cypher' in payload"
-    params = payload.get("params") or {}
-
-    uri = (
-        f"bolt://{os.environ.get('NEO4J_HOST', 'neo4j')}:"
-        f"{os.environ.get('NEO4J_PORT', '7687')}"
-    )
-    user = os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "")
-
-    driver = AsyncGraphDatabase.driver(uri, auth=(user, password))
-    try:
-        async with driver.session() as session:
-            await session.run(cypher, **params)
-        return "success", None
-    except Exception as exc:
-        return "transient_failure", f"{type(exc).__name__}: {exc}"
-    finally:
-        await driver.close()
+    """B1 (2026-07-28): Neo4j was removed from the stack. Stays registered
+    under target_store='neo4j' so any lingering outbox rows still route
+    somewhere, but is now a permanent no-op returning the same
+    transient_failure the try/except used to produce when the driver was
+    unreachable — the caller's existing dead-letter-after-N-attempts path
+    handles it identically, just without the wasted connection attempt.
+    """
+    return "transient_failure", "neo4j was removed from the stack (B1, 2026-07-28)"
 
 
 async def _dispatch_seaweedfs(row: asyncpg.Record) -> tuple[str, str | None]:
