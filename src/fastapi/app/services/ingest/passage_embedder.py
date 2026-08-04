@@ -177,14 +177,25 @@ async def embed_pending_passages(
     # ── Load passage rows ─────────────────────────────────────────
     pg_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        # REC#2 Phase-2 (2026-06-03) — bind_workspace_scope via the
-        # canonical helper. Pre-migration this site had a duplicate
-        # set_config call (lines 152-154 in git history); collapsed to
-        # a single bind. Phase-2 also tightens the SET LOCAL scope flag
-        # from `false` (session — wrong under PgBouncer) to `true`
-        # (transaction-scoped — correct).
+        # REC#2 Phase-2 (2026-06-03) note (since corrected): that migration
+        # tightened this to is_local=true (`SET LOCAL`), reasoning it was
+        # transaction-scoped-and-therefore-safer. It wasn't — `pg_conn` here
+        # is a dedicated, non-pooled connection with no wrapping transaction
+        # (same fact the sibling app.project_id bind below already documents
+        # and handles correctly with is_local=false). `SET LOCAL` outside a
+        # transaction block is a silent no-op in Postgres, so app.workspace_id
+        # was never actually set on this connection — and because
+        # database/raw/phase0's tenant_isolation policy fails OPEN when the
+        # GUC reads NULL, every embed_pending_passages sweep silently read
+        # and embedded EVERY workspace's unembedded passages, tagged in
+        # Qdrant with the caller's workspace_id (line ~292 below) rather than
+        # each row's true owner — a real cross-tenant content leak, not a
+        # theoretical one. is_local=false matches this connection's actual
+        # lifecycle: no transaction to scope to, so bind to the session,
+        # which lives exactly as long as `pg_conn` does.
         await bind_workspace_scope(
             pg_conn, workspace_id=workspace_id, site="passage_embedder",
+            is_local=False,
         )
         if project_id:
             # Session-scoped (false) is correct here, not a hazard: `pg_conn`
