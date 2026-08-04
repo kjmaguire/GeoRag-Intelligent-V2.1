@@ -365,10 +365,15 @@ export default function FoundryNewProject() {
                 setSubmitProgress({ done, total: uploadable.length });
             }
 
-            // 3. Land the user on the project overview.
-            // Route is /projects/{slug} (see routes/web.php — OverviewController),
-            // NOT /foundry/projects/{id} (that prefix only exists for /new).
-            window.location.href = `/projects/${projectSlug ?? projectId}`;
+            // 3. Land the user on Ingestion Runs, not the bare Overview —
+            // OCR/embedding is async (Hatchet workflow) and wasn't done yet
+            // just because the upload loop finished. Overview only picks up
+            // ingestion progress via its own 5s/30s poll banner, reached a
+            // full navigation later than this; Ingestion Runs shows live
+            // per-file OCR/parse/embed status immediately (5s poll, see
+            // routes/web.php's foundry.ingestion-runs route), closing the
+            // gap between "upload finished" and "processing is visible".
+            window.location.href = `/projects/${projectSlug ?? projectId}/ingestion-runs`;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             setSubmitError(msg);
