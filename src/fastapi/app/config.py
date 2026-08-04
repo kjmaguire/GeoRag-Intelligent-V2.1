@@ -835,7 +835,13 @@ class Settings(BaseSettings):
 
     TIMEOUT_POSTGIS_S: float = 5.0
     TIMEOUT_NEO4J_S: float = 3.0
-    TIMEOUT_QDRANT_S: float = 2.0
+    # 2.0s was tuned for same-host/local-docker-network Qdrant. On Azure
+    # Container Apps, Qdrant sits behind the internal HTTPS ingress
+    # (qdrant_conn.py) — a real TLS handshake plus the hybrid dense+sparse
+    # query over that hop routinely exceeds 2s, so search_documents silently
+    # timed out on every query post-cutover (empty results, not an error).
+    # 6.0s leaves headroom under TIMEOUT_GATHER_S=8.0 below.
+    TIMEOUT_QDRANT_S: float = 6.0
     # Latency-fix follow-up — separate budget for the CPU-bound reranker.
     # Previously folded into TIMEOUT_QDRANT_S, which meant the bge-reranker
     # could blow the 2s budget and the wait_for would drop the entire
