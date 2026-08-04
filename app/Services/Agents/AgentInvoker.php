@@ -160,7 +160,9 @@ class AgentInvoker
         }
 
         $row = DB::selectOne(
-            'SELECT * FROM workspace.agent_timeouts WHERE agent_name = ?',
+            'SELECT agent_name, risk_tier, soft_timeout_ms, hard_timeout_ms, '
+            .'retry_count, circuit_breaker_scope, failure_threshold, cool_down_seconds '
+            .'FROM workspace.agent_timeouts WHERE agent_name = ?',
             [$name],
         );
 
