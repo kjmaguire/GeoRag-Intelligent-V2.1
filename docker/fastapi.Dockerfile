@@ -325,12 +325,22 @@ ENV PATH=/opt/tesseract/bin:$PATH \
 
 # ---------------------------------------------------------------------------
 # Baked SPLADE++ weights from the builder stage (2026-08-04, see the RUN
-# step above for why). HF_HOME/TRANSFORMERS_CACHE default here so a plain
-# `docker run` with no override already works; Azure Container Apps'
-# deployed env vars must be updated to match this path too (see commit).
+# step above for why).
+#
+# Gotcha found live, after the first deploy of this fix still re-downloaded
+# on every request: `from_pretrained(cache_dir='/opt/hf_cache')` at build
+# time writes files directly to /opt/hf_cache/models--org--name/... , but
+# huggingface_hub does NOT read HF_HOME as that path directly — it derives
+# the actual cache root as f"{HF_HOME}/hub" (HF_HUB_CACHE's real default).
+# Setting only HF_HOME=/opt/hf_cache made the runtime look in
+# /opt/hf_cache/hub/models--..., which doesn't exist, so it silently fell
+# through to a fresh network download every time regardless of the bake.
+# HF_HUB_CACHE set explicitly bypasses that derivation and points straight
+# at where the bake step actually wrote the files.
 # ---------------------------------------------------------------------------
 COPY --from=builder /opt/hf_cache /opt/hf_cache
 ENV HF_HOME=/opt/hf_cache \
+    HF_HUB_CACHE=/opt/hf_cache \
     TRANSFORMERS_CACHE=/opt/hf_cache
 
 # ---------------------------------------------------------------------------
