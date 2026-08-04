@@ -18,18 +18,22 @@ import os
 import asyncpg
 from qdrant_client import AsyncQdrantClient
 
+from app.services.qdrant_conn import qdrant_client_kwargs
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
 logger = logging.getLogger(__name__)
 
 PG_DSN = os.environ.get("DATABASE_URL", "postgresql://georag:georag_dev_password@pgbouncer:6432/georag")
-QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant")
 EXPECTED_MODEL = os.environ.get("EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5")
 
 
 async def main():
     logger.info("Connecting to PostgreSQL and Qdrant...")
     pg = await asyncpg.connect(PG_DSN)
-    qdrant = AsyncQdrantClient(host=QDRANT_HOST, port=6333)
+    # qdrant_client_kwargs() centralizes host/port/https/api_key — this
+    # script used to hardcode host+port only, which cannot reach Azure
+    # Container Apps' internal ingress (HTTPS-only on 443).
+    qdrant = AsyncQdrantClient(**qdrant_client_kwargs())
 
     total_deleted = 0
 

@@ -69,21 +69,26 @@ UPSERT_BATCH = 50   # points per upsert call
 
 
 def _load_model():  # type: ignore[return]
-    """Load the bge-small-en-v1.5 model and run a warm-up encode."""
-    logger.info("Loading embedding model: %s", EMBEDDING_MODEL)
+    """Load the configured embedding model and run a warm-up encode.
+
+    Routes through app.services.embedding.get_embedding_model() — same
+    EMBEDDING_BACKEND precedence app/main.py and passage_embedder.py already
+    use. This script used to hardcode a local Qwen3-Embedding-0.6B load
+    regardless of backend, so EMBEDDING_BACKEND=foundry deployments (this
+    Azure cutover included) would re-embed the corpus with the WRONG model —
+    the exact "surface-level success, retrieval refused every question"
+    failure mode this file's own module docstring warns about, just moved
+    one step earlier in the pipeline.
+    """
     t0 = time.perf_counter()
     try:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        # Audit 2026-06-29: device is env-tunable. CPU re-embed of 9k Qwen3
-        # vectors is impractically slow + memory-spiky; REEMBED_DEVICE=cuda runs
-        # it in minutes when GPU headroom is freed (e.g. vllm-vl paused).
-        _device = os.environ.get("REEMBED_DEVICE", "cpu")
-        model = SentenceTransformer(EMBEDDING_MODEL, device=_device)
+        model = get_embedding_model(EMBEDDING_MODEL)
         model.encode("warm-up", normalize_embeddings=True)
         elapsed = time.perf_counter() - t0
         dim = model.get_sentence_embedding_dimension()
-        logger.info("Model ready — dim=%d, loaded in %.2fs", dim, elapsed)
+        logger.info("Model ready — dim=%s, loaded in %.2fs", dim, elapsed)
         return model
     except Exception:
         logger.exception("Failed to load model — aborting")
@@ -91,11 +96,19 @@ def _load_model():  # type: ignore[return]
 
 
 def _qdrant_client():  # type: ignore[return]
-    """Create a synchronous Qdrant client (sync is fine for a one-shot script)."""
+    """Create a synchronous Qdrant client (sync is fine for a one-shot script).
+
+    Routes through app.services.qdrant_conn.qdrant_client_kwargs() — this
+    script used to build host/port directly and never picked up https/
+    api_key, so it could not reach Azure Container Apps' internal ingress
+    (HTTPS-only on 443) at all.
+    """
     try:
         from qdrant_client import QdrantClient  # noqa: PLC0415
 
-        client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=30)
+        from app.services.qdrant_conn import qdrant_client_kwargs  # noqa: PLC0415
+
+        client = QdrantClient(**qdrant_client_kwargs(), timeout=30)
         # Quick health check.
         collections = client.get_collections()
         names = [c.name for c in collections.collections]

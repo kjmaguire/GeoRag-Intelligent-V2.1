@@ -48,6 +48,7 @@ from starlette.responses import Response  # for /metrics return-type resolution
 
 from app.config import settings
 from app.logging_config import configure_json_logging
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 # Sentry — initialised at import time so import-side errors are captured.
 # The FastAPI / Starlette / asyncpg / redis / httpx integrations are
@@ -320,16 +321,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 2. Async Qdrant client
     # -------------------------------------------------------------------------
     logger.info("Connecting Qdrant client -> %s:%s", settings.QDRANT_HOST, settings.QDRANT_PORT)
+    # qdrant_client_kwargs() is the single source of truth for host/port/
+    # https/api_key (11 other call sites already use it) — this was the one
+    # remaining construction site still building the dict inline, agreeing
+    # with the helper only by coincidence of matching settings values.
     qdrant_client = AsyncQdrantClient(
-        host=settings.QDRANT_HOST,
-        port=settings.QDRANT_PORT,
-        https=settings.QDRANT_HTTPS,
-        # Qdrant review #9 — optional API key for prod. Empty string in
-        # single-tenant dev posture (network isolation handles auth) —
-        # the qdrant-client lib treats "" as "no auth header", which is
-        # exactly what we want when the Qdrant container's own
-        # QDRANT__SERVICE__API_KEY is also empty.
-        api_key=settings.QDRANT_API_KEY or None,
+        **qdrant_client_kwargs(),
         timeout=int(settings.TIMEOUT_QDRANT_S),
         check_compatibility=False,  # avoids a blocking HTTP call at startup
     )
