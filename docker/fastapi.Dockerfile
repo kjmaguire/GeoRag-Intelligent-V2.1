@@ -205,6 +205,40 @@ RUN pip install --no-cache-dir slowapi>=0.1.9
 COPY fastapi/ .
 RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Bake the SPLADE++ sparse-encoder weights into the image (2026-08-04).
+#
+# app/services/sparse_encoder.py has no Foundry equivalent — CLAUDE.md:
+# "SPLADE++ sparse retrieval has no Foundry equivalent and stays self-hosted
+# either way" — so every deployment topology loads this model locally via
+# AutoModelForMaskedLM.from_pretrained(), with no cache_dir override, reading
+# whatever HF_HOME/TRANSFORMERS_CACHE point at.
+#
+# On Azure Container Apps that env var points at /tmp/hf_cache, which is
+# NOT baked into the image and has no persistent volume behind it — every
+# fresh replica (a manual redeploy, a scale-out event, or the nightly
+# shutdown-scheduler's restart) starts with an empty cache and must
+# re-download the ~440 MB model from HuggingFace Hub before it can serve a
+# single real query. With UVICORN_WORKERS processes each racing to do this
+# independently, and Azure egress bandwidth to contend with, this was
+# observed live taking anywhere from ~2s (occasionally already warm) to
+# >2 minutes (a `python -c "from app.services.sparse_encoder import
+# encode_sparse; encode_sparse('x')"` call inside the running container hung
+# past a 2-minute cap) — well past any query-level timeout budget, and the
+# reason chat answers were completing with empty citations rather than
+# erroring: search_documents timed out mid-encode and returned zero chunks.
+#
+# Baking to /opt (not /tmp/hf_cache) mirrors this file's own Tesseract
+# convention above and sidesteps relying on /tmp surviving into the runtime
+# container. The deployed Container Apps env vars must point HF_HOME /
+# TRANSFORMERS_CACHE at this same path for the bake to actually be read.
+RUN python3 -c "\
+from transformers import AutoModelForMaskedLM, AutoTokenizer; \
+name = 'naver/splade-cocondenser-ensembledistil'; \
+rev = '49cf4c7b0db5b870a401ddf5e2669993ef3699c7'; \
+AutoTokenizer.from_pretrained(name, revision=rev, trust_remote_code=False, cache_dir='/opt/hf_cache'); \
+AutoModelForMaskedLM.from_pretrained(name, revision=rev, trust_remote_code=False, cache_dir='/opt/hf_cache')"
+
 
 # =============================================================================
 # Stage 2 — runtime
@@ -289,6 +323,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=tesseract-builder /opt/tesseract /opt/tesseract
 ENV PATH=/opt/tesseract/bin:$PATH \
     TESSDATA_PREFIX=/opt/tesseract/share/tessdata
+
+# ---------------------------------------------------------------------------
+# Baked SPLADE++ weights from the builder stage (2026-08-04, see the RUN
+# step above for why). HF_HOME/TRANSFORMERS_CACHE default here so a plain
+# `docker run` with no override already works; Azure Container Apps'
+# deployed env vars must be updated to match this path too (see commit).
+# ---------------------------------------------------------------------------
+COPY --from=builder /opt/hf_cache /opt/hf_cache
+ENV HF_HOME=/opt/hf_cache \
+    TRANSFORMERS_CACHE=/opt/hf_cache
 
 # ---------------------------------------------------------------------------
 # Copy compiled Python environment from builder.
