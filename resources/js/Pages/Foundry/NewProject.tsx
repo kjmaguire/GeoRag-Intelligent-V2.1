@@ -454,7 +454,7 @@ export default function FoundryNewProject() {
                                 <p className="text-xs" style={{ color: 'var(--fg-2)' }}>
                                     Queue any files you already have. Once the project is created they're streamed to the bronze
                                     bucket and picked up by the Dagster ingestion sensor within ~5&nbsp;minutes.
-                                    Per-file cap: 100&nbsp;MB.
+                                    Per-file cap: 6&nbsp;GB.
                                 </p>
 
                                 {/* Drop zone — click opens individual file picker */}
@@ -567,7 +567,7 @@ export default function FoundryNewProject() {
                                                     <span style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}> · {queueSummary.unsupported.length} unsupported</span>
                                                 )}
                                                 {queueSummary.oversize.length > 0 && (
-                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over 100 MB</span>
+                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over 6 GB</span>
                                                 )}
                                             </div>
                                             <div className="flex-1" />
@@ -662,7 +662,7 @@ export default function FoundryNewProject() {
                                         )}
                                         {queueSummary.oversize.length > 0 && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}{queueSummary.oversize.length} over 100 MB will be skipped
+                                                {' · '}{queueSummary.oversize.length} over 6 GB will be skipped
                                             </span>
                                         )}
                                     </span>
