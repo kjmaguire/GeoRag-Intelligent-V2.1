@@ -6,6 +6,7 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Policies\DashboardPolicy;
+use App\Services\Azure\ManagedIdentityTokenProvider;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Filesystem\FilesystemAdapter as LaravelFilesystemAdapter;
@@ -52,7 +53,40 @@ class AppServiceProvider extends ServiceProvider
         // unconditionally; it's only instantiated when a disk config actually
         // resolves 'driver' => 'azure' (see config/filesystems.php).
         Storage::extend('azure', function ($app, $config) {
-            $client = BlobRestProxy::createBlobService($config['connection_string']);
+            // Managed-identity mode — no AccountKey ever touches this process.
+            // The blob client authenticates with an Azure AD token fetched
+            // from the Container App's system-assigned identity via IMDS
+            // (see ManagedIdentityTokenProvider). Opt-in via
+            // AZURE_STORAGE_AUTH_MODE=managed_identity; default stays
+            // 'connection_string' (today's account-key behavior, unchanged)
+            // so existing deployments are unaffected.
+            //
+            // SDK limitation: microsoft/azure-storage-blob ^1.1 has no
+            // user-delegation-key SAS support (the AAD-token equivalent of
+            // account-key SAS), so temporaryUrl() below still needs
+            // AccountKey to sign presigned export/figure download URLs even
+            // in managed-identity mode. That key is used ONLY for local SAS
+            // signing — it never authenticates the actual blob read/write
+            // traffic, which is 100% managed-identity in this mode. If
+            // AZURE_STORAGE_CONNECTION_STRING isn't also set alongside
+            // AZURE_STORAGE_AUTH_MODE=managed_identity, the buildTemporaryUrlsUsing
+            // callback below never gets registered and temporaryUrl() throws
+            // Flysystem's own UnableToGenerateTemporaryUrl — loud failure,
+            // not a silently broken URL.
+            if (($config['auth_mode'] ?? 'connection_string') === 'managed_identity') {
+                $token = $app->make(ManagedIdentityTokenProvider::class)->getToken();
+                $client = BlobRestProxy::createBlobServiceWithTokenCredential(
+                    $token,
+                    // DefaultEndpointsProtocol is required here even though it's
+                    // always https — omitting it leaves the SDK's internal
+                    // $scheme empty, producing a malformed "http://://..."
+                    // endpoint URI (caught by AzureBlobDiskTest's managed-identity
+                    // coverage).
+                    'DefaultEndpointsProtocol=https;AccountName='.$config['account_name'],
+                );
+            } else {
+                $client = BlobRestProxy::createBlobService($config['connection_string']);
+            }
             $adapter = new AzureBlobStorageAdapter($client, $config['container']);
 
             $disk = new LaravelFilesystemAdapter(new Flysystem($adapter), $adapter, $config);

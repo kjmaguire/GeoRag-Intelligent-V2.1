@@ -74,6 +74,10 @@ return [
             // prefix).
             'connection_string' => env('AZURE_STORAGE_CONNECTION_STRING'),
             'container' => env('AZURE_STORAGE_CONTAINER_BRONZE', 'bronze'),
+            // Managed-identity auth (opt-in) — see AppServiceProvider's
+            // Storage::extend('azure', ...) closure for the full contract.
+            'auth_mode' => env('AZURE_STORAGE_AUTH_MODE', 'connection_string'),
+            'account_name' => env('AZURE_STORAGE_ACCOUNT_NAME'),
         ],
 
         // Read-only access to the bronze bucket — used to mint presigned
@@ -98,6 +102,8 @@ return [
             'report' => false,
             'connection_string' => env('AZURE_STORAGE_CONNECTION_STRING'),
             'container' => env('AZURE_STORAGE_CONTAINER_BRONZE', 'bronze'),
+            'auth_mode' => env('AZURE_STORAGE_AUTH_MODE', 'connection_string'),
+            'account_name' => env('AZURE_STORAGE_ACCOUNT_NAME'),
         ],
 
         // Dedicated bucket for generated export artifacts (ZIP, CSV, GeoPackage
@@ -121,6 +127,8 @@ return [
             'report' => false,
             'connection_string' => env('AZURE_STORAGE_CONNECTION_STRING'),
             'container' => env('AZURE_STORAGE_CONTAINER_EXPORTS', 'exports'),
+            'auth_mode' => env('AZURE_STORAGE_AUTH_MODE', 'connection_string'),
+            'account_name' => env('AZURE_STORAGE_ACCOUNT_NAME'),
         ],
 
     ],
