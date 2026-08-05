@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Policies\DashboardPolicy;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Filesystem\FilesystemAdapter as LaravelFilesystemAdapter;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
 use Illuminate\Log\Events\MessageLogged;
@@ -16,7 +17,13 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\ServiceProvider;
+use League\Flysystem\AzureBlobStorage\AzureBlobStorageAdapter;
+use League\Flysystem\Filesystem as Flysystem;
+use MicrosoftAzure\Storage\Blob\BlobRestProxy;
+use MicrosoftAzure\Storage\Blob\BlobSharedAccessSignatureHelper;
+use MicrosoftAzure\Storage\Blob\Internal\BlobResources;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -40,6 +47,53 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Azure Blob disk driver — mirrors STORAGE_BACKEND=azure_blob on the
+        // Python side (georag_object_storage/factory.py). Registered
+        // unconditionally; it's only instantiated when a disk config actually
+        // resolves 'driver' => 'azure' (see config/filesystems.php).
+        Storage::extend('azure', function ($app, $config) {
+            $client = BlobRestProxy::createBlobService($config['connection_string']);
+            $adapter = new AzureBlobStorageAdapter($client, $config['container']);
+
+            $disk = new LaravelFilesystemAdapter(new Flysystem($adapter), $adapter, $config);
+
+            // AzureBlobStorageAdapter implements neither getTemporaryUrl() nor
+            // League's TemporaryUrlGenerator interface, so temporaryUrl() would
+            // otherwise throw "This driver does not support creating temporary
+            // URLs" — breaking every presigned-download call site (report/
+            // figure exports, GenerateExportJob, FigureResolver). Register a
+            // SAS-token callback so it behaves the same as the s3 disks it
+            // replaces under STORAGE_BACKEND=azure_blob.
+            if (str_contains((string) $config['connection_string'], 'AccountName=')) {
+                preg_match('/AccountName=([^;]+)/', (string) $config['connection_string'], $nameMatch);
+                preg_match('/AccountKey=([^;]+)/', (string) $config['connection_string'], $keyMatch);
+                $accountName = $nameMatch[1] ?? null;
+                $accountKey = $keyMatch[1] ?? null;
+
+                if ($accountName && $accountKey) {
+                    $sasHelper = new BlobSharedAccessSignatureHelper($accountName, $accountKey);
+                    $container = $config['container'];
+
+                    $disk->buildTemporaryUrlsUsing(
+                        function (string $path, \DateTimeInterface $expiration, array $options = []) use (
+                            $sasHelper, $accountName, $container
+                        ): string {
+                            $token = $sasHelper->generateBlobServiceSharedAccessSignatureToken(
+                                BlobResources::RESOURCE_TYPE_BLOB,
+                                "{$container}/{$path}",
+                                'r',
+                                $expiration,
+                            );
+
+                            return "https://{$accountName}.blob.core.windows.net/{$container}/{$path}?{$token}";
+                        },
+                    );
+                }
+            }
+
+            return $disk;
+        });
+
         Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);
         Gate::define('viewProject', [DashboardPolicy::class, 'viewProject']);
 

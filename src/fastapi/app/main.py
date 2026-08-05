@@ -48,6 +48,7 @@ from starlette.responses import Response  # for /metrics return-type resolution
 
 from app.config import settings
 from app.logging_config import configure_json_logging
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 # Sentry — initialised at import time so import-side errors are captured.
 # The FastAPI / Starlette / asyncpg / redis / httpx integrations are
@@ -233,6 +234,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     pg_dsn = (
         f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
         f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+        f"?sslmode={settings.POSTGRES_SSLMODE}"
     )
     logger.info(
         "Connecting asyncpg pool -> %s:%s/%s",
@@ -319,15 +321,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 2. Async Qdrant client
     # -------------------------------------------------------------------------
     logger.info("Connecting Qdrant client -> %s:%s", settings.QDRANT_HOST, settings.QDRANT_PORT)
+    # qdrant_client_kwargs() is the single source of truth for host/port/
+    # https/api_key (11 other call sites already use it) — this was the one
+    # remaining construction site still building the dict inline, agreeing
+    # with the helper only by coincidence of matching settings values.
     qdrant_client = AsyncQdrantClient(
-        host=settings.QDRANT_HOST,
-        port=settings.QDRANT_PORT,
-        # Qdrant review #9 — optional API key for prod. Empty string in
-        # single-tenant dev posture (network isolation handles auth) —
-        # the qdrant-client lib treats "" as "no auth header", which is
-        # exactly what we want when the Qdrant container's own
-        # QDRANT__SERVICE__API_KEY is also empty.
-        api_key=settings.QDRANT_API_KEY or None,
+        **qdrant_client_kwargs(),
         timeout=int(settings.TIMEOUT_QDRANT_S),
         check_compatibility=False,  # avoids a blocking HTTP call at startup
     )
@@ -522,14 +521,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # -------------------------------------------------------------------------
-    # 5. SentenceTransformer embedding model — bge-small-en-v1.5
+    # 5. Query-time embedding model
     # -------------------------------------------------------------------------
-    # BAAI/bge-small-en-v1.5 replaces all-MiniLM-L6-v2 (same 384-dim cosine,
-    # no collection recreation needed).  BGE scores 10-15% higher than MiniLM
-    # on mineral/geological queries.  The model runs on CPU — the FastAPI
-    # container has no GPU passthrough.  A single encode() call per request
-    # (query embedding only) is fast enough at CPU speeds; batch document
-    # indexing runs in the Dagster container via scripts/reembed_qdrant.py.
+    # get_embedding_model() branches on EMBEDDING_BACKEND: "foundry" returns a
+    # lightweight Cohere Embed v4 proxy (no local model, no download) — the
+    # live default (config.py's Qwen/Qwen3-Embedding-0.6B, 1024-dim, is the
+    # self-hosted fallback for operators without a Foundry backend). Batch
+    # document indexing runs through the Hatchet ingest_pdf workflow's
+    # passage_embedder, which reads the same EMBEDDING_BACKEND flag — Dagster
+    # dropped from this deployment entirely in Phase B2.
     logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL_NAME)
     _t0 = time.perf_counter()
     try:
@@ -549,8 +549,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _elapsed = time.perf_counter() - _t0
         app.state.embedding_model = embedding_model
         _loaded_dim = embedding_model.get_sentence_embedding_dimension()
+        # %s, not %d — the remote-sidecar proxy returns None for the dimension
+        # when the sidecar can't be reached, and %d would blow up the log call.
         logger.info(
-            "Embedding model ready: %s (dim=%d) loaded in %.2fs",
+            "Embedding model ready: %s (dim=%s) loaded in %.2fs",
             settings.EMBEDDING_MODEL_NAME,
             _loaded_dim,
             _elapsed,
@@ -653,42 +655,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # log + continue with RRF order. Do not fail the query.
     _t1 = time.perf_counter()
     try:
-        import os as _os  # noqa: PLC0415
-
         from app.services.reranker import (  # noqa: PLC0415
-            RERANKER_VERSION,
-            _get_reranker,
-            _RemoteReranker,
+            RERANKER_BACKEND,
+            active_reranker_version,
+            get_reranker_or_none,
         )
 
-        # 2026-06-24: when the shared reranker sidecar is configured
-        # (RERANKER_SERVICE_URL), point app.state.reranker at an HTTP proxy
-        # instead of loading a per-worker CrossEncoder copy. 6 uvicorn workers
-        # each loading a ~1 GiB model was the OOM driver; the proxy keeps the
-        # identical .predict() interface the query path already uses.
-        _svc_url = (_os.environ.get("RERANKER_SERVICE_URL") or "").strip()
-        if _svc_url:
-            _timeout = float(_os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
-            app.state.reranker = _RemoteReranker(_svc_url, _timeout)
-            app.state.reranker_version = RERANKER_VERSION
-            logger.info(
-                "Reranker via shared sidecar %s (%s) — no local model loaded",
-                _svc_url, RERANKER_VERSION,
+        # get_reranker_or_none() implements the full backend precedence:
+        # RERANKER_BACKEND=foundry (Cohere Rerank v4, no local model at all)
+        # > RERANKER_SERVICE_URL (shared sidecar HTTP proxy, avoids the
+        # per-worker OOM from 6 uvicorn workers each loading a ~1 GiB model)
+        # > in-process CrossEncoder singleton. Delegating here instead of
+        # duplicating the sidecar-vs-local branch keeps this single source
+        # of truth in services/reranker.py.
+        reranker = get_reranker_or_none()
+        _elapsed_r = time.perf_counter() - _t1
+        _version = active_reranker_version()
+        app.state.reranker = reranker
+        app.state.reranker_version = _version if reranker is not None else None
+        if reranker is None:
+            logger.warning(
+                "Reranker unavailable (backend=%s) — rerank step will be "
+                "skipped (RRF order used)",
+                RERANKER_BACKEND,
             )
         else:
             logger.info(
-                "Loading cross-encoder reranker: %s version=%s",
-                "BAAI/bge-reranker-base",
-                RERANKER_VERSION,
-            )
-            reranker = _get_reranker()  # warms the lru_cache singleton
-            _elapsed_r = time.perf_counter() - _t1
-            app.state.reranker = reranker
-            app.state.reranker_version = RERANKER_VERSION
-            logger.info(
-                "Reranker model ready: %s loaded in %.2fs",
-                RERANKER_VERSION,
-                _elapsed_r,
+                "Reranker ready: backend=%s version=%s loaded in %.2fs",
+                RERANKER_BACKEND, _version, _elapsed_r,
             )
     except Exception:
         logger.exception(
@@ -731,15 +725,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # storage-abstraction plan's PR4; LocalFsBronzeStore is a fallback for a
     # bare dev shell that isn't running the full docker-compose stack.
     try:
-        from georag_object_storage import StorageConfig  # noqa: PLC0415
+        import os as _os  # noqa: PLC0415
 
         from app.services.bronze_store import LocalFsBronzeStore, S3BronzeStore  # noqa: PLC0415
         from app.services.pdf_render import PdfRenderService  # noqa: PLC0415
 
         app.state.pdf_render_service = PdfRenderService()
         try:
-            app.state.bronze_store = S3BronzeStore(StorageConfig.from_env())
-            logger.info("PDF render service ready; Bronze store backed by SeaweedFS")
+            app.state.bronze_store = S3BronzeStore()
+            logger.info(
+                "PDF render service ready; Bronze store backed by object storage (STORAGE_BACKEND=%s)",
+                _os.environ.get("STORAGE_BACKEND", "s3_compatible"),
+            )
         except ValueError:
             # No object-storage credentials in this environment (AWS_ACCESS_KEY_ID/
             # AWS_SECRET_ACCESS_KEY, or a legacy S3_*/MINIO_*/SEAWEEDFS_* fallback,

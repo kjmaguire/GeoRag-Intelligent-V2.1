@@ -1,0 +1,60 @@
+# Azure Container Apps manifest for the self-hosted Redis instance.
+# Deployed via: az containerapp create -g georag -n redis-cc --environment georag-env-cc --yaml deploy/azure/containerapps/redis.yaml
+# (name/environment carry the `-cc` canadacentral-migration suffix — see
+# deploy/azure/containerapps/shutdown-job.yaml's header for why.)
+#
+# Self-hosted (not Azure Cache for Redis) specifically so it can be
+# scaled to 0 overnight by the C6 auto-shutdown scheduler — Azure Cache
+# for Redis bills continuously and can't pause. See plan C4/C6.
+#
+# No persistent volume: Container Apps' Azure Files mount adds real setup
+# (storage account + env storage link) for a queue/session/cache store
+# that's fully disposable at demo scale — accepted trade-off, matches the
+# "clean/empty start acceptable" posture used elsewhere in this lift.
+# --requirepass is a secretRef, not a literal, so the password isn't in
+# this file or in `az containerapp show` output.
+properties:
+  configuration:
+    ingress:
+      external: false
+      targetPort: 6379
+      transport: tcp
+    secrets:
+      - name: redis-password
+        value: REPLACE_AT_DEPLOY_TIME
+  template:
+    containers:
+      - image: redis:8.6.4-alpine
+        name: redis
+        command:
+          - sh
+          - -c
+        args:
+          - >-
+            redis-server
+            --maxmemory 512mb
+            --maxmemory-policy allkeys-lru
+            --appendonly yes
+            --appendfsync everysec
+            --databases 4
+            --tcp-backlog 511
+            --timeout 600
+            --tcp-keepalive 300
+            --slowlog-log-slower-than 1000
+            --slowlog-max-len 256
+            --lazyfree-lazy-eviction yes
+            --lazyfree-lazy-expire yes
+            --lazyfree-lazy-server-del yes
+            --lazyfree-lazy-user-del yes
+            --lazyfree-lazy-user-flush yes
+            --loglevel notice
+            --requirepass "$REDIS_PASSWORD"
+        env:
+          - name: REDIS_PASSWORD
+            secretRef: redis-password
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+    scale:
+      minReplicas: 1
+      maxReplicas: 1

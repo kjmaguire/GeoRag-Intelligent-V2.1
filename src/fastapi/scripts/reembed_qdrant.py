@@ -2,9 +2,23 @@
 
 2026-06-04 — UPDATED for the bge-small → Qwen3-Embedding swap.
 The 1024-dim Qwen3 vector does NOT fit in the old 384-dim bge collection,
-so this script now ASSERTS the collection's configured vector dim matches
-the loaded model before encoding. Mismatch = fatal exit with a pointer to
-init_qdrant.py (which recreates the collection at the new dim).
+so this script checks the collection's configured vector dim against the
+loaded model before encoding.
+
+2026-07-02 review fix — dim-mismatch handling is two-tier:
+  - CANONICAL collections (georag_chunks) and any collection named
+    explicitly on the command line MUST be re-embedded: a dim-mismatch
+    (or missing-collection) skip makes the run exit non-zero, telling the
+    operator to run ``init_qdrant.py --recreate`` first. Exiting 0 after
+    silently skipping the canonical corpus is how the 2026-06-01 incident
+    happened (surface-level "success", retrieval refused every question).
+  - Legacy/non-canonical collections (georag_reports, a deliberately
+    separate 384-dim bge space) soft-skip with a warning — re-embedding
+    them at 1024 would be wrong.
+
+Usage: ``python reembed_qdrant.py [collection ...]`` — with no args, all
+COLLECTIONS are processed and only CANONICAL_COLLECTIONS are must-succeed;
+with args, only the named collections run and ALL of them are must-succeed.
 
 Migration sequence
 ------------------
@@ -47,26 +61,34 @@ QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EXPECTED_VECTOR_DIM = 1024  # Qwen3-Embedding-0.6B dim. Assert on first load.
 COLLECTIONS = ["georag_chunks", "georag_reports"]
+# The canonical corpus (ADR-0010) — production retrieval reads it, so a run
+# that skips it must NOT exit 0 (see module docstring / 2026-06-01 incident).
+CANONICAL_COLLECTIONS = {"georag_chunks"}
 SCROLL_LIMIT = 100  # points per scroll page
 UPSERT_BATCH = 50   # points per upsert call
 
 
 def _load_model():  # type: ignore[return]
-    """Load the bge-small-en-v1.5 model and run a warm-up encode."""
-    logger.info("Loading embedding model: %s", EMBEDDING_MODEL)
+    """Load the configured embedding model and run a warm-up encode.
+
+    Routes through app.services.embedding.get_embedding_model() — same
+    EMBEDDING_BACKEND precedence app/main.py and passage_embedder.py already
+    use. This script used to hardcode a local Qwen3-Embedding-0.6B load
+    regardless of backend, so EMBEDDING_BACKEND=foundry deployments (this
+    Azure cutover included) would re-embed the corpus with the WRONG model —
+    the exact "surface-level success, retrieval refused every question"
+    failure mode this file's own module docstring warns about, just moved
+    one step earlier in the pipeline.
+    """
     t0 = time.perf_counter()
     try:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+        from app.services.embedding import get_embedding_model  # noqa: PLC0415
 
-        # Audit 2026-06-29: device is env-tunable. CPU re-embed of 9k Qwen3
-        # vectors is impractically slow + memory-spiky; REEMBED_DEVICE=cuda runs
-        # it in minutes when GPU headroom is freed (e.g. vllm-vl paused).
-        _device = os.environ.get("REEMBED_DEVICE", "cpu")
-        model = SentenceTransformer(EMBEDDING_MODEL, device=_device)
+        model = get_embedding_model(EMBEDDING_MODEL)
         model.encode("warm-up", normalize_embeddings=True)
         elapsed = time.perf_counter() - t0
         dim = model.get_sentence_embedding_dimension()
-        logger.info("Model ready — dim=%d, loaded in %.2fs", dim, elapsed)
+        logger.info("Model ready — dim=%s, loaded in %.2fs", dim, elapsed)
         return model
     except Exception:
         logger.exception("Failed to load model — aborting")
@@ -74,11 +96,19 @@ def _load_model():  # type: ignore[return]
 
 
 def _qdrant_client():  # type: ignore[return]
-    """Create a synchronous Qdrant client (sync is fine for a one-shot script)."""
+    """Create a synchronous Qdrant client (sync is fine for a one-shot script).
+
+    Routes through app.services.qdrant_conn.qdrant_client_kwargs() — this
+    script used to build host/port directly and never picked up https/
+    api_key, so it could not reach Azure Container Apps' internal ingress
+    (HTTPS-only on 443) at all.
+    """
     try:
         from qdrant_client import QdrantClient  # noqa: PLC0415
 
-        client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=30)
+        from app.services.qdrant_conn import qdrant_client_kwargs  # noqa: PLC0415
+
+        client = QdrantClient(**qdrant_client_kwargs(), timeout=30)
         # Quick health check.
         collections = client.get_collections()
         names = [c.name for c in collections.collections]
@@ -93,10 +123,13 @@ def _reembed_collection(
     client: Any,
     model: Any,
     collection_name: str,
-) -> int:
+) -> tuple[int, bool]:
     """Re-embed all points in ``collection_name`` and upsert them in place.
 
-    Returns the total number of points re-embedded.
+    Returns ``(count, skipped)``: the number of points re-embedded, and
+    whether the collection was skipped entirely (missing, or vector-dim
+    mismatch). The caller decides whether a skip is fatal — it is for the
+    canonical / explicitly-requested collections.
     """
     from qdrant_client.models import PointStruct  # noqa: PLC0415
 
@@ -106,7 +139,7 @@ def _reembed_collection(
         total_points = info.points_count
     except Exception:
         logger.warning("Collection '%s' not found — skipping", collection_name)
-        return 0
+        return 0, True
 
     # 2026-06-04 guard — verify collection vector dim matches the loaded
     # model. The Qwen3-Embedding swap changed dim 384→1024, and an in-place
@@ -128,19 +161,20 @@ def _reembed_collection(
             collection_dim = None
         if collection_dim is not None and collection_dim != EXPECTED_VECTOR_DIM:
             # Audit 2026-06-29: SKIP a dim-mismatched collection rather than
-            # aborting the whole run. georag_reports is a SEPARATE bge/384-dim
-            # corpus (per C1) — re-embedding it at 1024 would be wrong, and a
-            # hard sys.exit here would also abort the canonical georag_chunks
-            # pass if ordering ever changed. Skip + warn; the operator recreates
-            # explicitly (init_qdrant.py --recreate) only if a dim change is
-            # actually intended for that collection.
+            # aborting the whole run mid-loop. georag_reports is a SEPARATE
+            # bge/384-dim corpus (per C1) — re-embedding it at 1024 would be
+            # wrong. Review fix 2026-07-02: the skip is reported to main(),
+            # which exits non-zero if the skipped collection is canonical or
+            # was explicitly requested — a silent exit-0 skip of the canonical
+            # corpus is the 2026-06-01 incident failure mode.
             logger.warning(
                 "Collection '%s' has vector dim=%d but model %s produces "
                 "dim=%d — SKIPPING (separate-corpus dim mismatch). Recreate "
-                "explicitly via init_qdrant.py if a dim change is intended.",
+                "explicitly via init_qdrant.py --recreate if a dim change is "
+                "intended.",
                 collection_name, collection_dim, EMBEDDING_MODEL, EXPECTED_VECTOR_DIM,
             )
-            return 0
+            return 0, True
     except SystemExit:
         raise
     except Exception:
@@ -271,28 +305,56 @@ def _reembed_collection(
         total_reembedded,
         total_points,
     )
-    return total_reembedded
+    return total_reembedded, False
 
 
 def main() -> None:
-    """Entry point — re-embed all configured collections."""
+    """Entry point — re-embed all configured collections.
+
+    Optional CLI args name specific collections to re-embed; explicitly
+    requested collections are always must-succeed. With no args, all
+    COLLECTIONS run and only CANONICAL_COLLECTIONS are must-succeed.
+    """
     t_start = time.perf_counter()
+
+    requested = sys.argv[1:]
+    collections = requested or COLLECTIONS
+    required = set(requested) if requested else set(CANONICAL_COLLECTIONS)
 
     model = _load_model()
     client = _qdrant_client()
 
     grand_total = 0
-    for collection in COLLECTIONS:
-        count = _reembed_collection(client, model, collection)
+    skipped: list[str] = []
+    for collection in collections:
+        count, was_skipped = _reembed_collection(client, model, collection)
         grand_total += count
+        if was_skipped:
+            skipped.append(collection)
 
     elapsed = time.perf_counter() - t_start
     logger.info(
-        "Re-embedding complete — %d points across %d collections in %.1fs",
+        "Re-embedding complete — %d points across %d collections in %.1fs"
+        " (skipped: %s)",
         grand_total,
-        len(COLLECTIONS),
+        len(collections),
         elapsed,
+        ", ".join(skipped) or "none",
     )
+
+    fatal = [name for name in skipped if name in required]
+    if fatal:
+        logger.error(
+            "FATAL: required collection(s) %s were skipped (missing or "
+            "vector-dim mismatch) — no points were re-embedded for them. Run "
+            "`python scripts/init_qdrant.py --recreate` to drop + recreate "
+            "the collection at the model dim FIRST, then re-run this script. "
+            "Exiting non-zero so a forgotten recreate cannot masquerade as "
+            "success (2026-06-01 incident: a mis-shaped georag_chunks passed "
+            "surface checks while retrieval refused every question).",
+            ", ".join(fatal),
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

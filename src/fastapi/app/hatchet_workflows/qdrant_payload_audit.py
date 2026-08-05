@@ -42,6 +42,7 @@ from app.metrics import (
     QDRANT_PAYLOAD_AUDIT_RUNS,
     QDRANT_PAYLOAD_AUDIT_VIOLATIONS,
 )
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.hatchet.qdrant_payload_audit")
 
@@ -89,11 +90,7 @@ async def run_audit(input: AuditInput, ctx: Context) -> AuditOut:
     t0 = _t.monotonic()
     sample = input.sample_size
 
-    qclient = AsyncQdrantClient(
-        host=os.environ.get("QDRANT_HOST", "qdrant"),
-        port=int(os.environ.get("QDRANT_PORT", "6333")),
-        api_key=os.environ.get("QDRANT_API_KEY") or None,
-    )
+    qclient = AsyncQdrantClient(**qdrant_client_kwargs())
 
     sampled = 0
     violations = 0

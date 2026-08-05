@@ -29,8 +29,12 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.reranker import RERANKER_VERSION, _get_reranker
-from app.sidecar_auth import enforce_batch_limits, require_service_key
+from app.services.reranker import _get_reranker, active_reranker_version
+from app.sidecar_auth import (
+    enforce_batch_limits,
+    install_body_size_limit,
+    require_service_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +51,16 @@ async def lifespan(app: FastAPI):
     # /health then reports 503 and callers degrade to RRF order.
     try:
         await asyncio.to_thread(_get_reranker)
-        logger.info("reranker sidecar: model pre-warmed (%s)", RERANKER_VERSION)
+        logger.info(
+            "reranker sidecar: model pre-warmed (%s)", active_reranker_version()
+        )
     except Exception:
         logger.exception("reranker sidecar: model preload failed at startup")
     yield
 
 
 app = FastAPI(title="GeoRAG reranker sidecar", lifespan=lifespan)
+install_body_size_limit(app)
 
 
 class RerankRequest(BaseModel):
@@ -75,7 +82,7 @@ class RerankResponse(BaseModel):
 async def rerank(req: RerankRequest) -> RerankResponse:
     """Score (query, passage) pairs with the shared cross-encoder."""
     if not req.pairs:
-        return RerankResponse(scores=[], version=RERANKER_VERSION)
+        return RerankResponse(scores=[], version=active_reranker_version())
     # Flatten (query, passage) tuples for the total-chars guard.
     enforce_batch_limits(
         [s for pair in req.pairs for s in pair],
@@ -89,7 +96,9 @@ async def rerank(req: RerankRequest) -> RerankResponse:
     except Exception as exc:  # noqa: BLE001
         logger.exception("reranker sidecar: predict failed")
         raise HTTPException(status_code=503, detail="reranker_unavailable") from exc
-    return RerankResponse(scores=[float(s) for s in scores], version=RERANKER_VERSION)
+    return RerankResponse(
+        scores=[float(s) for s in scores], version=active_reranker_version()
+    )
 
 
 @app.get("/health")
@@ -99,4 +108,4 @@ async def health() -> dict[str, str]:
         await asyncio.to_thread(_get_reranker)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail="model_not_loaded") from exc
-    return {"status": "ok", "version": RERANKER_VERSION}
+    return {"status": "ok", "version": active_reranker_version()}

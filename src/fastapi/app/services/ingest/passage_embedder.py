@@ -12,11 +12,15 @@ Collection georag_reports doesn't exist``.
 For every passage row in `silver.document_passages` where
 `embedding_id IS NULL`:
 
-  1. Encode the text via Qwen3-Embedding-0.6B (dense, 1024-dim, normalized).
-     Documents are encoded RAW — the query-side "Instruct: ...\nQuery: ..."
-     template is asymmetric and applied only on retrieval (see
-     tools.search_documents). Documents must NOT carry the query template
-     or the query/document vectors live in different subspaces.
+  1. Encode the text (dense, 1024-dim, normalized), branching inline on
+     EMBEDDING_BACKEND: "foundry" -> Cohere Embed v4
+     (input_type="search_document"), else the self-hosted
+     Qwen/Qwen3-Embedding-0.6B fallback. Documents are encoded RAW — the
+     query-side "Instruct: ...\nQuery: ..." template (self-hosted path) /
+     input_type="search_query" (foundry path) is asymmetric and applied only
+     on retrieval (see tools.search_documents). Documents must NOT carry the
+     query-side treatment or the query/document vectors live in different
+     subspaces.
   2. Encode via SPLADE++ (sparse, named "text")
   3. Upsert to Qdrant `georag_chunks` with payload:
        { report_id, project_id, workspace_id,
@@ -48,6 +52,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import PointStruct, SparseVector
 
 from app.db import bind_workspace_scope
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.ingest.passage_embedder")
 
@@ -126,43 +131,88 @@ async def embed_pending_passages(
 
     # ── Load models / clients if not provided ─────────────────────
     if embedding_model is None:
-        import torch
-        from sentence_transformers import SentenceTransformer
+        from app.services.embedding import EMBEDDING_BACKEND
 
-        from app.config import settings
-        # Use CUDA when available — A4500 does ~144 chunks/sec vs ~4 on CPU.
-        # Falls back to CPU gracefully if no GPU present or CUDA unavailable.
-        _device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info("embed_pending.loading_embedding_model name=%s device=%s",
-                 settings.EMBEDDING_MODEL_NAME, _device)
-        embedding_model = SentenceTransformer(
-            settings.EMBEDDING_MODEL_NAME,
-            revision=settings.EMBEDDING_MODEL_REVISION,
-            trust_remote_code=False,
-            device=_device,
-        )
+        if EMBEDDING_BACKEND == "foundry":
+            # No local model load at all — Cohere Embed v4 via Azure AI
+            # Foundry. .encode(texts, normalize_embeddings=True,
+            # show_progress_bar=False) below is a drop-in call (input_type
+            # defaults to "search_document", correct for ingestion).
+            import os as _os
+
+            from app.services.embedding import (
+                AZURE_FOUNDRY_EMBED_DEPLOYMENT,
+                _FoundryEmbedding,
+            )
+            endpoint = (_os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
+            api_key = (_os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
+            if not (endpoint and api_key and AZURE_FOUNDRY_EMBED_DEPLOYMENT):
+                raise RuntimeError(
+                    "EMBEDDING_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/"
+                    "API_KEY/AZURE_FOUNDRY_EMBED_DEPLOYMENT not fully set"
+                )
+            log.info(
+                "embed_pending.loading_embedding_model backend=foundry deployment=%s",
+                AZURE_FOUNDRY_EMBED_DEPLOYMENT,
+            )
+            embedding_model = _FoundryEmbedding(endpoint, api_key, AZURE_FOUNDRY_EMBED_DEPLOYMENT)
+        else:
+            import torch
+            from sentence_transformers import SentenceTransformer
+
+            from app.config import settings
+            # Use CUDA when available — A4500 does ~144 chunks/sec vs ~4 on CPU.
+            # Falls back to CPU gracefully if no GPU present or CUDA unavailable.
+            _device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info("embed_pending.loading_embedding_model name=%s device=%s",
+                     settings.EMBEDDING_MODEL_NAME, _device)
+            embedding_model = SentenceTransformer(
+                settings.EMBEDDING_MODEL_NAME,
+                revision=settings.EMBEDDING_MODEL_REVISION,
+                trust_remote_code=False,
+                device=_device,
+            )
 
     own_qdrant = False
     if qdrant_client is None:
-        qdrant_client = AsyncQdrantClient(
-            host=os.environ.get("QDRANT_HOST", "qdrant"),
-            port=int(os.environ.get("QDRANT_PORT", "6333")),
-        )
+        qdrant_client = AsyncQdrantClient(**qdrant_client_kwargs())
         own_qdrant = True
 
     # ── Load passage rows ─────────────────────────────────────────
     pg_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        # REC#2 Phase-2 (2026-06-03) — bind_workspace_scope via the
-        # canonical helper. Pre-migration this site had a duplicate
-        # set_config call (lines 152-154 in git history); collapsed to
-        # a single bind. Phase-2 also tightens the SET LOCAL scope flag
-        # from `false` (session — wrong under PgBouncer) to `true`
-        # (transaction-scoped — correct).
+        # REC#2 Phase-2 (2026-06-03) note (since corrected): that migration
+        # tightened this to is_local=true (`SET LOCAL`), reasoning it was
+        # transaction-scoped-and-therefore-safer. It wasn't — `pg_conn` here
+        # is a dedicated, non-pooled connection with no wrapping transaction
+        # (same fact the sibling app.project_id bind below already documents
+        # and handles correctly with is_local=false). `SET LOCAL` outside a
+        # transaction block is a silent no-op in Postgres, so app.workspace_id
+        # was never actually set on this connection — and because
+        # database/raw/phase0's tenant_isolation policy fails OPEN when the
+        # GUC reads NULL, every embed_pending_passages sweep silently read
+        # and embedded EVERY workspace's unembedded passages, tagged in
+        # Qdrant with the caller's workspace_id (line ~292 below) rather than
+        # each row's true owner — a real cross-tenant content leak, not a
+        # theoretical one. is_local=false matches this connection's actual
+        # lifecycle: no transaction to scope to, so bind to the session,
+        # which lives exactly as long as `pg_conn` does.
         await bind_workspace_scope(
             pg_conn, workspace_id=workspace_id, site="passage_embedder",
+            is_local=False,
         )
         if project_id:
+            # Session-scoped (false) is correct here, not a hazard: `pg_conn`
+            # is a dedicated, non-pooled connection with no wrapping
+            # transaction, so `is_local=true`/SET LOCAL would be silently
+            # discarded before the next statement runs (Postgres: "SET LOCAL
+            # used outside a transaction block will appear to have no
+            # effect"). Session scope persists for this connection's life,
+            # which is exactly what's needed. Also: no RLS policy anywhere
+            # in this codebase reads app.project_id (verified 2026-07-30) —
+            # project filtering here uses an explicit $1::uuid query param,
+            # not this GUC — so this value is set defensively/for
+            # completeness, not for tenant-isolation enforcement.
             await pg_conn.execute(
                 "SELECT set_config('app.project_id', $1, false)", project_id,
             )

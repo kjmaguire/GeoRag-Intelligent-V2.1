@@ -90,6 +90,9 @@ async def run_agentic_retrieval(
     *,
     context_envelope: ContextEnvelope | None = None,
     history: list[Any] | None = None,
+    status_callback: Any = None,
+    token_callback: Any = None,
+    bind_callback: Any = None,
 ) -> GeoRAGResponse:
     """Top-level entry: classify the query, route, retrieve, answer.
 
@@ -109,6 +112,15 @@ async def run_agentic_retrieval(
             resolve_node will rewrite ``query`` to expand pronouns +
             demonstratives + comparatives. See
             docs/architecture/multi_turn_resolution_spec.md.
+        status_callback: Optional ``Callable[[str], Awaitable[None]]``,
+            awaited with a short phase string at major node transitions.
+        token_callback: Optional ``Callable[[str], Awaitable[None]]``,
+            forwarded to assemble_node's ``_call_llm`` call so the SSE
+            stream gets real per-chunk deltas instead of the queries.py
+            fallback that synthesises deltas from a finished answer.
+        bind_callback: Accepted for signature parity with
+            ``run_deterministic_rag`` but not yet invoked anywhere — see
+            ``AgenticRetrievalState.bind_callback`` docstring for why.
 
     On any unexpected node failure the graph propagates the partial state
     forward; the assemble node always returns *some* response (even if
@@ -135,6 +147,9 @@ async def run_agentic_retrieval(
         context_envelope=context_envelope,
         history=list(history) if history else [],
         run_start_monotonic=_time_for_latency.monotonic(),
+        status_callback=status_callback,
+        token_callback=token_callback,
+        bind_callback=bind_callback,
     )
     # LangGraph's ainvoke accepts either a dict or the state model; the
     # report-builder graph passes the model directly. final is a dict.

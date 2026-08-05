@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 from typing import Any
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.db import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
+from app.services.qdrant_conn import qdrant_client_kwargs
 from app.services.tool_gateway.gateway import register_tool
 
 log = logging.getLogger("georag.tool_gateway.impls")
@@ -80,34 +80,13 @@ async def _query_postgis_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
 async def _query_neo4j_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
     """Read-only Cypher against the graph.
     Inputs: {cypher: str, params: dict, workspace_id: str}
-    Blocks any write keyword.
+
+    B1 (2026-07-28): Neo4j was removed from the stack. This tool is kept
+    registered (callers still invoke it via invoke_tool()) but is now a
+    permanent no-op that returns the same fail-open error shape callers
+    already handled when the driver was unreachable.
     """
-    try:
-        from neo4j import AsyncGraphDatabase
-    except ImportError:
-        return {"error": "neo4j driver not installed in this worker"}
-    cypher = (inputs.get("cypher") or "").strip()
-    lc = cypher.lower()
-    if any(banned in lc for banned in (
-        "create ", "merge ", "delete ", "remove ", "set ", "drop ",
-    )):
-        return {"error": "potentially-mutating clause rejected"}
-    host = os.environ.get("NEO4J_HOST", "neo4j")
-    port = int(os.environ.get("NEO4J_PORT", "7687"))
-    user = os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "")
-    if not password:
-        return {"error": "NEO4J_PASSWORD not set"}
-    driver = AsyncGraphDatabase.driver(f"bolt://{host}:{port}", auth=(user, password))
-    try:
-        async with driver.session() as session:
-            result = await session.run(cypher, **(inputs.get("params") or {}))
-            rows = [dict(r) async for r in result]
-        return {"rows": rows[:1000], "count": len(rows)}
-    except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
-    finally:
-        with contextlib.suppress(Exception): await driver.close()
+    return {"error": "neo4j was removed from the stack (B1, 2026-07-28); query_neo4j_readonly is a permanent no-op"}
 
 
 async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -119,8 +98,6 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
     except ImportError:
         return {"error": "qdrant client not installed"}
-    host = os.environ.get("QDRANT_HOST", "qdrant")
-    port = int(os.environ.get("QDRANT_HTTP_PORT", "6333"))
     collection = inputs.get("collection", "georag_reports")
     workspace_id = inputs.get("workspace_id")
     k = int(inputs.get("k", 10))
@@ -129,7 +106,7 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
     # encoder, but as a starting point return points filtered by payload
     # match-string rather than vector similarity. Real embedding wiring
     # is wave 2 (would call services/qdrant_service.retrieve()).
-    client = AsyncQdrantClient(host=host, port=port)
+    client = AsyncQdrantClient(**qdrant_client_kwargs())
     try:
         flt = None
         if workspace_id:

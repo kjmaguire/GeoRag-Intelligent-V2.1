@@ -38,7 +38,11 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from app.sidecar_auth import enforce_batch_limits, require_service_key
+from app.sidecar_auth import (
+    enforce_batch_limits,
+    install_body_size_limit,
+    require_service_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="georag-sparse-sidecar")
+install_body_size_limit(app)
 
 
 class SparseRequest(BaseModel):

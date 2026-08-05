@@ -419,14 +419,14 @@ def test_card_type_none_when_viz_payload_is_none(fake_sdk: _FakeSentry):
 
 @pytest.mark.parametrize("chart_type", [
     "drill_trace_3d", "downhole_strip", "stereonet", "technique_timeline",
-    "coverage_table", "assay_histogram", "cross_section", "graph_viz",
+    "coverage_table", "assay_histogram", "cross_section",
 ])
 def test_card_type_known_chart_types_pass_through(
     fake_sdk: _FakeSentry, chart_type: str,
 ):
     """Every chart_type the §6b dispatcher can emit must be in
     _KNOWN_CARD_TYPES — otherwise it'd land as 'unknown' and a follow-up
-    spec-doc update is needed. Parametrise across all 8."""
+    spec-doc update is needed. Parametrise across all 7."""
     sentry_tags.stamp_card_type_tag(_FakeVizPayload(chart_type=chart_type))
     assert fake_sdk.tags["card.type"] == chart_type
     assert fake_sdk.tags["card.rendered"] == "true"
@@ -466,10 +466,9 @@ def test_known_card_types_set_matches_dispatcher_contract():
         "stereonet",          # StereonetResult branch
         "technique_timeline", # ProjectSummaryResult branch
         "coverage_table",     # CoverageGapResult branch
-        # The three below ride on the legacy ViznPayload shape but the
+        # The two below ride on the legacy ViznPayload shape but the
         # frontend dispatcher (InlineViz) handles them; keep them tagged.
         "assay_histogram",
         "cross_section",
-        "graph_viz",
     }
     assert frozenset(expected) == sentry_tags._KNOWN_CARD_TYPES

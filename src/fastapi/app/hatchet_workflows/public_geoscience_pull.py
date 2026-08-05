@@ -29,8 +29,7 @@ import time
 import uuid
 
 import asyncpg
-from georag_object_storage import Bucket, StorageConfig
-from georag_object_storage.async_client import AsyncS3CompatibleStorage
+from georag_object_storage import Bucket, get_async_storage_client
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -78,7 +77,7 @@ def _dsn() -> str:
 
 
 async def _download_from_s3(minio_key: str) -> bytes:
-    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    storage = get_async_storage_client()
     return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 

@@ -5,6 +5,8 @@ import { Pill, EmptyState, BrandDiamond } from '@/Components/Foundry/primitives'
 import EvidencePacketBadge from '@/Components/EvidencePacketBadge';
 import InlineViz from '@/Components/InlineViz';
 import ResolutionPreviewChip from '@/Components/ResolutionPreviewChip';
+import CitationPGEODetail from '@/Components/PublicGeoscience/CitationPGEODetail';
+import type { Citation as SharedCitation } from '@/types';
 import {
     ContextEnvelopeForm,
     EMPTY_ENVELOPE,
@@ -42,6 +44,20 @@ interface Citation {
     source_chunk_id: string;
     document_title?: string;
     relevance_score?: number;
+    // Public Geoscience extensions (plan §08) — present only on PGEO
+    // citations, needed to render CitationPGEODetail. Previously dropped by
+    // the per-token streaming 'citation' handler below (only the 'completed'
+    // event's bulk citations array carried them, via an `as Citation[]`
+    // cast that bypassed this interface entirely) — CitationPGEODetail
+    // existed, fully built and tested, with zero importers anywhere in the
+    // app because nothing in Chat.tsx could type its way to rendering it.
+    corpus?: 'internal_archive' | 'public_geo' | null;
+    jurisdiction_code?: string | null;
+    jurisdiction_name?: string | null;
+    license_summary?: string | null;
+    license_url?: string | null;
+    source_url?: string | null;
+    staleness_seconds?: number | null;
 }
 interface ChatMessage {
     id: string;
@@ -386,6 +402,18 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         source_chunk_id: String(event.source_chunk_id ?? ''),
                         document_title: event.document_title ? String(event.document_title) : undefined,
                         relevance_score: typeof event.relevance_score === 'number' ? event.relevance_score : undefined,
+                        // PGEO extensions — carried through so CitationPGEODetail
+                        // can render during live streaming, not just after the
+                        // 'completed' event's bulk citations array overwrites
+                        // this array (which never dropped them, an inconsistency
+                        // this closes).
+                        corpus: (event.corpus as Citation['corpus']) ?? null,
+                        jurisdiction_code: event.jurisdiction_code ? String(event.jurisdiction_code) : null,
+                        jurisdiction_name: event.jurisdiction_name ? String(event.jurisdiction_name) : null,
+                        license_summary: event.license_summary ? String(event.license_summary) : null,
+                        license_url: event.license_url ? String(event.license_url) : null,
+                        source_url: event.source_url ? String(event.source_url) : null,
+                        staleness_seconds: typeof event.staleness_seconds === 'number' ? event.staleness_seconds : null,
                     });
                     setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, citations: [...runningCitations] } : m)));
                 } else if (eventType === 'completed') {
@@ -627,6 +655,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 value={composer}
                                 onChange={(e) => setComposer(e.target.value)}
                                 placeholder={`Ask about ${project.project_name}…`}
+                                aria-label="Ask a question"
                                 rows={2}
                                 disabled={streaming}
                                 className="flex-1 text-sm px-3 py-2 rounded border resize-none disabled:opacity-60"
@@ -671,8 +700,45 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     );
 }
 
+type ResolvedCitation = { text: string; source_type: string; metadata?: Record<string, unknown> };
+
 function MessageBubble({ m, projectId }: { m: ChatMessage; projectId?: string | null }) {
     const isUser = m.role === 'user';
+    // Citation chips were inert (title-attribute tooltip only) despite the
+    // platform's citation-first pitch — GET /api/v1/citations/resolve
+    // already existed server-side with nothing in the UI calling it. Keyed
+    // by source_chunk_id so re-expanding an already-fetched citation is free.
+    const [expandedCitation, setExpandedCitation] = useState<string | null>(null);
+    const [resolvedCitations, setResolvedCitations] = useState<Record<string, ResolvedCitation | 'loading' | 'error'>>({});
+
+    async function toggleCitation(sourceChunkId: string, citationType: string) {
+        if (expandedCitation === sourceChunkId) {
+            setExpandedCitation(null);
+            return;
+        }
+        setExpandedCitation(sourceChunkId);
+        // PGEO citations render via <CitationPGEODetail>, which resolves its
+        // own body lazily — fetching here too would be a redundant, wasted
+        // second /citations/resolve call on every expand.
+        if (citationType === 'PGEO' || resolvedCitations[sourceChunkId]) {
+            return;
+        }
+        setResolvedCitations((prev) => ({ ...prev, [sourceChunkId]: 'loading' }));
+        try {
+            const resp = await fetch(`/api/v1/citations/resolve?source_chunk_id=${encodeURIComponent(sourceChunkId)}`, {
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            if (!resp.ok) {
+                throw new Error(`resolve failed (${resp.status})`);
+            }
+            const data = (await resp.json()) as ResolvedCitation;
+            setResolvedCitations((prev) => ({ ...prev, [sourceChunkId]: data }));
+        } catch {
+            setResolvedCitations((prev) => ({ ...prev, [sourceChunkId]: 'error' }));
+        }
+    }
+
     return (
         <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
             <div className="max-w-[80%]">
@@ -735,20 +801,68 @@ function MessageBubble({ m, projectId }: { m: ChatMessage; projectId?: string | 
                 {m.citations.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                         {m.citations.map((c, i) => (
-                            <span
+                            <button
                                 key={c.citation_id || i}
-                                className="text-[10px] font-mono px-1.5 py-0.5 rounded border"
-                                style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)' }}
+                                type="button"
+                                onClick={() => c.source_chunk_id && toggleCitation(c.source_chunk_id, c.citation_type)}
+                                className="text-[10px] font-mono px-1.5 py-0.5 rounded border cursor-pointer"
+                                style={{
+                                    color: 'var(--fg-2)',
+                                    borderColor: expandedCitation === c.source_chunk_id ? 'var(--accent)' : 'var(--line-2)',
+                                    background: 'transparent',
+                                }}
                                 title={c.source_chunk_id}
                             >
                                 [{i + 1}] {c.document_title ?? c.citation_type ?? '—'}
                                 {typeof c.relevance_score === 'number' && (
                                     <span style={{ color: 'var(--fg-3)' }}> · {(c.relevance_score * 100).toFixed(0)}%</span>
                                 )}
-                            </span>
+                            </button>
                         ))}
                     </div>
                 )}
+                {m.citations.map((c, i) => {
+                    if (!c.source_chunk_id || expandedCitation !== c.source_chunk_id) {
+                        return null;
+                    }
+                    if (c.citation_type === 'PGEO') {
+                        const pgeoCitation: SharedCitation = {
+                            citation_id: c.citation_id,
+                            citation_type: 'PGEO',
+                            source_chunk_id: c.source_chunk_id,
+                            document_title: c.document_title ?? '',
+                            relevance_score: c.relevance_score ?? 0,
+                            corpus: c.corpus,
+                            jurisdiction_code: c.jurisdiction_code,
+                            jurisdiction_name: c.jurisdiction_name,
+                            license_summary: c.license_summary,
+                            license_url: c.license_url,
+                            source_url: c.source_url,
+                            staleness_seconds: c.staleness_seconds,
+                        };
+                        return (
+                            <div
+                                key={`resolved-${c.citation_id || i}`}
+                                className="mt-1.5 rounded-lg px-3 py-3"
+                                style={{ background: 'var(--bg-2)', border: '1px solid var(--line-1)' }}
+                            >
+                                <CitationPGEODetail citation={pgeoCitation} />
+                            </div>
+                        );
+                    }
+                    const resolved = resolvedCitations[c.source_chunk_id];
+                    return (
+                        <div
+                            key={`resolved-${c.citation_id || i}`}
+                            className="mt-1.5 rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap"
+                            style={{ background: 'var(--bg-2)', border: '1px solid var(--line-1)', color: 'var(--fg-2)' }}
+                        >
+                            {resolved === 'loading' && <span style={{ color: 'var(--fg-3)' }}>Loading source…</span>}
+                            {resolved === 'error' && <span style={{ color: 'var(--warn, #d97706)' }}>Could not load this source.</span>}
+                            {resolved && resolved !== 'loading' && resolved !== 'error' && resolved.text}
+                        </div>
+                    );
+                })}
             </div>
         </div>
     );

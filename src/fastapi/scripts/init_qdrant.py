@@ -47,15 +47,35 @@ import httpx
 # ---------------------------------------------------------------------------
 
 # Honor QDRANT_BASE_URL (preferred), fall back to QDRANT_HOST/PORT for
-# container deployments where Qdrant is at qdrant:6333.
+# container deployments where Qdrant is at qdrant:6333. QDRANT_HTTPS picks the
+# scheme for the fallback, matching app/services/qdrant_conn.py — on Azure
+# Container Apps the internal ingress is HTTPS on 443 and the plain-HTTP
+# default cannot reach it at all.
+_QDRANT_SCHEME = "https" if os.environ.get("QDRANT_HTTPS", "").lower() in ("1", "true", "yes") else "http"
 QDRANT_BASE_URL = (
     os.environ.get("QDRANT_BASE_URL")
-    or f"http://{os.environ.get('QDRANT_HOST', 'localhost')}:{os.environ.get('QDRANT_PORT', '6333')}"
+    or f"{_QDRANT_SCHEME}://{os.environ.get('QDRANT_HOST', 'localhost')}:{os.environ.get('QDRANT_PORT', '6333')}"
 )
+
+# Qdrant rejects every request with 403 when QDRANT__SERVICE__API_KEY is set on
+# the server and the client omits this header. The bootstrap ran unauthenticated
+# for as long as Qdrant was only ever reached over an isolated docker network
+# with no key configured; any deployment that sets one (Azure) needs it.
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or ""
 
 # georag_chunks tracks the live runtime embedding dimension (Qwen3 = 1024).
 # Read from env so a fresh bootstrap can never drift from the FastAPI writer.
-CHUNKS_VECTOR_SIZE = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
+#
+# Which var holds that dimension depends on the backend: the self-hosted path
+# reads EMBEDDING_DIMENSION, but EMBEDDING_BACKEND=foundry reads
+# AZURE_FOUNDRY_EMBED_DIMENSION (Cohere Embed v4's Matryoshka output_dimension).
+# Both currently land on 1024, so honouring only the former would agree with the
+# writer by coincidence rather than construction — precisely the 384-vs-1024
+# drift that silently wrote wrong-sized vectors before.
+if os.environ.get("EMBEDDING_BACKEND", "").lower() == "foundry":
+    CHUNKS_VECTOR_SIZE = int(os.environ.get("AZURE_FOUNDRY_EMBED_DIMENSION", "1024"))
+else:
+    CHUNKS_VECTOR_SIZE = int(os.environ.get("EMBEDDING_DIMENSION", "1024"))
 # georag_reports is the frozen legacy bge-small 384 space (not swapped).
 REPORTS_VECTOR_SIZE = 384
 DISTANCE = "Cosine"
@@ -189,10 +209,14 @@ async def bootstrap() -> None:
         f"(from EMBEDDING_DIMENSION); georag_reports = {REPORTS_VECTOR_SIZE}"
     )
 
+    headers = {"Content-Type": "application/json"}
+    if QDRANT_API_KEY:
+        headers["api-key"] = QDRANT_API_KEY
+
     async with httpx.AsyncClient(
         base_url=QDRANT_BASE_URL,
         timeout=TIMEOUT,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     ) as client:
 
         # Verify Qdrant is reachable before doing anything

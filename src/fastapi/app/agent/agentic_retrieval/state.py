@@ -44,6 +44,44 @@ class AgenticRetrievalState(BaseModel):
         ),
     )
 
+    # Step 2.5 — SSE bridge callbacks, forwarded verbatim from
+    # run_deterministic_rag()/run_agentic_retrieval(). Typed as Any (not
+    # Callable) to match the `deps` pattern above and avoid Pydantic
+    # validating a callable's signature. None in every caller that doesn't
+    # stream (tests driving nodes directly, batch/eval callers) — nodes
+    # must guard with `if state.token_callback:` before awaiting.
+    token_callback: Any = Field(
+        default=None,
+        description=(
+            "Callable[[str], Awaitable[None]] — awaited once per LLM output "
+            "chunk. assemble_node forwards this straight into "
+            "app.agent.llm_calls._call_llm, which already knows how to "
+            "stream both the Anthropic and OpenAI-compatible (incl. Azure "
+            "Foundry) backends when this is set."
+        ),
+    )
+    status_callback: Any = Field(
+        default=None,
+        description=(
+            "Callable[[str], Awaitable[None]] — awaited with a short "
+            "human-readable phase string at major node transitions "
+            "(classify/execute/assemble) so the SSE stream can keep the "
+            "frontend's status line current."
+        ),
+    )
+    bind_callback: Any = Field(
+        default=None,
+        description=(
+            "Callable[[dict], Awaitable[None]] — reserved for a future "
+            "citations-bound-pre-tokens event (see queries.py _push_bind). "
+            "Not yet invoked anywhere in the graph: there's no live SSE/"
+            "frontend consumer for a 'bind' event today, so wiring this up "
+            "would be backend plumbing with no observable effect. Accepted "
+            "here (rather than dropped) so run_deterministic_rag's existing "
+            "callback contract doesn't silently lose a parameter."
+        ),
+    )
+
     # ── Classify node output ─────────────────────────────────────────────
     intent: Intent | None = None
     intent_result: IntentResult | None = None

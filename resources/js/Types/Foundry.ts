@@ -268,45 +268,6 @@ export interface WhatChangedFeedProps {
     empty: boolean;
 }
 
-export interface SupportWorkspace {
-    id: string;
-    name: string;
-    region: string;
-    users: number;
-    plan: string;
-    eval_overall: number | null;
-    status: 'ok' | 'watch' | 'incident';
-}
-
-export interface SupportTrace {
-    run_id: string;
-    workspace_id: string;
-    user: string;
-    when: string;
-    question: string;
-    status: 'ok' | 'refused' | 'warn';
-    latency_ms: number;
-    citations: number;
-    confidence: number;
-}
-
-export interface SupportThreshold {
-    id: string;
-    label: string;
-    value: number;
-    min_value: number;
-    max_value: number;
-    unit: string;
-}
-
-export interface SupportCockpitProps {
-    workspaces: SupportWorkspace[];
-    traces: SupportTrace[];
-    thresholds: SupportThreshold[];
-    can_admin: boolean;
-    empty: boolean;
-}
-
 export interface SavedMapView {
     id: string;
     scope: 'user' | 'project' | 'workspace';

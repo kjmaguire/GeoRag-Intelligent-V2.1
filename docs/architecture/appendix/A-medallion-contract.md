@@ -84,8 +84,8 @@ generated `interval_length` column) and the legacy `silver.lithology_logs`.
 |---|---|---|---|
 | `gold.h3_density_mineral` | `silver.collars` + `public_geo.pg_mineral_occurrences` | Dagster `gold_h3_density` schedule | Live |
 | `gold.drillhole_intervals_visual` | `silver.collars` + `silver.lithology` + `silver.assays_v2` | Dagster `gold_drillhole_intervals_visual` | Live |
-| `gold.cross_section_panels` | `silver.section_lines` + intervals | Dagster `gold_cross_section_panels` | Live |
-| `gold.structure_measurements_visual` | `silver.structure_measurements` | Dagster `gold_structure_measurements_visual` | Live |
+| `gold.cross_section_panels` | `silver.collars` + `silver.drill_traces` + lithology intervals (`silver.section_lines` does not exist) | Dagster `gold_cross_section_panels` | Live |
+| `gold.structure_measurements_visual` | `silver.structure` (`silver.structure_measurements` does not exist) | Dagster `gold_structure_measurements_visual` | Live |
 | `gold.assay_composites` | `silver.assays_v2` + `silver.collars` | Dagster `silver_to_gold/assay_composites` | Live ([2026_05_20_060700](../../../database/migrations/2026_05_20_060700_create_gold_drillhole_tables.php) §1) |
 | `gold.significant_intersections` | `silver.assays_v2` + `silver.collars` | Dagster `silver_to_gold/significant_intersections` | Live ([2026_05_20_060700](../../../database/migrations/2026_05_20_060700_create_gold_drillhole_tables.php) §2). The Martin function [2026_05_20_061000](../../../database/migrations/2026_05_20_061000_create_martin_significant_intersections_function.php) reads from this persisted table. |
 | `gold.drill_summaries` | `silver.collars` + assays/lithology rollup | Dagster `silver_to_gold/drill_summaries` | Live |

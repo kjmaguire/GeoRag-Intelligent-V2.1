@@ -33,8 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-from georag_object_storage import Bucket, StorageConfig
-from georag_object_storage.sync_client import S3CompatibleStorage
+from georag_object_storage import Bucket, ObjectStorage, get_storage_client
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
@@ -136,7 +135,7 @@ async def run_zip_ingest(
         input.minio_key,
     )
 
-    store = S3CompatibleStorage(StorageConfig.from_env())
+    store = get_storage_client()
 
     async with _archive_progress.archive_lifecycle(
         workspace_id=input.workspace_id,
@@ -327,7 +326,7 @@ async def _ingest_one(
     file_path: Path,
     ext: str,
     conn: asyncpg.Connection,
-    store: S3CompatibleStorage,
+    store: ObjectStorage,
     input: IngestZipArchiveInput,
     counts: dict[str, int],
 ) -> None:

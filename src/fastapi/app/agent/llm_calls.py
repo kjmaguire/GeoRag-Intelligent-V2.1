@@ -253,13 +253,27 @@ async def _call_openai_compatible_llm(
     # forcing). Forwarded by the dispatcher for symmetry.
     guided_json: dict[str, Any] | None = None,
 ) -> str:
-    """Call the OpenAI-compatible /v1/chat/completions endpoint (vLLM).
+    """Call the OpenAI-compatible chat-completions endpoint.
+
+    Two backends share this function, selected by ``settings.LLM_BACKEND``:
+    ``"azure"`` (Azure AI Foundry, Cohere Command A+ via the unified OpenAI
+    v1 API — the default primary backend post Phase-C cutover) and
+    ``"vllm"`` (a self-hosted or external OpenAI-compatible endpoint,
+    retained for operators who keep running their own). Azure gets
+    `api-key` header auth, no `?api-version=` query param, and loose
+    `response_format: json_object` (confirmed working against a live
+    Command A+ deployment 2026-07-30 — response arrives wrapped in Cohere
+    sentinel tokens, stripped below); vLLM gets its Qwen3 sampling
+    extensions (top_p/top_k/min_p/presence_penalty) and schema-constrained
+    `guided_json`, which Azure doesn't support (silently ignored there,
+    same as the Anthropic path). See the `backend_kind` branch below for
+    the exact payload differences.
 
     Historical note: this helper also drove an Ollama backend prior to the
-    2026-05-17 cutover. Post-cutover vLLM is the only local-LLM backend;
-    the OpenAI-compatible wire shape is preserved so a non-vLLM endpoint
-    (LiteLLM proxy, vLLM-equivalent fork) can be substituted at the URL
-    layer without code changes.
+    2026-05-17 vLLM cutover, and vLLM prior to the 2026-07-30 Azure
+    cutover. The OpenAI-compatible wire shape is preserved so any other
+    compatible endpoint (LiteLLM proxy, etc.) can be substituted at the
+    URL layer without code changes.
 
     Prompt structure (R15):
       - `system` role: static system prompt + per-project preamble. This is
@@ -312,9 +326,12 @@ async def _call_openai_compatible_llm(
     effective_model = model or settings.effective_llm_model
     stream_enabled = token_callback is not None
 
-    # vLLM is the single local-LLM backend post-2026-05-17. The detection
-    # label is preserved as a constant so the metric/log shape doesn't change.
-    backend_kind = "vllm"
+    # Phase C — Azure AI Foundry replaced vLLM as the default primary
+    # backend. "azure" gets Azure OpenAI wire-shape handling (api-key
+    # header, api-version query param, response_format json_schema);
+    # everything else (including a retained external vLLM) uses the
+    # original vLLM/Qwen3 wire shape below.
+    backend_kind = "azure" if settings.LLM_BACKEND == "azure" else "vllm"
 
     # Ollama review #5 — cap output tokens. Match the Anthropic ceiling
     # so the budget is consistent across backends. When thinking is on,
@@ -343,23 +360,28 @@ async def _call_openai_compatible_llm(
     # prompt itself fills the window we cap output at 64 so vLLM still
     # has SOME room (the 400-BadRequest path then surfaces cleanly to
     # the orchestrator's failover ladder).
-    if backend_kind == "vllm":
-        _max_model_len = int(getattr(settings, "VLLM_MAX_MODEL_LEN", 8192))
-        _prompt_chars = len(system_content) + len(user_message)
-        _prompt_tokens_est = int(_prompt_chars / 2.2)
-        _safety_margin = 512
-        _room_for_output = max(
-            64,
-            _max_model_len - _prompt_tokens_est - _safety_margin,
+    _max_model_len = int(
+        getattr(
+            settings,
+            "AZURE_FOUNDRY_MAX_MODEL_LEN" if backend_kind == "azure" else "VLLM_MAX_MODEL_LEN",
+            128_000 if backend_kind == "azure" else 8192,
         )
-        if _room_for_output < max_output:
-            logger.info(
-                "_call_openai_compatible_llm: capping max_tokens %d -> %d "
-                "(prompt_chars=%d prompt_tokens~%d max_model_len=%d)",
-                max_output, _room_for_output,
-                _prompt_chars, _prompt_tokens_est, _max_model_len,
-            )
-            max_output = _room_for_output
+    )
+    _prompt_chars = len(system_content) + len(user_message)
+    _prompt_tokens_est = int(_prompt_chars / 2.2)
+    _safety_margin = 512
+    _room_for_output = max(
+        64,
+        _max_model_len - _prompt_tokens_est - _safety_margin,
+    )
+    if _room_for_output < max_output:
+        logger.info(
+            "_call_openai_compatible_llm: capping max_tokens %d -> %d "
+            "(prompt_chars=%d prompt_tokens~%d max_model_len=%d backend=%s)",
+            max_output, _room_for_output,
+            _prompt_chars, _prompt_tokens_est, _max_model_len, backend_kind,
+        )
+        max_output = _room_for_output
 
     # Qwen3 sampling defaults (per Qwen team's published recommendations).
     # vLLM extends the OpenAI-compatible API to accept top_p / top_k / min_p /
@@ -390,52 +412,75 @@ async def _call_openai_compatible_llm(
         "max_tokens": max_output,
     }
 
-    # ── vLLM payload shape ───────────────────────────────────────────────
-    # vLLM extends the OpenAI-compatible API with top-level `top_p` /
-    # `top_k` / `min_p` / `presence_penalty` fields. Sampling defaults
-    # come from the QWEN3_* settings.
-    request_payload["top_p"] = qwen3_top_p
-    request_payload["top_k"] = qwen3_top_k
-    request_payload["min_p"] = qwen3_min_p
-    if structured_output:
-        request_payload["presence_penalty"] = qwen3_structured_presence
-    elif not enable_thinking:
-        request_payload["presence_penalty"] = qwen3_no_think_presence
+    # ── Backend-specific payload shape ──────────────────────────────────
+    request_headers: dict[str, str] = {}
+    url_query_suffix = ""
+    if backend_kind == "azure":
+        # Azure OpenAI v1 API (Cohere Command A+ on Foundry): auth via
+        # `api-key` header, no `?api-version=` query param needed on this
+        # surface (empirically confirmed 2026-07-30 — see effective_llm_url
+        # docstring). `response_format: json_object` IS supported (Cohere's
+        # own docs list Command A+ under Structured Outputs; confirmed
+        # working against the live endpoint) — unlike the vLLM branch's
+        # `guided_json` schema-constrained mode, this is loose JSON-object
+        # mode only. `guided_json` is silently ignored here (same
+        # "forwarded for symmetry, backend doesn't support schema-
+        # constrained decoding" contract as the Anthropic path). No
+        # Qwen3-specific sampling knobs (top_p/top_k/min_p/presence_penalty)
+        # or chat_template_kwargs — those are vLLM/Qwen extensions this API
+        # doesn't recognize.
+        request_headers["api-key"] = settings.AZURE_FOUNDRY_API_KEY
+        if structured_output:
+            request_payload["response_format"] = {"type": "json_object"}
+    else:
+        # vLLM extends the OpenAI-compatible API with top-level `top_p` /
+        # `top_k` / `min_p` / `presence_penalty` fields. Sampling defaults
+        # come from the QWEN3_* settings.
+        request_payload["top_p"] = qwen3_top_p
+        request_payload["top_k"] = qwen3_top_k
+        request_payload["min_p"] = qwen3_min_p
+        if structured_output:
+            request_payload["presence_penalty"] = qwen3_structured_presence
+        elif not enable_thinking:
+            request_payload["presence_penalty"] = qwen3_no_think_presence
 
-    # vLLM JSON mode uses the OpenAI-compat-standard `response_format` field
-    # for "any valid JSON" decoding. For schema-CONSTRAINED decoding the
-    # caller passes a `guided_json` dict (see kwarg docstring); we forward
-    # it as a top-level field per vLLM's OpenAI-compat extension.
-    if structured_output:
-        request_payload["response_format"] = {"type": "json_object"}
-    if guided_json is not None:
-        request_payload["guided_json"] = guided_json
+        # vLLM JSON mode uses the OpenAI-compat-standard `response_format`
+        # field for "any valid JSON" decoding. For schema-CONSTRAINED
+        # decoding the caller passes a `guided_json` dict (see kwarg
+        # docstring); we forward it as a top-level field per vLLM's
+        # OpenAI-compat extension.
+        if structured_output:
+            request_payload["response_format"] = {"type": "json_object"}
+        if guided_json is not None:
+            request_payload["guided_json"] = guided_json
 
-    # Qwen3 chat-template thinking control (Phase 5 follow-up, 2026-05-19).
-    # Prior comment claimed vLLM "produces normal output without an explicit
-    # reasoning phase" — that assumption broke on vLLM v0.21 + Qwen3-14B-AWQ:
-    # the model emits <think>...</think> blocks inline in `content`, which
-    # trips the §04i guards (entity/completeness/numeric) on every answer.
-    #
-    # vLLM v0.21+ forwards `chat_template_kwargs` to the tokenizer's
-    # `apply_chat_template()`; Qwen3's chat template reads
-    # `enable_thinking` from there. Passing False here suppresses the
-    # reasoning emission at the model boundary, which is the load-bearing
-    # fix. The defensive strip on the return path (below) handles any
-    # residual <think> leakage from future Qwen3 fine-tunes that ignore
-    # the flag.
-    if not enable_thinking:
-        request_payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # Qwen3 chat-template thinking control (Phase 5 follow-up,
+        # 2026-05-19). Prior comment claimed vLLM "produces normal output
+        # without an explicit reasoning phase" — that assumption broke on
+        # vLLM v0.21 + Qwen3-14B-AWQ: the model emits <think>...</think>
+        # blocks inline in `content`, which trips the §04i guards
+        # (entity/completeness/numeric) on every answer.
+        #
+        # vLLM v0.21+ forwards `chat_template_kwargs` to the tokenizer's
+        # `apply_chat_template()`; Qwen3's chat template reads
+        # `enable_thinking` from there. Passing False here suppresses the
+        # reasoning emission at the model boundary, which is the
+        # load-bearing fix. The defensive strip on the return path (below)
+        # handles any residual <think> leakage from future Qwen3
+        # fine-tunes that ignore the flag.
+        if not enable_thinking:
+            request_payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     # Backend label for metrics. Same detection as backend_kind above —
     # kept as a separate name so existing log lines / metric labels keep
-    # their wire shape ("ollama" / "vllm" strings).
+    # their wire shape ("azure" / "vllm" strings).
     backend_label = backend_kind
 
     async def _do_blocking_call(client: httpx.AsyncClient) -> dict:
         response = await client.post(
-            f"{effective_url}/chat/completions",
+            f"{effective_url}/chat/completions{url_query_suffix}",
             json=request_payload,
+            headers=request_headers or None,
         )
         # Phase G overnight — log the upstream error body BEFORE raising so
         # the orchestrator's retry path has a chance to see *why* (model
@@ -471,8 +516,9 @@ async def _call_openai_compatible_llm(
         usage: dict[str, Any] = {}
         async with client.stream(
             "POST",
-            f"{effective_url}/chat/completions",
+            f"{effective_url}/chat/completions{url_query_suffix}",
             json=request_payload,
+            headers=request_headers or None,
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -609,19 +655,41 @@ async def _call_openai_compatible_llm(
                 len(stripped),
             )
             content = stripped or content  # never empty the answer
-    # `reasoning` is a vendor extension some backends place on
-    # message.reasoning (separate from `content`). Not part of the OpenAI
-    # spec so we guard carefully.
-    reasoning: str = (
-        (data.get("choices") or [{}])[0]
-        .get("message", {})
-        .get("reasoning") or ""
-    )
+
+    # Cohere Command A+ (azure backend) wraps JSON-mode output in sentinel
+    # tokens: `<|START_TEXT|>{"...":...}<|END_TEXT|>`. Empirically confirmed
+    # 2026-07-30 against a live deployment. Strip before returning so the
+    # caller's json.loads() (or any plain-text consumer) sees a clean
+    # payload. Harmless no-op on backends that never emit these tokens.
+    if backend_kind == "azure" and "<|START_TEXT|>" in content:
+        stripped = re.sub(
+            r"<\|START_TEXT\|>|<\|END_TEXT\|>",
+            "",
+            content,
+        ).strip()
+        if stripped != content:
+            logger.debug(
+                "_call_openai_compatible_llm: stripped Cohere sentinel tokens "
+                "(%d -> %d chars)",
+                len(content),
+                len(stripped),
+            )
+            content = stripped or content
+
+    # `reasoning` / `reasoning_content` are vendor extensions some backends
+    # place on the message, separate from `content`. Not part of the OpenAI
+    # spec so we check both field names and guard carefully. `reasoning` is
+    # the vLLM/Qwen3 convention; `reasoning_content` is Cohere Command A+'s
+    # (confirmed 2026-07-30 against a live deployment — same "budget eaten
+    # by thinking" failure mode as Qwen3 reproduces here too).
+    _message = (data.get("choices") or [{}])[0].get("message", {})
+    reasoning: str = _message.get("reasoning") or _message.get("reasoning_content") or ""
     if not content and reasoning.strip():
         logger.warning(
             "budget_exhausted_by_thinking: empty content with %d-char reasoning. "
             "backend=%s model=%s max_tokens=%d prompt_tokens~%d. "
-            "Consider raising VLLM_MAX_MODEL_LEN or disabling thinking on this call site.",
+            "Consider raising the backend's max-context setting or disabling "
+            "thinking/reasoning on this call site.",
             len(reasoning), backend_label, effective_model, max_output, prompt_tokens,
         )
         # Return a structured fallback so downstream citation/response assembly
@@ -629,8 +697,8 @@ async def _call_openai_compatible_llm(
         content = (
             "The model returned no content for this query due to token budget "
             "exhaustion during its internal reasoning pass. This typically happens "
-            "on very large projects. Please retry, or raise VLLM_MAX_MODEL_LEN if the "
-            "problem persists."
+            "on very large projects. Please retry, or raise the configured max "
+            "output/context budget if the problem persists."
         )
 
     # Phase 5 follow-up — Langfuse generation observation. Until 2026-05-19
@@ -648,7 +716,7 @@ async def _call_openai_compatible_llm(
             # auth_check() once at startup would be cleaner, but we keep
             # it lazy here so test envs without Langfuse don't blow up.
             _gen = _lf.start_generation(
-                name="vllm_chat_completion",
+                name=f"{backend_label}_chat_completion",
                 model=effective_model,
                 input=[
                     {"role": "system", "content": system_content[:4000]},
@@ -677,13 +745,16 @@ async def _call_openai_compatible_llm(
 
 
 def _resolve_local_llm_fallback_target() -> tuple[str, str] | None:
-    """R12 — resolve the (base_url, model) for the local-LLM failover.
+    """R12 — resolve the (base_url, model) for the OpenAI-compat failover.
 
-    Prefers vLLM (the canonical local backend — see docs/model_migration.md)
-    when VLLM_URL is set; falls back to LLM_PRIMARY_URL/MODEL otherwise.
-    Returns None if neither is configured, which makes the orchestrator
-    surface the "LLM error" without trying a cross-backend retry.
+    Prefers Azure Foundry (the default primary backend post Phase-C) when
+    configured; falls back to a retained external VLLM_URL, then
+    LLM_PRIMARY_URL/MODEL. Returns None if nothing is configured, which
+    makes the orchestrator surface the "LLM error" without trying a
+    cross-backend retry.
     """
+    if settings.AZURE_FOUNDRY_ENDPOINT and settings.AZURE_FOUNDRY_DEPLOYMENT:
+        return settings.effective_llm_url, settings.AZURE_FOUNDRY_DEPLOYMENT
     if settings.VLLM_URL:
         return settings.VLLM_URL, settings.VLLM_MODEL
     if settings.LLM_PRIMARY_URL:

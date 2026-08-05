@@ -7,6 +7,13 @@ dependencies = [
     "boto3>=1.35",
     "botocore>=1.35",
     "aioboto3>=13.0",
+    "azure-storage-blob>=12.24",
+    # Only imported when STORAGE_BACKEND=azure_blob AND
+    # AZURE_STORAGE_ACCOUNT_URL (managed-identity mode) is set — see
+    # azure_sync_client.build_blob_service_client's lazy import. Declared
+    # as a hard dep anyway since it's small and every real Azure deployment
+    # needs it; connection-string-only test/local usage just won't import it.
+    "azure-identity>=1.19",
 ]
 
 [project.optional-dependencies]

@@ -32,6 +32,7 @@ from app.agent.agentic_retrieval.retrieval_profile import (
     profile_for_intent,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
+from app.models.rag import GeoRAGResponse
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,11 @@ async def resolve_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
 async def classify_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Run the 6-intent classifier; populate ``intent`` + ``intent_result``."""
+    if state.status_callback is not None:
+        try:
+            await state.status_callback("Classifying query…")
+        except Exception:  # pragma: no cover — status is a UX affordance
+            logger.debug("agentic_retrieval.classify: status_callback raised", exc_info=True)
     openai_client = getattr(state.deps, "openai_http_client", None)
     result = await classify_intent(state.query, openai_http_client=openai_client)
     logger.info(
@@ -488,6 +494,11 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     assert state.retrieval_profile is not None, (
         "route_node must run before execute_node"
     )
+    if state.status_callback is not None:
+        try:
+            await state.status_callback("Querying PostGIS + Qdrant…")
+        except Exception:  # pragma: no cover — status is a UX affordance
+            logger.debug("agentic_retrieval.execute: status_callback raised", exc_info=True)
     profile: RetrievalProfile = state.retrieval_profile
     filters = state.retrieval_filters
 
@@ -930,6 +941,19 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     openai_client = getattr(state.deps, "openai_http_client", None)
     anthropic_client = getattr(state.deps, "anthropic_client", None)
 
+    # Step 2.5 — real token streaming. Previously this call passed no
+    # token_callback at all, so _call_llm always took the blocking path
+    # and queries.py's word-split synthetic-delta fallback ran on EVERY
+    # query regardless of backend. _call_llm already knows how to stream
+    # both Anthropic and OpenAI-compatible (incl. Azure Foundry) backends
+    # once token_callback is set — the gap was purely that nothing in the
+    # LangGraph path forwarded it.
+    if state.status_callback is not None:
+        try:
+            await state.status_callback("Synthesizing answer…")
+        except Exception:  # pragma: no cover — status is a UX affordance
+            logger.debug("agentic_retrieval.assemble: status_callback raised", exc_info=True)
+
     try:
         text = await _call_llm(
             query=state.query,
@@ -939,6 +963,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             openai_http_client=openai_client,
             system_prompt=system_prompt,
             audit_label="agentic_retrieval",
+            token_callback=state.token_callback,
         )
     except Exception:
         logger.exception("agentic_retrieval.assemble: LLM call failed")
@@ -1330,15 +1355,36 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
          we FLOOR the answer's confidence and surface a loud warning so a
          fabrication- or constraint-flagged answer can never ship at normal
          confidence. (Follow-up: a real validate→execute retry edge.)
+
+    CLAUDE.md hard rule #5 audit (post Step 2.5): Layer 5 (chunk provenance)
+    was defined in layer5_provenance.py but never called anywhere on the
+    live agentic path — its only prior caller lived in the deleted legacy
+    orchestrator body. Wired in here, last, since it's a pure enrichment
+    pass (never rejects/mutates the answer text, only appends source-file
+    provenance onto Citation.section) and is cheapest to run once the
+    response is otherwise final.
     """
     from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
         validate_and_repair,
+    )
+    from app.agent.hallucination.layer5_provenance import (  # noqa: PLC0415
+        enrich_provenance,
     )
     from app.agent.hallucination.orchestrator_validators import (  # noqa: PLC0415
         run_post_assembly_validation,
     )
 
     assert state.response is not None, "assemble_node must run before validate_node"
+
+    async def _enrich_provenance_safely(resp: GeoRAGResponse) -> GeoRAGResponse:
+        pg_pool = getattr(state.deps, "pg_pool", None)
+        if pg_pool is None:
+            return resp
+        try:
+            return await enrich_provenance(resp, pg_pool)
+        except Exception:  # pragma: no cover — defensive, enrich_provenance already never raises
+            logger.debug("agentic_retrieval.validate: layer5 enrichment failed", exc_info=True)
+            return resp
 
     # Layer 2 — typed-output repair (sync, never raises).
     response = validate_and_repair(state.response)
@@ -1352,6 +1398,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "agentic_retrieval.validate: post-assembly validation failed; "
             "returning the un-validated response"
         )
+        response = await _enrich_provenance_safely(response)
         return {"response": response, "validation_warnings": []}
 
     if should_retry:
@@ -1376,6 +1423,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 exc_info=True,
             )
 
+    response = await _enrich_provenance_safely(response)
     return {"response": response, "validation_warnings": warnings}
 
 

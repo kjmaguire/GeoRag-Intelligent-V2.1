@@ -39,6 +39,7 @@ from app.metrics import (
     QDRANT_PAYLOAD_AUDIT_RUNS,
     QDRANT_PAYLOAD_AUDIT_VIOLATIONS,
 )
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.hatchet.embed_pending_passages.smoke")
 
@@ -176,11 +177,7 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
     ).tolist()
     sparse = encode_sparse(query)
 
-    qclient = AsyncQdrantClient(
-        host=os.environ.get("QDRANT_HOST", "qdrant"),
-        port=int(os.environ.get("QDRANT_PORT", "6333")),
-        api_key=os.environ.get("QDRANT_API_KEY") or None,
-    )
+    qclient = AsyncQdrantClient(**qdrant_client_kwargs())
     try:
         points = await hybrid_query(
             client=qclient,

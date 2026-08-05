@@ -365,10 +365,15 @@ export default function FoundryNewProject() {
                 setSubmitProgress({ done, total: uploadable.length });
             }
 
-            // 3. Land the user on the project overview.
-            // Route is /projects/{slug} (see routes/web.php — OverviewController),
-            // NOT /foundry/projects/{id} (that prefix only exists for /new).
-            window.location.href = `/projects/${projectSlug ?? projectId}`;
+            // 3. Land the user on Ingestion Runs, not the bare Overview —
+            // OCR/embedding is async (Hatchet workflow) and wasn't done yet
+            // just because the upload loop finished. Overview only picks up
+            // ingestion progress via its own 5s/30s poll banner, reached a
+            // full navigation later than this; Ingestion Runs shows live
+            // per-file OCR/parse/embed status immediately (5s poll, see
+            // routes/web.php's foundry.ingestion-runs route), closing the
+            // gap between "upload finished" and "processing is visible".
+            window.location.href = `/projects/${projectSlug ?? projectId}/ingestion-runs`;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             setSubmitError(msg);
@@ -454,7 +459,7 @@ export default function FoundryNewProject() {
                                 <p className="text-xs" style={{ color: 'var(--fg-2)' }}>
                                     Queue any files you already have. Once the project is created they're streamed to the bronze
                                     bucket and picked up by the Dagster ingestion sensor within ~5&nbsp;minutes.
-                                    Per-file cap: 100&nbsp;MB.
+                                    Per-file cap: 6&nbsp;GB.
                                 </p>
 
                                 {/* Drop zone — click opens individual file picker */}
@@ -567,7 +572,7 @@ export default function FoundryNewProject() {
                                                     <span style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}> · {queueSummary.unsupported.length} unsupported</span>
                                                 )}
                                                 {queueSummary.oversize.length > 0 && (
-                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over 100 MB</span>
+                                                    <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}> · {queueSummary.oversize.length} over 6 GB</span>
                                                 )}
                                             </div>
                                             <div className="flex-1" />
@@ -662,7 +667,7 @@ export default function FoundryNewProject() {
                                         )}
                                         {queueSummary.oversize.length > 0 && (
                                             <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
-                                                {' · '}{queueSummary.oversize.length} over 100 MB will be skipped
+                                                {' · '}{queueSummary.oversize.length} over 6 GB will be skipped
                                             </span>
                                         )}
                                     </span>

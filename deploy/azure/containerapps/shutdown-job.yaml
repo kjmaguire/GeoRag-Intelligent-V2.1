@@ -1,0 +1,50 @@
+# Azure Container Apps Job — nightly cost-control shutdown (plan C6).
+# Cron is UTC-only (no timezone support in Container Apps Jobs). 0 0 * * *
+# = 8:00pm US Eastern during EDT (UTC-4, in effect as of this deploy,
+# 2026-07-30). Switch to `0 1 * * *` when DST ends in November (EST is
+# UTC-5) if the 8pm-local intent should hold year-round — Container Apps
+# gives no DST-aware option, so this is a manual biannual adjustment.
+#
+# Runs `az containerapp update --min-replicas 0 --max-replicas 0` on every
+# scalable Container App plus `az postgres flexible-server stop`, using a
+# system-assigned managed identity scoped to Contributor on the `georag`
+# resource group (granted at deploy time, see deploy/azure/README.md).
+# Uses az CLI directly rather than the REST API for readability/
+# maintainability — this runs once a day, so the extra ~10s of az CLI
+# startup overhead doesn't matter.
+#
+# Region migration note (2026-07-31): live resource names carry a `-cc`
+# suffix (`georag-pg-cc`, `redis-cc`, `qdrant-cc`) — an artifact of the
+# eastus->canadacentral migration, see the plan's "Region migration to
+# canadacentral" section. Updated below to match the live names. The
+# still-undeployed app tier (fastapi/laravel-*/hatchet*, C8) keeps its
+# plain names since those were never created in eastus and so never
+# collided.
+properties:
+  configuration:
+    triggerType: Schedule
+    replicaTimeout: 300
+    replicaRetryLimit: 1
+    scheduleTriggerConfig:
+      cronExpression: "0 0 * * *"
+      parallelism: 1
+      replicaCompletionCount: 1
+  template:
+    containers:
+      - image: mcr.microsoft.com/azure-cli:latest
+        name: shutdown
+        command:
+          - /bin/bash
+          - -c
+        args:
+          - >-
+            set -euo pipefail;
+            az login --identity;
+            for app in redis-cc qdrant-cc fastapi hatchet-worker hatchet laravel-octane laravel-horizon laravel-reverb; do
+              az containerapp update -g georag -n "$app" --min-replicas 0 --max-replicas 0 || echo "skip $app (not deployed yet)";
+            done;
+            az postgres flexible-server stop -g georag -n georag-pg-cc || echo "skip postgres (not deployed yet)";
+            echo "shutdown sweep complete"
+        resources:
+          cpu: 0.5
+          memory: 1Gi

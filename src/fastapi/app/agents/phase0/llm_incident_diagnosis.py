@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.agents import AgentContext, georag_agent
 from app.agents.exceptions import AgentRefusalError
 from app.agents.runtime import get_runtime
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ async def llm_incident_diagnosis_run(
     # estimate prompt_tokens from message length when usage isn't surfaced.
     ctx.usage = {
         "model_profile": parameters.get("model_profile", "chat_deep"),
-        "model_id": os.environ.get("VLLM_MODEL"),
+        "model_id": settings.effective_llm_model,
         "tokens_prompt": int(len(user_message) / 4),
         "tokens_completion": int(len(raw) / 4),
         "projected_cost_usd": 0.0,

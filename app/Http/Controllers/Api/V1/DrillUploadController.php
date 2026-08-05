@@ -174,7 +174,7 @@ class DrillUploadController extends Controller
             vendorProfileId: $vendorProfileId,
         );
 
-        return response()->json([
+        $body = [
             'source_file_id' => $sourceFileId,
             'seaweedfs_key' => $seaweedfsKey,
             'sha256' => $sha256,
@@ -182,7 +182,22 @@ class DrillUploadController extends Controller
             'route' => $selection['route'],
             'asset_key' => $selection['asset_key'],
             'dispatch' => $dispatch,
-        ], 201);
+        ];
+
+        // A classified route (dagster/fastapi_pdf — NOT 'unrouted', which has
+        // no dispatcher to fail) whose dispatch nonetheless failed used to
+        // return 201 regardless, with the only signal a caller had to check
+        // being `dispatch.dispatched === false` nested three levels deep.
+        // The file IS stored (bronze.source_files row above), but it will
+        // never be processed — 201 read as unqualified success. Surface it
+        // as a real error instead of a silent dead end.
+        if ($dispatch['route'] !== 'unrouted' && $dispatch['dispatched'] === false) {
+            $body['error'] = 'ingestion_dispatch_failed';
+
+            return response()->json($body, 502);
+        }
+
+        return response()->json($body, 201);
     }
 
     /**

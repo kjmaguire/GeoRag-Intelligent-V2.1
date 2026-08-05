@@ -305,13 +305,19 @@ async def _embed_query(deps: AgentDeps, text_query: str | None) -> list[float] |
     # EMBEDDING_QUERY_PROMPT_NAME is unset we fall back to raw encoding.
     from app.config import settings as _settings  # noqa: PLC0415
     _prompt_name = _settings.EMBEDDING_QUERY_PROMPT_NAME or None
+
+    def _encode() -> list[float]:
+        # See tools.search_documents's matching comment: Cohere Embed v4
+        # (Azure AI Foundry) wants input_type="search_query" here, exposed
+        # only via embed_query() since plain SentenceTransformer has no
+        # equivalent slot. Falls back to .encode() + prompt_name for
+        # backends without that distinction.
+        if hasattr(model, "embed_query"):
+            return model.embed_query(q).tolist()
+        return model.encode(q, normalize_embeddings=True, prompt_name=_prompt_name).tolist()
+
     try:
-        vec = await loop.run_in_executor(
-            None,
-            lambda: model.encode(
-                q, normalize_embeddings=True, prompt_name=_prompt_name,
-            ).tolist(),
-        )
+        vec = await loop.run_in_executor(None, _encode)
         return vec
     except Exception:
         logger.exception("search_public_geoscience: embedding failed for '%.80s'", q)

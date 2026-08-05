@@ -1111,8 +1111,13 @@ async def run_deterministic_rag(
     # LangGraph. When the flag is off (default) we fall through to the
     # legacy deterministic path below — byte-identical behaviour. When on,
     # the query goes through the 6-intent classifier + per-intent
-    # retrieval profiles + Phase 1 OIUR assembly. Callbacks are not yet
-    # piped into the LangGraph path; that lands in Step 2.5.
+    # retrieval profiles + Phase 1 OIUR assembly.
+    #
+    # Step 2.5 (landed) — status_callback/token_callback are now forwarded
+    # into the graph (assemble_node passes token_callback straight into
+    # _call_llm, which streams both Anthropic and OpenAI-compatible/Azure
+    # Foundry backends). bind_callback is still accepted-but-unused — see
+    # AgenticRetrievalState.bind_callback docstring.
     #
     # Phase 3 / Step 3.2 — the optional ContextEnvelope from the request
     # is picked up via a contextvar so the legacy run_deterministic_rag
@@ -1169,6 +1174,9 @@ async def run_deterministic_rag(
             query, deps,
             context_envelope=envelope,
             history=history if history else None,
+            status_callback=status_callback,
+            token_callback=token_callback,
+            bind_callback=bind_callback,
         )
     raise RuntimeError(
         "AGENTIC_RETRIEVAL_V2_ENABLED must remain true; "

@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = "georag"
     POSTGRES_USER: str = "georag"
     POSTGRES_PASSWORD: str
+    # Local pgbouncer needs no TLS; Azure Database for PostgreSQL Flexible
+    # Server requires it. asyncpg accepts this as a DSN query param directly.
+    POSTGRES_SSLMODE: str = "prefer"
 
     # -------------------------------------------------------------------------
     # Neo4j — REMOVED 2026-07-28 (B1). NEO4J_HOST/PORT/USER/PASSWORD were only
@@ -155,6 +158,13 @@ class Settings(BaseSettings):
     # QDRANT_API_KEY in .env — the value is passed to both the FastAPI
     # AsyncQdrantClient AND the Qdrant container itself via compose.
     QDRANT_API_KEY: str = ""
+    # Azure Container Apps internal ingress (transport=Auto, i.e. HTTP) only
+    # fronts the app on 80/443 via its Envoy proxy — the container's own
+    # target port (6333) is not reachable directly through the environment's
+    # internal DNS, even with the bare app name. Set QDRANT_HTTPS=true and
+    # QDRANT_PORT=443 there; leave both at their plain-HTTP/6333 defaults for
+    # local compose (Qdrant is reached directly, no ingress in the way).
+    QDRANT_HTTPS: bool = False
 
     # -------------------------------------------------------------------------
     # Redis
@@ -181,14 +191,17 @@ class Settings(BaseSettings):
     # /v1/chat/completions endpoint; Anthropic uses its native messages API.
     # -------------------------------------------------------------------------
 
-    LLM_BACKEND: str = "vllm"  # "vllm" | "anthropic"
+    # Phase C (Azure lift) — "azure" is now the default primary backend,
+    # replacing self-hosted vLLM. "vllm" remains supported for operators who
+    # keep running their own OpenAI-compatible endpoint (the docker-compose
+    # `vllm` service itself was removed; point VLLM_URL at an external
+    # instance if you need this path). "anthropic" remains the optional
+    # cross-vendor fallback (see LLM_BACKEND_FALLBACK).
+    LLM_BACKEND: str = "azure"  # "azure" | "vllm" | "anthropic"
 
-    # Primary OpenAI-compatible target. With LLM_BACKEND=vllm (the only
-    # local-LLM option post-cutover), the VLLM_* values below are
-    # authoritative via `effective_llm_url` / `effective_llm_model`.
-    # LLM_PRIMARY_URL / LLM_PRIMARY_MODEL remain as the canonical OpenAI-shaped
-    # target indirection so failover paths can be retargeted via env without
-    # touching code.
+    # Legacy OpenAI-compatible target, retained for the "vllm" backend value
+    # and as the last-resort default in `effective_llm_url`/`effective_llm_model`
+    # if LLM_BACKEND is set to something unrecognized.
     LLM_PRIMARY_URL: str = "http://vllm:8000/v1"
     LLM_PRIMARY_MODEL: str = "Qwen/Qwen3-14B-AWQ"
 
@@ -236,6 +249,67 @@ class Settings(BaseSettings):
     VLLM_MAX_TOKENS: int = 4096
     VLLM_TEMPERATURE: float = 0.1
 
+    # Azure AI Foundry — used when LLM_BACKEND=azure (the default primary
+    # backend post Phase-C cutover). Deployed model is Cohere Command A+
+    # (Cohere-command-a-plus-05-2026, Preview; 128K in / 64K out, tool
+    # calling, reasoning content — see the Azure migration plan).
+    #
+    # 2026-07-30 — wire shape EMPIRICALLY VERIFIED against a live deployment
+    # (not assumed from docs, which disagreed with each other — the Foundry
+    # catalog table said "Text only" response formats for this model, while
+    # Cohere's own docs list it under Structured Outputs support; a real
+    # test call settled it). Confirmed contract:
+    #   POST {endpoint}/openai/v1/chat/completions
+    #   api-key: <key>
+    #   body: {"model": "<deployment-name>", "messages": [...],
+    #          "response_format": {"type": "json_object"}, ...}
+    # This is the newer unified **OpenAI v1 API** surface
+    # (`/openai/v1/...`, no `?api-version=` query param needed) — NOT the
+    # `/models/chat/completions` Azure AI Model Inference API path an
+    # earlier pass of this code assumed from documentation alone, and NOT
+    # the classic `/openai/deployments/{name}/chat/completions?api-
+    # version=...` path either. `effective_llm_url` builds the
+    # `{endpoint}/openai/v1` base; `_call_openai_compatible_llm` appends
+    # `/chat/completions` with no version suffix.
+    #
+    # Two response-shape quirks confirmed by the live test call, both
+    # handled in `_call_openai_compatible_llm`:
+    #   1. Reasoning lives in a separate `reasoning_content` message field
+    #      (not inline `<think>` tags like Qwen3) — cleaner to strip, but a
+    #      different code path than the vLLM branch's regex strip.
+    #   2. JSON-mode output arrives wrapped in Cohere sentinel tokens:
+    #      `<|START_TEXT|>{"...":...}<|END_TEXT|>` — must be stripped
+    #      before the caller's `json.loads()`.
+    #   3. Same "reasoning ate the whole token budget" failure mode as
+    #      Qwen3 is reproducible here too (empty `content`, partial
+    #      `reasoning_content`, `finish_reason: "length"`) — same class of
+    #      defensive handling applies, wired to the new field.
+    #
+    # AZURE_FOUNDRY_ENDPOINT: Azure AI Services / Foundry resource endpoint,
+    # e.g. https://<resource-name>.services.ai.azure.com — no trailing
+    # slash, no `/openai/v1` suffix — that's built by `effective_llm_url`.
+    AZURE_FOUNDRY_ENDPOINT: str = ""
+    AZURE_FOUNDRY_API_KEY: str = ""
+    # Deployment name as created in the Foundry portal — sent as the body
+    # `model` field. Note: some Foundry model cards (this one included)
+    # don't let you choose a custom deployment name; it defaults to the
+    # catalog model ID itself (e.g. "Cohere-command-a-plus-05-2026").
+    AZURE_FOUNDRY_DEPLOYMENT: str = ""
+    # Unused on the confirmed /openai/v1 path (no api-version query param
+    # needed) — kept for operators who fall back to the classic
+    # /openai/deployments/{name} or /models/chat/completions surfaces,
+    # which DO require it.
+    AZURE_FOUNDRY_API_VERSION: str = "2024-05-01-preview"
+    # Cohere Command A+: 128K input / 64K output tokens (Foundry catalog
+    # spec). MUST be retuned if the deployed model differs.
+    AZURE_FOUNDRY_MAX_MODEL_LEN: int = 128_000
+    AZURE_FOUNDRY_MAX_TOKENS: int = 4096
+    AZURE_FOUNDRY_TEMPERATURE: float = 0.1
+    # Preview-model risk: Command A+ is a Preview SKU (05-2026). Azure
+    # previews carry no SLA and can change wire shape without notice.
+    # Re-verify this contract with a live test call after any Azure/Cohere
+    # announcement before assuming it still holds.
+
     # Anthropic native backend — only used when LLM_BACKEND=anthropic
     ANTHROPIC_API_KEY: str = ""
     # Default to Opus 4.8 (strongest agentic coding, 1M ctx). Swap to
@@ -277,14 +351,6 @@ class Settings(BaseSettings):
     # Priority tier buys guaranteed throughput at a cost premium. Leave off
     # for development; turn on in production if 429s from standard tier bite.
     ANTHROPIC_USE_PRIORITY_TIER: bool = False
-
-    # Legacy OpenAI-compatible fallback (pre-Anthropic integration). Kept for
-    # back-compat when users already configured LLM_FALLBACK_URL against an
-    # OpenAI-shaped proxy. For new installs, prefer LLM_BACKEND=anthropic.
-    LLM_FALLBACK_ENABLED: bool = False
-    LLM_FALLBACK_URL: str = ""
-    LLM_FALLBACK_MODEL: str = ""
-    LLM_FALLBACK_API_KEY: str = ""
 
     # LLM-based classifier fallback tier (→ A grade).
     # When the keyword classifier hits classifier_fallback, ask a FAST-tier
@@ -723,7 +789,20 @@ class Settings(BaseSettings):
 
         Raises when LLM_BACKEND=anthropic, because the Anthropic path does
         not use a base URL — it goes through the native SDK.
+
+        For LLM_BACKEND=azure this returns the unified OpenAI v1 API's
+        base path (``{endpoint}/openai/v1``) — empirically confirmed
+        2026-07-30 against a live Cohere Command A+ deployment (this is
+        what Azure's own portal hands you as the connection endpoint for
+        this model, not the ``/models/chat/completions`` Model Inference
+        API path an earlier pass of this code assumed from docs). The
+        caller (`_call_openai_compatible_llm`) appends ``/chat/
+        completions`` with no version suffix — this API surface needs no
+        ``?api-version=`` query param. The deployment name goes in the
+        request body's `model` field, not the URL.
         """
+        if self.LLM_BACKEND == "azure":
+            return f"{self.AZURE_FOUNDRY_ENDPOINT.rstrip('/')}/openai/v1"
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_URL
         if self.LLM_BACKEND == "anthropic":
@@ -735,7 +814,14 @@ class Settings(BaseSettings):
 
     @property
     def effective_llm_model(self) -> str:
-        """Return the LLM model name based on the active backend."""
+        """Return the LLM model name based on the active backend.
+
+        For LLM_BACKEND=azure this is the deployment name, sent as the
+        request body's `model` field — the Azure AI Model Inference API
+        (Cohere-on-Foundry) routes by body field, not URL path.
+        """
+        if self.LLM_BACKEND == "azure":
+            return self.AZURE_FOUNDRY_DEPLOYMENT
         if self.LLM_BACKEND == "vllm":
             return self.VLLM_MODEL
         if self.LLM_BACKEND == "anthropic":
@@ -749,7 +835,13 @@ class Settings(BaseSettings):
 
     TIMEOUT_POSTGIS_S: float = 5.0
     TIMEOUT_NEO4J_S: float = 3.0
-    TIMEOUT_QDRANT_S: float = 2.0
+    # 2.0s was tuned for same-host/local-docker-network Qdrant. On Azure
+    # Container Apps, Qdrant sits behind the internal HTTPS ingress
+    # (qdrant_conn.py) — a real TLS handshake plus the hybrid dense+sparse
+    # query over that hop routinely exceeds 2s, so search_documents silently
+    # timed out on every query post-cutover (empty results, not an error).
+    # 6.0s leaves headroom under TIMEOUT_GATHER_S=8.0 below.
+    TIMEOUT_QDRANT_S: float = 6.0
     # Latency-fix follow-up — separate budget for the CPU-bound reranker.
     # Previously folded into TIMEOUT_QDRANT_S, which meant the bge-reranker
     # could blow the 2s budget and the wait_for would drop the entire
@@ -1086,19 +1178,27 @@ class Settings(BaseSettings):
     # surfaces as 400-class errors from vLLM, not silent truncation.
     MAX_CONTEXT_TOKENS: int = 22_000              # A4500 / qwen3-14b-awq (16K model_len)
     MAX_CONTEXT_TOKENS_ANTHROPIC: int = 200_000   # Claude 1M ctx, 200K leaves response headroom
+    # Headroom under AZURE_FOUNDRY_MAX_MODEL_LEN (128K default — Cohere
+    # Command A+'s documented input ceiling) for the up-to-64K output +
+    # reasoning_content overhead + system prompt + safety margin. Retune
+    # alongside AZURE_FOUNDRY_MAX_MODEL_LEN if the deployed model differs.
+    MAX_CONTEXT_TOKENS_AZURE: int = 100_000
 
 
     @property
     def effective_max_context_tokens(self) -> int:
         """Return the token budget appropriate for the active LLM_BACKEND.
 
-        Anthropic gets the generous budget (Claude 1M ctx); local
-        OpenAI-compatible backends keep the 24K ceiling to match their
-        window. Callers that truncate context should use this property
-        rather than the raw MAX_CONTEXT_TOKENS setting.
+        Anthropic and Azure Foundry get generous budgets matching their
+        much larger context windows; the legacy local vLLM path keeps the
+        22K ceiling sized for an 8K/16K-context deployment. Callers that
+        truncate context should use this property rather than the raw
+        MAX_CONTEXT_TOKENS setting.
         """
         if self.LLM_BACKEND == "anthropic":
             return self.MAX_CONTEXT_TOKENS_ANTHROPIC
+        if self.LLM_BACKEND == "azure":
+            return self.MAX_CONTEXT_TOKENS_AZURE
         return self.MAX_CONTEXT_TOKENS
 
     # Per-category row caps inside _build_context.

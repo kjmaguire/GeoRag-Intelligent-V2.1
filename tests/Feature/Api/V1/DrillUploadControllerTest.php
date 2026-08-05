@@ -180,6 +180,42 @@ class DrillUploadControllerTest extends TestCase
             ->get(), 'a duplicate SHA must not create a second row');
     }
 
+    public function test_dagster_route_dispatch_failure_returns_502_not_201(): void
+    {
+        // Distinct from test_unrouted_csv_still_persists_source_file: here
+        // DrillAssetSelector DID classify the file (route='dagster',
+        // asset_key='silver_collars') but the downstream Dagster call itself
+        // failed — the exact shape of a Dagster-decommissioned deployment
+        // (Phase B2 trim) receiving a classified upload. Previously this
+        // still returned 201 with dispatched=false buried in the response,
+        // reading as unqualified success while the row was never processed.
+        $this->mock(DagsterGraphQLClient::class, function (MockInterface $m): void {
+            $m->shouldReceive('launchAssetMaterialization')
+                ->with('silver_collars', Mockery::type('array'))
+                ->andReturn([
+                    'dispatched' => false,
+                    'run_id' => null,
+                    'error' => 'connection_refused',
+                ]);
+        });
+
+        $response = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertStatus(502)
+            ->assertJsonPath('route', 'dagster')
+            ->assertJsonPath('dispatch.dispatched', false)
+            ->assertJsonPath('error', 'ingestion_dispatch_failed');
+
+        // The file must still be stored and the bronze row still written —
+        // 502 signals "not processed yet", not "nothing happened".
+        $sourceFileId = $response->json('source_file_id');
+        $this->assertNotEmpty($sourceFileId);
+        $this->assertNotNull(
+            DB::table('bronze.source_files')->where('id', $sourceFileId)->first(),
+            'the upload must still be durably stored even when dispatch fails',
+        );
+    }
+
     public function test_unrouted_csv_still_persists_source_file(): void
     {
         // No keyword — DrillAssetSelector returns route='unrouted'.

@@ -21,10 +21,11 @@ Three exports, three patterns:
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 from typing import Any
+
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.hatchet.workspace_export.extras")
 
@@ -44,69 +45,14 @@ async def export_neo4j_workspace(
     Each node dict: ``{labels: [str], properties: {...}, neo4j_id: int}``
     Each rel dict: ``{type: str, start_neo4j_id: int, end_neo4j_id: int,
                        properties: {...}}``
+
+    B1 (2026-07-28): Neo4j was removed from the stack. This helper stays
+    in place for the export workflow's call signature but now returns
+    the same ``([], [], reason)`` fail-open shape the try/except used to
+    produce when the driver was unreachable, without the wasted
+    connection attempt.
     """
-    try:
-        from neo4j import AsyncGraphDatabase
-    except ImportError:
-        return [], [], "neo4j driver not available"
-
-    host = os.environ.get("NEO4J_HOST", "neo4j")
-    port = int(os.environ.get("NEO4J_PORT", "7687"))
-    user = os.environ.get("NEO4J_USER", "neo4j")
-    password = os.environ.get("NEO4J_PASSWORD", "")
-    if not password:
-        return [], [], "NEO4J_PASSWORD not set"
-
-    driver = AsyncGraphDatabase.driver(
-        f"bolt://{host}:{port}", auth=(user, password)
-    )
-    nodes: list[dict[str, Any]] = []
-    rels: list[dict[str, Any]] = []
-    try:
-        async with driver.session() as session:
-            # 1. Export nodes — direct workspace_id property OR project belonging
-            # to this workspace.
-            result = await session.run(
-                """
-                MATCH (n)
-                WHERE n.workspace_id = $ws
-                RETURN id(n) AS nid, labels(n) AS labels, properties(n) AS props
-                """,
-                ws=workspace_id,
-            )
-            async for rec in result:
-                nodes.append({
-                    "neo4j_id": int(rec["nid"]),
-                    "labels":   list(rec["labels"] or []),
-                    "properties": dict(rec["props"] or {}),
-                })
-
-            # 2. Export relationships where both endpoints belong to the workspace.
-            node_ids = {n["neo4j_id"] for n in nodes}
-            if node_ids:
-                rel_result = await session.run(
-                    """
-                    MATCH (a)-[r]->(b)
-                    WHERE a.workspace_id = $ws AND b.workspace_id = $ws
-                    RETURN type(r) AS rtype, id(a) AS sid, id(b) AS eid,
-                           properties(r) AS props
-                    """,
-                    ws=workspace_id,
-                )
-                async for rec in rel_result:
-                    rels.append({
-                        "type":             str(rec["rtype"]),
-                        "start_neo4j_id":   int(rec["sid"]),
-                        "end_neo4j_id":     int(rec["eid"]),
-                        "properties":       dict(rec["props"] or {}),
-                    })
-    except Exception as exc:  # noqa: BLE001
-        return [], [], f"neo4j_export_failed: {type(exc).__name__}: {exc}"
-    finally:
-        with contextlib.suppress(Exception):
-            await driver.close()
-
-    return nodes, rels, None
+    return [], [], "neo4j was removed from the stack (B1, 2026-07-28)"
 
 
 # ---------------------------------------------------------------------------
@@ -127,12 +73,10 @@ async def export_qdrant_workspace(
     except ImportError:
         return [], "qdrant client not available"
 
-    host = os.environ.get("QDRANT_HOST", "qdrant")
-    port = int(os.environ.get("QDRANT_HTTP_PORT", "6333"))
 
     points: list[dict[str, Any]] = []
     try:
-        client = AsyncQdrantClient(host=host, port=port)
+        client = AsyncQdrantClient(**qdrant_client_kwargs())
         try:
             scroll_filter = Filter(must=[
                 FieldCondition(

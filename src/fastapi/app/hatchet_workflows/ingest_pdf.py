@@ -36,9 +36,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from georag_object_storage import Bucket, StorageConfig
-from georag_object_storage.async_client import AsyncS3CompatibleStorage
-from georag_object_storage.sync_client import S3CompatibleStorage
+from georag_object_storage import Bucket, get_async_storage_client, get_storage_client
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -418,7 +416,7 @@ def _dsn() -> str:
 
 
 async def _download_from_s3(minio_key: str) -> bytes:
-    storage = AsyncS3CompatibleStorage(StorageConfig.from_env())
+    storage = get_async_storage_client()
     return await storage.get_bytes(Bucket.BRONZE, minio_key)
 
 
@@ -987,8 +985,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     pending_manifest = parsed.get("figures") or []
     if pending_manifest:
         try:
-            storage_config = StorageConfig.from_env()
-            store = S3CompatibleStorage(storage_config)
+            store = get_storage_client()
 
             figure_sections_out: list[dict] = []
             for entry in pending_manifest:
@@ -1071,7 +1068,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 if vl_desc:
                     section_lines.append(f"Description: {vl_desc}")
                 if final_key:
-                    section_lines.append(f"Image: s3://{storage_config.bucket_name(Bucket.BRONZE)}/{final_key}")
+                    section_lines.append(f"Image: s3://{Bucket.BRONZE.value}/{final_key}")
                 figure_sections_out.append({
                     "section_number": None,
                     "section_title": f"Figure (page {page_no}, #{int(idx) + 1})",

@@ -32,6 +32,7 @@ from app.agent.agentic_retrieval.nodes import (
     classify_node,
     execute_node,
     route_node,
+    validate_node,
 )
 
 # ---------------------------------------------------------------------------
@@ -533,6 +534,300 @@ async def test_run_agentic_retrieval_returns_geo_rag_response(monkeypatch) -> No
 
     assert isinstance(response, GeoRAGResponse)
     assert response.text  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# Step 2.5 — status_callback/token_callback actually reach the graph nodes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_forwards_token_callback_to_call_llm(monkeypatch) -> None:
+    """The whole point of Step 2.5: assemble_node must pass state.token_callback
+    straight into _call_llm so the SSE stream gets real per-chunk deltas
+    instead of the queries.py synthetic word-split fallback."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    async def fake_token_cb(chunk: str) -> None:
+        pass
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(), token_callback=fake_token_cb)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert captured_kwargs.get("token_callback") is fake_token_cb
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_omits_token_callback_when_none(monkeypatch) -> None:
+    """Non-streaming callers (tests, batch/eval paths) must not accidentally
+    flip _call_llm into streaming mode — token_callback stays None."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps())
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert captured_kwargs.get("token_callback") is None
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_emits_synthesizing_status(monkeypatch) -> None:
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    async def fake_call_llm(*args, **kwargs):
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    statuses: list[str] = []
+
+    async def fake_status_cb(message: str) -> None:
+        statuses.append(message)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(), status_callback=fake_status_cb)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert "Synthesizing answer…" in statuses
+
+
+@pytest.mark.asyncio
+async def test_classify_node_emits_classifying_status() -> None:
+    statuses: list[str] = []
+
+    async def fake_status_cb(message: str) -> None:
+        statuses.append(message)
+
+    state = AgenticRetrievalState(
+        query="what is the collar depth", deps=_FakeDeps(), status_callback=fake_status_cb,
+    )
+    await classify_node(state)
+    assert "Classifying query…" in statuses
+
+
+@pytest.mark.asyncio
+async def test_execute_node_emits_querying_status(monkeypatch) -> None:
+    async def fake_search_documents(ctx, query_text: str, project_id: str):
+        return {"chunks": [], "count": 0}
+
+    import app.agent.tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "search_documents", fake_search_documents, raising=False)
+
+    statuses: list[str] = []
+
+    async def fake_status_cb(message: str) -> None:
+        statuses.append(message)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(), status_callback=fake_status_cb)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+    })
+    await execute_node(state)
+    assert "Querying PostGIS + Qdrant…" in statuses
+
+
+@pytest.mark.asyncio
+async def test_run_agentic_retrieval_threads_callbacks_through_state(monkeypatch) -> None:
+    """End-to-end: callbacks passed into run_agentic_retrieval() actually
+    reach the nodes — not just accepted-and-dropped like before Step 2.5."""
+
+    async def fake_search_documents(ctx, query_text: str, project_id: str):
+        return {"chunks": [], "count": 0}
+
+    async def fake_project_id_only(ctx, project_id: str):
+        return {"chunks": [], "count": 0}
+
+    import app.agent.tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "search_documents", fake_search_documents, raising=False)
+    for t in ("query_spatial_collars", "query_assay_data", "query_project_overview"):
+        monkeypatch.setattr(_tools_mod, t, fake_project_id_only, raising=False)
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "I don't have data on that in this project. [DATA-1]"
+
+    import app.agent.llm_calls as _llm_mod
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    async def fake_validate(response, tool_results, deps):
+        return response, [], False
+
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    statuses: list[str] = []
+
+    async def status_cb(message: str) -> None:
+        statuses.append(message)
+
+    async def token_cb(chunk: str) -> None:
+        pass
+
+    response = await run_agentic_retrieval(
+        "What is the deepest hole in this project?",
+        _FakeDeps(),
+        status_callback=status_cb,
+        token_callback=token_cb,
+    )
+    from app.models.rag import GeoRAGResponse
+
+    assert isinstance(response, GeoRAGResponse)
+    assert captured_kwargs.get("token_callback") is token_cb
+    assert "Classifying query…" in statuses
+    assert "Querying PostGIS + Qdrant…" in statuses
+    assert "Synthesizing answer…" in statuses
+
+
+# ---------------------------------------------------------------------------
+# Hard rule #5 — Layer 5 (chunk provenance) now runs on the live path
+# ---------------------------------------------------------------------------
+
+
+def _minimal_response():
+    from app.models.rag import Citation, GeoRAGResponse
+
+    return GeoRAGResponse(
+        text="The collar is at 45m depth. [DATA-1]",
+        citations=[
+            Citation(
+                citation_id="[DATA-1]",
+                citation_type="DATA",
+                source_chunk_id="silver.collars:count=1:first=abc",
+                document_title="Collar data",
+                relevance_score=0.9,
+            )
+        ],
+        sources_used=["[DATA-1]"],
+        confidence=0.8,
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_node_calls_layer5_enrichment_when_pg_pool_present(monkeypatch) -> None:
+    """Layer 5 (chunk provenance) was defined but never called anywhere on
+    the live agentic path — this pins it to actually running now."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    captured: dict = {}
+
+    async def fake_enrich(resp, pg_pool):
+        captured["response"] = resp
+        captured["pg_pool"] = pg_pool
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    fake_pool = object()
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=fake_pool))
+    state = state.model_copy(update={"response": response})
+    await validate_node(state)
+
+    assert captured.get("pg_pool") is fake_pool
+    assert captured.get("response") is response
+
+
+@pytest.mark.asyncio
+async def test_validate_node_skips_layer5_when_no_pg_pool(monkeypatch) -> None:
+    """No pg_pool (e.g. certain test/eval callers) must not crash — Layer 5
+    is a best-effort enrichment, never a hard requirement."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    called = False
+
+    async def fake_enrich(resp, pg_pool):
+        nonlocal called
+        called = True
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=None))
+    state = state.model_copy(update={"response": response})
+    result = await validate_node(state)
+
+    assert called is False
+    assert result["response"] is response
+
+
+@pytest.mark.asyncio
+async def test_validate_node_swallows_layer5_failure(monkeypatch) -> None:
+    """A Layer 5 lookup failure must degrade gracefully, not break the answer."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, [], False
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    async def broken_enrich(resp, pg_pool):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", broken_enrich)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=object()))
+    state = state.model_copy(update={"response": response})
+    result = await validate_node(state)  # must not raise
+
+    assert result["response"] is response
 
 
 # ---------------------------------------------------------------------------

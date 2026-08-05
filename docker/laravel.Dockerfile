@@ -120,6 +120,18 @@ COPY . .
 RUN composer run-script post-autoload-dump --no-interaction || true
 
 # Build the production frontend assets (Vite + Inertia SSR).
+# VITE_* vars are inlined by Vite at build time (import.meta.env), unlike
+# every other setting in this image which is read from the runtime
+# container env — they must be supplied as build args, not env-vars set
+# on the deployed container.
+ARG VITE_REVERB_APP_KEY
+ARG VITE_REVERB_HOST
+ARG VITE_REVERB_PORT
+ARG VITE_REVERB_SCHEME
+ENV VITE_REVERB_APP_KEY=$VITE_REVERB_APP_KEY \
+    VITE_REVERB_HOST=$VITE_REVERB_HOST \
+    VITE_REVERB_PORT=$VITE_REVERB_PORT \
+    VITE_REVERB_SCHEME=$VITE_REVERB_SCHEME
 RUN npm run build
 
 # -----------------------------------------------------------------------------

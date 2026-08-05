@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import Plotly from 'plotly.js-dist-min';
+import { escapeHtml } from '../lib/escapeHtml';
 
 /**
  * 2026-05-26 — DO NOT re-import `react-plotly.js/factory`. Rolldown's
@@ -171,7 +172,11 @@ export default function DrillTrace3D({
                 x: holes.map((h) => h.longitude),
                 y: holes.map((h) => h.latitude),
                 z: holes.map((h) => h.elevation || 0),
-                text: holes.map((h) => h.hole_id),
+                // Plotly hovertemplate renders %{text} as pseudo-HTML (<b>,
+                // <br>, …) — hole_id is ingested data, so a hostile value
+                // could inject markup. Escape before it reaches Plotly (same
+                // stored-XSS class the MapLibre popups are guarded against).
+                text: holes.map((h) => escapeHtml(h.hole_id)),
                 textposition: 'top center',
                 textfont: { size: 9, color: '#d1d5db', family: 'monospace' },
                 marker: {
@@ -237,7 +242,10 @@ export default function DrillTrace3D({
                 const zs: (number | null)[] = [];
                 const text: (string | null)[] = [];
                 segments.forEach(({ from, to, iv }) => {
-                    const label = `${iv.label} · ${iv.depth_from}-${iv.depth_to}m`;
+                    // iv.label is ingested/derived data rendered via
+                    // hovertemplate's %{text} — escape it (see the hole_id
+                    // comment above for why).
+                    const label = `${escapeHtml(iv.label)} · ${iv.depth_from}-${iv.depth_to}m`;
                     xs.push(from.x, to.x, null);
                     ys.push(from.y, to.y, null);
                     zs.push(from.z, to.z, null);
@@ -292,10 +300,12 @@ export default function DrillTrace3D({
                     x: items.map((i) => i.pt.x),
                     y: items.map((i) => i.pt.y),
                     z: items.map((i) => i.pt.z),
+                    // kind/strike/dip are ingested/derived data rendered via
+                    // hovertemplate's %{text} — escape (see hole_id comment above).
                     text: items.map((i) => {
                         const strike = i.s.strike_deg ?? '—';
                         const dip = i.s.dip_deg ?? '—';
-                        return `${kind} · ${i.s.depth}m · strike ${strike}/dip ${dip}`;
+                        return `${escapeHtml(kind)} · ${i.s.depth}m · strike ${escapeHtml(String(strike))}/dip ${escapeHtml(String(dip))}`;
                     }),
                     marker: {
                         size: 4,

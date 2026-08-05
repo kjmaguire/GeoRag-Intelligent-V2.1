@@ -109,6 +109,14 @@ RERANKER_REVISION = _os_pin.environ.get(
 )
 RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
 
+# Version string of the backend _get_reranker() ACTUALLY loaded — set when the
+# singleton is built. RERANKER_VERSION above is only the bge default; reporting
+# it unconditionally (as the sidecar did pre-2026-07-02) mislabels the
+# qwen3_causal and RERANKER_MODEL_PATH deployments in answer_runs lineage.
+_ACTIVE_VERSION: str | None = None
+
+
+
 # ---------------------------------------------------------------------------
 # Qwen3-Reranker causal-LM backend (audit 2026-06-28, OPT-IN, NOT deployed)
 # ---------------------------------------------------------------------------
@@ -135,6 +143,47 @@ QWEN3_RERANKER_INSTRUCTION = (
 )
 QWEN3_RERANKER_MAX_LEN = int(os.environ.get("QWEN3_RERANKER_MAX_LEN", "2048"))
 QWEN3_RERANKER_BATCH = int(os.environ.get("QWEN3_RERANKER_BATCH", "8"))
+
+# ---------------------------------------------------------------------------
+# Azure AI Foundry (Cohere Rerank v4) backend — RERANKER_BACKEND=foundry
+# ---------------------------------------------------------------------------
+# Selected alongside the existing cross_encoder/qwen3_causal values. Unlike
+# those two, this path never loads a local model at all — no torch, no
+# sentence_transformers, no CPU thread tuning. Reuses the same Azure AI
+# Services resource as the LLM (AZURE_FOUNDRY_ENDPOINT/API_KEY), with its own
+# deployment name since rerank is deployed as a separate model on that
+# resource. Read via os.environ (not app.config.settings) to match this
+# module's existing convention of reading env vars directly.
+AZURE_FOUNDRY_RERANK_DEPLOYMENT = (
+    os.environ.get("AZURE_FOUNDRY_RERANK_DEPLOYMENT") or ""
+).strip()
+AZURE_FOUNDRY_RERANK_TIMEOUT_S = float(
+    os.environ.get("AZURE_FOUNDRY_RERANK_TIMEOUT_S", "8.0")
+)
+
+
+def active_reranker_version() -> str:
+    """Return the version string to persist to answer_runs.reranker_version.
+
+    RERANKER_VERSION is a module-level constant fixed to the Qwen3 cross-
+    encoder identity — accurate for the cross_encoder (default) backend, but
+    wrong for foundry/qwen3_causal/local-path overrides. Checks
+    _ACTIVE_VERSION first so a caller after the model has actually loaded
+    gets the exact loaded identity (e.g. the resolved qwen3_causal model_id)
+    rather than a pre-load guess; falls back to guessing from env vars for
+    callers before load (or when foundry, which never sets _ACTIVE_VERSION
+    since it loads no local model).
+    """
+    if RERANKER_BACKEND == "foundry":
+        return f"cohere-foundry:{AZURE_FOUNDRY_RERANK_DEPLOYMENT or 'unset'}"
+    if _ACTIVE_VERSION is not None:
+        return _ACTIVE_VERSION
+    model_path = (os.environ.get("RERANKER_MODEL_PATH") or "").strip()
+    if RERANKER_BACKEND == "qwen3_causal":
+        return f"qwen3-causal:{model_path or QWEN3_RERANKER_MODEL}"
+    if model_path:
+        return f"local:{model_path}"
+    return RERANKER_VERSION
 
 # ---------------------------------------------------------------------------
 # Per-query-class top-k defaults (spec B6)
@@ -201,6 +250,76 @@ class _RemoteReranker:
         )
         resp.raise_for_status()
         return [float(s) for s in resp.json()["scores"]]
+
+
+class _FoundryReranker:
+    """Cohere Rerank v4 (Azure AI Foundry) behind the CrossEncoder ``.predict()`` API.
+
+    Mirrors ``CrossEncoder.predict(list[(query, passage)]) -> list[float]`` so
+    it is a drop-in for ``get_reranker_or_none()`` consumers, same contract as
+    ``_RemoteReranker``/``_Qwen3CausalReranker`` above.
+
+    Wire shape empirically verified 2026-07-30 against a live deployment
+    (Cohere's own custom rerank API, proxied through Azure — NOT the unified
+    chat-completions/Model-Inference-API surface):
+        POST {endpoint}/providers/cohere/v2/rerank
+        api-key: <key>
+        body: {"model": "<deployment>", "query": str,
+               "documents": [str, ...], "top_n": int}
+        -> {"results": [{"index": int, "relevance_score": float}, ...]}
+
+    Cohere's rerank API takes ONE query + N documents per call — a real
+    shape difference from the pairwise CrossEncoder contract callers use.
+    ``predict`` groups the incoming pairs by their shared query (in practice
+    every call site passes pairs sharing a single query, but this groups
+    defensively rather than assume), issues one rerank call per group with
+    ``top_n`` set to the full document count so every candidate gets scored
+    back (not just Cohere's own top-N), and remaps scores to the caller's
+    original pair order via the returned ``index`` field.
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: str,
+        deployment: str,
+        timeout_s: float,
+    ) -> None:
+        self._url = endpoint.rstrip("/") + "/providers/cohere/v2/rerank"
+        self._api_key = api_key
+        self._deployment = deployment
+        self._timeout_s = timeout_s
+
+    def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        import httpx  # noqa: PLC0415
+
+        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
+
+        groups: dict[str, list[int]] = {}
+        for i, (query, _passage) in enumerate(pairs):
+            groups.setdefault(str(query), []).append(i)
+
+        scores: list[float] = [0.0] * len(pairs)
+        with httpx.Client(timeout=self._timeout_s) as client:
+            for query, indices in groups.items():
+                documents = [str(pairs[i][1]) for i in indices]
+
+                def _do(query: str = query, documents: list[str] = documents) -> httpx.Response:
+                    return client.post(
+                        self._url,
+                        headers={"api-key": self._api_key},
+                        json={
+                            "model": self._deployment,
+                            "query": query,
+                            "documents": documents,
+                            "top_n": len(documents),
+                        },
+                    )
+
+                resp = with_foundry_retry(_do, label="foundry_rerank")
+                for result in resp.json()["results"]:
+                    scores[indices[result["index"]]] = float(result["relevance_score"])
+        return scores
 
 
 class _Qwen3CausalReranker:
@@ -312,6 +431,8 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
     The caller (lifespan hook) should catch and log exceptions -- a reranker
     failure degrades quality but must not prevent service startup.
     """
+    global _ACTIVE_VERSION
+
     import os  # noqa: PLC0415
 
     import torch  # noqa: PLC0415
@@ -354,7 +475,8 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
         qwen_reranker.predict(
             [("warm up query", "warm up geological document passage")]
         )
-        logger.info("Reranker ready: qwen3-causal:%s", model_id)
+        _ACTIVE_VERSION = f"qwen3-causal:{model_id}"
+        logger.info("Reranker ready: %s", _ACTIVE_VERSION)
         return qwen_reranker
 
     # ADR-0010 §5e — RERANKER_MODEL_PATH override lets the operator A/B test
@@ -387,20 +509,38 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
 
     # Warm-up pass so the first real query doesn't pay JIT compilation cost.
     model.predict([("warm up query", "warm up geological document passage")])
+    _ACTIVE_VERSION = active_version
     logger.info("Reranker ready: %s", active_version)
     return model
 
 
-def get_reranker_or_none() -> CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | None:
-    """Return the reranker (local singleton, remote proxy, or None).
+def get_reranker_or_none() -> (
+    CrossEncoder | _RemoteReranker | _Qwen3CausalReranker | _FoundryReranker | None
+):
+    """Return the reranker (Foundry client, local singleton, remote proxy, or None).
 
-    When RERANKER_SERVICE_URL is set, returns an HTTP proxy to the shared
-    `reranker` sidecar — no local model is loaded in this process. Otherwise
-    loads the in-process CrossEncoder singleton. All exceptions are caught so
-    callers can handle the absent-reranker path (RRF order fallback) without
-    try/except boilerplate. Env is read fresh each call so it stays
-    monkeypatchable in tests.
+    Precedence: RERANKER_BACKEND=foundry short-circuits before anything else
+    — no torch, no sentence_transformers, no local model load at all. Then
+    RERANKER_SERVICE_URL (HTTP proxy to the shared `reranker` sidecar).
+    Otherwise loads the in-process CrossEncoder singleton. All exceptions are
+    caught so callers can handle the absent-reranker path (RRF order
+    fallback) without try/except boilerplate. Env is read fresh each call so
+    it stays monkeypatchable in tests.
     """
+    if RERANKER_BACKEND == "foundry":
+        endpoint = (os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
+        api_key = (os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
+        if not (endpoint and api_key and AZURE_FOUNDRY_RERANK_DEPLOYMENT):
+            logger.error(
+                "reranker: RERANKER_BACKEND=foundry but AZURE_FOUNDRY_ENDPOINT/"
+                "API_KEY/AZURE_FOUNDRY_RERANK_DEPLOYMENT not fully set -- "
+                "rerank step will be skipped"
+            )
+            return None
+        return _FoundryReranker(
+            endpoint, api_key, AZURE_FOUNDRY_RERANK_DEPLOYMENT,
+            AZURE_FOUNDRY_RERANK_TIMEOUT_S,
+        )
     service_url = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
     if service_url:
         timeout_s = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))

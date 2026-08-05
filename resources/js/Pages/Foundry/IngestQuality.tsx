@@ -40,7 +40,7 @@ export default function FoundryIngestQuality({ import_id, project, files, anomal
                     sub={`Import ${import_id} · ${files.length} files inspected`}
                     actions={
                         <Link
-                            href={`/projects/${project.slug}/data`}
+                            href={`/projects/${project.slug}/sources`}
                             className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                             style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)' }}
                         >
