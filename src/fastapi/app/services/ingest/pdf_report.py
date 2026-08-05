@@ -243,6 +243,13 @@ class ReportParseResult:
     # now goes through app.agent.figure_extractor instead, which does not
     # populate this field. See figure_extractor.py for the current path.
     figure_manifest: list[dict] = field(default_factory=list)
+    # True when native text extraction (fitz/pdfplumber) came up short and
+    # the whole-document OCR fallback ran, OR any individual page needed
+    # fitz's internal per-page tesseract recovery. Was previously read via
+    # getattr(result, "is_scanned", False) in ingest_pdf.py against a
+    # dataclass with no such field at all — silently always False, so
+    # every silver.reports row claimed "not scanned" regardless of reality.
+    is_scanned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2466,6 +2473,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
 
     fitz_failed = False
     image_page_nums: list[int] = []
+    is_scanned = False
     # Phase 3 — per-page method + confidence maps accumulated across the
     # dispatch tree, applied to ReportSections at the end via
     # _assign_ocr_metadata.
@@ -2483,6 +2491,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
                 _span.set_attribute("pdf.text_chars", len(full_text))
                 _span.set_attribute("pdf.page_count", len(page_languages))
                 _span.set_attribute("pdf.image_pages", len(image_page_nums))
+                is_scanned = is_scanned or bool(image_page_nums)
                 parser_used = "fitz"
                 logger.info(
                     "pdf_report: fitz extracted %d chars from '%s' (%d pages, %d image pages)",
@@ -2537,6 +2546,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
 
     # --- Scanned PDF detection + OCR fallback ---
     if len(full_text.strip()) < MIN_EXTRACTABLE_TEXT_CHARS:
+        is_scanned = True
         with _tracer.start_as_current_span("pdf_report.ocr") as _span:
             logger.warning(
                 "pdf_report: only %d chars extracted from '%s' — attempting OCR fallback",
@@ -2606,6 +2616,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
             warnings=extraction_warnings,
             provenance=_provenance,
             page_languages=page_languages,
+            is_scanned=is_scanned,
         )
 
     # --- Use first ~2000 chars for metadata extraction (title page) ---

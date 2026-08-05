@@ -122,7 +122,12 @@ def test_workflows_are_in_ai_pool() -> None:
     from app.hatchet_workflows.worker import POOLS
     names = {wf.name for wf in POOLS["ai"]}
     assert "backup_postgres" in names
-    assert "backup_neo4j" in names
+    # backup_neo4j deliberately NOT registered — Neo4j was dropped entirely
+    # 2026-07-28 (B1); the cron would guarantee a nightly failure against a
+    # container that no longer exists. See worker.py's comment at the same
+    # spot. The module itself (backup_neo4j.py) still exists and is still
+    # tested above/below as an importable, directly-invokable script.
+    assert "backup_neo4j" not in names
     assert "backup_qdrant" in names
     assert "backup_redis" in names
     assert "backup_seaweedfs" in names

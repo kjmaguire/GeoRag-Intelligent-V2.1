@@ -1108,10 +1108,12 @@ async def run_deterministic_rag(
     None or omit it when no stream exists (e.g. unit tests).
     """
     # Phase 2 / Step 2.3 — flag-gated entry into the new agentic-retrieval
-    # LangGraph. When the flag is off (default) we fall through to the
-    # legacy deterministic path below — byte-identical behaviour. When on,
-    # the query goes through the 6-intent classifier + per-intent
-    # retrieval profiles + Phase 1 OIUR assembly.
+    # LangGraph. Default is now true (config.py) — the "legacy deterministic
+    # path below" this comment used to describe was deleted 2026-08-04
+    # (Phase A2 trim); if the flag is ever false, this function raises
+    # RuntimeError instead (see below) rather than falling through to
+    # anything. When on, the query goes through the intent classifier +
+    # per-intent retrieval profiles + Phase 1 OIUR assembly.
     #
     # Step 2.5 (landed) — status_callback/token_callback are now forwarded
     # into the graph (assemble_node passes token_callback straight into

@@ -954,20 +954,33 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         except Exception:  # pragma: no cover — status is a UX affordance
             logger.debug("agentic_retrieval.assemble: status_callback raised", exc_info=True)
 
-    try:
-        text = await _call_llm(
-            query=state.query,
-            context=context_block,
-            temperature=0.1,
-            anthropic_client=anthropic_client,
-            openai_http_client=openai_client,
-            system_prompt=system_prompt,
-            audit_label="agentic_retrieval",
-            token_callback=state.token_callback,
-        )
-    except Exception:
-        logger.exception("agentic_retrieval.assemble: LLM call failed")
-        text = "I was unable to generate a summary due to an LLM error."
+    # No local try/except around this call (deliberately — see below).
+    # assemble_node used to catch every exception here and replace the
+    # answer with a hardcoded "I was unable to generate a summary..."
+    # string, then continue the pipeline as a success: HTTP 200, a
+    # `completed` SSE event, real Citation objects built from whatever was
+    # retrieved before the LLM call failed and attached to that boilerplate
+    # text. A 429 from Foundry, a timeout, a content-filter trip, or
+    # WorkspaceQuotaExceeded (the §35.1 cost-ceiling check _call_llm now
+    # runs — see llm_calls.py) all got the identical treatment: a real
+    # error dressed as a low-confidence answer. queries.py already has the
+    # correct handling for this (a `failed` SSE event via classify_error(),
+    # and a dedicated 429 path for WorkspaceQuotaExceeded) — it was simply
+    # never reached because this local catch swallowed everything first.
+    # Letting the exception propagate is what actually reaches it. Found in
+    # a full-app review, 2026-08-05.
+    text = await _call_llm(
+        query=state.query,
+        context=context_block,
+        temperature=0.1,
+        anthropic_client=anthropic_client,
+        openai_http_client=openai_client,
+        system_prompt=system_prompt,
+        audit_label="agentic_retrieval",
+        token_callback=state.token_callback,
+        workspace_id=getattr(state.deps, "workspace_id", None),
+        redis_client=getattr(state.deps, "redis_client", None),
+    )
 
     # ADR-0007 PR-1 — for project_summary / coverage_gap, pre-build the
     # chat-card payloads from the structured tool results BEFORE the
@@ -1410,16 +1423,40 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         ]
         try:
             _floored = min(float(getattr(response, "confidence", 0.2) or 0.2), 0.2)
-            response = response.model_copy(update={"confidence": _floored})
+            # Confidence-flooring ALONE used to be the only signal — nothing
+            # downstream (Laravel, FastAPI routers, the frontend) gates
+            # delivery on GeoRAGResponse.confidence, so a should_retry=True
+            # response (fabricated hole-ID/entity, an impossible geological
+            # value, or ≥3 ungrounded numbers) shipped as an ordinary-looking
+            # cited answer with only a quieter number attached. The agentic
+            # path genuinely has no re-generation loop yet (that's the
+            # separate, still-shadow-mode repair_shadow_node rollout — see
+            # docs/architecture/repair_loop_spec.md), so this doesn't try to
+            # fix or regenerate the answer; it makes the caveat impossible
+            # to miss by putting it in the text itself, since that's the one
+            # thing every consumer of this response actually renders.
+            # Citations/markers are left untouched (the retrieved evidence
+            # is real; what's unverified is the LLM's synthesis of it).
+            # Found in a full-app review, 2026-08-05.
+            _reason = warnings[0] if warnings else "an unverified claim"
+            _banner = (
+                "**Note: automated fact-checking flagged a potential issue "
+                f"with this answer** ({_reason}) — treat the following with "
+                "caution and verify against the source documents directly.\n\n"
+            )
+            response = response.model_copy(update={
+                "confidence": _floored,
+                "text": _banner + response.text,
+            })
             logger.error(
                 "agentic_retrieval.validate: should_retry=True — confidence "
-                "floored to %.2f. warnings=%s",
+                "floored to %.2f and warning banner prepended. warnings=%s",
                 _floored,
                 warnings,
             )
         except Exception:
             logger.debug(
-                "agentic_retrieval.validate: confidence floor skipped",
+                "agentic_retrieval.validate: confidence floor/banner skipped",
                 exc_info=True,
             )
 
@@ -1875,6 +1912,8 @@ async def _reissue_llm_only(
         openai_http_client=openai_client,
         system_prompt=system_prompt,
         audit_label="agentic_retrieval_repair_stage3",
+        workspace_id=getattr(state.deps, "workspace_id", None),
+        redis_client=getattr(state.deps, "redis_client", None),
     )
 
     new_response = assemble_response(text, state.tool_results)

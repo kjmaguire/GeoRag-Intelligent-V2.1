@@ -122,9 +122,14 @@ async def run_agentic_retrieval(
             ``run_deterministic_rag`` but not yet invoked anywhere — see
             ``AgenticRetrievalState.bind_callback`` docstring for why.
 
-    On any unexpected node failure the graph propagates the partial state
-    forward; the assemble node always returns *some* response (even if
-    it's a refusal-shaped one) so this function never returns None.
+    A synthesis-call failure inside assemble_node (LLM timeout, 429,
+    content-filter trip, WorkspaceQuotaExceeded, etc.) is NOT caught here
+    or in assemble_node — it propagates out of this function to the
+    caller (queries.py's stream handler), which is where the real
+    `failed`/`quota_exceeded` SSE-event handling lives. This function can
+    raise; only a *successful* graph run is guaranteed to return a
+    GeoRAGResponse (the defensive None-check below covers a graph that
+    completes without one, not a graph that raised).
     """
     graph = get_compiled_graph()
     # RetrievalInspector follow-up — capture wall-clock at entry so

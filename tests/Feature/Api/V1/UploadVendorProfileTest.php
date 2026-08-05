@@ -7,7 +7,10 @@ use App\Models\User;
 use App\Models\VendorProfile;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -44,8 +47,32 @@ class UploadVendorProfileTest extends TestCase
             'orientation_reference' => 'BOH',
         ]);
 
+        // workspace_id isn't mass-assignable (not in $fillable) and has no
+        // DB-level default for new rows — Project::create() above leaves it
+        // NULL. dispatchShadowIfPdf() needs a real one to proceed past its
+        // own "no workspace_id" skip branch (see below).
+        DB::table('silver.projects')
+            ->where('project_id', $this->project->project_id)
+            ->update(['workspace_id' => (string) Str::uuid()]);
+
         $this->user = User::factory()->create();
         $this->user->projects()->attach($this->project->project_id, ['role' => 'owner']);
+
+        // These tests exercise the 'reports' category, which now returns
+        // 502 (not 201) when dispatchShadowIfPdf() can't actually dispatch
+        // ingestion — see UploadController's ingestion_dispatch_failed fix.
+        // Fake a working FastAPI trigger endpoint so the tests validate a
+        // real successful dispatch instead of accidentally relying on a gap
+        // in the fixture data (workspace_id was NULL here, hitting
+        // dispatchShadowIfPdf()'s "no workspace_id" skip branch — not the
+        // "missing FASTAPI_SERVICE_KEY" this comment previously blamed).
+        config(['services.fastapi.service_key' => 'test-service-key-must-be-at-least-32-bytes-long']);
+        Http::fake([
+            '*/internal/v1/shadow/ingest_pdf/trigger' => Http::response(
+                ['hatchet_workflow_run_id' => 'test-run-id'],
+                202,
+            ),
+        ]);
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -55,8 +82,9 @@ class UploadVendorProfileTest extends TestCase
      * category. That category was retired with the Dagster services — its
      * uploads were stored and never processed — so these tests, which are
      * about vendor-profile metadata rather than CSV ingestion, now exercise
-     * the live 'reports' path instead. dispatchShadowIfPdf() returns early
-     * without FASTAPI_SERVICE_KEY, so no HTTP is attempted under test.
+     * the live 'reports' path instead. setUp() fakes a working FastAPI
+     * trigger endpoint so dispatchShadowIfPdf() actually succeeds under
+     * test, rather than these tests silently depending on it failing.
      */
     private function makePdfFile(): UploadedFile
     {

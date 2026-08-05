@@ -598,6 +598,71 @@ async def test_assemble_node_omits_token_callback_when_none(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_assemble_node_forwards_workspace_id_and_redis_client(monkeypatch) -> None:
+    """§35.1 cost-ceiling check (assert_workspace_not_suspended) lives
+    inside _call_llm and needs workspace_id + redis_client to do anything —
+    assemble_node must forward both from state.deps, not silently drop them
+    (found live: the check existed but had no caller anywhere, 2026-08-05)."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    captured_kwargs: dict = {}
+
+    async def fake_call_llm(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "stub answer [DATA-1]"
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", fake_call_llm)
+
+    deps = _FakeDeps()
+    deps.workspace_id = "a0000000-0000-0000-0000-000000000001"
+    sentinel_redis = object()
+    deps.redis_client = sentinel_redis
+
+    state = AgenticRetrievalState(query="q", deps=deps)
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+    await assemble_node(state)
+    assert captured_kwargs.get("workspace_id") == "a0000000-0000-0000-0000-000000000001"
+    assert captured_kwargs.get("redis_client") is sentinel_redis
+
+
+@pytest.mark.asyncio
+async def test_assemble_node_propagates_llm_call_failure(monkeypatch) -> None:
+    """assemble_node used to catch every exception from _call_llm and
+    replace the answer with a hardcoded apology string, shipping it as a
+    normal HTTP 200 / `completed` SSE event with real citations attached to
+    boilerplate text. A 429, a timeout, or WorkspaceQuotaExceeded all got
+    identical silent treatment. queries.py already has the correct handling
+    for this (a `failed` SSE event, and a dedicated 429 path for
+    WorkspaceQuotaExceeded) — it's only reachable if the exception actually
+    propagates out of this node instead of being swallowed here. Found in a
+    full-app review, 2026-08-05."""
+    import app.agent.llm_calls as _llm_mod
+    from app.agent.agentic_retrieval.state import AgenticRetrievalState
+
+    async def failing_call_llm(*args, **kwargs):
+        raise _llm_mod.WorkspaceQuotaExceeded("ws-over-budget")
+
+    monkeypatch.setattr(_llm_mod, "_call_llm", failing_call_llm)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps())
+    state = state.model_copy(update={
+        "intent": "synthesis",
+        "effective_intent": "synthesis",
+        "retrieval_profile": profile_for_intent("synthesis"),
+        "tool_results": [("search_documents", {"chunks": ["x"]})],
+    })
+
+    with pytest.raises(_llm_mod.WorkspaceQuotaExceeded):
+        await assemble_node(state)
+
+
+@pytest.mark.asyncio
 async def test_assemble_node_emits_synthesizing_status(monkeypatch) -> None:
     import app.agent.llm_calls as _llm_mod
     from app.agent.agentic_retrieval.state import AgenticRetrievalState
@@ -828,6 +893,50 @@ async def test_validate_node_swallows_layer5_failure(monkeypatch) -> None:
     result = await validate_node(state)  # must not raise
 
     assert result["response"] is response
+
+
+@pytest.mark.asyncio
+async def test_validate_node_prepends_warning_banner_on_should_retry(monkeypatch) -> None:
+    """should_retry=True (fabricated hole-ID/entity, geological constraint
+    violation, or ≥3 ungrounded numbers) used to ONLY floor confidence —
+    the answer text and citations shipped completely unchanged, looking
+    like a normal cited answer, and nothing downstream (Laravel, FastAPI
+    routers, the frontend) gates delivery on GeoRAGResponse.confidence. A
+    fabricated claim reached the user with just a quieter number attached.
+    This pins that a should_retry=True response now carries an unmissable
+    warning IN THE TEXT ITSELF, since text is the one thing every consumer
+    actually renders. Found in a full-app review, 2026-08-05."""
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+    original_text = response.text
+    original_citations = response.citations
+
+    async def fake_validate(resp, tool_results, deps):
+        return resp, ["Layer 4: fabricated hole ID 'DDH-999' not found in project records"], True
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", fake_validate)
+
+    async def fake_enrich(resp, pg_pool):
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=None))
+    state = state.model_copy(update={"response": response})
+    result = await validate_node(state)
+
+    updated = result["response"]
+    assert updated.confidence <= 0.2
+    assert "automated fact-checking flagged" in updated.text.lower()
+    assert "fabricated hole id" in updated.text.lower()
+    # The original answer text is still present (appended, not discarded) —
+    # this is a caveat banner, not a full refusal/rewrite.
+    assert original_text in updated.text
+    # Citations/markers are untouched — the retrieved evidence is real;
+    # what's unverified is the LLM's synthesis of it.
+    assert updated.citations == original_citations
 
 
 # ---------------------------------------------------------------------------
