@@ -98,21 +98,29 @@ class AzureBlobDiskTest extends TestCase
     }
 
     /**
-     * Managed-identity mode — the blob CLIENT authenticates via an IMDS
-     * token (mocked here, no real network call), NOT the account key. The
-     * account key stays configured only because temporaryUrl() SAS signing
-     * has no user-delegation-key equivalent in this SDK version (see
-     * AppServiceProvider's comment on the same closure).
+     * Managed-identity mode — the blob CLIENT authenticates via a
+     * Container-Apps-injected managed-identity token (mocked here, no real
+     * network call), NOT the account key. The account key stays configured
+     * only because temporaryUrl() SAS signing has no user-delegation-key
+     * equivalent in this SDK version (see AppServiceProvider's comment on
+     * the same closure).
      */
-    public function test_azure_disk_resolves_in_managed_identity_mode_without_throwing(): void
+    private function fakeIdentityEndpoint(): void
     {
-        Cache::forget('azure:imds_token:storage');
+        putenv('IDENTITY_ENDPOINT=http://localhost:12356/msi/token');
+        putenv('IDENTITY_HEADER=fake-identity-header-secret');
+        Cache::forget('azure:msi_token:storage');
         Http::fake([
-            'http://169.254.169.254/*' => Http::response([
-                'access_token' => 'fake-imds-token',
+            'http://localhost:12356/*' => Http::response([
+                'access_token' => 'fake-msi-token',
                 'expires_on' => (string) (time() + 3600),
             ], 200),
         ]);
+    }
+
+    public function test_azure_disk_resolves_in_managed_identity_mode_without_throwing(): void
+    {
+        $this->fakeIdentityEndpoint();
 
         $this->configureAzureDisk();
         config([
@@ -123,18 +131,12 @@ class AzureBlobDiskTest extends TestCase
         $disk = Storage::disk('s3');
 
         $this->assertNotNull($disk->getAdapter());
-        Http::assertSent(fn ($request) => str_contains($request->url(), '169.254.169.254'));
+        Http::assertSent(fn ($request) => str_contains($request->url(), 'localhost:12356'));
     }
 
     public function test_azure_disk_managed_identity_mode_still_provides_temporary_urls(): void
     {
-        Cache::forget('azure:imds_token:storage');
-        Http::fake([
-            'http://169.254.169.254/*' => Http::response([
-                'access_token' => 'fake-imds-token',
-                'expires_on' => (string) (time() + 3600),
-            ], 200),
-        ]);
+        $this->fakeIdentityEndpoint();
 
         $this->configureAzureDisk();
         config([
@@ -149,5 +151,12 @@ class AzureBlobDiskTest extends TestCase
         $this->assertTrue($disk->providesTemporaryUrls());
         $url = $disk->temporaryUrl('reports/example.pdf', now()->addHours(24));
         $this->assertStringContainsString('sig=', $url);
+    }
+
+    protected function tearDown(): void
+    {
+        putenv('IDENTITY_ENDPOINT');
+        putenv('IDENTITY_HEADER');
+        parent::tearDown();
     }
 }
