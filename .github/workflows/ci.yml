@@ -458,10 +458,18 @@ jobs:
         # available yet on the GitHub Actions runner's apt mirror.
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential libpq-dev perl
+          sudo apt-get install -y -qq build-essential libpq-dev perl curl ca-certificates gnupg
+          # Ubuntu 24.04's own archive only ships postgresql-server-dev up to
+          # PG16 — postgresql-server-dev-18 doesn't exist there at all, so the
+          # install below always fell through to postgresql-server-dev-all
+          # (which doesn't have PG18 headers either), and `make` failed for
+          # want of pg_config. The PGDG apt repo is required for PG18 headers.
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
+            sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
           PG_VERSION=$(psql -U georag -h localhost -d georag_test -tAc "SHOW server_version_num;" 2>/dev/null | head -c2 || echo "18")
-          sudo apt-get install -y -qq "postgresql-server-dev-${PG_VERSION}" 2>/dev/null || \
-            sudo apt-get install -y -qq postgresql-server-dev-all
+          sudo apt-get install -y -qq "postgresql-server-dev-${PG_VERSION}"
           cd /tmp
           curl -fsSL https://github.com/theory/pgtap/archive/refs/tags/v1.3.4.tar.gz | tar xz
           cd pgtap-1.3.4
@@ -566,12 +574,25 @@ jobs:
   # See ops/runbooks/llm-model-swap.md for the arm64 deployment caveat.
   #
   # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
+  #
+  # continue-on-error (2026-08-05): these GHCR pushes are no longer part of
+  # the real deploy path — cd.yml now builds fastapi/laravel straight to ACR
+  # (georagacrcc) and deploys from there, same as the manual `az acr build`
+  # steps used throughout the Azure migration. This job has also been timing
+  # out at its 30-minute cap on every single run for over a month, which
+  # alone kept "GeoRAG CI" permanently red and silently blocked CD from ever
+  # auto-firing (CD's workflow_run gate requires CI's overall conclusion to
+  # be success). Left in place non-blocking for its SBOM/Trivy scan value on
+  # PRs; the timeout itself is still real and unfixed.
   docker-build:
     name: Docker Build${{ github.ref == 'refs/heads/main' && ' + Push (GHCR)' || ' (PR smoke test)' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Matrix over the three images so each gets its own cache scope and SBOM.
-    # Failures in one image do not cancel the others.
+    continue-on-error: true
+    # Matrix over the two images so each gets its own cache scope and SBOM.
+    # Failures in one image do not cancel the other. The dagster leg was
+    # dropped 2026-08-05 — Dagster services were retired in Phase B2 and
+    # nothing deploys this image anymore.
     strategy:
       fail-fast: false
       matrix:
@@ -586,8 +607,6 @@ jobs:
           - service: laravel
             dockerfile: docker/laravel.Dockerfile
             context: .
-          - service: dagster
-            dockerfile: docker/dagster.Dockerfile
             # Same reasoning as the fastapi entry above.
             context: src
 
