@@ -113,7 +113,12 @@ jobs:
     needs: check-ci
     if: needs.check-ci.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 2026-08-05: a live dispatch hit this at exactly 30m15s — the fastapi
+    # ACR build alone takes ~20 min (heavier GDAL/geospatial image) and
+    # laravel ~12-15 min, sequentially, before migrate/rollout/health-check
+    # even start. GitHub cancels the whole job (not just the build step) on
+    # timeout, so this needs real headroom, not a tight cap.
+    timeout-minutes: 50
     environment:
       name: production
       url: https://laravel-octane-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io
