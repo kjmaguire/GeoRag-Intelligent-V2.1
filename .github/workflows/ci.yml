@@ -301,6 +301,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: python-lint
     timeout-minutes: 10
+    # This job runs the fast/mockable suite only (no live Postgres — see the
+    # "Run FastAPI tests" comment below), but app.config.Settings() is a
+    # module-level singleton instantiated at import time, so every test file
+    # that touches app.config needs these two required fields present in the
+    # environment even though nothing here ever dials the DB or mints a real
+    # token. Dummy values only — never real secrets.
+    env:
+      FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
+      POSTGRES_PASSWORD: test_password
 
     steps:
       - uses: actions/checkout@v7
