@@ -302,14 +302,20 @@ jobs:
     needs: python-lint
     timeout-minutes: 10
     # This job runs the fast/mockable suite only (no live Postgres — see the
-    # "Run FastAPI tests" comment below), but app.config.Settings() is a
-    # module-level singleton instantiated at import time, so every test file
-    # that touches app.config needs these two required fields present in the
-    # environment even though nothing here ever dials the DB or mints a real
-    # token. Dummy values only — never real secrets.
+    # "Run FastAPI tests" comment below), but app.config.Settings() and
+    # hatchet_sdk's ClientConfig() are both module-level singletons
+    # instantiated at import time, so every test file that transitively
+    # imports app.config or app.hatchet_workflows needs these fields present
+    # in the environment even though nothing here ever dials the DB, mints a
+    # real token, or talks to a real Hatchet engine. Dummy values only —
+    # never real secrets. HATCHET_CLIENT_TOKEN must merely be JWT-*shaped*
+    # (ClientConfig decodes the claims to fill in server_url/tenant_id even
+    # though nothing here connects anywhere) — it does not need to be a real
+    # signed token.
     env:
       FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
       POSTGRES_PASSWORD: test_password
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
 
     steps:
       - uses: actions/checkout@v7
@@ -451,32 +457,27 @@ jobs:
 
       - name: Install pgTAP from source
         # H-A4-03 fix (Chunk 10.1): updated for PG 18.
-        # pgTAP is not in the Debian apt repo for PG 18 either; we build from source.
-        # build-essential + postgresql-server-dev-XX are required for make install.
-        # PG_VERSION is read from the live server (returns "18" for PG 18.x).
-        # Fallback to postgresql-server-dev-all if the versioned package isn't
-        # available yet on the GitHub Actions runner's apt mirror.
+        # 2026-08-05: the previous version of this step ran `make install` on
+        # the RUNNER — but `services:` containers are a separate, isolated
+        # filesystem, so the compiled extension files never reached the
+        # Postgres server that `psql` actually talks to over TCP. The build
+        # itself could succeed and CREATE EXTENSION would still fail with
+        # "extension pgtap is not available", every single run. Fixed by
+        # building and installing INSIDE the running postgres service
+        # container via `docker exec`, which is where pg_config /
+        # $sharedir / $libdir actually need the files to land.
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential libpq-dev perl curl ca-certificates gnupg
-          # Ubuntu 24.04's own archive only ships postgresql-server-dev up to
-          # PG16 — postgresql-server-dev-18 doesn't exist there at all, so the
-          # install below always fell through to postgresql-server-dev-all
-          # (which doesn't have PG18 headers either), and `make` failed for
-          # want of pg_config. The PGDG apt repo is required for PG18 headers.
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
-          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | \
-            sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
-          sudo apt-get update -qq
-          PG_VERSION=$(psql -U georag -h localhost -d georag_test -tAc "SHOW server_version_num;" 2>/dev/null | head -c2 || echo "18")
-          sudo apt-get install -y -qq "postgresql-server-dev-${PG_VERSION}"
-          cd /tmp
-          curl -fsSL https://github.com/theory/pgtap/archive/refs/tags/v1.3.4.tar.gz | tar xz
-          cd pgtap-1.3.4
-          make
-          sudo make install
-        env:
-          PGPASSWORD: test_password
+          CID="${{ job.services.postgres.id }}"
+          docker exec -u root "$CID" bash -c '
+            set -euo pipefail
+            apt-get update -qq
+            apt-get install -y -qq build-essential libpq-dev perl curl ca-certificates postgresql-server-dev-18
+            cd /tmp
+            curl -fsSL https://github.com/theory/pgtap/archive/refs/tags/v1.3.4.tar.gz | tar xz
+            cd pgtap-1.3.4
+            make
+            make install
+          '
 
       - name: Install pgTAP extension
         run: |
