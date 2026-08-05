@@ -296,6 +296,21 @@ class UploadController extends Controller
                 );
             }
 
+            // Mirrors DrillUploadController::store()'s fix for the same
+            // class of bug: a category with a real dispatcher (reports,
+            // archive) whose dispatch failed used to return 201 regardless,
+            // with "dispatched": false buried in the body as the only
+            // signal — read by callers as unqualified success while the
+            // file silently never gets processed. The file IS stored
+            // (bronze put + bronze.manifest row above); surface the
+            // ingestion failure as a real error instead of a silent dead
+            // end that only the nightly Tier-1 integrity sweep would catch.
+            if (($responseData['ingest'] ?? null) !== null && $responseData['ingest']['dispatched'] === false) {
+                $responseData['error'] = 'ingestion_dispatch_failed';
+
+                return response()->json($responseData, 502);
+            }
+
             return response()->json($responseData, 201);
         } catch (Throwable $e) {
             Log::error('UploadController: upload failed', [
@@ -339,13 +354,17 @@ class UploadController extends Controller
         // ingest_pdf/trigger endpoint, bypassing the retired ShadowRouter.
         try {
             $row = DB::selectOne(
-                'SELECT workspace_id::text AS workspace_id FROM silver.projects WHERE project_id = ?',
+                'SELECT CAST(workspace_id AS TEXT) AS workspace_id FROM silver.projects WHERE project_id = ?',
                 [$projectId],
             );
             if ($row === null || empty($row->workspace_id)) {
                 Log::info('UploadController: ingest skip — no workspace_id', [
                     'project_id' => $projectId,
                 ]);
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'no workspace_id for project',
+                ];
 
                 return;
             }
@@ -360,6 +379,10 @@ class UploadController extends Controller
                 ?? config('services.fastapi.service_key');
             if (! $serviceKey) {
                 Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — ingest not dispatched');
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'FASTAPI_SERVICE_KEY not configured',
+                ];
 
                 return;
             }
@@ -429,12 +452,18 @@ class UploadController extends Controller
                 ];
             }
         } catch (Throwable $e) {
-            // Swallow — never block the upload response on ingest plumbing.
+            // Swallow the exception (never block the upload RESPONSE on
+            // ingest plumbing failing) but still record it in $responseData
+            // so store() can surface it — see the 502 check there.
             Log::warning('UploadController: ShadowRouter dispatch failed', [
                 'project_id' => $projectId,
                 'minio_key' => $minioKey,
                 'error' => $e->getMessage(),
             ]);
+            $responseData['ingest'] = [
+                'dispatched' => false,
+                'reason' => 'exception: '.$e->getMessage(),
+            ];
         }
     }
 
@@ -455,13 +484,17 @@ class UploadController extends Controller
     ): void {
         try {
             $row = DB::selectOne(
-                'SELECT workspace_id::text AS workspace_id FROM silver.projects WHERE project_id = ?',
+                'SELECT CAST(workspace_id AS TEXT) AS workspace_id FROM silver.projects WHERE project_id = ?',
                 [$projectId],
             );
             if ($row === null || empty($row->workspace_id)) {
                 Log::info('UploadController: zip ingest skip — no workspace_id', [
                     'project_id' => $projectId,
                 ]);
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'no workspace_id for project',
+                ];
 
                 return;
             }
@@ -476,6 +509,10 @@ class UploadController extends Controller
                 ?? env('FASTAPI_SERVICE_KEY');
             if (! $serviceKey) {
                 Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — zip ingest not dispatched');
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'FASTAPI_SERVICE_KEY not configured',
+                ];
 
                 return;
             }
@@ -538,6 +575,10 @@ class UploadController extends Controller
                 'minio_key' => $minioKey,
                 'error' => $e->getMessage(),
             ]);
+            $responseData['ingest'] = [
+                'dispatched' => false,
+                'reason' => 'exception: '.$e->getMessage(),
+            ];
         }
     }
 

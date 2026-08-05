@@ -6,7 +6,10 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -157,6 +160,22 @@ class UploadControllerIDORTest extends TestCase
         $projectA = Project::factory()->create();
         $this->userA->projects()->attach($projectA->project_id, ['role' => 'owner']);
 
+        // workspace_id isn't factory-set (and isn't mass-assignable) — the
+        // 'reports' category's dispatchShadowIfPdf() needs a real one to
+        // proceed past its "no workspace_id" skip branch and actually
+        // attempt ingestion dispatch (which now correctly 502s if it can't
+        // — see UploadController's ingestion_dispatch_failed fix).
+        DB::table('silver.projects')
+            ->where('project_id', $projectA->project_id)
+            ->update(['workspace_id' => (string) Str::uuid()]);
+        config(['services.fastapi.service_key' => 'test-service-key-must-be-at-least-32-bytes-long']);
+        Http::fake([
+            '*/internal/v1/shadow/ingest_pdf/trigger' => Http::response(
+                ['hatchet_workflow_run_id' => 'test-run-id'],
+                202,
+            ),
+        ]);
+
         $file = UploadedFile::fake()->create('report.pdf', 10, 'application/pdf');
 
         $response = $this->postJson(
@@ -167,7 +186,8 @@ class UploadControllerIDORTest extends TestCase
             ],
         );
 
-        // Gate passes; actual S3 upload is faked so it always succeeds.
+        // Gate passes; actual S3 upload + FastAPI dispatch are both faked
+        // so it always succeeds.
         $response->assertCreated();
     }
 }
