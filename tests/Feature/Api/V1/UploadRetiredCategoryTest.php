@@ -6,7 +6,10 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -39,6 +42,25 @@ class UploadRetiredCategoryTest extends TestCase
         $this->user = User::factory()->create();
         $this->project = Project::factory()->create();
         $this->user->projects()->attach($this->project->project_id, ['role' => 'owner']);
+
+        // workspace_id isn't factory-set (and isn't mass-assignable) — the
+        // 'reports' category's dispatchShadowIfPdf() needs a real one to
+        // proceed past its "no workspace_id" skip branch and actually
+        // attempt ingestion dispatch (which now correctly 502s if it can't
+        // — see UploadController's ingestion_dispatch_failed fix). Only
+        // test_live_report_category_still_accepts_uploads exercises
+        // 'reports'; the retired-category tests never reach dispatch at
+        // all (422 before that point), so this setup is harmless for them.
+        DB::table('silver.projects')
+            ->where('project_id', $this->project->project_id)
+            ->update(['workspace_id' => (string) Str::uuid()]);
+        config(['services.fastapi.service_key' => 'test-service-key-must-be-at-least-32-bytes-long']);
+        Http::fake([
+            '*/internal/v1/shadow/ingest_pdf/trigger' => Http::response(
+                ['hatchet_workflow_run_id' => 'test-run-id'],
+                202,
+            ),
+        ]);
     }
 
     private function uploadUrl(): string
