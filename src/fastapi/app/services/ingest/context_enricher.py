@@ -115,7 +115,21 @@ async def enrich_passage_context(
 
     pg_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
     try:
-        await bind_workspace_scope(pg_conn, workspace_id=workspace_id, site="ingest.context_enricher")
+        # is_local=False — this is a dedicated, non-pooled connection with no
+        # enclosing conn.transaction() (see the `asyncpg.connect()` above and
+        # the `pg_conn.close()` in `finally` below). bind_workspace_scope's
+        # default (is_local=True, SET LOCAL semantics) is a silent no-op
+        # outside a transaction — the exact class of bug fixed in
+        # passage_embedder.py this session, reproduced here: without this,
+        # the GUC never actually gets set, and the canonical RLS policy on
+        # silver.document_passages admits ALL rows when the GUC is unset —
+        # so this cron (enrich_passage_context_wf, daily) would enrich and
+        # mutate every workspace's pending passages, not just the one it was
+        # invoked for. The SELECT above has no workspace_id filter in SQL at
+        # all; RLS was the only thing meant to scope it.
+        await bind_workspace_scope(
+            pg_conn, workspace_id=workspace_id, site="ingest.context_enricher", is_local=False,
+        )
 
         query = (
             "SELECT dp.passage_id::text, dp.text, dp.ordinal, "

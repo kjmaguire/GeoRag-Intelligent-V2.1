@@ -59,6 +59,7 @@ from app.agent.deps import AgentDeps
 from app.agent.hallucination.layer1_retrieval import filter_by_quality
 from app.agent.log_safe import query_hash
 from app.config import settings
+from app.services.reranker import RERANKER_BACKEND
 
 # ---------------------------------------------------------------------------
 # P2 #28 — Cypher identifier allowlist.
@@ -1838,29 +1839,36 @@ async def search_documents(
             scores = []
 
         if scores:
-            # Cross-encoder outputs raw logits (unbounded real numbers). We
-            # (a) threshold and sort using the raw logit — preserving the
-            # semantic that RERANKER_SCORE_THRESHOLD=0.0 means "any positive
-            # logit" — and (b) sigmoid-transform to [0, 1] before storing on
-            # the chunk so downstream Citation.relevance_score (Pydantic
-            # constrained float, 0..1) accepts the value.
+            # Cross-encoder/qwen3_causal backends output raw logits
+            # (unbounded real numbers) and need a sigmoid transform to land
+            # in the [0, 1] range Citation.relevance_score requires. The
+            # foundry backend (_FoundryReranker, Cohere Rerank v4) instead
+            # returns Cohere's own relevance_score, which is ALREADY a
+            # calibrated [0, 1] probability — sigmoiding an already-[0,1]
+            # value a second time compresses every foundry score into
+            # roughly [0.5, 0.73], silently corrupting every downstream
+            # min_relevance gate (plan_executor.py, decomposer.py — a §04i
+            # Layer-1 retrieval-quality check) since those thresholds
+            # (0.5-0.6) assume a real [0,1] calibration. Caught in a live
+            # review session; only sort order was unaffected (sorting
+            # happens on the pre-transform score either way).
             import math
 
-            raw_logits: list[float] = [float(s) for s in scores]
+            raw_scores: list[float] = [float(s) for s in scores]
+            needs_sigmoid = RERANKER_BACKEND != "foundry"
 
-            # Pair chunks with raw logits, threshold, sort, top-K.
+            # Pair chunks with raw scores, threshold, sort, top-K.
             pre_threshold_count = len(chunks)
             min_score = settings.RERANKER_SCORE_THRESHOLD
             paired = [
-                (chunk, logit)
-                for chunk, logit in zip(chunks, raw_logits, strict=False)
-                if logit >= min_score
+                (chunk, score)
+                for chunk, score in zip(chunks, raw_scores, strict=False)
+                if score >= min_score
             ]
             paired.sort(key=lambda p: p[1], reverse=True)
 
-            # Sigmoid-transform logit -> [0, 1] for the Citation model.
-            for chunk, logit in paired:
-                chunk.relevance_score = 1.0 / (1.0 + math.exp(-logit))
+            for chunk, score in paired:
+                chunk.relevance_score = 1.0 / (1.0 + math.exp(-score)) if needs_sigmoid else score
 
             chunks = [chunk for chunk, _ in paired]
 

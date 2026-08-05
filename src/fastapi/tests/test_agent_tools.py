@@ -425,6 +425,71 @@ class TestSearchDocuments:
         assert "reranked" in result.data_source
 
     @pytest.mark.asyncio
+    async def test_reranker_foundry_backend_does_not_double_sigmoid(self) -> None:
+        """_FoundryReranker (Cohere Rerank v4) returns an ALREADY-calibrated
+        [0,1] relevance_score, unlike cross_encoder/qwen3_causal's raw
+        logits. Sigmoiding it a second time compresses every foundry score
+        into ~[0.5, 0.73], silently corrupting the min_relevance gates that
+        assume real [0,1] calibration (plan_executor.py, decomposer.py) —
+        caught in a live review session. With RERANKER_BACKEND="foundry",
+        the stored relevance_score must equal the raw score exactly, not
+        sigmoid(raw score)."""
+        import numpy as np
+
+        fake_point = MagicMock()
+        fake_point.id = "chunk-uuid-foundry-001"
+        fake_point.score = 0.5
+        fake_point.payload = {
+            "text": "Indicated resources: 12.5 Mt at 0.45% Cu",
+            "document_title": "NI 43-101 Tech Report",
+            "report_id": "rep-001",
+            "document_type": "NI43",
+        }
+
+        mock_qdrant_response = MagicMock()
+        mock_qdrant_response.points = [fake_point]
+
+        mock_qdrant = AsyncMock()
+        mock_qdrant.query_points = AsyncMock(return_value=mock_qdrant_response)
+
+        mock_model = MagicMock()
+        mock_model.encode = MagicMock(
+            return_value=np.array([0.1] * 384, dtype="float32")
+        )
+
+        # Cohere's own relevance_score — already a calibrated probability.
+        mock_reranker = MagicMock()
+        mock_reranker.predict = MagicMock(return_value=np.array([0.95]))
+
+        deps = _make_deps(
+            qdrant_client=mock_qdrant,
+            embedding_model=mock_model,
+            reranker=mock_reranker,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
+        )
+        ctx = _MockRunContext(deps=deps)
+
+        with patch("app.agent.tools.settings") as mock_settings, \
+             patch("app.agent.tools.RERANKER_BACKEND", "foundry"), \
+             patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
+            mock_settings.TIMEOUT_QDRANT_S = 5.0
+            mock_settings.TIMEOUT_RERANKER_S = 8.0
+            mock_settings.RETRIEVAL_TOP_N = 20
+            mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
+            mock_settings.RERANKER_SCORE_THRESHOLD = 0.0
+            mock_settings.RERANKER_TOP_K = 5
+
+            result: DocumentSearchResult = await search_documents(
+                ctx,  # type: ignore[arg-type]
+                query_text="What is the indicated copper resource?",
+                project_id="proj-test-uuid",
+            )
+
+        assert result.count == 1
+        # Must be the raw Cohere score (0.95), NOT sigmoid(0.95) (~0.721).
+        assert result.chunks[0].relevance_score == pytest.approx(0.95)
+
+    @pytest.mark.asyncio
     async def test_reranker_top_k_caps_results(self) -> None:
         """RERANKER_TOP_K=2 means only the two highest-logit chunks are returned
         even when more candidates pass the score threshold."""

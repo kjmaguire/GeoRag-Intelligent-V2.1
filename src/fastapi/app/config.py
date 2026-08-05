@@ -579,10 +579,17 @@ class Settings(BaseSettings):
     # decision) each apply a different retrieval profile. Requires the
     # OIUR flag to be on for the answer-template variants to be emitted.
     #
-    # Default false — Phase 2 lands behind this flag with a separate review
-    # gate from Phase 1 because the entire query-dispatch path changes when
-    # it flips on. See ``docs/phase2-agentic-retrieval.md`` for the rollout.
-    AGENTIC_RETRIEVAL_V2_ENABLED: bool = False
+    # Default true. Originally landed default-false behind a Phase 2 review
+    # gate with a "legacy deterministic path" fallback for when it's off —
+    # that legacy orchestrator body (~3040 lines) was deleted 2026-08-04
+    # (Phase A2 trim) and never reimplemented, so `run_deterministic_rag`
+    # now unconditionally `raise`s RuntimeError when this flag is false.
+    # False was never actually a safe default after that deletion; every
+    # live deployment already sets this true. Flipping the default to match
+    # reality — a fresh deploy that forgets to set it should get a working
+    # answer pipeline, not a guaranteed crash on every single query. See
+    # ``docs/phase2-agentic-retrieval.md`` for the original rollout.
+    AGENTIC_RETRIEVAL_V2_ENABLED: bool = True
 
     # -------------------------------------------------------------------------
     # Plan §3 — context preparation pipeline (§3b + §3c + §3f)

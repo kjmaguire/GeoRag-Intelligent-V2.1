@@ -1080,6 +1080,7 @@ async def _call_llm(
     project_facts: str | None = None,
     user_id: str | None = None,
     workspace_id: str | None = None,
+    redis_client: Any = None,
     pg_pool: Any = None,
     token_callback: Callable[[str], Awaitable[None]] | None = None,
     previous_answer: str | None = None,
@@ -1155,6 +1156,18 @@ async def _call_llm(
         "_call_llm: attempt=%d/%d label=%s model=%s temperature=%.2f",
         n_so_far + 1, cap, audit_label, model or "default", temperature,
     )
+
+    # §35.1 cost-ceiling pre-check — was documented on
+    # assert_workspace_not_suspended's own docstring as "called from
+    # _call_llm near the top" but had no actual caller anywhere in the
+    # codebase (found in a full-app review, 2026-08-05). Without this, the
+    # only thing standing between an over-budget workspace and unbounded
+    # further Azure Foundry spend was a 30-req/min Laravel HTTP throttle —
+    # a request-count cap, not a cost cap. WorkspaceQuotaExceeded propagates
+    # up through assemble_node (no local catch — see nodes.py) to
+    # queries.py's existing top-level handler, which already correctly
+    # turns it into an SSE quota_exceeded event / HTTP 429.
+    await assert_workspace_not_suspended(workspace_id, redis_client=redis_client)
 
     # Sanitize user query — strip any prompt injection attempts.
     sanitized_query = _sanitize_query(query)

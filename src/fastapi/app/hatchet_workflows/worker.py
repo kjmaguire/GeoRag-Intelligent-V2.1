@@ -29,7 +29,6 @@ import sys
 
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.audit_ledger_verify import audit_ledger_verify
-from app.hatchet_workflows.backup_neo4j import backup_neo4j  # §11.1
 from app.hatchet_workflows.backup_postgres import backup_postgres  # §11.1
 from app.hatchet_workflows.backup_qdrant import backup_qdrant  # §11.1
 from app.hatchet_workflows.backup_redis import backup_redis  # §11.1
@@ -177,7 +176,12 @@ POOLS = {
         # Master-plan §11.1 — nightly backup crons. Staggered 15 min
         # apart starting 02:00 UTC (per kickoff locked defaults).
         backup_postgres,    # 02:00 UTC
-        backup_neo4j,       # 02:15 UTC
+        # backup_neo4j (was 02:15 UTC) removed — Neo4j dropped entirely
+        # 2026-07-28 (B1), and the workflow shelled out via `docker exec`
+        # to a container that no longer exists (and never would on Azure
+        # Container Apps regardless — no docker daemon access from within
+        # a Container App). Was registered as a guaranteed nightly failure
+        # with nothing to back up; caught in a full-app review, 2026-08-05.
         backup_qdrant,      # 02:30 UTC
         backup_redis,       # 02:45 UTC
         backup_seaweedfs,   # 03:00 UTC
