@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Services;
 
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -93,5 +95,59 @@ class AzureBlobDiskTest extends TestCase
             explode('sig=', $urlA)[1] ?? null,
             explode('sig=', $urlB)[1] ?? null,
         );
+    }
+
+    /**
+     * Managed-identity mode — the blob CLIENT authenticates via an IMDS
+     * token (mocked here, no real network call), NOT the account key. The
+     * account key stays configured only because temporaryUrl() SAS signing
+     * has no user-delegation-key equivalent in this SDK version (see
+     * AppServiceProvider's comment on the same closure).
+     */
+    public function test_azure_disk_resolves_in_managed_identity_mode_without_throwing(): void
+    {
+        Cache::forget('azure:imds_token:storage');
+        Http::fake([
+            'http://169.254.169.254/*' => Http::response([
+                'access_token' => 'fake-imds-token',
+                'expires_on' => (string) (time() + 3600),
+            ], 200),
+        ]);
+
+        $this->configureAzureDisk();
+        config([
+            'filesystems.disks.s3.auth_mode' => 'managed_identity',
+            'filesystems.disks.s3.account_name' => 'georagteststorage',
+        ]);
+
+        $disk = Storage::disk('s3');
+
+        $this->assertNotNull($disk->getAdapter());
+        Http::assertSent(fn ($request) => str_contains($request->url(), '169.254.169.254'));
+    }
+
+    public function test_azure_disk_managed_identity_mode_still_provides_temporary_urls(): void
+    {
+        Cache::forget('azure:imds_token:storage');
+        Http::fake([
+            'http://169.254.169.254/*' => Http::response([
+                'access_token' => 'fake-imds-token',
+                'expires_on' => (string) (time() + 3600),
+            ], 200),
+        ]);
+
+        $this->configureAzureDisk();
+        config([
+            'filesystems.disks.s3.auth_mode' => 'managed_identity',
+            'filesystems.disks.s3.account_name' => 'georagteststorage',
+        ]);
+
+        $disk = Storage::disk('s3');
+
+        // SAS signing still runs off the (deliberately still-configured)
+        // AccountKey — see the SDK-limitation comment in AppServiceProvider.
+        $this->assertTrue($disk->providesTemporaryUrls());
+        $url = $disk->temporaryUrl('reports/example.pdf', now()->addHours(24));
+        $this->assertStringContainsString('sig=', $url);
     }
 }
