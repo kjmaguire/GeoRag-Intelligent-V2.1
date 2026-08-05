@@ -607,8 +607,6 @@ jobs:
           - service: laravel
             dockerfile: docker/laravel.Dockerfile
             context: .
-            # Same reasoning as the fastapi entry above.
-            context: src
 
     # GITHUB_TOKEN must have packages:write to push to GHCR.
     # id-token:write is required by anchore/sbom-action attestation.
