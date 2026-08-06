@@ -123,6 +123,7 @@ def test_recency_factor_just_now_is_one() -> None:
 # ──────────────── train_target_model end-to-end (live DB) ──────────────
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_train_target_model_emits_version_against_real_db() -> None:
     """Smoke: the workflow runs end-to-end against the live DB and
@@ -155,6 +156,7 @@ async def test_train_target_model_emits_version_against_real_db() -> None:
 # ──────────────── train_source_trust end-to-end (live DB) ──────────────
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_train_source_trust_runs_against_real_db() -> None:
     if not _live_db():

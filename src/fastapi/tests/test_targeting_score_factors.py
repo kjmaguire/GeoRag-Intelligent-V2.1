@@ -139,6 +139,7 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_10_deposit_model_templates_seeded() -> None:
     """All 10 deposit-model templates exist with an active v1 row each."""
@@ -179,6 +180,7 @@ async def test_10_deposit_model_templates_seeded() -> None:
         await conn.close()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_roll_front_demo_zone_scores_in_range() -> None:
     """End-to-end: pull the roll_front_uranium model from the DB, score a

@@ -60,6 +60,7 @@ async def test_restore_workspace_dry_run_against_default_workspace(conn):
     assert out.audit_ledger_entry_id is not None
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_restore_workspace_unknown_workspace_returns_failure():
     inp = RestoreWorkspaceInput(

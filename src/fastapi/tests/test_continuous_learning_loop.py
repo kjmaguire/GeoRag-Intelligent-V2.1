@@ -28,6 +28,7 @@ def _live_db_available() -> bool:
     return bool(os.environ.get("POSTGRES_PASSWORD"))
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_continuous_learning_loop_runs_against_real_workspaces() -> None:
     """Smoke: the orchestrator walks every workspace, records the
@@ -48,6 +49,7 @@ async def test_continuous_learning_loop_runs_against_real_workspaces() -> None:
     assert out.workspaces_evaluated == out.workspaces_scanned
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_continuous_learning_loop_emits_audit_anchor() -> None:
     """The loop emits a `continuous_learning_loop.completed` row to
@@ -78,6 +80,7 @@ async def test_continuous_learning_loop_emits_audit_anchor() -> None:
     assert n == 1
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_continuous_learning_loop_threshold_flags_pending_workspaces() -> None:
     """With thresholds set to 0, every workspace with any outcomes

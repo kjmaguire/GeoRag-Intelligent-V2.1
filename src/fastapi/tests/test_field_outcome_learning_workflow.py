@@ -13,6 +13,7 @@ from app.hatchet_workflows.field_outcome_learning import (
 )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_field_outcome_learning_no_outcomes_returns_success():
     """Empty outcome set → success=True with zero counts. Verifies the

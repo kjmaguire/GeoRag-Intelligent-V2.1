@@ -115,6 +115,7 @@ async def test_embed_verify_skips_without_project_id():
 # 4. embed_verify exits clean when unembedded count is 0
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_embed_verify_exits_when_zero_unembedded():
     embed_verify = _get_embed_verify_func()
@@ -155,6 +156,7 @@ async def test_embed_verify_exits_when_zero_unembedded():
 # 5. embed_verify dispatches when unembedded > 0
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_embed_verify_dispatches_when_unembedded_remains():
     embed_verify = _get_embed_verify_func()
@@ -194,6 +196,7 @@ async def test_embed_verify_dispatches_when_unembedded_remains():
 # 6. embed_verify returns ok=false when dispatch raises
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_embed_verify_dispatch_failure_returns_ok_false():
     embed_verify = _get_embed_verify_func()
@@ -233,6 +236,7 @@ async def test_embed_verify_dispatch_failure_returns_ok_false():
 # 7. Single SELECT round-trip (not 6)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_embed_verify_single_select_roundtrip():
     embed_verify = _get_embed_verify_func()

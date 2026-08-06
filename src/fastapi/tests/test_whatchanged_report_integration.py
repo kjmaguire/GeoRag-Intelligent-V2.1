@@ -55,6 +55,7 @@ async def test_what_changed_integration_returns_none_without_window():
     assert out is None
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_what_changed_integration_returns_drafts_with_window():
     """what_changed + window → 4 section drafts with real workspace deltas."""
@@ -81,6 +82,7 @@ async def test_what_changed_integration_returns_drafts_with_window():
     assert "Hypotheses generated" in data_changes_body
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_what_changed_integration_threaded_through_gather_evidence():
     """End-to-end via gather_evidence node — what_changed report
@@ -116,6 +118,7 @@ async def test_what_changed_falls_back_to_stub_without_window():
     assert "synthetic_stub" in state.section_drafts[0].body_markdown
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_generate_report_task_body_threads_window_through():
     """Full Hatchet body invocation with window → ReportBuilderState
