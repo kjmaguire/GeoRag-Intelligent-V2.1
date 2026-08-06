@@ -7,7 +7,10 @@ dependencies = [
     # Security floor for the OpenSSL bundled in PyPI wheels
     # (GHSA-537c-gmf6-5ccf). Keep this dormant package on the same
     # compatible cryptography line as the production FastAPI service.
-    "cryptography>=48.0.1,<49",
+    # 2026-08-06: raised 48.x->50.x alongside FastAPI's copy of this pin,
+    # closing a HIGH-severity Bleichenbacher-oracle CVE in PKCS#7
+    # EnvelopedData decryption (fixed 50.0.0).
+    "cryptography>=50.0,<51",
     "dagster>=1.13",
     "dagster-postgres>=0.29",
     "dagster-docker>=0.29",
@@ -39,8 +42,19 @@ dependencies = [
     "qdrant-client>=1.17",
     "sentence-transformers>=5.0",
     # SPLADE++ sparse encoder (Module 4 Chunk 2)
-    "torch>=2.3,<3.0",
-    "transformers>=4.40,<5.0",
+    # 2026-08-06: floor raised 2.3->2.13, same reasoning as src/fastapi's
+    # copy of this pin — closes a low-severity torch.jit.script memory-
+    # corruption CVE fixed in 2.13.0; the range already allowed it, the
+    # locked version was just stale.
+    "torch>=2.13,<3.0",
+    # 2026-08-06: bumped past 5.5.0, closing two HIGH-severity Dependabot
+    # CVEs (fixed 5.3.0 and 5.5.0). Unlike src/fastapi's copy of this pin,
+    # this one was never actually blocked by optimum-onnx — it doesn't
+    # appear anywhere in this package's own uv.lock — so the <5.0 cap here
+    # was just mirroring FastAPI's (then-necessary) pin rather than a real
+    # constraint of its own. Ceiling matches sentence-transformers' own
+    # <6.0.0 constraint.
+    "transformers>=5.5,<6.0",
     "pdfplumber>=0.11",
     "openpyxl>=3.1",
     "fastexcel>=0.14",

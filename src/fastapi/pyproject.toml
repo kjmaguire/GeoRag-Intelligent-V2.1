@@ -36,26 +36,38 @@ dependencies = [
     "slowapi>=0.1.9",
     "qdrant-client>=1.17",
     "neo4j>=6.0",
-    "sentence-transformers[onnx]>=5.0",
+    # 2026-08-06 re-audit: dropped the `[onnx]` extra. Grepped every
+    # SentenceTransformer(...) call site in src/fastapi/app/ (4 total) —
+    # none pass backend="onnx" or reference onnx in any way; the extra
+    # was declared but never actually exercised at runtime. It was also
+    # the ONLY thing pulling in `optimum-onnx`, which is what hard-capped
+    # transformers at <4.58.0 (confirmed against optimum-onnx 0.1.0's own
+    # published constraint) and blocked patching two HIGH-severity
+    # Dependabot CVEs. Base sentence-transformers has no such cap
+    # (transformers<6.0.0,>=4.41.0 per its own metadata) — dropping the
+    # extra was a zero-functional-impact way to unblock the real fix
+    # below instead of accepting the CVEs indefinitely.
+    "sentence-transformers>=5.0",
     # SPLADE++ sparse encoder (Module 4 Chunk 2)
     # torch: CPU-only build sufficient -- FastAPI container has no GPU passthrough.
     # transformers: HuggingFace BERT-family models for SPLADE++ masked LM.
-    "torch>=2.3,<3.0",
-    # Phase H — note: GHSA-69w3-r845-3855 (RCE in transformers Trainer)
-    # is fixed in 5.0.0rc3. We DO NOT use the Trainer surface (SPLADE++
-    # inference-only path), so the GHSA is not exploitable from
-    # GeoRAG's call sites. Bumping to 5.x is a major-version jump with
-    # API-breaking changes in sentence-transformers compatibility —
-    # deferred until sentence-transformers ships its 5.x-compatible
-    # release. Tracked: `docs/phase_h_python_deps_audit.md`.
-    #
-    # 2026-06-03 sweep: cap CANNOT be lifted to 5.x — `optimum-onnx`
-    # (transitive dep of `sentence-transformers[onnx]`) hard-caps
-    # transformers <4.58.0. The audit's "this cap blocks vLLM 0.22's
-    # transformers-v5 expectation" finding remains true in spirit, but
-    # the real upper bound is set by optimum-onnx, not by us. Revisit
-    # when optimum-onnx ships transformers-5.x compatibility.
-    "transformers>=4.40,<5.0",
+    # 2026-08-06: floor raised 2.3->2.13 to close a low-severity memory-
+    # corruption CVE in torch.jit.script (fixed 2.13.0). The range already
+    # allowed 2.13+ before this change — the committed uv.lock was just
+    # pinned to a stale 2.12.1 resolved before the fix shipped, and uv
+    # won't proactively upgrade an already-satisfying lock on its own.
+    "torch>=2.13,<3.0",
+    # 2026-08-06: bumped past 5.5.0, closing two HIGH-severity Dependabot
+    # CVEs (LightGlue model-loading RCE fixed 5.5.0; a second RCE fixed
+    # 5.3.0) plus the Trainer-class RCE already tracked below (fixed
+    # 5.0.0rc3, and moot now regardless since 5.5 postdates it). None of
+    # these were reachable from GeoRAG's SPLADE++ inference-only call
+    # sites even before the bump, per the original Phase H note — fixing
+    # the version is still the right move now that nothing blocks it.
+    # See the sentence-transformers entry above for why the old
+    # optimum-onnx-imposed <5.0 ceiling is gone. Ceiling matches
+    # sentence-transformers' own <6.0.0 constraint.
+    "transformers>=5.5,<6.0",
     "httpx>=0.28",
     "prometheus-fastapi-instrumentator>=7.0",
     # Sentry observability — pairs with sentry/sentry-laravel on the Laravel
@@ -122,7 +134,12 @@ dependencies = [
     "urllib3>=2.7.0,<3.0",
     "python-multipart>=0.0.31",
     "starlette>=1.3.1",
-    "cryptography>=48.0.1,<49",
+    # 2026-08-06: floor+ceiling raised 48.x->50.x, closing a HIGH-severity
+    # Bleichenbacher-oracle CVE in PKCS#7 EnvelopedData decryption
+    # (vulnerable range >=44.0.0,<50.0.0; fixed 50.0.0). The old <49
+    # ceiling was just this file's usual "pin to current major" habit,
+    # not a real compatibility constraint — nothing here found needing it.
+    "cryptography>=50.0,<51",
     "authlib>=1.6.12",
     # §04p Phase 1.A — PDF Ingestion Subsystem
     # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
