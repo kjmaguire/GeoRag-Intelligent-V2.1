@@ -56,13 +56,20 @@ def test_store_reconciliation_includes_cross_store_drift() -> None:
 
 def test_index_health_includes_qdrant_reachability_and_neo4j_pagecache() -> None:
     """All-nighter 2026-05-21 — index_health adds HNSW reachability +
-    Neo4j page-cache hit ratio + zero-hit index sweep."""
+    Neo4j page-cache hit ratio + zero-hit index sweep.
+
+    B1 (2026-07-28) removed Neo4j from the stack, so the literal JMX
+    metric name ("PageCacheHitRatio") this test used to check for is
+    gone along with the live `dbms.queryJmx` call — the field is now a
+    permanent no-op string instead. Qdrant reachability and the
+    zero-hit-index sweep are both unaffected by B1 and still live.
+    """
     import inspect
 
     from app.agents.phase0 import index_health as m
     src = inspect.getsource(m)
     assert "qdrant_reachability" in src
-    assert "PageCacheHitRatio" in src
+    assert "neo4j was removed from the stack (B1, 2026-07-28)" in src
     assert "zero_hit_index" in src
     assert "neo4j_page_cache_hit_ratio" in src
 

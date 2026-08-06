@@ -1,23 +1,23 @@
 """Z-roadmap Z.9 — Graph Tenant Auditor tests.
 
-Three coverage layers:
+B1 (2026-07-28) removed Neo4j from the stack; this agent is now a
+permanent no-op (see the module docstring in
+``app.agents.phase0.graph_tenant_auditor``). Three coverage layers,
+updated to match:
 
-  1. Source-shape regression — every invariant the agent claims to
-     check is actually expressed in the Cypher source.
+  1. Source-shape regression — inverted from the original intent.
+     Instead of pinning the (now-removed) Cypher invariants in place,
+     guards against someone silently reintroducing live Cypher here
+     without updating the module docstring and this test.
   2. Pure-helper test — `_persist_run_summary_sql_args` builds the
      correct INSERT shape without needing a live driver or pool.
-  3. End-to-end mocked run — `AsyncGraphDatabase.driver` is patched
-     with a stub Neo4j session that returns:
-       - one cross-workspace edge (the canonical fence breach)
-       - one node missing workspace_id
-       - one orphan project node not present in silver.projects
-     and the assertion is that the auditor counts all three and
-     persists matching finding rows.
-
-The mocked-Neo4j approach mirrors `test_phase0_smoke.py`: stub the
-runtime, stub the wrapper-side hooks, monkey-patch
-``neo4j.AsyncGraphDatabase`` at the import site so the agent picks up
-the stub via its lazy import.
+     Unaffected by B1 — still exercised on every run, including the
+     no-op path.
+  3. End-to-end run against a stubbed pg pool — no Neo4j mocking left
+     to do (the agent never touches `neo4j.AsyncGraphDatabase`
+     anymore). Asserts the actual current contract: zero violations,
+     zero per-row findings, but one summary row still written to
+     `tenant_isolation_audit` every run.
 """
 
 from __future__ import annotations
@@ -41,24 +41,23 @@ def test_graph_auditor_module_imports() -> None:
     assert callable(getattr(m, "graph_tenant_audit", None))
 
 
-def test_graph_auditor_runs_three_invariants() -> None:
-    """The three Cypher invariants must be expressed in source.
-
-    Regression net for somebody silently deleting a check while
-    refactoring — the source-text grep is the cheapest way to pin the
-    behavioural contract.
+def test_graph_auditor_is_a_documented_neo4j_removal_stub() -> None:
+    """B1 (2026-07-28) removed Neo4j from the stack; the three Cypher
+    invariants this agent used to run no longer exist in source. This is
+    the inverse of the original regression net (which pinned the Cypher
+    in place): it now guards against someone silently reintroducing live
+    Cypher here without updating both the module docstring and this test
+    — Neo4j is gone platform-wide, not just from this one agent.
     """
     from app.agents.phase0 import graph_tenant_auditor as m
 
     src = inspect.getsource(m)
-
-    # Check 1 — node workspace_id coverage
-    assert "n.workspace_id IS NULL" in src
-    # Check 2 — cross-workspace edge fence
-    assert "a.workspace_id <> b.workspace_id" in src
-    # Check 3 — orphan / missing project cross-store
-    assert "MATCH (p:Project {project_id: pid, " in src
-    assert "MATCH (p:Project {workspace_id: $ws})" in src
+    assert "neo4j was removed from the stack (B1, 2026-07-28)" in src
+    assert "MATCH (" not in src, (
+        "Found live Cypher in a module that's supposed to be a permanent "
+        "no-op post-B1 — either Neo4j is back (update this test) or this "
+        "is dead code that should be removed too."
+    )
 
 
 def test_graph_auditor_persists_to_tenant_isolation_audit() -> None:
@@ -148,152 +147,31 @@ def test_persist_run_summary_sql_args_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Layer 3 — end-to-end mocked Neo4j run
+# Layer 3 — no-op run against a stubbed pg pool
+#
+# B1 (2026-07-28) removed Neo4j from the stack. The mocked-Neo4j-session
+# fixtures this layer used to need (_FakeRecord/_FakeResult/_FakeSession/
+# _FakeDriver/_FakeAsyncGraphDatabase) are gone with it — the agent never
+# touches neo4j.AsyncGraphDatabase anymore, so there's nothing left to
+# mock on that side. Only the pg_pool stub survives, since the agent
+# still writes one summary row to tenant_isolation_audit every run.
 # ---------------------------------------------------------------------------
 
 
-class _FakeRecord:
-    """Mimics neo4j.Record's dict-style `__getitem__`."""
-
-    def __init__(self, payload: dict[str, Any]) -> None:
-        self._p = payload
-
-    def __getitem__(self, key: str) -> Any:
-        return self._p[key]
-
-
-class _FakeResult:
-    """Mimics the AsyncResult interface used by the agent.
-
-    Supports `async for record in res` AND `await res.single()`.
-    """
-
-    def __init__(self, records: list[dict[str, Any]]) -> None:
-        self._records = [_FakeRecord(r) for r in records]
-
-    def __aiter__(self) -> _FakeResult:
-        self._iter = iter(self._records)
-        return self
-
-    async def __anext__(self) -> _FakeRecord:
-        try:
-            return next(self._iter)
-        except StopIteration as exc:  # noqa: BLE001
-            raise StopAsyncIteration from exc
-
-    async def single(self) -> _FakeRecord | None:
-        return self._records[0] if self._records else None
-
-
-class _FakeSession:
-    """Stub Neo4j session that returns canned results per Cypher query.
-
-    The agent runs five queries in sequence; we key the canned results
-    on a substring unique to each query so a re-order in the agent
-    doesn't silently break the test (StopIteration would fire instead).
-    """
-
-    def __init__(self) -> None:
-        # ws_a / ws_b are the two halves of the canonical fence breach.
-        self.ws_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-        self.ws_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-        # One :Project node exists in graph that's NOT in silver
-        # (orphan_in_graph). silver returns one project that the graph
-        # doesn't carry (missing_in_graph).
-        self.graph_project_ids = ["graph-only-proj-1"]
-
-    async def __aenter__(self) -> _FakeSession:
-        return self
-
-    async def __aexit__(self, *_: Any) -> bool:
-        return False
-
-    async def run(self, query: str, **params: Any) -> _FakeResult:  # noqa: ARG002
-        if "n.workspace_id IS NULL" in query:
-            # Check 1 — one violating label group with 1 node
-            return _FakeResult(
-                [
-                    {
-                        "labels": ["Document"],
-                        "missing_count": 1,
-                        "sample_ids": ["elt-doc-1"],
-                    }
-                ]
-            )
-        if "MATCH (n) RETURN count(n)" in query:
-            return _FakeResult([{"c": 42}])
-        if "a.workspace_id <> b.workspace_id" in query:
-            # Check 2 — one cross-workspace edge
-            return _FakeResult(
-                [
-                    {
-                        "rel_type": "HAS_HOLE",
-                        "ws_a": self.ws_a,
-                        "ws_b": self.ws_b,
-                        "violations": 1,
-                        "sample_ids": ["elt-edge-1"],
-                    }
-                ]
-            )
-        if "MATCH ()-[e]->() RETURN count(e)" in query:
-            return _FakeResult([{"c": 17}])
-        if "OPTIONAL MATCH (p:Project {project_id: pid" in query:
-            # Check 3a — silver has one project that the graph doesn't.
-            # `pg_rows` in the agent provides the id list; here we
-            # return whichever ids weren't in graph_project_ids.
-            ids = params.get("ids", [])
-            missing = [i for i in ids if i not in self.graph_project_ids]
-            return _FakeResult([{"missing": missing}])
-        if "MATCH (p:Project {workspace_id: $ws})" in query:
-            # Check 3b — graph has one project node for the workspace
-            return _FakeResult([{"ids": list(self.graph_project_ids)}])
-        # Fallback — empty result.
-        return _FakeResult([])
-
-
-class _FakeDriver:
-    def __init__(self, *_: Any, **__: Any) -> None:
-        pass
-
-    def session(self) -> _FakeSession:
-        return _FakeSession()
-
-    async def close(self) -> None:
-        return None
-
-
-class _FakeAsyncGraphDatabase:
-    """Stand-in for `neo4j.AsyncGraphDatabase` — the agent calls
-    `AsyncGraphDatabase.driver(uri, auth=...)` as a class-level factory."""
-
-    @staticmethod
-    def driver(*_: Any, **__: Any) -> _FakeDriver:
-        return _FakeDriver()
-
-
 class _FakePool:
-    """Async stub for asyncpg.Pool that records writes for assertion."""
+    """Async stub for asyncpg.Pool that records writes for assertion.
+
+    B1 (2026-07-28): the agent no longer calls `.fetch(...)` at all (the
+    orphan/missing-project cross-store check it used to feed was part of
+    the removed Cypher invariants), so this stub only needs to answer
+    `.execute(...)` for the two INSERT statements that still run.
+    """
 
     def __init__(self) -> None:
         self.finding_writes: list[tuple[str, str, str]] = []  # (drift_type, store, target)
         self.audit_writes: list[dict[str, Any]] = []
-        # silver.projects returns one row whose project_id is NOT in
-        # the graph (missing_in_graph) so the orphan check fires.
-        self.silver_projects = [
-            {
-                "project_id": "silver-only-proj-1",
-                "project_name": "Silver only",
-            }
-        ]
 
-    async def fetch(self, query: str, *_: Any) -> list[dict[str, Any]]:
-        if "FROM silver.projects" in query and "ANY($2::text[])" in query:
-            # Check 3b cross-check — graph asked for ids; silver returns
-            # only those that exist. Our graph carries `graph-only-proj-1`
-            # which is NOT in silver, so return empty.
-            return []
-        if "FROM silver.projects" in query:
-            return self.silver_projects
+    async def fetch(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
         return []
 
     async def fetchval(self, *_: Any, **__: Any) -> Any:
@@ -356,30 +234,19 @@ def _install_wrapper_stubs(monkeypatch: pytest.MonkeyPatch, pool: _FakePool) -> 
 
 
 @pytest.mark.asyncio
-async def test_graph_auditor_detects_cross_workspace_edge_and_persists_findings(
+async def test_graph_auditor_is_permanent_noop_and_persists_one_audit_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The canonical end-to-end test.
-
-    Mock Neo4j carries:
-      - one Document node missing workspace_id
-      - one HAS_HOLE edge spanning two workspaces
-      - one :Project node not present in silver.projects (orphan)
-      - silver.projects has one project not present in graph (missing)
-
-    Assertions:
-      - summary.graph_violations == 4
-      - summary.cross_workspace_edges == 1
-      - 4 store_reconciliation_findings rows written
-      - 1 tenant_isolation_audit row written with the same total
+    """B1 (2026-07-28) — Neo4j was removed; this agent is now a permanent
+    no-op regardless of driver/mock state. Was "the canonical end-to-end
+    test" against a mocked Neo4j session; that mock is now unreachable
+    dead weight since the agent never touches `neo4j.AsyncGraphDatabase`
+    at all anymore. Rewritten to assert the actual current contract:
+    zero violations detected (there's nothing left to detect), zero
+    per-row findings persisted, but exactly one summary row still
+    written to tenant_isolation_audit so the ops dashboard's history
+    doesn't show a gap.
     """
-    # Patch neo4j.AsyncGraphDatabase BEFORE the agent runs — the agent
-    # imports it lazily at call time via `from neo4j import ...`, so the
-    # monkeypatch on the module attribute is what the agent sees.
-    import neo4j
-
-    monkeypatch.setattr(neo4j, "AsyncGraphDatabase", _FakeAsyncGraphDatabase)
-
     pool = _FakePool()
     _install_wrapper_stubs(monkeypatch, pool)
 
@@ -395,25 +262,20 @@ async def test_graph_auditor_detects_cross_workspace_edge_and_persists_findings(
         f"agent returned no value — outcome={result.outcome!r}, "
         f"error={result.error!r}"
     )
-    assert summary["neo4j_reachable"] is True
-    # 1 missing workspace_id + 1 cross-workspace edge + 1 missing project
-    # in graph + 1 orphan project in graph
-    assert summary["missing_workspace_id"] == 1
-    assert summary["cross_workspace_edges"] == 1
-    assert summary["orphan_nodes"] == 2
-    assert summary["graph_violations"] == 4
+    assert summary["neo4j_reachable"] is False
+    assert summary["skipped_reason"] == "neo4j was removed from the stack (B1, 2026-07-28)"
+    assert summary["missing_workspace_id"] == 0
+    assert summary["cross_workspace_edges"] == 0
+    assert summary["orphan_nodes"] == 0
+    assert summary["graph_violations"] == 0
 
-    # 4 per-row findings written
-    assert len(pool.finding_writes) == 4
-    drift_types = sorted(w[0] for w in pool.finding_writes)
-    # missing workspace_id => missing_in_b; cross-edge => orphan_in_b;
-    # missing_in_graph => missing_in_b; orphan_in_graph => orphan_in_b
-    assert drift_types == ["missing_in_b", "missing_in_b", "orphan_in_b", "orphan_in_b"]
-    assert all(w[1] == "neo4j" for w in pool.finding_writes)
+    # Nothing to detect => nothing to persist per-row.
+    assert pool.finding_writes == []
 
-    # 1 run-summary row in tenant_isolation_audit
+    # The run-summary row is still written every run so the dashboard's
+    # isolation-health history stays continuous.
     assert len(pool.audit_writes) == 1
-    assert pool.audit_writes[0]["graph_violations"] == 4
+    assert pool.audit_writes[0]["graph_violations"] == 0
     assert pool.audit_writes[0]["workspace_id"] == ws
 
 
@@ -447,7 +309,11 @@ async def test_graph_auditor_no_op_when_neo4j_driver_missing(
     summary = result.value
     assert summary is not None
     assert summary["neo4j_reachable"] is False
-    assert summary["skipped_reason"] == "neo4j driver not installed"
+    # B1 (2026-07-28): Neo4j was removed from the stack entirely, so the
+    # agent no longer even attempts the lazy `from neo4j import ...` this
+    # test used to defend against — the skip reason is now the fixed B1
+    # message regardless of whether the driver is importable.
+    assert summary["skipped_reason"] == "neo4j was removed from the stack (B1, 2026-07-28)"
     assert summary["graph_violations"] == 0
     # No findings should be written when the auditor short-circuits.
     assert pool.finding_writes == []
