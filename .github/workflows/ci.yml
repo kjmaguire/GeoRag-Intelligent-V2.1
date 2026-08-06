@@ -581,34 +581,57 @@ jobs:
   #   main:  build + push with SHA tag + rolling "main" tag.
   #
   # Images pushed to:
-  #   ghcr.io/<owner>/georag-fastapi:<short-sha>  (immutable, consumed by cd.yml)
+  #   ghcr.io/<owner>/georag-fastapi:<short-sha>
   #   ghcr.io/<owner>/georag-fastapi:main         (rolling latest on main)
-  #   (same pattern for laravel and dagster)
+  #   (same pattern for laravel)
+  #   NOT consumed by cd.yml — that builds straight to ACR (georagacrcc)
+  #   and deploys from there (2026-08-05 rewrite). This job's own value is
+  #   the Trivy scan + SBOM below; the GHCR push is just a side effect of
+  #   how docker/build-push-action works, kept in case a non-Azure
+  #   consumer ever needs these images.
   #
-  # Platforms: linux/amd64 + linux/arm64 (v1.5-13).
+  # Platforms: linux/amd64 only (2026-08-06 — see below).
   # Cache: GitHub Actions cache (type=gha) scoped per image name.
   #
-  # Note on arm64 prod deployments: the three georag/* images this job
-  # builds are Python/PHP and are arm64-clean. The compose stack also
-  # includes vLLM (prod LLM tier), which is x86_64-only — arm64 hosts
-  # can run dev (Ollama) but cannot run the prod LLM tier directly.
-  # See ops/runbooks/llm-model-swap.md for the arm64 deployment caveat.
+  # 2026-08-06: dropped the linux/arm64 leg. This job had been timing out
+  # at its 30-minute cap on every single run for over a month; the
+  # near-certain cause is that `main` pushes built BOTH amd64 and
+  # QEMU-emulated arm64 in the same step, and emulated compilation of the
+  # torch/GDAL-heavy dependencies in these images is a well-known
+  # multi-minute-to-multi-hour multiplier over native — CD's own ACR
+  # builds of the identical Dockerfiles (single-platform, native) already
+  # take ~20 minutes for fastapi alone. Nothing in the real deploy path
+  # (Azure Container Apps, x86_64-only) has ever consumed an arm64 image;
+  # the original rationale below was for self-hosted on-prem ARM hosts
+  # from before the Azure-only decision.
+  #
+  # Original note on arm64 prod deployments (now historical, kept for
+  # context): the three georag/* images this job builds are Python/PHP
+  # and are arm64-clean. The compose stack also includes vLLM (prod LLM
+  # tier), which is x86_64-only — arm64 hosts could run dev (Ollama) but
+  # never the prod LLM tier directly. See
+  # ops/runbooks/llm-model-swap.md for the (now moot) arm64 caveat.
   #
   # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
   #
   # continue-on-error (2026-08-05): these GHCR pushes are no longer part of
   # the real deploy path — cd.yml now builds fastapi/laravel straight to ACR
   # (georagacrcc) and deploys from there, same as the manual `az acr build`
-  # steps used throughout the Azure migration. This job has also been timing
+  # steps used throughout the Azure migration. This job had also been timing
   # out at its 30-minute cap on every single run for over a month, which
   # alone kept "GeoRAG CI" permanently red and silently blocked CD from ever
   # auto-firing (CD's workflow_run gate requires CI's overall conclusion to
-  # be success). Left in place non-blocking for its SBOM/Trivy scan value on
-  # PRs; the timeout itself is still real and unfixed.
+  # be success) — see the arm64 note above (2026-08-06) for the actual fix.
+  # Left non-blocking regardless, since a Trivy/SBOM finding on a PR is
+  # useful signal but shouldn't itself gate CD.
   docker-build:
     name: Docker Build${{ github.ref == 'refs/heads/main' && ' + Push (GHCR)' || ' (PR smoke test)' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Native single-platform builds of these Dockerfiles take ~20 minutes
+    # for fastapi alone via ACR (see cd.yml); 30 min was already tight
+    # even before accounting for the Trivy scan + SBOM steps that run
+    # after the build within the same budget. 45 gives real headroom.
+    timeout-minutes: 45
     continue-on-error: true
     # Matrix over the two images so each gets its own cache scope and SBOM.
     # Failures in one image do not cancel the other. The dagster leg was
@@ -666,10 +689,9 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           # `load: true` (PR builds) puts the image in the local Docker
-          # daemon so Trivy can scan it — the daemon's image store can't
-          # hold a multi-platform manifest list, so PR builds are pinned
-          # to a single platform. Only pushes to GHCR (main) build both.
-          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          # daemon so Trivy can scan it. Single platform on both branches
+          # now — see the arm64 note above the job definition (2026-08-06).
+          platforms: linux/amd64
           push: ${{ github.ref == 'refs/heads/main' }}
           load: ${{ github.ref != 'refs/heads/main' }}
           tags: |
