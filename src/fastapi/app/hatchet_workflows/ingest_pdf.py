@@ -783,8 +783,12 @@ INSERT INTO silver.review_queue (
 )
 SELECT
     $1::uuid, $2::uuid, $3::uuid, 'silver.document_passages', 'ocr_page',
-    $4, NULL, $5::jsonb, $6::jsonb,
-    $7, $8, 'review_required'::silver.review_routing_enum, $9,
+    -- $4/$8 carry explicit ::text casts in BOTH positions: in INSERT..SELECT
+    -- the target-list occurrence deduces `text` (no column context) while the
+    -- WHERE comparison deduces `varchar` — Postgres refuses the prepare with
+    -- AmbiguousParameterError ("inconsistent types deduced") unless unified.
+    $4::text, NULL, $5::jsonb, $6::jsonb,
+    $7, $8::text, 'review_required'::silver.review_routing_enum, $9,
     $10::jsonb
 WHERE NOT EXISTS (
     SELECT 1
@@ -793,9 +797,9 @@ WHERE NOT EXISTS (
       AND existing.project_id = $3::uuid
       AND existing.target_table = 'silver.document_passages'
       AND existing.target_record_kind = 'ocr_page'
-      AND existing.bronze_uri = $4
+      AND existing.bronze_uri = $4::text
       AND existing.payload->>'page_number' = $5::jsonb->>'page_number'
-      AND existing.parser_version = $8
+      AND existing.parser_version = $8::text
       AND existing.lifecycle IN ('pending', 'in_review')
 )
 ON CONFLICT (queue_id) DO NOTHING
