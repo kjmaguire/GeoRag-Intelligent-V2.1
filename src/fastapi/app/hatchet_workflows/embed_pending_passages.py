@@ -181,6 +181,89 @@ async def run(
     except Exception as exc:
         log.debug("embed_pending_passages: gauge publish failed: %s", exc)
 
+    # Qdrant-drift self-healing (2026-08-07). qdrant-cc has no persistent
+    # volume: a replica recreation silently wipes every collection while
+    # Postgres still says "embedded" — retrieval then returns zero hits until
+    # a human notices (bit us live 2026-08-06). On cron sweeps, compare an
+    # exact Qdrant point count against PG's embedded-passage count; if the
+    # collection is empty/missing while PG believes ≥50 passages are embedded,
+    # re-run the bootstrap script (idempotent) and null out embedding_id so
+    # this very sweep re-embeds the corpus with no operator involvement.
+    # Fails soft: an unreachable Qdrant must never turn into a mass reset.
+    if input.project_id == "*":
+        try:
+            from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
+
+            from app.services.qdrant_conn import qdrant_client_kwargs  # noqa: PLC0415
+
+            _qc = AsyncQdrantClient(**qdrant_client_kwargs())
+            try:
+                _collections = {
+                    c.name for c in (await _qc.get_collections()).collections
+                }
+                if "georag_chunks" in _collections:
+                    _qdrant_points = (
+                        await _qc.count("georag_chunks", exact=True)
+                    ).count
+                else:
+                    _qdrant_points = None  # collection itself is gone
+            finally:
+                await _qc.close()
+
+            _heal_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
+            try:
+                _pg_embedded = await _heal_conn.fetchval(
+                    "SELECT count(*) FROM silver.document_passages "
+                    "WHERE embedding_id IS NOT NULL"
+                )
+                if (_qdrant_points in (0, None)) and _pg_embedded >= 50:
+                    log.error(
+                        "embed_pending_passages.qdrant_drift detected: "
+                        "qdrant_points=%s pg_embedded=%d — collection wiped. "
+                        "Re-bootstrapping and resetting embedding_id for "
+                        "automatic re-embed.",
+                        _qdrant_points, _pg_embedded,
+                    )
+                    import asyncio as _aio  # noqa: PLC0415
+
+                    _proc = await _aio.create_subprocess_exec(
+                        "python", "/app/scripts/init_qdrant.py",
+                        stdout=_aio.subprocess.PIPE,
+                        stderr=_aio.subprocess.STDOUT,
+                    )
+                    _out, _ = await _proc.communicate()
+                    log.info(
+                        "embed_pending_passages.qdrant_bootstrap rc=%s tail=%s",
+                        _proc.returncode,
+                        (_out or b"")[-300:].decode(errors="replace"),
+                    )
+                    if _proc.returncode == 0:
+                        _reset = await _heal_conn.execute(
+                            "UPDATE silver.document_passages "
+                            "SET embedding_id = NULL, updated_at = NOW() "
+                            "WHERE embedding_id IS NOT NULL"
+                        )
+                        log.info(
+                            "embed_pending_passages.qdrant_drift reset %s — "
+                            "re-embed begins this sweep", _reset,
+                        )
+                        # Re-resolve the project list: the pre-heal query saw
+                        # zero pending passages, so without this the reset
+                        # rows would wait for the NEXT cron tick.
+                        _rows = await _heal_conn.fetch(
+                            "SELECT DISTINCT r.project_id::text AS pid "
+                            "  FROM silver.document_passages dp "
+                            "  JOIN silver.reports r ON r.report_id = dp.document_id "
+                            " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
+                        )
+                        project_ids = [r["pid"] for r in _rows]
+            finally:
+                await _heal_conn.close()
+        except Exception as exc:
+            log.warning(
+                "embed_pending_passages.qdrant_drift check failed (soft): %s", exc,
+            )
+
     log.info("embed_pending_passages.start projects=%d", len(project_ids))
 
     total_seen = 0
