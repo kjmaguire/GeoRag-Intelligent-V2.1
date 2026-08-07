@@ -100,19 +100,30 @@ window.axios.interceptors.response.use(
 // Reverb uses the Pusher protocol but runs on our own server.
 window.Pusher = Pusher;
 
-// Use the current page's hostname for the WebSocket connection. This lets
-// the same build work from localhost, host.docker.internal, or any other
-// hostname — the WS host always matches where the page was loaded from.
+// WS host resolution (2026-08-07): honour VITE_REVERB_HOST when the build
+// provides one — on Azure Container Apps, Reverb lives on a DIFFERENT
+// hostname than the page (laravel-reverb-cc vs laravel-octane-cc), so
+// deriving wsHost from window.location silently dials an endpoint that
+// doesn't speak WebSocket and every chat stream/progress event is lost.
+// Falls back to the page hostname for localhost / docker-compose builds,
+// where the old behaviour was correct.
+const reverbScheme: string = import.meta.env.VITE_REVERB_SCHEME
+    ?? (window.location.protocol === 'https:' ? 'https' : 'http');
+const reverbHost: string = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
+// Port default follows the scheme: TLS deployments (Azure ingress) terminate
+// on 443; plain-http local stacks keep the legacy 8085 Reverb port.
+const reverbPort: number = Number(
+    import.meta.env.VITE_REVERB_PORT || (reverbScheme === 'https' ? 443 : 8085),
+);
 window.Echo = new Echo({
     broadcaster: 'reverb',
     key: import.meta.env.VITE_REVERB_APP_KEY,
-    wsHost: window.location.hostname,
-    wsPort: import.meta.env.VITE_REVERB_PORT ?? 8085,
-    wssPort: import.meta.env.VITE_REVERB_PORT ?? 8085,
+    wsHost: reverbHost,
+    wsPort: reverbPort,
+    wssPort: reverbPort,
     // Audit 2026-06-28: follow the PAGE protocol when VITE_REVERB_SCHEME is
     // unset — defaulting to 'http' on an https page yields ws:// and the browser
     // blocks it as mixed content. https page -> wss (forceTLS true).
-    forceTLS: (import.meta.env.VITE_REVERB_SCHEME
-        ?? (window.location.protocol === 'https:' ? 'https' : 'http')) === 'https',
+    forceTLS: reverbScheme === 'https',
     enabledTransports: ['ws', 'wss'],
 });

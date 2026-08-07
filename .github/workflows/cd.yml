@@ -149,11 +149,21 @@ jobs:
             src
 
       - name: Build + push laravel image
+        # VITE_REVERB_* are baked into the Vite bundle at build time. On Azure,
+        # Reverb runs on its own Container App hostname, so the browser cannot
+        # derive the WS endpoint from window.location — omitting these args
+        # ships a bundle whose websocket dials the octane host and every chat
+        # stream / progress event is silently lost (live failure 2026-08-07).
+        # The app key is public by design (it is embedded in the JS bundle).
         run: |
           az acr build --registry "$ACR_NAME" \
             --image "georag/laravel:${SHORT_SHA}" \
             --image "georag/laravel:latest" \
             --file docker/laravel.Dockerfile \
+            --build-arg VITE_REVERB_APP_KEY=gxk7h5w2ato1zq9pm4b8rucy0fedlv \
+            --build-arg VITE_REVERB_HOST=laravel-reverb-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io \
+            --build-arg VITE_REVERB_PORT=443 \
+            --build-arg VITE_REVERB_SCHEME=https \
             .
 
       # Capture the currently-active image digest for every app/job this
