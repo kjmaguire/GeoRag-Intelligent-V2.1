@@ -1417,9 +1417,36 @@ def _ocr_single_page(
 
     if _di.is_engine_selected():
         try:
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
-            result = _di.ocr_page_sync(pdf_bytes, page_num)
+            # Slice the single target page into its own PDF before upload.
+            # Two reasons this is not an optimisation but a correctness fix:
+            # (1) Document Intelligence F0 rejects `pages=N` for N > 2
+            #     ("InvalidRequest") — a 1-page document sidesteps the free
+            #     tier's first-two-pages analysis window entirely;
+            # (2) sending the full file per page uploads O(size × pages)
+            #     bytes — a 40 MB / 200-page report would push ~8 GB.
+            # pikepdf failure falls back to the legacy whole-file upload.
+            try:
+                import io as _io
+
+                import pikepdf as _pikepdf
+
+                with _pikepdf.open(pdf_path) as _src:
+                    _single = _pikepdf.Pdf.new()
+                    _single.pages.append(_src.pages[page_num - 1])
+                    _buf = _io.BytesIO()
+                    _single.save(_buf)
+                pdf_bytes = _buf.getvalue()
+                _di_page = 1
+            except Exception as _slice_exc:  # noqa: BLE001
+                logger.warning(
+                    "pdf_report: single-page slice failed for page %d of '%s' "
+                    "(%s) — sending full document",
+                    page_num, pdf_path, _slice_exc,
+                )
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+                _di_page = page_num
+            result = _di.ocr_page_sync(pdf_bytes, _di_page)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "pdf_report: document_intelligence OCR failed on page %d of "

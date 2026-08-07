@@ -465,9 +465,15 @@ ingest_pdf = hatchet.workflow(
     # 2026-05-24 Ontario Gold re-ingest hit this — runs 5–9 of 9 all
     # cancelled at exactly the 5-min mark. schedule_timeout="2h" gives
     # space for ~80 sequential parses before the tail starts expiring.
+    # 2026-08-07 — raised 1 → 2. The original OOM driver (docling/Paddle
+    # models resident per parse) is gone: OCR is remote (Azure Document
+    # Intelligence) and embedding is remote (Foundry). Two in-flight runs
+    # let doc B parse while doc A persists/embeds, roughly halving batch
+    # wall-clock; PARSE_SUBPROCESS_MAX_WORKERS and the memory guard still
+    # bound actual parse concurrency on small containers.
     concurrency=ConcurrencyExpression(
         expression="input.workspace_id",
-        max_runs=1,
+        max_runs=2,
         limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
     ),
 )
@@ -778,7 +784,7 @@ INSERT INTO silver.review_queue (
 SELECT
     $1::uuid, $2::uuid, $3::uuid, 'silver.document_passages', 'ocr_page',
     $4, NULL, $5::jsonb, $6::jsonb,
-    $7, $8, 'review_required'::review_routing_enum, $9,
+    $7, $8, 'review_required'::silver.review_routing_enum, $9,
     $10::jsonb
 WHERE NOT EXISTS (
     SELECT 1

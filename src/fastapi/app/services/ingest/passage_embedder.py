@@ -277,15 +277,21 @@ async def embed_pending_passages(
                 result.passages_skipped += len(batch)
                 continue
 
-            # Sparse encode (SPLADE++)
-            from app.services.sparse_encoder import encode_sparse
-            sparse_vectors = []
-            for txt in texts:
-                try:
-                    sparse_vectors.append(encode_sparse(txt))
-                except Exception as e:
-                    log.warning("embed_pending.sparse_encode_failed err=%s", e)
-                    sparse_vectors.append({})
+            # Sparse encode (SPLADE++) — batched forward pass; falls back to
+            # the per-text loop only if the whole batch fails, so one bad
+            # text degrades to {} instead of sinking its batch-mates.
+            from app.services.sparse_encoder import encode_sparse, encode_sparse_batch
+            try:
+                sparse_vectors = encode_sparse_batch(texts)
+            except Exception as e:
+                log.warning("embed_pending.sparse_batch_failed err=%s — per-text fallback", e)
+                sparse_vectors = []
+                for txt in texts:
+                    try:
+                        sparse_vectors.append(encode_sparse(txt))
+                    except Exception as e2:
+                        log.warning("embed_pending.sparse_encode_failed err=%s", e2)
+                        sparse_vectors.append({})
 
             # Build Qdrant points
             points: list[PointStruct] = []
@@ -391,24 +397,40 @@ async def embed_pending_passages(
                         "embed_pending.verify_skipped err=%s", _vexc,
                     )
 
-            # Update silver.document_passages.embedding_id
-            for row, point in zip(batch, points, strict=False):
-                try:
-                    await pg_conn.execute(
-                        "UPDATE silver.document_passages "
-                        "   SET embedding_id = $1, updated_at = NOW() "
-                        " WHERE passage_id = $2::uuid",
-                        point.id, row["passage_id"],
-                    )
-                    result.passages_embedded += 1
-                except Exception as e:
-                    result.errors.append(
-                        f"pg_update_failed:{row['passage_id']}:{type(e).__name__}:{e}"
-                    )
-                    log.warning(
-                        "embed_pending.pg_update_failed passage=%s err=%s",
-                        row["passage_id"], e,
-                    )
+            # Update silver.document_passages.embedding_id — one batched
+            # executemany round-trip; falls back to per-row on failure so a
+            # single bad row can't lose the whole batch's writeback.
+            _wb = [(point.id, row["passage_id"]) for row, point in zip(batch, points, strict=False)]
+            try:
+                await pg_conn.executemany(
+                    "UPDATE silver.document_passages "
+                    "   SET embedding_id = $1, updated_at = NOW() "
+                    " WHERE passage_id = $2::uuid",
+                    _wb,
+                )
+                result.passages_embedded += len(_wb)
+            except Exception as batch_exc:
+                log.warning(
+                    "embed_pending.pg_update_batch_failed err=%s — per-row fallback",
+                    batch_exc,
+                )
+                for point_id, passage_id in _wb:
+                    try:
+                        await pg_conn.execute(
+                            "UPDATE silver.document_passages "
+                            "   SET embedding_id = $1, updated_at = NOW() "
+                            " WHERE passage_id = $2::uuid",
+                            point_id, passage_id,
+                        )
+                        result.passages_embedded += 1
+                    except Exception as e:
+                        result.errors.append(
+                            f"pg_update_failed:{passage_id}:{type(e).__name__}:{e}"
+                        )
+                        log.warning(
+                            "embed_pending.pg_update_failed passage=%s err=%s",
+                            passage_id, e,
+                        )
 
             log.info(
                 "embed_pending.batch_done batch=%d/%d embedded=%d",

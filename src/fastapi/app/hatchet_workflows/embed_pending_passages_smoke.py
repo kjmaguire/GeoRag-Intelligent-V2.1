@@ -144,11 +144,17 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
     # Encode + hybrid search. Lazy imports because this module is loaded
     # by Hatchet workers that don't necessarily have torch/transformers
     # on the import path until first use.
+    #
+    # 2026-08-07 — must go through get_embedding_model(), NOT a direct
+    # SentenceTransformer load. With EMBEDDING_BACKEND=foundry the local
+    # model isn't baked into the image (first live smoke tried to download
+    # 1.2 GB of Qwen3 into a read-only HF cache and crashed with
+    # "Permission denied (os error 13)") — and even a successful local
+    # encode would score points from a different vector space than the
+    # Cohere-embedded corpus, making the smoke's verdict meaningless.
     try:
-        import torch  # noqa: PLC0415
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
-
         from app.config import settings  # noqa: PLC0415
+        from app.services.embedding import get_embedding_model  # noqa: PLC0415
         from app.services.qdrant_service import hybrid_query  # noqa: PLC0415
         from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
     except Exception as imp_exc:  # pragma: no cover
@@ -161,20 +167,19 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
             reason="transient",
         )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SentenceTransformer(
-        settings.EMBEDDING_MODEL_NAME,
-        revision=settings.EMBEDDING_MODEL_REVISION,
-        trust_remote_code=False,
-        device=device,
-    )
-    # Qwen3-Embedding query template via prompt_name (no manual prefix —
-    # the model card publishes the canonical instruction template). Empty
-    # config value falls back to raw encoding for A-B.
-    _prompt_name = settings.EMBEDDING_QUERY_PROMPT_NAME or None
-    dense = model.encode(
-        query, normalize_embeddings=True, prompt_name=_prompt_name,
-    ).tolist()
+    model = get_embedding_model(settings.EMBEDDING_MODEL_NAME)
+    if hasattr(model, "embed_query"):
+        # Foundry/Cohere path — asymmetric query-side embedding.
+        dense = model.embed_query(query).tolist()
+    else:
+        # Local SentenceTransformer path — Qwen3-Embedding query template
+        # via prompt_name (the model card publishes the canonical
+        # instruction template). Empty config value falls back to raw
+        # encoding for A-B.
+        _prompt_name = settings.EMBEDDING_QUERY_PROMPT_NAME or None
+        dense = model.encode(
+            query, normalize_embeddings=True, prompt_name=_prompt_name,
+        ).tolist()
     sparse = encode_sparse(query)
 
     qclient = AsyncQdrantClient(**qdrant_client_kwargs())

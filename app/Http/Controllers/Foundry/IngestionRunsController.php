@@ -107,8 +107,17 @@ class IngestionRunsController extends Controller
         $matched = [];
 
         // 1. Real progress rows: anything not yet 'completed' is in flight.
+        //    Terminal failures stay visible (warn pill + error text) for 24h
+        //    so the user sees what broke, then drop off — without this cutoff
+        //    every failed run ever stays pinned in "in flight" forever.
+        $terminalSteps = ['failed', 'cancelled', 'timed_out'];
         foreach ($progress as $p) {
             if ($p['current_step'] === 'completed') {
+                continue;
+            }
+            if (in_array((string) $p['current_step'], $terminalSteps, true)
+                && $p['started_at'] !== null
+                && strtotime((string) $p['started_at']) < time() - 86400) {
                 continue;
             }
             $inFlight[] = [
