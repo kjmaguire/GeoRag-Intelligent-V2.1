@@ -277,21 +277,21 @@ async def embed_pending_passages(
                 result.passages_skipped += len(batch)
                 continue
 
-            # Sparse encode (SPLADE++) — batched forward pass; falls back to
-            # the per-text loop only if the whole batch fails, so one bad
-            # text degrades to {} instead of sinking its batch-mates.
-            from app.services.sparse_encoder import encode_sparse, encode_sparse_batch
-            try:
-                sparse_vectors = encode_sparse_batch(texts)
-            except Exception as e:
-                log.warning("embed_pending.sparse_batch_failed err=%s — per-text fallback", e)
-                sparse_vectors = []
-                for txt in texts:
-                    try:
-                        sparse_vectors.append(encode_sparse(txt))
-                    except Exception as e2:
-                        log.warning("embed_pending.sparse_encode_failed err=%s", e2)
-                        sparse_vectors.append({})
+            # Sparse encode (SPLADE++) — deliberately per-text, NOT batched.
+            # 2026-08-07: a batched 32×512-token forward pass here OOM-killed
+            # the 8 Gi worker container (exit 137 every ~2 min — padded
+            # attention + per-OMP-thread scratch spikes several GB, and the
+            # kill also took down concurrent parse tasks). The per-text loop
+            # peaks at 1×512 and ran for months without incident. Do not
+            # re-batch without measuring peak RSS under OMP_NUM_THREADS.
+            from app.services.sparse_encoder import encode_sparse
+            sparse_vectors = []
+            for txt in texts:
+                try:
+                    sparse_vectors.append(encode_sparse(txt))
+                except Exception as e:
+                    log.warning("embed_pending.sparse_encode_failed err=%s", e)
+                    sparse_vectors.append({})
 
             # Build Qdrant points
             points: list[PointStruct] = []
