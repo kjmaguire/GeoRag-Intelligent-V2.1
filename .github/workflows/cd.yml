@@ -160,7 +160,7 @@ jobs:
             --image "georag/laravel:${SHORT_SHA}" \
             --image "georag/laravel:latest" \
             --file docker/laravel.Dockerfile \
-            --build-arg VITE_REVERB_APP_KEY=gxk7h5w2ato1zq9pm4b8rucy0fedlv \
+            --build-arg VITE_REVERB_APP_KEY=gxk7h5w2ato1zq9pm4b8rucy0fedlvj3 \
             --build-arg VITE_REVERB_HOST=laravel-reverb-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io \
             --build-arg VITE_REVERB_PORT=443 \
             --build-arg VITE_REVERB_SCHEME=https \
