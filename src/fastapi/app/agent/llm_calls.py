@@ -661,7 +661,11 @@ async def _call_openai_compatible_llm(
     # 2026-07-30 against a live deployment. Strip before returning so the
     # caller's json.loads() (or any plain-text consumer) sees a clean
     # payload. Harmless no-op on backends that never emit these tokens.
-    if backend_kind == "azure" and "<|START_TEXT|>" in content:
+    # 2026-08-10: gate widened from backend_kind == "azure" — the sentinel
+    # is a property of the Cohere model, not the transport, and a wrapped
+    # answer reached the UI verbatim through a path that reported a
+    # different backend_kind. Harmless no-op for models that never emit it.
+    if "<|START_TEXT|>" in content:
         stripped = re.sub(
             r"<\|START_TEXT\|>|<\|END_TEXT\|>",
             "",

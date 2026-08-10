@@ -52,6 +52,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
@@ -552,6 +553,20 @@ async def _agent_rag_stream(
             await run_task
 
     assert final is not None
+
+    # Cohere Command A+ wraps plain-text answers in sentinel tokens
+    # (`<|START_TEXT|>…<|END_TEXT|>`). The JSON-mode strip in llm_calls
+    # doesn't cover this path, and the raw tokens rendered verbatim in the
+    # chat UI (observed live 2026-08-10). Sanitise once here so the
+    # synthetic deltas AND the completed payload are both clean.
+    if final.text and "<|START_TEXT|>" in final.text:
+        final = final.model_copy(
+            update={
+                "text": re.sub(
+                    r"<\|START_TEXT\|>|<\|END_TEXT\|>", "", final.text
+                ).strip()
+            }
+        )
 
     # Phase 3: if stream_text produced nothing, synthesise word-level deltas
     # from the final response text so the frontend always gets progressive
