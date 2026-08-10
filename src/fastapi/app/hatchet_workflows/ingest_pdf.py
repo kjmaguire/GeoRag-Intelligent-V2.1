@@ -480,7 +480,11 @@ ingest_pdf = hatchet.workflow(
 
 
 # ---- Step 1: preflight -------------------------------------------------------
-@ingest_pdf.task(execution_timeout="60s", schedule_timeout="2h", retries=2)
+# 2026-08-10: execution_timeout raised 60s -> 180s. Preflight is mostly a
+# ~20 MB blob download + sha256, but on a saturated worker (concurrent parse
+# using all cores) the event loop starves and the old 60s budget expired 3×
+# in a row, terminally failing a whole workflow (Madsen, 2026-08-07 11:32Z).
+@ingest_pdf.task(execution_timeout="180s", schedule_timeout="2h", retries=2)
 async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
     """Download from S3, compute sha256, validate magic bytes + size + encryption."""
     log.info("ingest_pdf.preflight start key=%s", input.minio_key)
