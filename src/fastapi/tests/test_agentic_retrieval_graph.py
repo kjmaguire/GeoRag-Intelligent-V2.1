@@ -189,7 +189,11 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
     """
     calls: list[tuple[str, tuple]] = []
 
-    async def fake_search_documents(ctx, query_text: str, project_id: str):
+    # 2026-08 identifier-boost wiring: the dispatcher now passes
+    # sparse_boost_factor=<float> to search_documents.
+    async def fake_search_documents(
+        ctx, query_text: str, project_id: str, *, sparse_boost_factor: float = 1.0
+    ):
         assert ctx is not None and hasattr(ctx, "deps"), (
             "dispatcher must pass a ctx with .deps"
         )
@@ -237,7 +241,10 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
 async def test_execute_node_runs_adversarial_pass_for_hypothesis(monkeypatch) -> None:
     queries_seen: list[str] = []
 
-    async def fake_search_documents(ctx, query_text: str, project_id: str):
+    # 2026-08 identifier-boost wiring: dispatcher passes sparse_boost_factor.
+    async def fake_search_documents(
+        ctx, query_text: str, project_id: str, *, sparse_boost_factor: float = 1.0
+    ):
         queries_seen.append(query_text)
         return {"chunks": [], "count": 0}
 
@@ -324,7 +331,10 @@ async def test_execute_node_populates_evidence_packet(monkeypatch) -> None:
         },
     ]
 
-    async def fake_search_documents(ctx, query_text: str, project_id: str):
+    # 2026-08 identifier-boost wiring: dispatcher passes sparse_boost_factor.
+    async def fake_search_documents(
+        ctx, query_text: str, project_id: str, *, sparse_boost_factor: float = 1.0
+    ):
         return _FakeDocSearch(chunks_payload)
 
     async def fake_project_id_only(ctx, project_id: str):
@@ -500,7 +510,9 @@ async def test_run_agentic_retrieval_returns_geo_rag_response(monkeypatch) -> No
     valid :class:`GeoRAGResponse`.
     """
 
-    async def fake_search_documents(ctx, query_text: str, project_id: str):
+    async def fake_search_documents(
+        ctx, query_text: str, project_id: str, *, sparse_boost_factor: float = 1.0
+    ):
         return {"chunks": [], "count": 0}
 
     async def fake_project_id_only(ctx, project_id: str):
@@ -704,7 +716,9 @@ async def test_classify_node_emits_classifying_status() -> None:
 
 @pytest.mark.asyncio
 async def test_execute_node_emits_querying_status(monkeypatch) -> None:
-    async def fake_search_documents(ctx, query_text: str, project_id: str):
+    async def fake_search_documents(
+        ctx, query_text: str, project_id: str, *, sparse_boost_factor: float = 1.0
+    ):
         return {"chunks": [], "count": 0}
 
     import app.agent.tools as _tools_mod
@@ -731,7 +745,9 @@ async def test_run_agentic_retrieval_threads_callbacks_through_state(monkeypatch
     """End-to-end: callbacks passed into run_agentic_retrieval() actually
     reach the nodes — not just accepted-and-dropped like before Step 2.5."""
 
-    async def fake_search_documents(ctx, query_text: str, project_id: str):
+    async def fake_search_documents(
+        ctx, query_text: str, project_id: str, *, sparse_boost_factor: float = 1.0
+    ):
         return {"chunks": [], "count": 0}
 
     async def fake_project_id_only(ctx, project_id: str):

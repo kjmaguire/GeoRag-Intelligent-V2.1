@@ -20,6 +20,10 @@ from app.services.geological_ontology import (
     resolve_term,
 )
 
+# CI's non-integration pytest job runs without a database service; these tests
+# dial Postgres at fixture setup, so they must run in the integration lane.
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

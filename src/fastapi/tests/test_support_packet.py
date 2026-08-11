@@ -14,6 +14,10 @@ from app.services.support_cockpit.root_cause_investigation import (
 from app.services.support_cockpit.support_packet import build_support_packet
 from app.services.support_cockpit.ticket_triage import triage_ticket
 
+# CI's non-integration pytest job runs without a database service; these tests
+# dial Postgres at fixture setup, so they must run in the integration lane.
+pytestmark = pytest.mark.integration
+
 
 def _dsn() -> str:
     user = os.environ.get("POSTGRES_USER", "georag")

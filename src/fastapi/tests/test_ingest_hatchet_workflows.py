@@ -30,7 +30,8 @@ def test_embed_pending_passages_default_input():
     )
     assert inp.workspace_id == "a0000000-0000-0000-0000-000000000001"
     assert inp.project_id == "*"
-    assert inp.batch_size == 32
+    # Default embed batch_size deliberately raised 32 → 64 (2026-08 weekend perf work).
+    assert inp.batch_size == 64
     assert inp.max_passages is None
 
 

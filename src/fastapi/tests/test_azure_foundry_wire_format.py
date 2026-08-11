@@ -6,17 +6,17 @@ test_qwen3_payload_shape.py, same fake-http_client convention (no live model,
 no new test dependency — http_client is already an injectable seam per the
 P1 #13 comment in llm_calls.py).
 
-Two behaviors, both azure-only:
+Two behaviors:
   1. Cohere wraps JSON-mode output in <|START_TEXT|>...<|END_TEXT|> sentinel
      tokens — must be stripped so callers' json.loads() sees clean output.
-  2. Cohere's "budget exhausted by thinking" failure surfaces reasoning on
-     `reasoning_content` (vLLM/Qwen3 uses `reasoning` instead) — same
-     fallback-message behavior must fire for either field name.
-
-Also asserts the azure-only guard doesn't fire on the vllm backend, so a
-future refactor can't accidentally make sentinel-stripping backend-agnostic
-(harmless today since vLLM never emits these tokens, but the guard existing
-at all is the point of testing it).
+     The strip gate was deliberately widened 2026-08-10 from
+     backend_kind == "azure" to ANY response content containing the sentinel:
+     the sentinel is a property of the Cohere model, not the transport, so an
+     operator serving Cohere behind their own OpenAI-compatible endpoint
+     (LLM_BACKEND=vllm) gets the same stripping.
+  2. (azure-only) Cohere's "budget exhausted by thinking" failure surfaces
+     reasoning on `reasoning_content` (vLLM/Qwen3 uses `reasoning` instead) —
+     same fallback-message behavior must fire for either field name.
 """
 
 from __future__ import annotations
@@ -65,10 +65,11 @@ async def test_azure_backend_strips_cohere_sentinel_tokens(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_vllm_backend_does_not_strip_sentinel_like_text(monkeypatch):
-    """The stripping guard checks backend_kind == "azure" specifically — a
-    vLLM response that happens to contain sentinel-shaped text (e.g. echoed
-    back from a user's own prompt) must pass through unmodified."""
+async def test_vllm_backend_strips_sentinel_tokens_too(monkeypatch):
+    """2026-08-10: the strip gate is content-based, not backend-based — the
+    sentinel is a property of the Cohere model, not the transport. A vLLM
+    (OpenAI-compatible) backend response containing <|START_TEXT|> sentinel
+    tokens must be stripped exactly like the azure path."""
     monkeypatch.setattr(settings, "LLM_BACKEND", "vllm")
     client = _make_capturing_client("<|START_TEXT|>literal vllm content<|END_TEXT|>")
 
@@ -81,7 +82,9 @@ async def test_vllm_backend_does_not_strip_sentinel_like_text(monkeypatch):
         enable_thinking=False,
     )
 
-    assert result == "<|START_TEXT|>literal vllm content<|END_TEXT|>"
+    assert "<|START_TEXT|>" not in result
+    assert "<|END_TEXT|>" not in result
+    assert result == "literal vllm content"
 
 
 @pytest.mark.asyncio

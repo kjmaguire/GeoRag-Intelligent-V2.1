@@ -93,7 +93,9 @@ def _stub_fitz(parser_module, per_page, image_pages, warnings=None,
     method = per_page_method if per_page_method is not None else default_method
     conf = per_page_confidence if per_page_confidence is not None else default_conf
 
-    def _fake(path, apply_ocr_fallback=True):
+    # progress_file added 2026-08: _run_parser_subprocess/_parse_with_fitz
+    # gained a progress_file param; the dispatcher passes it through.
+    def _fake(path, apply_ocr_fallback=True, progress_file=None):
         return (
             full_text, "Test Doc", 0, list(warnings or []), page_langs,
             list(per_page), list(image_pages),
@@ -124,7 +126,8 @@ def test_fitz_total_failure_falls_back_to_pdfplumber(
 ):
     pdfplumber_pages = [(1, "Pdfplumber recovered page one " * 10)]
 
-    def _fitz_explodes(path, apply_ocr_fallback=True):
+    # progress_file param added 2026-08 to the _parse_with_fitz signature.
+    def _fitz_explodes(path, apply_ocr_fallback=True, progress_file=None):
         raise RuntimeError("simulated fitz crash")
 
     with patch.object(parser_module, "_parse_with_fitz",
@@ -151,7 +154,8 @@ def test_tesseract_fallback_enabled_recovers_image_pages(
 
     captured_apply_ocr_fallback = []
 
-    def _fake_parse_with_fitz(path, apply_ocr_fallback=True):
+    # progress_file param added 2026-08 to the _parse_with_fitz signature.
+    def _fake_parse_with_fitz(path, apply_ocr_fallback=True, progress_file=None):
         captured_apply_ocr_fallback.append(apply_ocr_fallback)
         return (
             "Native text " * 30, "Test Doc", 0, [], ["en"],
@@ -174,7 +178,8 @@ def test_tesseract_fallback_disabled_skips_internal_ocr_loop(
 
     captured_apply_ocr_fallback = []
 
-    def _fake_parse_with_fitz(path, apply_ocr_fallback=True):
+    # progress_file param added 2026-08 to the _parse_with_fitz signature.
+    def _fake_parse_with_fitz(path, apply_ocr_fallback=True, progress_file=None):
         captured_apply_ocr_fallback.append(apply_ocr_fallback)
         return (
             "Native text " * 30, "Test Doc", 0, [], ["en"],

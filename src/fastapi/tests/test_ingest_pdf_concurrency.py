@@ -6,9 +6,9 @@ the kernel's edge and the OOM killer SIGKILLed docling subprocesses,
 which then tripped an asyncio.to_thread fallback that ran the same
 memory-hungry parse in-process, killing the whole worker. Two fixes:
 
-  Q. Per-workspace concurrency cap on ingest_pdf — at most one parse
-     per workspace at a time. Different workspaces parallel; same
-     workspace queues.
+  Q. Per-workspace concurrency cap on ingest_pdf — a small fixed number
+     of parses per workspace at a time (raised 1 → 2 on 2026-08-07).
+     Different workspaces parallel; same workspace queues beyond the cap.
   R. Remove the in-process asyncio.to_thread fallback — on
      BrokenProcessPool, reset the pool and raise so Hatchet retries.
 
@@ -20,7 +20,7 @@ from hatchet_sdk import ConcurrencyLimitStrategy
 
 
 def test_ingest_pdf_has_per_workspace_singleton_concurrency():
-    """Q — concurrency cap is configured per-workspace, singleton, queue."""
+    """Q — concurrency cap is configured per-workspace, capped, queue."""
     from app.hatchet_workflows.ingest_pdf import ingest_pdf
 
     cfg = ingest_pdf.config
@@ -35,8 +35,9 @@ def test_ingest_pdf_has_per_workspace_singleton_concurrency():
     assert expr.expression == "input.workspace_id", (
         f"Expected per-workspace grouping, got {expr.expression!r}"
     )
-    assert expr.max_runs == 1, (
-        f"Expected max_runs=1 (one parse per workspace), got {expr.max_runs}"
+    # max_runs deliberately raised 1 → 2 on 2026-08-07 (ingest_pdf concurrency).
+    assert expr.max_runs == 2, (
+        f"Expected max_runs=2 (two parses per workspace), got {expr.max_runs}"
     )
     assert expr.limit_strategy == ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN, (
         f"Expected GROUP_ROUND_ROBIN (queue subsequent uploads, never "

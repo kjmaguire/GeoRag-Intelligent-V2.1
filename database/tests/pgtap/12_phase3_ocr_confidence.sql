@@ -59,15 +59,18 @@ SELECT col_is_null(
 );
 
 -- ── 7. Range constraint exists ───────────────────────────────────────────────
-SELECT has_check(
-    'silver', 'document_passages', 'document_passages_ocr_confidence_range',
-    'document_passages_ocr_confidence_range CHECK constraint exists'
+-- pgTAP has no 4-arg has_check(schema, table, constraint_name, desc);
+-- col_has_check asserts the column carries a CHECK constraint, and tests
+-- 10-13 below exercise the range/enum semantics behaviourally.
+SELECT col_has_check(
+    'silver', 'document_passages', 'ocr_confidence',
+    'ocr_confidence has a CHECK constraint (document_passages_ocr_confidence_range)'
 );
 
 -- ── 8. Enum constraint exists ────────────────────────────────────────────────
-SELECT has_check(
-    'silver', 'document_passages', 'document_passages_ocr_method_check',
-    'document_passages_ocr_method_check CHECK constraint exists'
+SELECT col_has_check(
+    'silver', 'document_passages', 'ocr_method',
+    'ocr_method has a CHECK constraint (document_passages_ocr_method_check)'
 );
 
 -- ── 9. Partial index exists ──────────────────────────────────────────────────
