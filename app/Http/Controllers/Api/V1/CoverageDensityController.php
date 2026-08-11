@@ -74,7 +74,7 @@ class CoverageDensityController extends Controller
             'X-Service-Key' => $serviceKey,
             'Authorization' => 'Bearer '.$jwt,
             'Accept' => 'application/json',
-        ])->timeout(30)->get($fastApiBase.'/coverage/density', [
+        ])->timeout(30)->retry(2, 250)->get($fastApiBase.'/coverage/density', [
             'project_id' => $projectId,
             'kind' => $kind,
             'cell_size_m' => $cellSizeM,

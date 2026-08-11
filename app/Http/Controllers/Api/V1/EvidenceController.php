@@ -92,7 +92,7 @@ class EvidenceController extends Controller
                 'Authorization' => 'Bearer '.$jwt,
                 'X-Workspace-Id' => (string) $row->workspace_id,
                 'Accept' => 'application/json',
-            ])->timeout(10)->get(
+            ])->timeout(10)->retry(2, 250)->get(
                 $fastApiBase.'/v1/evidence/'.rawurlencode($evidenceId),
             );
         } catch (\Throwable $exc) {

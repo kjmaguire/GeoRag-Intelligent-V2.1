@@ -51,6 +51,18 @@ class HatchetDispatchThrottle
     /** Default window — matches `ingest:reingest-project --throttle-ms`. */
     public const DEFAULT_THROTTLE_MS = 2000;
 
+    /**
+     * Effective default, env-tunable. The 2000ms constant was sized for
+     * 500-file bulk replays; on the interactive upload path it pins an
+     * Octane worker in usleep for >=2s per file (uploads are sequential
+     * in the wizard, so a 20-file import spends 40s just waiting). 250ms
+     * still smooths Hatchet's GROUP_ROUND_ROBIN intake.
+     */
+    public static function defaultThrottleMs(): int
+    {
+        return (int) config('services.hatchet.dispatch_throttle_ms', 250);
+    }
+
     /** Hard ceiling on time spent waiting so we don't pin an Octane worker. */
     public const MAX_WAIT_MS = 30_000;
 
@@ -76,7 +88,7 @@ class HatchetDispatchThrottle
      */
     public function wait(string $workspaceId, ?int $throttleMs = null): void
     {
-        $ms = $throttleMs ?? self::DEFAULT_THROTTLE_MS;
+        $ms = $throttleMs ?? self::defaultThrottleMs();
         if ($ms <= 0 || $workspaceId === '') {
             return;
         }

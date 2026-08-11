@@ -76,6 +76,13 @@ return [
         'llm_model' => env('FASTAPI_LLM_MODEL', 'Qwen/Qwen3-14B-AWQ'),
     ],
 
+    'hatchet' => [
+        // Per-workspace dispatch smoothing (HatchetDispatchThrottle). The
+        // old hard-coded 2000ms was sized for 500-file bulk replays and
+        // pinned an Octane worker >=2s per interactive upload.
+        'dispatch_throttle_ms' => (int) env('HATCHET_DISPATCH_THROTTLE_MS', 250),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Qdrant

@@ -144,11 +144,11 @@ class PublicApiController extends Controller
         $jwt = app(FastApiJwtMinter::class)->mint((string) $user->id, $projectId, []);
 
         $allNotes = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
-            ->timeout(10)->get("$fastApi/v1/interpretation/notes", ['project_id' => $projectId]);
+            ->timeout(10)->retry(2, 250)->get("$fastApi/v1/interpretation/notes", ['project_id' => $projectId]);
         $allZones = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
-            ->timeout(10)->get("$fastApi/v1/interpretation/target-zones", ['project_id' => $projectId]);
+            ->timeout(10)->retry(2, 250)->get("$fastApi/v1/interpretation/target-zones", ['project_id' => $projectId]);
         $allSections = Http::withHeaders(['X-Service-Key' => $svc, 'Authorization' => "Bearer $jwt"])
-            ->timeout(10)->get("$fastApi/v1/interpretation/section-lines", ['project_id' => $projectId]);
+            ->timeout(10)->retry(2, 250)->get("$fastApi/v1/interpretation/section-lines", ['project_id' => $projectId]);
 
         return response()->json([
             'project_id' => $projectId,

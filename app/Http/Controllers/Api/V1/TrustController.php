@@ -71,7 +71,7 @@ class TrustController extends Controller
                 'X-Service-Key' => $serviceKey,
                 'Authorization' => 'Bearer '.$jwt,
                 'Accept' => 'application/json',
-            ])->timeout(15)->get(
+            ])->timeout(15)->retry(2, 250)->get(
                 $fastApiBase.'/v1/answer_runs/'.$answerRunId.'/trust-summary',
             );
         } catch (\Throwable $exc) {

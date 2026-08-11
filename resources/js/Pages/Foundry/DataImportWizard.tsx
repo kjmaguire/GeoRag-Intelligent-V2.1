@@ -128,15 +128,24 @@ export default function FoundryDataImportWizard() {
         setSubmitting(true);
         setOutcomes([]);
 
-        // Upload sequentially so per-file failures don't break the whole
-        // batch — UploadController validates size + content-type per file
-        // and we want clear per-file feedback rather than a single 4xx.
-        const results: UploadOutcome[] = [];
-        for (const f of files) {
-            const r = await uploadOne(selectedProject.project_id, f);
-            results.push(r);
-            setOutcomes([...results]);
+        // Bounded-concurrency pool (3 wide): per-file requests stay
+        // independent so failures still surface per file, but a 20-file
+        // import no longer serialises 20 round-trips end-to-end. Results
+        // land in input order for stable UI rows.
+        const CONCURRENCY = 3;
+        const results: UploadOutcome[] = new Array(files.length);
+        let nextIndex = 0;
+        async function worker() {
+            for (;;) {
+                const i = nextIndex++;
+                if (i >= files.length) return;
+                results[i] = await uploadOne(selectedProject!.project_id, files[i]);
+                setOutcomes(results.filter(Boolean) as UploadOutcome[]);
+            }
         }
+        await Promise.all(
+            Array.from({ length: Math.min(CONCURRENCY, files.length) }, () => worker()),
+        );
 
         setSubmitting(false);
 

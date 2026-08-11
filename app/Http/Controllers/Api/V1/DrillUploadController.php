@@ -75,10 +75,18 @@ class DrillUploadController extends Controller
         }
 
         $originalName = $file->getClientOriginalName();
-        $sha256 = hash_file('sha256', $file->getRealPath());
-        if ($sha256 === false) {
+        // Single streaming pass for the hash — hash_file + a later fresh
+        // fopen + a FileinfoMimeTypeGuesser walk read a multi-GB upload
+        // three times over; the hash must still come FIRST because the
+        // dedupe SELECT below needs it before anything is written.
+        $handle = fopen($file->getRealPath(), 'rb');
+        if ($handle === false) {
             return response()->json(['error' => 'sha_compute_failed'], 500);
         }
+        $hashCtx = hash_init('sha256');
+        hash_update_stream($hashCtx, $handle);
+        $sha256 = hash_final($hashCtx);
+        fclose($handle);
 
         // Dedupe early — same workspace + same content = same row. This
         // protects against accidental double-uploads from the UI without
@@ -135,7 +143,10 @@ class DrillUploadController extends Controller
                 'original_filename' => $originalName,
                 'file_sha256' => $sha256,
                 'file_size_bytes' => $file->getSize(),
-                'mime_type' => $file->getMimeType(),
+                // Client-declared mime, not getMimeType(): the fileinfo
+                // guesser re-reads the file (third full pass on multi-GB
+                // uploads) and the extension is already allow-listed above.
+                'mime_type' => $file->getClientMimeType(),
                 'source_type' => 'drill_upload',
                 'data_type' => $selection['asset_key'] ?? 'unrouted',
                 'campaign_id' => null,
@@ -143,6 +154,15 @@ class DrillUploadController extends Controller
                 'ingested_at' => now(),
             ]);
         } catch (Throwable $e) {
+            // The object was written before the row — on any branch that
+            // exits without a row referencing $seaweedfsKey, delete it or
+            // it becomes invisible unbounded storage growth (the Tier-1
+            // sweep audits rows, not objects).
+            try {
+                $storage->bronze()->delete($seaweedfsKey);
+            } catch (Throwable) {
+                // Best-effort; orphan is logged below either way.
+            }
             // Race: another request inserted the same (workspace_id, sha256)
             // between our SELECT and INSERT. Return the canonical row.
             $canonical = DB::table('bronze.source_files')
@@ -158,6 +178,7 @@ class DrillUploadController extends Controller
             }
             Log::error('DrillUploadController: source_files insert failed', [
                 'error' => $e->getMessage(),
+                'orphaned_key_deleted' => $seaweedfsKey,
             ]);
 
             return response()->json(['error' => 'persist_failed'], 500);
@@ -298,7 +319,7 @@ class DrillUploadController extends Controller
                 'X-Service-Key' => $serviceKey,
                 'Authorization' => 'Bearer '.$jwt,
                 'Accept' => 'application/json',
-            ])->timeout(15)->post(
+            ])->timeout(15)->retry(3, 500)->post(
                 $fastApiBase.'/internal/v1/shadow/ingest_pdf/trigger',
                 [
                     'workspace_id' => $workspaceId,

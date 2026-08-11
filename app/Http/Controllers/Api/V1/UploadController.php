@@ -198,11 +198,18 @@ class UploadController extends Controller
                 ];
             }
 
+            // Hash and upload in ONE pass over the file — the previous
+            // shape did a full hash_file() read after the put, doubling
+            // disk I/O on uploads capped at 6 GB.
             $handle = fopen($file->getRealPath(), 'r');
             if ($handle === false) {
                 throw new \RuntimeException('Unable to open uploaded file for streaming.');
             }
             try {
+                $hashCtx = hash_init('sha256');
+                hash_update_stream($hashCtx, $handle);
+                $sha256 = hash_final($hashCtx);
+                rewind($handle);
                 $this->storage->bronze()->put($minioKey, $handle, $putOptions);
             } finally {
                 if (is_resource($handle)) {
@@ -221,7 +228,7 @@ class UploadController extends Controller
                     ->where('project_id', $projectId)
                     ->value('workspace_id');
                 if ($workspaceId !== null) {
-                    $sha256 = hash_file('sha256', $file->getRealPath()) ?: '';
+                    // $sha256 computed in the streaming pass above.
                     DB::statement(
                         'INSERT INTO bronze.manifest
                              (file_key, workspace_id, sha256, document_type,
@@ -423,7 +430,7 @@ class UploadController extends Controller
                 'X-Service-Key' => $serviceKey,
                 'Authorization' => 'Bearer '.$jwt,
                 'Accept' => 'application/json',
-            ])->timeout(15)->post(
+            ])->timeout(15)->retry(3, 500)->post(
                 $fastApiBase.$triggerPath,
                 $payload,
             );
@@ -541,7 +548,7 @@ class UploadController extends Controller
                 'X-Service-Key' => $serviceKey,
                 'Authorization' => 'Bearer '.$jwt,
                 'Accept' => 'application/json',
-            ])->timeout(15)->post(
+            ])->timeout(15)->retry(3, 500)->post(
                 $fastApiBase.'/internal/v1/shadow/ingest_zip_archive/trigger',
                 $payload,
             );
