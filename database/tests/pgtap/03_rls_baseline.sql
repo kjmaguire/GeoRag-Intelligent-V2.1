@@ -11,7 +11,7 @@
 --
 --   • 2026_04_17_120200_replace_toothless_rls_with_guc_aware_policies
 --       Tables: silver.collars, silver.samples
---       Policy names: collars_project_scope, samples_project_scope
+--       Policy family: *_workspace_isolation (v2 renames included)
 --
 --   • 2026_04_22_170000_extend_rls_workspace_coverage
 --       Tables: silver.drill_traces, silver.evidence_items, silver.answer_runs,
@@ -29,10 +29,10 @@
 -- Assertions (plan: 15):
 --   1.  collars has RLS enabled
 --   2.  collars has FORCE ROW LEVEL SECURITY
---   3.  collars has collars_project_scope policy
+--   3.  collars has a workspace_isolation policy
 --   4.  samples has RLS enabled
 --   5.  samples has FORCE ROW LEVEL SECURITY
---   6.  samples has samples_project_scope policy
+--   6.  samples has a workspace_isolation policy
 --   7.  drill_traces has relrowsecurity = true
 --   8.  drill_traces has relforcerowsecurity = true
 --   9.  drill_traces has drill_traces_tenant_scope policy
@@ -69,9 +69,11 @@ SELECT ok(
         SELECT 1 FROM pg_policies
          WHERE schemaname = 'silver'
            AND tablename  = 'collars'
-           AND policyname = 'collars_project_scope'
+           -- Renamed in the 2026-05/06 tenancy normalization; assert the
+           -- workspace_isolation family so a future _v3 doesn't re-break this.
+           AND policyname LIKE '%workspace_isolation%'
     ),
-    'silver.collars has collars_project_scope policy'
+    'silver.collars has a workspace_isolation policy'
 );
 
 -- ── 4–6. silver.samples ──────────────────────────────────────────────────────
@@ -91,9 +93,9 @@ SELECT ok(
         SELECT 1 FROM pg_policies
          WHERE schemaname = 'silver'
            AND tablename  = 'samples'
-           AND policyname = 'samples_project_scope'
+           AND policyname LIKE '%workspace_isolation%'
     ),
-    'silver.samples has samples_project_scope policy'
+    'silver.samples has a workspace_isolation policy'
 );
 
 -- ── 7–9. silver.drill_traces ─────────────────────────────────────────────────
