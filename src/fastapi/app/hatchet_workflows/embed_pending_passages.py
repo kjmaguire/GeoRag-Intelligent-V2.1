@@ -53,7 +53,10 @@ class EmbedPendingPassagesInput(BaseModel):
         description="Project UUID to embed, or '*' to walk every project with "
                     "un-embedded passages.",
     )
-    batch_size: int = Field(default=32)
+    # 2026-08-11: 32 → 64. Cohere Embed's v2 API takes up to 96 texts per
+    # request; bigger batches halve the HTTP round-trips and Qdrant
+    # upserts per document. SPLADE memory is unaffected (per-text loop).
+    batch_size: int = Field(default=64)
     max_passages: int | None = Field(
         default=None,
         description="Cap for smoke runs. None = no limit.",

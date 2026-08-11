@@ -43,8 +43,10 @@ This matches the orchestrator's payload-extraction logic in
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import asyncpg
@@ -110,8 +112,9 @@ async def embed_pending_passages(
     project_id: str | None = None,
     embedding_model=None,
     qdrant_client: AsyncQdrantClient | None = None,
-    batch_size: int = 32,
+    batch_size: int = 64,
     max_passages: int | None = None,
+    concurrency: int | None = None,
 ) -> EmbeddingSyncResult:
     """Walk un-embedded passages for a project and push to Qdrant.
 
@@ -121,8 +124,16 @@ async def embed_pending_passages(
             in the workspace.
         embedding_model: SentenceTransformer instance. Loaded if None.
         qdrant_client: AsyncQdrantClient. Connected if None.
-        batch_size: number of passages to encode in one BGE batch
+        batch_size: passages per Cohere/encode batch (Cohere Embed v2 API
+            caps a single request at 96 texts — keep at or below that)
         max_passages: cap for smoke tests; None = no limit
+        concurrency: batches processed in parallel (default: env
+            EMBED_CONCURRENCY, else 3). The sync Cohere HTTP call and the
+            SPLADE forward run in a thread pool so batches genuinely
+            overlap; per-batch SPLADE stays a per-text loop, so peak
+            memory is `concurrency` × one 512-token forward — nowhere
+            near the batched 32×512 pass that OOM-killed the 8 Gi worker
+            on 2026-08-07.
 
     Returns:
         EmbeddingSyncResult with per-stage counts.
@@ -262,36 +273,62 @@ async def embed_pending_passages(
             return result
 
         # ── Encode in batches ─────────────────────────────────────
-        _verified_this_run = False
-        for batch_start in range(0, len(rows), batch_size):
-            batch = rows[batch_start:batch_start + batch_size]
+        # 2026-08-11 throughput rework: batches now overlap. The dense
+        # (sync Cohere HTTP) and sparse (SPLADE CPU forward) stages run in
+        # a small thread pool so `concurrency` batches are in flight at
+        # once, and Qdrant upserts after the first batch use wait=False —
+        # on the Azure Files (SMB) volume a wait=True flush dominated the
+        # whole pipeline (~20-40 s/batch vs ~13 s of actual encode work).
+        # Durability is unchanged: writes still land in Qdrant's WAL, and
+        # the embed_pending cron's drift self-heal re-embeds anything a
+        # crash loses. The FIRST batch keeps wait=True so the post-upsert
+        # payload-contract verification below stays race-free.
+        if concurrency is None:
+            concurrency = max(1, int(os.environ.get("EMBED_CONCURRENCY", "3")))
+
+        from app.services.sparse_encoder import encode_sparse
+
+        def _encode_dense_sync(texts: list[str]):
+            return embedding_model.encode(
+                texts, normalize_embeddings=True, show_progress_bar=False,
+            ).tolist()
+
+        def _encode_sparse_sync(texts: list[str]) -> list[dict]:
+            # Per-text loop preserved — see the 2026-08-07 OOM note in the
+            # docstring. Peak memory stays one 512-token forward per
+            # in-flight batch.
+            out: list[dict] = []
+            for txt in texts:
+                try:
+                    out.append(encode_sparse(txt))
+                except Exception as e:
+                    log.warning("embed_pending.sparse_encode_failed err=%s", e)
+                    out.append({})
+            return out
+
+        loop = asyncio.get_running_loop()
+        executor = ThreadPoolExecutor(max_workers=concurrency)
+        pg_lock = asyncio.Lock()
+        batches = [rows[i:i + batch_size] for i in range(0, len(rows), batch_size)]
+        total_batches = len(batches)
+
+        async def _process_batch(batch_no: int, batch, *, first: bool) -> None:
             texts = [r["contextualized_content"] or r["text"] for r in batch]
 
-            # Dense encode (BGE-small, normalized)
+            # Dense encode (Cohere Embed v4 / SentenceTransformer)
             try:
-                dense_vectors = embedding_model.encode(
-                    texts, normalize_embeddings=True, show_progress_bar=False,
-                ).tolist()
+                dense_vectors = await loop.run_in_executor(
+                    executor, _encode_dense_sync, texts,
+                )
             except Exception as e:
                 result.errors.append(f"dense_encode_failed:{type(e).__name__}:{e}")
                 result.passages_skipped += len(batch)
-                continue
+                return
 
-            # Sparse encode (SPLADE++) — deliberately per-text, NOT batched.
-            # 2026-08-07: a batched 32×512-token forward pass here OOM-killed
-            # the 8 Gi worker container (exit 137 every ~2 min — padded
-            # attention + per-OMP-thread scratch spikes several GB, and the
-            # kill also took down concurrent parse tasks). The per-text loop
-            # peaks at 1×512 and ran for months without incident. Do not
-            # re-batch without measuring peak RSS under OMP_NUM_THREADS.
-            from app.services.sparse_encoder import encode_sparse
-            sparse_vectors = []
-            for txt in texts:
-                try:
-                    sparse_vectors.append(encode_sparse(txt))
-                except Exception as e:
-                    log.warning("embed_pending.sparse_encode_failed err=%s", e)
-                    sparse_vectors.append({})
+            # Sparse encode (SPLADE++)
+            sparse_vectors = await loop.run_in_executor(
+                executor, _encode_sparse_sync, texts,
+            )
 
             # Build Qdrant points
             points: list[PointStruct] = []
@@ -339,18 +376,20 @@ async def embed_pending_passages(
                     id=point_id, vector=vector_dict, payload=payload,
                 ))
 
-            # Upsert
+            # Upsert. wait only on the first batch (needed for the verify
+            # read below); later batches return as soon as Qdrant accepts
+            # the write, dodging the SMB flush latency per batch.
             try:
                 await qdrant_client.upsert(
                     collection_name=_QDRANT_COLLECTION,
-                    points=points, wait=True,
+                    points=points, wait=first,
                 )
                 result.qdrant_points_upserted += len(points)
             except Exception as e:
                 result.errors.append(f"upsert_failed:{type(e).__name__}:{e}")
                 result.passages_skipped += len(batch)
                 log.warning("embed_pending.upsert_failed err=%s", e)
-                continue
+                return
 
             # Post-upsert verification on the FIRST successful batch of each
             # run only — retrieve one freshly-written point and confirm Qdrant
@@ -359,8 +398,7 @@ async def embed_pending_passages(
             # 2026-06-01 outage: missing sparse "text" slot caused canonical
             # upserts to 400 and an unknown code path stripped payload to
             # make uploads succeed).
-            if points and not _verified_this_run:
-                _verified_this_run = True
+            if points and first:
                 try:
                     _verify = await qdrant_client.retrieve(
                         collection_name=_QDRANT_COLLECTION,
@@ -402,12 +440,17 @@ async def embed_pending_passages(
             # single bad row can't lose the whole batch's writeback.
             _wb = [(point.id, row["passage_id"]) for row, point in zip(batch, points, strict=False)]
             try:
-                await pg_conn.executemany(
-                    "UPDATE silver.document_passages "
-                    "   SET embedding_id = $1, updated_at = NOW() "
-                    " WHERE passage_id = $2::uuid",
-                    _wb,
-                )
+                # pg_conn is a single shared asyncpg connection — one
+                # query at a time; the lock serialises concurrent batches'
+                # writebacks (they're the cheapest stage, so this doesn't
+                # bottleneck the pipeline).
+                async with pg_lock:
+                    await pg_conn.executemany(
+                        "UPDATE silver.document_passages "
+                        "   SET embedding_id = $1, updated_at = NOW() "
+                        " WHERE passage_id = $2::uuid",
+                        _wb,
+                    )
                 result.passages_embedded += len(_wb)
             except Exception as batch_exc:
                 log.warning(
@@ -416,12 +459,13 @@ async def embed_pending_passages(
                 )
                 for point_id, passage_id in _wb:
                     try:
-                        await pg_conn.execute(
-                            "UPDATE silver.document_passages "
-                            "   SET embedding_id = $1, updated_at = NOW() "
-                            " WHERE passage_id = $2::uuid",
-                            point_id, passage_id,
-                        )
+                        async with pg_lock:
+                            await pg_conn.execute(
+                                "UPDATE silver.document_passages "
+                                "   SET embedding_id = $1, updated_at = NOW() "
+                                " WHERE passage_id = $2::uuid",
+                                point_id, passage_id,
+                            )
                         result.passages_embedded += 1
                     except Exception as e:
                         result.errors.append(
@@ -434,10 +478,31 @@ async def embed_pending_passages(
 
             log.info(
                 "embed_pending.batch_done batch=%d/%d embedded=%d",
-                batch_start // batch_size + 1,
-                (len(rows) + batch_size - 1) // batch_size,
+                batch_no + 1,
+                total_batches,
                 result.passages_embedded,
             )
+
+        try:
+            # First batch runs alone: wait=True upsert + payload-contract
+            # verify establish the collection is healthy before fanning out.
+            await _process_batch(0, batches[0], first=True)
+            if len(batches) > 1:
+                sem = asyncio.Semaphore(concurrency)
+
+                async def _guarded(i: int, b) -> None:
+                    async with sem:
+                        await _process_batch(i, b, first=False)
+
+                # gather without return_exceptions: a payload-contract
+                # RuntimeError must abort the run loudly (matching the old
+                # serial behaviour); per-batch encode/upsert failures are
+                # already caught inside _process_batch.
+                await asyncio.gather(
+                    *(_guarded(i, b) for i, b in enumerate(batches[1:], start=1))
+                )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
     finally:
         await pg_conn.close()
         if own_qdrant:
