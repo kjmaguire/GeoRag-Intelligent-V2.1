@@ -118,7 +118,11 @@ jobs:
     # laravel ~12-15 min, sequentially, before migrate/rollout/health-check
     # even start. GitHub cancels the whole job (not just the build step) on
     # timeout, so this needs real headroom, not a tight cap.
-    timeout-minutes: 50
+    # 2026-08-11: 50 -> 80. A slow ACR agent put the fastapi build past
+    # 30 min twice tonight; at 50 the job got cancelled after ~45 min of
+    # build work, wasting the whole run. 80 covers worst-case agent
+    # variance while still bounding a hung deploy.
+    timeout-minutes: 80
     environment:
       name: production
       url: https://laravel-octane-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io
