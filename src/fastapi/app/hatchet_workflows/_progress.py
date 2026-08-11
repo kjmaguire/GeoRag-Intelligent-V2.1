@@ -232,6 +232,11 @@ async def mark_stage_started(
         SET current_stage         = $2,
             current_step          = $2,
             step_index            = $3,
+            -- Sub-step progress belongs to the step that wrote it; a new
+            -- step starts at 0 or the UI shows "Saving to database —
+            -- extracting page 533/575".
+            stage_pct             = NULL,
+            stage_detail          = NULL,
             last_stage_started_at = now(),
             last_heartbeat_at     = now(),
             step_started_at       = now(),
