@@ -318,6 +318,32 @@ async def _agent_rag_stream(
     stream_started = _time_mod.monotonic()
     first_token_observed = False
 
+    # 2026-08-11: Cohere's `<|START_TEXT|>`/`<|END_TEXT|>` sentinels arrive
+    # as REAL streamed deltas (token_callback streams live since the Step
+    # 2.5 wiring), so the final-text sanitise further down never touches
+    # what the UI renders mid-stream. Filter at the SSE boundary instead —
+    # this covers every producer path regardless of backend. The holdback
+    # buffer handles a sentinel split across two chunks: any stream suffix
+    # that is a proper prefix of a sentinel is withheld until the next
+    # chunk disambiguates it, and flushed verbatim at end-of-stream.
+    _sentinels = ("<|START_TEXT|>", "<|END_TEXT|>")
+    _pending_tail = ""
+    last_token_seq = 0
+
+    def _clean_stream_token(chunk: str) -> str:
+        nonlocal _pending_tail
+        buf = _pending_tail + chunk
+        for s in _sentinels:
+            buf = buf.replace(s, "")
+        hold = 0
+        for s in _sentinels:
+            for k in range(min(len(s) - 1, len(buf)), 0, -1):
+                if buf.endswith(s[:k]):
+                    hold = max(hold, k)
+                    break
+        _pending_tail = buf[len(buf) - hold:] if hold else ""
+        return buf[: len(buf) - hold] if hold else buf
+
     # SSE keepalive to prevent proxy timeout during orchestration.
     yield _sse_keepalive()
 
@@ -503,6 +529,13 @@ async def _agent_rag_stream(
                 # migration — design doc in docs/proposals/).
                 yield await _stamped_event("bind", payload)
             elif kind == "delta":
+                last_token_seq = payload.get("seq", 0)
+                token = _clean_stream_token(payload.get("token", ""))
+                if not token:
+                    # Chunk was wholly a Cohere sentinel (or is being held
+                    # back as a possible sentinel prefix) — nothing visible
+                    # to emit.
+                    continue
                 # P0 #5 — real streamed token from the LLM. Bump token_count
                 # so the Phase-3 fallback below doesn't re-synthesise deltas
                 # from the final text after we already emitted them live.
@@ -522,12 +555,21 @@ async def _agent_rag_stream(
                 # M7B1: rename internal ``seq`` → ``token_seq`` so it's
                 # distinct from the new event-level ``event_seq``.
                 delta_data = {
-                    "token": payload.get("token", ""),
-                    "token_seq": payload.get("seq", 0),
+                    "token": token,
+                    "token_seq": last_token_seq,
                 }
                 yield await _stamped_event("delta", delta_data)
             elif kind == "done":
                 final = payload  # type: ignore[assignment]
+                if _pending_tail:
+                    # A held-back chunk turned out not to be a sentinel —
+                    # emit it so no legitimate text is lost.
+                    token_count += 1
+                    yield await _stamped_event(
+                        "delta",
+                        {"token": _pending_tail, "token_seq": last_token_seq + 1},
+                    )
+                    _pending_tail = ""
                 break
             elif kind == "timeout":
                 yield await _stamped_event(
