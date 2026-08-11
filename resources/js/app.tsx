@@ -8,7 +8,7 @@ import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/600.css';
 import { createInertiaApp, type ResolvedComponent } from '@inertiajs/react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, hydrateRoot } from 'react-dom/client';
 import { ErrorBoundary } from './Components/ErrorBoundary';
 
 /**
@@ -44,11 +44,20 @@ createInertiaApp({
         return loader().then((module) => module.default);
     },
     setup({ el, App, props }) {
-        createRoot(el!).render(
+        const tree = (
             <ErrorBoundary scope="root">
                 <App {...props} />
-            </ErrorBoundary>,
+            </ErrorBoundary>
         );
+        // SSR-safe mount: if the server rendered markup (bootstrap/ssr
+        // built + inertia:start-ssr running), hydrate it — a blind
+        // createRoot() would discard the server HTML and leave a pre-mount
+        // window where the composer looks interactive but isn't.
+        if (el!.hasChildNodes()) {
+            hydrateRoot(el!, tree);
+        } else {
+            createRoot(el!).render(tree);
+        }
     },
     progress: {
         color: '#f59e0b', // amber-500 — matches the brand bar

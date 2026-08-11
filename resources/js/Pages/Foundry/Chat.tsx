@@ -185,25 +185,86 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     // without re-binding handlers on every render.
     const echoRef = useRef<{ channel: { stopListening: (e: string) => void }; name: string } | null>(null);
     const scrollerRef = useRef<HTMLDivElement | null>(null);
-    // P0.2 — timeout watchdog. Two stage timers protect against the chat
-    // ever sitting on "Sending…" forever when a terminal event is lost
-    // (Reverb down, payload too large, network blip mid-stream).
-    //   warn  @  30s — flip the status line to a "still working" notice
-    //   fatal @  60s — replace the assistant message with a terminal
-    //                  error + Retry affordance, tear down the channel
-    const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const fatalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // P0.2 — timeout watchdog, reworked 2026-08-11. The original version
+    // armed a single 60s wall-clock timer at send and REPLACED the
+    // assistant message content when it fired — on a pipeline whose
+    // server-side budget is 270-300s, that destroyed fully-streamed
+    // correct answers whose `completed` frame was late (observed live
+    // when Reverb rejected oversized terminal frames). Now:
+    //   - the timers are IDLE timers, re-armed on every frame received
+    //     (status/delta/citation), so an actively-streaming answer can
+    //     never be killed;
+    //   - warn  @  30s idle — flip the status line to "still working";
+    //   - fatal @ 120s idle — mark the message failed but PRESERVE any
+    //     streamed content (surface the error via m.error instead).
+    // Timers are held in one ref keyed by the owning assistant id so a
+    // thread switch or overlapping send can't fire a stale timer against
+    // the wrong message.
+    const watchdogRef = useRef<{
+        assistantId: string;
+        warn: ReturnType<typeof setTimeout>;
+        fatal: ReturnType<typeof setTimeout>;
+    } | null>(null);
 
     function clearWatchdog() {
-        if (warnTimerRef.current) { clearTimeout(warnTimerRef.current); warnTimerRef.current = null; }
-        if (fatalTimerRef.current) { clearTimeout(fatalTimerRef.current); fatalTimerRef.current = null; }
+        const w = watchdogRef.current;
+        if (w) {
+            clearTimeout(w.warn);
+            clearTimeout(w.fatal);
+            watchdogRef.current = null;
+        }
     }
 
-    // Sync to initialMessages on thread switch.
+    function armWatchdog(assistantId: string) {
+        clearWatchdog();
+        const warn = setTimeout(() => {
+            setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
+                ? { ...m, status: 'Still working… large queries can take a few minutes.' }
+                : m)));
+        }, 30_000);
+        const fatal = setTimeout(() => {
+            const errMsg = 'The stream went quiet for 2 minutes — the realtime channel may have dropped. The answer below may be incomplete.';
+            setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
+                ? {
+                      ...m,
+                      // Preserve whatever streamed; only synthesize an error
+                      // body when nothing arrived at all.
+                      content: m.content || `Error: ${errMsg}`,
+                      status: null,
+                      error: errMsg,
+                      isStreaming: false,
+                  }
+                : m)));
+            const ref = echoRef.current;
+            if (ref) {
+                try { ref.channel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
+                try { window.Echo?.leave?.(ref.name); } catch { /* noop */ }
+                echoRef.current = null;
+            }
+            watchdogRef.current = null;
+            setStreaming(false);
+        }, 120_000);
+        watchdogRef.current = { assistantId, warn, fatal };
+    }
+
+    // Snapshot ref for event handlers that need current messages outside
+    // a state updater (see the `completed` branch).
+    const messagesRef = useRef<ChatMessage[]>(messages);
+    useEffect(() => { messagesRef.current = messages; }, [messages]);
+    const streamingRef = useRef(streaming);
+    useEffect(() => { streamingRef.current = streaming; }, [streaming]);
+
+    // Sync to initialMessages on thread switch ONLY. Keying this on the
+    // `initialMessages` array identity re-ran it on every Inertia prop
+    // delivery (partial reloads, workspace hooks), wiping the in-flight
+    // streaming bubble and resetting a freshly-minted conversation id
+    // mid-answer. Also bail while a stream is live.
     useEffect(() => {
+        if (streamingRef.current) return;
         setMessages(initialMessages);
         setConversationId(active_thread_id ?? '');
-    }, [active_thread_id, initialMessages]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [active_thread_id]);
 
     // Auto-scroll on new tokens.
     useEffect(() => {
@@ -289,8 +350,20 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         const query = text.trim();
         if (!query || streaming) return;
         if (!window.Echo) {
-            // eslint-disable-next-line no-alert
-            alert('Realtime channel (Echo) not available. Reverb might be down.');
+            // Surface in-conversation instead of window.alert(): alerts are
+            // auto-dismissed by automation, blockable, and leave no trace —
+            // the send just silently vanished.
+            console.error('GeoRAG chat: window.Echo unavailable — Reverb may be down.');
+            setMessages((prev) => [...prev, {
+                id: newUuid(),
+                role: 'assistant' as const,
+                content: 'Error: realtime channel unavailable (Reverb may be down). Reload the page and try again.',
+                created_at: new Date().toISOString(),
+                citations: [],
+                confidence: null,
+                answer_run_id: null,
+                error: 'Realtime channel unavailable',
+            }]);
             return;
         }
 
@@ -327,28 +400,10 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         setComposer('');
         setStreaming(true);
 
-        // P0.2 watchdog — kick off both timers. Any terminal event below
-        // (completed / failed / error / Stop) calls clearWatchdog() so
-        // they never fire on a successful run.
-        clearWatchdog();
-        warnTimerRef.current = setTimeout(() => {
-            setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
-                ? { ...m, status: 'Still working… large queries can take up to a minute.' }
-                : m)));
-        }, 30_000);
-        fatalTimerRef.current = setTimeout(() => {
-            const errMsg = 'No response within 60 seconds. The realtime channel may have dropped — try again.';
-            setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
-                ? { ...m, content: `Error: ${errMsg}`, status: null, error: errMsg, isStreaming: false }
-                : m)));
-            const ref = echoRef.current;
-            if (ref) {
-                try { ref.channel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
-                try { window.Echo?.leave?.(ref.name); } catch { /* noop */ }
-                echoRef.current = null;
-            }
-            setStreaming(false);
-        }, 60_000);
+        // P0.2 watchdog — idle timers, re-armed on every received frame.
+        // Any terminal event below (completed / failed / error / Stop)
+        // calls clearWatchdog() so they never fire on a successful run.
+        armWatchdog(assistantId);
 
         try {
             // Phase 1: open the query.
@@ -390,10 +445,21 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             echoChannel.listen('.QueryStreamEvent', (event: Record<string, unknown>) => {
                 const eventType = String(event.event ?? '');
 
+                // Every received frame proves the pipeline is alive —
+                // push the idle watchdog out rather than racing a
+                // wall-clock timer against a long synthesis.
+                if (eventType !== 'completed' && eventType !== 'failed' && eventType !== 'error') {
+                    armWatchdog(assistantId);
+                }
+
+                // The job wraps non-JSON SSE deltas as {text: raw} while
+                // JSON deltas carry {token} — accept both so no frame
+                // shape is silently dropped.
+                const deltaToken = event.token ?? event.text;
                 if (eventType === 'status' && event.message) {
                     setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, status: String(event.message) } : m)));
-                } else if (eventType === 'delta' && event.token) {
-                    accumulatedText += String(event.token);
+                } else if (eventType === 'delta' && deltaToken) {
+                    accumulatedText += String(deltaToken);
                     setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: accumulatedText, status: null } : m)));
                 } else if (eventType === 'citation') {
                     runningCitations.push({
@@ -438,28 +504,30 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     // "Interpreted as:" preview chip.
                     const finalMultiTurn =
                         (event.multi_turn_resolution as Record<string, unknown> | null | undefined) ?? null;
-                    setMessages((prev) => {
-                        const next = prev.map((m) =>
-                            m.id === assistantId
-                                ? {
-                                      ...m,
-                                      content: finalText,
-                                      confidence: finalConfidence,
-                                      citations: finalCitations as Citation[],
-                                      answer_run_id: answerRunId,
-                                      status: null,
-                                      isStreaming: false,
-                                      mapPayload: finalMapPayload,
-                                      vizPayload: finalVizPayload,
-                                      evidencePacket: finalEvidencePacket,
-                                      multiTurnResolution: finalMultiTurn,
-                                  }
-                                : m,
-                        );
-                        // Fire-and-forget persistence.
-                        persistConversation(convoId, next);
-                        return next;
-                    });
+                    // Built from the ref snapshot (not inside the state
+                    // updater) so the fire-and-forget persistence below is
+                    // NOT a side effect of a React updater — updaters are
+                    // re-invoked under StrictMode/concurrent renders, which
+                    // duplicated the PUT per completed answer.
+                    const next = messagesRef.current.map((m) =>
+                        m.id === assistantId
+                            ? {
+                                  ...m,
+                                  content: finalText,
+                                  confidence: finalConfidence,
+                                  citations: finalCitations as Citation[],
+                                  answer_run_id: answerRunId,
+                                  status: null,
+                                  isStreaming: false,
+                                  mapPayload: finalMapPayload,
+                                  vizPayload: finalVizPayload,
+                                  evidencePacket: finalEvidencePacket,
+                                  multiTurnResolution: finalMultiTurn,
+                              }
+                            : m,
+                    );
+                    setMessages(next);
+                    void persistConversation(convoId, next);
                     clearWatchdog();
                     try { echoChannel.stopListening('.QueryStreamEvent'); } catch { /* noop */ }
                     try { window.Echo.leave(channel); } catch { /* noop */ }
@@ -482,31 +550,61 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 }
             });
 
-            // Phase 3: dispatch the job now that the listener is bound.
-            // Phase 3 / Step 3.2 — forward the envelope here too; this is
-            // the call that actually fires the Horizon job, so the envelope
-            // travels with the job through to FastAPI.
-            const startResp = await fetch(`/api/v1/queries/${query_id}/start`, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    ...(getCsrf() ? { 'X-CSRF-TOKEN': getCsrf() as string } : {}),
-                },
-                body: JSON.stringify({
-                    context_envelope: buildEnvelopePayload(envelope),
-                    // Plan §3e — forward the chat thread so the FastAPI
-                    // bridge can load prior turns for multi-turn
-                    // resolution. No-op when MULTI_TURN_RESOLUTION_ENABLED
-                    // is False or the conversation has no prior turns.
-                    conversation_id: convoId,
-                }),
-            });
-            if (!startResp.ok && startResp.status !== 409) {
-                const detail = await startResp.text();
-                throw new Error(`Failed to start query (${startResp.status}): ${detail.slice(0, 200)}`);
+            // Phase 3: dispatch the job — but only once the private-channel
+            // subscription is ACKed. Echo.private() returns synchronously
+            // and merely queues pusher:subscribe; on a fresh page load the
+            // websocket itself is often still connecting, so starting
+            // immediately let the Horizon job broadcast the whole stream
+            // before the browser was listening (the exact race the
+            // two-phase handshake was meant to fix). A 5s fallback fires
+            // the start anyway so a missed ACK can't dead-lock the send.
+            const startQuery = async () => {
+                try {
+                    const startResp = await fetch(`/api/v1/queries/${query_id}/start`, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Accept: 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest',
+                            ...(getCsrf() ? { 'X-CSRF-TOKEN': getCsrf() as string } : {}),
+                        },
+                        body: JSON.stringify({
+                            context_envelope: buildEnvelopePayload(envelope),
+                            // Plan §3e — forward the chat thread so the FastAPI
+                            // bridge can load prior turns for multi-turn
+                            // resolution. No-op when MULTI_TURN_RESOLUTION_ENABLED
+                            // is False or the conversation has no prior turns.
+                            conversation_id: convoId,
+                        }),
+                    });
+                    if (!startResp.ok && startResp.status !== 409) {
+                        const detail = await startResp.text();
+                        throw new Error(`Failed to start query (${startResp.status}): ${detail.slice(0, 200)}`);
+                    }
+                } catch (e) {
+                    clearWatchdog();
+                    const msg = e instanceof Error ? e.message : 'Network error';
+                    setMessages((prev) =>
+                        prev.map((m) =>
+                            m.id === assistantId ? { ...m, content: `Error: ${msg}`, status: null, error: msg, isStreaming: false } : m,
+                        ),
+                    );
+                    setStreaming(false);
+                }
+            };
+            let startFired = false;
+            const fireStart = () => {
+                if (startFired) return;
+                startFired = true;
+                void startQuery();
+            };
+            const subscribable = echoChannel as unknown as { subscribed?: (cb: () => void) => void };
+            if (typeof subscribable.subscribed === 'function') {
+                subscribable.subscribed(fireStart);
+                setTimeout(fireStart, 5_000);
+            } else {
+                fireStart();
             }
         } catch (e) {
             clearWatchdog();
@@ -526,7 +624,12 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     }
 
     function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        // Enter sends (the universal chat convention — requiring Ctrl+Enter
+        // made a plain Enter insert a silent newline, which presented as
+        // "my message didn't send"). Shift+Enter inserts a newline;
+        // Ctrl/Cmd+Enter still sends for muscle memory. IME composition
+        // (e.g. CJK input) is respected via isComposing.
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             sendMessage(composer);
         }
@@ -672,7 +775,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                             </button>
                         </form>
                         <div className="text-[10px] font-mono uppercase tracking-wider mt-1.5" style={{ color: 'var(--fg-3)' }}>
-                            ⌘/ctrl+enter sends · citations resolve via /api/v1/citations · stream via Reverb
+                            enter sends · shift+enter newline · citations resolve via /api/v1/citations · stream via Reverb
                         </div>
                     </footer>
                 </section>

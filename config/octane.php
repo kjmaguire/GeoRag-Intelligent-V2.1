@@ -98,7 +98,10 @@ return [
         ],
 
         RequestTerminated::class => [
-            // FlushUploadedFiles::class,
+            // 2026-08-11: enabled — this app takes multi-GB uploads; without
+            // the flush, long-lived workers accumulate PHP upload temp files
+            // until the temp volume fills and uploads 500.
+            FlushUploadedFiles::class,
         ],
 
         TaskReceived::class => [

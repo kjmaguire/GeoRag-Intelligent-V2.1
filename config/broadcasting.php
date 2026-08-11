@@ -14,7 +14,11 @@ return [
     |
     */
 
-    'default' => env('BROADCAST_CONNECTION', 'null'),
+    // 2026-08-11: fallback was 'null' — a deploy that dropped
+    // BROADCAST_CONNECTION produced green health checks and a chat UI
+    // that hung on every query with no error anywhere. Reverb is the
+    // only real driver this product ships.
+    'default' => env('BROADCAST_CONNECTION', 'reverb'),
 
     /*
     |--------------------------------------------------------------------------

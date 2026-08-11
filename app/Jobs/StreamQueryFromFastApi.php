@@ -16,7 +16,6 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Psr\Http\Message\StreamInterface;
 
 /**
  * Proxies a natural-language query to FastAPI's /internal/queries endpoint,
@@ -230,52 +229,83 @@ class StreamQueryFromFastApi implements ShouldQueue
                     "FastAPI returned HTTP {$statusCode}: ".substr($body, 0, 200),
                     $statusCode,
                 );
-
-                return;
+                // Fall through to the shared audit finalisation instead of
+                // returning — an early return left every non-2xx run's
+                // audit row indistinguishable from "reserved but never
+                // dispatched", corrupting latency/error analytics.
+                $this->failedPayload = [
+                    'event' => 'failed',
+                    'query_id' => $this->queryId,
+                    'code' => (string) $statusCode,
+                    'error' => 'FastAPI returned HTTP '.$statusCode.': '.substr($body, 0, 480),
+                ];
             }
 
-            // Read the SSE stream line by line. fgets() blocks waiting for data.
-            $eventType = null;
-            $dataBuffer = '';
-            $eventCount = 0;
+            if ($this->failedPayload === null) {
+                // Read the SSE stream line by line. fgets() blocks waiting for data.
+                $eventType = null;
+                $dataBuffer = '';
+                $eventCount = 0;
 
-            while (! feof($stream)) {
-                $line = fgets($stream);
-                if ($line === false) {
-                    break;
-                }
-
-                $line = rtrim($line, "\r\n");
-
-                if ($line === '') {
-                    if ($dataBuffer !== '') {
-                        $this->dispatchSseEvent($eventType ?? 'delta', $dataBuffer);
-                        $eventCount++;
-                        $eventType = null;
-                        $dataBuffer = '';
+                while (! feof($stream)) {
+                    $line = fgets($stream);
+                    if ($line === false) {
+                        break;
                     }
 
-                    continue;
+                    $line = rtrim($line, "\r\n");
+
+                    if ($line === '') {
+                        if ($dataBuffer !== '') {
+                            $this->dispatchSseEvent($eventType ?? 'delta', $dataBuffer);
+                            $eventCount++;
+                            $eventType = null;
+                            $dataBuffer = '';
+                        }
+
+                        continue;
+                    }
+
+                    if (str_starts_with($line, 'event:')) {
+                        $eventType = trim(substr($line, 6));
+                    } elseif (str_starts_with($line, 'data:')) {
+                        $dataBuffer .= trim(substr($line, 5));
+                    }
                 }
 
-                if (str_starts_with($line, 'event:')) {
-                    $eventType = trim(substr($line, 6));
-                } elseif (str_starts_with($line, 'data:')) {
-                    $dataBuffer .= trim(substr($line, 5));
+                if ($dataBuffer !== '') {
+                    $this->dispatchSseEvent($eventType ?? 'delta', $dataBuffer);
+                    $eventCount++;
+                }
+
+                fclose($stream);
+
+                Log::info('StreamQueryFromFastApi: stream complete', [
+                    'query_id' => $this->queryId,
+                    'events_dispatched' => $eventCount,
+                ]);
+
+                // A stream that ended without EITHER terminal payload was
+                // truncated (FastAPI restart, revision swap, socket drop
+                // mid-stream). Treating it as success left the audit row
+                // half-written and — worse — broadcast nothing terminal, so
+                // the browser hung until its watchdog. Synthesise a failed
+                // terminal so both the client and the audit row learn the
+                // truth.
+                if ($this->completedPayload === null && $this->failedPayload === null) {
+                    Log::warning('StreamQueryFromFastApi: stream truncated — no terminal event received', [
+                        'query_id' => $this->queryId,
+                        'events_dispatched' => $eventCount,
+                    ]);
+                    $this->failedPayload = [
+                        'event' => 'failed',
+                        'query_id' => $this->queryId,
+                        'code' => 'STREAM_TRUNCATED',
+                        'error' => 'The answer stream ended unexpectedly — please try again.',
+                    ];
+                    $this->dispatchSseEvent('failed', json_encode($this->failedPayload));
                 }
             }
-
-            if ($dataBuffer !== '') {
-                $this->dispatchSseEvent($eventType ?? 'delta', $dataBuffer);
-                $eventCount++;
-            }
-
-            fclose($stream);
-
-            Log::info('StreamQueryFromFastApi: stream complete', [
-                'query_id' => $this->queryId,
-                'events_dispatched' => $eventCount,
-            ]);
 
             // ── Audit log: update with response data ─────────────────────
             // On `completed`: write the full success payload.
@@ -369,15 +399,27 @@ class StreamQueryFromFastApi implements ShouldQueue
                 'exception' => $e->getMessage(),
             ]);
 
-            $elapsed = (int) ((microtime(true) - $this->startTime) * 1000);
-            $row = QueryAuditLog::where('query_id', $this->queryId)->first();
-            if ($row !== null) {
-                $row->response_text = '[error: '.substr($e->getMessage(), 0, 480).']';
-                $row->response_time_ms = $elapsed;
-                $row->save();
-            }
-
+            // Broadcast FIRST — if the DB is the failing dependency, the
+            // audit write below re-throws and the client would otherwise
+            // never receive a terminal event.
             $this->broadcastError($e->getMessage(), 500);
+
+            $elapsed = (int) ((microtime(true) - $this->startTime) * 1000);
+            try {
+                $row = QueryAuditLog::where('query_id', $this->queryId)->first();
+                if ($row !== null) {
+                    $row->response_text = '[error: '.substr($e->getMessage(), 0, 480).']';
+                    $row->response_time_ms = $elapsed;
+                    $row->save();
+                }
+            } catch (\Throwable $auditExc) {
+                // A DB-caused failure must not mask the ORIGINAL exception
+                // in the log/rethrow below.
+                Log::warning('StreamQueryFromFastApi: failure-path audit write skipped', [
+                    'query_id' => $this->queryId,
+                    'exception' => $auditExc->getMessage(),
+                ]);
+            }
 
             throw $e;
         }
@@ -633,29 +675,6 @@ class StreamQueryFromFastApi implements ShouldQueue
     }
 
     /**
-     * Read a single newline-terminated line from a PSR-7 stream body.
-     * Reads byte-by-byte to avoid buffering entire chunks at once, which
-     * would delay token delivery to the broadcast layer.
-     */
-    private function readLine(StreamInterface $body): string
-    {
-        $line = '';
-
-        while (! $body->eof()) {
-            $byte = $body->read(1);
-
-            if ($byte === "\n") {
-                break;
-            }
-
-            $line .= $byte;
-        }
-
-        // Strip trailing carriage return for CRLF line endings.
-        return rtrim($line, "\r");
-    }
-
-    /**
      * Plan §3e — load up to the last N chat turns for the active
      * conversation and shape them for the FastAPI resolve_node.
      *
@@ -691,12 +710,18 @@ class StreamQueryFromFastApi implements ShouldQueue
         }
 
         try {
+            // Newest N turns, then restored to chronological order — the
+            // ascending+limit form silently returned the OLDEST 20 turns,
+            // so long threads resolved pronouns against ancient context
+            // and never the immediately preceding turn.
             $messages = ChatMessage::query()
                 ->where('conversation_id', $this->conversationId)
-                ->orderBy('created_at')
-                ->orderBy('id')
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
                 ->limit(self::HISTORY_MAX_TURNS)
-                ->get(['id', 'conversation_id', 'role', 'content', 'metadata']);
+                ->get(['id', 'conversation_id', 'role', 'content', 'metadata'])
+                ->reverse()
+                ->values();
         } catch (\Throwable $e) {
             Log::warning('StreamQueryFromFastApi: chat history load failed', [
                 'conversation_id' => $this->conversationId,
