@@ -115,20 +115,69 @@ async def ocr_image(image_bytes: bytes) -> PageOcrResult:
     return await _analyze_document(image_bytes, pages=None, log_page=None)
 
 
+_RETRYABLE_STATUS_CODES = (429, 503)
+_MAX_REQUEST_ATTEMPTS = 3
+_RETRY_AFTER_CAP_SECONDS = 30.0
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Extract a numeric Retry-After header from an azure-core error, if any."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if not headers:
+        return None
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
 async def _analyze_document(
     body: bytes,
     *,
     pages: str | None,
     log_page: int | None,
 ) -> PageOcrResult:
+    from azure.core.exceptions import HttpResponseError
+
     client = _build_client()
     try:
         async with client:
             kwargs: dict[str, Any] = {"body": body}
             if pages is not None:
                 kwargs["pages"] = pages
-            poller = await client.begin_analyze_document(_MODEL_ID, **kwargs)
-            result = await poller.result()
+            # Throttle/outage retry (429/503 only): 3 attempts with 1s/2s/4s
+            # exponential backoff, honoring a numeric Retry-After header
+            # (capped at 30s). Any other error keeps the existing fail-soft
+            # behavior via the outer except below.
+            for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
+                try:
+                    poller = await client.begin_analyze_document(_MODEL_ID, **kwargs)
+                    result = await poller.result()
+                    break
+                except HttpResponseError as exc:
+                    status = getattr(exc, "status_code", None)
+                    if (
+                        status not in _RETRYABLE_STATUS_CODES
+                        or attempt == _MAX_REQUEST_ATTEMPTS
+                    ):
+                        raise
+                    delay = float(2 ** (attempt - 1))
+                    retry_after = _retry_after_seconds(exc)
+                    if retry_after is not None:
+                        delay = min(retry_after, _RETRY_AFTER_CAP_SECONDS)
+                    logger.warning(
+                        "document_intelligence: HTTP %s%s — retrying in %.1fs "
+                        "(attempt %d/%d)",
+                        status,
+                        f" on page {log_page}" if log_page is not None else "",
+                        delay,
+                        attempt,
+                        _MAX_REQUEST_ATTEMPTS,
+                    )
+                    await asyncio.sleep(delay)
     except DocumentIntelligenceNotConfigured:
         raise
     except Exception as exc:  # noqa: BLE001

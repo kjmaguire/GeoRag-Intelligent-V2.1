@@ -244,13 +244,21 @@ async def embed_pending_passages(
             # qdrant point so retrieval can weight low-confidence
             # passages down without a Postgres join. NULL means the
             # passage came from the text layer (no OCR involved).
-            "       dp.ocr_confidence, dp.ocr_method, "
+            "       dp.ocr_confidence, dp.ocr_method, dp.ocr_status, "
             "       dp.chunk_kind, "
             "       COALESCE(r.title, dp.chunk_kind, 'Passage') AS report_title, "
             "       r.project_id::text AS project_id "
             "  FROM silver.document_passages dp "
             "  LEFT JOIN silver.reports r ON r.report_id = dp.document_id "
             " WHERE dp.embedding_id IS NULL "
+            # Skip passages whose OCR text is known-bad: 'pending_reocr'
+            # means the quality agent has queued a replacement (the row
+            # gets re-embedded once it flips to 'reocr_complete');
+            # 'rejected' is forward-compat. 'low_confidence' passages ARE
+            # embedded — retrieval down-weights them via the ocr_status
+            # payload field below instead of losing them entirely.
+            "   AND (dp.ocr_status IS NULL "
+            "        OR dp.ocr_status NOT IN ('rejected', 'pending_reocr')) "
         )
         params: list = []
         if project_id:
@@ -355,6 +363,7 @@ async def embed_pending_passages(
                     "page_last": row["page_last"],
                     "ocr_confidence": float(_conf) if _conf is not None else None,
                     "ocr_method": row["ocr_method"],
+                    "ocr_status": row["ocr_status"],
                     # ADR-0010 §A discriminator — lets the orchestrator
                     # filter / score public_geo_synthesis differently
                     # from narrative report chunks.

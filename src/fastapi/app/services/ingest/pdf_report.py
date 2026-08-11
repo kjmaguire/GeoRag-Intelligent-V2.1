@@ -434,12 +434,14 @@ def _assign_ocr_metadata(
 
 def _build_page_index(
     per_page_text: list[tuple[int, str]],
+    joiner_len: int = 1,
 ) -> list[tuple[int, int, int]]:
     """Return [(char_start, char_end_exclusive, page_num), ...] for full_text.
 
-    full_text is built via "\\n".join(pages_text) in the pdfplumber path, so
-    consecutive page ranges are separated by exactly one "\\n". Mirror that
-    here so char offsets line up with what the section regex sees.
+    full_text is built via "\\n".join(pages_text) in the fitz/pdfplumber
+    paths (joiner_len=1) but "\\n\\n".join(texts) in the whole-document OCR
+    paths (joiner_len=2). Mirror the actual joiner width here so char
+    offsets line up with what the section regex sees.
     """
     index: list[tuple[int, int, int]] = []
     cursor = 0
@@ -447,7 +449,7 @@ def _build_page_index(
         start = cursor
         end = start + len(text)
         index.append((start, end, page_num))
-        cursor = end + (1 if i < len(per_page_text) - 1 else 0)  # the "\n" joiner
+        cursor = end + (joiner_len if i < len(per_page_text) - 1 else 0)  # the joiner
     return index
 
 
@@ -544,6 +546,7 @@ def _emit_windows(
 def _split_into_sections(
     full_text: str,
     per_page_text: list[tuple[int, str]] | None = None,
+    joiner_len: int = 1,
 ) -> list[ReportSection]:
     """Chunk the document with sliding windows; tag chunks with section
     metadata when NI 43-101 headings are detected.
@@ -570,7 +573,7 @@ def _split_into_sections(
     if not text:
         return []
 
-    page_index = _build_page_index(per_page_text or [])
+    page_index = _build_page_index(per_page_text or [], joiner_len=joiner_len)
     matches = list(SECTION_HEADING_RE.finditer(full_text))
 
     if not matches:
@@ -1256,6 +1259,7 @@ def _parse_with_fitz(
     page_languages: list[str] = []
     warnings: list[dict] = []
     short_page_nums: list[int] = []  # candidates for per-page OCR
+    short_page_native: dict[int, str] = {}  # sub-threshold native text, kept for salvage
     # Phase 3 (2026-05-22) — per-page engine + confidence tracking
     per_page_method: dict[int, str] = {}
     per_page_confidence: dict[int, float | None] = {}
@@ -1297,6 +1301,7 @@ def _parse_with_fitz(
                 # Page came back short — queue it for OCR below.
                 page_languages.append("unknown")
                 short_page_nums.append(n)
+                short_page_native[n] = txt or ""
     finally:
         with contextlib.suppress(Exception):
             pdf.close()
@@ -1346,6 +1351,28 @@ def _parse_with_fitz(
                     "page": n,
                     "ocr_confidence": round(mean_conf, 4),
                 })
+            else:
+                # Neither native text nor OCR cleared PER_PAGE_MIN_CHARS.
+                # Keep the longer non-empty candidate instead of dropping
+                # the page entirely — short pages often carry section-
+                # heading anchors ("SECTION 14 — ...") that downstream
+                # section splitting depends on.
+                native_txt = short_page_native.get(n, "")
+                salvage = max(native_txt, ocr_text or "", key=len)
+                if salvage.strip():
+                    pages_text.append(salvage)
+                    per_page_text.append((n, salvage))
+                    if salvage == native_txt:
+                        per_page_method[n] = "fitz_native"
+                        per_page_confidence[n] = None
+                    else:
+                        per_page_method[n] = "tesseract"
+                        per_page_confidence[n] = mean_conf
+                    warnings.append({
+                        "code": "page_short_text_salvaged",
+                        "page": n,
+                        "chars": len(salvage.strip()),
+                    })
         if ocr_recovered:
             logger.info(
                 "pdf_report: fitz+OCR recovered %d/%d short pages",
@@ -1415,7 +1442,8 @@ def _ocr_single_page(
     """
     from . import document_intelligence_client as _di
 
-    if _di.is_engine_selected():
+    di_selected = _di.is_engine_selected()
+    if di_selected:
         try:
             # Slice the single target page into its own PDF before upload.
             # Two reasons this is not an optimisation but a correctness fix:
@@ -1454,7 +1482,17 @@ def _ocr_single_page(
                 page_num, pdf_path, exc,
             )
         else:
-            if result.text.strip():
+            if not result.request_succeeded:
+                # Transport/throttle failure (NOT merely empty text): the
+                # tiled escalation below would fire 4+ more doomed DI calls
+                # against the same broken endpoint — go straight to the
+                # tesseract fallback instead.
+                logger.warning(
+                    "pdf_report: di_request_failed on page %d of '%s': %s — "
+                    "skipping tiled escalation, falling back to tesseract",
+                    page_num, pdf_path, result.error or "unknown error",
+                )
+            elif result.text.strip():
                 assessment = _assess_ocr_result(
                     result.text,
                     [word.confidence for word in result.words]
@@ -1469,46 +1507,54 @@ def _ocr_single_page(
                     return_confidence=return_confidence,
                     return_assessment=return_assessment,
                 )
-            # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
-            # InvalidContentDimensions on an out-of-range scan resolution —
-            # confirmed against a real 1940s-era TIFF in the corpus 2026-07-29)
-            # and return an empty PageOcrResult rather than raising. Without
-            # this check, that soft failure would look identical to "page is
-            # genuinely blank" and skip tesseract entirely, silently losing
-            # a page tesseract might actually be able to read.
-            logger.info(
-                "pdf_report: document_intelligence returned empty text for "
-                "page %d of '%s' — trying bounded raster tiles",
-                page_num, pdf_path,
-            )
-            try:
-                tiled_result, assessment = _ocr_tiled_pdf_page(
-                    pdf_path,
-                    page_num,
-                )
-            except Exception as tiled_exc:  # noqa: BLE001
-                logger.warning(
-                    "pdf_report: tiled document_intelligence OCR failed on "
-                    "page %d of '%s': %s — falling back to tesseract",
-                    page_num,
-                    pdf_path,
-                    tiled_exc,
-                )
             else:
-                if tiled_result.text.strip():
-                    return _format_ocr_page_return(
-                        tiled_result.text,
-                        tiled_result.mean_confidence,
-                        assessment,
-                        return_confidence=return_confidence,
-                        return_assessment=return_assessment,
+                # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
+                # InvalidContentDimensions on an out-of-range scan resolution —
+                # confirmed against a real 1940s-era TIFF in the corpus 2026-07-29)
+                # and return an empty PageOcrResult rather than raising. Without
+                # this check, that soft failure would look identical to "page is
+                # genuinely blank" and skip tesseract entirely, silently losing
+                # a page tesseract might actually be able to read.
+                logger.info(
+                    "pdf_report: document_intelligence returned empty text for "
+                    "page %d of '%s' — trying bounded raster tiles",
+                    page_num, pdf_path,
+                )
+                try:
+                    tiled_result, assessment = _ocr_tiled_pdf_page(
+                        pdf_path,
+                        page_num,
                     )
+                except Exception as tiled_exc:  # noqa: BLE001
+                    logger.warning(
+                        "pdf_report: tiled document_intelligence OCR failed on "
+                        "page %d of '%s': %s — falling back to tesseract",
+                        page_num,
+                        pdf_path,
+                        tiled_exc,
+                    )
+                else:
+                    if tiled_result.text.strip():
+                        return _format_ocr_page_return(
+                            tiled_result.text,
+                            tiled_result.mean_confidence,
+                            assessment,
+                            return_confidence=return_confidence,
+                            return_assessment=return_assessment,
+                        )
 
     try:
         import pytesseract
         from pdf2image import convert_from_path
     except ImportError:
-        return _empty_ocr_page_return(return_confidence, return_assessment)
+        # Truthful provenance: when the DI branch already ran and came back
+        # empty, this empty page is a DI result; otherwise tesseract simply
+        # is not installed.
+        return _empty_ocr_page_return(
+            return_confidence,
+            return_assessment,
+            method="document_intelligence" if di_selected else "unavailable",
+        )
     try:
         images = convert_from_path(
             pdf_path,
@@ -1753,12 +1799,16 @@ def _ocr_quality_warning(
 ) -> dict[str, Any]:
     """Build the persisted page-quality warning for every OCR attempt."""
 
+    # Truncate the text excerpt: warnings travel through Hatchet task
+    # outputs, and shipping every full page (~1MB on a 300-page scanned
+    # doc) duplicates text that is already persisted elsewhere.
+    excerpt = text if len(text) <= 512 else text[:512] + "…[truncated]"
     return {
         "code": "ocr_quality_assessment",
         "page": page_number,
         "parser_version": PARSER_VERSION,
         "ocr_method": str(assessment.get("ocr_method") or "unknown"),
-        "extracted_text": text,
+        "extracted_text": excerpt,
         **{
             key: value
             for key, value in assessment.items()
@@ -1785,9 +1835,10 @@ def _format_ocr_page_return(
 def _empty_ocr_page_return(
     return_confidence: bool,
     return_assessment: bool,
+    method: str = "tesseract",
 ):
     assessment = _assess_ocr_result("", [], detected_region_count=0)
-    assessment["ocr_method"] = "tesseract"
+    assessment["ocr_method"] = method
     return _format_ocr_page_return(
         "",
         0.0,
@@ -2081,11 +2132,13 @@ def _postprocess_ocr_text(text: str) -> str:
         r'\bIndi cated\b': 'Indicated',
         r'\binfer red\b': 'inferred',
         r'\bInfer red\b': 'Inferred',
-        r'\bisa\b': 'is a',
     }
 
     for pattern, replacement in corrections.items():
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE if pattern[0] != '\\' else 0)
+        # Case-sensitive on purpose: patterns encode exact-case misreads
+        # (e.g. 'Re port' vs 're port'), and IGNORECASE would corrupt
+        # proper nouns (e.g. "Mount Isa" via a \bisa\b rule).
+        text = re.sub(pattern, replacement, text, flags=0)
 
     # Clean up multiple blank lines
     text = re.sub(r'\n{3,}', '\n\n', text)
@@ -2487,6 +2540,11 @@ def parse_pdf_report(path: str) -> ReportParseResult:
     extraction_warnings: list[dict] = []
     page_languages: list[str] = []
     per_page_text: list[tuple[int, str]] = []
+    # Width of the joiner between page texts in full_text: the fitz/
+    # pdfplumber paths use "\n".join (1 char), the whole-document OCR
+    # paths use "\n\n".join (2 chars). _build_page_index must mirror the
+    # actual width or page attribution drifts +1 char per page.
+    page_joiner_len = 1
 
     # Always-fitz-first dispatch: fitz (pypdfium2) runs first for native
     # text extraction. When PDF_PARSER_TESSERACT_FALLBACK_ENABLED is on
@@ -2582,19 +2640,23 @@ def parse_pdf_report(path: str) -> ReportParseResult:
             )
             ocr_result = _attempt_ocr(path)
             ocr_text = ocr_result.text
-            extraction_warnings.extend(
-                _ocr_quality_warning(
-                    page_number=page.page_number,
-                    text=page.text,
-                    assessment=page.assessment,
-                )
-                for page in ocr_result.pages
-            )
             _span.set_attribute("ocr.input_chars", len(full_text.strip()))
             _span.set_attribute("ocr.output_chars", len(ocr_text))
             if ocr_text and len(ocr_text.strip()) > len(full_text.strip()):
+                # Only persist per-page OCR quality warnings when the OCR
+                # text actually wins — when the native text is kept, the
+                # discarded OCR pages' assessments are pure noise.
+                extraction_warnings.extend(
+                    _ocr_quality_warning(
+                        page_number=page.page_number,
+                        text=page.text,
+                        assessment=page.assessment,
+                    )
+                    for page in ocr_result.pages
+                )
                 full_text = ocr_text
                 parser_used = ocr_result.parser_used
+                page_joiner_len = 2  # OCR paths join pages with "\n\n"
                 per_page_text = [
                     (page.page_number, page.text)
                     for page in ocr_result.pages
@@ -2663,7 +2725,9 @@ def parse_pdf_report(path: str) -> ReportParseResult:
 
     # --- Split into sections (primary headings + subsections) ---
     with _tracer.start_as_current_span("pdf_report.sections") as _span:
-        sections = _split_into_sections(full_text, per_page_text)
+        sections = _split_into_sections(
+            full_text, per_page_text, joiner_len=page_joiner_len,
+        )
         # Unified sliding-window chunker emits multiple chunks per detected
         # heading. parse_quality_pct measures heading *coverage* against the
         # 17-section NI 43-101 baseline, so dedupe by section_number.
@@ -2776,4 +2840,5 @@ def parse_pdf_report(path: str) -> ReportParseResult:
         provenance=_provenance,
         resource_tables=resource_tables,
         page_languages=page_languages,
+        is_scanned=is_scanned,
     )

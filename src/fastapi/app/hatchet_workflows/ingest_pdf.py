@@ -234,7 +234,10 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
     from app.services.ingest.pdf_report import parse_pdf_report
 
     _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
-    cached_path = f"{_PDF_BODY_CACHE_DIR}/{sha256}.pdf"
+    # Run-unique filename (sha prefix kept for debuggability): two
+    # concurrent parses of the SAME file must not delete each other's
+    # input via the shared finally-unlink below.
+    cached_path = f"{_PDF_BODY_CACHE_DIR}/{sha256}.{uuid.uuid4().hex}.pdf"
     # Use a temp file inside the cache dir + rename for atomicity.
     tmp_path = cached_path + ".tmp"
     with open(tmp_path, "wb") as f:
@@ -740,9 +743,18 @@ VALUES (
     $13, $14, $16::uuid, $15::uuid
 )
 ON CONFLICT (report_id) DO UPDATE SET
+    title          = EXCLUDED.title,
+    authors        = EXCLUDED.authors,
+    company        = EXCLUDED.company,
+    filing_date    = EXCLUDED.filing_date,
+    commodity      = EXCLUDED.commodity,
+    project_name   = EXCLUDED.project_name,
+    region         = EXCLUDED.region,
+    resource_estimate = EXCLUDED.resource_estimate,
     sections_text  = EXCLUDED.sections_text,
     parser_used    = EXCLUDED.parser_used,
     parse_quality_pct = EXCLUDED.parse_quality_pct,
+    is_scanned     = EXCLUDED.is_scanned,
     updated_at     = NOW()
 """
 
@@ -1121,13 +1133,16 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         }
 
     # Build sections_text dict (v1.49 _build_sections_dict shape).
+    # Collisions are disambiguated with the chunk's ordinal (matching the
+    # silver.document_passages ordinal below) — the old single "_dup"
+    # fallback kept only 2 of N chunks per section number.
     sections_text: dict = {}
-    for s in parsed.get("sections", []) or []:
+    for ordinal, s in enumerate(parsed.get("sections", []) or []):
         n = s.get("section_number")
         title = (s.get("section_title") or "")
         key = str(n) if n is not None else (title.lower() or "section")
         if key in sections_text:
-            key = f"{key}_dup"
+            key = f"{key}#{ordinal}"
         sections_text[key] = s.get("text") or ""
 
     title = parsed.get("title") or "(untitled)"  # silver.reports.title is NOT NULL

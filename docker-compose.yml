@@ -932,13 +932,13 @@ services:
       TIMEOUT_QDRANT_S: ${TIMEOUT_QDRANT_S:-2}
       TIMEOUT_REDIS_MS: ${TIMEOUT_REDIS_MS:-500}
       TIMEOUT_GATHER_S: ${TIMEOUT_GATHER_S:-180}
-      RETRIEVAL_QUALITY_THRESHOLD: ${RETRIEVAL_QUALITY_THRESHOLD:-0.6}
+      RETRIEVAL_QUALITY_THRESHOLD: ${RETRIEVAL_QUALITY_THRESHOLD:-0.5}
       # ADR-0010 — silver.document_passages canonical chunked corpus.
       # When True, search_documents reads from the georag_chunks Qdrant
       # collection (fed by index_document_passages) instead of the
       # legacy georag_reports collection (fed by index_reports).
       # Hard flag flip per ADR-0010 §execute Session C.
-      RETRIEVAL_USE_DOCUMENT_PASSAGES: ${RETRIEVAL_USE_DOCUMENT_PASSAGES:-false}
+      RETRIEVAL_USE_DOCUMENT_PASSAGES: ${RETRIEVAL_USE_DOCUMENT_PASSAGES:-true}
       # Module 6 Phase B Chunk 2+3 — Citation span resolver + guards
       CITATION_SPAN_RESOLVER_ENABLED: ${CITATION_SPAN_RESOLVER_ENABLED:-false}
       # ADR-0007 — agentic retrieval v2 path (intent classifier + LangGraph
@@ -1736,6 +1736,21 @@ services:
       HOME: /tmp
       # Ingest parser and OCR configuration.
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
+      # OCR engine parity with the live Azure Container Apps env — Azure
+      # Document Intelligence is the primary engine there; tesseract stays
+      # the in-container fallback. Endpoint/key default empty so the DI
+      # adapter raises its NotConfigured error loudly instead of the
+      # engine silently no-oping.
+      OCR_ENGINE: ${OCR_ENGINE:-azure_document_intelligence}
+      AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: ${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT:-}
+      AZURE_DOCUMENT_INTELLIGENCE_KEY: ${AZURE_DOCUMENT_INTELLIGENCE_KEY:-}
+      # Calibrated OCR routing thresholds (ocr_quality.OcrRoutingThresholds
+      # schema). Without this var every OCR page fail-closes to
+      # review_required ("routing_thresholds_not_calibrated") — pure noise.
+      # Bands: mean confidence >= 0.90 (+ clean text signals) auto-accepts,
+      # 0.60-0.90 lands in the review bands (spot_check/mandatory), below
+      # 0.60 is mandatory review, below 0.30 is catastrophic failure.
+      OCR_ROUTING_THRESHOLDS_JSON: '${OCR_ROUTING_THRESHOLDS_JSON:-{"catastrophic_max_mean_confidence":0.30,"catastrophic_max_coverage_ratio":0.20,"mandatory_min_mean_confidence":0.60,"mandatory_min_median_confidence":0.60,"mandatory_max_low_confidence_word_ratio":0.40,"mandatory_min_coverage_ratio":0.50,"mandatory_max_gibberish_word_ratio":0.30,"mandatory_max_repeated_character_ratio":0.20,"mandatory_max_seam_duplicate_ratio":0.20,"spot_check_min_mean_confidence":0.90,"spot_check_min_median_confidence":0.90,"spot_check_max_low_confidence_word_ratio":0.10,"spot_check_min_coverage_ratio":0.80,"spot_check_max_gibberish_word_ratio":0.10,"spot_check_max_repeated_character_ratio":0.05,"spot_check_max_seam_duplicate_ratio":0.05}}'
       PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
       PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
       PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}
