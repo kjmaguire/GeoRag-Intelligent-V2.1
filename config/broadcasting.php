@@ -16,9 +16,11 @@ return [
 
     // 2026-08-11: fallback was 'null' — a deploy that dropped
     // BROADCAST_CONNECTION produced green health checks and a chat UI
-    // that hung on every query with no error anywhere. Reverb is the
-    // only real driver this product ships.
-    'default' => env('BROADCAST_CONNECTION', 'reverb'),
+    // that hung on every query with no error anywhere. But a blanket
+    // 'reverb' default fataled env-less artisan contexts (the migrate
+    // job has no REVERB_* vars; Pusher::__construct(null) throws at
+    // boot). Default to reverb exactly when a key exists to drive it.
+    'default' => env('BROADCAST_CONNECTION', env('REVERB_APP_KEY') ? 'reverb' : 'null'),
 
     /*
     |--------------------------------------------------------------------------
