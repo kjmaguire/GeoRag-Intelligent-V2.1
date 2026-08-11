@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import re
@@ -1206,9 +1207,43 @@ def _detect_page_language(text: str) -> str:
 # Fast text extractor: PyMuPDF (fitz)
 # ---------------------------------------------------------------------------
 
+_PROGRESS_TICK_INTERVAL_S = 2.0
+_progress_last_write: dict[str, float] = {}
+
+
+def _tick_progress(
+    progress_file: str | None,
+    phase: str,
+    done: int,
+    total: int,
+    *,
+    force: bool = False,
+) -> None:
+    """Best-effort page-level progress beacon for the parse subprocess.
+
+    The parent workflow (ingest_pdf.parse) polls this file and relays it
+    into silver.ingest_progress.stage_pct so the UI bar moves during a
+    multi-minute parse instead of sitting on the step boundary. Never
+    raises; time-gated so hot loops don't turn into fsync storms.
+    """
+    if not progress_file:
+        return
+    import time as _time
+    now = _time.monotonic()
+    if not force and now - _progress_last_write.get(progress_file, 0.0) < _PROGRESS_TICK_INTERVAL_S:
+        return
+    _progress_last_write[progress_file] = now
+    try:
+        with open(progress_file, "w", encoding="utf-8") as fh:
+            json.dump({"phase": phase, "done": done, "total": total}, fh)
+    except Exception:
+        pass
+
+
 def _parse_with_fitz(
     path: str,
     apply_ocr_fallback: bool = True,
+    progress_file: str | None = None,
 ) -> tuple[
     str, str, int, list, list[str], list[tuple[int, str]], list[int],
     dict[int, str], dict[int, float | None],
@@ -1273,7 +1308,9 @@ def _parse_with_fitz(
         meta = pdf.get_metadata_dict() or {}
         _raw_title = (meta.get("Title") or "").strip()
         meta_title = "" if _raw_title in _META_SENTINELS else _raw_title
-        for n in range(1, len(pdf) + 1):
+        _total_pages = len(pdf)
+        for n in range(1, _total_pages + 1):
+            _tick_progress(progress_file, "extract", n, _total_pages)
             page = pdf[n - 1]
             try:
                 # get_text_bounded() returns the full page's text in PDFium's
@@ -1317,7 +1354,10 @@ def _parse_with_fitz(
             PER_PAGE_MIN_CHARS, len(short_page_nums),
         )
         ocr_recovered = 0
+        _ocr_done = 0
         for n in short_page_nums:
+            _ocr_done += 1
+            _tick_progress(progress_file, "ocr", _ocr_done, len(short_page_nums), force=True)
             try:
                 # Phase 3 — capture mean_conf from tesseract per-word data
                 ocr_text, mean_conf, assessment = _ocr_single_page(
@@ -2468,13 +2508,17 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
         return OcrAttemptResult("", "ocr_tesseract")
 
 
-def parse_pdf_report(path: str) -> ReportParseResult:
+def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParseResult:
     """Parse a NI 43-101 PDF technical report and return a :class:`ReportParseResult`.
 
     Parameters
     ----------
     path:
         Absolute path to the PDF file on disk.
+    progress_file:
+        Optional path this (sub)process writes page-level progress JSON to
+        (see :func:`_tick_progress`); the parent workflow polls it into
+        silver.ingest_progress for the live UI bar.
 
     Returns
     -------
@@ -2572,6 +2616,7 @@ def parse_pdf_report(path: str) -> ReportParseResult:
                  per_page_method, per_page_confidence) = _parse_with_fitz(
                     path,
                     apply_ocr_fallback=_tesseract_fallback_enabled,
+                    progress_file=progress_file,
                 )
                 _span.set_attribute("pdf.text_chars", len(full_text))
                 _span.set_attribute("pdf.page_count", len(page_languages))

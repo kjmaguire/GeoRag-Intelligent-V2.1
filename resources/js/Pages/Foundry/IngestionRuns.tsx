@@ -24,6 +24,7 @@ interface InFlightRow {
     uploaded_at: string | null;
     uploaded_ago: string | null;
     stage: string;
+    stage_detail?: string | null;
     step_index: number;
     total_steps: number;
     progress_pct: number;
@@ -45,6 +46,11 @@ const STEP_LABELS: Record<string, string> = {
 
 function prettyStage(row: InFlightRow): string {
     const label = STEP_LABELS[row.stage] ?? row.stage;
+    // Page-level detail from the worker ("OCR page 61/210") beats the
+    // step counter when present.
+    if (row.stage_detail) {
+        return `${label} — ${row.stage_detail}`;
+    }
     if (row.has_real_progress && row.total_steps > 0) {
         return `${label} (step ${row.step_index} of ${row.total_steps})`;
     }

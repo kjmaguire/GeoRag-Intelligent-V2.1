@@ -249,6 +249,38 @@ async def mark_stage_started(
         log.warning("progress.mark_stage_started failed (run=%s stage=%s): %s", run_id, stage, e)
 
 
+async def mark_stage_progress(
+    *,
+    run_id: str,
+    stage_pct: float,
+    stage_detail: str | None = None,
+) -> None:
+    """Record fractional progress WITHIN the current step.
+
+    stage_pct is 0..1 inside the current stage; the UI composes it with
+    step_index/total_steps for a smooth bar instead of the old 5-step
+    quantization (which sat at 40% through an entire multi-minute
+    parse). Cheap single-row UPDATE, best-effort, and doubles as a
+    heartbeat so page-level ticks keep the stale-run detector fed.
+    """
+    sql = """
+        UPDATE silver.ingest_progress
+        SET stage_pct         = $2,
+            stage_detail      = $3,
+            last_heartbeat_at = now(),
+            updated_at        = now()
+        WHERE run_id = $1::uuid AND status = 'started'
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                sql, run_id, max(0.0, min(1.0, float(stage_pct))), stage_detail,
+            )
+    except Exception as e:
+        log.warning("progress.mark_stage_progress failed (run=%s): %s", run_id, e)
+
+
 async def mark_heartbeat(*, run_id: str) -> None:
     """Bump last_heartbeat_at for a running task.
 

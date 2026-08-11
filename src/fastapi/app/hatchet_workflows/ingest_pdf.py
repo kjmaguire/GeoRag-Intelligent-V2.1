@@ -215,7 +215,9 @@ _FIGURE_VL_CAPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().l
 )
 
 
-def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
+def _run_parser_subprocess(
+    body_bytes: bytes, sha256: str, progress_file: str | None = None,
+) -> dict:
     """Module-level wrapper for the parse so ProcessPoolExecutor can pickle it.
 
     Returns a plain dict (not a Pydantic model) — easier to pickle across
@@ -246,7 +248,7 @@ def _run_parser_subprocess(body_bytes: bytes, sha256: str) -> dict:
 
     try:
         t_start = _time.monotonic()
-        result = parse_pdf_report(cached_path)
+        result = parse_pdf_report(cached_path, progress_file=progress_file)
         elapsed_ms = int((_time.monotonic() - t_start) * 1000)
 
         return {
@@ -693,9 +695,53 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
 
     loop = asyncio.get_running_loop()
     pool = _get_parse_pool()
+
+    # Page-level progress relay: the subprocess writes {phase, done, total}
+    # to a beacon file (see pdf_report._tick_progress); this task polls it
+    # and folds it into silver.ingest_progress.stage_pct so the UI bar
+    # moves during the parse instead of sitting at the step boundary.
+    # Weighting inside the parse stage: text extraction is fast (~20% of
+    # wall clock even on big docs), per-page OCR is the long pole.
+    _progress_path = f"{_PDF_BODY_CACHE_DIR}/progress.{uuid.uuid4().hex}.json"
+
+    async def _relay_progress() -> None:
+        run_id: str | None = None
+        try:
+            if input.workspace_id:
+                run_id = await ingest_progress.lookup_active_run_id(
+                    workspace_id=str(input.workspace_id),
+                    minio_key=input.minio_key,
+                )
+        except Exception:
+            run_id = None
+        if run_id is None:
+            return
+        import json as _json
+        while True:
+            await asyncio.sleep(3)
+            try:
+                with open(_progress_path, encoding="utf-8") as fh:
+                    beat = _json.load(fh)
+            except Exception:
+                continue
+            phase = beat.get("phase")
+            done, total = int(beat.get("done", 0)), max(1, int(beat.get("total", 1)))
+            if phase == "extract":
+                pct = 0.2 * (done / total)
+                detail = f"extracting page {done}/{total}"
+            elif phase == "ocr":
+                pct = 0.2 + 0.75 * (done / total)
+                detail = f"OCR page {done}/{total}"
+            else:
+                continue
+            await ingest_progress.mark_stage_progress(
+                run_id=run_id, stage_pct=pct, stage_detail=detail,
+            )
+
+    _relay_task = asyncio.create_task(_relay_progress())
     try:
         result_dict = await loop.run_in_executor(
-            pool, _run_parser_subprocess, body, pre.get("sha256", ""),
+            pool, _run_parser_subprocess, body, pre.get("sha256", ""), _progress_path,
         )
     except BrokenProcessPool as exc:
         # 2026-05-23 — kill the in-process fallback. The original
@@ -723,6 +769,12 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
         )
         _reset_parse_pool()
         raise
+    finally:
+        _relay_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _relay_task
+        with contextlib.suppress(Exception):
+            os.unlink(_progress_path)
     return ParseOut(**result_dict)
 
 

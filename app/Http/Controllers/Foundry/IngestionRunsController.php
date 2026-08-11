@@ -127,10 +127,18 @@ class IngestionRunsController extends Controller
                 'uploaded_at' => $p['started_at'],
                 'uploaded_ago' => $this->humanAgo($p['started_at']),
                 'stage' => $p['current_step'],
+                'stage_detail' => $p['stage_detail'] ?? null,
                 'step_index' => $p['step_index'],
                 'total_steps' => $p['total_steps'],
+                // Smooth bar: completed steps + fractional progress within
+                // the current step (stage_pct 0..1 written by the worker's
+                // page-level relay). Falls back to the old step quantization
+                // when the worker hasn't reported sub-step progress.
                 'progress_pct' => $p['total_steps'] > 0
-                    ? (int) round(($p['step_index'] / $p['total_steps']) * 100)
+                    ? (int) round(
+                        ((max(0, $p['step_index'] - 1) + (float) ($p['stage_pct'] ?? 0.0))
+                            / $p['total_steps']) * 100,
+                    )
                     : 0,
                 'has_real_progress' => true,
                 'failed' => $p['failed_at'] !== null,
@@ -293,6 +301,7 @@ class IngestionRunsController extends Controller
                 <<<'SQL'
                 SELECT minio_key, filename, current_step,
                        step_index, total_steps,
+                       stage_pct, stage_detail,
                        to_char(started_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,
                        to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS updated_at,
                        to_char(failed_at,  'YYYY-MM-DD"T"HH24:MI:SSOF') AS failed_at,
