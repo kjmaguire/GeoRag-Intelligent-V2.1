@@ -77,6 +77,10 @@ class QueryAuditLog extends Model
         'citations' => 'array',
         'sources_used' => 'array',
         'confidence' => 'float',
+        // Guard-code durability (StreamQueryFromFastApi finalisation) —
+        // without the cast, reads come back as a JSON string and the
+        // merge in the job would clobber instead of extend.
+        'metadata' => 'array',
         'dispatched_at' => 'datetime',
         'faithfulness_score' => 'float',
         'context_precision_score' => 'float',
