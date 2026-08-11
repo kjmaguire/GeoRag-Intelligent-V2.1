@@ -9,9 +9,13 @@ the cited data back to a specific source file in MinIO with its sha256 hash.
 
 The provenance chain is:
 
-  Citation.source_chunk_id
-    → silver table (collars, lithology_logs, reports, samples)
+  Citation.source_chunk_id ("georag_reports:<report_id>:…")
+    → silver.reports.source_file_sha256
       → bronze.source_files (file_path, sha256, bucket)
+
+Structured silver.* citations (collars, lithology_logs, samples) have no
+per-row source-file linkage yet and are left unenriched — a wrong sha256
+is worse than none.
 
 This layer runs AFTER assembly and AFTER Layer 2 validation. It does not
 reject or modify the response — it only enriches Citation objects with
@@ -50,32 +54,20 @@ _SOURCE_TABLE_RE = re.compile(
     r"^(silver\.collars|silver\.lithology_logs|silver\.samples|georag_reports)"
 )
 
-# Map silver tables to their likely bronze source file patterns.
-# Each entry is a SQL query that resolves the source file(s) for a given
-# citation context. We use LIKE patterns on file_path because the exact
-# mapping depends on the ingestion pipeline.
-_TABLE_TO_SOURCE_SQL: dict[str, str] = {
-    "silver.collars": (
-        "SELECT file_path, sha256, file_size FROM bronze.source_files "
-        "WHERE file_path LIKE 'collars/%' OR file_path LIKE 'excel/%' "
-        "ORDER BY ingested_at DESC LIMIT 1"
-    ),
-    "silver.lithology_logs": (
-        "SELECT file_path, sha256, file_size FROM bronze.source_files "
-        "WHERE file_path LIKE 'lithology/%' "
-        "ORDER BY ingested_at DESC LIMIT 1"
-    ),
-    "silver.samples": (
-        "SELECT file_path, sha256, file_size FROM bronze.source_files "
-        "WHERE file_path LIKE 'samples/%' "
-        "ORDER BY ingested_at DESC LIMIT 1"
-    ),
-    "georag_reports": (
-        "SELECT file_path, sha256, file_size FROM bronze.source_files "
-        "WHERE file_path LIKE 'reports/%' AND mime_type = 'application/pdf' "
-        "ORDER BY ingested_at DESC LIMIT 1"
-    ),
-}
+# Only georag_reports citations resolve to a SPECIFIC source file today:
+# the source_chunk_id carries the report_id, and silver.reports records
+# the ingested file's sha256 (source_file_sha256 — written by ingest_pdf's
+# INSERT_REPORT_SQL), which joins to bronze.source_files. The silver.*
+# structured kinds have no per-row file linkage yet; the old LIKE-on-
+# file_path lookups just attached the most-recently-ingested file's sha256
+# to EVERY citation — provenance fabrication. Skip, don't guess.
+_REPORT_SOURCE_SQL = (
+    "SELECT bf.file_path, bf.sha256, bf.file_size "
+    "FROM silver.reports r "
+    "JOIN bronze.source_files bf ON bf.sha256 = r.source_file_sha256 "
+    "WHERE r.report_id = $1 "
+    "ORDER BY bf.ingested_at DESC LIMIT 1"
+)
 
 
 async def enrich_provenance(
@@ -120,15 +112,25 @@ async def enrich_provenance(
             continue
 
         table_key = match.group(1)
-        sql = _TABLE_TO_SOURCE_SQL.get(table_key)
-        if not sql:
+        if table_key != "georag_reports":
+            # silver.* structured kinds: no reliable citation → file join
+            # exists yet — returning NO provenance beats attaching a
+            # random file's sha256 to the citation.
+            unresolved_count += 1
+            continue
+
+        # georag_reports:<report_id>:section=..:chunk=.. — resolve the
+        # provenance of THIS report, not whichever PDF was ingested last.
+        parts = source_id.split(":", 2)
+        report_id = parts[1] if len(parts) > 1 else ""
+        if not report_id or report_id == "empty":
             unresolved_count += 1
             continue
 
         try:
             async with pg_pool.acquire() as conn:
                 row = await asyncio.wait_for(
-                    conn.fetchrow(sql),
+                    conn.fetchrow(_REPORT_SOURCE_SQL, report_id),
                     timeout=settings.TIMEOUT_POSTGIS_S,
                 )
         except Exception:

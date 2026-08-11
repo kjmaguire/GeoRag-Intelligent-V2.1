@@ -1713,7 +1713,7 @@ async def search_documents(
         from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
         query_sparse: dict[int, float] = await loop.run_in_executor(
             None,
-            lambda: encode_sparse(query_text),
+            lambda: encode_sparse(_expanded_query),
         )
 
         # _workspace_id was resolved (and the fail-closed refusal returned) in
@@ -1755,12 +1755,21 @@ async def search_documents(
             # payload. Cast to float for ocr_confidence in case the
             # payload stored a numeric type that isn't already float.
             _ocr_conf_raw = payload.get("ocr_confidence")
+            # Citation.document_title has min_length=1 — never emit "Unknown"
+            # or empty. Fall through payload fields that still identify the
+            # document before resorting to the report-id stub.
+            _doc_title = (
+                payload.get("document_title")
+                or payload.get("project_name")
+                or payload.get("section_title")
+                or f"Report {str(payload.get('report_id', ''))[:8]}"
+            )
             candidates.append(
                 DocumentChunk(
                     chunk_id=str(point.id),
                     text=payload.get("text", ""),
                     source_document_id=payload.get("report_id", payload.get("document_id", "")),
-                    document_title=payload.get("document_title", "Unknown"),
+                    document_title=_doc_title,
                     section_number=section_number,
                     section_title=section_title,
                     section=section_label,
@@ -1805,8 +1814,13 @@ async def search_documents(
         # Latency-fix follow-up — pre-truncate body text so the reranker's
         # tokeniser doesn't walk a 5 kB chunk just to discard everything
         # past the model's 512-token max. ~2000 chars (~500 tokens) is the
-        # safe budget under bge-reranker-base.
-        _budget = settings.RERANKER_INPUT_CHAR_BUDGET
+        # safe budget under bge-reranker-base. Foundry (Cohere Rerank v4)
+        # accepts ~4096-token documents, so it gets a wider 8000-char
+        # budget instead of the bge-era default.
+        _budget = (
+            8000 if RERANKER_BACKEND == "foundry"
+            else settings.RERANKER_INPUT_CHAR_BUDGET
+        )
         pairs = [(query_text, (c.text or "")[:_budget]) for c in chunks]
         try:
             # CrossEncoder.predict is synchronous and CPU-bound; run in executor

@@ -925,12 +925,13 @@ class Settings(BaseSettings):
     RERANKER_MODEL_NAME: str = "Qwen/Qwen3-Reranker-0.6B"
 
     # Number of chunks fetched from Qdrant before reranking (coarse retrieval).
-    # Latency-fix follow-up — was 20; cold queries blew the search_documents
-    # wait_for budget because the bge-reranker-base CPU pass on 20 candidates
-    # consistently took >1.7s. Halving keeps the top-K with negligible
-    # recall impact (bottom-10 ANN candidates almost never contain the
-    # cited passage) and halves reranker wall time.
-    RETRIEVAL_TOP_N: int = 10
+    # Was 10 — a latency tune for the self-hosted bge cross-encoder, whose
+    # CPU pass on N candidates dominated search_documents wall time. Cohere
+    # Rerank v4 via Foundry (RERANKER_BACKEND=foundry) scores all N docs in
+    # a single HTTP call, so that cost model no longer applies — and
+    # TOP_N=10 < RERANKER_TOP_K (12) made the reranker a pure re-sort with
+    # nothing to prune. 40 gives the rerank stage a real candidate pool.
+    RETRIEVAL_TOP_N: int = 40
 
     # Number of chunks to keep after reranking (fine retrieval, Layer 1 gate).
     # P1 #17 — bumped from 5 to 12 to give MMR a real candidate pool.

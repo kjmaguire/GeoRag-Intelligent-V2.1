@@ -367,7 +367,12 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
 
     try:
         if real_name == "search_documents":
-            return await fn(ctx, query, project_id)
+            # B3 identifier boost — exact-token identifiers (hole IDs,
+            # sample IDs, commodity codes) retrieve better through the
+            # sparse branch; widen its prefetch pool when one is present.
+            from app.services.identifier_boost import detect_identifiers  # noqa: PLC0415
+            _boost = detect_identifiers(query).boost_factor
+            return await fn(ctx, query, project_id, sparse_boost_factor=_boost)
         if real_name in (
             "query_spatial_collars",
             "query_assay_data",
@@ -580,6 +585,23 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "search_documents", adversarial_query, state.deps
         )
         if result is not None:
+            # The disconfirming framing re-retrieves much of the primary
+            # pass's chunk set; drop duplicates so the context doesn't
+            # double-count the same evidence under two citation ids.
+            _prior_chunk_ids = {
+                getattr(c, "chunk_id", None)
+                for _, _r in results
+                for c in (getattr(_r, "chunks", None) or ())
+            }
+            _adv_chunks = getattr(result, "chunks", None)
+            if _adv_chunks:
+                _fresh = [
+                    c for c in _adv_chunks
+                    if getattr(c, "chunk_id", None) not in _prior_chunk_ids
+                ]
+                if len(_fresh) != len(_adv_chunks):
+                    result.chunks = _fresh
+                    result.count = len(_fresh)
             results.append(("search_documents_adversarial", result))
             logger.info(
                 "agentic_retrieval.execute: adversarial pass returned a result"
@@ -719,6 +741,81 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _render_tool_results_context(
+    tool_results: list[tuple[str, Any]],
+) -> str:
+    """Render tool results into the LLM context block, chunk by chunk.
+
+    Replaces the legacy ``f"[DATA:{n}] tool=... result={result!r}"[:1500]``
+    rendering, which handed the model a truncated Python repr — the actual
+    retrieved passage text rarely survived the 1500-char cut, and the
+    ``[DATA:n]`` labels never matched the ``[NI43-n]``/``[PUB-n]``/
+    ``[PGEO-n]``/``[DATA-n]`` ids the assembler attaches to the response
+    citations (the model cited [DATA:3] while the UI chips said [NI43-3]).
+
+    Uses ``assign_citation_ids`` so every block carries the SAME canonical
+    id ``assemble_response`` will emit for that tool result — that
+    alignment is the point.
+    """
+    from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
+
+    _CHUNK_TEXT_CAP = 1800    # per document chunk
+    _STRUCTURED_CAP = 1200    # per structured (non-chunk) result
+    _TOTAL_BUDGET = 24_000    # whole context block
+
+    blocks: list[str] = []
+    id_bundles = assign_citation_ids(tool_results)
+    for (tool_name, result), bundle in zip(
+        tool_results, id_bundles, strict=False
+    ):
+        chunks = getattr(result, "chunks", None)
+        records = getattr(result, "records", None)
+        if chunks is not None:
+            # DocumentSearchResult-shaped — one block per retrieved chunk,
+            # all sharing the tool result's citation id.
+            cid = bundle[0] if bundle else "[DATA-0]"
+            for chunk in chunks:
+                header = (
+                    f"{cid} "
+                    f"{getattr(chunk, 'document_title', None) or 'Untitled document'}"
+                )
+                section = (
+                    getattr(chunk, "section_number", None)
+                    or getattr(chunk, "section_title", None)
+                    or getattr(chunk, "section", None)
+                )
+                if section:
+                    header += f" | section {section}"
+                page = getattr(chunk, "page", None)
+                if page is not None:
+                    header += f" | page {page}"
+                text = (getattr(chunk, "text", "") or "")[:_CHUNK_TEXT_CAP]
+                blocks.append(f"{header}\n{text}")
+        elif records is not None and len(bundle) == len(records):
+            # PublicGeoscienceSearchResult-shaped — one id per record.
+            for record, cid in zip(records, bundle, strict=False):
+                blocks.append(
+                    f"{cid} tool={tool_name} {str(record)[:_STRUCTURED_CAP]}"
+                )
+        else:
+            # Structured results (collars / samples / graph / overview) —
+            # one compact block per tool result.
+            cid = bundle[0] if bundle else "[DATA-0]"
+            blocks.append(
+                f"{cid} tool={tool_name} {str(result)[:_STRUCTURED_CAP]}"
+            )
+
+    out: list[str] = []
+    total = 0
+    for block in blocks:
+        if total + len(block) > _TOTAL_BUDGET:
+            out.append("[context budget reached]")
+            break
+        out.append(block)
+        total += len(block)
+    return "\n\n".join(out) if out else "(no tool results)"
+
+
 async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Build the LLM context, call the model, and assemble the response.
 
@@ -819,8 +916,8 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     #   1. CONTEXT_PREP_ENABLED + non-empty prepared packet → render
     #      from the typed evidence (authority-ranked, diversity-balanced,
     #      budget-fit).
-    #   2. Default → legacy tool_results rendering. Byte-identical to
-    #      the pre-§27 path.
+    #   2. Default → typed per-chunk tool_results rendering with the
+    #      canonical citation ids (see _render_tool_results_context).
     context_lines: list[str] = []
     citation_counter = 0
     use_packet_for_context = (
@@ -839,13 +936,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 f"evidence_id={ev.evidence_id} {ev.model_dump(mode='json')!r}"
             )
             context_lines.append(ev_summary[:1500])
+        context_block = (
+            "\n".join(context_lines) if context_lines else "(no tool results)"
+        )
     else:
-        for tool_name, result in state.tool_results:
-            citation_counter += 1
-            context_lines.append(
-                f"[DATA:{citation_counter}] tool={tool_name} result={result!r}"[:1500]
-            )
-    context_block = "\n".join(context_lines) if context_lines else "(no tool results)"
+        context_block = _render_tool_results_context(state.tool_results)
 
     # System prompt selection — empty categories dict so the routing falls
     # to DEFAULT (the per-intent base preamble doesn't change here, only
@@ -1890,14 +1985,7 @@ async def _reissue_llm_only(
 
     # Rebuild the context block + system prompt the same way
     # assemble_node would, then append the repair suffix.
-    context_lines: list[str] = []
-    citation_counter = 0
-    for tool_name, result in state.tool_results:
-        citation_counter += 1  # noqa: SIM113
-        context_lines.append(
-            f"[DATA:{citation_counter}] tool={tool_name} result={result!r}"[:1500]
-        )
-    context_block = "\n".join(context_lines) if context_lines else "(no tool results)"
+    context_block = _render_tool_results_context(state.tool_results)
 
     system_prompt = _select_system_prompt(categories=None, query=state.query) + suffix
 
@@ -2802,7 +2890,11 @@ def _extract_citation_rows(
         cid = (r.get("candidate_ref") or {}).get("chunk_id")
         pid = r.get("passage_id")
         if cid and pid:
-            chunk_to_passage[str(cid)] = pid
+            cid = str(cid)
+            # Symmetric `:chunk=` handling with the citation loop below.
+            if ":chunk=" in cid:
+                cid = cid.rsplit(":chunk=", 1)[-1]
+            chunk_to_passage[cid] = pid
 
     rows: list[dict[str, Any]] = []
     seen_markers: set[str] = set()
@@ -2810,7 +2902,11 @@ def _extract_citation_rows(
         marker = _normalise_marker(getattr(c, "citation_id", None))
         if marker is None or marker in seen_markers:
             continue
-        chunk_id = str(getattr(c, "source_chunk_id", "") or "")
+        raw = str(getattr(c, "source_chunk_id", "") or "")
+        # Document citations carry a composite source_chunk_id
+        # ("georag_reports:<report_id>:section=..:chunk=<uuid>") — the
+        # passage lookup wants the bare chunk uuid after `:chunk=`.
+        chunk_id = raw.rsplit(":chunk=", 1)[-1] if ":chunk=" in raw else raw
         passage_id = chunk_to_passage.get(chunk_id) or _maybe_uuid(chunk_id)
         if passage_id is None:
             # No passage backing this citation — the CHECK constraint

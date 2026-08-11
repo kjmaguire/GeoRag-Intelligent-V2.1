@@ -651,9 +651,42 @@ def _extract_entities_from_tool_results(
             for value in _collect_value_strings(payload):
                 for tok in re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{1,}\b", value):
                     entity_tokens.add(tok.lower())
+                    # Split column-style compounds so "Au_ppm" also grounds
+                    # "au" (and "ppm") — assay fields arrive as unit-suffixed
+                    # identifiers far more often than as bare symbols.
+                    for part in re.split(r"[_\-]", tok):
+                        if part:
+                            entity_tokens.add(part.lower())
+                # Single-letter commodities (U, W, V) can never pass the
+                # 2+ char token floor above — capture them when they appear
+                # as standalone tokens.
+                for tok in re.findall(r"\b[UWV]\b", value):
+                    entity_tokens.add(tok.lower())
         except Exception:
             continue
     return entity_tokens
+
+
+def _commodity_grounded(sym: str, bag: set[str]) -> bool:
+    """True when commodity symbol *sym* is grounded by the tool-result bag.
+
+    Accepts three grounding forms: the bare symbol ("au"), the spelled-out
+    name from the query-expansion table ("gold"; multi-word names like
+    "rare earth elements" need every word present), or a column-style
+    compound token ("au_ppm" / "au-ppm").
+    """
+    from app.services.geological_query_expansion import _ABBREVIATIONS  # noqa: PLC0415
+
+    s = sym.lower()
+    if s in bag:
+        return True
+    full = _ABBREVIATIONS.get(sym)
+    if full and all(w in bag for w in full.lower().split()):
+        return True
+    return any(
+        tok == s or tok.startswith(s + "_") or tok.startswith(s + "-")
+        for tok in bag
+    )
 
 
 async def verify_entities(
@@ -734,7 +767,7 @@ async def verify_entities(
         cited_commodities = [m.group(1) for m in commodity_pattern.finditer(clean)]
         cited_commodities = list(dict.fromkeys(cited_commodities))
         for commodity in cited_commodities:
-            if commodity.lower() not in grounded_tokens:
+            if not _commodity_grounded(commodity, grounded_tokens):
                 warnings.append(
                     f"Layer 4: Commodity '{commodity}' mentioned but not found "
                     f"in any tool result — verify this appears in cited evidence"
@@ -856,11 +889,28 @@ async def run_post_assembly_validation(
     # Layer 6 — geological constraints
     all_warnings.extend(verify_constraints(response.text))
 
-    # Classify warnings by severity — entity failures are critical
-    # (fabricated hole IDs), constraints are high, numerical grounding
-    # is advisory UNLESS it crosses a threshold or co-locates with a
-    # constraint violation.
-    critical = [w for w in all_warnings if w.startswith("Layer 4:")]
+    # Classify warnings by severity — fabricated drill-hole IDs are
+    # critical, constraints are high, numerical grounding is advisory
+    # UNLESS it crosses a threshold or co-locates with a constraint
+    # violation. The other Layer 4 warnings (commodity / formation /
+    # entity grounding) come from heuristic token-bag checks with a real
+    # false-positive rate, so they escalate to critical only in bulk —
+    # mirroring the Layer 3 NUMERIC_RETRY_THRESHOLD policy below. They
+    # remain in all_warnings either way.
+    _layer4 = [w for w in all_warnings if w.startswith("Layer 4:")]
+    critical = [w for w in _layer4 if w.startswith("Layer 4: Drill-hole ID")]
+    _layer4_advisory = [
+        w for w in _layer4 if not w.startswith("Layer 4: Drill-hole ID")
+    ]
+    _LAYER4_ADVISORY_CRITICAL_THRESHOLD = 3
+    if len(_layer4_advisory) >= _LAYER4_ADVISORY_CRITICAL_THRESHOLD:
+        critical = critical + _layer4_advisory
+        logger.warning(
+            "post_assembly_validation: %d advisory Layer 4 warning(s) "
+            "(threshold=%d) — the density signals fabrication, escalating "
+            "to critical.",
+            len(_layer4_advisory), _LAYER4_ADVISORY_CRITICAL_THRESHOLD,
+        )
     high = [w for w in all_warnings if w.startswith("Layer 6:")]
     advisory = [w for w in all_warnings if w.startswith("Layer 3:")]
 
