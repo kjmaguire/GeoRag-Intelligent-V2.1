@@ -81,7 +81,12 @@ class OverviewController extends Controller
         // Recommended next action — picks the highest-leverage thing to do based
         // on the project's current state.
         $nextAction = match (true) {
-            $collarCount === 0 => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard'],
+            // "Connect your first source" only when the project is genuinely
+            // empty — a document corpus without drill data is a working
+            // project (chat answers from reports), not a cold start. Keying
+            // on collars alone told users with 7 ingested reports to
+            // "connect your first data source".
+            $collarCount === 0 && $reportsCount === 0 => ['title' => 'Connect your first data source', 'detail' => 'Upload drill logs or ingest the Wyoming WSGS archive to start the corpus.', 'cta' => 'Open import wizard', 'href' => '/foundry/imports/wizard'],
             $queries7d === 0 => ['title' => 'Ask your first hypothesis', 'detail' => 'The chat is the main interface — pin sources, rank candidates, save runs.', 'cta' => 'Open Chat', 'href' => "/projects/{$slug}/chat"],
             $reportsCount === 0 => ['title' => 'Draft a recommendation report', 'detail' => 'Block editor with live citations + version diff.', 'cta' => 'Open Reports', 'href' => "/projects/{$slug}/reports"],
             default => ['title' => 'Review your document corpus', 'detail' => 'Read ingested passages and open their source reports.', 'cta' => 'Open Reader', 'href' => "/projects/{$slug}/corpus"],

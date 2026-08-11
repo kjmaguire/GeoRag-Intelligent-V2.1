@@ -125,7 +125,12 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                     title={project.project_name}
                     sub={
                         <span>
-                            {project.region ?? '—'} · {project.commodity ?? '—'} · status <Pill tone={project.status === 'active' ? 'accent' : 'neutral'} dot>{project.status}</Pill>
+                            {/* Only render segments that have real values — a
+                                project without region/commodity was showing a
+                                bare "— · — · status" placeholder header. */}
+                            {project.region && <span>{project.region} · </span>}
+                            {project.commodity && <span>{project.commodity} · </span>}
+                            status <Pill tone={project.status === 'active' ? 'accent' : 'neutral'} dot>{project.status}</Pill>
                             {project.crs_epsg && <span> · EPSG:{project.crs_epsg}</span>}
                             <span> · v{project.data_version}</span>
                         </span>
