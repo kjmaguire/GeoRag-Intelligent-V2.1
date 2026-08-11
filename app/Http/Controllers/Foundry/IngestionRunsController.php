@@ -323,6 +323,8 @@ class IngestionRunsController extends Controller
             'current_step' => (string) $r->current_step,
             'step_index' => (int) $r->step_index,
             'total_steps' => (int) $r->total_steps,
+            'stage_pct' => $r->stage_pct !== null ? (float) $r->stage_pct : null,
+            'stage_detail' => $r->stage_detail !== null ? (string) $r->stage_detail : null,
             'started_at' => $r->started_at,
             'updated_at' => $r->updated_at,
             'failed_at' => $r->failed_at,
