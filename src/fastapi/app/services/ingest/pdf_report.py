@@ -37,6 +37,7 @@ records this in Dagster materialisation metadata.
 from __future__ import annotations
 
 import contextlib
+import difflib
 import hashlib
 import json
 import logging
@@ -88,6 +89,14 @@ SECTION_HEADING_RE = re.compile(
     re.MULTILINE,
 )
 
+# F15 (2026-08-11) — table-of-contents entry shape: a "heading" line ending
+# in dot leaders + page number ("1. Summary ........ 3") or >=2 spaces
+# followed by a bare page number ("1. Summary   3"). SECTION_HEADING_RE
+# matches these too, which inflated parse_quality_pct (TOC hits counted as
+# detected sections). Line-shape rejection only — deliberately no TOC-page
+# detection (too fragile).
+_TOC_LINE_TAIL_RE = re.compile(r"(?:\.{2,}\s*\d{1,4}|\s{2,}\d{1,4})\s*$")
+
 # Subsection headings: "14.1 Resource Classification" or "14.1.2 Block Model"
 SUBSECTION_HEADING_RE = re.compile(
     r"^(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)\s+([^\n]{2,120})$",
@@ -103,6 +112,16 @@ MIN_EXTRACTABLE_TEXT_CHARS = 200
 # figures, scanned drill log inserts, etc. arrive as page-sized images.
 # Without per-page OCR these pages contribute zero text to the index.
 PER_PAGE_MIN_CHARS = 80
+
+# F16 (2026-08-11) — native text-layer quality screen. A page can clear the
+# PER_PAGE_MIN_CHARS length gate and still be garbage embedded OCR or a
+# header-only scanned page whose only text layer is repeated boilerplate.
+# Thresholds are deliberately conservative (well above normal prose levels)
+# because a false positive here sends the page to OCR — a cost, not a loss.
+NATIVE_TEXT_MAX_GIBBERISH_RATIO = 0.4
+NATIVE_TEXT_MAX_REPEATED_CHAR_RATIO = 0.3
+NATIVE_TEXT_BOILERPLATE_SIMILARITY = 0.70
+NATIVE_TEXT_BOILERPLATE_MAX_CHARS = 300
 
 # Maximum file size for PDF processing — bumped from 100 MB to 2 GB to
 # match the Octane + PHP upload caps (the four-layer stack already accepts
@@ -575,7 +594,12 @@ def _split_into_sections(
         return []
 
     page_index = _build_page_index(per_page_text or [], joiner_len=joiner_len)
-    matches = list(SECTION_HEADING_RE.finditer(full_text))
+    # F15 — SECTION_HEADING_RE is line-anchored (^...$ MULTILINE), so
+    # group(0) is the whole line; drop TOC entries by line shape.
+    matches = [
+        m for m in SECTION_HEADING_RE.finditer(full_text)
+        if not _TOC_LINE_TAIL_RE.search(m.group(0))
+    ]
 
     if not matches:
         logger.info(
@@ -788,6 +812,31 @@ def _table_to_markdown(table: list[list[str | None]]) -> str:
         if any(cells):
             rendered.append(" | ".join(cells))
     return "\n".join(rendered)
+
+
+def _split_table_markdown(md: str) -> list[str]:
+    """F13 (2026-08-11) — split an oversize table's markdown into chunks of
+    at most WINDOW_CHARS on row boundaries, repeating the header row (the
+    first line — `_table_to_markdown` emits no separator line) at the top
+    of every chunk so each part stays independently interpretable.
+    """
+    lines = md.splitlines()
+    if len(lines) <= 1:
+        return [md]
+    header = lines[0]
+    chunks: list[str] = []
+    current: list[str] = [header]
+    current_len = len(header)
+    for line in lines[1:]:
+        if current_len + 1 + len(line) > WINDOW_CHARS and len(current) > 1:
+            chunks.append("\n".join(current))
+            current = [header]
+            current_len = len(header)
+        current.append(line)
+        current_len += 1 + len(line)
+    if len(current) > 1:
+        chunks.append("\n".join(current))
+    return chunks or [md]
 
 
 def _table_has_data(table: list[list]) -> bool:
@@ -1078,15 +1127,27 @@ def _extract_all_tables_as_sections(pdf_path: str) -> list[ReportSection]:
                 md = _table_to_markdown(tbl)
                 if not md.strip():
                     continue
-                pdfplumber_sections.append(
-                    ReportSection(
-                        section_number=None,
-                        section_title=f"Table (page {page_num}, #{idx + 1})",
-                        text=md,
-                        page_first=page_num,
-                        page_last=page_num,
-                    )
+                # F13 — table sections previously bypassed the window
+                # chunker entirely; split oversize tables on row
+                # boundaries so no emitted chunk exceeds WINDOW_CHARS.
+                base_title = f"Table (page {page_num}, #{idx + 1})"
+                chunks = (
+                    _split_table_markdown(md)
+                    if len(md) > WINDOW_CHARS else [md]
                 )
+                for part_num, chunk in enumerate(chunks, start=1):
+                    pdfplumber_sections.append(
+                        ReportSection(
+                            section_number=None,
+                            section_title=(
+                                base_title if len(chunks) == 1
+                                else f"{base_title} (part {part_num})"
+                            ),
+                            text=chunk,
+                            page_first=page_num,
+                            page_last=page_num,
+                        )
+                    )
 
     # ------------------------------------------------------------------
     # 3. Final dedupe pass via a content signature, in case the lines
@@ -1240,6 +1301,38 @@ def _tick_progress(
         pass
 
 
+def _native_text_screen_reason(
+    stripped_txt: str,
+    prev_accepted_stripped: str | None,
+) -> str | None:
+    """F16 — screen a native text-layer page that passed the length gate.
+
+    Returns a reason string when the page should be routed to OCR instead
+    of accepted as fitz_native, else None. Reuses ocr_quality's gibberish /
+    repeated-character word ratios (calculate_ocr_quality works with empty
+    confidences — only the text-derived signals are read here), plus a
+    repeated-boilerplate check against the previous accepted page.
+    """
+    from .ocr_quality import calculate_ocr_quality
+
+    signals = calculate_ocr_quality(
+        stripped_txt, [], detected_region_count=0,
+    )
+    if signals.gibberish_word_ratio > NATIVE_TEXT_MAX_GIBBERISH_RATIO:
+        return "gibberish_word_ratio"
+    if signals.repeated_character_ratio > NATIVE_TEXT_MAX_REPEATED_CHAR_RATIO:
+        return "repeated_character_ratio"
+    if (
+        prev_accepted_stripped
+        and len(stripped_txt) < NATIVE_TEXT_BOILERPLATE_MAX_CHARS
+        and difflib.SequenceMatcher(
+            None, stripped_txt, prev_accepted_stripped,
+        ).ratio() >= NATIVE_TEXT_BOILERPLATE_SIMILARITY
+    ):
+        return "repeated_boilerplate"
+    return None
+
+
 def _parse_with_fitz(
     path: str,
     apply_ocr_fallback: bool = True,
@@ -1295,6 +1388,7 @@ def _parse_with_fitz(
     warnings: list[dict] = []
     short_page_nums: list[int] = []  # candidates for per-page OCR
     short_page_native: dict[int, str] = {}  # sub-threshold native text, kept for salvage
+    _prev_native_stripped: str | None = None  # F16 — boilerplate comparison anchor
     # Phase 3 (2026-05-22) — per-page engine + confidence tracking
     per_page_method: dict[int, str] = {}
     per_page_confidence: dict[int, float | None] = {}
@@ -1327,15 +1421,31 @@ def _parse_with_fitz(
                 page_languages.append("unknown")
                 short_page_nums.append(n)
                 continue
-            if txt and len(txt.strip()) >= PER_PAGE_MIN_CHARS:
+            _stripped = (txt or "").strip()
+            # F16 — length alone isn't quality: garbage embedded OCR and
+            # header-only boilerplate pages that clear the 80-char gate are
+            # screened and routed to OCR like short pages.
+            _screen_reason = (
+                _native_text_screen_reason(_stripped, _prev_native_stripped)
+                if len(_stripped) >= PER_PAGE_MIN_CHARS else None
+            )
+            if len(_stripped) >= PER_PAGE_MIN_CHARS and _screen_reason is None:
                 pages_text.append(txt)
                 per_page_text.append((n, txt))
                 page_languages.append(_detect_page_language(txt))
                 # Phase 3 — text-layer page, no OCR involved
                 per_page_method[n] = "fitz_native"
                 per_page_confidence[n] = None
+                _prev_native_stripped = _stripped
             else:
-                # Page came back short — queue it for OCR below.
+                # Page came back short (or failed the F16 native-text
+                # screen) — queue it for OCR below.
+                if _screen_reason is not None:
+                    logger.info(
+                        "pdf_report: native text on page %d failed quality "
+                        "screen (%s) — routing to OCR",
+                        n, _screen_reason,
+                    )
                 page_languages.append("unknown")
                 short_page_nums.append(n)
                 short_page_native[n] = txt or ""
@@ -1367,6 +1477,20 @@ def _parse_with_fitz(
                     return_assessment=True,
                 )
             except Exception:
+                # F30 — an OCR exception must not drop sub-threshold native
+                # text: salvage it with the same bookkeeping as the
+                # short-text salvage branch below.
+                _native_txt = short_page_native.get(n, "")
+                if _native_txt.strip():
+                    pages_text.append(_native_txt)
+                    per_page_text.append((n, _native_txt))
+                    per_page_method[n] = "fitz_native"
+                    per_page_confidence[n] = None
+                    warnings.append({
+                        "code": "page_ocr_exception_native_salvaged",
+                        "page": n,
+                        "chars": len(_native_txt.strip()),
+                    })
                 continue
             warnings.append(
                 _ocr_quality_warning(
@@ -1460,6 +1584,29 @@ def _parse_with_fitz(
 # Fallback parser: pdfplumber
 # ---------------------------------------------------------------------------
 
+# F11 (2026-08-11) — cache the opened pikepdf document per path.
+# _ocr_single_page runs once per short page; re-opening (a full reparse
+# of) a large PDF for every page is O(pages) reparses. Parsing runs in a
+# single-process subprocess handling one document at a time, so a simple
+# dict with evict-on-different-path is enough — no locking, and memory
+# doesn't accumulate across documents.
+_PIKEPDF_CACHE: dict[str, Any] = {}
+
+
+def _get_cached_pikepdf(pdf_path: str):
+    import pikepdf as _pikepdf
+
+    cached = _PIKEPDF_CACHE.get(pdf_path)
+    if cached is not None:
+        return cached
+    for _stale_path in list(_PIKEPDF_CACHE):
+        with contextlib.suppress(Exception):
+            _PIKEPDF_CACHE.pop(_stale_path).close()
+    pdf = _pikepdf.open(pdf_path)
+    _PIKEPDF_CACHE[pdf_path] = pdf
+    return pdf
+
+
 def _ocr_single_page(
     pdf_path: str,
     page_num: int,
@@ -1492,29 +1639,37 @@ def _ocr_single_page(
             #     tier's first-two-pages analysis window entirely;
             # (2) sending the full file per page uploads O(size × pages)
             #     bytes — a 40 MB / 200-page report would push ~8 GB.
-            # pikepdf failure falls back to the legacy whole-file upload.
+            # F11: the source doc is opened once per path (cached), and a
+            # slice failure does NOT fall back to a whole-file upload — one
+            # structural defect must not turn a 300-page doc into 300
+            # full-file uploads. It fails the DI request instead, so the
+            # branch below falls through to tesseract for this page.
             try:
                 import io as _io
 
                 import pikepdf as _pikepdf
 
-                with _pikepdf.open(pdf_path) as _src:
-                    _single = _pikepdf.Pdf.new()
-                    _single.pages.append(_src.pages[page_num - 1])
-                    _buf = _io.BytesIO()
-                    _single.save(_buf)
+                _src = _get_cached_pikepdf(pdf_path)
+                _single = _pikepdf.Pdf.new()
+                _single.pages.append(_src.pages[page_num - 1])
+                _buf = _io.BytesIO()
+                _single.save(_buf)
                 pdf_bytes = _buf.getvalue()
-                _di_page = 1
             except Exception as _slice_exc:  # noqa: BLE001
                 logger.warning(
                     "pdf_report: single-page slice failed for page %d of '%s' "
-                    "(%s) — sending full document",
+                    "(%s) — skipping document_intelligence, falling back to "
+                    "tesseract",
                     page_num, pdf_path, _slice_exc,
                 )
-                with open(pdf_path, "rb") as f:
-                    pdf_bytes = f.read()
-                _di_page = page_num
-            result = _di.ocr_page_sync(pdf_bytes, _di_page)
+                result = _di.PageOcrResult(
+                    "",
+                    0.0,
+                    request_succeeded=False,
+                    error=f"single_page_slice_failed: {_slice_exc}",
+                )
+            else:
+                result = _di.ocr_page_sync(pdf_bytes, 1)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "pdf_report: document_intelligence OCR failed on page %d of "
@@ -2398,20 +2553,39 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
             pages_to_process, OCR_DPI,
         )
 
-        images = convert_from_path(
-            path,
-            dpi=OCR_DPI,
-            first_page=1,
-            last_page=pages_to_process,
-            thread_count=2,  # parallel page rendering
-        )
+        # F18 (2026-08-11) — render in blocks of 10 pages instead of
+        # materialising every page image at once (a whole-document render
+        # of a long scanned report at 250 DPI is multiple GB of RAM).
+        # Each block is rendered, processed page by page, then discarded
+        # when the next block replaces it.
+        _OCR_RENDER_BLOCK_PAGES = 10
+
+        def _iter_page_images():
+            for _block_start in range(
+                1, pages_to_process + 1, _OCR_RENDER_BLOCK_PAGES,
+            ):
+                block = convert_from_path(
+                    path,
+                    dpi=OCR_DPI,
+                    first_page=_block_start,
+                    last_page=min(
+                        _block_start + _OCR_RENDER_BLOCK_PAGES - 1,
+                        pages_to_process,
+                    ),
+                    thread_count=2,  # parallel page rendering
+                )
+                if not block:
+                    # Past the real last page (page-count probe failed and
+                    # the defensive 1000-page ceiling overshot).
+                    return
+                yield from block
 
         texts = []
         page_confidences = []
         low_confidence_pages = []
         page_attempts: list[OcrPageAttempt] = []
 
-        for i, img in enumerate(images):
+        for i, img in enumerate(_iter_page_images()):
             # Preprocess image for better OCR accuracy
             processed_img = _preprocess_image_for_ocr(img)
 
@@ -2483,7 +2657,7 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
             if (i + 1) % 10 == 0 or i == 0:
                 logger.info(
                     "pdf_report: OCR progress %d/%d pages",
-                    i + 1, len(images),
+                    i + 1, pages_to_process,
                 )
 
         result = "\n\n".join(texts)
@@ -2494,7 +2668,7 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
         logger.info(
             "pdf_report: OCR complete — %d pages, %d chars, avg confidence %.0f%%, "
             "%d low-confidence pages",
-            len(images), len(result), avg_confidence * 100,
+            len(page_attempts), len(result), avg_confidence * 100,
             len(low_confidence_pages),
         )
         return OcrAttemptResult(

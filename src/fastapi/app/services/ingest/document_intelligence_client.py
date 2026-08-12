@@ -29,6 +29,15 @@ KEY_ENV = "AZURE_DOCUMENT_INTELLIGENCE_KEY"
 ENGINE_ENV = "OCR_ENGINE"
 _MODEL_ID = "prebuilt-read"
 
+# F12 (2026-08-11) — bounded waits. The aio SDK's AsyncLROPoller.result()
+# takes no timeout parameter (unlike the sync poller), so the polling wait
+# is capped with asyncio.wait_for. The sync-bridge cap is deliberately
+# larger than the polling cap so a page normally fails inside the loop
+# (clean fail-soft PageOcrResult) and the bridge cap only fires if the
+# loop itself is wedged (transport hang before the poller even exists).
+_ANALYZE_TIMEOUT_SECONDS = 120.0  # per-page cap on begin_analyze + polling
+_SYNC_BRIDGE_TIMEOUT_SECONDS = 150.0  # outer cap on the thread bridge
+
 
 class DocumentIntelligenceNotConfigured(RuntimeError):
     """OCR_ENGINE=azure_document_intelligence but the endpoint/key are absent.
@@ -77,6 +86,16 @@ class PageOcrResult:
     error: str | None = None
 
 
+# F12 — one cached client (one HTTP session) per (endpoint, key) instead
+# of a fresh DocumentIntelligenceClient per page. The cached client's
+# aiohttp session is loop-bound, so all coroutines run on the single
+# persistent background loop owned by `_run_sync` (see below); the cache
+# is only ever touched from that loop, so no locking is needed. The
+# client is deliberately never closed — it lives for the process, like
+# the loop thread itself.
+_CLIENT_CACHE: dict[tuple[str, str], Any] = {}
+
+
 def _build_client():
     endpoint = os.environ.get(ENDPOINT_ENV)
     key = os.environ.get(KEY_ENV)
@@ -85,12 +104,19 @@ def _build_client():
             f"{ENDPOINT_ENV} and {KEY_ENV} must both be set to use the azure_document_intelligence OCR engine."
         )
 
+    cache_key = (endpoint, key)
+    client = _CLIENT_CACHE.get(cache_key)
+    if client is not None:
+        return client
+
     # Imported lazily so `azure-ai-documentintelligence` being installed
     # doesn't force-import at module load for callers that never use it.
     from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
     from azure.core.credentials import AzureKeyCredential
 
-    return DocumentIntelligenceClient(endpoint=endpoint, credential=AzureKeyCredential(key))
+    client = DocumentIntelligenceClient(endpoint=endpoint, credential=AzureKeyCredential(key))
+    _CLIENT_CACHE[cache_key] = client
+    return client
 
 
 async def ocr_page(pdf_bytes: bytes, page_num: int) -> PageOcrResult:
@@ -142,42 +168,52 @@ async def _analyze_document(
 ) -> PageOcrResult:
     from azure.core.exceptions import HttpResponseError
 
+    # F12 — the client is cached per (endpoint, key) and never closed here;
+    # no `async with` so the underlying HTTP session survives across pages.
     client = _build_client()
     try:
-        async with client:
-            kwargs: dict[str, Any] = {"body": body}
-            if pages is not None:
-                kwargs["pages"] = pages
-            # Throttle/outage retry (429/503 only): 3 attempts with 1s/2s/4s
-            # exponential backoff, honoring a numeric Retry-After header
-            # (capped at 30s). Any other error keeps the existing fail-soft
-            # behavior via the outer except below.
-            for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
-                try:
-                    poller = await client.begin_analyze_document(_MODEL_ID, **kwargs)
-                    result = await poller.result()
-                    break
-                except HttpResponseError as exc:
-                    status = getattr(exc, "status_code", None)
-                    if (
-                        status not in _RETRYABLE_STATUS_CODES
-                        or attempt == _MAX_REQUEST_ATTEMPTS
-                    ):
-                        raise
-                    delay = float(2 ** (attempt - 1))
-                    retry_after = _retry_after_seconds(exc)
-                    if retry_after is not None:
-                        delay = min(retry_after, _RETRY_AFTER_CAP_SECONDS)
-                    logger.warning(
-                        "document_intelligence: HTTP %s%s — retrying in %.1fs "
-                        "(attempt %d/%d)",
-                        status,
-                        f" on page {log_page}" if log_page is not None else "",
-                        delay,
-                        attempt,
-                        _MAX_REQUEST_ATTEMPTS,
-                    )
-                    await asyncio.sleep(delay)
+        kwargs: dict[str, Any] = {"body": body}
+        if pages is not None:
+            kwargs["pages"] = pages
+
+        async def _begin_and_poll():
+            # F12 — AsyncLROPoller.result() accepts no timeout parameter,
+            # so the submit + polling pair shares one asyncio.wait_for
+            # deadline. TimeoutError falls to the outer except (fail-soft).
+            poller = await client.begin_analyze_document(_MODEL_ID, **kwargs)
+            return await poller.result()
+
+        # Throttle/outage retry (429/503 only): 3 attempts with 1s/2s/4s
+        # exponential backoff, honoring a numeric Retry-After header
+        # (capped at 30s). Any other error keeps the existing fail-soft
+        # behavior via the outer except below.
+        for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
+            try:
+                result = await asyncio.wait_for(
+                    _begin_and_poll(), timeout=_ANALYZE_TIMEOUT_SECONDS
+                )
+                break
+            except HttpResponseError as exc:
+                status = getattr(exc, "status_code", None)
+                if (
+                    status not in _RETRYABLE_STATUS_CODES
+                    or attempt == _MAX_REQUEST_ATTEMPTS
+                ):
+                    raise
+                delay = float(2 ** (attempt - 1))
+                retry_after = _retry_after_seconds(exc)
+                if retry_after is not None:
+                    delay = min(retry_after, _RETRY_AFTER_CAP_SECONDS)
+                logger.warning(
+                    "document_intelligence: HTTP %s%s — retrying in %.1fs "
+                    "(attempt %d/%d)",
+                    status,
+                    f" on page {log_page}" if log_page is not None else "",
+                    delay,
+                    attempt,
+                    _MAX_REQUEST_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
     except DocumentIntelligenceNotConfigured:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -224,13 +260,15 @@ def ocr_page_sync(pdf_bytes: bytes, page_num: int) -> PageOcrResult:
     parse pipeline (`_ocr_single_page`, `_attempt_ocr` are plain `def`s,
     not `async def`s — there is no `await` anywhere in that call chain).
 
-    Always runs the coroutine on a dedicated background thread with its
-    own fresh event loop, rather than `asyncio.run()` directly on the
+    Always runs the coroutine on a dedicated background thread with a
+    persistent event loop, rather than `asyncio.run()` directly on the
     calling thread. `asyncio.run()` raises "cannot be called from a
     running event loop" if the caller happens to be invoked from inside
     FastAPI's event loop thread (e.g. a future caller that doesn't route
     parsing through a process/thread pool executor first); the dedicated
-    thread makes this safe regardless of the caller's own context.
+    thread makes this safe regardless of the caller's own context. The
+    loop is persistent (F12) because the cached client's HTTP session is
+    bound to the loop it first ran on.
     """
     return _run_sync(lambda: ocr_page(pdf_bytes, page_num))
 
@@ -241,25 +279,52 @@ def ocr_image_sync(image_bytes: bytes) -> PageOcrResult:
     return _run_sync(lambda: ocr_image(image_bytes))
 
 
+# F12 — one persistent background loop thread for all sync-bridged calls.
+# A fresh loop per call would strand the cached client's loop-bound HTTP
+# session; a persistent loop also lets a hung poller be abandoned (the
+# daemon thread keeps running) without blocking the parse pipeline.
+_LOOP_LOCK = threading.Lock()
+_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _get_background_loop() -> asyncio.AbstractEventLoop:
+    global _LOOP
+    with _LOOP_LOCK:
+        if _LOOP is None or _LOOP.is_closed():
+            loop = asyncio.new_event_loop()
+            threading.Thread(
+                target=loop.run_forever,
+                daemon=True,
+                name="di-ocr-loop",
+            ).start()
+            _LOOP = loop
+    return _LOOP
+
+
 def _run_sync(
     coroutine_factory: Callable[[], Awaitable[PageOcrResult]],
 ) -> PageOcrResult:
-    result: list[PageOcrResult] = []
-    error: list[BaseException] = []
+    import concurrent.futures
 
-    def _runner() -> None:
-        try:
-            result.append(asyncio.run(coroutine_factory()))
-        except BaseException as exc:  # noqa: BLE001
-            error.append(exc)
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join()
-
-    if error:
-        raise error[0]
-    return result[0]
+    loop = _get_background_loop()
+    future = asyncio.run_coroutine_threadsafe(coroutine_factory(), loop)
+    try:
+        return future.result(timeout=_SYNC_BRIDGE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        # F12 — the poller outlived even the polling cap's margin: cancel
+        # the coroutine and fail this page distinctly so the caller falls
+        # through to tesseract instead of blocking the parse forever.
+        future.cancel()
+        logger.warning(
+            "document_intelligence: sync bridge exceeded %.0fs — abandoning call",
+            _SYNC_BRIDGE_TIMEOUT_SECONDS,
+        )
+        return PageOcrResult(
+            "",
+            0.0,
+            request_succeeded=False,
+            error="di_poller_hung",
+        )
 
 
 def _clamp_confidence(value: float | None) -> float:
