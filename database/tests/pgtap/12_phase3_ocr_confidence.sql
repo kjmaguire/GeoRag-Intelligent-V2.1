@@ -140,7 +140,9 @@ DECLARE
         'fitz_native',
         'pdfplumber_native',
         'docling_rapidocr',
-        'tesseract'
+        'tesseract',
+        'document_intelligence',
+        'unavailable'
     ];
     m text;
     report_id_val uuid := (SELECT report_id FROM silver.reports LIMIT 1);
@@ -163,7 +165,7 @@ BEGIN
     END LOOP;
 END $$;
 
-SELECT pass('All four valid ocr_method values accepted (fitz_native, pdfplumber_native, docling_rapidocr, tesseract)');
+SELECT pass('All four valid ocr_method values accepted (fitz_native, pdfplumber_native, docling_rapidocr, tesseract, document_intelligence, unavailable)');
 
 SELECT * FROM finish();
 
