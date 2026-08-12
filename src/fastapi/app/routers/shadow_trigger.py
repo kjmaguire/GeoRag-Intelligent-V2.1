@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -52,6 +53,9 @@ def _check_service_key(x_service_key: str | None = Header(default=None)) -> None
 class TriggerIngestPdfResponse(BaseModel):
     workflow_run_id: str
     correlation_token: str
+    # F4 (2026-08-11) — False when the endpoint deduped against an
+    # existing non-terminal run instead of dispatching a new workflow.
+    dispatched: bool = True
 
 
 @router.post(
@@ -101,6 +105,46 @@ async def trigger_ingest_pdf(
                 await require_active_project(
                     project_id=str(payload.project_id), conn=_conn
                 )
+
+    # F4 (2026-08-11) — dedupe against an in-flight run for the same file.
+    # Laravel's bridge wraps this call in retry(3, 500): a first dispatch
+    # that succeeded but responded slowly gets re-POSTed, and nothing ever
+    # read correlation_token for dedupe, so bulk imports double-ingested.
+    # A non-terminal ingest_progress row for (workspace, key) means a run
+    # is already queued/started — return its identifiers with 200 instead
+    # of dispatching again. Fails open: a lookup error just dispatches.
+    if payload.workspace_id:
+        try:
+            _pool = await ingest_progress.get_pool()
+            async with _pool.acquire() as _c:
+                _existing = await _c.fetchrow(
+                    "SELECT run_id::text AS run_id, workflow_run_id "
+                    "FROM silver.ingest_progress "
+                    "WHERE workspace_id = $1::uuid AND minio_key = $2 "
+                    "  AND status NOT IN ('completed','failed','cancelled','timed_out') "
+                    "LIMIT 1",
+                    str(payload.workspace_id), payload.minio_key,
+                )
+        except Exception as _dedupe_exc:
+            log.warning(
+                "trigger_ingest_pdf: dedupe lookup failed (%s) — dispatching anyway",
+                _dedupe_exc,
+            )
+            _existing = None
+        if _existing is not None:
+            log.info(
+                "trigger_ingest_pdf: dedupe hit run=%s workflow=%s key=%s — "
+                "returning existing run, not re-dispatching",
+                _existing["run_id"], _existing["workflow_run_id"], payload.minio_key,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=TriggerIngestPdfResponse(
+                    workflow_run_id=_existing["workflow_run_id"] or _existing["run_id"],
+                    correlation_token=payload.correlation_token,
+                    dispatched=False,
+                ).model_dump(),
+            )
 
     ref = await ingest_pdf.aio_run_no_wait(payload)
 
@@ -170,6 +214,22 @@ async def trigger_tiff_normalize(
                 )
 
     ref = await tiff_normalize.aio_run_no_wait(payload)
+
+    # F6 (2026-08-11) — mirror the ingest_pdf sibling above: insert the
+    # ingest_progress row at dispatch time (status='queued') for the SOURCE
+    # tiff key so a saturation-cancelled or crashed normalize run is visible
+    # in the IngestionRuns UI instead of vanishing. tiff_normalize's
+    # on_failure hook and the normalize task's own terminal writes resolve
+    # this row; the derived PDF gets its own row from ingest_pdf preflight.
+    if payload.workspace_id and payload.project_id:
+        await ingest_progress.start_run(
+            workspace_id=str(payload.workspace_id),
+            project_id=str(payload.project_id),
+            minio_key=payload.minio_key,
+            triggered_by="upload",
+            workflow_run_id=ref.workflow_run_id,
+        )
+
     return TriggerIngestPdfResponse(
         workflow_run_id=ref.workflow_run_id,
         correlation_token=payload.correlation_token,

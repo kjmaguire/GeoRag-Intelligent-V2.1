@@ -391,6 +391,11 @@ async def _ingest_one(
                 correlation_token=f"zip-{input.run_id}-{file_path.name}",
             )
         )
+        # F7 (2026-08-11) — throttle the fan-out. An unthrottled burst of
+        # dispatches saturates the GROUP_ROUND_ROBIN concurrency queue and
+        # Hatchet silently CANCELS the overflow — exactly the Cameco
+        # 529-file incident ([[cameco-recovery-2026-06-02]]).
+        await asyncio.sleep(0.25)
         counts["tif"] += 1
 
     elif ext in ("xlsx", "xls"):
@@ -425,6 +430,9 @@ async def _ingest_one(
                 correlation_token=f"zip-{input.run_id}-{file_path.name}",
             )
         )
+        # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch above
+        # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
+        await asyncio.sleep(0.25)
         counts["pdf"] += 1
 
     else:

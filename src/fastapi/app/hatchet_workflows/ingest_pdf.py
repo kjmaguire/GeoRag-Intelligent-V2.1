@@ -740,9 +740,26 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
 
     _relay_task = asyncio.create_task(_relay_progress())
     try:
-        result_dict = await loop.run_in_executor(
-            pool, _run_parser_subprocess, body, pre.get("sha256", ""), _progress_path,
+        # F12 (2026-08-11) — hard wall-clock cap on the parse subprocess.
+        # 3300 s (55 min) sits just under the task's execution_timeout="60m"
+        # so a hung parser (e.g. the §04p subprocess-pool instability on
+        # image-only PDFs) fails from OUR side with a pool reset, letting
+        # Hatchet's retries=1 re-run against a fresh pool instead of the
+        # task dying opaquely at the Hatchet timeout with a poisoned pool.
+        result_dict = await asyncio.wait_for(
+            loop.run_in_executor(
+                pool, _run_parser_subprocess, body, pre.get("sha256", ""), _progress_path,
+            ),
+            timeout=3300,
         )
+    except TimeoutError:
+        log.error(
+            "ingest_pdf.parse: subprocess exceeded the 3300s hard timeout "
+            "key=%s — resetting parse pool and re-raising so Hatchet retries.",
+            input.minio_key,
+        )
+        _reset_parse_pool()
+        raise
     except BrokenProcessPool as exc:
         # 2026-05-23 — kill the in-process fallback. The original
         # fallback ran the parser on the default asyncio thread pool,
@@ -1416,6 +1433,19 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         final.parse_duration_ms + final.persist_duration_ms,
     )
 
+    # F2 (2026-08-11) — stamp this run's report_id onto its ingest_progress
+    # row now (not at completion) so the embed completion sweep and
+    # stale_run_detector can test "fully embedded?" against THIS document
+    # only. Embeds serialize per workspace (embed wf max_runs=1), so on bulk
+    # imports the old project-wide predicate timed out runs whose own
+    # document had long finished embedding.
+    if input.workspace_id:
+        await ingest_progress.mark_report_id(
+            workspace_id=str(input.workspace_id),
+            minio_key=input.minio_key,
+            report_id=report_id,
+        )
+
     # Trigger embedding for this project so chunks land in qdrant
     # immediately, instead of waiting for the 05:45 UTC daily cron.
     # Fire-and-forget — embedding can take minutes for big PDFs; we don't
@@ -1450,6 +1480,16 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
 
 
 # ---- Step 4: embed-verify ----------------------------------------------------
+# F3 (2026-08-11) — keep in lockstep with the eligibility predicate in
+# app/services/ingest/passage_embedder.py (embed_pending_passages SELECT):
+# passages whose OCR text is known-bad ('rejected' / 'pending_reocr') are
+# never embedded, so counting them as "unembedded" here would wedge the run
+# at embed_verify forever.
+_EMBEDDABLE_OCR_PREDICATE = (
+    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+)
+
+
 # Safety net for the BattleNorth-style race where the inline embed dispatch
 # from persist gets lost between Hatchet retries. Quickly polls the project's
 # unembedded passage count and re-dispatches the embed workflow if anything
@@ -1496,12 +1536,13 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
+                f"""
                 SELECT count(*) AS unembedded
                 FROM silver.document_passages p
                 JOIN silver.reports r ON r.report_id = p.document_id
                 WHERE r.project_id = $1::uuid
                   AND p.embedding_id IS NULL
+                  AND {_EMBEDDABLE_OCR_PREDICATE}
                 """,
                 str(input.project_id),
             )

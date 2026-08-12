@@ -14,6 +14,7 @@ we skip normalise and trigger ingest_pdf directly.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -24,6 +25,7 @@ from georag_object_storage import Bucket, ObjectStorage, get_storage_client
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
 from app.services.ingest.tiff_to_pdf import (
@@ -134,7 +136,10 @@ tiff_normalize = hatchet.workflow(
 )
 
 
-@tiff_normalize.task(execution_timeout="20m", retries=1)
+# F6 (2026-08-11) — schedule_timeout added so a queue-saturated normalize is
+# cancelled by Hatchet (and surfaced via on_failure below) instead of being
+# silently dropped with the default schedule window.
+@tiff_normalize.task(execution_timeout="20m", schedule_timeout="2h", retries=1)
 async def normalize(
     input: TiffNormalizeInput, ctx: Context
 ) -> TiffNormalizeOutput:
@@ -150,18 +155,37 @@ async def normalize(
         input.workspace_id, input.project_id, input.minio_key, input.file_size,
     )
 
+    # F6 (2026-08-11) — flip the dispatch-time row (queued → started) so the
+    # IngestionRuns UI shows the normalize as live and the on_failure hook
+    # has an active row to close.
+    await ingest_progress.mark_started(
+        workspace_id=str(input.workspace_id),
+        project_id=str(input.project_id),
+        minio_key=input.minio_key,
+        step="preflight",
+        workflow_run_id=getattr(ctx, "workflow_run_id", None),
+    )
+
     store = get_storage_client()
 
+    # F6b (2026-08-11) — georag_object_storage is sync boto3; every S3
+    # round-trip in this task goes off-loop via asyncio.to_thread so a slow
+    # SeaweedFS/SMB call can't starve the Hatchet worker's event loop
+    # (same pattern as ingest_pdf.py's figure-persist block).
     # 1. Stream the source TIFF down.
-    source_bytes = store.get_bytes(Bucket.BRONZE, input.minio_key)
+    source_bytes = await asyncio.to_thread(
+        store.get_bytes, Bucket.BRONZE, input.minio_key,
+    )
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
 
     derived_key = derived_pdf_key(input.project_id, input.minio_key, source_sha256)
 
     # 2. Idempotency — if the derived PDF is already in SeaweedFS with the
     # matching source-sha tag, skip the wrap and trigger ingest_pdf
-    # directly. This makes Hatchet retries safe.
-    normalize_skipped = _derived_already_present(store, derived_key, source_sha256)
+    # directly. This makes Hatchet retries safe. (to_thread: does an S3 head.)
+    normalize_skipped = await asyncio.to_thread(
+        _derived_already_present, store, derived_key, source_sha256,
+    )
     page_count = 0
     truncated = False
 
@@ -180,7 +204,8 @@ async def normalize(
         truncated = result.truncated_at_cap
 
         # 4. Upload derived PDF with provenance metadata.
-        store.put_bytes(
+        await asyncio.to_thread(
+            store.put_bytes,
             Bucket.BRONZE,
             derived_key,
             result.pdf_bytes,
@@ -203,7 +228,7 @@ async def normalize(
             derived_key, source_sha256[:8],
         )
         # Pull frame count from the metadata for a complete output record.
-        head = store.head(Bucket.BRONZE, derived_key)
+        head = await asyncio.to_thread(store.head, Bucket.BRONZE, derived_key)
         meta = head.get("metadata") or {}
         try:
             page_count = int(meta.get("x-georag-tiff-frames", "0"))
@@ -215,7 +240,7 @@ async def normalize(
     # workspace_id / project_id / vendor_profile_id / actor_id /
     # correlation_token unchanged; the only delta is minio_key (now the
     # derived PDF) and file_size (derived PDF size).
-    head = store.head(Bucket.BRONZE, derived_key)
+    head = await asyncio.to_thread(store.head, Bucket.BRONZE, derived_key)
     derived_size = int(head.get("size") or 0)
 
     downstream_input = IngestPdfInput(
@@ -234,6 +259,15 @@ async def normalize(
         ref.workflow_run_id, derived_key,
     )
 
+    # F6 (2026-08-11) — the source-TIFF progress row ends here: the derived
+    # PDF is tracked by its own row (created by ingest_pdf's preflight).
+    # Without this terminal write the row would sit non-terminal until the
+    # stale sweep timed it out as a false alarm.
+    await ingest_progress.mark_completed(
+        workspace_id=str(input.workspace_id),
+        minio_key=input.minio_key,
+    )
+
     return TiffNormalizeOutput(
         source_sha256=source_sha256,
         derived_minio_key=derived_key,
@@ -242,6 +276,63 @@ async def normalize(
         normalize_skipped=normalize_skipped,
         ingest_pdf_workflow_run_id=ref.workflow_run_id,
     )
+
+
+# F6 (2026-08-11) — workflow-level failure hook, mirroring ingest_pdf's.
+# Before this, a cancelled (queue-saturation) or retries-exhausted normalize
+# left its ingest_progress row non-terminal forever: the TIFF just vanished
+# from the UI until the stale sweep timed it out with no context.
+@tiff_normalize.on_failure_task(
+    name="on_failure",
+    execution_timeout="30s",
+    schedule_timeout="30m",
+    retries=2,
+)
+async def on_failure(input: TiffNormalizeInput, ctx: Context) -> dict:
+    """Mark the source-TIFF progress row failed when the workflow dies."""
+    from app.services.laravel_bridge import post_ingestion_progress
+
+    workspace_id = str(input.workspace_id)
+
+    run_id = await ingest_progress.lookup_active_run_id(
+        workspace_id=workspace_id, minio_key=input.minio_key,
+    )
+    if run_id is None:
+        log.warning(
+            "tiff_normalize.on_failure: no active run found for (ws=%s, key=%s) — "
+            "skipping terminal update", workspace_id, input.minio_key,
+        )
+        return {"updated": False, "reason": "no_active_run"}
+
+    row = await ingest_progress.get_run(run_id=run_id)
+    current_stage = (row or {}).get("current_stage") or "preflight"
+
+    transitioned = await ingest_progress.mark_failed_by_run(
+        run_id=run_id,
+        stage=current_stage,
+        error="tiff_normalize workflow failure hook fired",
+    )
+
+    if transitioned:
+        try:
+            await post_ingestion_progress(
+                workspace_id=workspace_id,
+                project_id=str(input.project_id),
+                run_id=run_id,
+                stage=current_stage,
+                status="failed",
+                message="TIFF normalise exhausted retries or was cancelled.",
+            )
+        except Exception as exc:
+            log.warning(
+                "tiff_normalize.on_failure: broadcast failed run=%s: %s", run_id, exc,
+            )
+
+    return {
+        "updated": transitioned,
+        "run_id": run_id,
+        "current_stage": current_stage,
+    }
 
 
 __all__ = [

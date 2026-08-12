@@ -54,41 +54,61 @@ class OrphanDocument:
     parent_minio_key: str | None
 
 
+# F3 (2026-08-11): the eligibility filter (mirrors passage_embedder's
+# SELECT — rejected/pending_reocr passages are never embedded, so they must
+# not count as orphans) and the NOT EXISTS guard both landed together: the
+# guard stops the sweep from re-minting a fresh recovery ingest_progress row
+# for the same stuck document on EVERY 10-minute tick while an earlier
+# recovery row is still non-terminal.
 SELECT_ORPHANS_SQL = """
-    SELECT
-        dp.document_id::text                       AS document_id,
-        r.project_id::text                         AS project_id,
-        r.workspace_id::text                       AS workspace_id,
-        COUNT(*)                                    AS orphan_count,
-        (
-            SELECT ip.run_id::text
-            FROM silver.ingest_progress ip
-            WHERE ip.workspace_id = r.workspace_id
-              AND ip.report_id    = dp.document_id
-            ORDER BY ip.attempt_number DESC, ip.started_at DESC
-            LIMIT 1
-        )                                           AS parent_run_id,
-        (
-            SELECT ip.attempt_number
-            FROM silver.ingest_progress ip
-            WHERE ip.workspace_id = r.workspace_id
-              AND ip.report_id    = dp.document_id
-            ORDER BY ip.attempt_number DESC, ip.started_at DESC
-            LIMIT 1
-        )                                           AS parent_attempt_number,
-        (
-            SELECT ip.minio_key
-            FROM silver.ingest_progress ip
-            WHERE ip.workspace_id = r.workspace_id
-              AND ip.report_id    = dp.document_id
-            ORDER BY ip.attempt_number DESC, ip.started_at DESC
-            LIMIT 1
-        )                                           AS parent_minio_key
-    FROM silver.document_passages dp
-    JOIN silver.reports r ON r.report_id = dp.document_id
-    WHERE dp.embedding_id IS NULL
-      AND dp.created_at   < now() - interval '5 minutes'
-    GROUP BY dp.document_id, r.project_id, r.workspace_id
+    WITH orphans AS (
+        SELECT
+            dp.document_id::text                       AS document_id,
+            r.project_id::text                         AS project_id,
+            r.workspace_id::text                       AS workspace_id,
+            COUNT(*)                                    AS orphan_count,
+            (
+                SELECT ip.run_id::text
+                FROM silver.ingest_progress ip
+                WHERE ip.workspace_id = r.workspace_id
+                  AND ip.report_id    = dp.document_id
+                ORDER BY ip.attempt_number DESC, ip.started_at DESC
+                LIMIT 1
+            )                                           AS parent_run_id,
+            (
+                SELECT ip.attempt_number
+                FROM silver.ingest_progress ip
+                WHERE ip.workspace_id = r.workspace_id
+                  AND ip.report_id    = dp.document_id
+                ORDER BY ip.attempt_number DESC, ip.started_at DESC
+                LIMIT 1
+            )                                           AS parent_attempt_number,
+            (
+                SELECT ip.minio_key
+                FROM silver.ingest_progress ip
+                WHERE ip.workspace_id = r.workspace_id
+                  AND ip.report_id    = dp.document_id
+                ORDER BY ip.attempt_number DESC, ip.started_at DESC
+                LIMIT 1
+            )                                           AS parent_minio_key
+        FROM silver.document_passages dp
+        JOIN silver.reports r ON r.report_id = dp.document_id
+        WHERE dp.embedding_id IS NULL
+          AND (dp.ocr_status IS NULL
+               OR dp.ocr_status NOT IN ('rejected', 'pending_reocr'))
+          AND dp.created_at   < now() - interval '5 minutes'
+        GROUP BY dp.document_id, r.project_id, r.workspace_id
+    )
+    SELECT o.*
+    FROM orphans o
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM silver.ingest_progress ip2
+        WHERE ip2.workspace_id = o.workspace_id::uuid
+          AND ip2.minio_key    = o.parent_minio_key
+          AND ip2.triggered_by = 'embed_pending_sweep'
+          AND ip2.status NOT IN ('completed','failed','cancelled','timed_out')
+    )
 """
 
 

@@ -62,6 +62,22 @@ def _stale_after_minutes() -> int:
         return 15
 
 
+def _embed_stale_after_minutes() -> int:
+    """Longer staleness window for rows at embedding/embed_verify (F2b).
+
+    Embeds serialize per workspace (embed_pending_passages max_runs=1 with
+    GROUP_ROUND_ROBIN), so on a bulk import a row can legitimately sit at
+    'embedding' far longer than 15 minutes while other documents' embeds
+    drain the queue. Parse/persist keep the tight window.
+    """
+    raw = os.environ.get("STALE_RUN_DETECTOR_EMBED_MINUTES", "120")
+    try:
+        v = int(raw)
+        return v if v > 0 else 120
+    except ValueError:
+        return 120
+
+
 def _recovery_max_attempts() -> int:
     """Cap the parent-chain depth so a chronically broken file can't loop forever.
 
@@ -110,29 +126,61 @@ stale_run_detector = hatchet.workflow(
 )
 
 
-async def _project_is_fully_embedded(pool, project_id: str | None) -> bool:
-    """True when every passage on this project has an embedding_id.
+# F3 (2026-08-11) — keep in lockstep with the eligibility predicate in
+# app/services/ingest/passage_embedder.py (embed_pending_passages SELECT):
+# passages with ocr_status 'rejected'/'pending_reocr' are never embedded,
+# so counting them as "unembedded" would keep runs un-completable forever.
+_EMBEDDABLE_OCR_PREDICATE = (
+    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+)
+
+
+async def _project_is_fully_embedded(
+    pool, project_id: str | None, report_id: str | None = None,
+) -> bool:
+    """True when every embeddable passage in scope has an embedding_id.
+
+    F2 (2026-08-11): when the run row carries a report_id, scope the test
+    to that run's OWN document — embeds serialize per workspace, so a
+    project-wide test held rows hostage to every other document in a bulk
+    import. NULL report_id (row died before persist, or legacy rows) falls
+    back to the original project-wide behaviour.
 
     Returns False on any DB error so we err on the side of timing out
     (the safe, observable outcome) rather than silently marking
     completed.
     """
-    if not project_id:
+    if not project_id and not report_id:
         return False
     try:
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM silver.document_passages p
-                    JOIN silver.reports r ON r.report_id = p.document_id
-                    WHERE r.project_id = $1::uuid
-                      AND p.embedding_id IS NULL
-                ) AS has_unembedded
-                """,
-                project_id,
-            )
+            if report_id:
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM silver.document_passages p
+                        WHERE p.document_id = $1::uuid
+                          AND p.embedding_id IS NULL
+                          AND {_EMBEDDABLE_OCR_PREDICATE}
+                    ) AS has_unembedded
+                    """,
+                    report_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM silver.document_passages p
+                        JOIN silver.reports r ON r.report_id = p.document_id
+                        WHERE r.project_id = $1::uuid
+                          AND p.embedding_id IS NULL
+                          AND {_EMBEDDABLE_OCR_PREDICATE}
+                    ) AS has_unembedded
+                    """,
+                    project_id,
+                )
         return not bool(row and row["has_unembedded"])
     except Exception as exc:
         log.warning(
@@ -205,6 +253,7 @@ async def _dispatch_recovery_run(
 @stale_run_detector.task(execution_timeout="2m", schedule_timeout="1h", retries=1)
 async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetectorOutput:
     stale_minutes = input.stale_minutes or _stale_after_minutes()
+    embed_stale_minutes = max(_embed_stale_after_minutes(), stale_minutes)
     max_attempts = _recovery_max_attempts()
 
     pool = await ingest_progress.get_pool()
@@ -218,10 +267,18 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     # current_step is read (not current_stage) because it's the field
     # written by mark_stage_started — current_stage is set lazily by the
     # task body and is often NULL on rows that died early in a stage.
+    # F5 (2026-08-11): 'queued' rows are included — a dispatch that never
+    # reached preflight (worker down, Hatchet queue drop) previously left the
+    # row queued forever with no heartbeat to age out. Age-test falls back to
+    # started_at because queued rows never receive a heartbeat.
+    # F2b (2026-08-11): embedding/embed_verify rows get the longer window —
+    # embeds serialize per workspace, so a 15-min clock timed out healthy
+    # bulk-import rows.
     select_sql = f"""
         SELECT run_id::text          AS run_id,
                workspace_id::text    AS workspace_id,
                project_id::text      AS project_id,
+               report_id::text       AS report_id,
                minio_key,
                filename,
                current_stage,
@@ -229,8 +286,12 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                attempt_number,
                triggered_by
           FROM silver.ingest_progress
-         WHERE status = 'started'
-           AND last_heartbeat_at < now() - interval '{int(stale_minutes)} minutes'
+         WHERE status IN ('queued','started')
+           AND COALESCE(last_heartbeat_at, started_at) < now()
+               - CASE WHEN current_step IN ('embedding','embed_verify')
+                      THEN interval '{int(embed_stale_minutes)} minutes'
+                      ELSE interval '{int(stale_minutes)} minutes'
+                 END
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(select_sql)
@@ -242,8 +303,10 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     # happen on this tick.
     try:
         async with pool.acquire() as gauge_conn:
+            # F5 — count queued rows too; they're now part of the sweep.
             active_row = await gauge_conn.fetchrow(
-                "SELECT count(*)::int AS n FROM silver.ingest_progress WHERE status = 'started'"
+                "SELECT count(*)::int AS n FROM silver.ingest_progress "
+                "WHERE status IN ('queued','started')"
             )
         from app.metrics import INGESTION_STALE_RUNS_DETECTED
         INGESTION_STALE_RUNS_DETECTED.set(int(active_row["n"]) if active_row else 0)
@@ -258,7 +321,9 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
         # win the race against this 15-min tick, but the embeddings are
         # actually all in. Mark completed instead of timing out.
         if current_step in {"embed_verify", "embedding"} and \
-                await _project_is_fully_embedded(pool, row["project_id"]):
+                await _project_is_fully_embedded(
+                    pool, row["project_id"], report_id=row["report_id"],
+                ):
             transitioned = await ingest_progress.mark_completed_by_run(run_id=run_id)
             if transitioned:
                 runs_marked_completed += 1

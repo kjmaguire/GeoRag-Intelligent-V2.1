@@ -356,6 +356,36 @@ async def heartbeat_loop(
                 await task
 
 
+async def mark_report_id(
+    *,
+    workspace_id: str,
+    minio_key: str,
+    report_id: str,
+) -> None:
+    """Record the persisted report_id on the active (non-terminal) run row.
+
+    Written at the end of ingest_pdf's persist step (F2, 2026-08-11) so the
+    embed completion sweep and stale_run_detector can scope their
+    "fully embedded?" predicates to THIS run's own document instead of the
+    whole project — bulk imports serialize embeds per workspace, so a
+    project-wide predicate timed out rows whose own document had already
+    finished. Best-effort like every other helper here.
+    """
+    sql = """
+        UPDATE silver.ingest_progress
+        SET report_id  = $3::uuid,
+            updated_at = now()
+        WHERE workspace_id = $1::uuid AND minio_key = $2
+          AND status NOT IN ('completed','failed','cancelled','timed_out')
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(sql, workspace_id, minio_key, report_id)
+    except Exception as e:
+        log.warning("progress.mark_report_id failed (key=%s): %s", minio_key, e)
+
+
 async def mark_completed_by_run(
     *,
     run_id: str,

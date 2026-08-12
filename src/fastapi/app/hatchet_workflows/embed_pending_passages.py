@@ -32,6 +32,16 @@ from app.services.ingest.passage_embedder import embed_pending_passages
 log = logging.getLogger("georag.hatchet.embed_pending_passages")
 
 
+# F3 (2026-08-11) — keep in lockstep with the eligibility predicate in
+# app/services/ingest/passage_embedder.py (embed_pending_passages SELECT):
+# passages with ocr_status 'rejected'/'pending_reocr' are never embedded, so
+# treating them as "still pending" in the completion sweep would leave runs
+# at embed_verify/embedding forever.
+_EMBEDDABLE_OCR_PREDICATE = (
+    "(p.ocr_status IS NULL OR p.ocr_status NOT IN ('rejected', 'pending_reocr'))"
+)
+
+
 class EmbedPendingPassagesInput(BaseModel):
     # REC#1 (2026-06-03) — workspace_id is REQUIRED. The Pydantic
     # Field no longer has a default. Bootstrap callers (Dagster
@@ -260,6 +270,61 @@ async def run(
                             " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
                         )
                         project_ids = [r["pid"] for r in _rows]
+                elif _qdrant_points is not None and _pg_embedded > 0:
+                    # F21 (2026-08-11) — partial-loss detection. The
+                    # all-empty branch above only fires when the collection
+                    # is wiped; a PARTIALLY lost collection (replica
+                    # recreation mid-upsert, selective delete) previously
+                    # surfaced nowhere until the nightly spot-check sampled
+                    # into the hole. Compare exact per-project counts
+                    # (PG embedded vs Qdrant filtered by project_id) and log
+                    # a WARNING on >2% mismatch. Observability only — no
+                    # automatic reset, and the existing all-empty self-heal
+                    # behaviour is unchanged.
+                    try:
+                        from qdrant_client import models as _qmodels  # noqa: PLC0415
+
+                        _proj_rows = await _heal_conn.fetch(
+                            "SELECT r.project_id::text AS pid, count(*)::int AS n "
+                            "  FROM silver.document_passages dp "
+                            "  JOIN silver.reports r ON r.report_id = dp.document_id "
+                            " WHERE dp.embedding_id IS NOT NULL "
+                            "   AND r.project_id IS NOT NULL "
+                            " GROUP BY r.project_id"
+                        )
+                        _qc_cnt = AsyncQdrantClient(**qdrant_client_kwargs())
+                        try:
+                            for _pr in _proj_rows:
+                                _pg_n = int(_pr["n"])
+                                _q_n = (await _qc_cnt.count(
+                                    "georag_chunks",
+                                    count_filter=_qmodels.Filter(must=[
+                                        _qmodels.FieldCondition(
+                                            key="project_id",
+                                            match=_qmodels.MatchValue(value=_pr["pid"]),
+                                        ),
+                                    ]),
+                                    exact=True,
+                                )).count
+                                if _pg_n > 0 and (_pg_n - _q_n) / _pg_n > 0.02:
+                                    log.warning(
+                                        "embed_pending_passages.qdrant_partial_loss "
+                                        "project=%s pg_embedded=%d qdrant=%d "
+                                        "(%.1f%% missing) — Qdrant dropped points "
+                                        "PG still believes are embedded; run "
+                                        "scripts/reset_embeddings_for_reencode.py "
+                                        "for the project or investigate the "
+                                        "collection.",
+                                        _pr["pid"], _pg_n, _q_n,
+                                        100.0 * (_pg_n - _q_n) / _pg_n,
+                                    )
+                        finally:
+                            await _qc_cnt.close()
+                    except Exception as _plexc:
+                        log.debug(
+                            "embed_pending_passages.qdrant_partial_loss check "
+                            "failed (soft): %s", _plexc,
+                        )
             finally:
                 await _heal_conn.close()
         except Exception as exc:
@@ -275,11 +340,28 @@ async def run(
     total_skipped = 0
     errors: list[str] = []
 
+    # F28 (2026-08-11) — construct the embedding model ONCE per sweep and
+    # pass it into every per-project call. Previously embed_pending_passages
+    # reloaded the model (SentenceTransformer weights / Foundry client) for
+    # every project on every 10-minute tick. Load failure falls back to
+    # None so each per-project call retries the load itself (old behaviour).
+    embedding_model = None
+    if project_ids:
+        try:
+            from app.services.ingest.passage_embedder import load_embedding_model
+            embedding_model = load_embedding_model()
+        except Exception as exc:
+            log.warning(
+                "embed_pending_passages.model_preload_failed err=%s — "
+                "falling back to per-project loads", exc,
+            )
+
     for pid in project_ids:
         try:
             r = await embed_pending_passages(
                 workspace_id=input.workspace_id,
                 project_id=pid,
+                embedding_model=embedding_model,
                 batch_size=input.batch_size,
                 max_passages=input.max_passages,
             )
@@ -304,6 +386,7 @@ async def run(
             r = await embed_pending_passages(
                 workspace_id=input.workspace_id,
                 project_id=None,
+                embedding_model=embedding_model,
                 batch_size=input.batch_size,
                 max_passages=input.max_passages,
             )
@@ -373,8 +456,14 @@ async def run(
         from app.services.laravel_bridge import post_ingestion_progress
         sweep_pool2 = await _ingest_progress.get_pool()
         async with sweep_pool2.acquire() as sweep_conn:
+            # F2 (2026-08-11) — scope the "fully embedded?" test to the run's
+            # OWN document when the row carries a report_id (stamped by
+            # ingest_pdf.persist). Embeds serialize per workspace, so the old
+            # project-wide predicate held every run hostage to the slowest
+            # document in a bulk import. NULL report_id (recovery rows, rows
+            # that died before persist) keeps the project-wide fallback.
             rows_to_complete = await sweep_conn.fetch(
-                """
+                f"""
                 SELECT ip.run_id::text       AS run_id,
                        ip.workspace_id::text AS workspace_id,
                        ip.project_id::text   AS project_id
@@ -386,8 +475,12 @@ async def run(
                         SELECT 1
                         FROM silver.document_passages p
                         JOIN silver.reports r ON r.report_id = p.document_id
-                        WHERE r.project_id = ip.project_id
-                          AND p.embedding_id IS NULL
+                        WHERE p.embedding_id IS NULL
+                          AND {_EMBEDDABLE_OCR_PREDICATE}
+                          AND CASE WHEN ip.report_id IS NOT NULL
+                                   THEN p.document_id = ip.report_id
+                                   ELSE r.project_id = ip.project_id
+                              END
                   )
                 """,
                 project_ids,

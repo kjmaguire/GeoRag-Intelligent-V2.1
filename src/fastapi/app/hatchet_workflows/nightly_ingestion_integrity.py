@@ -183,12 +183,12 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
             file_key = orphan["file_key"]
             workspace_id = orphan["workspace_id"]
 
-            claim = await conn.fetchrow(claim_sql, file_key, workspace_id)
-            if claim is None:
-                report.items_skipped += 1
-                report.notes.append(f"claim_failed: {file_key}")
-                continue
-
+            # F29 (2026-08-11) — eligibility BEFORE the claim. The claim_sql
+            # increments dispatch_attempts, so keys we can never dispatch
+            # (non-`reports/` prefixes with no derivable project_id) used to
+            # burn all 3 attempts on undispatchable rows and then fall out
+            # of the sweep silently. Skip them without claiming: they cost
+            # one note per night and stay visible until triaged.
             # Extract project_id from the conventional reports/{projectId}/...
             # prefix. Falls back to None — the FastAPI trigger validates.
             parts = file_key.split("/")
@@ -197,6 +197,12 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
             if project_id is None:
                 report.items_skipped += 1
                 report.notes.append(f"no_project_id: {file_key}")
+                continue
+
+            claim = await conn.fetchrow(claim_sql, file_key, workspace_id)
+            if claim is None:
+                report.items_skipped += 1
+                report.notes.append(f"claim_failed: {file_key}")
                 continue
 
             try:
