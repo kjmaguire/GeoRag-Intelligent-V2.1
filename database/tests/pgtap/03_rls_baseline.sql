@@ -18,7 +18,14 @@
 --               silver.answer_retrieval_items, silver.answer_citation_items,
 --               silver.answer_citation_spans, silver.document_revisions,
 --               silver.document_passages, silver.message_feedback
---       Policy names: <table>_tenant_scope
+--       Policy names: originally <table>_tenant_scope; RENAMED by the
+--       2026-05/06 tenancy normalization:
+--         - the 8 workspace tables now carry <table>_workspace_isolation
+--           (2026_05_25_180924_replace_broken_guc_rls_policies_with_canonical,
+--            body normalized by 2026_05_25_184857)
+--         - drill_traces now carries tenant_isolation
+--           (2026_05_30_010000_enable_rls_silver_drill_traces; the legacy
+--            drill_traces_workspace_isolation is dropped by 2026_05_30_020000)
 --
 -- NOTE: 11_rls_workspace_isolation.sql (Module 9) covers the 9 workspace-scoped
 -- tables with functional denial tests. This file covers the 2 project-scoped
@@ -35,13 +42,13 @@
 --   6.  samples has a workspace_isolation policy
 --   7.  drill_traces has relrowsecurity = true
 --   8.  drill_traces has relforcerowsecurity = true
---   9.  drill_traces has drill_traces_tenant_scope policy
+--   9.  drill_traces has a tenant_isolation policy
 --   10. evidence_items has relforcerowsecurity = true
---   11. evidence_items has evidence_items_tenant_scope policy
+--   11. evidence_items has a workspace_isolation policy
 --   12. answer_runs has relforcerowsecurity = true
---   13. answer_runs has answer_runs_tenant_scope policy
+--   13. answer_runs has a workspace_isolation policy
 --   14. document_revisions has relforcerowsecurity = true
---   15. document_revisions has document_revisions_tenant_scope policy
+--   15. document_revisions has a workspace_isolation policy
 --
 -- The remaining workspace-scoped tables (answer_retrieval_items, answer_citation_items,
 -- answer_citation_spans, document_passages, message_feedback) are already asserted
@@ -115,9 +122,13 @@ SELECT ok(
         SELECT 1 FROM pg_policies
          WHERE schemaname = 'silver'
            AND tablename  = 'drill_traces'
-           AND policyname = 'drill_traces_tenant_scope'
+           -- Renamed in the 2026-05/06 tenancy normalization: the old
+           -- drill_traces_tenant_scope was dropped and the canonical policy
+           -- is now named tenant_isolation (2026_05_30_010000; the legacy
+           -- drill_traces_workspace_isolation was dropped by 2026_05_30_020000).
+           AND policyname LIKE '%tenant_isolation%'
     ),
-    'silver.drill_traces has drill_traces_tenant_scope policy'
+    'silver.drill_traces has a tenant_isolation policy'
 );
 
 -- ── 10–11. silver.evidence_items (spot-check workspace-scoped group) ─────────
@@ -132,9 +143,12 @@ SELECT ok(
         SELECT 1 FROM pg_policies
          WHERE schemaname = 'silver'
            AND tablename  = 'evidence_items'
-           AND policyname = 'evidence_items_tenant_scope'
+           -- Renamed in the 2026-05/06 tenancy normalization: the broken
+           -- evidence_items_tenant_scope (legacy georag.* GUC) was replaced
+           -- by the canonical workspace_isolation family (2026_05_25_180924).
+           AND policyname LIKE '%workspace_isolation%'
     ),
-    'silver.evidence_items has evidence_items_tenant_scope policy'
+    'silver.evidence_items has a workspace_isolation policy'
 );
 
 -- ── 12–13. silver.answer_runs ────────────────────────────────────────────────
@@ -149,9 +163,10 @@ SELECT ok(
         SELECT 1 FROM pg_policies
          WHERE schemaname = 'silver'
            AND tablename  = 'answer_runs'
-           AND policyname = 'answer_runs_tenant_scope'
+           -- Renamed in the 2026-05/06 tenancy normalization (2026_05_25_180924).
+           AND policyname LIKE '%workspace_isolation%'
     ),
-    'silver.answer_runs has answer_runs_tenant_scope policy'
+    'silver.answer_runs has a workspace_isolation policy'
 );
 
 -- ── 14–15. silver.document_revisions ─────────────────────────────────────────
@@ -166,9 +181,10 @@ SELECT ok(
         SELECT 1 FROM pg_policies
          WHERE schemaname = 'silver'
            AND tablename  = 'document_revisions'
-           AND policyname = 'document_revisions_tenant_scope'
+           -- Renamed in the 2026-05/06 tenancy normalization (2026_05_25_180924).
+           AND policyname LIKE '%workspace_isolation%'
     ),
-    'silver.document_revisions has document_revisions_tenant_scope policy'
+    'silver.document_revisions has a workspace_isolation policy'
 );
 
 SELECT * FROM finish();

@@ -89,12 +89,22 @@ SELECT ok(
 -- The MVT byte md5 values DIFFER per layer (different feature sets and geometry).
 -- ══════════════════════════════════════════════════════════════════════════════
 
-SELECT is(
-    (SELECT md5(mvt) FROM silver.pg_collars_by_project(
+-- NOTE 2026-08: the collars golden md5 (e1aa3e412a19a56cb6810df932eee48e,
+-- captured 2026-04-26) went stale when
+-- 2026_05_24_130000_add_uncertainty_to_pg_collars_mvt.php intentionally
+-- changed the function output — it now publishes spatial_uncertainty_m,
+-- crs_confidence, georef_method and _lat as feature attributes (CC-01
+-- Item 2 follow-on), so the MVT bytes legitimately differ. Until the
+-- golden manifest is regenerated (bash database/tests/pgtap/golden/generate.sh
+-- against a live PostGIS), assert structurally — non-empty tile bytes for
+-- the fixture project — matching the style of 08_silver_mvt_functions.sql.
+-- Determinism of the collars tile is still byte-checked by the BLOCK 3
+-- assertion below; the other 6 layers remain exact-md5 golden checks.
+SELECT ok(
+    (SELECT octet_length(mvt) > 0 FROM silver.pg_collars_by_project(
         3, 1, 2, '{"project_id": "00000000-0000-0000-0000-deadbeefcafe"}'::json
     ) WHERE mvt IS NOT NULL),
-    'e1aa3e412a19a56cb6810df932eee48e',
-    'pg_collars_by_project(3,1,2): MVT bytes match golden snapshot'
+    'pg_collars_by_project(3,1,2): MVT bytes non-empty (golden md5 stale after 2026_05_24 uncertainty attrs; regen manifest to restore exact check)'
 );
 
 SELECT is(

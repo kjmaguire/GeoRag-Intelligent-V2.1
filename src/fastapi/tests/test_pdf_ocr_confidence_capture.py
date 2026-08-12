@@ -228,8 +228,17 @@ def test_parse_with_fitz_tags_text_layer_pages_as_fitz_native(parser_module, mon
 
 
 def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monkeypatch):
-    # Page 1 returns substantial text; page 2 returns empty (image page)
-    _install_fake_pypdfium2(monkeypatch, ["P" * 200, ""])
+    # Page 1 returns substantial REALISTIC text; page 2 returns empty
+    # (image page). "P" * 200 is a single repeated-character word — the F16
+    # native-text quality screen correctly classifies that as gibberish and
+    # routes it to OCR, which is the desired production behavior, so the
+    # fixture must look like prose to be accepted as fitz_native.
+    _page1_text = (
+        "The Madsen gold deposit lies within the Red Lake greenstone belt "
+        "and hosts quartz vein mineralization across the Austin and McVeigh "
+        "zones with grades near seven grams per tonne. " * 2
+    )
+    _install_fake_pypdfium2(monkeypatch, [_page1_text, ""])
 
     # Stub _ocr_single_page to return text + conf=0.72
     def _fake_ocr(
