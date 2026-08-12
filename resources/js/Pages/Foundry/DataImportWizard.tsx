@@ -96,8 +96,27 @@ export default function FoundryDataImportWizard() {
     }
 
     async function uploadOne(projectId: string, file: File): Promise<UploadOutcome> {
+        // UploadController requires `category` (in:reports,archive) — omitting
+        // it 422'd EVERY wizard upload while the create-project flow (which
+        // sends it) worked, so the gap went unnoticed. Derive from extension;
+        // anything the server would reject is refused here with a clear
+        // message instead of a validator error.
+        const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+        const category = ['pdf', 'tif', 'tiff'].includes(ext)
+            ? 'reports'
+            : ext === 'zip'
+              ? 'archive'
+              : null;
+        if (!category) {
+            return {
+                filename: file.name,
+                ok: false,
+                message: `Unsupported type .${ext} — accepted: PDF, TIF/TIFF, ZIP`,
+            };
+        }
         const fd = new FormData();
         fd.append('file', file);
+        fd.append('category', category);
         try {
             const res = await fetch(`/api/v1/projects/${projectId}/upload`, {
                 method: 'POST',
@@ -231,7 +250,7 @@ export default function FoundryDataImportWizard() {
                             style={{ borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
                         >
                             <div className="text-sm font-medium mb-1" style={{ color: 'var(--fg-1)' }}>
-                                Drop PDF / LAS / CSV / SEG-Y / AGS / KMZ here
+                                Drop PDF / TIFF / ZIP here
                             </div>
                             <div
                                 className="text-[11px] font-mono uppercase tracking-wider mb-3"

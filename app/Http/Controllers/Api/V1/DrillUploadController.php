@@ -69,6 +69,19 @@ class DrillUploadController extends Controller
             ], 422);
         }
 
+        // CSV/XLSX dispatched to Dagster's GraphQL API — a service retired
+        // with the 2026-07-28 trim (B2). Every such upload stored the file,
+        // then 502'd on a dead hostname. Reject up front with the same
+        // explanation shape UploadController::RETIRED_CATEGORIES uses,
+        // keeping PDF on the working FastAPI route.
+        if ($ext !== 'pdf') {
+            return response()->json([
+                'error' => 'retired_pipeline',
+                'message' => "Drill '.{$ext}' ingestion was retired with the Dagster services on 2026-07-28; "
+                    .'uploads were stored but never processed. PDF drill reports remain supported here.',
+            ], 422);
+        }
+
         $workspaceId = $this->workspaceIdFor($project->project_id);
         if ($workspaceId === null) {
             return response()->json(['error' => 'workspace_unresolved'], 500);

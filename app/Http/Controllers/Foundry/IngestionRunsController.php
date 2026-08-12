@@ -51,7 +51,12 @@ class IngestionRunsController extends Controller
         $project = $this->loadProject($request, $slug);
 
         return response()->json([
-            'runs' => $this->buildSnapshot($project->project_id),
+            // The 5s poll skips the bronze S3 listing: listUploads() costs
+            // ~2 HEAD round-trips per object per poll (a 200-report project
+            // = ~400 S3 calls every 5 seconds per open tab) and only feeds
+            // the Phase-A fallback for pre-instrumentation runs, which the
+            // initial page load already rendered.
+            'runs' => $this->buildSnapshot($project->project_id, includeUploadListing: false),
             'fetched_at' => CarbonImmutable::now()->toIso8601String(),
         ]);
     }
@@ -76,11 +81,11 @@ class IngestionRunsController extends Controller
      *     totals: array<string, int>,
      * }
      */
-    private function buildSnapshot(string $projectId): array
+    private function buildSnapshot(string $projectId, bool $includeUploadListing = true): array
     {
         $reports = $this->loadReports($projectId);
         $progress = $this->loadProgressRows($projectId);
-        $uploads = $this->listUploads($projectId);
+        $uploads = $includeUploadListing ? $this->listUploads($projectId) : [];
 
         // Phase B: prefer real progress rows from silver.ingest_progress. Build
         // a set of MinIO keys we already have authoritative state for so we
@@ -299,7 +304,12 @@ class IngestionRunsController extends Controller
         try {
             $rows = DB::select(
                 <<<'SQL'
-                SELECT minio_key, filename, current_step,
+                -- DISTINCT ON: retries/recovery sweeps create multiple rows
+                -- per minio_key (attempt N + recovery rows); rendering every
+                -- non-terminal one duplicated the same filename 3-10x in the
+                -- in-flight list. Latest attempt wins.
+                SELECT DISTINCT ON (minio_key)
+                       minio_key, filename, current_step,
                        step_index, total_steps,
                        stage_pct, stage_detail,
                        to_char(started_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS started_at,
@@ -309,7 +319,7 @@ class IngestionRunsController extends Controller
                        report_id::text AS report_id
                 FROM silver.ingest_progress
                 WHERE project_id = ?
-                ORDER BY updated_at DESC
+                ORDER BY minio_key, attempt_number DESC, started_at DESC
                 SQL,
                 [$projectId],
             );
