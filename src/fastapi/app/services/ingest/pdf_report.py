@@ -280,6 +280,9 @@ class OcrPageAttempt:
     text: str
     mean_confidence: float
     assessment: dict[str, Any]
+    # Scanned-table support (2026-08-11) — DI prebuilt-layout table grids
+    # (tables[t][row][col]); always () on the tesseract path.
+    tables: tuple[list[list[str]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1169,6 +1172,53 @@ def _extract_all_tables_as_sections(pdf_path: str) -> list[ReportSection]:
     return out
 
 
+def _di_tables_to_sections(
+    tables: list[list[list[str]]],
+    page_num: int,
+    mean_confidence: float | None = None,
+) -> list[ReportSection]:
+    """Render Document Intelligence table grids into ReportSections.
+
+    Scanned-table support (2026-08-11): pages with no text layer never
+    yield pdfplumber tables, so `_extract_all_tables_as_sections` is blind
+    to them. When the DI prebuilt-layout model OCRs such a page, its
+    `tables` grids (``tables[t][row][col]``, see PageOcrResult.tables) are
+    the only structured capture — render each to the same ' | '-joined
+    row-per-line markdown shape `_table_to_markdown` produces, split
+    oversize tables on row boundaries via the F13 splitter (header
+    repeated per part), and mirror `_extract_all_tables_as_sections`'
+    ReportSection construction. ocr_method is always
+    'document_intelligence'; ocr_confidence carries the page's mean OCR
+    confidence when available.
+    """
+    out: list[ReportSection] = []
+    for idx, grid in enumerate(tables):
+        md = _table_to_markdown(grid)
+        if not md.strip():
+            continue
+        base_title = f"Table (OCR, page {page_num}, #{idx + 1})"
+        chunks = (
+            _split_table_markdown(md)
+            if len(md) > WINDOW_CHARS else [md]
+        )
+        for part_num, chunk in enumerate(chunks, start=1):
+            out.append(
+                ReportSection(
+                    section_number=None,
+                    section_title=(
+                        base_title if len(chunks) == 1
+                        else f"{base_title} (part {part_num})"
+                    ),
+                    text=chunk,
+                    page_first=page_num,
+                    page_last=page_num,
+                    ocr_confidence=mean_confidence,
+                    ocr_method="document_intelligence",
+                )
+            )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Two-column layout detection and extraction
 # ---------------------------------------------------------------------------
@@ -1339,7 +1389,7 @@ def _parse_with_fitz(
     progress_file: str | None = None,
 ) -> tuple[
     str, str, int, list, list[str], list[tuple[int, str]], list[int],
-    dict[int, str], dict[int, float | None],
+    dict[int, str], dict[int, float | None], dict[int, list[list[list[str]]]],
 ]:
     """Extract full text using pypdfium2 (PDFium). Faster than pdfplumber.
 
@@ -1349,7 +1399,13 @@ def _parse_with_fitz(
 
     Returns (full_text, title, skipped, warnings, page_languages,
              per_page_text, image_page_nums, per_page_method,
-             per_page_confidence).
+             per_page_confidence, per_page_tables).
+
+    Scanned-table support (2026-08-11) — `per_page_tables` maps 1-indexed
+    page number → the Document Intelligence table grids that page's OCR
+    returned (``tables[t][row][col]``; only ever populated when OCR_ENGINE
+    routes `_ocr_single_page` to DI prebuilt-layout). The caller renders
+    them into table ReportSections via `_di_tables_to_sections`.
 
     `image_page_nums` — list of 1-indexed pages where fitz returned
     less than PER_PAGE_MIN_CHARS (i.e. needs OCR). Always populated
@@ -1392,6 +1448,8 @@ def _parse_with_fitz(
     # Phase 3 (2026-05-22) — per-page engine + confidence tracking
     per_page_method: dict[int, str] = {}
     per_page_confidence: dict[int, float | None] = {}
+    # Scanned-table support (2026-08-11) — DI table grids per OCR'd page
+    per_page_tables: dict[int, list[list[list[str]]]] = {}
 
     # PDFium returns these sentinels for unset metadata fields — treat as "no
     # title" so the first-line fallback below can supply a real one.
@@ -1469,12 +1527,15 @@ def _parse_with_fitz(
             _ocr_done += 1
             _tick_progress(progress_file, "ocr", _ocr_done, len(short_page_nums), force=True)
             try:
-                # Phase 3 — capture mean_conf from tesseract per-word data
-                ocr_text, mean_conf, assessment = _ocr_single_page(
+                # Phase 3 — capture mean_conf from tesseract per-word data.
+                # return_tables — DI prebuilt-layout table grids (always []
+                # on the tesseract path).
+                ocr_text, mean_conf, assessment, ocr_tables = _ocr_single_page(
                     path,
                     n,
                     return_confidence=True,
                     return_assessment=True,
+                    return_tables=True,
                 )
             except Exception:
                 # F30 — an OCR exception must not drop sub-threshold native
@@ -1492,6 +1553,11 @@ def _parse_with_fitz(
                         "chars": len(_native_txt.strip()),
                     })
                 continue
+            if ocr_tables:
+                # Collected regardless of whether the page's TEXT clears
+                # PER_PAGE_MIN_CHARS — a scanned table page can carry
+                # structure worth indexing even when its prose is thin.
+                per_page_tables[n] = ocr_tables
             warnings.append(
                 _ocr_quality_warning(
                     page_number=n,
@@ -1570,7 +1636,7 @@ def _parse_with_fitz(
     return (
         full_text, title_candidate, 0, warnings, page_languages,
         per_page_text, image_page_nums,
-        per_page_method, per_page_confidence,
+        per_page_method, per_page_confidence, per_page_tables,
     )
 
 
@@ -1612,6 +1678,7 @@ def _ocr_single_page(
     page_num: int,
     return_confidence: bool = False,
     return_assessment: bool = False,
+    return_tables: bool = False,
 ):
     """Render one PDF page and run Tesseract on it.
 
@@ -1624,6 +1691,11 @@ def _ocr_single_page(
 
     When ``return_assessment=True``, a third value contains the serialized
     multi-signal quality assessment used by review routing.
+
+    Scanned-table support (2026-08-11): when ``return_tables=True``, one
+    extra trailing element carries the Document Intelligence table grids
+    (``tables[t][row][col]``, see PageOcrResult.tables) — always ``[]``
+    on the tesseract/tiled/failure paths, which extract no tables.
 
     Returns ``""`` (or the corresponding empty tuple) on any failure.
     """
@@ -1701,6 +1773,8 @@ def _ocr_single_page(
                     assessment,
                     return_confidence=return_confidence,
                     return_assessment=return_assessment,
+                    return_tables=return_tables,
+                    tables=result.tables,
                 )
             else:
                 # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
@@ -1730,12 +1804,15 @@ def _ocr_single_page(
                     )
                 else:
                     if tiled_result.text.strip():
+                        # Tiled reconstruction is word-level only — no
+                        # table grids survive tiling, so tables stays [].
                         return _format_ocr_page_return(
                             tiled_result.text,
                             tiled_result.mean_confidence,
                             assessment,
                             return_confidence=return_confidence,
                             return_assessment=return_assessment,
+                            return_tables=return_tables,
                         )
 
     try:
@@ -1749,6 +1826,7 @@ def _ocr_single_page(
             return_confidence,
             return_assessment,
             method="document_intelligence" if di_selected else "unavailable",
+            return_tables=return_tables,
         )
     try:
         images = convert_from_path(
@@ -1759,7 +1837,9 @@ def _ocr_single_page(
             thread_count=1,
         )
         if not images:
-            return _empty_ocr_page_return(return_confidence, return_assessment)
+            return _empty_ocr_page_return(
+                return_confidence, return_assessment, return_tables=return_tables,
+            )
         processed = _preprocess_image_for_ocr(images[0])
         # Phase 3: image_to_data carries per-word confidence in the
         # `conf` column (range -1..100, where -1 = no detection).
@@ -1805,6 +1885,7 @@ def _ocr_single_page(
                     assessment,
                     return_confidence=return_confidence,
                     return_assessment=return_assessment,
+                    return_tables=return_tables,
                 )
             except Exception as conf_exc:  # noqa: BLE001
                 logger.debug(
@@ -1833,6 +1914,7 @@ def _ocr_single_page(
             assessment,
             return_confidence=return_confidence,
             return_assessment=return_assessment,
+            return_tables=return_tables,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -1841,7 +1923,9 @@ def _ocr_single_page(
             pdf_path,
             exc,
         )
-        return _empty_ocr_page_return(return_confidence, return_assessment)
+        return _empty_ocr_page_return(
+            return_confidence, return_assessment, return_tables=return_tables,
+        )
 
 
 def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
@@ -2019,18 +2103,30 @@ def _format_ocr_page_return(
     *,
     return_confidence: bool,
     return_assessment: bool,
+    return_tables: bool = False,
+    tables: list[list[list[str]]] | None = None,
 ):
     if return_assessment:
-        return text, mean_confidence, assessment
-    if return_confidence:
-        return text, mean_confidence
-    return text
+        out: Any = (text, mean_confidence, assessment)
+    elif return_confidence:
+        out = (text, mean_confidence)
+    else:
+        out = text
+    if return_tables:
+        # Scanned-table support (2026-08-11) — append the DI table grids
+        # as one extra trailing element, leaving every legacy tuple shape
+        # untouched for callers that don't opt in.
+        if not isinstance(out, tuple):
+            out = (out,)
+        return (*out, list(tables) if tables else [])
+    return out
 
 
 def _empty_ocr_page_return(
     return_confidence: bool,
     return_assessment: bool,
     method: str = "tesseract",
+    return_tables: bool = False,
 ):
     assessment = _assess_ocr_result("", [], detected_region_count=0)
     assessment["ocr_method"] = method
@@ -2040,6 +2136,7 @@ def _empty_ocr_page_return(
         assessment,
         return_confidence=return_confidence,
         return_assessment=return_assessment,
+        return_tables=return_tables,
     )
 
 
@@ -2420,11 +2517,12 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     page_attempts: list[OcrPageAttempt] = []
 
     for page_num in range(1, total_pages + 1):
-        page_text, mean_confidence, assessment = _ocr_single_page(
+        page_text, mean_confidence, assessment, page_tables = _ocr_single_page(
             path,
             page_num,
             return_confidence=True,
             return_assessment=True,
+            return_tables=True,
         )
         cleaned = _postprocess_ocr_text(page_text) if page_text.strip() else ""
         page_attempts.append(
@@ -2433,6 +2531,7 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
                 text=cleaned,
                 mean_confidence=mean_confidence,
                 assessment=assessment,
+                tables=tuple(page_tables),
             )
         )
         if page_text.strip():
@@ -2782,12 +2881,16 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # _assign_ocr_metadata.
     per_page_method: dict[int, str] = {}
     per_page_confidence: dict[int, float | None] = {}
+    # Scanned-table support (2026-08-11) — DI table grids per OCR'd page,
+    # rendered into table ReportSections at the end.
+    per_page_tables: dict[int, list[list[list[str]]]] = {}
     if fitz_enabled:
         try:
             with _tracer.start_as_current_span("pdf_report.fitz") as _span:
                 (full_text, raw_title, skipped_elements, extraction_warnings,
                  page_languages, per_page_text, image_page_nums,
-                 per_page_method, per_page_confidence) = _parse_with_fitz(
+                 per_page_method, per_page_confidence,
+                 per_page_tables) = _parse_with_fitz(
                     path,
                     apply_ocr_fallback=_tesseract_fallback_enabled,
                     progress_file=progress_file,
@@ -2892,6 +2995,13 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                     page.page_number: page.mean_confidence
                     for page in ocr_result.pages
                     if page.text.strip()
+                }
+                # Whole-doc OCR re-analyzed every page — its per-page DI
+                # table grids supersede anything the fitz loop collected.
+                per_page_tables = {
+                    page.page_number: list(page.tables)
+                    for page in ocr_result.pages
+                    if page.tables
                 }
                 page_languages = [
                     _detect_page_language(page.text)
@@ -3042,6 +3152,36 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # ReportSection (narrative sections, table sections, figure sections)
     # using the per-page maps the dispatch tree accumulated.
     _assign_ocr_metadata(sections, per_page_method, per_page_confidence)
+
+    # --- Scanned-table sections from Document Intelligence (2026-08-11) ---
+    # Table grids the DI prebuilt-layout model returned for OCR'd pages,
+    # appended after the narrative + pdfplumber table sections. Two notes:
+    #   - No dedupe against _extract_all_tables_as_sections is needed:
+    #     that pass runs pdfplumber against the original PDF, and pages
+    #     that produced DI tables have no usable text layer (that is why
+    #     they were OCR'd) — pdfplumber's lines/text strategies find
+    #     nothing there, so double-extraction cannot occur.
+    #   - Appended AFTER _assign_ocr_metadata on purpose: these sections
+    #     carry their own truthful provenance (ocr_method =
+    #     'document_intelligence' + the page's mean confidence) and must
+    #     not be overwritten by the first-page-wins backfill.
+    if per_page_tables:
+        di_table_sections: list[ReportSection] = []
+        for _tbl_page in sorted(per_page_tables):
+            di_table_sections.extend(
+                _di_tables_to_sections(
+                    per_page_tables[_tbl_page],
+                    _tbl_page,
+                    mean_confidence=per_page_confidence.get(_tbl_page),
+                )
+            )
+        if di_table_sections:
+            logger.info(
+                "pdf_report: document_intelligence added %d table section(s) "
+                "across %d OCR'd page(s) in '%s'",
+                len(di_table_sections), len(per_page_tables), Path(path).name,
+            )
+            sections.extend(di_table_sections)
 
     return ReportParseResult(
         title=title or None,

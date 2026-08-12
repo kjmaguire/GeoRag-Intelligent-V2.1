@@ -19,7 +19,7 @@ import logging
 import os
 import threading
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("georag.ingest.document_intelligence")
@@ -27,7 +27,12 @@ logger = logging.getLogger("georag.ingest.document_intelligence")
 ENDPOINT_ENV = "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"
 KEY_ENV = "AZURE_DOCUMENT_INTELLIGENCE_KEY"
 ENGINE_ENV = "OCR_ENGINE"
-_MODEL_ID = "prebuilt-read"
+# prebuilt-layout supersedes prebuilt-read (2026-08-11): layout returns the
+# same content/pages word stream AND a `tables` collection, which is the only
+# way scanned tables survive OCR as structure instead of flat word soup.
+# ~2x/page cost (product-owner approved); the env var is the escape hatch
+# back to "prebuilt-read" if cost bites (tables then simply stay empty).
+_MODEL_ID = os.environ.get("AZURE_DI_MODEL_ID", "prebuilt-layout")
 
 # F12 (2026-08-11) — bounded waits. The aio SDK's AsyncLROPoller.result()
 # takes no timeout parameter (unlike the sync poller), so the polling wait
@@ -35,8 +40,9 @@ _MODEL_ID = "prebuilt-read"
 # larger than the polling cap so a page normally fails inside the loop
 # (clean fail-soft PageOcrResult) and the bridge cap only fires if the
 # loop itself is wedged (transport hang before the poller even exists).
-_ANALYZE_TIMEOUT_SECONDS = 120.0  # per-page cap on begin_analyze + polling
-_SYNC_BRIDGE_TIMEOUT_SECONDS = 150.0  # outer cap on the thread bridge
+# (prebuilt-layout analyzes slower than prebuilt-read, hence the wider caps.)
+_ANALYZE_TIMEOUT_SECONDS = 180.0  # per-page cap on begin_analyze + polling
+_SYNC_BRIDGE_TIMEOUT_SECONDS = 210.0  # outer cap on the thread bridge
 
 
 class DocumentIntelligenceNotConfigured(RuntimeError):
@@ -84,6 +90,10 @@ class PageOcrResult:
     detected_region_count: int = 0
     request_succeeded: bool = True
     error: str | None = None
+    # Row-major text grids from prebuilt-layout: tables[t][row][col].
+    # Always [] under prebuilt-read (no `tables` collection in the result)
+    # and on the failure sentinels.
+    tables: list[list[list[str]]] = field(default_factory=list)
 
 
 # F12 — one cached client (one HTTP session) per (endpoint, key) instead
@@ -120,7 +130,8 @@ def _build_client():
 
 
 async def ocr_page(pdf_bytes: bytes, page_num: int) -> PageOcrResult:
-    """OCR one page of a PDF via Azure Document Intelligence's prebuilt-read model.
+    """OCR one page of a PDF via Azure Document Intelligence (`_MODEL_ID`,
+    prebuilt-layout by default).
 
     Unlike the Tesseract path, this does not need local rasterisation
     (pdf2image) — Document Intelligence accepts raw PDF bytes plus a
@@ -252,6 +263,7 @@ async def _analyze_document(
         mean_confidence=_clamp_confidence(mean_confidence),
         words=words,
         detected_region_count=detected_region_count,
+        tables=_extract_tables(result),
     )
 
 
@@ -325,6 +337,42 @@ def _run_sync(
             request_succeeded=False,
             error="di_poller_hung",
         )
+
+
+def _extract_tables(result: Any) -> list[list[list[str]]]:
+    """Convert a layout result's `tables` collection into row-major grids.
+
+    Each grid is ``tables[t][row][col]`` of stripped cell text. Spanning
+    cells (column_span/row_span > 1) appear once in the SDK's cells[] at
+    their anchor (row_index, column_index) — the content lands there and
+    the covered positions stay "". Defensive throughout: a missing/None
+    `tables` attribute (e.g. the prebuilt-read escape hatch) yields [].
+    """
+    grids: list[list[list[str]]] = []
+    for table in getattr(result, "tables", None) or []:
+        try:
+            row_count = int(getattr(table, "row_count", 0) or 0)
+            column_count = int(getattr(table, "column_count", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if row_count <= 0 or column_count <= 0:
+            continue
+        grid = [["" for _ in range(column_count)] for _ in range(row_count)]
+        for cell in getattr(table, "cells", None) or []:
+            row_index = getattr(cell, "row_index", None)
+            column_index = getattr(cell, "column_index", None)
+            if (
+                not isinstance(row_index, int)
+                or not isinstance(column_index, int)
+                or not (0 <= row_index < row_count)
+                or not (0 <= column_index < column_count)
+            ):
+                continue
+            content = str(getattr(cell, "content", "") or "").strip()
+            if content:
+                grid[row_index][column_index] = content
+        grids.append(grid)
+    return grids
 
 
 def _clamp_confidence(value: float | None) -> float:

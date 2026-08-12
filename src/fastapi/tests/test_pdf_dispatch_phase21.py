@@ -79,7 +79,8 @@ def minimal_pdf(tmp_path):
 
 def _stub_fitz(parser_module, per_page, image_pages, warnings=None,
                per_page_method=None, per_page_confidence=None):
-    """Patch _parse_with_fitz to return the Phase-3-extended 9-tuple."""
+    """Patch _parse_with_fitz to return the 10-tuple (Phase 3 method/conf
+    maps + the 2026-08-11 per_page_tables map for scanned-table support)."""
     full_text = "\n".join(t for _n, t in per_page)
     page_langs = ["en" if t else "unknown" for _n, t in per_page]
     image_set = set(image_pages)
@@ -99,7 +100,7 @@ def _stub_fitz(parser_module, per_page, image_pages, warnings=None,
         return (
             full_text, "Test Doc", 0, list(warnings or []), page_langs,
             list(per_page), list(image_pages),
-            dict(method), dict(conf),
+            dict(method), dict(conf), {},
         )
 
     return patch.object(parser_module, "_parse_with_fitz", side_effect=_fake)
@@ -160,7 +161,7 @@ def test_tesseract_fallback_enabled_recovers_image_pages(
         return (
             "Native text " * 30, "Test Doc", 0, [], ["en"],
             [(1, "Native text " * 30)], [],
-            {1: "fitz_native"}, {1: None},
+            {1: "fitz_native"}, {1: None}, {},
         )
 
     with patch.object(parser_module, "_parse_with_fitz",
@@ -184,7 +185,7 @@ def test_tesseract_fallback_disabled_skips_internal_ocr_loop(
         return (
             "Native text " * 30, "Test Doc", 0, [], ["en"],
             [(1, "Native text " * 30)], [2],
-            {1: "fitz_native"}, {1: None},
+            {1: "fitz_native"}, {1: None}, {},
         )
 
     with patch.object(parser_module, "_parse_with_fitz",
@@ -261,8 +262,9 @@ def test_parse_with_fitz_apply_ocr_fallback_param_skips_loop(
     monkeypatch.setattr(parser_module, "_ocr_single_page", _track_ocr)
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf", apply_ocr_fallback=False)
-    # Output unpacked — Phase 3 added per_page_method + per_page_confidence
-    full_text, _, _, _, _, _, image_page_nums, method, conf = out
+    # Output unpacked — Phase 3 added per_page_method + per_page_confidence;
+    # 2026-08-11 added per_page_tables (scanned-table support).
+    full_text, _, _, _, _, _, image_page_nums, method, conf, tables = out
     assert image_page_nums == [1]
     assert captured_ocr_calls == []  # tesseract never invoked
     assert full_text == ""
@@ -280,7 +282,8 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
 ):
     _install_fake_pypdfium2(monkeypatch, [""], title="T")
 
-    # Quality-routing path returns text, confidence, and serialized assessment.
+    # Quality-routing path returns text, confidence, serialized assessment,
+    # and (return_tables=True since 2026-08-11) the DI table grids.
     monkeypatch.setattr(
         parser_module, "_ocr_single_page",
         MagicMock(return_value=(
@@ -292,11 +295,13 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
                 "reasons": [],
                 "signals": {},
             },
+            [],
         )),
     )
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf", apply_ocr_fallback=True)
-    full_text, _, _, warnings, _, per_page, image_page_nums, method, conf = out
+    (full_text, _, _, warnings, _, per_page, image_page_nums, method, conf,
+     tables) = out
     # tesseract fired and recovered page 1 → it's no longer in image_page_nums
     assert image_page_nums == []
     assert "tesseract recovered" in full_text
@@ -307,19 +312,21 @@ def test_parse_with_fitz_apply_ocr_fallback_default_runs_loop(
 
 
 # ---------------------------------------------------------------------------
-# _parse_with_fitz 9-element return shape is stable
+# _parse_with_fitz 10-element return shape is stable
 # ---------------------------------------------------------------------------
 
-def test_parse_with_fitz_returns_nine_tuple(parser_module, monkeypatch):
+def test_parse_with_fitz_returns_ten_tuple(parser_module, monkeypatch):
     """Phase 3 extended the return shape from 7- to 9-tuple by adding
-    `per_page_method` + `per_page_confidence` for OCR provenance."""
+    `per_page_method` + `per_page_confidence` for OCR provenance;
+    scanned-table support (2026-08-11) appended `per_page_tables`."""
     _install_fake_pypdfium2(monkeypatch, [])
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf")
-    assert isinstance(out, tuple) and len(out) == 9
+    assert isinstance(out, tuple) and len(out) == 10
     # image_page_nums (slot 6)
     assert out[6] == []
-    # per_page_method + per_page_confidence (slots 7 + 8) — empty dicts
-    # since the fake doc has no pages
+    # per_page_method + per_page_confidence + per_page_tables (slots 7-9)
+    # — empty dicts since the fake doc has no pages
     assert out[7] == {}
     assert out[8] == {}
+    assert out[9] == {}

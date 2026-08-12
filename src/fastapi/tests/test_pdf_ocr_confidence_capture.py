@@ -214,12 +214,13 @@ def test_parse_with_fitz_tags_text_layer_pages_as_fitz_native(parser_module, mon
     _install_fake_pypdfium2(monkeypatch, ["A" * 200] * 3, title="T")
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf")
-    *_, image_pages, method, conf = out
+    *_, image_pages, method, conf, di_tables = out
 
     assert image_pages == []
     for p in [1, 2, 3]:
         assert method[p] == "fitz_native"
         assert conf[p] is None
+    assert di_tables == {}
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +247,7 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
         page_num,
         return_confidence=False,
         return_assessment=False,
+        return_tables=False,
     ):
         assert return_confidence is True
         assert return_assessment is True
@@ -256,14 +258,15 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
             "thresholds_calibrated": False,
             "signals": {},
         }
-        if return_assessment:
-            return "R" * 200, 0.72, assessment
-        return ("R" * 200, 0.72)
+        out = ("R" * 200, 0.72, assessment) if return_assessment else ("R" * 200, 0.72)
+        if return_tables:
+            return (*out, [])
+        return out
 
     monkeypatch.setattr(parser_module, "_ocr_single_page", _fake_ocr)
 
     out = parser_module._parse_with_fitz("/tmp/fake.pdf", apply_ocr_fallback=True)
-    *_, image_pages, method, conf = out
+    *_, image_pages, method, conf, di_tables = out
 
     # Page 1 = text layer
     assert method[1] == "fitz_native"
@@ -285,7 +288,7 @@ def test_parse_with_fitz_no_fallback_leaves_image_pages(parser_module, monkeypat
         "/tmp/fake.pdf",
         apply_ocr_fallback=False,
     )
-    *_, image_pages, method, conf = out
+    *_, image_pages, method, conf, di_tables = out
 
     assert image_pages == [1]
     # Page not in either map (didn't fall into text-layer NOR recovery)
@@ -626,6 +629,8 @@ def test_full_document_ocr_reports_actual_mixed_engine_provenance(
     fake_pdf2image.pdfinfo_from_path = MagicMock(return_value={"Pages": 2})
     monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
 
+    # 4-tuples: _attempt_ocr_document_intelligence passes return_tables=True
+    # (scanned-table support, 2026-08-11).
     page_results = iter(
         [
             (
@@ -639,6 +644,7 @@ def test_full_document_ocr_reports_actual_mixed_engine_provenance(
                     "signals": {"mean_confidence": 0.9},
                     "ocr_method": "document_intelligence",
                 },
+                [],
             ),
             (
                 "Tesseract fallback page",
@@ -651,6 +657,7 @@ def test_full_document_ocr_reports_actual_mixed_engine_provenance(
                     "signals": {"mean_confidence": 0.7},
                     "ocr_method": "tesseract",
                 },
+                [],
             ),
         ]
     )

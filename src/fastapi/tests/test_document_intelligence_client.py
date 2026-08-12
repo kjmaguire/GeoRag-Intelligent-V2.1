@@ -117,8 +117,10 @@ class TestOcrPage:
             40.0,
         )
         assert result.detected_region_count == 2
+        # prebuilt-layout is the default model since scanned-table support
+        # (2026-08-11); AZURE_DI_MODEL_ID is the prebuilt-read escape hatch.
         mock_client.begin_analyze_document.assert_awaited_once_with(
-            "prebuilt-read",
+            "prebuilt-layout",
             body=b"%PDF-1.4 fake bytes",
             pages="3",
         )
@@ -164,6 +166,44 @@ class TestOcrPage:
 
         assert result.text == "Tile"
         mock_client.begin_analyze_document.assert_awaited_once_with(
-            "prebuilt-read",
+            "prebuilt-layout",
             body=b"\x89PNG fake",
         )
+
+    async def test_extracts_layout_tables_as_grids(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Scanned-table support (2026-08-11): prebuilt-layout `tables` become
+        row-major grids; span content lands in the anchor cell only."""
+        monkeypatch.setenv(di.ENDPOINT_ENV, "https://example.cognitiveservices.azure.com")
+        monkeypatch.setenv(di.KEY_ENV, "fake-key")
+
+        def _cell(row, col, content):
+            return MagicMock(row_index=row, column_index=col, content=content)
+
+        table = MagicMock(
+            row_count=2,
+            column_count=3,
+            cells=[
+                # Header cell spanning cols 0-1: SDK emits ONE cell at the
+                # anchor (0, 0) with column_span=2 — no cell exists at (0, 1).
+                MagicMock(row_index=0, column_index=0, content="Hole ID ", column_span=2),
+                _cell(0, 2, "Au g/t"),
+                _cell(1, 0, "MAD-22-001"),
+                _cell(1, 1, "120.5"),
+                _cell(1, 2, " 7.2"),
+            ],
+        )
+        analyze_result = MagicMock(pages=[], tables=[table])
+        poller = AsyncMock()
+        poller.result = AsyncMock(return_value=analyze_result)
+        mock_client = MagicMock()
+        mock_client.begin_analyze_document = AsyncMock(return_value=poller)
+
+        with patch.object(di, "_build_client", return_value=mock_client):
+            result = await di.ocr_page(b"%PDF-1.4 fake bytes", page_num=1)
+
+        assert result.tables == [
+            [
+                ["Hole ID", "", "Au g/t"],
+                ["MAD-22-001", "120.5", "7.2"],
+            ]
+        ]
