@@ -21,7 +21,7 @@
     --color-foundry-fg-0: oklch(0.96 0.005 240);
     --color-foundry-fg-1: oklch(0.84 0.008 240);
     --color-foundry-fg-2: oklch(0.64 0.01 240);
-    --color-foundry-fg-3: oklch(0.48 0.012 240);
+    --color-foundry-fg-3: oklch(0.56 0.012 240); /* kept in sync with .foundry --fg-3 */
     --color-foundry-fg-4: oklch(0.36 0.014 240);
     --color-foundry-line-1: oklch(0.28 0.016 240);
     --color-foundry-line-2: oklch(0.34 0.018 240);
@@ -154,7 +154,9 @@
     --fg-0: oklch(0.96 0.005 240);
     --fg-1: oklch(0.84 0.008 240);
     --fg-2: oklch(0.64 0.01 240);
-    --fg-3: oklch(0.48 0.012 240);
+    /* fg-3 lifted 0.48 → 0.56 (2026-08-14 contrast pass): it is used for
+       10px mono metadata everywhere and sat well below 4.5:1 on bg-0/1. */
+    --fg-3: oklch(0.56 0.012 240);
     --fg-4: oklch(0.36 0.014 240);
 
     --line-1: oklch(0.28 0.016 240);
@@ -188,7 +190,9 @@
     --fg-0: oklch(0.18 0.01 240);
     --fg-1: oklch(0.28 0.012 240);
     --fg-2: oklch(0.45 0.014 240);
-    --fg-3: oklch(0.58 0.012 240);
+    /* fg-3 dropped 0.58 → 0.50 (2026-08-14 contrast pass) — darker = more
+       contrast on the near-white light backgrounds. */
+    --fg-3: oklch(0.5 0.012 240);
     --fg-4: oklch(0.72 0.01 240);
 
     --line-1: oklch(0.88 0.008 240);

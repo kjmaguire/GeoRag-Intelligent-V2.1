@@ -323,7 +323,7 @@ function PassagesTab({ passages }: { passages: Passage[] }) {
                                 </Pill>
                             )}
                             {p.chunk_kind && <Pill tone="neutral">{p.chunk_kind}</Pill>}
-                            <span className="ml-auto" style={{ color: 'var(--fg-4)' }}>
+                            <span className="ml-auto" style={{ color: 'var(--fg-3)' }}>
                                 {p.id.slice(0, 8)}
                             </span>
                         </div>

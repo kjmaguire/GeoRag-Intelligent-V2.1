@@ -386,7 +386,7 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                                 );
                             })}
                             <div className="flex-1" />
-                            <div className="flex items-center text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-4)' }}>
+                            <div className="flex items-center text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>
                                 {currentSlug}
                             </div>
                         </div>
@@ -421,7 +421,7 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                                     </Link>
                                 </div>
                                 {threads.length === 0 ? (
-                                    <div className="px-3 py-1 text-[10px] font-mono" style={{ color: 'var(--fg-4)' }}>
+                                    <div className="px-3 py-1 text-[10px] font-mono" style={{ color: 'var(--fg-3)' }}>
                                         no threads yet
                                     </div>
                                 ) : (
