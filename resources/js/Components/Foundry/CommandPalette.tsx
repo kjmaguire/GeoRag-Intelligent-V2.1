@@ -4,32 +4,31 @@ import { router } from '@inertiajs/react';
 /**
  * Foundry CommandPalette — ⌘K / Ctrl+K fuzzy nav.
  *
- * Items are static + Inertia shared-props-hydrated. Slash commands map to
- * chat actions (handled at the Chat page level when /command is dispatched).
+ * Items are static org-level nav plus project-scoped entries when the
+ * shell is inside a project (FoundryShell passes the active slug).
+ *
+ * The old "/compare, /analog, …" command entries are gone: they routed to
+ * a nonexistent standalone /chat (only /projects/{slug}/chat exists) with
+ * a ?prompt= param nothing read, and no slash-command interceptor exists —
+ * the text would have been sent verbatim as a RAG query. Dead on three
+ * counts, so removed rather than rerouted.
  */
 
 interface PaletteItem {
-    kind: 'nav' | 'cmd';
-    icon?: string;
+    kind: 'nav';
     title: string;
     sub: string;
-    href?: string;
-    cmd?: string;
+    href: string;
     group: string;
 }
 
-const ITEMS: PaletteItem[] = [
+const ORG_ITEMS: PaletteItem[] = [
     { kind: 'nav', title: 'Projects', sub: 'Project picker', href: '/projects', group: 'Navigate' },
     { kind: 'nav', title: 'New project', sub: '4-step wizard', href: '/foundry/projects/new', group: 'Navigate' },
-    { kind: 'cmd', title: '/compare', sub: 'Compare two holes or analogs', cmd: '/compare', group: 'Commands' },
-    { kind: 'cmd', title: '/analog', sub: 'Find nearest-match analogs', cmd: '/analog', group: 'Commands' },
-    { kind: 'cmd', title: '/permit', sub: 'Check consultation status', cmd: '/permit', group: 'Commands' },
-    { kind: 'cmd', title: '/pin', sub: 'Pin answer as investigation', cmd: '/pin', group: 'Commands' },
-    { kind: 'cmd', title: '/map', sub: 'Ask about current map viewport', cmd: '/map', group: 'Commands' },
-    { kind: 'cmd', title: '/branch', sub: 'Fork this thread', cmd: '/branch', group: 'Commands' },
+    { kind: 'nav', title: 'Upload files', sub: 'Import wizard — PDF / TIFF / ZIP', href: '/foundry/imports/wizard', group: 'Navigate' },
 ];
 
-export default function CommandPalette() {
+export default function CommandPalette({ projectSlug = null }: { projectSlug?: string | null }) {
     const [open, setOpen] = useState(false);
     const [q, setQ] = useState('');
     const [cursor, setCursor] = useState(0);
@@ -46,17 +45,31 @@ export default function CommandPalette() {
         return () => window.removeEventListener('keydown', onKey);
     }, []);
 
+    const items = useMemo<PaletteItem[]>(() => {
+        if (!projectSlug) return ORG_ITEMS;
+        const base = `/projects/${projectSlug}`;
+        return [
+            ...ORG_ITEMS,
+            { kind: 'nav', title: 'Overview', sub: 'Project overview', href: base, group: 'This project' },
+            { kind: 'nav', title: 'Chat', sub: 'Ask the project corpus', href: `${base}/chat`, group: 'This project' },
+            { kind: 'nav', title: 'Data', sub: 'Sources + lineage', href: `${base}/sources`, group: 'This project' },
+            { kind: 'nav', title: 'Ingestion runs', sub: 'Live pipeline activity', href: `${base}/ingestion-runs`, group: 'This project' },
+            { kind: 'nav', title: 'Quality', sub: 'Ingest trust report', href: `${base}/imports/quality`, group: 'This project' },
+            { kind: 'nav', title: 'Reader', sub: 'Document corpus', href: `${base}/corpus`, group: 'This project' },
+            { kind: 'nav', title: 'Reports', sub: 'Ingested reports', href: `${base}/reports`, group: 'This project' },
+        ];
+    }, [projectSlug]);
+
     const filtered = useMemo(() => {
         const qq = q.trim().toLowerCase();
-        if (!qq) return ITEMS;
-        return ITEMS.filter((i) => `${i.title} ${i.sub}`.toLowerCase().includes(qq));
-    }, [q]);
+        if (!qq) return items;
+        return items.filter((i) => `${i.title} ${i.sub}`.toLowerCase().includes(qq));
+    }, [q, items]);
 
     function pick(item: PaletteItem) {
         setOpen(false);
         setQ('');
-        if (item.href) router.visit(item.href);
-        else if (item.cmd) router.visit(`/chat?prompt=${encodeURIComponent(item.cmd + ' ')}`);
+        router.visit(item.href);
     }
 
     function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -92,16 +105,16 @@ export default function CommandPalette() {
                         value={q}
                         onChange={(e) => { setQ(e.target.value); setCursor(0); }}
                         onKeyDown={onKey}
-                        placeholder="Search nav, projects, slash commands…"
+                        placeholder="Search navigation…"
                         className="flex-1 text-sm bg-transparent outline-none"
                         style={{ color: 'var(--fg-0)' }}
                     />
                 </div>
                 <div className="max-h-96 overflow-y-auto">
-                    {Object.entries(grouped).map(([group, items]) => (
+                    {Object.entries(grouped).map(([group, groupItems]) => (
                         <div key={group}>
                             <div className="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>{group}</div>
-                            {items.map((i) => {
+                            {groupItems.map((i) => {
                                 const isActive = runningIdx === cursor;
                                 runningIdx++;
                                 return (

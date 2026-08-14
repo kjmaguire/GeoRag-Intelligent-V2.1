@@ -392,7 +392,7 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
                 </main>
             </div>
 
-            <CommandPalette />
+            <CommandPalette projectSlug={currentSlug} />
         </div>
     );
 }

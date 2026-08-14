@@ -118,8 +118,6 @@ const SUGGESTION_CHIPS: Array<{ label: string; query: string }> = [
     { label: 'Recommend where to drill next', query: 'Where should the next drill hole be located based on existing grades and collar coverage?' },
 ];
 
-const SLASH_COMMANDS = ['/compare', '/analog', '/permit', '/pin', '/map', '/branch'];
-
 // Crypto.randomUUID polyfill for older browsers.
 function newUuid(): string {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -639,7 +637,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         <AppLayout>
             <Head title={active_thread?.title ?? 'Chat — GeoRAG'} />
 
-            <div className="flex-1 grid grid-cols-[280px_1fr_280px] overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
+            <div className="flex-1 grid grid-cols-[280px_1fr] overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 {/* Thread rail */}
                 <aside className="border-r overflow-y-auto" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
                     <div className="px-3 py-3 flex items-center justify-between border-b" style={{ borderColor: 'var(--line-1)' }}>
@@ -779,25 +777,6 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         </div>
                     </footer>
                 </section>
-
-                {/* Slash commands rail */}
-                <aside className="border-l overflow-y-auto" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
-                    <div className="px-3 py-3 border-b text-[10px] font-mono uppercase tracking-[0.12em]" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>
-                        Slash commands
-                    </div>
-                    <ul className="px-3 py-2 space-y-1 text-[11px]">
-                        {SLASH_COMMANDS.map((c) => (
-                            <li key={c} className="font-mono" style={{ color: 'var(--fg-2)' }}>{c}</li>
-                        ))}
-                    </ul>
-                    <div className="px-3 py-3 border-t text-[10px] font-mono uppercase tracking-wider" style={{ borderColor: 'var(--line-1)', color: 'var(--fg-3)' }}>
-                        Branch tree
-                    </div>
-                    <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--fg-3)' }}>
-                        Use <code className="font-mono" style={{ color: 'var(--fg-2)' }}>/branch</code> to fork the current
-                        thread; the graph renders when this conversation has ≥1 fork.
-                    </div>
-                </aside>
             </div>
         </AppLayout>
     );
