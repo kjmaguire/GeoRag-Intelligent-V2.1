@@ -22,10 +22,16 @@ import uuid
 import asyncpg
 import pytest
 
+# Live-Postgres tests — routed to the integration bucket
+# (release-rehearsal.yml). Without this marker the module ran nowhere:
+# PR CI skipped on the missing POSTGRES_USER, and release-rehearsal's
+# `-m integration` deselected the unmarked module (2026-08-14 audit).
+pytestmark = pytest.mark.integration
+
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 
-import contextlib
+import contextlib  # noqa: E402
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 from app.services.ingest.orphan_sweep import (  # noqa: E402

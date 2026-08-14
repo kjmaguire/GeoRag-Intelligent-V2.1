@@ -22,9 +22,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+# Routed to the integration bucket (release-rehearsal.yml). The module-level
+# skip below aborts import when POSTGRES_USER is unset, so even the
+# "no DB needed" source checks never ran in PR CI; without this marker the
+# whole module was ALSO deselected by release-rehearsal's `-m integration`
+# — i.e. it ran nowhere (2026-08-14 audit).
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
-# Source-level checks (no DB needed; run everywhere)
+# Source-level checks (no DB needed; run everywhere the module imports)
 # ---------------------------------------------------------------------------
 def test_sweep_source_uses_mark_completed_by_run():
     """The completion path must use the canonical terminal-write helper

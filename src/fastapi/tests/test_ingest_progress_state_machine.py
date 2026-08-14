@@ -25,12 +25,20 @@ import uuid
 import asyncpg
 import pytest
 
+# These are live-Postgres tests: route them to the integration bucket
+# (release-rehearsal.yml) where the full stack + migrated schema exist.
+# CI's python-test job has no Postgres service, so without this marker
+# the module-level skip below made them run NOWHERE — PR CI skipped on
+# the missing env, and release-rehearsal's `-m integration` deselected
+# the unmarked module (2026-08-14 audit).
+pytestmark = pytest.mark.integration
+
 # Skip the whole module if we can't talk to Postgres (e.g. local dev
 # without docker compose up).
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 
-import contextlib
+import contextlib  # noqa: E402
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
 

@@ -21,6 +21,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+# Live-Postgres tests — routed to the integration bucket
+# (release-rehearsal.yml). Without this marker the module ran nowhere:
+# PR CI skipped on the missing POSTGRES_USER, and release-rehearsal's
+# `-m integration` deselected the unmarked module (2026-08-14 audit).
+pytestmark = pytest.mark.integration
+
 if not os.environ.get("POSTGRES_USER"):
     pytest.skip("postgres env not configured", allow_module_level=True)
 
