@@ -61,6 +61,7 @@ from app.hatchet_workflows.reliability_metrics_publisher import (
 )
 from app.hatchet_workflows.repair_shadow_aggregate import repair_shadow_aggregate
 from app.hatchet_workflows.restore_workspace import restore_workspace  # doc-phase 100
+from app.hatchet_workflows.retention_sweep import retention_sweep  # 2026-08-14 M1 retention
 from app.hatchet_workflows.score_targets import score_targets  # doc-phase 88
 from app.hatchet_workflows.stale_run_detector import stale_run_detector  # reliability spec Fix 1e
 from app.hatchet_workflows.support_replay import support_replay  # doc-phase 98
@@ -112,6 +113,11 @@ POOLS = {
         # expired workspace.idempotency_keys rows so the table doesn't
         # grow unbounded under R2+ agent invocations.
         idempotency_keys_cleanup,
+        # 2026-08-14 DB audit M1 — nightly batched purge of expired
+        # audit.query_audit_log rows (180d) + terminal
+        # silver.ingest_progress rows (90d, always keeping the newest
+        # attempt per file for the IngestionRuns UI). 04:45 UTC.
+        retention_sweep,
         # Phase 15 Step 1 (R-P14-2) — nightly REFRESH MATERIALIZED VIEW
         # for the agent's silver fact-source MVs. Keeps the agent
         # from drifting back into Phase 14 R-P13-1 refusal state.
