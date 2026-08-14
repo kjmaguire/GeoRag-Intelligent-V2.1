@@ -700,8 +700,13 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
     # to a beacon file (see pdf_report._tick_progress); this task polls it
     # and folds it into silver.ingest_progress.stage_pct so the UI bar
     # moves during the parse instead of sitting at the step boundary.
-    # Weighting inside the parse stage: text extraction is fast (~20% of
-    # wall clock even on big docs), per-page OCR is the long pole.
+    # Weighting inside the parse stage (2026-08-14 — added the 'tables'
+    # band): text extraction is fast (0–15%), per-page OCR is the long
+    # pole on scanned docs (15–75%), and the table-extraction pass is the
+    # long pole on NATIVE docs (75–100%) — previously the bar sat frozen
+    # at the end of extract for the whole table pass. Bands follow the
+    # chronological phase order in parse_pdf_report (extract → ocr →
+    # tables) so the relayed pct stays monotonic.
     _progress_path = f"{_PDF_BODY_CACHE_DIR}/progress.{uuid.uuid4().hex}.json"
 
     async def _relay_progress() -> None:
@@ -727,11 +732,14 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
             phase = beat.get("phase")
             done, total = int(beat.get("done", 0)), max(1, int(beat.get("total", 1)))
             if phase == "extract":
-                pct = 0.2 * (done / total)
+                pct = 0.15 * (done / total)
                 detail = f"extracting page {done}/{total}"
             elif phase == "ocr":
-                pct = 0.2 + 0.75 * (done / total)
+                pct = 0.15 + 0.60 * (done / total)
                 detail = f"OCR page {done}/{total}"
+            elif phase == "tables":
+                pct = 0.75 + 0.25 * (done / total)
+                detail = f"extracting tables {done}/{total}"
             else:
                 continue
             await ingest_progress.mark_stage_progress(
@@ -1045,6 +1053,83 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     parsed = ctx.task_output(parse)
     parsed = parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)
 
+    # 2026-08-14 — preflight rejection must FAIL the run, not persist a
+    # phantom report. parse() short-circuits with parser_used="skipped"
+    # when preflight marked the file invalid (password-protected, missing
+    # %PDF- magic, >2GB, inactive project). The old code fell through to
+    # the normal persist path: an empty "(untitled)" silver.reports row
+    # landed, embed_verify then saw zero unembedded passages and marked
+    # the run COMPLETED — the rejection was invisible to the user. Now:
+    # mark the run failed with the preflight error (reaches
+    # silver.ingest_progress.error_text → IngestionRuns UI), write NO
+    # report row, and return a skipped final output.
+    if (parsed.get("parser_used") or "") == "skipped":
+        preflight_error = pre.get("error") or next(
+            (
+                w.get("message")
+                for w in (parsed.get("warnings") or [])
+                if w.get("code") == "preflight_rejected" and w.get("message")
+            ),
+            "preflight rejected the file",
+        )
+        log.warning(
+            "ingest_pdf.persist: preflight rejected key=%s (%s) — failing "
+            "run, no report row written",
+            input.minio_key, preflight_error,
+        )
+        run_id: str | None = None
+        if input.workspace_id:
+            run_id = await ingest_progress.lookup_active_run_id(
+                workspace_id=str(input.workspace_id),
+                minio_key=input.minio_key,
+            )
+        if run_id:
+            await ingest_progress.mark_failed_by_run(
+                run_id=run_id,
+                stage="preflight",
+                error=f"preflight_rejected: {preflight_error}",
+            )
+            # Best-effort terminal broadcast so the IngestionRuns UI flips
+            # without waiting for its poll — the workflow itself SUCCEEDS
+            # here, so the on_failure hook never fires for this path.
+            if input.project_id:
+                try:
+                    from app.services.laravel_bridge import post_ingestion_progress
+                    await post_ingestion_progress(
+                        workspace_id=str(input.workspace_id),
+                        project_id=str(input.project_id),
+                        run_id=run_id,
+                        stage="preflight",
+                        status="failed",
+                        message=f"Upload rejected: {preflight_error}",
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "ingest_pdf.persist: preflight-rejection broadcast "
+                        "failed run=%s: %s", run_id, exc,
+                    )
+        return IngestPdfFinalOut(
+            sha256=pre.get("sha256", ""),
+            parser_used="skipped",
+            parse_quality_pct=0.0,
+            page_count=int(pre.get("page_count", 0) or 0),
+            title=None,
+            authors=[],
+            company=None,
+            filing_date=None,
+            commodity=None,
+            project_name=None,
+            region=None,
+            sections_count=0,
+            resource_tables_count=0,
+            is_scanned=False,
+            warnings_count=len(parsed.get("warnings") or []),
+            parse_duration_ms=0,
+            persist_duration_ms=0,
+            report_id=None,
+            passages_written=0,
+        )
+
     t_start = time.monotonic()
     report_id = _stable_report_id(
         workspace_id=str(input.workspace_id or LEGACY_DEFAULT_TENANT_UUID),
@@ -1272,6 +1357,11 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # With a single transaction, either the whole report + all its
             # passages land together, or neither does and Hatchet retries.
             passages_written = 0
+            # 2026-08-14 stale-passage GC — text_hashes of every passage the
+            # CURRENT parse produced, plus the rows the GC DELETE removed
+            # (their Qdrant points are deleted after the transaction commits).
+            current_text_hashes: list[str] = []
+            stale_passage_rows: list = []
             async with conn.transaction():
                 await bind_workspace_scope(
                     conn, workspace_id=workspace_id_str, site="hatchet.ingest_pdf"
@@ -1300,6 +1390,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     if not text:
                         continue
                     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                    current_text_hashes.append(text_hash)
                     # Phase 3 (2026-05-22) — OCR provenance. Default to
                     # None when the parser didn't supply values (e.g. older
                     # parsers or sections built outside _assign_ocr_metadata).
@@ -1336,6 +1427,40 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         review_row["routing_reason"],
                         json.dumps(review_row["outlier_flags"]),
                     )
+
+                # 2026-08-14 — GC passages superseded by this re-parse.
+                # INSERT_PASSAGE_SQL upserts by (document_id,
+                # revision_number, text_hash) but never deleted old rows:
+                # when a chunking/OCR change altered a chunk's text, the
+                # OLD chunk (and its Qdrant point) stayed retrievable
+                # forever. Delete rows of THIS document whose hash the new
+                # parse no longer produced. Guards:
+                #   - only when the new parse yielded >0 passages, so a
+                #     degenerate empty parse can't wipe a good document;
+                #   - chunk_kind='narrative' only — the only kind this
+                #     writer produces; 'section'/'paragraph' parent-child
+                #     rows from other pipelines are untouched.
+                # The matching Qdrant points (ids are passage UUIDs) are
+                # deleted after the transaction commits, below.
+                if current_text_hashes:
+                    stale_passage_rows = await conn.fetch(
+                        """
+                        DELETE FROM silver.document_passages
+                        WHERE document_id = $1
+                          AND revision_number = 1
+                          AND chunk_kind = 'narrative'
+                          AND text_hash <> ALL($2::text[])
+                        RETURNING passage_id::text AS passage_id, embedding_id
+                        """,
+                        report_id,
+                        current_text_hashes,
+                    )
+                    if stale_passage_rows:
+                        log.info(
+                            "ingest_pdf.persist: deleted %d stale passage "
+                            "row(s) for report=%s (superseded by re-parse)",
+                            len(stale_passage_rows), report_id,
+                        )
 
             # silver.shadow_runs was dropped in Phase 4 Step 6 (sunset of the
             # v1.49 shadow-diff harness). The persist step previously
@@ -1425,6 +1550,42 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                 log.warning("audit emit failed: %s", e)
     finally:
         await pool.close()
+
+    # 2026-08-14 — delete the Qdrant points of GC'd stale passages. Point
+    # ids are the passage UUIDs (see passage_embedder._passage_to_point_id).
+    # Runs AFTER the PG transaction committed so a rollback can't orphan
+    # live rows' points; failure here is soft (rows are already gone from
+    # PG, so the points are unreachable via retrieval joins on payload —
+    # but they'd still be directly searchable, hence the loud warning).
+    if stale_passage_rows:
+        try:
+            from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
+            from qdrant_client import models as qmodels  # noqa: PLC0415
+
+            from app.services.qdrant_conn import qdrant_client_kwargs  # noqa: PLC0415
+
+            stale_point_ids = [r["passage_id"] for r in stale_passage_rows]
+            _qc = AsyncQdrantClient(**qdrant_client_kwargs())
+            try:
+                await _qc.delete(
+                    collection_name="georag_chunks",
+                    points_selector=qmodels.PointIdsList(points=stale_point_ids),
+                    wait=False,
+                )
+            finally:
+                await _qc.close()
+            log.info(
+                "ingest_pdf.persist: deleted %d stale qdrant point(s) for "
+                "report=%s", len(stale_point_ids), report_id,
+            )
+        except Exception as gc_exc:  # noqa: BLE001
+            log.warning(
+                "ingest_pdf.persist: stale-passage qdrant delete failed for "
+                "report=%s (%d points): %s — PG rows are gone; the orphaned "
+                "points remain retrievable until a payload audit or "
+                "re-bootstrap removes them.",
+                report_id, len(stale_passage_rows), gc_exc,
+            )
 
     log.info(
         "ingest_pdf.persist done report_id=%s parser=%s sections=%d tables=%d total=%dms",
@@ -1521,6 +1682,21 @@ async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
     """
     if not input.project_id:
         return {"ok": True, "skipped": True, "reason": "no project_id"}
+
+    # 2026-08-14 — preflight-rejected runs were marked FAILED by persist
+    # (no report row written). Without this guard the zero-unembedded
+    # check below would try to complete the run and broadcast "completed"
+    # via the (ws, key) fallback re-query even though the row is failed.
+    try:
+        _parsed_out = ctx.task_output(parse)
+        _parsed_out = (
+            _parsed_out.model_dump()
+            if hasattr(_parsed_out, "model_dump") else dict(_parsed_out)
+        )
+        if (_parsed_out.get("parser_used") or "") == "skipped":
+            return {"ok": False, "skipped": True, "reason": "preflight_rejected"}
+    except Exception:  # noqa: BLE001 — defensive; fall through to normal path
+        pass
 
     if input.project_id and input.workspace_id:
         await ingest_progress.mark_started(

@@ -716,7 +716,9 @@ def _table_confidence(header: list[str], data_rows: list[list]) -> float:
     return round(min(1.0, confidence), 4)
 
 
-def _extract_resource_tables(pdf_path: str) -> list[dict]:
+def _extract_resource_tables(
+    pdf_path: str, progress_file: str | None = None,
+) -> list[dict]:
     """Extract mineral resource / reserve tables from a NI 43-101 PDF.
 
     Opens the PDF with pdfplumber, identifies candidate pages via trigger
@@ -726,13 +728,20 @@ def _extract_resource_tables(pdf_path: str) -> list[dict]:
     Each entry contains:
         page, table_index_on_page, trigger_phrase, header, rows,
         extraction_method, confidence.
+
+    Progress (2026-08-14): ticks the 'tables' phase over the FIRST half of
+    a 2×pages span — `_extract_all_tables_as_sections` (which always runs
+    right after this in parse_pdf_report) ticks the second half, so the
+    relayed pct stays monotonic across both pdfplumber walks.
     """
     import pdfplumber  # noqa: PLC0415
 
     results: list[dict] = []
 
     with pdfplumber.open(pdf_path) as pdf:
+        _total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, start=1):
+            _tick_progress(progress_file, "tables", page_num, 2 * _total_pages)
             try:
                 page_text = (page.extract_text() or "").lower()
             except Exception:
@@ -1033,7 +1042,9 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
     return result
 
 
-def _extract_all_tables_as_sections(pdf_path: str) -> list[ReportSection]:
+def _extract_all_tables_as_sections(
+    pdf_path: str, progress_file: str | None = None,
+) -> list[ReportSection]:
     """Walk every page and extract every data-table-like table.
 
     Each page is classified as 'bordered' (has table borders/lines/
@@ -1085,7 +1096,13 @@ def _extract_all_tables_as_sections(pdf_path: str) -> list[ReportSection]:
         return []
 
     with _pdf_ctx as pdf:
+        _total_pages = len(pdf.pages)
         for page_num, page in enumerate(pdf.pages, start=1):
+            # 2026-08-14 — second half of the 'tables' progress span; see
+            # the note on _extract_resource_tables (which ticks the first).
+            _tick_progress(
+                progress_file, "tables", _total_pages + page_num, 2 * _total_pages,
+            )
             run_lines = (
                 _classification_failed
                 or page_num in bordered_pages
@@ -3101,7 +3118,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     resource_tables: list[dict] = []
     with _tracer.start_as_current_span("pdf_report.resource_tables") as _span:
         try:
-            resource_tables = _extract_resource_tables(path)
+            resource_tables = _extract_resource_tables(path, progress_file=progress_file)
             _span.set_attribute("pdf.resource_tables_found", len(resource_tables))
             logger.info(
                 "pdf_report: resource table extraction found %d table(s) in '%s'",
@@ -3128,7 +3145,9 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # resource-trigger pages; this is the broader net.
     with _tracer.start_as_current_span("pdf_report.all_tables") as _span:
         try:
-            table_sections = _extract_all_tables_as_sections(path)
+            table_sections = _extract_all_tables_as_sections(
+                path, progress_file=progress_file,
+            )
             _span.set_attribute("pdf.all_tables_found", len(table_sections))
             if table_sections:
                 logger.info(
