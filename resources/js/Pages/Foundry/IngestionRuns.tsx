@@ -115,7 +115,22 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
     const [lastFetched, setLastFetched] = useState<string | null>(null);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Snapshot poll — keeps the in-flight / completed lists fresh.
+    // Tab visibility — its own always-mounted effect. This listener used to
+    // live inside the polling effect below, AFTER an early `if (!polling)
+    // return` — so the moment the tab was hidden (polling → false), the
+    // effect re-ran, bailed before registering the listener, and nothing
+    // could ever flip polling back to true. Registering it unconditionally
+    // means hide → show now resumes the poll.
+    useEffect(() => {
+        const onVis = (): void => {
+            setPolling(document.visibilityState === 'visible');
+        };
+        document.addEventListener('visibilitychange', onVis);
+        return () => document.removeEventListener('visibilitychange', onVis);
+    }, []);
+
+    // Snapshot poll — keeps the in-flight / completed lists fresh. Gated on
+    // `polling` (tab visible); the visibility effect above re-arms it.
     useEffect(() => {
         if (!polling) return;
 
@@ -143,15 +158,9 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
 
         timerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
 
-        const onVis = (): void => {
-            setPolling(document.visibilityState === 'visible');
-        };
-        document.addEventListener('visibilitychange', onVis);
-
         return () => {
             cancelled = true;
             if (timerRef.current) clearTimeout(timerRef.current);
-            document.removeEventListener('visibilitychange', onVis);
         };
     }, [polling, project.slug]);
 
