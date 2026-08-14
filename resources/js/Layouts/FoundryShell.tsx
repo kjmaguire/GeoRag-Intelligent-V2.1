@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, usePage, router } from '@inertiajs/react';
 import ProjectSelector from '../Components/ProjectSelector';
 import CommandPalette from '../Components/Foundry/CommandPalette';
+import { ToastProvider, useToast } from '../Components/Foundry/ToastHost';
 import type { PageProps } from '@/types';
 
 /**
@@ -59,7 +60,6 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
         search: <path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4" />,
         plus: <path d="M12 5v14 M5 12h14" />,
         chevron: <path d="M9 6 L15 12 L9 18" />,
-        bell: <path d="M6 14v-3a6 6 0 0 1 12 0v3l1.5 3h-15z M10 20a2 2 0 0 0 4 0" />,
         pulse: <path d="M3 12h4l2-7 4 14 2-7h6" />,
     };
     return (
@@ -134,6 +134,76 @@ function UserMenu() {
     );
 }
 
+/**
+ * IngestToastBridge — shell-level "«file» finished ingesting" notifications.
+ *
+ * Subscribes to the same `project.{projectId}.ingestion` Reverb channel the
+ * IngestionRuns page uses and pushes a toast on terminal pipeline events
+ * (completed / failed / cancelled / timed_out), linking to the runs page.
+ * Suppressed while ON the runs page (it already renders live state) by not
+ * subscribing at all there. Renders nothing.
+ *
+ * Cleanup deliberately uses stopListening rather than Echo.leave():
+ * IngestionRuns.tsx and useWorkspaceDataUpdated share this channel and
+ * leave() would tear down their listeners with ours.
+ */
+const TERMINAL_INGEST_STATUSES = ['completed', 'failed', 'cancelled', 'timed_out'];
+
+interface IngestProgressEvent {
+    project_id?: string;
+    pipeline_run_id?: string;
+    status?: string;
+    message?: string | null;
+}
+
+function IngestToastBridge({ projectSlug }: { projectSlug: string | null }) {
+    const { url, props } = usePage<PageProps>();
+    const { pushToast } = useToast();
+    const projectId =
+        (props as PageProps & { project?: { project_id?: string } }).project?.project_id ?? null;
+    const onRunsPage = url.includes('/ingestion-runs');
+    // Dedupe guard — Echo reconnect replays / double broadcasts shouldn't
+    // stack identical toasts.
+    const seenRef = useRef<Set<string>>(new Set());
+
+    useEffect(() => {
+        if (!projectId || onRunsPage) return;
+        if (typeof window === 'undefined' || !window.Echo) return;
+
+        const channelName = `project.${projectId}.ingestion`;
+        const ch = window.Echo.private(channelName);
+
+        const handler = (raw: unknown): void => {
+            const evt = raw as IngestProgressEvent;
+            if (evt.project_id !== projectId) return;
+            const status = String(evt.status ?? '');
+            if (!TERMINAL_INGEST_STATUSES.includes(status)) return;
+            const key = `${evt.pipeline_run_id ?? ''}:${status}`;
+            if (seenRef.current.has(key)) return;
+            seenRef.current.add(key);
+            const ok = status === 'completed';
+            pushToast({
+                title: ok ? 'File finished ingesting' : `Ingestion ${status.replace('_', ' ')}`,
+                detail: evt.message ?? undefined,
+                tone: ok ? 'accent' : 'warn',
+                href: projectSlug ? `/projects/${projectSlug}/ingestion-runs` : undefined,
+                linkLabel: 'View runs',
+            });
+        };
+
+        ch.listen('.ingestion.progress', handler);
+        return () => {
+            try {
+                ch.stopListening('.ingestion.progress', handler);
+            } catch {
+                // Channel may already be gone if a sibling called Echo.leave().
+            }
+        };
+    }, [projectId, onRunsPage, projectSlug, pushToast]);
+
+    return null;
+}
+
 function orgNavClass(active: boolean) {
     return [
         'text-[11px] font-mono uppercase tracking-wider px-2.5 py-1 rounded transition-colors',
@@ -199,6 +269,9 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
 
     return (
         <div className={rootClass} style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* ToastProvider lives INSIDE the themed root so the fixed
+                viewport inherits the .foundry / .foundry.light tokens. */}
+            <ToastProvider>
             <a
                 href="#main-content"
                 className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-[var(--accent)] focus:text-[var(--bg-0)] focus:px-4 focus:py-2 focus:rounded focus:text-xs"
@@ -393,6 +466,8 @@ export default function FoundryShell({ children, onProjectChange }: FoundryShell
             </div>
 
             <CommandPalette projectSlug={currentSlug} />
+            <IngestToastBridge projectSlug={currentSlug} />
+            </ToastProvider>
         </div>
     );
 }
