@@ -259,7 +259,20 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No ingestion activity for this project yet."
-                            detail="Upload a PDF, drill log, or other source on the Data page. As soon as a file is uploaded it will show up here, and you can watch it move through parse → tables → embed."
+                            detail="Upload a PDF, drill log, or other source and it will show up here, where you can watch it move through parse → tables → embed."
+                            action={
+                                <Link
+                                    href="/foundry/imports/wizard"
+                                    className="inline-block text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                    style={{
+                                        color: 'var(--accent)',
+                                        background: 'var(--accent-bg)',
+                                        borderColor: 'var(--accent-dim)',
+                                    }}
+                                >
+                                    ↑ Upload files →
+                                </Link>
+                            }
                         />
                     </div>
                 )}

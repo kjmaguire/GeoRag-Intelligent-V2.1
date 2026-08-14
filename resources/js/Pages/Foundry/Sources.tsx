@@ -140,12 +140,22 @@ export default function FoundrySources({
                     actions={
                         <div className="flex gap-2">
                             <Link
-                                href={`/projects/${project.slug}/corpus`}
+                                href="/foundry/imports/wizard"
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                 style={{
                                     color: 'var(--accent)',
                                     background: 'var(--accent-bg)',
                                     borderColor: 'var(--accent-dim)',
+                                }}
+                            >
+                                ↑ Upload files
+                            </Link>
+                            <Link
+                                href={`/projects/${project.slug}/corpus`}
+                                className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                style={{
+                                    color: 'var(--fg-2)',
+                                    borderColor: 'var(--line-2)',
                                 }}
                             >
                                 + Connect source
@@ -172,6 +182,19 @@ export default function FoundrySources({
                         <EmptyState
                             title="No data ingested into this workspace yet."
                             detail="Drop a zip or folder into the Import Wizard and Bronze ingestion will start indexing files. As parsers run, silver rows appear here."
+                            action={
+                                <Link
+                                    href="/foundry/imports/wizard"
+                                    className="inline-block text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
+                                    style={{
+                                        color: 'var(--accent)',
+                                        background: 'var(--accent-bg)',
+                                        borderColor: 'var(--accent-dim)',
+                                    }}
+                                >
+                                    ↑ Upload files →
+                                </Link>
+                            }
                         />
                     </div>
                 ) : (

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Head, router } from '@inertiajs/react';
+import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
 
@@ -11,9 +11,13 @@ import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
  * Step 1 ("Drop") — user picks a target project (fetched from /api/v1/projects)
  *                   and drops one or more files.
  * Step 2 ("Submit") — files are POSTed to /api/v1/projects/{id}/upload.
- *                     On success we router.visit to the project's IngestionRuns
- *                     page, which is the canonical surface for watching ingest
- *                     progress (Echo + 5 s poll fallback).
+ *                     When EVERY file queues successfully we router.visit to
+ *                     the project's IngestionRuns page, which is the canonical
+ *                     surface for watching ingest progress (Echo + 5 s poll
+ *                     fallback). On partial failure we stay here so the
+ *                     per-file failure pills remain visible, and show a
+ *                     "N queued · M failed" summary with a link to the runs
+ *                     page.
  *
  * The previous incarnation of this page synthesized progress with a
  * setInterval ticker — that was a UX mockup unconnected to any real
@@ -29,19 +33,42 @@ interface ProjectPick {
     commodity: string | null;
 }
 
+/** A queued file with a stable per-entry id so duplicate filenames never
+ *  collide when matching upload outcomes back to rows. */
+interface QueuedFile {
+    id: string;
+    file: File;
+}
+
 interface UploadOutcome {
-    filename: string;
+    /** QueuedFile.id — the join key back to the row (NOT the filename). */
+    id: string;
     ok: boolean;
     message: string;
+}
+
+const ACCEPTED_EXTENSIONS = ['pdf', 'tif', 'tiff', 'zip'];
+
+let nextQueueId = 0;
+function newQueueId(): string {
+    nextQueueId += 1;
+    return `qf-${Date.now()}-${nextQueueId}`;
+}
+
+function fileExtension(name: string): string {
+    return (name.split('.').pop() ?? '').toLowerCase();
 }
 
 export default function FoundryDataImportWizard() {
     const [projects, setProjects] = useState<ProjectPick[] | null>(null);
     const [projectsError, setProjectsError] = useState<string | null>(null);
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-    const [files, setFiles] = useState<File[]>([]);
+    const [files, setFiles] = useState<QueuedFile[]>([]);
+    const [rejectedNote, setRejectedNote] = useState<string | null>(null);
+    const [dragging, setDragging] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [outcomes, setOutcomes] = useState<UploadOutcome[]>([]);
+    const [finished, setFinished] = useState(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     const selectedProject = projects?.find((p) => p.project_id === selectedProjectId) ?? null;
@@ -83,10 +110,50 @@ export default function FoundryDataImportWizard() {
         };
     }, []);
 
-    function handleFilesPicked(picked: FileList | null) {
-        if (!picked) return;
-        setFiles(Array.from(picked));
-        setOutcomes([]);
+    // Shared intake path for the picker AND the drop zone: filter to the
+    // accepted extensions up front and surface anything rejected as an
+    // inline message instead of letting the server 422 it later.
+    function addFiles(incoming: FileList | File[] | null) {
+        if (!incoming) return;
+        const arr = Array.from(incoming);
+        if (arr.length === 0) return;
+        const accepted: QueuedFile[] = [];
+        const rejected: string[] = [];
+        for (const f of arr) {
+            if (ACCEPTED_EXTENSIONS.includes(fileExtension(f.name))) {
+                accepted.push({ id: newQueueId(), file: f });
+            } else {
+                rejected.push(f.name);
+            }
+        }
+        if (accepted.length > 0) {
+            setFiles((prev) => [...prev, ...accepted]);
+        }
+        setRejectedNote(
+            rejected.length > 0
+                ? `Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${rejected
+                      .slice(0, 3)
+                      .join(', ')}${rejected.length > 3 ? ', …' : ''}) — accepted types: PDF, TIF/TIFF, ZIP.`
+                : null,
+        );
+        // Keep successful outcomes (their pills + the no-re-upload guard in
+        // handleSubmit depend on them); clear stale failures so the new
+        // attempt starts clean.
+        setOutcomes((prev) => prev.filter((o) => o.ok));
+        setFinished(false);
+    }
+
+    function removeFile(id: string) {
+        setFiles((prev) => prev.filter((qf) => qf.id !== id));
+        setOutcomes((prev) => prev.filter((o) => o.id !== id && o.ok));
+        setFinished(false);
+    }
+
+    function onDrop(e: React.DragEvent<HTMLDivElement>) {
+        e.preventDefault();
+        setDragging(false);
+        if (submitting) return;
+        addFiles(e.dataTransfer?.files ?? null);
     }
 
     function csrfHeader(): Record<string, string> {
@@ -95,13 +162,13 @@ export default function FoundryDataImportWizard() {
         return token ? { 'X-CSRF-TOKEN': token } : {};
     }
 
-    async function uploadOne(projectId: string, file: File): Promise<UploadOutcome> {
+    async function uploadOne(projectId: string, qf: QueuedFile): Promise<UploadOutcome> {
         // UploadController requires `category` (in:reports,archive) — omitting
         // it 422'd EVERY wizard upload while the create-project flow (which
         // sends it) worked, so the gap went unnoticed. Derive from extension;
         // anything the server would reject is refused here with a clear
         // message instead of a validator error.
-        const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+        const ext = fileExtension(qf.file.name);
         const category = ['pdf', 'tif', 'tiff'].includes(ext)
             ? 'reports'
             : ext === 'zip'
@@ -109,13 +176,13 @@ export default function FoundryDataImportWizard() {
               : null;
         if (!category) {
             return {
-                filename: file.name,
+                id: qf.id,
                 ok: false,
                 message: `Unsupported type .${ext} — accepted: PDF, TIF/TIFF, ZIP`,
             };
         }
         const fd = new FormData();
-        fd.append('file', file);
+        fd.append('file', qf.file);
         fd.append('category', category);
         try {
             const res = await fetch(`/api/v1/projects/${projectId}/upload`, {
@@ -127,15 +194,15 @@ export default function FoundryDataImportWizard() {
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
                 return {
-                    filename: file.name,
+                    id: qf.id,
                     ok: false,
                     message: body.message ?? `HTTP ${res.status}`,
                 };
             }
-            return { filename: file.name, ok: true, message: 'queued' };
+            return { id: qf.id, ok: true, message: 'queued' };
         } catch (err) {
             return {
-                filename: file.name,
+                id: qf.id,
                 ok: false,
                 message: err instanceof Error ? err.message : String(err),
             };
@@ -145,35 +212,50 @@ export default function FoundryDataImportWizard() {
     async function handleSubmit() {
         if (!selectedProject || files.length === 0) return;
         setSubmitting(true);
-        setOutcomes([]);
+        setFinished(false);
+
+        // On a retry after partial failure, files that already queued keep
+        // their outcome and are NOT re-uploaded (re-POSTing would ingest
+        // them twice). Only never-attempted / failed files go out again.
+        const priorOk = outcomes.filter((o) => o.ok);
+        const priorOkIds = new Set(priorOk.map((o) => o.id));
+        const pending = files.filter((qf) => !priorOkIds.has(qf.id));
+        setOutcomes(priorOk);
 
         // Bounded-concurrency pool (3 wide): per-file requests stay
         // independent so failures still surface per file, but a 20-file
         // import no longer serialises 20 round-trips end-to-end. Results
         // land in input order for stable UI rows.
         const CONCURRENCY = 3;
-        const results: UploadOutcome[] = new Array(files.length);
+        const results: UploadOutcome[] = new Array(pending.length);
         let nextIndex = 0;
         async function worker() {
             for (;;) {
                 const i = nextIndex++;
-                if (i >= files.length) return;
-                results[i] = await uploadOne(selectedProject!.project_id, files[i]);
-                setOutcomes(results.filter(Boolean) as UploadOutcome[]);
+                if (i >= pending.length) return;
+                results[i] = await uploadOne(selectedProject!.project_id, pending[i]);
+                setOutcomes([...priorOk, ...(results.filter(Boolean) as UploadOutcome[])]);
             }
         }
         await Promise.all(
-            Array.from({ length: Math.min(CONCURRENCY, files.length) }, () => worker()),
+            Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker()),
         );
 
         setSubmitting(false);
+        setFinished(true);
 
-        const anyOk = results.some((r) => r.ok);
-        if (anyOk) {
+        // Navigate ONLY when every file queued. On partial failure we stay
+        // put so the per-file failure pills survive — auto-navigating threw
+        // that context away and the user never learned which files failed.
+        const allOk = results.every((r) => r.ok);
+        if (allOk) {
             // Hand off to the page that actually shows live ingest progress.
             router.visit(`/projects/${selectedProject.slug}/ingestion-runs`);
         }
     }
+
+    const queuedCount = outcomes.filter((o) => o.ok).length;
+    const failedCount = outcomes.filter((o) => !o.ok).length;
 
     return (
         <AppLayout>
@@ -246,8 +328,23 @@ export default function FoundryDataImportWizard() {
 
                     <Card eyebrow="STEP 2" title="Drop files">
                         <div
-                            className="h-44 rounded-md border-2 border-dashed flex flex-col items-center justify-center"
-                            style={{ borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+                            onDragOver={(e) => {
+                                e.preventDefault();
+                                setDragging(true);
+                            }}
+                            onDragLeave={() => setDragging(false)}
+                            onDrop={onDrop}
+                            onClick={() => fileInputRef.current?.click()}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                            }}
+                            className="h-44 rounded-md border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors"
+                            style={{
+                                borderColor: dragging ? 'var(--accent)' : 'var(--line-2)',
+                                background: dragging ? 'var(--accent-bg)' : 'var(--bg-2)',
+                            }}
                         >
                             <div className="text-sm font-medium mb-1" style={{ color: 'var(--fg-1)' }}>
                                 Drop PDF / TIFF / ZIP here
@@ -262,12 +359,20 @@ export default function FoundryDataImportWizard() {
                                 ref={fileInputRef}
                                 type="file"
                                 multiple
+                                accept=".pdf,.tif,.tiff,.zip"
                                 className="hidden"
-                                onChange={(e) => handleFilesPicked(e.target.files)}
+                                onChange={(e) => {
+                                    addFiles(e.target.files);
+                                    // Reset so re-picking the same file fires change again.
+                                    e.target.value = '';
+                                }}
                             />
                             <button
                                 type="button"
-                                onClick={() => fileInputRef.current?.click()}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    fileInputRef.current?.click();
+                                }}
                                 className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                 style={{
                                     color: 'var(--accent)',
@@ -279,6 +384,19 @@ export default function FoundryDataImportWizard() {
                             </button>
                         </div>
 
+                        {rejectedNote && (
+                            <div
+                                className="mt-3 text-xs px-3 py-2 rounded border"
+                                style={{
+                                    color: 'var(--warn)',
+                                    borderColor: 'var(--warn)',
+                                    background: 'color-mix(in oklch, var(--warn) 10%, transparent)',
+                                }}
+                            >
+                                {rejectedNote}
+                            </div>
+                        )}
+
                         {files.length > 0 && (
                             <div className="mt-4">
                                 <div
@@ -288,22 +406,20 @@ export default function FoundryDataImportWizard() {
                                     Selected · {files.length}
                                 </div>
                                 <ul className="text-xs space-y-1">
-                                    {files.map((f) => {
-                                        const outcome = outcomes.find(
-                                            (o) => o.filename === f.name,
-                                        );
+                                    {files.map((qf) => {
+                                        const outcome = outcomes.find((o) => o.id === qf.id);
                                         return (
                                             <li
-                                                key={f.name}
+                                                key={qf.id}
                                                 className="flex items-center gap-3"
                                                 style={{ color: 'var(--fg-1)' }}
                                             >
-                                                <span className="font-mono">{f.name}</span>
+                                                <span className="font-mono">{qf.file.name}</span>
                                                 <span
                                                     className="font-mono"
                                                     style={{ color: 'var(--fg-3)' }}
                                                 >
-                                                    {(f.size / 1024).toFixed(1)} KB
+                                                    {(qf.file.size / 1024).toFixed(1)} KB
                                                 </span>
                                                 {outcome && (
                                                     <Pill
@@ -315,6 +431,17 @@ export default function FoundryDataImportWizard() {
                                                             : outcome.message}
                                                     </Pill>
                                                 )}
+                                                {!submitting && (!outcome || !outcome.ok) && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => removeFile(qf.id)}
+                                                        aria-label={`Remove ${qf.file.name}`}
+                                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                                        style={{ color: 'var(--fg-3)' }}
+                                                    >
+                                                        remove
+                                                    </button>
+                                                )}
                                             </li>
                                         );
                                     })}
@@ -322,6 +449,33 @@ export default function FoundryDataImportWizard() {
                             </div>
                         )}
                     </Card>
+
+                    {finished && failedCount > 0 && (
+                        <div
+                            className="flex items-center gap-3 text-xs px-3 py-2.5 rounded border"
+                            style={{
+                                color: 'var(--fg-1)',
+                                borderColor: 'var(--warn)',
+                                background: 'color-mix(in oklch, var(--warn) 8%, transparent)',
+                            }}
+                        >
+                            <Pill tone="warn" dot>
+                                {queuedCount} queued · {failedCount} failed
+                            </Pill>
+                            <span style={{ color: 'var(--fg-2)' }}>
+                                Failed files stay listed above — fix and retry, or
+                            </span>
+                            {selectedProject && queuedCount > 0 && (
+                                <Link
+                                    href={`/projects/${selectedProject.slug}/ingestion-runs`}
+                                    className="font-mono uppercase tracking-wider underline"
+                                    style={{ color: 'var(--accent)' }}
+                                >
+                                    watch the {queuedCount} queued file{queuedCount === 1 ? '' : 's'} →
+                                </Link>
+                            )}
+                        </div>
+                    )}
 
                     <footer className="flex justify-end gap-2">
                         <button
