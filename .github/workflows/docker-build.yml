@@ -1,0 +1,218 @@
+name: Docker Build (GHCR + Trivy + SBOM)
+
+# =============================================================================
+# Moved out of ci.yml 2026-08-14 (CD lead-time fix).
+#
+# cd.yml's workflow_run trigger fires only when the WHOLE "GeoRAG CI"
+# workflow concludes. CI's blocking jobs finish in ~6 minutes, but this
+# ~24-minute non-blocking build/Trivy/SBOM/Cosign job used to live inside
+# that workflow — so every production deploy waited ~18 extra minutes for a
+# job that was continue-on-error and gated nothing. Same triggers as ci.yml
+# (push main/develop, PR to main), identical job content, but its own
+# workflow so "GeoRAG CI" concludes fast and CD starts sooner.
+#
+# BLOCKING CHANGE (2026-08-14): the old job-level continue-on-error is gone.
+# Now that this workflow is no longer in CD's gate path, a Trivy CRITICAL
+# finding (exit-code: "1" below) fails THIS workflow for real instead of
+# being swallowed — that was the whole point of running the scan. Evidence
+# this is safe to enforce: both matrix legs (build, Trivy, SBOM, Cosign)
+# passed end-to-end on the last green main run (run 31567237441, commit
+# f33e21e, 2026-08-12). The GHCR push behavior is unchanged.
+# =============================================================================
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # Deliberately NOT ci-${{ github.ref }} — concurrency groups are
+  # repo-global, so reusing CI's group string would cancel CI runs.
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Docker build + push (GHCR on main) + Trivy + SBOM ──────────────────
+  # Strategy:
+  #   PRs:   build only (no push) — fast cycle, no registry writes.
+  #   main:  build + push with SHA tag + rolling "main" tag.
+  #
+  # Images pushed to:
+  #   ghcr.io/<owner>/georag-fastapi:<short-sha>
+  #   ghcr.io/<owner>/georag-fastapi:main         (rolling latest on main)
+  #   (same pattern for laravel)
+  #   NOT consumed by cd.yml — that builds straight to ACR (georagacrcc)
+  #   and deploys from there (2026-08-05 rewrite). This job's own value is
+  #   the Trivy scan + SBOM below; the GHCR push is just a side effect of
+  #   how docker/build-push-action works, kept in case a non-Azure
+  #   consumer ever needs these images.
+  #
+  # Platforms: linux/amd64 only (2026-08-06 — see below).
+  # Cache: GitHub Actions cache (type=gha) scoped per image name.
+  #
+  # 2026-08-06: dropped the linux/arm64 leg. This job had been timing out
+  # at its 30-minute cap on every single run for over a month; the
+  # near-certain cause is that `main` pushes built BOTH amd64 and
+  # QEMU-emulated arm64 in the same step, and emulated compilation of the
+  # torch/GDAL-heavy dependencies in these images is a well-known
+  # multi-minute-to-multi-hour multiplier over native — CD's own ACR
+  # builds of the identical Dockerfiles (single-platform, native) already
+  # take ~20 minutes for fastapi alone. Nothing in the real deploy path
+  # (Azure Container Apps, x86_64-only) has ever consumed an arm64 image;
+  # the original rationale below was for self-hosted on-prem ARM hosts
+  # from before the Azure-only decision.
+  #
+  # Original note on arm64 prod deployments (now historical, kept for
+  # context): the three georag/* images this job builds are Python/PHP
+  # and are arm64-clean. The compose stack also includes vLLM (prod LLM
+  # tier), which is x86_64-only — arm64 hosts could run dev (Ollama) but
+  # never the prod LLM tier directly. See
+  # ops/runbooks/llm-model-swap.md for the (now moot) arm64 caveat.
+  #
+  # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
+  docker-build:
+    name: Docker Build${{ github.ref == 'refs/heads/main' && ' + Push (GHCR)' || ' (PR smoke test)' }}
+    runs-on: ubuntu-latest
+    # Native single-platform builds of these Dockerfiles take ~20 minutes
+    # for fastapi alone via ACR (see cd.yml); 30 min was already tight
+    # even before accounting for the Trivy scan + SBOM steps that run
+    # after the build within the same budget. 45 gives real headroom.
+    timeout-minutes: 45
+    # Matrix over the two images so each gets its own cache scope and SBOM.
+    # Failures in one image do not cancel the other. The dagster leg was
+    # dropped 2026-08-05 — Dagster services were retired in Phase B2 and
+    # nothing deploys this image anymore.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: fastapi
+            dockerfile: docker/fastapi.Dockerfile
+            # Storage-abstraction plan PR1 — widened from src/fastapi to src
+            # so the Dockerfile can COPY the sibling georag_object_storage
+            # path dependency. Must match docker-compose.yml's fastapi
+            # build.context.
+            context: src
+          - service: laravel
+            dockerfile: docker/laravel.Dockerfile
+            context: .
+
+    # GITHUB_TOKEN must have packages:write to push to GHCR.
+    # id-token:write is required by anchore/sbom-action attestation.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Login to GHCR only on main branch pushes (PRs build without pushing).
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Short SHA tag — immutable identifier used by cd.yml deploy jobs.
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # Build and optionally push.
+      # On PRs: push=false, load=true (image available to Trivy via local daemon).
+      # On main: push=true, load=false (image in GHCR, Trivy pulls from there).
+      - name: Build${{ github.ref == 'refs/heads/main' && ' and push' || '' }} ${{ matrix.service }} image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          # `load: true` (PR builds) puts the image in the local Docker
+          # daemon so Trivy can scan it. Single platform on both branches
+          # now — see the arm64 note above the job definition (2026-08-06).
+          platforms: linux/amd64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          load: ${{ github.ref != 'refs/heads/main' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}
+            ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:main
+          cache-from: type=gha,scope=georag-${{ matrix.service }}
+          cache-to: type=gha,scope=georag-${{ matrix.service }},mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      # Trivy vulnerability scan.
+      # CRITICAL severity fails the build (exit-code: "1") — and since
+      # 2026-08-14 this workflow has no continue-on-error wrapper, so a
+      # CRITICAL finding actually fails the workflow (it no longer sits in
+      # CD's gate path, see the file header).
+      # HIGH is reported but does not block — tighten to CRITICAL,HIGH once
+      # base images are updated to non-EOL OS versions.
+      # ignore-unfixed: true skips CVEs with no upstream fix (noise reduction).
+      - name: Trivy scan — ${{ matrix.service }}
+        # 2026-06-24 re-audit: was @master — a floating branch ref on a
+        # repo that suffered a tag-hijack supply-chain incident in March
+        # 2026 (GHSA-69fq-xp46-6x23). Pinned to a release tag.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+
+      # SBOM generation via Syft (anchore/sbom-action). SPDX JSON format.
+      # Artifact is uploaded and retained 90 days for supply-chain audits.
+      # Closes L-A4-08.
+      - name: Generate SBOM — ${{ matrix.service }}
+        uses: anchore/sbom-action@v0
+        with:
+          image: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}.spdx.json
+          output-file: /tmp/sbom-${{ matrix.service }}.spdx.json
+
+      - name: Upload SBOM artifact — ${{ matrix.service }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}
+          path: /tmp/sbom-${{ matrix.service }}.spdx.json
+          retention-days: 90
+
+      # ---------------------------------------------------------------------
+      # Cosign keyless image signing (2026-06-23 sweep).
+      # Sigstore keyless signing via GitHub OIDC — no private key to
+      # manage. Each pushed image gets a Rekor transparency-log entry
+      # binding the digest to the workflow + commit SHA + branch ref.
+      # Verify downstream with:
+      #   cosign verify \
+      #     --certificate-identity-regexp "https://github\.com/${OWNER}/" \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     ghcr.io/${OWNER}/georag-${SERVICE}@sha256:<digest>
+      # PR builds are not signed (no push happens, no digest to sign).
+      # ---------------------------------------------------------------------
+      - name: Install Cosign — ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        # 2026-06-24 re-audit: installer v3 cannot install Cosign v3.x;
+        # bumped to v4 + cosign-release to the current v3.1.1.
+        # 2026-06-29: pin to v4.1.2 — sigstore/cosign-installer does not
+        # publish a floating `v4` major tag, so `@v4` failed to resolve.
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: 'v3.1.1'
+
+      - name: Cosign sign image — ${{ matrix.service }}
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}@${{ steps.build.outputs.digest }}"

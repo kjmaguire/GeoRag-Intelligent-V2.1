@@ -312,6 +312,17 @@ jobs:
     # (ClientConfig decodes the claims to fill in server_url/tenant_id even
     # though nothing here connects anywhere) — it does not need to be a real
     # signed token.
+    # POSTGRES_USER is DELIBERATELY unset (2026-08-14 audit): 7 test
+    # modules (test_ingest_progress_state_machine, test_orphan_sweep,
+    # test_mv_refresh, test_nightly_ingestion_integrity,
+    # test_reliability_metrics, test_stale_run_detector,
+    # test_embed_pending_completion_sweep) module-skip on it because they
+    # are live-asyncpg tests against the migrated silver schema — this job
+    # has no Postgres service and never runs the Laravel migrations, so
+    # setting POSTGRES_USER here would make them dial a socket that isn't
+    # there and go red. They now all carry the `integration` marker, which
+    # routes them to release-rehearsal.yml's Bucket 3 (full stack) instead
+    # of silently running nowhere.
     env:
       FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
       POSTGRES_PASSWORD: test_password
@@ -388,6 +399,67 @@ jobs:
       - name: Vite build
         run: npm run build
 
+  # ─── Static analysis (ADVISORY — promote when green) ──────────────────
+  # 2026-08-14 audit: phpstan.neon (larastan level 6 + a 973-line baseline)
+  # and [tool.mypy] strict (src/fastapi/pyproject.toml) both exist but CI
+  # ran neither — the configs were dead weight. Added here as NON-BLOCKING
+  # jobs (continue-on-error: true) because neither could be verified green
+  # in this environment before landing.
+  #
+  # PROMOTION CRITERIA — drop the continue-on-error line from a job once:
+  #   1. its step has passed on ≥2 consecutive main runs, and
+  #   2. any findings have either been fixed or captured in the baseline
+  #      (composer run stan:baseline / a mypy baseline or per-module
+  #      ignores) with a TODO to burn them down.
+  # Until then, red here is signal, not a gate.
+  phpstan:
+    name: phpstan (advisory — promote when green)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      # composer.json's "stan" script = phpstan analyse with memory_limit=2G,
+      # using phpstan.neon (larastan level 6) + phpstan-baseline.neon.
+      - name: Run PHPStan
+        run: composer run stan
+
+  mypy:
+    name: mypy (advisory — promote when green)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      # [tool.mypy] in src/fastapi/pyproject.toml is strict = true; mypy
+      # ships in the dev extra (mypy>=1.15). Scoped to the app package.
+      - name: Run mypy (strict)
+        working-directory: src/fastapi
+        run: uv run mypy app
+
   # ─── pgTAP MVT function tests ────────────────────────────────────────
   pgtap:
     name: pgTAP (MVT function assertions)
@@ -396,26 +468,18 @@ jobs:
     # Runs after Laravel job so that migrations are proven to apply cleanly
     # before we assert on their resulting SQL functions.
     needs: laravel
-    # continue-on-error (2026-08-05): 03_rls_baseline.sql fails 6 of 15
-    # assertions, but not because RLS is missing — "... has ROW LEVEL
-    # SECURITY enabled" and "... has FORCE ROW LEVEL SECURITY" all still
-    # pass for every table. Only the hardcoded POLICY NAMES are stale:
-    # the fixture checks for e.g. "collars_project_scope" and
-    # "drill_traces_tenant_scope", but the actual applied migrations
-    # (2026_05_30_010000_enable_rls_silver_drill_traces.php,
-    # 2026_04_13_200000_production_hardening_final.php) name the real
-    # policies "tenant_isolation" and "collars_owner_access" /
-    # "collars_workspace_isolation" — a naming drift from an earlier
-    # policy-normalization pass, not a live tenancy gap. This was
-    # previously invisible because the job failed one step earlier
-    # (pgTAP was never actually installed against the postgres service
-    # container — see the "Install pgTAP from source" step below) every
-    # single run since this fixture was written, for an unrelated reason.
-    # Left non-blocking rather than silently deleting the check; the real
-    # fix is updating 03_rls_baseline.sql to assert the current policy
-    # names per table, which needs a table-by-table read of what each
-    # migration actually named its policy — not done here.
-    continue-on-error: true
+    # BLOCKING again as of 2026-08-14. This job was continue-on-error from
+    # 2026-08-05 because 03_rls_baseline.sql asserted 6 stale hardcoded
+    # policy names ("collars_project_scope", "drill_traces_tenant_scope",
+    # …). The fixture was fixed in 4260d12 (+ sibling sweeps in 1546589 /
+    # 6a6ec08) to assert the post-normalization families: the
+    # <table>_workspace_isolation family (2026_05_25_180924 canonical +
+    # 2026_05_25_182857 missed-tables migrations) and drill_traces'
+    # tenant_isolation (2026_05_30_010000). Verified table-by-table
+    # against those migrations 2026-08-14, and empirically: the "Run
+    # pgTAP assertions" step passed on the last green main run
+    # (run 31567237441, commit f33e21e). Nothing masks failures anymore —
+    # a stale fixture now correctly blocks the merge.
 
     services:
       postgres:
@@ -574,195 +638,12 @@ jobs:
           dockerfile: docker/dagster.Dockerfile
           failure-threshold: error
 
-  # ─── Docker build + push (GHCR on main) + Trivy + SBOM ──────────────────
-  # Strategy:
-  #   PRs:   build only (no push) — fast cycle, no registry writes.
-  #   main:  build + push with SHA tag + rolling "main" tag.
-  #
-  # Images pushed to:
-  #   ghcr.io/<owner>/georag-fastapi:<short-sha>
-  #   ghcr.io/<owner>/georag-fastapi:main         (rolling latest on main)
-  #   (same pattern for laravel)
-  #   NOT consumed by cd.yml — that builds straight to ACR (georagacrcc)
-  #   and deploys from there (2026-08-05 rewrite). This job's own value is
-  #   the Trivy scan + SBOM below; the GHCR push is just a side effect of
-  #   how docker/build-push-action works, kept in case a non-Azure
-  #   consumer ever needs these images.
-  #
-  # Platforms: linux/amd64 only (2026-08-06 — see below).
-  # Cache: GitHub Actions cache (type=gha) scoped per image name.
-  #
-  # 2026-08-06: dropped the linux/arm64 leg. This job had been timing out
-  # at its 30-minute cap on every single run for over a month; the
-  # near-certain cause is that `main` pushes built BOTH amd64 and
-  # QEMU-emulated arm64 in the same step, and emulated compilation of the
-  # torch/GDAL-heavy dependencies in these images is a well-known
-  # multi-minute-to-multi-hour multiplier over native — CD's own ACR
-  # builds of the identical Dockerfiles (single-platform, native) already
-  # take ~20 minutes for fastapi alone. Nothing in the real deploy path
-  # (Azure Container Apps, x86_64-only) has ever consumed an arm64 image;
-  # the original rationale below was for self-hosted on-prem ARM hosts
-  # from before the Azure-only decision.
-  #
-  # Original note on arm64 prod deployments (now historical, kept for
-  # context): the three georag/* images this job builds are Python/PHP
-  # and are arm64-clean. The compose stack also includes vLLM (prod LLM
-  # tier), which is x86_64-only — arm64 hosts could run dev (Ollama) but
-  # never the prod LLM tier directly. See
-  # ops/runbooks/llm-model-swap.md for the (now moot) arm64 caveat.
-  #
-  # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
-  #
-  # continue-on-error (2026-08-05): these GHCR pushes are no longer part of
-  # the real deploy path — cd.yml now builds fastapi/laravel straight to ACR
-  # (georagacrcc) and deploys from there, same as the manual `az acr build`
-  # steps used throughout the Azure migration. This job had also been timing
-  # out at its 30-minute cap on every single run for over a month, which
-  # alone kept "GeoRAG CI" permanently red and silently blocked CD from ever
-  # auto-firing (CD's workflow_run gate requires CI's overall conclusion to
-  # be success) — see the arm64 note above (2026-08-06) for the actual fix.
-  # Left non-blocking regardless, since a Trivy/SBOM finding on a PR is
-  # useful signal but shouldn't itself gate CD.
-  docker-build:
-    name: Docker Build${{ github.ref == 'refs/heads/main' && ' + Push (GHCR)' || ' (PR smoke test)' }}
-    runs-on: ubuntu-latest
-    # Native single-platform builds of these Dockerfiles take ~20 minutes
-    # for fastapi alone via ACR (see cd.yml); 30 min was already tight
-    # even before accounting for the Trivy scan + SBOM steps that run
-    # after the build within the same budget. 45 gives real headroom.
-    timeout-minutes: 45
-    continue-on-error: true
-    # Matrix over the two images so each gets its own cache scope and SBOM.
-    # Failures in one image do not cancel the other. The dagster leg was
-    # dropped 2026-08-05 — Dagster services were retired in Phase B2 and
-    # nothing deploys this image anymore.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - service: fastapi
-            dockerfile: docker/fastapi.Dockerfile
-            # Storage-abstraction plan PR1 — widened from src/fastapi to src
-            # so the Dockerfile can COPY the sibling georag_object_storage
-            # path dependency. Must match docker-compose.yml's fastapi
-            # build.context.
-            context: src
-          - service: laravel
-            dockerfile: docker/laravel.Dockerfile
-            context: .
-
-    # GITHUB_TOKEN must have packages:write to push to GHCR.
-    # id-token:write is required by anchore/sbom-action attestation.
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # Login to GHCR only on main branch pushes (PRs build without pushing).
-      - name: Log in to GHCR
-        if: github.ref == 'refs/heads/main'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Short SHA tag — immutable identifier used by cd.yml deploy jobs.
-      - name: Compute short SHA
-        id: sha
-        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-
-      # Build and optionally push.
-      # On PRs: push=false, load=true (image available to Trivy via local daemon).
-      # On main: push=true, load=false (image in GHCR, Trivy pulls from there).
-      - name: Build${{ github.ref == 'refs/heads/main' && ' and push' || '' }} ${{ matrix.service }} image
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          # `load: true` (PR builds) puts the image in the local Docker
-          # daemon so Trivy can scan it. Single platform on both branches
-          # now — see the arm64 note above the job definition (2026-08-06).
-          platforms: linux/amd64
-          push: ${{ github.ref == 'refs/heads/main' }}
-          load: ${{ github.ref != 'refs/heads/main' }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}
-            ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:main
-          cache-from: type=gha,scope=georag-${{ matrix.service }}
-          cache-to: type=gha,scope=georag-${{ matrix.service }},mode=max
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-
-      # Trivy vulnerability scan.
-      # CRITICAL severity fails the build (exit-code: "1").
-      # HIGH is reported but does not block — tighten to CRITICAL,HIGH once
-      # base images are updated to non-EOL OS versions.
-      # ignore-unfixed: true skips CVEs with no upstream fix (noise reduction).
-      - name: Trivy scan — ${{ matrix.service }}
-        # 2026-06-24 re-audit: was @master — a floating branch ref on a
-        # repo that suffered a tag-hijack supply-chain incident in March
-        # 2026 (GHSA-69fq-xp46-6x23). Pinned to a release tag.
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: CRITICAL
-
-      # SBOM generation via Syft (anchore/sbom-action). SPDX JSON format.
-      # Artifact is uploaded and retained 90 days for supply-chain audits.
-      # Closes L-A4-08.
-      - name: Generate SBOM — ${{ matrix.service }}
-        uses: anchore/sbom-action@v0
-        with:
-          image: "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}:${{ steps.sha.outputs.short }}"
-          format: spdx-json
-          artifact-name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}.spdx.json
-          output-file: /tmp/sbom-${{ matrix.service }}.spdx.json
-
-      - name: Upload SBOM artifact — ${{ matrix.service }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: sbom-${{ matrix.service }}-${{ steps.sha.outputs.short }}
-          path: /tmp/sbom-${{ matrix.service }}.spdx.json
-          retention-days: 90
-
-      # ---------------------------------------------------------------------
-      # Cosign keyless image signing (2026-06-23 sweep).
-      # Sigstore keyless signing via GitHub OIDC — no private key to
-      # manage. Each pushed image gets a Rekor transparency-log entry
-      # binding the digest to the workflow + commit SHA + branch ref.
-      # Verify downstream with:
-      #   cosign verify \
-      #     --certificate-identity-regexp "https://github\.com/${OWNER}/" \
-      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      #     ghcr.io/${OWNER}/georag-${SERVICE}@sha256:<digest>
-      # PR builds are not signed (no push happens, no digest to sign).
-      # ---------------------------------------------------------------------
-      - name: Install Cosign — ${{ matrix.service }}
-        if: github.event_name != 'pull_request'
-        # 2026-06-24 re-audit: installer v3 cannot install Cosign v3.x;
-        # bumped to v4 + cosign-release to the current v3.1.1.
-        # 2026-06-29: pin to v4.1.2 — sigstore/cosign-installer does not
-        # publish a floating `v4` major tag, so `@v4` failed to resolve.
-        uses: sigstore/cosign-installer@v4.1.2
-        with:
-          cosign-release: 'v3.1.1'
-
-      - name: Cosign sign image — ${{ matrix.service }}
-        if: github.event_name != 'pull_request'
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          cosign sign --yes \
-            "ghcr.io/${{ github.repository_owner }}/georag-${{ matrix.service }}@${{ steps.build.outputs.digest }}"
+  # ─── Docker build + Trivy + SBOM: MOVED (2026-08-14) ────────────────────
+  # The ~24-minute docker-build/Trivy/SBOM/Cosign job now lives in its own
+  # workflow, .github/workflows/docker-build.yml (identical triggers and job
+  # content). Rationale: cd.yml's workflow_run trigger waits for this WHOLE
+  # workflow to conclude, and this workflow's blocking jobs finish in ~6
+  # minutes — keeping the non-blocking 24-minute image build inside "GeoRAG
+  # CI" delayed every production deploy by ~18 minutes for no gate value.
+  # Side benefit: the Trivy CRITICAL scan is a real (blocking) check over
+  # there now that it no longer sits in CD's gate path.
