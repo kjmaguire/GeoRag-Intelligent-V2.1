@@ -721,7 +721,30 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                 </div>
                             </div>
                         ) : (
-                            messages.map((m) => <MessageBubble key={m.id} m={m} projectId={project.project_id} />)
+                            messages.map((m, idx) => {
+                                // For an errored assistant bubble, Retry re-sends the
+                                // paired preceding user message (the nearest user turn
+                                // above it).
+                                const pairedUser =
+                                    m.role === 'assistant' && m.error
+                                        ? messages
+                                              .slice(0, idx)
+                                              .filter((x) => x.role === 'user')
+                                              .pop()
+                                        : undefined;
+                                return (
+                                    <MessageBubble
+                                        key={m.id}
+                                        m={m}
+                                        projectId={project.project_id}
+                                        onRetry={
+                                            pairedUser && !streaming
+                                                ? () => sendMessage(pairedUser.content)
+                                                : undefined
+                                        }
+                                    />
+                                );
+                            })
                         )}
                     </div>
 
@@ -784,8 +807,36 @@ export default function FoundryChat({ project, threads, active_thread_id, active
 
 type ResolvedCitation = { text: string; source_type: string; metadata?: Record<string, unknown> };
 
-function MessageBubble({ m, projectId }: { m: ChatMessage; projectId?: string | null }) {
+function MessageBubble({
+    m,
+    projectId,
+    onRetry,
+}: {
+    m: ChatMessage;
+    projectId?: string | null;
+    onRetry?: () => void;
+}) {
     const isUser = m.role === 'user';
+    // Copy-to-clipboard with a brief confirmation flash.
+    const [copied, setCopied] = useState(false);
+    const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(() => () => {
+        if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    }, []);
+
+    function copyContent() {
+        if (!m.content) return;
+        navigator.clipboard
+            ?.writeText(m.content)
+            .then(() => {
+                setCopied(true);
+                if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+                copiedTimerRef.current = setTimeout(() => setCopied(false), 1500);
+            })
+            .catch(() => {
+                // Clipboard unavailable (permissions / insecure context) — no-op.
+            });
+    }
     // Citation chips were inert (title-attribute tooltip only) despite the
     // platform's citation-first pitch — GET /api/v1/citations/resolve
     // already existed server-side with nothing in the UI calling it. Keyed
@@ -822,7 +873,7 @@ function MessageBubble({ m, projectId }: { m: ChatMessage; projectId?: string | 
     }
 
     return (
-        <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+        <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'}`}>
             <div className="max-w-[80%]">
                 <div
                     className="rounded-lg px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap"
@@ -878,6 +929,43 @@ function MessageBubble({ m, projectId }: { m: ChatMessage; projectId?: string | 
                             <span>·</span>
                             <Pill tone="info">conf {m.confidence.toFixed(2)}</Pill>
                         </>
+                    )}
+                    {/* Hover actions — copy on any settled assistant message,
+                        retry on error bubbles. Kept in the micro-mono meta row;
+                        revealed on hover/focus so the transcript stays quiet. */}
+                    {!isUser && !m.isStreaming && (
+                        <span className="inline-flex items-center gap-2 ml-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                            {m.content && (
+                                <button
+                                    type="button"
+                                    onClick={copyContent}
+                                    aria-label="Copy message to clipboard"
+                                    className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
+                                    style={{
+                                        color: copied ? 'var(--accent)' : 'var(--fg-3)',
+                                        borderColor: copied ? 'var(--accent)' : 'var(--line-2)',
+                                        background: 'transparent',
+                                    }}
+                                >
+                                    {copied ? '✓ copied' : 'copy'}
+                                </button>
+                            )}
+                            {m.error && onRetry && (
+                                <button
+                                    type="button"
+                                    onClick={onRetry}
+                                    aria-label="Retry the question that produced this error"
+                                    className="font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
+                                    style={{
+                                        color: 'var(--warn)',
+                                        borderColor: 'var(--warn)',
+                                        background: 'transparent',
+                                    }}
+                                >
+                                    ↻ retry
+                                </button>
+                            )}
+                        </span>
                     )}
                 </div>
                 {m.citations.length > 0 && (
