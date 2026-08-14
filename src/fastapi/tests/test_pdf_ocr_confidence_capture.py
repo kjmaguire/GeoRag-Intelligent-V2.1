@@ -160,6 +160,40 @@ def test_ocr_single_page_returns_confidence_tuple(parser_module, monkeypatch):
     assert abs(conf - 0.8125) < 1e-6
 
 
+def test_ocr_single_page_preserves_line_structure(parser_module, monkeypatch):
+    """2026-08-14 — words are grouped by (block, par, line) and joined with
+    newlines so MULTILINE section-heading regexes can match OCR'd pages."""
+    fake_image = MagicMock()
+    fake_pdf2image = types.ModuleType("pdf2image")
+    fake_pdf2image.convert_from_path = MagicMock(return_value=[fake_image])
+
+    fake_tesseract = types.ModuleType("pytesseract")
+    fake_tesseract.Output = types.SimpleNamespace(DICT="dict")
+    fake_tesseract.image_to_data = MagicMock(
+        return_value={
+            "text": ["1.", "Summary", "The", "property"],
+            "conf": [90, 90, 80, 80],
+            "block_num": [1, 1, 1, 1],
+            "par_num": [1, 1, 1, 1],
+            "line_num": [1, 1, 2, 2],
+        }
+    )
+    fake_tesseract.image_to_string = MagicMock(return_value="")
+
+    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+    monkeypatch.setitem(sys.modules, "pytesseract", fake_tesseract)
+    monkeypatch.setattr(parser_module, "_preprocess_image_for_ocr", lambda img: img)
+    monkeypatch.setattr(parser_module, "_postprocess_ocr_text", lambda t: t)
+
+    text, conf = parser_module._ocr_single_page(
+        "/tmp/fake.pdf",
+        1,
+        return_confidence=True,
+    )
+    assert text == "1. Summary\nThe property"
+    assert abs(conf - 0.85) < 1e-6
+
+
 def test_ocr_single_page_legacy_signature_returns_string(parser_module, monkeypatch):
     fake_image = MagicMock()
     fake_pdf2image = types.ModuleType("pdf2image")

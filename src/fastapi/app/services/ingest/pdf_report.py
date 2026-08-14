@@ -1586,7 +1586,12 @@ def _parse_with_fitz(
                 ocr_recovered += 1
                 pages_text.append(ocr_text)
                 per_page_text.append((n, ocr_text))
-                per_page_method[n] = "tesseract"
+                # 2026-08-14 — _ocr_single_page may have routed to Azure
+                # Document Intelligence; the assessment carries the true
+                # engine. Hard-coding "tesseract" mislabeled DI pages in
+                # silver.document_passages.ocr_method and the Qdrant
+                # confidence weighting.
+                per_page_method[n] = str(assessment.get("ocr_method") or "tesseract")
                 per_page_confidence[n] = mean_conf
                 # Note: not sorting pages_text — order matters for
                 # downstream section detection, but OCR'd image pages
@@ -1613,7 +1618,10 @@ def _parse_with_fitz(
                         per_page_method[n] = "fitz_native"
                         per_page_confidence[n] = None
                     else:
-                        per_page_method[n] = "tesseract"
+                        # 2026-08-14 — truthful engine label (see above).
+                        per_page_method[n] = str(
+                            assessment.get("ocr_method") or "tesseract"
+                        )
                         per_page_confidence[n] = mean_conf
                     warnings.append({
                         "code": "page_short_text_salvaged",
@@ -1688,6 +1696,58 @@ def _get_cached_pikepdf(pdf_path: str):
     pdf = _pikepdf.open(pdf_path)
     _PIKEPDF_CACHE[pdf_path] = pdf
     return pdf
+
+
+def _tesseract_data_to_words_and_text(data: dict) -> tuple[list[tuple[str, int]], str]:
+    """2026-08-14 — rebuild line structure from ``image_to_data`` output.
+
+    The old code joined every accepted word with a single space, producing
+    one giant line per page. SECTION_HEADING_RE (and the other structural
+    regexes) are ``^...$`` MULTILINE, so headings never matched on OCR'd
+    pages — parse_quality sat at 0 and every chunk was labeled "Document".
+
+    Groups accepted words by ``(block_num, par_num, line_num)`` and joins
+    lines with ``\\n``. Falls back to a single line when the grouping
+    columns are absent (defensive: malformed output, legacy fixtures).
+
+    Returns ``(words, text)`` where ``words`` is ``[(word, conf_int)]`` in
+    reading order — identical filtering to the old inline comprehension
+    (non-empty, confidence >= 0), so confidence math is unchanged.
+    """
+    raw_words = data.get("text", []) or []
+    raw_confs = data.get("conf", []) or []
+    n = len(raw_words)
+    blocks = data.get("block_num") or [0] * n
+    pars = data.get("par_num") or [0] * n
+    line_nums = data.get("line_num") or [0] * n
+
+    words: list[tuple[str, int]] = []
+    line_texts: list[str] = []
+    current_key: tuple | None = None
+    current_words: list[str] = []
+    for w, c, blk, par, ln in zip(
+        raw_words, raw_confs, blocks, pars, line_nums, strict=False,
+    ):
+        if not (w and str(w).strip()):
+            continue
+        try:
+            conf = int(c)
+        except (TypeError, ValueError):
+            continue
+        if conf < 0:
+            continue
+        token = str(w).strip()
+        words.append((token, conf))
+        key = (blk, par, ln)
+        if key != current_key:
+            if current_words:
+                line_texts.append(" ".join(current_words))
+            current_words = []
+            current_key = key
+        current_words.append(token)
+    if current_words:
+        line_texts.append(" ".join(current_words))
+    return words, "\n".join(line_texts)
 
 
 def _ocr_single_page(
@@ -1869,17 +1929,13 @@ def _ocr_single_page(
                     config="--psm 3 --oem 3",
                     output_type=pytesseract.Output.DICT,
                 )
-                # strict=False deliberately: pytesseract's DICT output should
-                # give equal-length text/conf lists, but a malformed OCR result
-                # must degrade to fewer words rather than raise mid-ingest.
-                words = [
-                    (w, int(c))
-                    for w, c in zip(
-                        data.get("text", []), data.get("conf", []), strict=False
-                    )
-                    if w and w.strip() and int(c) >= 0
-                ]
-                text = " ".join(w for w, _c in words)
+                # strict=False (inside the helper) deliberately:
+                # pytesseract's DICT output should give equal-length
+                # text/conf lists, but a malformed OCR result must degrade
+                # to fewer words rather than raise mid-ingest. 2026-08-14 —
+                # text is now line-structured (grouped by block/par/line)
+                # so section headings survive OCR; see the helper.
+                words, text = _tesseract_data_to_words_and_text(data)
                 if words:
                     mean_conf = sum(c for _w, c in words) / len(words) / 100.0
                     mean_conf = max(0.0, min(1.0, mean_conf))
@@ -2713,16 +2769,10 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
                     output_type=pytesseract.Output.DICT,
                 )
                 detected_region_count = len(data.get("text", []))
-                detected_words = [
-                    (str(word).strip(), int(confidence))
-                    for word, confidence in zip(
-                        data.get("text", []),
-                        data.get("conf", []),
-                        strict=False,
-                    )
-                    if str(word).strip() and int(confidence) >= 0
-                ]
-                page_text = " ".join(word for word, _confidence in detected_words)
+                # 2026-08-14 — line-structured OCR text (grouped by
+                # block/par/line) so section headings survive; see
+                # _tesseract_data_to_words_and_text.
+                detected_words, page_text = _tesseract_data_to_words_and_text(data)
                 word_confidences = [
                     confidence / 100.0
                     for _word, confidence in detected_words
@@ -2915,7 +2965,17 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                 _span.set_attribute("pdf.text_chars", len(full_text))
                 _span.set_attribute("pdf.page_count", len(page_languages))
                 _span.set_attribute("pdf.image_pages", len(image_page_nums))
-                is_scanned = is_scanned or bool(image_page_nums)
+                # 2026-08-14 — image_page_nums is recomputed post-recovery
+                # (only pages still unfilled), so a scan whose every page
+                # was successfully OCR'd reported is_scanned=false. Any
+                # page whose text came from an OCR engine was an image
+                # page pre-recovery — OR those in. (per_page_method holds
+                # 'fitz_native' only for true text-layer pages; recovered
+                # pages carry 'tesseract'/'document_intelligence'/etc.)
+                is_scanned = is_scanned or bool(image_page_nums) or any(
+                    m not in ("fitz_native", "pdfplumber_native")
+                    for m in per_page_method.values()
+                )
                 parser_used = "fitz"
                 logger.info(
                     "pdf_report: fitz extracted %d chars from '%s' (%d pages, %d image pages)",

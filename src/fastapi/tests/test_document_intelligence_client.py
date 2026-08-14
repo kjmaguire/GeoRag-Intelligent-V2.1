@@ -125,6 +125,33 @@ class TestOcrPage:
             pages="3",
         )
 
+    async def test_reconstructs_text_from_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """2026-08-14: page text is rebuilt from DI's `lines` collection
+        (joined with newlines) so pdf_report's MULTILINE section-heading
+        regexes can match on scanned docs; the word stream still drives
+        confidence, and the word join stays as the no-lines fallback."""
+        monkeypatch.setenv(di.ENDPOINT_ENV, "https://example.cognitiveservices.azure.com")
+        monkeypatch.setenv(di.KEY_ENV, "fake-key")
+
+        word_a = MagicMock(content="1.", confidence=0.9, polygon=None)
+        word_b = MagicMock(content="Summary", confidence=0.8, polygon=None)
+        line_1 = MagicMock(content="1. Summary")
+        line_2 = MagicMock(content="The Patterson Lake property")
+        page = MagicMock(words=[word_a, word_b], lines=[line_1, line_2])
+        analyze_result = MagicMock(pages=[page])
+
+        poller = AsyncMock()
+        poller.result = AsyncMock(return_value=analyze_result)
+        mock_client = MagicMock()
+        mock_client.begin_analyze_document = AsyncMock(return_value=poller)
+
+        with patch.object(di, "_build_client", return_value=mock_client):
+            result = await di.ocr_page(b"%PDF-1.4 fake bytes", page_num=1)
+
+        assert result.text == "1. Summary\nThe Patterson Lake property"
+        assert result.mean_confidence == pytest.approx((0.9 + 0.8) / 2)
+        assert result.detected_region_count == 2
+
     async def test_empty_result_when_no_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(di.ENDPOINT_ENV, "https://example.cognitiveservices.azure.com")
         monkeypatch.setenv(di.KEY_ENV, "fake-key")

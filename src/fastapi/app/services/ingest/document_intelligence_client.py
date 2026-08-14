@@ -251,7 +251,24 @@ async def _analyze_document(
         for word in sdk_words
         if getattr(word, "content", None)
     )
-    text = " ".join(word.text for word in words)
+    # 2026-08-14 — reconstruct page text from DI's `lines` collection
+    # instead of one giant space-joined word soup. pdf_report's section
+    # regexes (SECTION_HEADING_RE et al) are ^...$ MULTILINE: with no
+    # newlines, no heading ever matched on scanned docs, so parse_quality
+    # sat at 0 and every chunk was labeled "Document". Word-level
+    # confidence/polygon handling (tiling) is intentionally unchanged.
+    # Falls back to the word join when no usable lines exist (image tiles
+    # from odd models, defensive against mocked results).
+    line_texts: list[str] = []
+    for page in pages:
+        for line in getattr(page, "lines", None) or []:
+            content = getattr(line, "content", None)
+            if isinstance(content, str) and content.strip():
+                line_texts.append(content.strip())
+    if line_texts:
+        text = "\n".join(line_texts)
+    else:
+        text = " ".join(word.text for word in words)
     confidences = [word.confidence for word in words]
     mean_confidence = (sum(confidences) / len(confidences)) if confidences else 0.0
     # Count every detected word region, including empty-content regions that
