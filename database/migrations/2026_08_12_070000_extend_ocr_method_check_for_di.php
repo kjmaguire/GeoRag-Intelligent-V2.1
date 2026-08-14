@@ -26,7 +26,7 @@ return new class extends Migration
         DB::statement('ALTER TABLE silver.document_passages DROP CONSTRAINT IF EXISTS document_passages_ocr_method_check');
         DB::statement(
             'ALTER TABLE silver.document_passages ADD CONSTRAINT document_passages_ocr_method_check '
-            .'CHECK (ocr_method IS NULL OR ocr_method IN ('.self::VALUES.'))'
+            .'CHECK (ocr_method IS NULL OR ocr_method IN ('.self::VALUES.'))',
         );
     }
 
@@ -39,7 +39,7 @@ return new class extends Migration
         DB::statement('ALTER TABLE silver.document_passages DROP CONSTRAINT IF EXISTS document_passages_ocr_method_check');
         DB::statement(
             'ALTER TABLE silver.document_passages ADD CONSTRAINT document_passages_ocr_method_check '
-            ."CHECK (ocr_method IS NULL OR ocr_method IN ('fitz_native', 'pdfplumber_native', 'docling_rapidocr', 'tesseract'))"
+            ."CHECK (ocr_method IS NULL OR ocr_method IN ('fitz_native', 'pdfplumber_native', 'docling_rapidocr', 'tesseract'))",
         );
     }
 };
