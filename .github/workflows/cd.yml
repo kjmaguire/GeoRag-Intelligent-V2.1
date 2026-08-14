@@ -258,10 +258,18 @@ jobs:
           echo "::error::laravel-octane-cc /up never returned 200"
           exit 1
 
-      - name: Rollback on failure
-        if: failure()
+      - name: Rollback on failure or cancellation
+        # cancelled() matters here (2026-08-14 audit): this workflow's
+        # concurrency group has cancel-in-progress: true, so a newer push
+        # can cancel a deploy AFTER migrations ran / apps were partially
+        # rolled over — with a bare failure() condition, that cancelled run
+        # never rolled back and left the environment half-deployed. The
+        # step is bounded so a hung `az` call can't keep a cancelled job
+        # pinned to the runner past GitHub's grace period.
+        if: failure() || cancelled()
+        timeout-minutes: 10
         run: |
-          echo "::warning::deploy failed a health check — rolling back to the pre-deploy image on each app"
+          echo "::warning::deploy failed or was cancelled mid-flight — rolling back to the pre-deploy image on each app"
           for target in fastapi-cc hatchet-worker-cc laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
             if [ -f "/tmp/rollback/${target}.image" ]; then
               PREV=$(cat "/tmp/rollback/${target}.image")
