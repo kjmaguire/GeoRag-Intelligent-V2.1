@@ -7,6 +7,7 @@ import InlineViz from '@/Components/InlineViz';
 import ResolutionPreviewChip from '@/Components/ResolutionPreviewChip';
 import CitationPGEODetail from '@/Components/PublicGeoscience/CitationPGEODetail';
 import type { Citation as SharedCitation } from '@/types';
+import { formatTime, formatWhen } from '@/lib/time';
 import {
     ContextEnvelopeForm,
     EMPTY_ENVELOPE,
@@ -670,7 +671,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                             >
                                 <div className="text-xs font-medium truncate">{t.title}</div>
                                 <div className="text-[10px] font-mono uppercase tracking-wider mt-0.5" style={{ color: 'var(--fg-3)' }}>
-                                    {t.updated.slice(0, 16)}
+                                    {formatWhen(t.updated)}
                                 </div>
                             </button>
                         ))
@@ -923,7 +924,7 @@ function MessageBubble({
                 <div className="flex items-center gap-2 mt-1.5 text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
                     <span>{m.role}</span>
                     <span>·</span>
-                    <span>{m.created_at.slice(11, 16)}</span>
+                    <span>{formatTime(m.created_at)}</span>
                     {m.confidence !== null && (
                         <>
                             <span>·</span>

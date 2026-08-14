@@ -3,6 +3,7 @@ import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, StatusDot, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
+import { formatWhen } from '@/lib/time';
 
 interface FileTypeRow {
     kind: string;
@@ -85,11 +86,6 @@ function humanBytes(n: number): string {
         i += 1;
     }
     return `${v.toFixed(v >= 100 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
-}
-
-function shortDate(s: string | null | undefined): string {
-    if (!s) return '—';
-    return s.slice(0, 16).replace('T', ' ');
 }
 
 function statusTone(s: string): 'accent' | 'warn' | 'danger' | 'info' | 'neutral' {
@@ -408,7 +404,7 @@ function ParsersTab({ rows }: { rows: ParserActivityRow[] }) {
                                 {p.tables_touched}
                             </div>
                             <div className="font-mono text-[11px]" style={{ color: 'var(--fg-2)' }}>
-                                {shortDate(p.last_run)}
+                                {formatWhen(p.last_run)}
                             </div>
                         </div>
                     ))}
@@ -472,7 +468,7 @@ function ReportsTab({
                                 {r.version}
                             </div>
                             <div className="font-mono text-[11px]" style={{ color: 'var(--fg-3)' }}>
-                                {shortDate(r.created_at)}
+                                {formatWhen(r.created_at)}
                             </div>
                         </div>
                     ))}
@@ -532,7 +528,7 @@ function RunsTab({ rows }: { rows: IngestRunRow[] }) {
                                 <Pill tone={statusTone(r.status)}>{r.status}</Pill>
                             </div>
                             <div className="font-mono text-[11px]" style={{ color: 'var(--fg-2)' }}>
-                                {shortDate(r.started_at)}
+                                {formatWhen(r.started_at)}
                             </div>
                             <div className="font-mono text-right" style={{ color: 'var(--fg-2)' }}>
                                 {r.files_seen.toLocaleString()}

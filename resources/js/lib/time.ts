@@ -60,6 +60,69 @@ export function formatStaleness(seconds: number | null | undefined): StalenessIn
     };
 }
 
+/* ------------------------------------------------------------------ *
+ * Timestamp display — the ONE place server timestamps become UI text.
+ *
+ * Server timestamps arrive as ISO strings that are UTC but frequently
+ * WITHOUT a timezone designator ("2026-08-14T09:31:22" or
+ * "2026-08-14 09:31:22"). JavaScript's Date parses those as LOCAL time,
+ * so slicing (`created_at.slice(11,16)`) or naive `new Date(...)` both
+ * rendered UTC wall-clock digits as if they were local — factually wrong
+ * for any user west or east of Greenwich. These helpers parse as UTC,
+ * then format in the viewer's local zone.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Parse a server timestamp as UTC. Strings without a timezone designator
+ * get 'Z' appended; a space separator is normalized to 'T'. Returns null
+ * for unparseable input.
+ */
+export function parseUtc(value: string | null | undefined): Date | null {
+    if (!value) return null;
+    let s = value.trim();
+    if (s.length === 0) return null;
+    // "YYYY-MM-DD HH:MM…" → ISO 'T' separator.
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) s = s.replace(' ', 'T');
+    // No explicit zone (Z or ±hh[:]mm) → server timestamps are UTC.
+    if (/T\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) s += 'Z';
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function pad2(n: number): string {
+    return String(n).padStart(2, '0');
+}
+
+/**
+ * Full "when" label: relative for the recent past ("just now", "12m ago",
+ * "2h ago"), absolute local "YYYY-MM-DD HH:MM" beyond 24 h. Date-only
+ * inputs ("1979-05-12") pass through unchanged — they carry no time
+ * component to convert and UTC-parsing them can shift the calendar day.
+ * Null/empty/unparseable input renders as an em dash / the raw string.
+ */
+export function formatWhen(value: string | null | undefined): string {
+    if (!value) return '—';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return value.trim();
+    const d = parseUtc(value);
+    if (!d) return value;
+    const ageSec = (Date.now() - d.getTime()) / 1000;
+    if (ageSec >= 0 && ageSec < 60) return 'just now';
+    if (ageSec >= 60 && ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
+    if (ageSec >= 3600 && ageSec < 86_400) return `${Math.floor(ageSec / 3600)}h ago`;
+    // Absolute, in the viewer's local zone, mono-friendly.
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * Local wall-clock "HH:MM" for a server timestamp. Use where only the
+ * time-of-day matters (chat message meta, "refreshed at" lines).
+ */
+export function formatTime(value: string | null | undefined): string {
+    const d = parseUtc(value);
+    if (!d) return '—';
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
 function _humanize(seconds: number): string {
     if (seconds < 60) return 'just now';
     const minutes = Math.round(seconds / 60);

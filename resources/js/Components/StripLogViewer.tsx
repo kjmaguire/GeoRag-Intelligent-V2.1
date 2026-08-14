@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { cn } from '../lib/utils';
+import { formatWhen } from '../lib/time';
 
 /**
  * StripLogViewer
@@ -715,9 +716,10 @@ export default function StripLogViewer({
 
     // ── Full render ───────────────────────────────────────────────────────────
 
-    const drillDate = collar.drill_date
-        ? new Date(collar.drill_date).toLocaleDateString('en-CA')
-        : '—';
+    // formatWhen parses server timestamps as UTC (naive new Date() read
+    // zoneless strings as local) and passes date-only values through
+    // untouched, so a plain "1979-05-12" can't shift a calendar day.
+    const drillDate = collar.drill_date ? formatWhen(String(collar.drill_date)) : '—';
 
     return (
         <div className="flex flex-col h-full bg-gray-950 overflow-hidden">

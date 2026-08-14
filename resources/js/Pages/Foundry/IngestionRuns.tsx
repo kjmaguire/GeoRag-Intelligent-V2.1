@@ -2,6 +2,7 @@ import { Head, Link } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Stat, EmptyState, ProgressBar } from '@/Components/Foundry/primitives';
+import { formatTime } from '@/lib/time';
 
 /**
  * IngestionRuns — per-project pipeline progress.
@@ -220,7 +221,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                         <span>
                             {runs.totals.in_flight} in flight · {runs.totals.completed} completed
                             {lastFetched && (
-                                <span style={{ color: 'var(--fg-3)' }}> · refreshed {new Date(lastFetched).toLocaleTimeString()}</span>
+                                <span style={{ color: 'var(--fg-3)' }}> · refreshed {formatTime(lastFetched)}</span>
                             )}
                         </span>
                     }
