@@ -44,6 +44,7 @@ import hashlib
 import io
 import logging
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -70,16 +71,29 @@ def _dsn() -> str:
     return f"postgres://{user}:{password}@{host}:{port}/{db}"
 
 
-async def _ensure_project(pool, *, project_id: str, workspace_id: str) -> None:
-    """Insert the CI smoke project row (idempotent)."""
+def _slugify(value: str) -> str:
+    """Mirror Laravel's Str::slug() default behavior (ascii, '-' separator)."""
+    return re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
+
+
+async def _ensure_project(pool, *, project_id: str, workspace_id: str, project_name: str) -> None:
+    """Insert the CI smoke project row (idempotent).
+
+    silver.projects.slug is NOT NULL + UNIQUE. This INSERT bypasses Eloquent
+    (and its Project::booted() creating-hook that normally derives slug), so
+    it replicates that same convention here -- slugified name + first 8 chars
+    of project_id (app/Models/Project.php) -- to stay unique across CI runs,
+    which each generate a fresh project_id.
+    """
+    slug = f"{_slugify(project_name)}-{project_id[:8]}"
     await pool.execute(
         """
         INSERT INTO silver.projects (
-            project_id, project_name, orientation_reference, workspace_id
-        ) VALUES ($1::uuid, $2, $3, $4::uuid)
+            project_id, project_name, orientation_reference, workspace_id, slug
+        ) VALUES ($1::uuid, $2, $3, $4::uuid, $5)
         ON CONFLICT (project_id) DO NOTHING
         """,
-        project_id, "CI E2E Smoke Project", "grid-north", workspace_id,
+        project_id, project_name, "grid-north", workspace_id, slug,
     )
 
 
@@ -164,7 +178,10 @@ async def main() -> int:
 
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2, statement_cache_size=0)
     try:
-        await _ensure_project(pool, project_id=project_id, workspace_id=workspace_id)
+        await _ensure_project(
+            pool, project_id=project_id, workspace_id=workspace_id,
+            project_name="CI E2E Smoke Project",
+        )
 
         log.info("ingest: calling REAL ingest_pdf._persist_body (silver.reports + document_passages)")
         final = await _persist_body(ingest_input, ctx)
