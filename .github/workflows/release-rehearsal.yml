@@ -135,6 +135,33 @@ jobs:
         continue-on-error: false
         env:
           FASTAPI_URL: "http://localhost:8000"
+          # Live-Postgres integration modules (test_orphan_sweep,
+          # test_stale_run_detector, test_ingest_progress_state_machine,
+          # test_embed_pending_completion_sweep, and others) call
+          # app.hatchet_workflows._progress._dsn(), which requires
+          # POSTGRES_USER/POSTGRES_PASSWORD and reads POSTGRES_DIRECT_HOST/
+          # POSTGRES_DIRECT_PORT/POSTGRES_DB. Each module module-skips when
+          # POSTGRES_USER is unset — before this env block only FASTAPI_URL
+          # was set here, so the modules silently skipped in this job too
+          # even after being routed to it (2026-08-14 audit).
+          #
+          # pytest runs directly on this runner (via `uv run`), not inside
+          # a container, so it cannot reach the `postgresql` compose
+          # service by its service name — docker-compose.yml only
+          # `expose`s 5432 internally for it (applications are meant to go
+          # through PgBouncer). `pgbouncer` is the one service in this
+          # stack that publishes a host port (${PGBOUNCER_PORT:-6432}:6432,
+          # started above alongside postgresql), so route through it.
+          # Credentials match the dev defaults in .env.example
+          # (POSTGRES_USER/POSTGRES_DB default to "georag" in
+          # docker-compose.yml too; POSTGRES_PASSWORD has no compose
+          # default and must match whatever the stack was actually brought
+          # up with).
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: georag_dev_password
+          POSTGRES_DIRECT_HOST: localhost
+          POSTGRES_DIRECT_PORT: "6432"
+          POSTGRES_DB: georag
         run: |
           uv run pytest tests/ -v --tb=short \
             -m "integration and not golden and not hallucination and not live" \

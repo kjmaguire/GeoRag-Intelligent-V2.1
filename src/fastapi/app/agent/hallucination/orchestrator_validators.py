@@ -763,7 +763,7 @@ async def verify_entities(
             found = {r["hole_id"] for r in rows}
             missing = [hid for hid in hole_ids if hid not in found]
             for hid in missing:
-                # RAG-quality audit 2026-08-14 (finding 2, the "ZRY" case):
+                # RAG-quality audit 2026-08-14 (finding 3, the "ZRY" case):
                 # a hole named verbatim in retrieved document chunks but
                 # absent from silver.collars is NOT a fabrication — the
                 # structured drill database simply doesn't cover it. Check
