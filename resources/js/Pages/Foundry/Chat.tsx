@@ -143,6 +143,12 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
     const [streaming, setStreaming] = useState(false);
     const [conversationId, setConversationId] = useState<string>(active_thread_id ?? '');
+    // Mobile (< lg) thread rail — collapsed by default, toggled by the
+    // hamburger button in the conversation header. Below `lg:` the rail
+    // renders inline above the conversation (same "toggle reveals a block
+    // below the header" convention as FoundryShell's own `sm:hidden`
+    // hamburger drawer) rather than a fixed overlay.
+    const [mobileThreadsOpen, setMobileThreadsOpen] = useState(false);
 
     // Phase 3 / Steps 3.2 + 3.3 — context envelope + Field/Office mode.
     // Mode is persisted per-user in localStorage; the 12 fields reset each
@@ -273,6 +279,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
 
     function selectThread(id: string) {
         router.get(`/projects/${project.slug}/chat`, { thread: id }, { preserveState: true });
+        setMobileThreadsOpen(false);
     }
 
     function newThread() {
@@ -287,6 +294,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         setMessages([]);
         setConversationId('');
         setComposer('');
+        setMobileThreadsOpen(false);
         // Also clear any `?thread=` already in the URL so the browser
         // address bar matches the empty state.
         if (typeof window !== 'undefined' && window.history && window.location.search) {
@@ -638,9 +646,19 @@ export default function FoundryChat({ project, threads, active_thread_id, active
         <AppLayout>
             <Head title={active_thread?.title ?? 'Chat — GeoRAG'} />
 
-            <div className="flex-1 grid grid-cols-[280px_1fr] overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
-                {/* Thread rail */}
-                <aside className="border-r overflow-y-auto" style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}>
+            <div className="flex-1 grid lg:grid-cols-[280px_1fr] overflow-hidden" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
+                {/* Thread rail — below `lg:` this is collapsed by default and
+                    toggled via the hamburger button in the conversation
+                    header; renders inline above the conversation instead of
+                    a fixed overlay (same convention as FoundryShell's mobile
+                    nav drawer). */}
+                <aside
+                    className={[
+                        mobileThreadsOpen ? 'block' : 'hidden',
+                        'lg:block max-h-[50vh] lg:max-h-none border-r overflow-y-auto',
+                    ].join(' ')}
+                    style={{ borderColor: 'var(--line-1)', background: 'var(--bg-1)' }}
+                >
                     <div className="px-3 py-3 flex items-center justify-between border-b" style={{ borderColor: 'var(--line-1)' }}>
                         <span className="text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>Threads · {threads.length}</span>
                         <button
@@ -681,6 +699,18 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 {/* Active conversation */}
                 <section className="flex flex-col overflow-hidden">
                     <header className="px-6 py-3 border-b flex items-center gap-3 shrink-0" style={{ borderColor: 'var(--line-1)' }}>
+                        <button
+                            type="button"
+                            onClick={() => setMobileThreadsOpen((v) => !v)}
+                            className="lg:hidden shrink-0 p-1 -ml-1"
+                            style={{ color: 'var(--fg-3)' }}
+                            aria-label="Toggle threads"
+                            aria-expanded={mobileThreadsOpen}
+                        >
+                            <svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+                                <path d="M3 6h18 M3 12h18 M3 18h18" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                        </button>
                         <BrandDiamond size={14} />
                         <div className="flex-1">
                             <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
@@ -738,6 +768,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                         key={m.id}
                                         m={m}
                                         projectId={project.project_id}
+                                        projectSlug={project.slug}
                                         onRetry={
                                             pairedUser && !streaming
                                                 ? () => sendMessage(pairedUser.content)
@@ -806,15 +837,28 @@ export default function FoundryChat({ project, threads, active_thread_id, active
     );
 }
 
-type ResolvedCitation = { text: string; source_type: string; metadata?: Record<string, unknown> };
+type ResolvedCitation = {
+    text: string;
+    source_type: string;
+    title?: string;
+    // Present on report-backed (non-PGEO) citations — see
+    // ReportResolver::resolve(). `section_number` is the raw
+    // "section=N" token off source_chunk_id (may be "unknown" when the
+    // chunk carries no section, in which case there's nothing useful to
+    // deep-link to).
+    section_number?: string | null;
+    metadata?: Record<string, unknown>;
+};
 
 function MessageBubble({
     m,
     projectId,
+    projectSlug,
     onRetry,
 }: {
     m: ChatMessage;
     projectId?: string | null;
+    projectSlug: string;
     onRetry?: () => void;
 }) {
     const isUser = m.role === 'user';
@@ -1030,11 +1074,47 @@ function MessageBubble({
                         >
                             {resolved === 'loading' && <span style={{ color: 'var(--fg-3)' }}>Loading source…</span>}
                             {resolved === 'error' && <span style={{ color: 'var(--warn, #d97706)' }}>Could not load this source.</span>}
-                            {resolved && resolved !== 'loading' && resolved !== 'error' && resolved.text}
+                            {resolved && resolved !== 'loading' && resolved !== 'error' && (
+                                <>
+                                    {resolved.text}
+                                    <ReaderLink resolved={resolved} projectSlug={projectSlug} />
+                                </>
+                            )}
                         </div>
                     );
                 })}
             </div>
+        </div>
+    );
+}
+
+/**
+ * "Open in Reader →" deep link for the expanded citation panel. Only
+ * report-backed citations (ReportResolver::resolve()) carry
+ * `metadata.report_id` — PGEO / structured citations don't reference a
+ * silver.reports row, so this renders nothing for those (handled by the
+ * caller never invoking it for PGEO, and by the report_id guard below for
+ * any other resolver that omits it).
+ */
+function ReaderLink({ resolved, projectSlug }: { resolved: ResolvedCitation; projectSlug: string }) {
+    const metadata = resolved.metadata;
+    const reportId = metadata && typeof metadata.report_id === 'string' ? metadata.report_id : null;
+    if (!reportId) return null;
+    // "unknown" is ReportResolver's literal token for a chunk with no
+    // section — nothing to jump to, so leave the query string off rather
+    // than deep-linking to a section that doesn't exist.
+    const sectionNum =
+        resolved.section_number && resolved.section_number !== 'unknown' ? resolved.section_number : null;
+    const href = `/projects/${projectSlug}/reports/${reportId}${sectionNum ? `?section=${encodeURIComponent(sectionNum)}` : ''}`;
+    return (
+        <div className="mt-2">
+            <Link
+                href={href}
+                className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
+                style={{ color: 'var(--accent)', borderColor: 'var(--accent-dim)', background: 'transparent' }}
+            >
+                Open in Reader →
+            </Link>
         </div>
     );
 }

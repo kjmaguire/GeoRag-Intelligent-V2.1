@@ -3,6 +3,7 @@ import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
+import { formatWhen } from '@/lib/time';
 
 interface ReportRow {
     id: string;
@@ -55,11 +56,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
     { id: 'passages', label: 'Indexed passages' },
     { id: 'entities', label: 'Entity links' },
 ];
-
-function shortDate(s: string | null | undefined): string {
-    if (!s) return '—';
-    return s.slice(0, 10);
-}
 
 export default function FoundryCorpus({
     project,
@@ -202,51 +198,58 @@ function ReportsTab({ reports, project }: { reports: ReportRow[]; project: Corpu
     }
     return (
         <Card padded={false}>
-            <div
-                className="grid grid-cols-[1fr_160px_110px_110px_90px_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
-                style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
-            >
-                <div>Title</div>
-                <div>Company</div>
-                <div>Filing</div>
-                <div className="text-right">Sections</div>
-                <div className="text-right">v</div>
-                <div>Updated</div>
-            </div>
-            {reports.map((r) => (
-                <Link
-                    key={r.id}
-                    href={`/projects/${project.slug}/reports/${r.id}`}
-                    className="grid grid-cols-[1fr_160px_110px_110px_90px_120px] gap-2 items-center px-4 py-2 border-b text-xs hover:bg-[var(--bg-1)] transition-colors"
-                    style={{ borderColor: 'var(--line-1)' }}
-                >
-                    <div className="flex items-center gap-2 min-w-0">
-                        <span className="truncate" style={{ color: 'var(--fg-0)' }}>
-                            {r.title}
-                        </span>
-                        {r.is_scanned && <Pill tone="warn">scanned</Pill>}
-                        {!r.has_content && <Pill tone="neutral">meta only</Pill>}
-                    </div>
-                    <div className="font-mono text-[11px] truncate" style={{ color: 'var(--fg-2)' }}>
-                        {r.company || '—'}
-                    </div>
-                    <div className="font-mono text-[11px]" style={{ color: 'var(--fg-2)' }}>
-                        {shortDate(r.filing_date)}
-                    </div>
+            {/* Fixed-px columns don't collapse below `lg:` — scroll
+                horizontally instead of clipping/overlapping on narrow
+                viewports. */}
+            <div className="overflow-x-auto">
+                <div className="min-w-[760px]">
                     <div
-                        className="font-mono text-right"
-                        style={{ color: r.has_content ? 'var(--accent)' : 'var(--fg-3)' }}
+                        className="grid grid-cols-[1fr_160px_110px_110px_90px_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
+                        style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
                     >
-                        {r.sections_count}
+                        <div>Title</div>
+                        <div>Company</div>
+                        <div>Filing</div>
+                        <div className="text-right">Sections</div>
+                        <div className="text-right">v</div>
+                        <div>Updated</div>
                     </div>
-                    <div className="font-mono text-right" style={{ color: 'var(--fg-2)' }}>
-                        v{r.version}
-                    </div>
-                    <div className="font-mono text-[11px]" style={{ color: 'var(--fg-3)' }}>
-                        {shortDate(r.updated_at)}
-                    </div>
-                </Link>
-            ))}
+                    {reports.map((r) => (
+                        <Link
+                            key={r.id}
+                            href={`/projects/${project.slug}/reports/${r.id}`}
+                            className="grid grid-cols-[1fr_160px_110px_110px_90px_120px] gap-2 items-center px-4 py-2 border-b text-xs hover:bg-[var(--bg-1)] transition-colors"
+                            style={{ borderColor: 'var(--line-1)' }}
+                        >
+                            <div className="flex items-center gap-2 min-w-0">
+                                <span className="truncate" style={{ color: 'var(--fg-0)' }}>
+                                    {r.title}
+                                </span>
+                                {r.is_scanned && <Pill tone="warn">scanned</Pill>}
+                                {!r.has_content && <Pill tone="neutral">meta only</Pill>}
+                            </div>
+                            <div className="font-mono text-[11px] truncate" style={{ color: 'var(--fg-2)' }}>
+                                {r.company || '—'}
+                            </div>
+                            <div className="font-mono text-[11px]" style={{ color: 'var(--fg-2)' }}>
+                                {formatWhen(r.filing_date)}
+                            </div>
+                            <div
+                                className="font-mono text-right"
+                                style={{ color: r.has_content ? 'var(--accent)' : 'var(--fg-3)' }}
+                            >
+                                {r.sections_count}
+                            </div>
+                            <div className="font-mono text-right" style={{ color: 'var(--fg-2)' }}>
+                                v{r.version}
+                            </div>
+                            <div className="font-mono text-[11px]" style={{ color: 'var(--fg-3)' }}>
+                                {formatWhen(r.updated_at)}
+                            </div>
+                        </Link>
+                    ))}
+                </div>
+            </div>
         </Card>
     );
 }

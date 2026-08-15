@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
@@ -6,6 +6,7 @@ import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import DataQualityFlagsBadge, {
     type DataQualityFlagsBadgeData,
 } from '@/Components/DataQualityFlagsBadge';
+import { formatWhen } from '@/lib/time';
 
 interface Section {
     heading: string;
@@ -66,11 +67,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
     { id: 'metadata', label: 'Metadata' },
 ];
 
-function shortDate(s: string | null | undefined): string {
-    if (!s) return '—';
-    return s.slice(0, 16).replace('T', ' ');
-}
-
 export default function FoundryReportView({
     project,
     report,
@@ -97,6 +93,23 @@ export default function FoundryReportView({
         }
     });
 
+    // Chat's citation "Open in Reader →" link (resources/js/Pages/Foundry/Chat.tsx)
+    // deep-links here as `?section=<N>`, where N is the raw section_number
+    // ReportResolver::resolve() returned off the citation's source_chunk_id.
+    // ReportController::view() normalises sections_text (keyed "1", "2",
+    // "preamble", ...) into `sections[].heading` holding that same key
+    // (see normaliseSection()'s "object keyed by heading" branch), so a
+    // straight string match against `s.heading` is exact — no fuzzy index
+    // arithmetic needed. Read once on mount; not intended to react to
+    // further client-side navigation within this page.
+    const [highlightSection] = useState<string | null>(() => {
+        if (typeof window === 'undefined') return null;
+        return new URLSearchParams(window.location.search).get('section');
+    });
+
+    // sections.length > 0 already wins the tab-priority order below, so a
+    // `?section=` deep link (which only ever points at a real section) opens
+    // straight onto the Sections tab with no extra branching needed here.
     const initial: Tab =
         sections.length > 0
             ? 'sections'
@@ -180,7 +193,9 @@ export default function FoundryReportView({
                 </section>
 
                 <section className="px-8 py-6 space-y-3">
-                    {tab === 'sections' && <SectionsTab sections={sections} empty={empty} />}
+                    {tab === 'sections' && (
+                        <SectionsTab sections={sections} empty={empty} highlightHeading={highlightSection} />
+                    )}
                     {tab === 'passages' && <PassagesTab passages={passages} />}
                     {tab === 'figures' && <FiguresTab figures={figures} />}
                     {tab === 'metadata' && <MetadataTab report={report} />}
@@ -256,7 +271,24 @@ function FiguresTab({ figures }: { figures: Figure[] }) {
     );
 }
 
-function SectionsTab({ sections, empty }: { sections: Section[]; empty: boolean }) {
+function SectionsTab({
+    sections,
+    empty,
+    highlightHeading,
+}: {
+    sections: Section[];
+    empty: boolean;
+    highlightHeading?: string | null;
+}) {
+    const highlightRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (highlightHeading && highlightRef.current) {
+            highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        // Only run on mount for the deep-link landing — not on every re-render.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     if (sections.length === 0) {
         return (
             <EmptyState
@@ -271,24 +303,32 @@ function SectionsTab({ sections, empty }: { sections: Section[]; empty: boolean 
     }
     return (
         <>
-            {sections.map((s) => (
-                <Card
-                    key={s.index}
-                    eyebrow={`§ ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
-                    title={s.heading || 'Untitled section'}
-                >
+            {sections.map((s) => {
+                const isHighlighted = Boolean(highlightHeading) && s.heading === highlightHeading;
+                return (
                     <div
-                        className="text-[13px] whitespace-pre-wrap leading-relaxed"
-                        style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-sans)' }}
+                        key={s.index}
+                        ref={isHighlighted ? highlightRef : undefined}
+                        style={isHighlighted ? { outline: '2px solid var(--accent)', borderRadius: 8 } : undefined}
                     >
-                        {s.body || (
-                            <span className="italic" style={{ color: 'var(--fg-3)' }}>
-                                (empty body)
-                            </span>
-                        )}
+                        <Card
+                            eyebrow={`§ ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
+                            title={s.heading || 'Untitled section'}
+                        >
+                            <div
+                                className="text-[13px] whitespace-pre-wrap leading-relaxed"
+                                style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-sans)' }}
+                            >
+                                {s.body || (
+                                    <span className="italic" style={{ color: 'var(--fg-3)' }}>
+                                        (empty body)
+                                    </span>
+                                )}
+                            </div>
+                        </Card>
                     </div>
-                </Card>
-            ))}
+                );
+            })}
         </>
     );
 }
@@ -350,8 +390,8 @@ function MetadataTab({ report }: { report: ReportRow }) {
         ['Region', report.region || '—'],
         ['Source project', report.project_name || '—'],
         ['Version', String(report.version)],
-        ['Ingested', shortDate(report.created_at)],
-        ['Last updated', shortDate(report.updated_at)],
+        ['Ingested', formatWhen(report.created_at)],
+        ['Last updated', formatWhen(report.updated_at)],
     ];
     return (
         <Card eyebrow="SILVER · REPORTS" title="Metadata">

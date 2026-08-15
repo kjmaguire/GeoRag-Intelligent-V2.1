@@ -294,53 +294,60 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                 {runs.in_flight.length > 0 && (
                     <section className="px-8 py-5">
                         <Card eyebrow={`IN FLIGHT · ${runs.in_flight.length}`} title="Currently ingesting" padded={false}>
-                            <div
-                                className="grid grid-cols-[1.4fr_220px_1fr_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
-                                style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
-                            >
-                                <div>File</div>
-                                <div>Stage</div>
-                                <div>Progress</div>
-                                <div>Uploaded</div>
-                            </div>
-                            {runs.in_flight.map((f) => (
-                                <div
-                                    key={f.key}
-                                    className="grid grid-cols-[1.4fr_220px_1fr_120px] text-xs px-4 py-3 border-b items-center gap-4"
-                                    style={{ borderColor: 'var(--line-1)' }}
-                                >
-                                    <div className="min-w-0">
-                                        <div className="truncate" style={{ color: 'var(--fg-0)' }} title={f.filename}>
-                                            {f.filename}
-                                        </div>
-                                        {f.failed && f.error_text && (
-                                            <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: 'var(--warn)' }} title={f.error_text}>
-                                                {f.error_text}
+                            {/* Fixed-px columns don't collapse below `lg:` — scroll
+                                horizontally instead of clipping/overlapping on narrow
+                                viewports. */}
+                            <div className="overflow-x-auto">
+                                <div className="min-w-[640px]">
+                                    <div
+                                        className="grid grid-cols-[1.4fr_220px_1fr_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
+                                        style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
+                                    >
+                                        <div>File</div>
+                                        <div>Stage</div>
+                                        <div>Progress</div>
+                                        <div>Uploaded</div>
+                                    </div>
+                                    {runs.in_flight.map((f) => (
+                                        <div
+                                            key={f.key}
+                                            className="grid grid-cols-[1.4fr_220px_1fr_120px] text-xs px-4 py-3 border-b items-center gap-4"
+                                            style={{ borderColor: 'var(--line-1)' }}
+                                        >
+                                            <div className="min-w-0">
+                                                <div className="truncate" style={{ color: 'var(--fg-0)' }} title={f.filename}>
+                                                    {f.filename}
+                                                </div>
+                                                {f.failed && f.error_text && (
+                                                    <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: 'var(--warn)' }} title={f.error_text}>
+                                                        {f.error_text}
+                                                    </div>
+                                                )}
                                             </div>
-                                        )}
-                                    </div>
-                                    <div className="text-[11px]" style={{ color: f.failed ? 'var(--warn)' : 'var(--fg-1)' }}>
-                                        <Pill tone={f.failed ? 'warn' : 'accent'} dot>
-                                            {prettyStage(f)}
-                                        </Pill>
-                                    </div>
-                                    <div className="flex items-center gap-3 min-w-0">
-                                        <div className="flex-1 min-w-0">
-                                            <ProgressBar
-                                                value={f.progress_pct}
-                                                tone={f.failed ? 'warn' : (f.progress_pct >= 100 ? 'accent' : 'accent')}
-                                                height={6}
-                                            />
+                                            <div className="text-[11px]" style={{ color: f.failed ? 'var(--warn)' : 'var(--fg-1)' }}>
+                                                <Pill tone={f.failed ? 'warn' : 'accent'} dot>
+                                                    {prettyStage(f)}
+                                                </Pill>
+                                            </div>
+                                            <div className="flex items-center gap-3 min-w-0">
+                                                <div className="flex-1 min-w-0">
+                                                    <ProgressBar
+                                                        value={f.progress_pct}
+                                                        tone={f.failed ? 'warn' : (f.progress_pct >= 100 ? 'accent' : 'accent')}
+                                                        height={6}
+                                                    />
+                                                </div>
+                                                <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                    {f.progress_pct}%
+                                                </span>
+                                            </div>
+                                            <div className="font-mono text-[11px]" style={{ color: 'var(--fg-3)' }}>
+                                                {f.uploaded_ago ?? '—'}
+                                            </div>
                                         </div>
-                                        <span className="font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
-                                            {f.progress_pct}%
-                                        </span>
-                                    </div>
-                                    <div className="font-mono text-[11px]" style={{ color: 'var(--fg-3)' }}>
-                                        {f.uploaded_ago ?? '—'}
-                                    </div>
+                                    ))}
                                 </div>
-                            ))}
+                            </div>
                         </Card>
                     </section>
                 )}
@@ -348,57 +355,64 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                 {runs.completed.length > 0 && (
                     <section className="px-8 py-5 pb-8">
                         <Card eyebrow={`COMPLETED · ${runs.completed.length}`} title="Ingested into silver" padded={false}>
-                            <div
-                                className="grid grid-cols-[1fr_90px_100px_120px_160px_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
-                                style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
-                            >
-                                <div>Report</div>
-                                <div>Parser</div>
-                                <div>Quality</div>
-                                <div>Passages</div>
-                                <div>Embedded</div>
-                                <div>Uploaded</div>
-                            </div>
-                            {runs.completed.map((r) => (
-                                <div
-                                    key={r.report_id}
-                                    className="grid grid-cols-[1fr_90px_100px_120px_160px_120px] text-xs px-4 py-2.5 border-b items-center"
-                                    style={{ borderColor: 'var(--line-1)' }}
-                                >
-                                    <div className="truncate" style={{ color: 'var(--fg-0)' }} title={r.title}>
-                                        {r.title}
-                                        {r.filename && (
-                                            <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: 'var(--fg-3)' }}>
-                                                {r.filename}
+                            {/* Fixed-px columns don't collapse below `lg:` — scroll
+                                horizontally instead of clipping/overlapping on narrow
+                                viewports. */}
+                            <div className="overflow-x-auto">
+                                <div className="min-w-[720px]">
+                                    <div
+                                        className="grid grid-cols-[1fr_90px_100px_120px_160px_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
+                                        style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
+                                    >
+                                        <div>Report</div>
+                                        <div>Parser</div>
+                                        <div>Quality</div>
+                                        <div>Passages</div>
+                                        <div>Embedded</div>
+                                        <div>Uploaded</div>
+                                    </div>
+                                    {runs.completed.map((r) => (
+                                        <div
+                                            key={r.report_id}
+                                            className="grid grid-cols-[1fr_90px_100px_120px_160px_120px] text-xs px-4 py-2.5 border-b items-center"
+                                            style={{ borderColor: 'var(--line-1)' }}
+                                        >
+                                            <div className="truncate" style={{ color: 'var(--fg-0)' }} title={r.title}>
+                                                {r.title}
+                                                {r.filename && (
+                                                    <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: 'var(--fg-3)' }}>
+                                                        {r.filename}
+                                                    </div>
+                                                )}
                                             </div>
-                                        )}
-                                    </div>
-                                    <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
-                                        {r.parser_used ?? '—'}
-                                    </div>
-                                    <div className="font-mono" style={{ color: qualityColor(r.parse_quality_pct) }}>
-                                        {r.parse_quality_pct === null ? '—' : `${Math.round(r.parse_quality_pct)}%`}
-                                    </div>
-                                    <div className="font-mono" style={{ color: 'var(--fg-1)' }}>
-                                        {r.passages.toLocaleString()}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <div className="flex-1">
-                                            <ProgressBar
-                                                value={r.embed_pct}
-                                                tone={r.embed_pct === 100 ? 'accent' : 'warn'}
-                                                height={4}
-                                            />
+                                            <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
+                                                {r.parser_used ?? '—'}
+                                            </div>
+                                            <div className="font-mono" style={{ color: qualityColor(r.parse_quality_pct) }}>
+                                                {r.parse_quality_pct === null ? '—' : `${Math.round(r.parse_quality_pct)}%`}
+                                            </div>
+                                            <div className="font-mono" style={{ color: 'var(--fg-1)' }}>
+                                                {r.passages.toLocaleString()}
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <div className="flex-1">
+                                                    <ProgressBar
+                                                        value={r.embed_pct}
+                                                        tone={r.embed_pct === 100 ? 'accent' : 'warn'}
+                                                        height={4}
+                                                    />
+                                                </div>
+                                                <span className="font-mono text-[10px]" style={{ color: 'var(--fg-2)' }}>
+                                                    {r.embedded}/{r.passages}
+                                                </span>
+                                            </div>
+                                            <div className="font-mono" style={{ color: 'var(--fg-3)' }}>
+                                                {r.uploaded_ago ?? '—'}
+                                            </div>
                                         </div>
-                                        <span className="font-mono text-[10px]" style={{ color: 'var(--fg-2)' }}>
-                                            {r.embedded}/{r.passages}
-                                        </span>
-                                    </div>
-                                    <div className="font-mono" style={{ color: 'var(--fg-3)' }}>
-                                        {r.uploaded_ago ?? '—'}
-                                    </div>
+                                    ))}
                                 </div>
-                            ))}
+                            </div>
                         </Card>
                     </section>
                 )}
