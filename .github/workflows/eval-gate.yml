@@ -1,0 +1,266 @@
+# Nightly eval-harness gate.
+#
+# Plan §5b's golden-query benchmark (scripts/run_golden_benchmark.py +
+# scripts/compare_benchmarks.py) is the operator entry point for measuring
+# RAG quality lift/regression around a deploy. The Hatchet cron that used to
+# run the underlying evaluator nightly (`eval_real_rag_nightly`) was removed
+# in the runtime-eval trim (09d1d35, 2026-07-27); the evaluator modules under
+# src/fastapi/app/services/eval/ were RESTORED 2026-08-14 specifically to
+# keep this CLI runnable (see run_golden_benchmark.py's own docstring) — but
+# nothing since then has actually run it on a schedule to prove the
+# restoration holds up. This workflow closes that gap.
+#
+# ─── What this workflow DOES gate (BLOCKING) ──────────────────────────────
+# That the eval harness itself stays importable and runnable end-to-end:
+# real Postgres schema (migrations + eval.golden_questions seeded from the
+# committed tests/golden_questions/seed_template.yaml via
+# GoldenQuestionsSeeder — the actual SME question corpus, not synthetic
+# rows), real Qdrant, real app.services.eval.real_rag_evaluator code path
+# (AgentDeps construction, retrieval, response assembly). A crash here
+# (import error, schema drift, evaluator exception) means the harness has
+# silently bit-rotted again — exactly the failure mode that motivated the
+# 2026-08-14 restoration.
+#
+# ─── What this workflow does NOT (yet) gate — real quality regression ─────
+# scripts/compare_benchmarks.py's pass-rate diff against
+# bench_results_to_commit_baseline.json is genuinely meaningful ONLY when
+# both sides ran against a real LLM + real embeddings. This job's LLM and
+# embedding calls are STUBBED (tests/e2e_smoke/stub_backend.py — the same
+# stub the "E2E money-path smoke" job in ci.yml uses; see that file's
+# docstring for exactly what's real vs faked) because no real Azure AI
+# Foundry credentials are available to a GitHub-hosted runner:
+#
+#     $ gh secret list -R kjmaguire/GeoRag-Intelligent-V2.1
+#     AZURE_CLIENT_ID        (OIDC federated identity for CD deploys)
+#     AZURE_SUBSCRIPTION_ID
+#     AZURE_TENANT_ID
+#
+# These three are an Azure login identity (used by cd.yml to deploy), not a
+# Foundry API key or a reachable database — there is no secrets.STAGING_URL
+# either (the same gap release-rehearsal.yml's golden/hallucination steps
+# already document as continue-on-error for the identical reason). Running
+# compare_benchmarks.py here is still worthwhile: it proves the CLI's own
+# parsing/diff logic doesn't crash and produces a human-readable diff
+# artifact — but its pass/fail verdict is NOT trusted as a quality gate, so
+# the step is continue-on-error and its exit code is informational only.
+#
+# ─── PROMOTION CRITERIA (to a real quality gate) ──────────────────────────
+# 1. Provision either (a) a reachable staging FastAPI URL with a real Azure
+#    AI Foundry backend behind it (secrets.STAGING_URL, mirroring
+#    release-rehearsal.yml's pattern), or (b) Key-Vault-backed secret
+#    retrieval via the existing AZURE_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID
+#    OIDC identity (az login --service-principal + az keyvault secret show
+#    for AZURE_FOUNDRY_ENDPOINT/API_KEY) — NOT implemented here per this
+#    branch's scope (no az commands beyond read-only `gh` were run to build
+#    this file, and wiring live credential retrieval deserves its own
+#    reviewed change).
+# 2. Point the "Run golden benchmark" step at that real backend instead of
+#    the stub (drop EMBEDDING_BACKEND/AZURE_FOUNDRY_*/LLM_BACKEND/VLLM_URL
+#    overrides below, stop starting stub_backend.py).
+# 3. Flip the compare step's continue-on-error to false and decide what a
+#    real regression should do (fail the run — this workflow doesn't gate
+#    PRs, so "fail" just means a red nightly + notification, not a blocked
+#    merge; consider opening an issue automatically on regression).
+
+name: Eval Gate (nightly)
+
+on:
+  schedule:
+    # 05:17 UTC — offset from the hour to avoid the GitHub Actions
+    # top-of-hour cron thundering herd.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      max_questions:
+        description: "Cap on golden questions to run (keep small — LLM/embeddings are stubbed, see workflow header)"
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+
+env:
+  PHP_VERSION: "8.5"
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  eval-harness-selfcheck:
+    name: Eval harness self-check (stubbed LLM — see workflow header)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+      qdrant:
+        image: qdrant/qdrant:v1.17.1@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+        ports: ["6333:6333"]
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    env:
+      POSTGRES_USER: georag
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: georag_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DIRECT_HOST: localhost
+      POSTGRES_DIRECT_PORT: "5432"
+      POSTGRES_SSLMODE: disable
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      QDRANT_HOST: localhost
+      QDRANT_PORT: "6333"
+      EMBEDDING_DIMENSION: "1024"
+      FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+      # STUBBED — see workflow header. Same stub used by ci.yml's E2E smoke job.
+      EMBEDDING_BACKEND: foundry
+      AZURE_FOUNDRY_ENDPOINT: http://localhost:8899
+      AZURE_FOUNDRY_API_KEY: stub-key
+      AZURE_FOUNDRY_EMBED_DEPLOYMENT: stub-embed
+      AZURE_FOUNDRY_EMBED_DIMENSION: "1024"
+      LLM_BACKEND: vllm
+      VLLM_URL: http://localhost:8899/v1
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Run migrations
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      # GoldenQuestionsSeeder::SEEDER_AUTHOR_USER_ID = 971 (kyle@georag.local)
+      # is a hardcoded FK into public.users. A fresh CI database has no such
+      # row, so the seed would fail on the FK constraint (see migration
+      # 2026_05_13_140000_create_eval_schema.php) without this placeholder.
+      - name: Seed placeholder author user (FK target for golden questions)
+        run: |
+          PGPASSWORD=test_password psql -h localhost -U georag -d georag_test -c "
+            INSERT INTO users (id, name, email, email_verified_at, password, created_at, updated_at)
+            VALUES (971, 'CI Eval Seeder', 'kyle@georag.local', NOW(), 'unused', NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING;
+            SELECT setval(pg_get_serial_sequence('users','id'), GREATEST((SELECT MAX(id) FROM users), 1));
+          "
+
+      - name: Seed golden questions (real SME corpus)
+        run: php artisan db:seed --class=GoldenQuestionsSeeder --force
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Bootstrap Qdrant collections
+        working-directory: src/fastapi
+        run: uv run python scripts/init_qdrant.py
+
+      - name: Start stub Foundry backend (embeddings + LLM)
+        working-directory: src/fastapi
+        run: |
+          uv run python tests/e2e_smoke/stub_backend.py --port 8899 &
+          echo $! > /tmp/stub_backend.pid
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8899/health > /dev/null && exit 0
+            sleep 1
+          done
+          echo "::error::stub backend did not become healthy"
+          exit 1
+
+      # Gives the corpus SOME real content so retrieval isn't a guaranteed
+      # 100% refusal on every question — reuses the exact ingest leg the
+      # E2E smoke job in ci.yml exercises. Most golden questions reference
+      # projects/entities this single fixture doesn't have, so most will
+      # still fail/refuse — expected and fine; this step is about proving
+      # the harness runs, not about a real pass rate (see workflow header).
+      - name: Ingest fixture PDF (some real retrieval content)
+        working-directory: src/fastapi
+        continue-on-error: true
+        run: uv run python scripts/ci/e2e_smoke_ingest.py
+
+      # BLOCKING: a crash here (import error, schema drift, evaluator
+      # exception) means the eval harness has bit-rotted again. Pass rate
+      # itself is NOT gated (--strict is intentionally omitted — the LLM is
+      # stubbed, see workflow header) and the harness is best-effort
+      # per-question by design (run_golden_benchmark.py docstring).
+      - name: Run golden benchmark (harness self-check)
+        working-directory: src/fastapi
+        run: |
+          uv run python scripts/run_golden_benchmark.py \
+            --max-questions "${{ github.event.inputs.max_questions || '10' }}" \
+            --label ci-nightly-harness-selfcheck \
+            --output bench_results/ci_nightly.json
+
+      # Informational only — see workflow header for why the verdict isn't
+      # trusted as a quality gate yet (stubbed LLM vs a real-LLM baseline).
+      - name: Diff against committed baseline (informational)
+        working-directory: src/fastapi
+        continue-on-error: true
+        run: |
+          uv run python scripts/compare_benchmarks.py \
+            ../../bench_results_to_commit_baseline.json \
+            bench_results/ci_nightly.json --json \
+            | tee bench_results/ci_nightly_diff.json
+
+      - name: Upload benchmark + diff artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: eval-gate-${{ github.run_number }}
+          path: |
+            src/fastapi/bench_results/ci_nightly.json
+            src/fastapi/bench_results/ci_nightly_diff.json
+          retention-days: 30
+
+      - name: Stop stub backend
+        if: always()
+        run: |
+          [ -f /tmp/stub_backend.pid ] && kill "$(cat /tmp/stub_backend.pid)" 2>/dev/null || true
