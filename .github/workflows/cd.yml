@@ -104,34 +104,35 @@ jobs:
           echo "Deploying SHA: ${SHA} (short: ${SHORT})"
 
   # ==========================================================================
-  # Deploy — build, migrate, roll over each Container App, health-check,
-  # roll back on failure. Single stage: there is one live environment, not a
-  # dev/staging/production chain (see the file header for why).
+  # Build fastapi — split into its own job (2026-08-15 audit) so it runs
+  # concurrently with build-laravel instead of sequentially in the same job.
+  # Steps within a single GitHub Actions job always run sequentially, even
+  # if they're independent — only separate jobs run in parallel. Before this
+  # split, fastapi's ~20 min ACR build ran to completion, THEN laravel's
+  # ~12-15 min build started, so wall-clock push-to-live time was ~35-38 min
+  # even after the GHCR/Trivy/SBOM split (2026-08-14) cut CD's trigger delay.
+  # That earlier split only fixed how soon CD *started*; it never touched
+  # the fact that CD's own deploy job serialized its two builds. Splitting
+  # them into sibling jobs collapses that ~32-35 min build phase to
+  # max(~20, ~12-15) ≈ 20 min.
+  #
+  # azure/login is duplicated here rather than shared: OIDC login is a fast,
+  # stateless token exchange (no state to carry between jobs), and GitHub
+  # Actions has no supported way to share an authenticated CLI session
+  # across jobs (each job gets a fresh runner/VM). id-token: write must be
+  # granted on every job that calls azure/login, not just one.
   # ==========================================================================
-  deploy:
-    name: Deploy to Azure Container Apps
+  build-fastapi:
+    name: Build fastapi image
     needs: check-ci
     if: needs.check-ci.result == 'success'
     runs-on: ubuntu-latest
-    # 2026-08-05: a live dispatch hit this at exactly 30m15s — the fastapi
-    # ACR build alone takes ~20 min (heavier GDAL/geospatial image) and
-    # laravel ~12-15 min, sequentially, before migrate/rollout/health-check
-    # even start. GitHub cancels the whole job (not just the build step) on
-    # timeout, so this needs real headroom, not a tight cap.
-    # 2026-08-11: 50 -> 80. A slow ACR agent put the fastapi build past
-    # 30 min twice tonight; at 50 the job got cancelled after ~45 min of
-    # build work, wasting the whole run. 80 covers worst-case agent
-    # variance while still bounding a hung deploy.
-    timeout-minutes: 80
-    environment:
-      name: production
-      url: https://laravel-octane-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io
+    timeout-minutes: 40
     permissions:
       id-token: write
       contents: read
     env:
       SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
-
     steps:
       - uses: actions/checkout@v7
         with:
@@ -152,6 +153,33 @@ jobs:
             --file docker/fastapi.Dockerfile \
             src
 
+  # ==========================================================================
+  # Build laravel — sibling of build-fastapi, see that job's comment for why
+  # this is a separate job rather than a second step in `deploy`.
+  # ==========================================================================
+  build-laravel:
+    name: Build laravel image
+    needs: check-ci
+    if: needs.check-ci.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check-ci.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Build + push laravel image
         # VITE_REVERB_* are baked into the Vite bundle at build time. On Azure,
         # Reverb runs on its own Container App hostname, so the browser cannot
@@ -169,6 +197,49 @@ jobs:
             --build-arg VITE_REVERB_PORT=443 \
             --build-arg VITE_REVERB_SCHEME=https \
             .
+
+  # ==========================================================================
+  # Deploy — migrate, roll over each Container App, health-check, roll back
+  # on failure. Single stage: there is one live environment, not a
+  # dev/staging/production chain (see the file header for why). Runs after
+  # BOTH build jobs so the migrate step (which runs on the new laravel
+  # image) and the fastapi rollout always have an image to pull.
+  # ==========================================================================
+  deploy:
+    name: Deploy to Azure Container Apps
+    needs: [check-ci, build-fastapi, build-laravel]
+    if: needs.check-ci.result == 'success' && needs.build-fastapi.result == 'success' && needs.build-laravel.result == 'success'
+    runs-on: ubuntu-latest
+    # 2026-08-15: the two ACR builds (fastapi ~20 min, laravel ~12-15 min)
+    # moved out to their own parallel jobs (build-fastapi, build-laravel)
+    # above — this job's timeout no longer needs to absorb both builds
+    # sequentially, just the migrate/rollout/health-check/rollback chain
+    # that follows them. Trimmed from 80 accordingly, but kept generous:
+    # the migrate-job poll alone budgets 300s, and az containerapp update /
+    # revision-health polling across 5 targets can legitimately run long on
+    # a slow ACR/ACA control-plane day (see the 2026-08-11 note this
+    # replaces, which was sized for the pre-split single job).
+    timeout-minutes: 40
+    environment:
+      name: production
+      url: https://laravel-octane-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check-ci.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Capture the currently-active image digest for every app/job this
       # deploy touches, before changing anything, so a failed health check
