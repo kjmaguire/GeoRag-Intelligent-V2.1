@@ -63,6 +63,26 @@ return new class extends Migration
             return;
         }
 
+        // 2026-08-15 live-deploy fix: on any environment where phase0's raw
+        // SQL already ran, `workspace.workspace_roles` exists but is owned
+        // by the role that ran that bootstrap (not `georag`, the migration
+        // connection's role) — CREATE TABLE IF NOT EXISTS silently no-ops
+        // as intended, but the unconditional COMMENT ON TABLE statements
+        // below require table ownership and fail with "must be owner of
+        // table" (SQLSTATE 42501) on the live DB, which has no bearing on
+        // whether the schema itself is correct. Bail out entirely once the
+        // table is already present — this migration's whole stated purpose
+        // is a no-op on any environment where phase0 already ran; the
+        // table-existence check makes that literal instead of assumed.
+        $tableExists = DB::table('information_schema.tables')
+            ->where('table_schema', 'workspace')
+            ->where('table_name', 'workspace_roles')
+            ->exists();
+
+        if ($tableExists) {
+            return;
+        }
+
         // The `workspace` schema itself has the same gap one level up —
         // it's created only by docker/postgresql/init/10-phase0-extensions-
         // and-schemas.sql (a docker-entrypoint-initdb.d script, never run
