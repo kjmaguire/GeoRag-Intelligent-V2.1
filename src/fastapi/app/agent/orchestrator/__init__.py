@@ -22,6 +22,7 @@ orchestrator logic — but for Milestone 1 this is the right call.
 """
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import os  # noqa: F401
@@ -1084,6 +1085,33 @@ def set_active_history(history: list[Any] | None) -> None:
     _active_history.set(history)
 
 
+def _query_response_cache_key(deps: AgentDeps, query: str) -> str | None:
+    """Redis key for the item-5 short-TTL exact-match query-response cache.
+
+    Keyed on (workspace_id, project_id, normalised query text). Returns
+    None (meaning "don't cache") if the workspace can't be resolved —
+    WorkspaceContext.from_state can raise WorkspaceResolutionError once
+    Phase 2 flips ``_ALLOW_DEFAULT_TENANT_FALLBACK`` off (see its
+    docstring), and this call site is new — nothing resolved a workspace
+    this early before caching was restored — so a resolution failure
+    degrades to "run the graph for real" rather than failing the request.
+    """
+    from app.agent.log_safe import query_hash as _query_hash  # noqa: PLC0415
+    from app.agent.workspace_context import WorkspaceContext  # noqa: PLC0415
+
+    try:
+        ws_id = WorkspaceContext.from_state(
+            deps, site="orchestrator.run_deterministic_rag.query_cache",
+        ).workspace_id
+    except Exception:
+        logger.debug(
+            "run_deterministic_rag: query cache workspace resolution failed "
+            "— skipping cache", exc_info=True,
+        )
+        return None
+    return f"georag:query_response:v1:{ws_id}:{deps.project_id}:{_query_hash(query)}"
+
+
 async def run_deterministic_rag(
     query: str,
     deps: AgentDeps,
@@ -1166,13 +1194,57 @@ async def run_deterministic_rag(
                     exc_info=True,
                 )
 
+        # Perf audit 2026-08-15 (item 5) — restore the short-TTL exact-match
+        # Redis cache this docstring has promised ever since the legacy
+        # orchestrator was deleted 2026-08-04 (persist_node has hardwired
+        # cache_hit=False the whole time — nothing was ever actually
+        # checking or writing a cache). Deliberately scoped to single-turn,
+        # envelope-free queries only: a context envelope changes retrieval
+        # filters (Field/Office mode, allowed_data_sources, ...) and
+        # conversation history changes what the SAME literal query text
+        # means ("tell me more" after turn 3 vs turn 1), so caching either
+        # would risk silently serving a wrong-scope answer. This is an
+        # exact-match cache (same normalised query text), not semantic —
+        # query_hash() already does the normalisation (strip + lowercase)
+        # the log-safe hashing path uses elsewhere.
+        _cache_key: str | None = None
+        if envelope is None and not history and deps.redis_client is not None:
+            _cache_key = _query_response_cache_key(deps, query)
+
+        if _cache_key is not None:
+            try:
+                _cached_json = await deps.redis_client.get(_cache_key)
+            except Exception:
+                _cached_json = None
+                logger.debug(
+                    "run_deterministic_rag: query cache read failed", exc_info=True,
+                )
+            if _cached_json:
+                try:
+                    cached_response = GeoRAGResponse.model_validate_json(_cached_json)
+                except Exception:
+                    logger.debug(
+                        "run_deterministic_rag: cached response failed to "
+                        "deserialise — treating as a cache miss",
+                        exc_info=True,
+                    )
+                else:
+                    logger.info(
+                        "run_deterministic_rag: query cache hit project=%s",
+                        deps.project_id,
+                    )
+                    if status_callback is not None:
+                        with contextlib.suppress(Exception):
+                            await status_callback("Reusing a recent identical answer…")
+                    return cached_response
+
         logger.info(
             "run_deterministic_rag: AGENTIC_RETRIEVAL_V2_ENABLED — dispatching "
             "to agentic-retrieval LangGraph (envelope=%s, history_turns=%d)",
             "present" if envelope is not None else "None",
             len(history),
         )
-        return await run_agentic_retrieval(
+        result = await run_agentic_retrieval(
             query, deps,
             context_envelope=envelope,
             history=history if history else None,
@@ -1180,6 +1252,16 @@ async def run_deterministic_rag(
             token_callback=token_callback,
             bind_callback=bind_callback,
         )
+        if _cache_key is not None:
+            try:
+                await deps.redis_client.setex(
+                    _cache_key, 300, result.model_dump_json(),
+                )
+            except Exception:
+                logger.debug(
+                    "run_deterministic_rag: query cache write failed", exc_info=True,
+                )
+        return result
     raise RuntimeError(
         "AGENTIC_RETRIEVAL_V2_ENABLED must remain true; "
         "the retired legacy orchestrator is no longer available"
