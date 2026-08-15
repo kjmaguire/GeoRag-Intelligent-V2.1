@@ -86,16 +86,24 @@ jobs:
       # TODO (Chunk 10.2): on a self-hosted GPU runner, bring up the full
       # dev-light profile including Ollama.  On the current GitHub-hosted runner
       # we start the infrastructure services only (postgres, redis, qdrant,
-      # neo4j, fastapi) and skip Ollama because the runner has no GPU and
+      # fastapi) and skip Ollama because the runner has no GPU and
       # the model download would exhaust the disk quota.
+      #
+      # 2026-08-15 — neo4j and martin dropped from this list: both were
+      # removed from docker-compose.yml entirely (neo4j 2026-07-28 per B1;
+      # martin earlier — see commit a0013db's "same class of gap" note).
+      # `docker compose up -d <service>` fails immediately with
+      # "no such service: neo4j" for any name not defined in the compose
+      # file, and that failure was being swallowed by this step's `|| true`
+      # exactly like the missing-.env gap above — the job was silently
+      # never bringing up a stack, independent of that fix.
       - name: Start infrastructure services (dev-light without Ollama)
         run: |
-          # Start core infrastructure — postgres, pgbouncer, redis, neo4j, qdrant
+          # Start core infrastructure — postgres, pgbouncer, redis, qdrant
           # are not profile-gated, so they start unconditionally.
           # fastapi + laravel-octane require --profile dev-light.
-          # Martin requires --profile dev-light.
           docker compose --profile dev-light up -d \
-            postgresql pgbouncer redis qdrant neo4j fastapi laravel-octane martin \
+            postgresql pgbouncer redis qdrant fastapi laravel-octane \
             2>&1 || true
           echo "Services started (Ollama excluded — see Chunk 10.2 TODO)."
 
