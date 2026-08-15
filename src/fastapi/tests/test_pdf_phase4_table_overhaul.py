@@ -2,7 +2,8 @@
 
 Verifies:
   - _classify_page_table_type: line + rect thresholds, env overrides
-  - _classify_pages_from_pdf: handles missing fitz gracefully
+  - _iter_pdfium_path_items: segment-walking primitive extraction
+  - _classify_pages_from_pdf: handles missing pypdfium2 gracefully
   - _extract_all_tables_as_sections per-page routing:
       • bordered → pdfplumber-lines AND pdfplumber-text
       • borderless → pdfplumber-text ONLY (no expensive lines pass)
@@ -17,6 +18,18 @@ docling — it never ran in production (PDF_PARSER_DOCLING_ENABLED was
 false in every live deployment). pdfplumber-lines is now the sole
 bordered-table extraction method; see
 app.services.ingest.pdf_report._extract_all_tables_as_sections.
+
+Engine note (2026-08-15): the classifier walked fitz's (PyMuPDF's)
+`page.get_drawings()` output until PyMuPDF was removed for its AGPL
+license (2026-05-27) — after that, `_classify_pages_from_pdf`'s
+`import pymupdf` always raised ImportError and it silently returned {}
+on every call, so the "bordered vs borderless" routing below was dead
+in production despite these tests passing (the old tests stubbed
+`sys.modules["pymupdf"]`, masking the always-fails-for-real import).
+Re-ported onto pypdfium2 (already a dependency); `_classify_page_table_type`
+now takes a flat list of ("l", p1, p2) / ("re",) primitives produced by
+the new `_iter_pdfium_path_items` helper instead of fitz-shaped drawing
+dicts.
 
 Run with:
     pytest src/fastapi/tests/test_pdf_phase4_table_overhaul.py -v
@@ -56,24 +69,12 @@ def parser_module():
     return pdf_report
 
 
-def _make_point(x, y):
-    p = MagicMock()
-    p.x = x
-    p.y = y
-    return p
-
-
-def _drawing(items):
-    return {"items": items}
-
-
 # ---------------------------------------------------------------------------
-# 1. Classifier — zero drawings → borderless
+# 1. Classifier — zero items → borderless
 # ---------------------------------------------------------------------------
 
-def test_classify_empty_drawings_is_borderless(parser_module):
+def test_classify_empty_items_is_borderless(parser_module):
     assert parser_module._classify_page_table_type([]) == "borderless"
-    assert parser_module._classify_page_table_type([{"items": []}]) == "borderless"
 
 
 # ---------------------------------------------------------------------------
@@ -81,17 +82,13 @@ def test_classify_empty_drawings_is_borderless(parser_module):
 # ---------------------------------------------------------------------------
 
 def test_classify_horizontal_lines_above_threshold_is_bordered(parser_module):
-    items = []
-    for _ in range(5):
-        items.append(("l", _make_point(0, 100), _make_point(200, 100)))
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "bordered"
+    items = [("l", (0, 100), (200, 100)) for _ in range(5)]
+    assert parser_module._classify_page_table_type(items) == "bordered"
 
 
 def test_classify_horizontal_lines_below_threshold_is_borderless(parser_module):
-    items = [("l", _make_point(0, 100), _make_point(200, 100))]
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "borderless"
+    items = [("l", (0, 100), (200, 100))]
+    assert parser_module._classify_page_table_type(items) == "borderless"
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +97,8 @@ def test_classify_horizontal_lines_below_threshold_is_borderless(parser_module):
 
 def test_classify_ignores_short_horizontal_lines(parser_module):
     # 5 very short lines (< 30 points) — should not classify as bordered
-    items = [
-        ("l", _make_point(0, 100), _make_point(5, 100)) for _ in range(5)
-    ]
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "borderless"
+    items = [("l", (0, 100), (5, 100)) for _ in range(5)]
+    assert parser_module._classify_page_table_type(items) == "borderless"
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +107,8 @@ def test_classify_ignores_short_horizontal_lines(parser_module):
 
 def test_classify_vertical_lines_dont_count(parser_module):
     # 5 vertical lines (Δx ~ 0)
-    items = [
-        ("l", _make_point(100, 0), _make_point(100, 200)) for _ in range(5)
-    ]
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "borderless"
+    items = [("l", (100, 0), (100, 200)) for _ in range(5)]
+    assert parser_module._classify_page_table_type(items) == "borderless"
 
 
 # ---------------------------------------------------------------------------
@@ -125,15 +116,13 @@ def test_classify_vertical_lines_dont_count(parser_module):
 # ---------------------------------------------------------------------------
 
 def test_classify_rectangles_above_rect_threshold_is_bordered(parser_module):
-    items = [("re", MagicMock()) for _ in range(25)]
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "bordered"
+    items = [("re",) for _ in range(25)]
+    assert parser_module._classify_page_table_type(items) == "bordered"
 
 
 def test_classify_rectangles_below_rect_threshold_is_borderless(parser_module):
-    items = [("re", MagicMock()) for _ in range(15)]
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "borderless"
+    items = [("re",) for _ in range(15)]
+    assert parser_module._classify_page_table_type(items) == "borderless"
 
 
 # ---------------------------------------------------------------------------
@@ -142,26 +131,23 @@ def test_classify_rectangles_below_rect_threshold_is_borderless(parser_module):
 
 def test_classify_mixed_lines_and_rects_is_bordered(parser_module):
     items = [
-        ("l", _make_point(0, 100), _make_point(200, 100)),
-        ("l", _make_point(0, 200), _make_point(200, 200)),
-        ("l", _make_point(0, 300), _make_point(200, 300)),
-        ("re", MagicMock()),
+        ("l", (0, 100), (200, 100)),
+        ("l", (0, 200), (200, 200)),
+        ("l", (0, 300), (200, 300)),
+        ("re",),
     ]
-    drawings = [_drawing(items)]
     # 3 horizontal lines exactly hits the line threshold
-    assert parser_module._classify_page_table_type(drawings) == "bordered"
+    assert parser_module._classify_page_table_type(items) == "bordered"
 
 
 # ---------------------------------------------------------------------------
-# 7. Classifier — non-line / non-rect items ignored ('qu', 'c')
+# 7. Classifier — unrecognized item kinds ignored (defense in depth; in
+#    practice _iter_pdfium_path_items never emits anything but "l"/"re")
 # ---------------------------------------------------------------------------
 
-def test_classify_ignores_quads_and_curves(parser_module):
-    items = [("qu", MagicMock()) for _ in range(50)]
-    items += [("c", MagicMock(), MagicMock(), MagicMock(), MagicMock())
-              for _ in range(50)]
-    drawings = [_drawing(items)]
-    assert parser_module._classify_page_table_type(drawings) == "borderless"
+def test_classify_ignores_unrecognized_item_kinds(parser_module):
+    items = [("qu",) for _ in range(50)] + [("c",) for _ in range(50)]
+    assert parser_module._classify_page_table_type(items) == "borderless"
 
 
 # ---------------------------------------------------------------------------
@@ -169,14 +155,113 @@ def test_classify_ignores_quads_and_curves(parser_module):
 # ---------------------------------------------------------------------------
 
 def test_classify_custom_thresholds(parser_module):
-    items = [("re", MagicMock()) for _ in range(5)]
-    drawings = [_drawing(items)]
+    items = [("re",) for _ in range(5)]
     # Default rect threshold 20 → borderless
-    assert parser_module._classify_page_table_type(drawings) == "borderless"
+    assert parser_module._classify_page_table_type(items) == "borderless"
     # Tighten to 3 → bordered
     assert parser_module._classify_page_table_type(
-        drawings, rect_threshold=3,
+        items, rect_threshold=3,
     ) == "bordered"
+
+
+# ---------------------------------------------------------------------------
+# _iter_pdfium_path_items — segment-walking primitive extraction
+#
+# These tests fake pypdfium2's raw ctypes surface directly (CountSegments /
+# GetPathSegment / SegmentGetType / SegmentGetPoint / SegmentGetClose) so
+# they exercise the real segment-walking loop without needing a real
+# PDFium-rendered PDF. `FPDFPathSegment_GetPoint` is faked with genuine
+# `ctypes.cast(...)`-based pointer writes (no native library involved —
+# this is pure in-process pointer manipulation), matching the exact
+# `ctypes.byref()` contract the production code relies on.
+# ---------------------------------------------------------------------------
+
+class _FakeSegment:
+    def __init__(self, seg_type, x, y, closed=False):
+        self.type = seg_type
+        self.x = x
+        self.y = y
+        self.closed = closed
+
+
+def _fake_pdfium_raw(segments: list[_FakeSegment]):
+    """Build a fake `pypdfium2.raw`-shaped object driving one PATH object's
+    segment list (as `_iter_pdfium_path_items` would see it)."""
+    import ctypes as _ctypes
+
+    fake_raw = MagicMock()
+    fake_raw.FPDF_SEGMENT_MOVETO = "MOVETO"
+    fake_raw.FPDF_SEGMENT_LINETO = "LINETO"
+    fake_raw.FPDF_SEGMENT_BEZIERTO = "BEZIERTO"
+    fake_raw.FPDF_SEGMENT_UNKNOWN = "UNKNOWN"
+    fake_raw.FPDFPath_CountSegments = MagicMock(return_value=len(segments))
+    fake_raw.FPDFPath_GetPathSegment = MagicMock(
+        side_effect=lambda _obj, i: segments[i],
+    )
+    fake_raw.FPDFPathSegment_GetType = MagicMock(side_effect=lambda seg: seg.type)
+    fake_raw.FPDFPathSegment_GetClose = MagicMock(
+        side_effect=lambda seg: 1 if seg.closed else 0,
+    )
+
+    def _get_point(seg, x_ref, y_ref):
+        _ctypes.cast(x_ref, _ctypes.POINTER(_ctypes.c_float))[0] = float(seg.x)
+        _ctypes.cast(y_ref, _ctypes.POINTER(_ctypes.c_float))[0] = float(seg.y)
+
+    fake_raw.FPDFPathSegment_GetPoint = MagicMock(side_effect=_get_point)
+    return fake_raw
+
+
+def test_iter_path_items_two_point_open_subpath_is_line(parser_module):
+    segs = [
+        _FakeSegment("MOVETO", 0, 100),
+        _FakeSegment("LINETO", 200, 100),
+    ]
+    items = parser_module._iter_pdfium_path_items(object(), _fake_pdfium_raw(segs))
+    assert items == [("l", (0.0, 100.0), (200.0, 100.0))]
+
+
+def test_iter_path_items_closed_polygon_is_rect(parser_module):
+    # MOVETO + 3x LINETO with close on the last segment — exactly how
+    # PDFium decomposes the `re` operator.
+    segs = [
+        _FakeSegment("MOVETO", 0, 0),
+        _FakeSegment("LINETO", 100, 0),
+        _FakeSegment("LINETO", 100, 20),
+        _FakeSegment("LINETO", 0, 20, closed=True),
+    ]
+    items = parser_module._iter_pdfium_path_items(object(), _fake_pdfium_raw(segs))
+    assert items == [("re",)]
+
+
+def test_iter_path_items_bezier_subpath_dropped(parser_module):
+    segs = [
+        _FakeSegment("MOVETO", 0, 0),
+        _FakeSegment("BEZIERTO", 50, 50),
+        _FakeSegment("LINETO", 100, 0),
+    ]
+    items = parser_module._iter_pdfium_path_items(object(), _fake_pdfium_raw(segs))
+    assert items == []
+
+
+def test_iter_path_items_multiple_subpaths_in_one_object(parser_module):
+    # One combined path object stroking two disjoint 2-point lines — the
+    # "whole grid drawn as one path" case a bbox-only approach can't see.
+    segs = [
+        _FakeSegment("MOVETO", 0, 100),
+        _FakeSegment("LINETO", 200, 100),
+        _FakeSegment("MOVETO", 0, 200),
+        _FakeSegment("LINETO", 200, 200),
+    ]
+    items = parser_module._iter_pdfium_path_items(object(), _fake_pdfium_raw(segs))
+    assert items == [
+        ("l", (0.0, 100.0), (200.0, 100.0)),
+        ("l", (0.0, 200.0), (200.0, 200.0)),
+    ]
+
+
+def test_iter_path_items_no_segments_returns_empty(parser_module):
+    items = parser_module._iter_pdfium_path_items(object(), _fake_pdfium_raw([]))
+    assert items == []
 
 
 # ---------------------------------------------------------------------------
@@ -187,33 +272,40 @@ def test_classify_pages_env_thresholds_honored(parser_module, monkeypatch):
     monkeypatch.setenv("TABLE_BORDER_LINE_THRESHOLD", "1")
     monkeypatch.setenv("TABLE_BORDER_RECT_THRESHOLD", "1")
 
-    # Stub fitz to return one page with 1 horizontal line
+    fake_path_object = object()
+    fake_raw = _fake_pdfium_raw([
+        _FakeSegment("MOVETO", 0, 100),
+        _FakeSegment("LINETO", 200, 100),
+    ])
+    fake_raw.FPDF_PAGEOBJ_PATH = "PATH"
+
     fake_page = MagicMock()
-    fake_page.get_drawings = MagicMock(return_value=[_drawing([
-        ("l", _make_point(0, 100), _make_point(200, 100)),
-    ])])
+    fake_page.get_objects = MagicMock(return_value=[fake_path_object])
 
     class _FakeDoc:
         def __iter__(self): return iter([fake_page])
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def close(self): pass
 
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(return_value=_FakeDoc())
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+    fake_pdfium = types.ModuleType("pypdfium2")
+    fake_pdfium.PdfDocument = MagicMock(return_value=_FakeDoc())
+    fake_pdfium.raw = fake_raw
+    monkeypatch.setitem(sys.modules, "pypdfium2", fake_pdfium)
+    monkeypatch.setitem(sys.modules, "pypdfium2.raw", fake_raw)
 
     result = parser_module._classify_pages_from_pdf("/tmp/fake.pdf")
     assert result == {1: "bordered"}
 
 
 # ---------------------------------------------------------------------------
-# 10. _classify_pages_from_pdf — fitz unavailable returns empty
+# 10. _classify_pages_from_pdf — pypdfium2 open failure returns empty
 # ---------------------------------------------------------------------------
 
-def test_classify_pages_fitz_open_failure_returns_empty(parser_module, monkeypatch):
-    fake_pymupdf = types.ModuleType("pymupdf")
-    fake_pymupdf.open = MagicMock(side_effect=RuntimeError("can't open"))
-    monkeypatch.setitem(sys.modules, "pymupdf", fake_pymupdf)
+def test_classify_pages_pdfium_open_failure_returns_empty(parser_module, monkeypatch):
+    fake_pdfium = types.ModuleType("pypdfium2")
+    fake_pdfium.PdfDocument = MagicMock(side_effect=RuntimeError("can't open"))
+    fake_pdfium.raw = MagicMock()
+    monkeypatch.setitem(sys.modules, "pypdfium2", fake_pdfium)
+    monkeypatch.setitem(sys.modules, "pypdfium2.raw", fake_pdfium.raw)
     assert parser_module._classify_pages_from_pdf("/tmp/fake.pdf") == {}
 
 

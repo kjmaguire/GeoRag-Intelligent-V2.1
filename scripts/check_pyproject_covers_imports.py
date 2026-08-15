@@ -126,9 +126,13 @@ ALLOWED_NON_PYPROJECT: set[str] = {
     "eralchemy2",
     # pymupdf was deliberately removed from dependencies (CC-1 audit
     # 2026-05-27, AGPL-3.0 licensing). Its one remaining call site
-    # (pdf_report.py _classify_pages_from_pdf) wraps the import in
-    # try/except ImportError and returns {} on absence — same
-    # gracefully-degrading pattern as pdf2image/pytesseract above.
+    # (pdf_report.py _classify_pages_from_pdf) wrapped the import in
+    # try/except ImportError and returned {} on absence — but since the
+    # dependency was gone, that import ALWAYS failed and the classifier was
+    # silently dead code (2026-08-15 fix). That call site now imports
+    # pypdfium2 instead (already declared in pyproject.toml), so no "pymupdf"
+    # import remains anywhere in app/ — this entry is kept only as a
+    # tombstone in case a future contributor reintroduces it by accident.
     "pymupdf",
     # opentelemetry: observability/otel.py wraps every otel import in
     # try/except ImportError and only activates when

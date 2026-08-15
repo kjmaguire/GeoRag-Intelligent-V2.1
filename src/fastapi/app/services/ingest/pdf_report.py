@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import difflib
 import hashlib
 import json
@@ -946,52 +947,65 @@ def _table_signature(table: list[list]) -> str:
 
 
 def _classify_page_table_type(
-    drawings: list,
+    items: list[tuple],
     line_threshold: int = 3,
     rect_threshold: int = 20,
     min_horizontal_line_length: float = 30.0,
 ) -> str:
     """Phase 4 (2026-05-22) — classify a PDF page as 'bordered' or 'borderless'.
 
-    Walks the fitz `page.get_drawings()` output (pre-fetched and passed
-    in so the caller can open the PDF once per file rather than once per
-    classifier call).
+    Walks a flat list of vector-drawing primitives produced by
+    `_iter_pdfium_path_items` (one per straight-line or closed-polygon
+    subpath found on the page).
 
     Heuristic:
       - Count horizontal lines longer than ``min_horizontal_line_length``
         points. ≥ ``line_threshold`` → bordered.
-      - Count rectangle ('re') items. ≥ ``rect_threshold`` → bordered.
-        Real-world prospectuses commonly use rectangles (not lines) for
-        table borders — counted separately so the kickoff's
+      - Count closed-polygon ('re'-equivalent) subpaths. ≥ ``rect_threshold``
+        → bordered. Real-world prospectuses commonly use rectangles (not
+        lines) for table borders — counted separately so the kickoff's
         TABLE_BORDER_LINE_THRESHOLD threshold doesn't miss them.
+
+    Each item is either:
+      - ("l", (x1, y1), (x2, y2)) — a 2-point straight-line subpath
+      - ("re",) — a closed-polygon subpath (≥ 4 points, closed)
 
     A page that has ≥ either threshold is bordered. Pages below both
     thresholds are classified borderless. Returns "bordered" or
     "borderless"; never None.
+
+    Engine note (2026-08-15): originally walked fitz's (PyMuPDF's)
+    `page.get_drawings()` output. PyMuPDF was removed for its AGPL license
+    (2026-05-27, see pyproject.toml), so the `import pymupdf` this function
+    depended on ALWAYS failed at runtime — `_classify_pages_from_pdf` has
+    been silently returning {} on every call since, permanently disabling
+    both TABLE_BORDER_* env knobs. Ported to pypdfium2 (Apache 2.0, already
+    a dependency — see `_iter_pdfium_path_items`, which replaces
+    `get_drawings()` by walking each PATH page-object's raw path segments).
     """
     h_lines = 0
     rects = 0
-    for d in (drawings or []):
-        for it in d.get("items", []) or []:
-            kind = it[0] if it else None
-            if kind == "l":
-                # Line: ('l', Point1, Point2). Count near-horizontal lines
-                # only (Δy ~ 0 within 1 point), of meaningful length.
-                try:
-                    p1, p2 = it[1], it[2]
-                    if (
-                        abs(p1.y - p2.y) < 1.0
-                        and abs(p1.x - p2.x) >= min_horizontal_line_length
-                    ):
-                        h_lines += 1
-                except Exception:
-                    continue
-            elif kind == "re":
-                # Rectangle: ('re', Rect, ...). Counted regardless of size;
-                # real-world bordered table cells can be tiny.
-                rects += 1
-            # 'qu' (quad) and 'c' (curve) are ignored — neither is a
-            # standard table-border primitive.
+    for it in items or []:
+        kind = it[0] if it else None
+        if kind == "l":
+            # Line: ("l", (x1,y1), (x2,y2)). Count near-horizontal lines
+            # only (Δy ~ 0 within 1 point), of meaningful length.
+            try:
+                (x1, y1), (x2, y2) = it[1], it[2]
+                if (
+                    abs(y1 - y2) < 1.0
+                    and abs(x1 - x2) >= min_horizontal_line_length
+                ):
+                    h_lines += 1
+            except Exception:
+                continue
+        elif kind == "re":
+            # Closed polygon (rectangle-equivalent). Counted regardless of
+            # size; real-world bordered table cells can be tiny.
+            rects += 1
+        # Open polygons and bezier-containing subpaths never reach here —
+        # `_iter_pdfium_path_items` drops them, mirroring fitz's ignoring
+        # of 'qu' (quad) / 'c' (curve) primitives.
     if h_lines >= line_threshold:
         return "bordered"
     if rects >= rect_threshold:
@@ -999,8 +1013,71 @@ def _classify_page_table_type(
     return "borderless"
 
 
+def _iter_pdfium_path_items(path_object, pdfium_raw) -> list[tuple]:
+    """Walk one pypdfium2 PATH page-object's segments into the same
+    ('l', p1, p2) / ('re',) primitives fitz's `get_drawings()['items']`
+    used to produce for a single drawing operation.
+
+    A PDF path object can contain multiple disjoint subpaths (multiple
+    MOVETOs — e.g. a whole table grid stroked in one operation as many
+    `m l` pairs sharing one paint op). Each subpath is classified
+    independently:
+      - exactly 2 points, not closed → ("l", (x1, y1), (x2, y2))
+      - ≥ 4 points, closed → ("re",) — PDFium decomposes the `re` operator
+        into MOVETO + 3× LINETO + close-on-last-segment, so this also
+        catches other ruled-cell polygons drawn the same way.
+      - anything else (a single point, an open polygon, any subpath
+        containing a bezier curve) → dropped, mirroring fitz's ignoring of
+        'c' (curve) / 'qu' (quad) primitives.
+
+    Verified against synthetic pypdfium2-rendered fixtures covering: lines
+    drawn as separate stroke ops, lines drawn as one combined multi-subpath
+    stroke op, `re`-style bordered cells, and small decorative vector
+    shapes that must NOT trip the classifier.
+    """
+    items: list[tuple] = []
+    n = pdfium_raw.FPDFPath_CountSegments(path_object)
+    if n <= 0:
+        return items
+
+    pts: list[tuple[float, float]] = []
+    has_bezier = False
+    closed = False
+
+    def _flush() -> None:
+        if has_bezier or len(pts) < 2:
+            return
+        if closed and len(pts) >= 4:
+            items.append(("re",))
+        elif not closed and len(pts) == 2:
+            items.append(("l", pts[0], pts[1]))
+
+    for i in range(n):
+        seg = pdfium_raw.FPDFPath_GetPathSegment(path_object, i)
+        seg_type = pdfium_raw.FPDFPathSegment_GetType(seg)
+        x = ctypes.c_float()
+        y = ctypes.c_float()
+        pdfium_raw.FPDFPathSegment_GetPoint(seg, ctypes.byref(x), ctypes.byref(y))
+        seg_closed = bool(pdfium_raw.FPDFPathSegment_GetClose(seg))
+
+        if seg_type == pdfium_raw.FPDF_SEGMENT_MOVETO and pts:
+            # New subpath starting — flush the one just finished.
+            _flush()
+            pts = []
+            has_bezier = False
+            closed = False
+
+        if seg_type == pdfium_raw.FPDF_SEGMENT_BEZIERTO:
+            has_bezier = True
+        pts.append((x.value, y.value))
+        closed = closed or seg_closed
+
+    _flush()
+    return items
+
+
 def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
-    """Open the PDF once via fitz and return {page_no: 'bordered'|'borderless'}.
+    """Open the PDF once via pypdfium2 and return {page_no: 'bordered'|'borderless'}.
 
     Reads thresholds from env vars (with the defaults in kickoff):
       TABLE_BORDER_LINE_THRESHOLD (default 3)
@@ -1010,7 +1087,8 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
     behavior — defensive).
     """
     try:
-        import pymupdf  # noqa: PLC0415
+        import pypdfium2 as pdfium  # noqa: PLC0415
+        import pypdfium2.raw as pdfium_raw  # noqa: PLC0415
     except ImportError:
         return {}
     try:
@@ -1022,19 +1100,8 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
     except ValueError:
         rect_thr = 20
 
-    result: dict[int, str] = {}
     try:
-        with pymupdf.open(pdf_path) as doc:
-            for n, page in enumerate(doc, start=1):
-                try:
-                    drawings = page.get_drawings()
-                except Exception:
-                    drawings = []
-                result[n] = _classify_page_table_type(
-                    drawings,
-                    line_threshold=line_thr,
-                    rect_threshold=rect_thr,
-                )
+        pdf = pdfium.PdfDocument(pdf_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "pdf_report: page classification failed for '%s' (%s) — "
@@ -1042,6 +1109,36 @@ def _classify_pages_from_pdf(pdf_path: str) -> dict[int, str]:
             pdf_path, exc,
         )
         return {}
+
+    result: dict[int, str] = {}
+    try:
+        for n, page in enumerate(pdf, start=1):
+            try:
+                path_objects = list(
+                    page.get_objects(filter=(pdfium_raw.FPDF_PAGEOBJ_PATH,)),
+                )
+            except Exception:
+                path_objects = []
+            items: list[tuple] = []
+            for obj in path_objects:
+                try:
+                    items.extend(_iter_pdfium_path_items(obj, pdfium_raw))
+                except Exception:
+                    continue
+            result[n] = _classify_page_table_type(
+                items,
+                line_threshold=line_thr,
+                rect_threshold=rect_thr,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "pdf_report: page classification failed for '%s' (%s) — "
+            "callers will treat every page as borderless",
+            pdf_path, exc,
+        )
+        return {}
+    finally:
+        pdf.close()
     return result
 
 
