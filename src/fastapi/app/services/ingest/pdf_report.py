@@ -36,6 +36,7 @@ records this in Dagster materialisation metadata.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import difflib
 import hashlib
@@ -44,6 +45,8 @@ import logging
 import os
 import re
 import statistics
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -1539,22 +1542,66 @@ def _parse_with_fitz(
             PER_PAGE_MIN_CHARS, len(short_page_nums),
         )
         ocr_recovered = 0
-        _ocr_done = 0
-        for n in short_page_nums:
-            _ocr_done += 1
-            _tick_progress(progress_file, "ocr", _ocr_done, len(short_page_nums), force=True)
+
+        # Perf audit 2026-08-15 (item 3) — this used to be a fully serial
+        # for-loop: one _ocr_single_page call, fully awaited, then the
+        # next. Each call is either a network round-trip to Azure Document
+        # Intelligence or a tesseract subprocess invocation (pytesseract
+        # shells out to the `tesseract` binary) — both release the GIL
+        # while blocked, so a small bounded thread pool lets several
+        # pages' OCR genuinely overlap within this one parse subprocess
+        # (still one document per subprocess — see _run_parser_subprocess
+        # in hatchet_workflows/ingest_pdf.py). _ocr_single_page's shared
+        # mutable state (the cached pikepdf.Pdf object + the DI page
+        # budget) is guarded by _PIKEPDF_LOCK — see _get_cached_pikepdf's
+        # docstring. Only the OCR calls themselves run concurrently; the
+        # per-page bookkeeping below (pages_text, per_page_text,
+        # per_page_method, warnings, ...) is applied sequentially, in
+        # short_page_nums order (asyncio.gather preserves input order
+        # regardless of completion order), so it stays exactly as
+        # single-threaded/order-independent as the old code — and
+        # per_page_text is re-sorted by page number a few lines down
+        # regardless.
+        _OCR_PAGE_CONCURRENCY = max(
+            1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4"))
+        )
+
+        def _ocr_one_page(n: int):
             try:
                 # Phase 3 — capture mean_conf from tesseract per-word data.
                 # return_tables — DI prebuilt-layout table grids (always []
                 # on the tesseract path).
-                ocr_text, mean_conf, assessment, ocr_tables = _ocr_single_page(
+                return n, _ocr_single_page(
                     path,
                     n,
                     return_confidence=True,
                     return_assessment=True,
                     return_tables=True,
-                )
-            except Exception:
+                ), None
+            except Exception as _ocr_exc:  # noqa: BLE001
+                return n, None, _ocr_exc
+
+        async def _run_ocr_fanout():
+            loop = asyncio.get_event_loop()
+            sem = asyncio.Semaphore(_OCR_PAGE_CONCURRENCY)
+            with ThreadPoolExecutor(max_workers=_OCR_PAGE_CONCURRENCY) as executor:
+                async def _bounded(n: int):
+                    async with sem:
+                        return await loop.run_in_executor(executor, _ocr_one_page, n)
+
+                return await asyncio.gather(*(_bounded(n) for n in short_page_nums))
+
+        # _parse_with_fitz is a plain sync function running inside its own
+        # parse subprocess (no asyncio event loop already running there —
+        # see _run_parser_subprocess), so a fresh, local asyncio.run() here
+        # is safe: nothing else in this process touches asyncio.
+        ocr_page_results = asyncio.run(_run_ocr_fanout())
+
+        _ocr_done = 0
+        for n, _ocr_result, _ocr_exc in ocr_page_results:
+            _ocr_done += 1
+            _tick_progress(progress_file, "ocr", _ocr_done, len(short_page_nums), force=True)
+            if _ocr_exc is not None:
                 # F30 — an OCR exception must not drop sub-threshold native
                 # text: salvage it with the same bookkeeping as the
                 # short-text salvage branch below.
@@ -1570,6 +1617,7 @@ def _parse_with_fitz(
                         "chars": len(_native_txt.strip()),
                     })
                 continue
+            ocr_text, mean_conf, assessment, ocr_tables = _ocr_result
             if ocr_tables:
                 # Collected regardless of whether the page's TEXT clears
                 # PER_PAGE_MIN_CHARS — a scanned table page can carry
@@ -1683,6 +1731,24 @@ def _parse_with_fitz(
 # doesn't accumulate across documents.
 _PIKEPDF_CACHE: dict[str, Any] = {}
 
+# Perf audit 2026-08-15 (item 3) — guards _PIKEPDF_CACHE here AND
+# _DI_PAGES_USED / _DI_CAP_LOGGED further below. Both were written assuming
+# a single-threaded, one-document-per-subprocess caller, which was true
+# before this change. The per-page OCR loop in _parse_with_fitz now fans
+# pages out across a small in-process ThreadPoolExecutor (still just one
+# document per parse subprocess — see _run_parser_subprocess in
+# hatchet_workflows/ingest_pdf.py), so concurrent threads can now race on:
+#  (a) the cache dict itself,
+#  (b) the shared pikepdf.Pdf object it hands out — pikepdf (a qpdf
+#      binding) is not documented as safe for concurrent reads from
+#      multiple threads, so this is real shared mutable state, not just a
+#      dict-keyed-by-page-number result, and
+#  (c) the DI budget's check-and-increment.
+# One lock covers all three: they're all fast, non-blocking, in-memory
+# operations (dict ops + a single-page PDF slice), so serializing them
+# costs nothing next to the network/OCR work that runs outside the lock.
+_PIKEPDF_LOCK = threading.Lock()
+
 
 def _get_cached_pikepdf(pdf_path: str):
     import pikepdf as _pikepdf
@@ -1696,6 +1762,30 @@ def _get_cached_pikepdf(pdf_path: str):
     pdf = _pikepdf.open(pdf_path)
     _PIKEPDF_CACHE[pdf_path] = pdf
     return pdf
+
+
+def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
+    """Extract one page into its own in-memory PDF, for DI single-page upload.
+
+    Perf audit 2026-08-15: the whole cache-get + slice + save sequence runs
+    under _PIKEPDF_LOCK because _get_cached_pikepdf hands back a SHARED
+    pikepdf.Pdf object that every concurrent OCR-page thread would otherwise
+    read from at once — see the lock's docstring above for why that's
+    unsafe. This used to be inlined directly in _ocr_single_page, where it
+    ran with no concurrency at all; pulling it into its own function just
+    gives the lock a single, obvious acquisition point.
+    """
+    import io as _io
+
+    import pikepdf as _pikepdf
+
+    with _PIKEPDF_LOCK:
+        _src = _get_cached_pikepdf(pdf_path)
+        _single = _pikepdf.Pdf.new()
+        _single.pages.append(_src.pages[page_num - 1])
+        _buf = _io.BytesIO()
+        _single.save(_buf)
+        return _buf.getvalue()
 
 
 # 2026-08-14 — per-document Azure DI page budget. `_ocr_single_page` fires
@@ -1721,25 +1811,35 @@ def _di_max_pages_per_doc() -> int:
 
 
 def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
-    """Consume ``pages`` from the document's DI budget; False when exhausted."""
-    if pdf_path not in _DI_PAGES_USED:
-        for _stale in list(_DI_PAGES_USED):
-            _DI_PAGES_USED.pop(_stale, None)
-            _DI_CAP_LOGGED.discard(_stale)
-        _DI_PAGES_USED[pdf_path] = 0
-    cap = _di_max_pages_per_doc()
-    if _DI_PAGES_USED[pdf_path] + pages > cap:
-        if pdf_path not in _DI_CAP_LOGGED:
-            _DI_CAP_LOGGED.add(pdf_path)
-            logger.warning(
-                "pdf_report: document_intelligence page budget exhausted for "
-                "'%s' (used=%d, cap=%d via %s) — remaining short pages fall "
-                "back to tesseract",
-                pdf_path, _DI_PAGES_USED[pdf_path], cap, _DI_PAGE_BUDGET_ENV,
-            )
-        return False
-    _DI_PAGES_USED[pdf_path] += pages
-    return True
+    """Consume ``pages`` from the document's DI budget; False when exhausted.
+
+    Perf audit 2026-08-15: guarded by _PIKEPDF_LOCK (shared with the pikepdf
+    cache above — see its docstring) now that the per-page OCR loop calls
+    this from multiple concurrent threads. The check-and-increment must be
+    atomic: without the lock, two threads could both read
+    _DI_PAGES_USED[pdf_path] before either writes it back, letting the
+    budget overrun by up to (concurrency - 1) pages, and both could race on
+    the "log once" _DI_CAP_LOGGED set.
+    """
+    with _PIKEPDF_LOCK:
+        if pdf_path not in _DI_PAGES_USED:
+            for _stale in list(_DI_PAGES_USED):
+                _DI_PAGES_USED.pop(_stale, None)
+                _DI_CAP_LOGGED.discard(_stale)
+            _DI_PAGES_USED[pdf_path] = 0
+        cap = _di_max_pages_per_doc()
+        if _DI_PAGES_USED[pdf_path] + pages > cap:
+            if pdf_path not in _DI_CAP_LOGGED:
+                _DI_CAP_LOGGED.add(pdf_path)
+                logger.warning(
+                    "pdf_report: document_intelligence page budget exhausted for "
+                    "'%s' (used=%d, cap=%d via %s) — remaining short pages fall "
+                    "back to tesseract",
+                    pdf_path, _DI_PAGES_USED[pdf_path], cap, _DI_PAGE_BUDGET_ENV,
+                )
+            return False
+        _DI_PAGES_USED[pdf_path] += pages
+        return True
 
 
 def _tesseract_data_to_words_and_text(data: dict) -> tuple[list[tuple[str, int]], str]:
@@ -1843,16 +1943,7 @@ def _ocr_single_page(
             # full-file uploads. It fails the DI request instead, so the
             # branch below falls through to tesseract for this page.
             try:
-                import io as _io
-
-                import pikepdf as _pikepdf
-
-                _src = _get_cached_pikepdf(pdf_path)
-                _single = _pikepdf.Pdf.new()
-                _single.pages.append(_src.pages[page_num - 1])
-                _buf = _io.BytesIO()
-                _single.save(_buf)
-                pdf_bytes = _buf.getvalue()
+                pdf_bytes = _slice_single_page_pdf_bytes(pdf_path, page_num)
             except Exception as _slice_exc:  # noqa: BLE001
                 logger.warning(
                     "pdf_report: single-page slice failed for page %d of '%s' "
