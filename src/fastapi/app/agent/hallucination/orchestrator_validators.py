@@ -75,6 +75,13 @@ async def _get_known_formations(
             return formations
         # Cache expired — fall through to refresh
 
+    # B1 (2026-07-28): Neo4j was REMOVED from the stack — deps.neo4j_driver
+    # is always None in production, so this branch fires on every call and
+    # the Layer-4 formation check below is PERMANENTLY fail-open (no
+    # formation warnings can ever be emitted). Kept rather than deleted so
+    # the check springs back to life if a graph store returns; flagged
+    # explicitly per the RAG-quality audit 2026-08-14 (finding 7) so nobody
+    # mistakes it for live coverage.
     if neo4j_driver is None:
         return frozenset()
 
@@ -732,6 +739,14 @@ async def verify_entities(
 
     warnings: list[str] = []
 
+    # Tool-result token bag — built once, shared by the hole-ID, commodity,
+    # and formation checks below (previously built inside the commodity
+    # branch only, which the formation block reached via a fragile F821
+    # cross-reference).
+    grounded_tokens: set[str] = (
+        _extract_entities_from_tool_results(tool_results) if tool_results else set()
+    )
+
     # --- Hole ID resolution via PostGIS ---
     if hole_ids:
         try:
@@ -748,10 +763,29 @@ async def verify_entities(
             found = {r["hole_id"] for r in rows}
             missing = [hid for hid in hole_ids if hid not in found]
             for hid in missing:
-                warnings.append(
-                    f"Layer 4: Drill-hole ID '{hid}' not found in silver.collars "
-                    f"for this project"
-                )
+                # RAG-quality audit 2026-08-14 (finding 2, the "ZRY" case):
+                # a hole named verbatim in retrieved document chunks but
+                # absent from silver.collars is NOT a fabrication — the
+                # structured drill database simply doesn't cover it. Check
+                # the same tool-result token bag the commodity check uses
+                # before escalating. Only a hole absent from BOTH the DB
+                # and the retrieved evidence stays critical (the prefix
+                # "Layer 4: Drill-hole ID" is what
+                # run_post_assembly_validation classifies as critical /
+                # confidence-floor-worthy — the advisory prefix below is
+                # deliberately different so it never trips that bucket).
+                if hid.lower() in grounded_tokens:
+                    warnings.append(
+                        f"Layer 4 advisory: Hole '{hid}' is not in the "
+                        f"structured drill database (silver.collars) for "
+                        f"this project; the answer is grounded in retrieved "
+                        f"documents instead"
+                    )
+                else:
+                    warnings.append(
+                        f"Layer 4: Drill-hole ID '{hid}' not found in silver.collars "
+                        f"for this project"
+                    )
         except Exception:
             logger.debug(
                 "orchestrator_validators: hole-ID entity resolution failed (fail-open)"
@@ -759,7 +793,6 @@ async def verify_entities(
 
     # --- Commodity codes: must appear in tool results ---
     if tool_results:
-        grounded_tokens = _extract_entities_from_tool_results(tool_results)
         # Find bare commodity tokens in the answer text.
         commodity_pattern = re.compile(
             r"\b(" + "|".join(re.escape(c) for c in sorted(_COMMODITY_CODES, key=len, reverse=True)) + r")\b"
@@ -796,12 +829,8 @@ async def verify_entities(
         known_formations = await _get_known_formations(
             neo4j_driver, project_id, timeout_s=settings.TIMEOUT_NEO4J_S
         )
-        # Build the tool-results token bag once (already computed above for
-        # the commodity-grounding check; recompute if that branch was skipped).
-        if tool_results:  # noqa: SIM108
-            tool_tokens = grounded_tokens  # noqa: F821  (set in the commodity block)
-        else:
-            tool_tokens = set()
+        # Token bag was built once at the top of this function.
+        tool_tokens = grounded_tokens
 
         if known_formations:
             # Graph is populated — check each proper noun against the cached
@@ -813,7 +842,12 @@ async def verify_entities(
                         f"Layer 4: Formation/entity name '{name}' could not be "
                         f"resolved in the Neo4j knowledge graph for this project"
                     )
-        # If known_formations is empty, graph not yet populated — fail-open (no warnings).
+        # If known_formations is empty, fail-open (no warnings). NOTE: since
+        # Neo4j was removed from the stack (B1, 2026-07-28) known_formations
+        # is ALWAYS empty in production — the formation/entity branch above
+        # is dead code kept only for a future graph-store return; the
+        # tool-token grounding it would add is partially covered by the
+        # commodity check. See audit 2026-08-14 finding 7.
 
     return warnings
 

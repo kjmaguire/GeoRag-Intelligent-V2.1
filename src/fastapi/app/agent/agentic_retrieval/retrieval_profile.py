@@ -131,15 +131,21 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         answer_emphasis="exact_citation",
         max_chunks=6,
     ),
+    # NOTE (audit 2026-08-14, finding 7): "traverse_knowledge_graph" was
+    # removed from every profile below. Neo4j was removed from the stack
+    # (B1, 2026-07-28) — the tool early-returns an empty
+    # GraphTraversalResult unconditionally, so listing it as a primary tool
+    # only burned an execute-node dispatch and injected a guaranteed-empty
+    # "Neo4j knowledge graph (unavailable)" block into telemetry. Re-add it
+    # here if a graph store ever returns.
     "synthesis": RetrievalProfile(
         intent="synthesis",
-        # Broad multi-source — every retrieval store contributes.
+        # Broad multi-source — every live retrieval store contributes.
         primary_tools=[
             "search_documents",
             "query_spatial_collars",
             "query_downhole_logs",
             "query_assay_data",
-            "traverse_knowledge_graph",
         ],
         secondary_tools=["query_project_overview"],
         bm25_weight=0.5,
@@ -154,7 +160,6 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         # (see execute_node.run_adversarial_pass).
         primary_tools=[
             "search_documents",
-            "traverse_knowledge_graph",
             "query_assay_data",
         ],
         secondary_tools=["query_spatial_collars"],
@@ -191,12 +196,11 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
     "decision_support": RetrievalProfile(
         intent="decision_support",
         # Evidence for ALL candidate options before ranking — same broad
-        # retrieval as synthesis plus the graph for analogues.
+        # retrieval as synthesis.
         primary_tools=[
             "search_documents",
             "query_spatial_collars",
             "query_assay_data",
-            "traverse_knowledge_graph",
         ],
         secondary_tools=["query_downhole_logs", "query_project_overview"],
         bm25_weight=0.5,

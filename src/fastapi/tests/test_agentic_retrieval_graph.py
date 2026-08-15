@@ -102,7 +102,15 @@ def test_decision_profile_carries_evidence_for_all_options() -> None:
     assert "search_documents" in p.primary_tools
     assert "query_spatial_collars" in p.primary_tools
     assert "query_assay_data" in p.primary_tools
-    assert "traverse_knowledge_graph" in p.primary_tools
+
+
+@pytest.mark.parametrize("intent", list(INTENT_LABELS))
+def test_no_profile_lists_dead_graph_tool(intent: Intent) -> None:
+    """Audit 2026-08-14 finding 7: traverse_knowledge_graph early-returns
+    empty (Neo4j removed, B1 2026-07-28) — no profile may list it."""
+    p = profile_for_intent(intent)
+    assert "traverse_knowledge_graph" not in p.primary_tools
+    assert "traverse_knowledge_graph" not in p.secondary_tools
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +232,9 @@ async def test_execute_node_dispatches_primary_tools(monkeypatch) -> None:
         }
     )
     update = await execute_node(state)
-    # search_documents + spatial + assay tools should fire (3 of 5 primaries
-    # from the synthesis profile — downhole + graph are skipped pending NER).
+    # search_documents + spatial + assay tools should fire (3 of 4 primaries
+    # from the synthesis profile — downhole is skipped pending NER; the dead
+    # graph tool was dropped from the profile entirely, audit 2026-08-14).
     # query_project_overview from secondary_tools fires too when primary
     # yielded < 3 results (it didn't, so secondary may or may not run).
     tool_names = [name for name, _ in update["tool_results"]]

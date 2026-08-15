@@ -47,13 +47,20 @@ def _count_independent_sources(citations: Iterable[Citation]) -> int:
     Independence is measured at the ``source_chunk_id`` granularity — two
     citations pointing at the same chunk count as one source even if they
     have different display ids. Refusal placeholder citations (no real
-    upstream record) are excluded.
+    upstream record) are excluded via the sentinel set SHARED with the
+    assembler's IND-6 guard (response_assembler.EMPTY_SOURCE_SENTINELS) so
+    the two filters cannot drift (audit 2026-08-14, finding 3).
     """
+    # Local import — response_assembler imports this module lazily inside
+    # a function, so a top-of-function import here keeps the pair cycle-free
+    # regardless of module load order.
+    from app.agent.response_assembler import EMPTY_SOURCE_SENTINELS  # noqa: PLC0415
+
     ids: set[str] = set()
     for c in citations:
         if not c.source_chunk_id:
             continue
-        if c.source_chunk_id in {"no-tool-call", "georag_reports:empty", "pg_public_geoscience:empty"}:
+        if c.source_chunk_id in EMPTY_SOURCE_SENTINELS:
             continue
         ids.add(c.source_chunk_id)
     return len(ids)

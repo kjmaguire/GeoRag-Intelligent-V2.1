@@ -50,7 +50,30 @@ QueryClassLiteral = Literal[
 
 FusionMethodLiteral = Literal["rrf", "dbsf"]
 
-BackendLiteral = Literal["vllm", "ollama", "anthropic"]
+# Mirrors the DB CHECK `answer_runs_backend_valid` exactly — the constraint
+# is (re)defined by migration 2026_08_14_010000_extend_answer_runs_backend_check
+# ('vllm', 'anthropic', 'azure', 'unknown'). 'ollama' was dropped from the
+# DB CHECK back in 2026_06_02_220000 but lingered here; 'azure' is the live
+# default backend (config.LLM_BACKEND) and was previously unrepresentable in
+# both the Literal and the CHECK (RAG-quality audit 2026-08-14, finding 5).
+# tests/test_backend_enum_contract.py asserts Literal ⊆ migration CHECK.
+BackendLiteral = Literal["vllm", "anthropic", "azure", "unknown"]
+
+# The recognised live backends; anything else normalises to "unknown".
+_KNOWN_BACKENDS: frozenset[str] = frozenset({"vllm", "anthropic", "azure"})
+
+
+def normalize_backend(value: str | None) -> BackendLiteral:
+    """Map an arbitrary backend string onto the allowed persistence set.
+
+    Used by the agentic persist path to record ``settings.LLM_BACKEND``
+    without ever violating the ``answer_runs_backend_valid`` CHECK — an
+    unrecognised or missing value becomes ``"unknown"`` (queryable and
+    alertable, unlike a silent NULL).
+    """
+    if value in _KNOWN_BACKENDS:
+        return value  # type: ignore[return-value]
+    return "unknown"
 
 CitationLifecycleStateLiteral = Literal[
     "draft",

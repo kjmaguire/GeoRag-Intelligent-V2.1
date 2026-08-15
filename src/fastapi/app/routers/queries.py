@@ -102,8 +102,8 @@ class QueryRequest(BaseModel):
     # is a turn dict; the FastAPI agentic graph hands the list to the
     # resolve_node, which expands pronouns / demonstratives / comparatives
     # against the history before classification. When
-    # MULTI_TURN_RESOLUTION_ENABLED is False (default), resolve_node
-    # is a no-op and history is ignored.
+    # MULTI_TURN_RESOLUTION_ENABLED is False (default is True since
+    # 2026-08-14), resolve_node is a no-op and history is ignored.
     #
     # Shape per entry:
     #   {

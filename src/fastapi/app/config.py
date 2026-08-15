@@ -651,10 +651,12 @@ class Settings(BaseSettings):
     #   3. Comparative reference ('the previous one', 'the first one')
     #
     # See docs/architecture/multi_turn_resolution_spec.md for the contract.
-    # Default off — conversation history plumbing across Laravel + FastAPI
-    # is the larger half of the wire; this flag exists so the FastAPI side
-    # can ship first and the Laravel loader follows in a later commit.
-    MULTI_TURN_RESOLUTION_ENABLED: bool = False
+    # Default ON since 2026-08-14 (RAG-quality audit finding 4): the
+    # resolver is pure/heuristic (no LLM, no I/O), resolve_node returns {}
+    # when history is empty, and with the flag off every follow-up
+    # ("what were its top assays?") hit retrieval with an unresolved
+    # pronoun. Set to false to restore the pass-through behaviour.
+    MULTI_TURN_RESOLUTION_ENABLED: bool = True
 
     # -------------------------------------------------------------------------
     # Plan §2c — entity-resolver shadow mode
@@ -1119,17 +1121,19 @@ class Settings(BaseSettings):
     #
     # Phase rollout for the (value, unit) cross-check that catches
     # unit-pair fabrication ("37 oz/t" while evidence carries "37 g/t"):
-    #   "shadow" — telemetry only; never affects pass/fail. Default
-    #              until ~2 weeks of real-traffic data confirms the
-    #              extractor doesn't over-flag.
+    #   "shadow" — telemetry only; never affects pass/fail.
     #   "warn"   — emits a validation_warning per mismatch so the
     #              orchestrator surfaces it but does NOT reject.
     #   "fail"   — full guard semantics; mismatched tuples reject the
     #              answer (treated identically to ungrounded numbers).
     #
-    # Promote with one env var bump after the shadow data lands — no
-    # code change required. See `app.agent.hallucination.orchestrator_validators`.
-    L3_TUPLE_GUARD_MODE: str = "shadow"
+    # Default promoted shadow → warn 2026-08-14 (RAG-quality audit finding
+    # 8): g/t-vs-oz/t unit-pair fabrications now surface to users as
+    # advisory warnings instead of log-only telemetry. "shadow" and "off"
+    # remain available as env-var escape hatches; demote with one env var
+    # bump — no code change required.
+    # See `app.agent.hallucination.orchestrator_validators`.
+    L3_TUPLE_GUARD_MODE: str = "warn"
 
     # -------------------------------------------------------------------------
     # Context budget — how much retrieved data we feed the LLM per request

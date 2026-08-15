@@ -48,6 +48,20 @@ logger = logging.getLogger(__name__)
 # (shared pattern — see citation_markers.py for the colon/dash rationale).
 _CITATION_MARKER_RE = CITATION_MARKER_RE
 
+# Sentinel source_chunk_id values that carry NO real upstream evidence — the
+# synthetic no-tool-call placeholder plus the empty-retrieval sentinels the
+# assembler emits when a search tool returned zero hits. Shared between the
+# IND-6 ungrounded-answer guard here and
+# ``confidence_computer._count_independent_sources`` so the two filters can
+# never drift again (RAG-quality audit 2026-08-14, finding 3 — an empty
+# DocumentSearchResult's "georag_reports:empty" citation used to pass IND-6
+# while being excluded from the independent-source count).
+EMPTY_SOURCE_SENTINELS: frozenset[str] = frozenset({
+    "no-tool-call",
+    "georag_reports:empty",
+    "pg_public_geoscience:empty",
+})
+
 
 def assign_citation_ids(
     tool_results: list[tuple[str, Any]],
@@ -56,13 +70,25 @@ def assign_citation_ids(
 
     Returns a list parallel to tool_results. Each inner list holds the
     citation_ids that tool result will contribute — typically exactly one,
-    EXCEPT for ``PublicGeoscienceSearchResult`` where we emit one citation
-    per record (plan §04i Layer 5 — every cited fact must trace to exactly
-    one upstream record, not to the first-record-of-the-tool-call).
+    EXCEPT for:
 
-    Called by ``_build_context`` so the LLM prompt can tag each PG record
-    with the exact ``[PGEO-N]`` marker the assembler will emit, and by
-    ``assemble_response`` so the citation objects use those same ids.
+      * ``PublicGeoscienceSearchResult`` — one citation per record (plan
+        §04i Layer 5 — every cited fact must trace to exactly one upstream
+        record, not to the first-record-of-the-tool-call).
+      * ``DocumentSearchResult`` with chunks — one citation PER CHUNK
+        (RAG-quality audit 2026-08-14, finding 1: all 12 chunks of a
+        search_documents call used to share one ``[NI43-n]``, so chips /
+        pages / Layer-5 provenance always described chunk 1 regardless of
+        which chunk actually grounded the sentence). An EMPTY
+        DocumentSearchResult still yields one sentinel id so the
+        empty-retrieval citation ("georag_reports:empty") survives for the
+        IND-6 refusal path.
+
+    Called by ``_render_tool_results_context`` so the LLM prompt can tag
+    each chunk/record with the exact marker the assembler will emit, and by
+    ``assemble_response`` so the citation objects use those same ids. The
+    two MUST stay in lockstep — Layer 2 strips any marker without a
+    matching Citation (layer2_typed_output.py).
 
     A shared counter across tool-result types matches the existing
     interleaved behavior — two consecutive DATA then NI43 tool results
@@ -77,11 +103,28 @@ def assign_citation_ids(
                 counter += 1
                 ids.append(f"[PGEO-{counter}]")
             out.append(ids)
+        elif isinstance(result, DocumentSearchResult) and result.chunks:
+            ids = []
+            for chunk in result.chunks:
+                counter += 1
+                ids.append(f"[{_citation_type_for_chunk(chunk)}-{counter}]")
+            out.append(ids)
         else:
             counter += 1
             cit_type = _citation_type_for_tool(tool_name, result)
             out.append([f"[{cit_type}-{counter}]"])
     return out
+
+
+def _citation_type_for_chunk(chunk: Any) -> Literal["NI43", "PUB"]:
+    """Citation type for ONE document chunk (per-chunk citation path).
+
+    Mirrors the first-chunk logic in ``_citation_type_for_tool`` but at
+    chunk granularity, so a mixed result set (PUB + NI43 chunks) labels
+    each chunk by its own document_type.
+    """
+    dtype = (getattr(chunk, "document_type", "") or "").upper()
+    return "PUB" if dtype == "PUB" else "NI43"
 
 
 def _citation_type_for_tool(
@@ -172,6 +215,31 @@ def assemble_response(
                 sources_used.append(source_chunk_id)
             continue
 
+        if isinstance(result, DocumentSearchResult) and result.chunks:
+            # Per-chunk citations (audit 2026-08-14 finding 1) — one
+            # Citation per retrieved chunk so each [NI43-n]/[PUB-n] maps to
+            # the REAL chunk_id / section / page that grounded it, mirroring
+            # the PGEO per-record branch above. Ids come from the same
+            # ``assign_citation_ids`` call the context renderer used, so the
+            # prompt markers and the emitted citations stay in lockstep.
+            for chunk, citation_id in zip(result.chunks, bundle, strict=False):
+                source_chunk_id = _source_chunk_id_for_doc_chunk(chunk)
+                section_label, page = _section_page_for_chunk(chunk)
+                citations.append(
+                    Citation(
+                        citation_id=citation_id,
+                        citation_type=_citation_type_for_chunk(chunk),
+                        source_chunk_id=source_chunk_id,
+                        document_title=chunk.document_title,
+                        section=section_label,
+                        page=page,
+                        relevance_score=float(chunk.relevance_score or 0.0),
+                        corpus="internal_archive",
+                    )
+                )
+                sources_used.append(source_chunk_id)
+            continue
+
         # Non-PG path — exactly one citation per tool result.
         citation_id = bundle[0]
         cit_type = _citation_type_for_tool(tool_name, result)
@@ -243,12 +311,20 @@ def assemble_response(
     # orchestrator after run_post_assembly_validation.
     # Audit 2026-06-28 (IND-6, Hard Rule 4): deterministic ungrounded-answer
     # guard. If NO real evidence backs the answer — sources_used is empty or
-    # holds only the synthetic 'no-tool-call' placeholder — the answer is
-    # ungrounded and must NOT ship at normal confidence, regardless of whether
-    # the LLM happened to phrase it as a refusal. Floor confidence hard so the
-    # downstream demotion/UI surfaces it as untrusted (the citation-first
-    # generator, when restored, is the proper salvage path).
-    _real_sources = [s for s in sources_used if s and s != "no-tool-call"]
+    # holds only synthetic placeholders — the answer is ungrounded and must
+    # NOT ship at normal confidence, regardless of whether the LLM happened
+    # to phrase it as a refusal. Floor confidence hard so the downstream
+    # demotion/UI surfaces it as untrusted (the citation-first generator,
+    # when restored, is the proper salvage path).
+    #
+    # Audit 2026-08-14 (finding 3): the filter now uses the SAME sentinel
+    # set as confidence_computer._count_independent_sources — previously it
+    # excluded only 'no-tool-call', so an empty DocumentSearchResult's
+    # 'georag_reports:empty' citation counted as real evidence and a
+    # zero-hit retrieval shipped as a normal-confidence answer.
+    _real_sources = [
+        s for s in sources_used if s and s not in EMPTY_SOURCE_SENTINELS
+    ]
     if not _real_sources and not _is_refusal(text):
         logger.warning(
             "assemble_response: ungrounded answer (no real sources_used; "
@@ -446,20 +522,40 @@ def _extract_source_id(tool_name: str, result: Any) -> str:
     return f"{tool_name}:result"
 
 
+def _source_chunk_id_for_doc_chunk(chunk: Any) -> str:
+    """Canonical source_chunk_id for ONE document chunk.
+
+    Same ``georag_reports:<report_id>:section=..:chunk=..`` format as the
+    legacy first-chunk path in ``_extract_source_id`` — Laravel
+    ``CitationController::resolve()`` and Layer 5 provenance both parse it —
+    but computed per chunk so each citation binds to the chunk that actually
+    grounded it (audit 2026-08-14 finding 1).
+    """
+    section_part = (
+        f"section={chunk.section_number}"
+        if chunk.section_number
+        else "section=unknown"
+    )
+    return f"georag_reports:{chunk.report_id}:{section_part}:chunk={chunk.chunk_id}"
+
+
+def _section_page_for_chunk(chunk: Any) -> tuple[str | None, int | None]:
+    """Return (section_label, page_number) for ONE document chunk."""
+    if chunk.section_number and chunk.section_title:
+        section_label: str | None = f"{chunk.section_number} — {chunk.section_title}"
+    elif chunk.section_title:
+        section_label = chunk.section_title
+    elif chunk.section_number:
+        section_label = chunk.section_number
+    else:
+        section_label = None
+    return section_label, chunk.page
+
+
 def _extract_section_page(result: Any) -> tuple[str | None, int | None]:
     """Return (section_label, page_number) for the top result chunk, or (None, None)."""
     if isinstance(result, DocumentSearchResult) and result.chunks:
-        first = result.chunks[0]
-        # Build the most descriptive section label available.
-        if first.section_number and first.section_title:
-            section_label = f"{first.section_number} — {first.section_title}"
-        elif first.section_title:
-            section_label = first.section_title
-        elif first.section_number:
-            section_label = first.section_number
-        else:
-            section_label = None
-        return section_label, first.page
+        return _section_page_for_chunk(result.chunks[0])
     return None, None
 
 

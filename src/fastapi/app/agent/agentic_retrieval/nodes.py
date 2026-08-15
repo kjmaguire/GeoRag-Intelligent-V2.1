@@ -54,9 +54,10 @@ async def resolve_node(state: AgenticRetrievalState) -> dict[str, Any]:
     expanded query ("what are PLS-22-08's top assays?") instead of the
     pronoun-laden original ("what are ITS top assays?").
 
-    When ``settings.MULTI_TURN_RESOLUTION_ENABLED`` is False (default),
-    this node returns ``{}`` — no rewrite, no state change. Same shape
-    as the repair-loop shadow node.
+    When ``settings.MULTI_TURN_RESOLUTION_ENABLED`` is False (default is
+    True since 2026-08-14 — the resolver is pure/heuristic; the flag is
+    the escape hatch), this node returns ``{}`` — no rewrite, no state
+    change. Same shape as the repair-loop shadow node.
 
     Best-effort: any exception inside the resolver logs but does NOT
     block the answer path — the classifier just sees the un-rewritten
@@ -772,9 +773,15 @@ def _render_tool_results_context(
         records = getattr(result, "records", None)
         if chunks is not None:
             # DocumentSearchResult-shaped — one block per retrieved chunk,
-            # all sharing the tool result's citation id.
-            cid = bundle[0] if bundle else "[DATA-0]"
-            for chunk in chunks:
+            # each carrying its OWN citation id (audit 2026-08-14 finding 1:
+            # assign_citation_ids now emits one id per chunk, mirroring the
+            # PGEO per-record branch, so the marker the model cites maps to
+            # the real chunk_id/section/page in the assembled Citation).
+            # zip is deliberately non-strict: an empty result has one
+            # sentinel id and zero chunks.
+            fallback_cid = bundle[0] if bundle else "[DATA-0]"
+            for idx, chunk in enumerate(chunks):
+                cid = bundle[idx] if idx < len(bundle) else fallback_cid
                 header = (
                     f"{cid} "
                     f"{getattr(chunk, 'document_title', None) or 'Untitled document'}"
@@ -2240,6 +2247,9 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     import json as _json
 
     from app.config import settings as _settings  # noqa: PLC0415
+    from app.models.answer_run import (  # noqa: PLC0415
+        normalize_backend as _normalize_backend,
+    )
 
     citation_state = "rejected" if not state.response.citations else "committed"
 
@@ -2322,6 +2332,7 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 workspace_data_version_at_query,
                 citation_lifecycle_state,
                 model_name,
+                backend_used,
                 session_id,
                 lineage_retrieved_sources,
                 lineage_filters_applied,
@@ -2330,8 +2341,8 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 confidence,
                 latency_ms
             ) VALUES (
-                $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7::uuid,
-                $8::jsonb, $9::jsonb, $10::jsonb, $11, $12, $13
+                $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
+                $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14
             )
             RETURNING answer_run_id
             """,
@@ -2341,6 +2352,12 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             spec_query_class,
             citation_state,
             _settings.effective_llm_model,
+            # Audit 2026-08-14 (finding 5): the agentic path previously
+            # never wrote backend_used (silent NULL). Record the active
+            # LLM backend, normalised onto the answer_runs_backend_valid
+            # CHECK list so an unrecognised value persists as 'unknown'
+            # instead of violating the constraint.
+            _normalize_backend(getattr(_settings, "LLM_BACKEND", None)),
             cols["session_id"],
             _json.dumps(cols["lineage_retrieved_sources"]),
             _json.dumps(cols["lineage_filters_applied"]),

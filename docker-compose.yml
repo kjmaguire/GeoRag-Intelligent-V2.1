@@ -952,9 +952,11 @@ services:
       # Plan §3 context-prep pipeline. Default off; changes LLM input
       # shape, gated behind ADR-0009 Stage C2 (live LLM eval).
       CONTEXT_PREP_ENABLED: ${CONTEXT_PREP_ENABLED:-false}
-      # Plan §3e multi-turn resolver. Default off; needs Laravel-side
-      # history loader before the wire is useful end-to-end.
-      MULTI_TURN_RESOLUTION_ENABLED: ${MULTI_TURN_RESOLUTION_ENABLED:-false}
+      # Plan §3e multi-turn resolver. Default ON since 2026-08-14 (RAG
+      # audit finding 4) — the resolver is pure/heuristic and no-ops
+      # without history, so follow-up queries reformulate with history
+      # when the caller supplies it. Set false in .env to disable.
+      MULTI_TURN_RESOLUTION_ENABLED: ${MULTI_TURN_RESOLUTION_ENABLED:-true}
       # Plan §1b parent-child chunker. Default off; flipping it makes
       # new PDF ingests emit parent + child passages with FK linkage,
       # enabling the §3d expander on greenfield documents.

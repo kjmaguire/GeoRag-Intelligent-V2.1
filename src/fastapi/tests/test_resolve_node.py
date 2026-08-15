@@ -173,10 +173,13 @@ def test_state_carries_resolution_fields():
 # ---------------------------------------------------------------------------
 
 
-def test_multi_turn_flag_defaults_to_false():
+def test_multi_turn_flag_defaults_to_true():
+    """Default flipped False → True 2026-08-14 (RAG-quality audit finding
+    4): the resolver is pure/heuristic and no-ops without history, so the
+    flag stays as an escape hatch only."""
     from app.config import Settings  # noqa: PLC0415
 
-    assert Settings.model_fields["MULTI_TURN_RESOLUTION_ENABLED"].default is False
+    assert Settings.model_fields["MULTI_TURN_RESOLUTION_ENABLED"].default is True
 
 
 # ---------------------------------------------------------------------------

@@ -6,15 +6,16 @@ Runs the live RAG pipeline against every active question in
 to ``bench_results/<timestamp>_<git_sha>.json`` that future runs can be
 compared against to measure lift or regression.
 
-Why a CLI, not just the Hatchet workflow:
+Why a CLI:
 
-  The existing ``eval_real_rag_nightly`` Hatchet workflow runs the same
-  evaluator on a cron schedule, but it (a) only targets
-  ``refusal_correctness`` by default and (b) doesn't produce a single
-  artifact a developer can ``git diff``. This CLI is the ad-hoc
-  operator entry point for before/after measurement around a deploy
-  (flip a feature flag, run the bench, compare against the prior
-  baseline) — pairs with ``scripts/compare_benchmarks.py``.
+  This CLI is the sole operator entry point for before/after measurement
+  around a deploy (flip a feature flag, run the bench, compare against
+  the prior baseline) — pairs with ``scripts/compare_benchmarks.py``.
+  The ``eval_real_rag_nightly`` Hatchet workflow that used to run the
+  same evaluator on a cron schedule was removed with the runtime eval
+  trim (09d1d35, 2026-07-27); the evaluator modules under
+  ``app/services/eval/`` were restored 2026-08-14 specifically to keep
+  this bench runnable.
 
 Usage::
 
