@@ -1698,6 +1698,50 @@ def _get_cached_pikepdf(pdf_path: str):
     return pdf
 
 
+# 2026-08-14 — per-document Azure DI page budget. `_ocr_single_page` fires
+# one DI request per short page (plus one per tile on the tiled-escalation
+# path), unmetered until now: a pathological scan (thousands of image
+# pages) could silently burn the subscription quota — and on exhaustion
+# Azure 403s (not retryable), which used to disappear into the tesseract
+# fallback. Beyond the budget, remaining pages route straight to
+# tesseract with one WARNING per document. Keyed per path with
+# evict-on-new-document, mirroring _PIKEPDF_CACHE (one document per parse
+# subprocess). The cross-run Prometheus counter (DI_OCR_PAGES_TOTAL)
+# lives in the DI client itself.
+_DI_PAGE_BUDGET_ENV = "AZURE_DI_MAX_PAGES_PER_DOC"
+_DI_PAGES_USED: dict[str, int] = {}
+_DI_CAP_LOGGED: set[str] = set()
+
+
+def _di_max_pages_per_doc() -> int:
+    try:
+        return int(os.environ.get(_DI_PAGE_BUDGET_ENV, "300"))
+    except ValueError:
+        return 300
+
+
+def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
+    """Consume ``pages`` from the document's DI budget; False when exhausted."""
+    if pdf_path not in _DI_PAGES_USED:
+        for _stale in list(_DI_PAGES_USED):
+            _DI_PAGES_USED.pop(_stale, None)
+            _DI_CAP_LOGGED.discard(_stale)
+        _DI_PAGES_USED[pdf_path] = 0
+    cap = _di_max_pages_per_doc()
+    if _DI_PAGES_USED[pdf_path] + pages > cap:
+        if pdf_path not in _DI_CAP_LOGGED:
+            _DI_CAP_LOGGED.add(pdf_path)
+            logger.warning(
+                "pdf_report: document_intelligence page budget exhausted for "
+                "'%s' (used=%d, cap=%d via %s) — remaining short pages fall "
+                "back to tesseract",
+                pdf_path, _DI_PAGES_USED[pdf_path], cap, _DI_PAGE_BUDGET_ENV,
+            )
+        return False
+    _DI_PAGES_USED[pdf_path] += pages
+    return True
+
+
 def _tesseract_data_to_words_and_text(data: dict) -> tuple[list[tuple[str, int]], str]:
     """2026-08-14 — rebuild line structure from ``image_to_data`` output.
 
@@ -1779,6 +1823,11 @@ def _ocr_single_page(
     from . import document_intelligence_client as _di
 
     di_selected = _di.is_engine_selected()
+    # 2026-08-14 — per-document DI page budget (AZURE_DI_MAX_PAGES_PER_DOC,
+    # default 300). Beyond it, this page skips DI and goes straight to the
+    # tesseract fallback below.
+    if di_selected and not _di_budget_take(pdf_path):
+        di_selected = False
     if di_selected:
         try:
             # Slice the single target page into its own PDF before upload.
@@ -2029,6 +2078,15 @@ def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
         )
 
     tiles = split_image(images[0])
+    # 2026-08-14 — each tile is one billed DI page; charge them against the
+    # per-document budget. When it can't cover the whole tile set, raise so
+    # the caller's except falls through to tesseract (a partial tile pass
+    # would be rejected anyway — see the partial-failure guard below).
+    if not _di_budget_take(pdf_path, pages=len(tiles)):
+        raise RuntimeError(
+            "document_intelligence per-document page budget exhausted "
+            "before tiled OCR"
+        )
     tile_words: list[TileWord] = []
     detected_region_count = 0
     fallback_tile_texts: list[str] = []

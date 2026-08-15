@@ -15,6 +15,7 @@ through `app.config.Settings`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import threading
@@ -228,17 +229,37 @@ async def _analyze_document(
     except DocumentIntelligenceNotConfigured:
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "document_intelligence: OCR failed%s: %s",
-            f" on page {log_page}" if log_page is not None else "",
-            exc,
-        )
+        # 2026-08-14 — 403 is what Azure returns when the tier quota is
+        # exhausted (e.g. F0's 500 pages/month). It is NOT in
+        # _RETRYABLE_STATUS_CODES, so before this it fell into the generic
+        # warning and the silent tesseract fallback hid the exhaustion.
+        if getattr(exc, "status_code", None) == 403:
+            logger.error(
+                "document_intelligence: HTTP 403%s — DI quota likely "
+                "exhausted (F0 tier: 500 pages/month). Falling back to "
+                "tesseract; raise the tier or wait for the quota window "
+                "to reset. Error: %s",
+                f" on page {log_page}" if log_page is not None else "",
+                exc,
+            )
+        else:
+            logger.warning(
+                "document_intelligence: OCR failed%s: %s",
+                f" on page {log_page}" if log_page is not None else "",
+                exc,
+            )
         return PageOcrResult(
             "",
             0.0,
             request_succeeded=False,
             error=str(exc),
         )
+
+    # 2026-08-14 — meter successful analyze calls (1 request == 1 billed
+    # page/tile). Best-effort: metrics must never fail an OCR result.
+    with contextlib.suppress(Exception):
+        from app.metrics import DI_OCR_PAGES_TOTAL  # noqa: PLC0415
+        DI_OCR_PAGES_TOTAL.inc()
 
     pages = getattr(result, "pages", None) or []
     sdk_words = [word for page in pages for word in (page.words or [])]

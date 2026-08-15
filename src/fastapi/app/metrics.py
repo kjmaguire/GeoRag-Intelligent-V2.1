@@ -511,3 +511,19 @@ SOURCE_TRUST_BOOST_RANK_DELTA = Histogram(
     "summed across the result set). Higher = boost is reshuffling more.",
     buckets=(0, 1, 2, 3, 5, 8, 13, 21, 34),
 )
+
+# ---------------------------------------------------------------------------
+# Azure Document Intelligence metering (2026-08-14).
+#
+# One increment per successful DI analyze request — a single-page PDF slice
+# or one raster tile — which is exactly what Azure bills as a "page". Watch
+# this against the tier quota (F0: 500 pages/month; on exhaustion Azure
+# returns 403, which the client logs at ERROR and falls back to tesseract).
+# The per-document budget lives in pdf_report (AZURE_DI_MAX_PAGES_PER_DOC).
+# ---------------------------------------------------------------------------
+
+DI_OCR_PAGES_TOTAL = Counter(
+    "georag_di_ocr_pages_total",
+    "Azure Document Intelligence pages analyzed (1 per analyze request; "
+    "tiles count individually, matching Azure billing).",
+)
