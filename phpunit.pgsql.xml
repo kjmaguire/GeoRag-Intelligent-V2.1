@@ -91,6 +91,12 @@
                  SQLite's compat shim no-ops that FK so the fixture must
                  also run for real here. -->
             <file>tests/Feature/Api/V1/CitationControllerIDORTest.php</file>
+            <!-- RLS second-pass fix 2026-08-15: PublicApiController::targets()
+                 needs targeting.target_recommendations rows + the fail-closed
+                 policy to actually be enforced, so the withWorkspaceRls() fix
+                 (and its regression, an empty items[] for the rightful owner)
+                 is only observable under real Postgres. -->
+            <file>tests/Feature/Api/V1/PublicApiControllerTargetsTest.php</file>
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>

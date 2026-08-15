@@ -333,4 +333,91 @@ final class WorkspaceRlsCoverageTest extends TestCase
             .'canonical fail-closed shape.',
         );
     }
+
+    /**
+     * SECURITY regression test for the 2026-08-15 SECOND pass on the
+     * fail-open→fail-closed conversion (this one live-DB-verified, not
+     * static-analysis-only like the first pass above).
+     *
+     * Migration 2026_08_15_020100_close_rls_admin_escape_hatch_second_pass
+     * converted 15 more tables — decision-intelligence (decision_records
+     * + 4 child tables), geological hypotheses (hypotheses +
+     * hypothesis_evidence_links), silver.saved_map_views, and 7 of the 8
+     * targeting.* tables — to fail-closed, each verified against a live
+     * Postgres container for (a) an actual workspace_id column of the
+     * right shape and (b) no live Laravel/FastAPI request-time reader
+     * depending on the unset-GUC escape (see that migration's docblock
+     * for the full per-table evidence, including the PublicApiController
+     * ::targets() and RecordDecision.php fixes that shipped alongside it).
+     *
+     * Still intentionally fail-open and NOT asserted here: audit.
+     * audit_ledger and targeting.target_backtests (both have a
+     * deliberately NULLABLE workspace_id for legitimate platform-wide /
+     * cross-workspace rows — flipping them would silently hide those
+     * rows, a product decision beyond closing the escape hatch) and
+     * silver.source_trust_scores (its one live reader is an admin
+     * cross-workspace listing endpoint that never binds the GUC by
+     * design). Also still open: everything from the first pass's "much
+     * larger remaining set" not covered by either batch (silver.projects,
+     * collars, reports, samples, answer_runs, evidence_items,
+     * document_passages, exports, and more).
+     */
+    public function test_second_verified_subset_has_no_fail_open_escape_hatch(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('RLS is Postgres-only.');
+        }
+
+        // Mirrors the TABLES constant in
+        // 2026_08_15_020100_close_rls_admin_escape_hatch_second_pass.
+        $converted = [
+            ['silver', 'hypotheses', 'hypotheses_workspace_isolation'],
+            ['silver', 'hypothesis_evidence_links', 'hypothesis_evidence_links_workspace_isolation'],
+            ['silver', 'decision_records', 'decision_records_workspace_isolation'],
+            ['silver', 'decision_evidence_links', 'decision_evidence_links_workspace_isolation'],
+            ['silver', 'decision_options', 'decision_options_workspace_isolation'],
+            ['silver', 'decision_outcomes', 'decision_outcomes_workspace_isolation'],
+            ['silver', 'decision_lessons_learned', 'decision_lessons_learned_workspace_isolation'],
+            ['silver', 'saved_map_views', 'saved_map_views_workspace_isolation'],
+            ['targeting', 'target_recommendations', 'target_recommendations_workspace_isolation'],
+            ['targeting', 'target_candidate_zones', 'target_candidate_zones_workspace_isolation'],
+            ['targeting', 'target_scores', 'target_scores_workspace_isolation'],
+            ['targeting', 'target_score_factors', 'target_score_factors_workspace_isolation'],
+            ['targeting', 'target_uncertainties', 'target_uncertainties_workspace_isolation'],
+            ['targeting', 'target_review_decisions', 'target_review_decisions_workspace_isolation'],
+            ['targeting', 'target_outcomes', 'target_outcomes_workspace_isolation'],
+        ];
+
+        $gaps = [];
+        foreach ($converted as [$schema, $table, $policy]) {
+            $row = DB::selectOne(
+                'SELECT qual, with_check FROM pg_policies '
+                .'WHERE schemaname = ? AND tablename = ? AND policyname = ?',
+                [$schema, $table, $policy],
+            );
+
+            if ($row === null) {
+                // Table/policy absent in this environment — not a
+                // regression to flag here.
+                continue;
+            }
+
+            $qualified = "{$schema}.{$table}";
+            if (str_contains((string) $row->qual, 'IS NULL OR')) {
+                $gaps[] = "{$qualified} → {$policy} (USING still has an IS NULL OR escape)";
+            }
+            if ($row->with_check !== null && str_contains((string) $row->with_check, 'IS NULL OR')) {
+                $gaps[] = "{$qualified} → {$policy} (WITH CHECK still has an IS NULL OR escape)";
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $gaps,
+            'Fail-closed RLS regressed on the second verified subset: '.PHP_EOL.implode(PHP_EOL, $gaps).
+            PHP_EOL.PHP_EOL.
+            'See 2026_08_15_020100_close_rls_admin_escape_hatch_second_pass for the '
+            .'canonical fail-closed shape.',
+        );
+    }
 }

@@ -145,15 +145,23 @@ class RecordDecision
             $decisionId = (string) $row->decision_id;
 
             // 2. INSERT evidence links.
+            //    RLS fix 2026-08-15: this child table has workspace_id
+            //    NOT NULL with no default/trigger (verified via live-DB
+            //    \d), so the original column list (missing workspace_id)
+            //    would have thrown a NOT NULL violation the moment this
+            //    dead-code facade got wired to a live capture site,
+            //    independent of RLS. Mirrors the Python facade
+            //    (app.services.decision_intelligence.recorder), which
+            //    already included it.
             foreach ($evidenceChunkIds as $chunkId) {
                 DB::connection('pgsql')->statement(
                     <<<'SQL'
                     INSERT INTO silver.decision_evidence_links (
-                        decision_id, source_chunk_id, role
+                        decision_id, source_chunk_id, role, workspace_id
                     )
-                    VALUES (?::uuid, ?, 'supporting')
+                    VALUES (?::uuid, ?, 'supporting', ?::uuid)
                     SQL,
-                    [$decisionId, $chunkId],
+                    [$decisionId, $chunkId, $workspaceId],
                 );
             }
 
@@ -170,9 +178,9 @@ class RecordDecision
                 DB::connection('pgsql')->statement(
                     <<<'SQL'
                     INSERT INTO silver.decision_options (
-                        decision_id, label, description, was_chosen, payload
+                        decision_id, label, description, was_chosen, payload, workspace_id
                     )
-                    VALUES (?::uuid, ?, ?, ?, ?::jsonb)
+                    VALUES (?::uuid, ?, ?, ?, ?::jsonb, ?::uuid)
                     SQL,
                     [
                         $decisionId,
@@ -180,6 +188,7 @@ class RecordDecision
                         $description,
                         $wasChosen,
                         json_encode($payload, JSON_THROW_ON_ERROR),
+                        $workspaceId,
                     ],
                 );
             }
@@ -189,14 +198,15 @@ class RecordDecision
                 DB::connection('pgsql')->statement(
                     <<<'SQL'
                     INSERT INTO silver.decision_outcomes (
-                        decision_id, outcome_kind, outcome_payload
+                        decision_id, outcome_kind, outcome_payload, workspace_id
                     )
-                    VALUES (?::uuid, ?, ?::jsonb)
+                    VALUES (?::uuid, ?, ?::jsonb, ?::uuid)
                     SQL,
                     [
                         $decisionId,
                         $outcomeKind,
                         json_encode($outcomePayload ?? [], JSON_THROW_ON_ERROR),
+                        $workspaceId,
                     ],
                 );
             }

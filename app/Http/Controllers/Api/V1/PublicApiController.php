@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Services\FastApiJwtMinter;
+use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,6 +34,8 @@ use Illuminate\Support\Facades\Http;
  */
 class PublicApiController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     public function answer(Request $request, string $answerRunId): JsonResponse
     {
         // Tenancy gate (Theme H — 2026-06-03 audit). Without this check
@@ -113,15 +116,34 @@ class PublicApiController extends Controller
         if ($user === null || ! $user->hasProjectAccess($projectId)) {
             return response()->json(['error' => 'not_found'], 404);
         }
-        $rows = DB::select(
-            'SELECT recommendation_id::text AS id, rank, run_id::text,
-                    LEFT(explanation_markdown, 500) AS explanation_preview,
-                    created_at
-               FROM targeting.target_recommendations
-              WHERE project_id = ?::uuid
-              ORDER BY rank ASC NULLS LAST, created_at DESC
-              LIMIT 50',
-            [$projectId],
+
+        // RLS fix 2026-08-15: targeting.target_recommendations was converted
+        // to fail-closed (no more NULL-GUC escape hatch) by
+        // 2026_08_15_020000_close_rls_admin_escape_hatch_second_pass. This
+        // read never bound `app.workspace_id`, relying entirely on the
+        // fail-open fallback to actually return rows — under fail-closed it
+        // would silently 0-row every legitimate caller. silver.projects
+        // itself is still fail-open this pass, so the lookup below is safe
+        // regardless of GUC state.
+        $workspaceId = (string) DB::table('silver.projects')
+            ->where('project_id', $projectId)
+            ->value('workspace_id');
+        if ($workspaceId === '') {
+            return response()->json(['error' => 'not_found'], 404);
+        }
+
+        $rows = $this->withWorkspaceRls(
+            $workspaceId,
+            fn () => DB::select(
+                'SELECT recommendation_id::text AS id, rank, run_id::text,
+                        LEFT(explanation_markdown, 500) AS explanation_preview,
+                        created_at
+                   FROM targeting.target_recommendations
+                  WHERE project_id = ?::uuid
+                  ORDER BY rank ASC NULLS LAST, created_at DESC
+                  LIMIT 50',
+                [$projectId],
+            ),
         );
 
         return response()->json(['project_id' => $projectId, 'items' => $rows]);
