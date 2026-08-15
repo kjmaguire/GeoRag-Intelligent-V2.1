@@ -3,6 +3,7 @@
 namespace Tests\Feature\Api\V1\PublicGeoscience;
 
 use App\Models\User;
+use App\Support\SetsWorkspaceRlsContext;
 use Carbon\Carbon;
 use Illuminate\Database\Query\Expression;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -378,6 +379,26 @@ class CitationControllerPgeoTest extends TestCase
      * We return separate Mockery builder mocks per table so `first()` calls
      * don't cross-contaminate due to Mockery's shared-mock matching order.
      */
+    /**
+     * Stub the DB facade's transaction/statement surface so
+     * {@see SetsWorkspaceRlsContext::withWorkspaceRls()} can run
+     * against a fully-mocked DB facade (Mockery::mock('...')). Without this,
+     * every PGEO test hits `Method ...DatabaseManager::transaction() does
+     * not exist on this mock object` — the citation IDOR fix (2026-08-14)
+     * wraps every resolver call in withWorkspaceRls(), which calls
+     * DB::transaction() + DB::statement("SELECT set_config(...)").
+     */
+    private function mockWorkspaceRlsPassthrough(): void
+    {
+        DB::shouldReceive('transaction')
+            ->withAnyArgs()
+            ->andReturnUsing(fn (\Closure $callback) => $callback());
+
+        DB::shouldReceive('statement')
+            ->withAnyArgs()
+            ->andReturn(true);
+    }
+
     private function mockPgeoResolverCall(
         string $entityTable,
         array $entityRow,
@@ -385,6 +406,8 @@ class CitationControllerPgeoTest extends TestCase
         ?string $lastRefreshedAt = null,
         int $linkCount = 0,
     ): void {
+        $this->mockWorkspaceRlsPassthrough();
+
         $sourceObj = (object) [
             'source_id' => 'CA-SK-'.strtoupper(str_replace('_', '-', $canonicalType)),
             'source_name' => 'Test Source',

@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import get_args
 
-from app.models.answer_run import BackendLiteral, _KNOWN_BACKENDS, normalize_backend
+from app.models.answer_run import _KNOWN_BACKENDS, BackendLiteral, normalize_backend
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[3]
@@ -60,7 +60,7 @@ def test_backend_literal_matches_db_check() -> None:
 
 def test_known_backends_are_a_subset_of_the_literal() -> None:
     """_KNOWN_BACKENDS excludes 'unknown' itself (it's the fallback target)."""
-    assert _KNOWN_BACKENDS < set(get_args(BackendLiteral))
+    assert set(get_args(BackendLiteral)) > _KNOWN_BACKENDS
     assert "unknown" not in _KNOWN_BACKENDS
 
 
