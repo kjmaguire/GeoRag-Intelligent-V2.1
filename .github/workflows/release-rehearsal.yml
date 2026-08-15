@@ -72,6 +72,17 @@ jobs:
           echo "Reason: ${{ github.event.inputs.reason || 'tag push' }}"
 
       # ── Stack startup ──────────────────────────────────────────────────────
+      # 2026-08-15 — docker-compose.yml requires POSTGRES_PASSWORD with no
+      # default (`${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in
+      # .env}`), and this workflow never created a .env file before this fix
+      # (unlike ci.yml/eval-gate.yml, which both do `cp .env.example .env`
+      # first). Without it, `docker compose up` failed var-interpolation
+      # immediately — masked by the `|| true` on the next step, so the job
+      # printed "Services started" and only failed ~2.5 minutes later at
+      # "Wait for FastAPI health" once no container had actually started.
+      - name: Prepare environment
+        run: cp .env.example .env 2>/dev/null || true
+
       # TODO (Chunk 10.2): on a self-hosted GPU runner, bring up the full
       # dev-light profile including Ollama.  On the current GitHub-hosted runner
       # we start the infrastructure services only (postgres, redis, qdrant,
