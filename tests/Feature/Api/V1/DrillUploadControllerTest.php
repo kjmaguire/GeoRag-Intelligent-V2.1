@@ -12,6 +12,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Mockery;
 use Mockery\MockInterface;
 use Tests\Concerns\RequiresPostgres;
@@ -39,20 +40,34 @@ class DrillUploadControllerTest extends TestCase
     {
         parent::setUp();
 
+        // silver.projects.workspace_id is only auto-populated by the
+        // phase0 raw-SQL bootstrap in a real deployment (see
+        // 2026_08_14_000000/025900) — a migrate-only Postgres test DB has
+        // no such trigger, so it must be set explicitly here rather than
+        // relying on it being auto-filled. workspace_id isn't fillable on
+        // the Project model, so create the workspace + project, then
+        // assign via a raw update — same pattern as
+        // tests/Feature/Api/V1/IngestProgressControllerTest.php.
+        $this->workspaceId = (string) Str::uuid();
+        DB::table('silver.workspaces')->insert([
+            'workspace_id' => $this->workspaceId,
+            'name' => 'Drill Upload Test Workspace',
+            'slug' => 'drill-upload-'.substr($this->workspaceId, 0, 8),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
         $this->project = Project::create([
             'project_name' => 'Drill Upload Test '.uniqid(),
             'crs_datum' => 'EPSG:32613',
             'orientation_reference' => 'BOH',
         ]);
+        DB::table('silver.projects')
+            ->where('project_id', $this->project->project_id)
+            ->update(['workspace_id' => $this->workspaceId]);
 
         $this->user = User::factory()->create();
         $this->user->projects()->attach($this->project->project_id, ['role' => 'owner']);
-
-        // The Project model belongs to a workspace via silver.projects.workspace_id.
-        // The factory may auto-fill this; capture it so we can assert paths.
-        $this->workspaceId = (string) DB::table('silver.projects')
-            ->where('project_id', $this->project->project_id)
-            ->value('workspace_id');
 
         Storage::fake('s3');
         Http::fake([

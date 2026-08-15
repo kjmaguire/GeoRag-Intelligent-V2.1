@@ -51,6 +51,26 @@
               ST_Transform, geometry columns). These run ONLY against
               georag_test — RefreshDatabase's migrate:fresh would drop
               every table.
+
+              Maintenance note (2026-08-15): this list is hand-maintained
+              rather than a <directory> glob over tests/Feature, because
+              only a minority of the ~70 Feature test files actually need
+              real Postgres — most run fine (and faster) on the default
+              SQLite suite, and blanket-including all of them here would
+              both balloon run time and risk exercising tests never
+              verified against a real PG driver. When adding a new
+              Postgres-dependent test, use `Tests\Concerns\RequiresPostgres`
+              (or `TestCase::skipIfSqlite()`) so it self-identifies, then
+              add it below — that trait/method is the audit signal:
+                grep -rl "RequiresPostgres\|skipIfSqlite" tests/Feature
+              A test that asserts real PG-only behavior (FK enforcement,
+              pg_catalog/information_schema, RLS) without one of those
+              guards will silently no-op or false-pass under the default
+              SQLite suite — see CitationControllerIDORTest and
+              WorkspaceRlsCoverageTest below, added without the trait
+              because they're also meant to exercise belt-and-braces
+              app-level filtering on SQLite; only their Postgres-only
+              assertions are gated inline.
             -->
             <file>tests/Feature/Api/V1/CollarControllerTest.php</file>
             <file>tests/Feature/Api/V1/CollarCrudTest.php</file>
@@ -64,6 +84,31 @@
             <!-- Reliability spec Phase 2 — broadcast controller side-effects:
                  data_version bump + refresh dispatch only on completed. -->
             <file>tests/Feature/Internal/IngestionProgressBroadcastControllerTest.php</file>
+            <!-- Security fix 2026-08-14 (HIGH — cross-tenant IDOR) flagship
+                 regression: CitationController's workspace-scoped resolver
+                 paths. Needs real silver.workspaces rows + the
+                 projects_workspace_id_fkey FK to actually be enforced;
+                 SQLite's compat shim no-ops that FK so the fixture must
+                 also run for real here. -->
+            <file>tests/Feature/Api/V1/CitationControllerIDORTest.php</file>
+            <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
+            <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
+            <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
+            <file>tests/Feature/Api/V1/PublicGeoscience/EntityReferencesControllerIDORTest.php</file>
+            <!-- MIME-sniffing / bronze.source_files coverage — bronze schema
+                 is Postgres-only (driver-gated migration). -->
+            <file>tests/Feature/Api/V1/DrillUploadControllerTest.php</file>
+            <file>tests/Feature/Admin/IntegrationsControllerTest.php</file>
+            <file>tests/Feature/DecisionIntelligence/RecordDecisionTest.php</file>
+            <file>tests/Feature/Foundry/IngestionRunsControllerTest.php</file>
+            <file>tests/Feature/Internal/WorkspaceDataUpdatedBridgeControllerTest.php</file>
+            <file>tests/Feature/Jobs/DebounceWorkspaceMvRefreshDataVersionTest.php</file>
+            <file>tests/Feature/Services/AuditEmitterAlertBroadcastTest.php</file>
+            <!-- Tenancy invariant backstop: every workspace-scoped table has
+                 RLS + a policy, no legacy GUC, no chr(0) sentinel, no
+                 fail-open escape hatch on the verified subset. Uses
+                 RefreshDatabase to guarantee schema/policies are current. -->
+            <file>tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php</file>
         </testsuite>
         <testsuite name="Postgres (read-only)">
             <!--
@@ -72,6 +117,10 @@
               never mutate application tables.
             -->
             <file>tests/Feature/Api/V1/PublicGeoscience/BedrockGeologyMigrationTest.php</file>
+            <!-- Seeds/updates silver.entity_aliases directly (no
+                 RefreshDatabase) and tears itself down; must run after the
+                 RefreshDatabase group has populated the schema. -->
+            <file>tests/Feature/Seeders/CgiVocabSeederTest.php</file>
         </testsuite>
     </testsuites>
     <source>

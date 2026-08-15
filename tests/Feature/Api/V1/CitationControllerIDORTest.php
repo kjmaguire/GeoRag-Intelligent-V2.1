@@ -63,6 +63,33 @@ class CitationControllerIDORTest extends TestCase
         $this->workspaceA = (string) Str::uuid();
         $this->workspaceB = (string) Str::uuid();
 
+        // silver.workspaces only exists under real Postgres — its CREATE
+        // TABLE (UUID type + gen_random_uuid() default) is no-op'd by the
+        // SQLite compatibility shim in Tests\TestCase, and the
+        // silver.projects.workspace_id FK added by
+        // 2026_04_20_100000_create_workspaces_and_data_version is a no-op
+        // there too. Under real Postgres, `projects_workspace_id_fkey`
+        // requires a matching silver.workspaces row before the
+        // silver.projects UPDATE below (SQLSTATE 23503 otherwise).
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            DB::table('silver.workspaces')->insert([
+                [
+                    'workspace_id' => $this->workspaceA,
+                    'name' => 'Citation IDOR Workspace A',
+                    'slug' => 'citation-idor-a-'.substr($this->workspaceA, 0, 8),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ],
+                [
+                    'workspace_id' => $this->workspaceB,
+                    'name' => 'Citation IDOR Workspace B',
+                    'slug' => 'citation-idor-b-'.substr($this->workspaceB, 0, 8),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ],
+            ]);
+        }
+
         // Two users in two disjoint workspaces, following the
         // project_user membership pattern the controller scopes on.
         $this->userA = User::factory()->create();
