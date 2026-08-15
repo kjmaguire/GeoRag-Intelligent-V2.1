@@ -61,6 +61,15 @@
 #    real regression should do (fail the run — this workflow doesn't gate
 #    PRs, so "fail" just means a red nightly + notification, not a blocked
 #    merge; consider opening an issue automatically on regression).
+#
+# 2026-08-15 CI-promotion audit: checked, NOT promoted — `gh run list
+# --workflow=eval-gate.yml` returns zero runs. It's schedule-triggered
+# (05:17 UTC nightly) and was only added 2026-08-14/15, so it hasn't fired
+# yet; there is no run history to evaluate. Also note this workflow was
+# never a PR-merge gate to begin with (nightly cron, not `pull_request`),
+# so "promoting" it is really about item 3 above (trusting the compare
+# step's verdict), not branch protection. Re-check after its first
+# scheduled run.
 
 name: Eval Gate (nightly)
 

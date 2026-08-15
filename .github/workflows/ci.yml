@@ -331,6 +331,16 @@ jobs:
   # this job has passed on >= 2 consecutive main runs with no flakiness
   # (watch especially for reranker-model-download flakiness and the
   # marker-phrase retrieval-threshold rig described in stub_backend.py).
+  #
+  # 2026-08-15 CI-promotion audit: checked, NOT promoted. Every real run
+  # since this job landed has failed on the same real bug, not flakiness —
+  # runs 31873785695, 31876922565, 31880497530 all die identically in the
+  # "Run ingest leg" step:
+  #   asyncpg.exceptions.NotNullViolationError: null value in column "slug"
+  #   of relation "projects" violates not-null constraint
+  # (scripts/ci/e2e_smoke_ingest.py:75, _ensure_project() — the INSERT INTO
+  # silver.projects omits the slug column). Fix that INSERT, confirm two
+  # consecutive green main runs, then drop continue-on-error.
   e2e-smoke:
     name: E2E money-path smoke (advisory — promote when green)
     runs-on: ubuntu-latest
@@ -621,6 +631,17 @@ jobs:
   #      (composer run stan:baseline / a mypy baseline or per-module
   #      ignores) with a TODO to burn them down.
   # Until then, red here is signal, not a gate.
+  #
+  # 2026-08-15 CI-promotion audit: checked, NOT promoted — neither job has
+  # ever gone green. Last 3 real runs (31873785695, 31876922565, 31880497530)
+  # on main all fail both jobs with real, non-flaky findings:
+  #   phpstan: "[ERROR] Found 118 errors" — none captured in
+  #     phpstan-baseline.neon (regenerate it with `composer run stan:baseline`
+  #     to separate pre-existing debt from new regressions, then promote).
+  #   mypy: "Found 824 errors in 198 files" — no baseline/per-module ignores
+  #     exist yet for [tool.mypy] strict in src/fastapi/pyproject.toml.
+  # Same run set as the e2e-smoke note above — consistent failure, not
+  # flakiness, so this stays advisory rather than being promoted on a hope.
   phpstan:
     name: phpstan (advisory — promote when green)
     runs-on: ubuntu-latest
