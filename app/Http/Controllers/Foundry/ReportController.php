@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Services\Figures\FigureResolver;
+use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +28,8 @@ use Inertia\Response;
  */
 class ReportController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     public function index(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
@@ -120,22 +123,30 @@ class ReportController extends Controller
         // Pull a few real passages from silver.document_passages tied
         // to this report (via bronze.provenance reverse-lookup) so
         // the user can see the actual indexed chunk text.
+        //
+        // RLS fix 2026-08-15 (third pass): silver.document_passages was
+        // converted to fail-closed. $project is already resolved above via
+        // the (still fail-open) silver.projects lookup, so its workspace_id
+        // is safe to bind before this query.
         $passages = collect();
         try {
-            $passages = DB::table('silver.document_passages AS dp')
-                ->join('bronze.provenance AS bp', function ($j) {
-                    $j->on(DB::raw('bp.target_id::text'), '=', DB::raw('dp.passage_id::text'))
-                        ->where('bp.target_table', '=', 'document_passages');
-                })
-                ->join('bronze.provenance AS bp2', function ($j) {
-                    $j->on(DB::raw('bp2.source_file'), '=', DB::raw('bp.source_file'))
-                        ->where('bp2.target_table', '=', 'reports');
-                })
-                ->where('bp2.target_id', $report_id)
-                ->select('dp.passage_id', 'dp.text', 'dp.page_first', 'dp.page_last', 'dp.ordinal', 'dp.chunk_kind')
-                ->orderBy('dp.ordinal')
-                ->limit(30)
-                ->get();
+            $passages = $this->withWorkspaceRls(
+                (string) $project->workspace_id,
+                fn () => DB::table('silver.document_passages AS dp')
+                    ->join('bronze.provenance AS bp', function ($j) {
+                        $j->on(DB::raw('bp.target_id::text'), '=', DB::raw('dp.passage_id::text'))
+                            ->where('bp.target_table', '=', 'document_passages');
+                    })
+                    ->join('bronze.provenance AS bp2', function ($j) {
+                        $j->on(DB::raw('bp2.source_file'), '=', DB::raw('bp.source_file'))
+                            ->where('bp2.target_table', '=', 'reports');
+                    })
+                    ->where('bp2.target_id', $report_id)
+                    ->select('dp.passage_id', 'dp.text', 'dp.page_first', 'dp.page_last', 'dp.ordinal', 'dp.chunk_kind')
+                    ->orderBy('dp.ordinal')
+                    ->limit(30)
+                    ->get(),
+            );
         } catch (\Throwable $e) {
             $passages = collect();
         }
@@ -157,7 +168,7 @@ class ReportController extends Controller
         //
         // Mirrors the DrillholeDetail pattern. Returns null on empty so
         // the badge component hides itself for well-behaved reports.
-        $dqFlags = $this->dataQualityFlagSummary($report_id);
+        $dqFlags = $this->dataQualityFlagSummary($report_id, (string) $project->workspace_id);
 
         return Inertia::render('Foundry/ReportView', [
             'project' => [
@@ -216,62 +227,68 @@ class ReportController extends Controller
      *
      * @return array{counts: array<string, int>, open_total: int, flags: array<int, array<string, mixed>>}
      */
-    private function dataQualityFlagSummary(string $reportId): array
+    private function dataQualityFlagSummary(string $reportId, string $workspaceId): array
     {
-        // Counts by severity for the badge dots — joined via passage_id.
-        $countRows = DB::table('silver.data_quality_flags as f')
-            ->join('silver.document_passages as p', DB::raw('p.passage_id::text'), '=', DB::raw('f.record_id'))
-            ->where('p.document_id', $reportId)
-            ->whereIn('f.record_type', ['document_chunk', 'table_extraction'])
-            ->whereNull('f.resolved_at')
-            ->select('f.severity', DB::raw('count(*)::int as n'))
-            ->groupBy('f.severity')
-            ->get();
+        // RLS fix 2026-08-15 (third pass): both queries below join through
+        // silver.document_passages, which was converted to fail-closed.
+        // $workspaceId is resolved by the caller from the (still fail-open)
+        // silver.projects row before this method runs.
+        return $this->withWorkspaceRls($workspaceId, function () use ($reportId) {
+            // Counts by severity for the badge dots — joined via passage_id.
+            $countRows = DB::table('silver.data_quality_flags as f')
+                ->join('silver.document_passages as p', DB::raw('p.passage_id::text'), '=', DB::raw('f.record_id'))
+                ->where('p.document_id', $reportId)
+                ->whereIn('f.record_type', ['document_chunk', 'table_extraction'])
+                ->whereNull('f.resolved_at')
+                ->select('f.severity', DB::raw('count(*)::int as n'))
+                ->groupBy('f.severity')
+                ->get();
 
-        $counts = ['ERROR' => 0, 'WARNING' => 0, 'INFO' => 0];
-        foreach ($countRows as $row) {
-            if (isset($counts[$row->severity])) {
-                $counts[$row->severity] = (int) $row->n;
+            $counts = ['ERROR' => 0, 'WARNING' => 0, 'INFO' => 0];
+            foreach ($countRows as $row) {
+                if (isset($counts[$row->severity])) {
+                    $counts[$row->severity] = (int) $row->n;
+                }
             }
-        }
 
-        // Cap the rendered flag list — a verbose report can produce many
-        // chunk-level flags. Order ERROR first, then WARNING, then INFO,
-        // latest-first within each tier.
-        $flags = DB::table('silver.data_quality_flags as f')
-            ->join('silver.document_passages as p', DB::raw('p.passage_id::text'), '=', DB::raw('f.record_id'))
-            ->where('p.document_id', $reportId)
-            ->whereIn('f.record_type', ['document_chunk', 'table_extraction'])
-            ->whereNull('f.resolved_at')
-            ->orderByRaw("CASE f.severity WHEN 'ERROR' THEN 0 WHEN 'WARNING' THEN 1 ELSE 2 END")
-            ->orderByDesc('f.flagged_at')
-            ->limit(20)
-            ->select(
-                'f.flag_id',
-                'f.flag_type',
-                'f.severity',
-                'f.description',
-                'f.rule_id',
-                'f.rule_version',
-                'f.flagged_at',
-            )
-            ->get()
-            ->map(fn ($f) => [
-                'flag_id' => $f->flag_id,
-                'flag_type' => $f->flag_type,
-                'severity' => $f->severity,
-                'description' => $f->description,
-                'rule_id' => $f->rule_id,
-                'rule_version' => $f->rule_version,
-                'flagged_at' => $f->flagged_at,
-            ])
-            ->all();
+            // Cap the rendered flag list — a verbose report can produce many
+            // chunk-level flags. Order ERROR first, then WARNING, then INFO,
+            // latest-first within each tier.
+            $flags = DB::table('silver.data_quality_flags as f')
+                ->join('silver.document_passages as p', DB::raw('p.passage_id::text'), '=', DB::raw('f.record_id'))
+                ->where('p.document_id', $reportId)
+                ->whereIn('f.record_type', ['document_chunk', 'table_extraction'])
+                ->whereNull('f.resolved_at')
+                ->orderByRaw("CASE f.severity WHEN 'ERROR' THEN 0 WHEN 'WARNING' THEN 1 ELSE 2 END")
+                ->orderByDesc('f.flagged_at')
+                ->limit(20)
+                ->select(
+                    'f.flag_id',
+                    'f.flag_type',
+                    'f.severity',
+                    'f.description',
+                    'f.rule_id',
+                    'f.rule_version',
+                    'f.flagged_at',
+                )
+                ->get()
+                ->map(fn ($f) => [
+                    'flag_id' => $f->flag_id,
+                    'flag_type' => $f->flag_type,
+                    'severity' => $f->severity,
+                    'description' => $f->description,
+                    'rule_id' => $f->rule_id,
+                    'rule_version' => $f->rule_version,
+                    'flagged_at' => $f->flagged_at,
+                ])
+                ->all();
 
-        return [
-            'counts' => $counts,
-            'open_total' => array_sum($counts),
-            'flags' => $flags,
-        ];
+            return [
+                'counts' => $counts,
+                'open_total' => array_sum($counts),
+                'flags' => $flags,
+            ];
+        });
     }
 
     /**

@@ -359,8 +359,11 @@ final class WorkspaceRlsCoverageTest extends TestCase
      * cross-workspace listing endpoint that never binds the GUC by
      * design). Also still open: everything from the first pass's "much
      * larger remaining set" not covered by either batch (silver.projects,
-     * collars, reports, samples, answer_runs, evidence_items,
-     * document_passages, exports, and more).
+     * collars, reports, samples, answer_runs, evidence_items, exports,
+     * and more). silver.document_passages — the one exception — was
+     * converted in the third pass; see
+     * test_third_pass_document_passages_has_no_fail_open_escape_hatch
+     * below.
      */
     public function test_second_verified_subset_has_no_fail_open_escape_hatch(): void
     {
@@ -417,6 +420,60 @@ final class WorkspaceRlsCoverageTest extends TestCase
             'Fail-closed RLS regressed on the second verified subset: '.PHP_EOL.implode(PHP_EOL, $gaps).
             PHP_EOL.PHP_EOL.
             'See 2026_08_15_020100_close_rls_admin_escape_hatch_second_pass for the '
+            .'canonical fail-closed shape.',
+        );
+    }
+
+    /**
+     * SECURITY regression test for the 2026-08-15 THIRD pass on the
+     * fail-open→fail-closed conversion — the first of the two prior
+     * passes' "8 remaining high-traffic tables" to actually convert.
+     *
+     * Migration 2026_08_15_030000_close_rls_admin_escape_hatch_third_pass
+     * converted silver.document_passages only, after a live-DB-verified
+     * call-site audit found its one real gap surface (4 Foundry
+     * controllers) was mechanically fixable with the established
+     * withWorkspaceRls() pattern — see that migration's docblock for the
+     * full per-table evidence on why the other 7 of the 8 (projects,
+     * collars, reports, answer_runs, evidence_items, exports, samples)
+     * stayed fail-open this pass (each has either a structural
+     * opaque-ID-into-itself chicken-and-egg blocker, an unbound live
+     * INSERT path, or a broad multi-file gap surface too large to fix
+     * safely alongside this migration).
+     */
+    public function test_third_pass_document_passages_has_no_fail_open_escape_hatch(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('RLS is Postgres-only.');
+        }
+
+        $row = DB::selectOne(
+            'SELECT qual, with_check FROM pg_policies '
+            .'WHERE schemaname = ? AND tablename = ? AND policyname = ?',
+            ['silver', 'document_passages', 'document_passages_workspace_isolation'],
+        );
+
+        if ($row === null) {
+            // Table/policy absent in this environment — not a regression
+            // to flag here (mirrors the tableExists()/columnExists() guard
+            // in the migration itself).
+            return;
+        }
+
+        $gaps = [];
+        if (str_contains((string) $row->qual, 'IS NULL OR')) {
+            $gaps[] = 'silver.document_passages → document_passages_workspace_isolation (USING still has an IS NULL OR escape)';
+        }
+        if ($row->with_check !== null && str_contains((string) $row->with_check, 'IS NULL OR')) {
+            $gaps[] = 'silver.document_passages → document_passages_workspace_isolation (WITH CHECK still has an IS NULL OR escape)';
+        }
+
+        $this->assertSame(
+            [],
+            $gaps,
+            'Fail-closed RLS regressed on silver.document_passages: '.PHP_EOL.implode(PHP_EOL, $gaps).
+            PHP_EOL.PHP_EOL.
+            'See 2026_08_15_030000_close_rls_admin_escape_hatch_third_pass for the '
             .'canonical fail-closed shape.',
         );
     }

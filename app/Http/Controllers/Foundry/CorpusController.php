@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
@@ -28,12 +29,16 @@ use Inertia\Response;
  */
 class CorpusController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     public function show(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
         $request->user()->projects()
             ->where('silver.projects.project_id', $project->project_id)
             ->firstOrFail();
+
+        $workspaceId = (string) $project->workspace_id;
 
         // ── Reports for this project ─────────────────────────────────
         $reports = DB::table('silver.reports')
@@ -47,27 +52,36 @@ class CorpusController extends Controller
             ->count();
 
         // ── Passages for this project (direct report-id join) ────────
-        $passagesCount = (int) DB::table('silver.document_passages AS dp')
-            ->join('silver.reports AS r', 'r.report_id', '=', 'dp.document_id')
-            ->where('r.project_id', $project->project_id)
-            ->count();
+        // RLS fix 2026-08-15 (third pass): silver.document_passages was
+        // converted to fail-closed; $workspaceId was already resolved above
+        // from the (still fail-open) silver.projects lookup.
+        $passagesCount = (int) $this->withWorkspaceRls(
+            $workspaceId,
+            fn () => DB::table('silver.document_passages AS dp')
+                ->join('silver.reports AS r', 'r.report_id', '=', 'dp.document_id')
+                ->where('r.project_id', $project->project_id)
+                ->count(),
+        );
 
-        $recentPassages = DB::table('silver.document_passages AS dp')
-            ->join('silver.reports AS r', 'r.report_id', '=', 'dp.document_id')
-            ->where('r.project_id', $project->project_id)
-            ->select(
-                'dp.passage_id',
-                'dp.text',
-                'dp.ordinal',
-                'dp.page_first',
-                'dp.page_last',
-                'dp.chunk_kind',
-                'r.report_id',
-                'r.title AS report_title',
-            )
-            ->orderBy('dp.ordinal')
-            ->limit(30)
-            ->get();
+        $recentPassages = $this->withWorkspaceRls(
+            $workspaceId,
+            fn () => DB::table('silver.document_passages AS dp')
+                ->join('silver.reports AS r', 'r.report_id', '=', 'dp.document_id')
+                ->where('r.project_id', $project->project_id)
+                ->select(
+                    'dp.passage_id',
+                    'dp.text',
+                    'dp.ordinal',
+                    'dp.page_first',
+                    'dp.page_last',
+                    'dp.chunk_kind',
+                    'r.report_id',
+                    'r.title AS report_title',
+                )
+                ->orderBy('dp.ordinal')
+                ->limit(30)
+                ->get(),
+        );
 
         // ── Entity-link rollup ───────────────────────────────────────
         // Lives in public_geo (cross-corpus linker storage, see migration

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
@@ -30,6 +31,8 @@ use Inertia\Response;
  */
 class SourcesController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     public function show(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
@@ -129,17 +132,23 @@ class SourcesController extends Controller
             ])->values();
 
         // ── 5. Workspace passages + project-scoped quality rollup ──
-        $passagesInProject = (int) DB::table('silver.document_passages AS dp')
-            ->join('bronze.provenance AS bp', function ($j) {
-                $j->on(DB::raw('bp.target_id::text'), '=', DB::raw('dp.passage_id::text'))
-                    ->where('bp.target_table', '=', 'document_passages');
-            })
-            ->join('silver.reports AS r', function ($j) {
-                $j->on('r.report_id', '=', 'bp.target_id')
-                    ->where('bp.target_table', '=', 'reports');
-            })
-            ->where('r.project_id', $project->project_id)
-            ->count();
+        // RLS fix 2026-08-15 (third pass): silver.document_passages was
+        // converted to fail-closed. $workspaceId was already resolved above
+        // from the (still fail-open) silver.projects lookup.
+        $passagesInProject = (int) $this->withWorkspaceRls(
+            $workspaceId,
+            fn () => DB::table('silver.document_passages AS dp')
+                ->join('bronze.provenance AS bp', function ($j) {
+                    $j->on(DB::raw('bp.target_id::text'), '=', DB::raw('dp.passage_id::text'))
+                        ->where('bp.target_table', '=', 'document_passages');
+                })
+                ->join('silver.reports AS r', function ($j) {
+                    $j->on('r.report_id', '=', 'bp.target_id')
+                        ->where('bp.target_table', '=', 'reports');
+                })
+                ->where('r.project_id', $project->project_id)
+                ->count(),
+        );
 
         $qualityRollup = DB::table('silver.document_ingestion_quality AS dq')
             ->join('silver.reports AS r', 'r.report_id', '=', 'dq.report_id')

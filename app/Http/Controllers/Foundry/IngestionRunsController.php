@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Services\StorageService;
+use App\Support\SetsWorkspaceRlsContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -28,6 +29,8 @@ use Inertia\Response;
  */
 class IngestionRunsController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     public function __construct(
         private readonly StorageService $storage,
     ) {}
@@ -42,7 +45,7 @@ class IngestionRunsController extends Controller
                 'project_name' => $project->project_name,
                 'slug' => $project->slug,
             ],
-            'runs' => $this->buildSnapshot($project->project_id),
+            'runs' => $this->buildSnapshot($project->project_id, (string) $project->workspace_id),
         ]);
     }
 
@@ -56,7 +59,11 @@ class IngestionRunsController extends Controller
             // = ~400 S3 calls every 5 seconds per open tab) and only feeds
             // the Phase-A fallback for pre-instrumentation runs, which the
             // initial page load already rendered.
-            'runs' => $this->buildSnapshot($project->project_id, includeUploadListing: false),
+            'runs' => $this->buildSnapshot(
+                $project->project_id,
+                (string) $project->workspace_id,
+                includeUploadListing: false,
+            ),
             'fetched_at' => CarbonImmutable::now()->toIso8601String(),
         ]);
     }
@@ -81,9 +88,9 @@ class IngestionRunsController extends Controller
      *     totals: array<string, int>,
      * }
      */
-    private function buildSnapshot(string $projectId, bool $includeUploadListing = true): array
+    private function buildSnapshot(string $projectId, string $workspaceId, bool $includeUploadListing = true): array
     {
-        $reports = $this->loadReports($projectId);
+        $reports = $this->loadReports($projectId, $workspaceId);
         $progress = $this->loadProgressRows($projectId);
         $uploads = $includeUploadListing ? $this->listUploads($projectId) : [];
 
@@ -249,7 +256,7 @@ class IngestionRunsController extends Controller
      *     parse_quality_pct: ?float, is_scanned: bool, passages: int, embedded: int,
      * }>
      */
-    private function loadReports(string $projectId): array
+    private function loadReports(string $projectId, string $workspaceId): array
     {
         // Perf audit 2026-08-15 (item 4) — the passage-count subquery used to
         // aggregate the WHOLE silver.document_passages table (every project,
@@ -259,7 +266,11 @@ class IngestionRunsController extends Controller
         // document_id + workspace_id — see the 2026-04-20 migration), so the
         // subquery is scoped by joining through silver.reports the same way
         // the outer query already does, before it ever aggregates.
-        $rows = DB::select(
+        //
+        // RLS fix 2026-08-15 (third pass): silver.document_passages was
+        // converted to fail-closed, so the LEFT JOIN subquery above also
+        // needs app.workspace_id bound or it silently contributes zero rows.
+        $rows = $this->withWorkspaceRls($workspaceId, fn () => DB::select(
             <<<'SQL'
             SELECT
                 r.report_id::text AS report_id,
@@ -282,7 +293,7 @@ class IngestionRunsController extends Controller
             WHERE r.project_id = ?
             SQL,
             [$projectId, $projectId],
-        );
+        ));
 
         return array_map(static fn ($r) => [
             'report_id' => (string) $r->report_id,
