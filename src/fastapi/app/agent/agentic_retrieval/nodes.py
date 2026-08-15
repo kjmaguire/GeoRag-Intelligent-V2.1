@@ -786,12 +786,31 @@ def _render_tool_results_context(
     Uses ``assign_citation_ids`` so every block carries the SAME canonical
     id ``assemble_response`` will emit for that tool result — that
     alignment is the point.
+
+    Prompt-injection fencing (RAG-safety audit 2026-08-15): this is the
+    ONLY renderer on the live agentic-retrieval path (assemble_node calls
+    it whenever ``CONTEXT_PREP_ENABLED`` is off, which is the default) —
+    ``app.agent.context_builder._build_context`` implements the same
+    fencing but is dead code (confirmed zero call sites outside the
+    retired legacy orchestrator's re-export and tests). Reusing its
+    ``_fence_untrusted``/``_UNTRUSTED_GUARD`` here, gated by the SAME
+    ``settings.PROMPT_INJECTION_DELIMITING_ENABLED`` flag (default False
+    pending a golden-eval pass — see config.py), closes that gap: once the
+    flag is flipped it now actually protects the path real traffic runs
+    through, not just the abandoned one. Fencing is applied to the two
+    externally-sourced free-text surfaces the model sees — retrieved
+    document-chunk text and public-geoscience record dumps — mirroring
+    exactly what ``_build_context`` fences (structured PostGIS/Neo4j/
+    collar/graph blocks stay unfenced, same as there).
     """
+    from app.agent.context_builder import _UNTRUSTED_GUARD, _fence_untrusted  # noqa: PLC0415
     from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
+    from app.config import settings as _settings  # noqa: PLC0415
 
     _CHUNK_TEXT_CAP = 1800    # per document chunk
     _STRUCTURED_CAP = 1200    # per structured (non-chunk) result
     _TOTAL_BUDGET = 24_000    # whole context block
+    _fence_enabled = bool(_settings.PROMPT_INJECTION_DELIMITING_ENABLED)
 
     blocks: list[str] = []
     id_bundles = assign_citation_ids(tool_results)
@@ -826,16 +845,21 @@ def _render_tool_results_context(
                 if page is not None:
                     header += f" | page {page}"
                 text = (getattr(chunk, "text", "") or "")[:_CHUNK_TEXT_CAP]
+                if _fence_enabled:
+                    text = _fence_untrusted(text)
                 blocks.append(f"{header}\n{text}")
         elif records is not None and len(bundle) == len(records):
             # PublicGeoscienceSearchResult-shaped — one id per record.
             for record, cid in zip(records, bundle, strict=False):
-                blocks.append(
-                    f"{cid} tool={tool_name} {str(record)[:_STRUCTURED_CAP]}"
-                )
+                record_text = str(record)[:_STRUCTURED_CAP]
+                if _fence_enabled:
+                    record_text = _fence_untrusted(record_text)
+                blocks.append(f"{cid} tool={tool_name} {record_text}")
         else:
             # Structured results (collars / samples / graph / overview) —
-            # one compact block per tool result.
+            # one compact block per tool result. Sourced from our own
+            # PostGIS/Neo4j tables, not externally-authored free text, so
+            # (matching _build_context) these are NOT fenced.
             cid = bundle[0] if bundle else "[DATA-0]"
             blocks.append(
                 f"{cid} tool={tool_name} {str(result)[:_STRUCTURED_CAP]}"
@@ -843,6 +867,10 @@ def _render_tool_results_context(
 
     out: list[str] = []
     total = 0
+    if _fence_enabled and blocks:
+        out.append(_UNTRUSTED_GUARD)
+        out.append("")
+        total += len(_UNTRUSTED_GUARD) + 1
     for block in blocks:
         if total + len(block) > _TOTAL_BUDGET:
             out.append("[context budget reached]")
@@ -954,6 +982,33 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     #      budget-fit).
     #   2. Default → typed per-chunk tool_results rendering with the
     #      canonical citation ids (see _render_tool_results_context).
+    #
+    # RAG-safety audit 2026-08-15 — KNOWN OPEN GAP, do not flip
+    # CONTEXT_PREP_ENABLED without fixing this first: the two paths use
+    # DISJOINT citation-marker vocabularies. Path 2 (below, and the
+    # default) tags each block with the SAME dash-form id
+    # (``[NI43-n]``/``[PGEO-n]``/``[DATA-n]``) that
+    # ``response_assembler.assign_citation_ids`` will later emit as the
+    # real ``Citation.citation_id`` — see ``_render_tool_results_context``'s
+    # docstring for why that lockstep matters. Path 1 instead assigns a
+    # fresh sequential colon-form id (``[DATA:1]``, ``[DATA:2]``, ...)
+    # over ``state.evidence_packet.evidence`` — a list that context_prep
+    # has already re-ranked (authority order) and pruned (diversity quota
+    # + token budget) relative to ``state.tool_results``. Meanwhile
+    # ``assemble_response`` below is ALWAYS called with the raw
+    # ``state.tool_results``, never with the prepared packet, so it always
+    # emits dash-form ids in tool_results order. Net effect: when this
+    # branch is live, the ids the model is told to cite
+    # (``[DATA:1]``...) essentially never match any real
+    # ``Citation.citation_id`` (``[NI43-3]``...), so
+    # ``hallucination.layer2_typed_output`` strips the model's markers as
+    # orphans and citations silently collapse. Not fixed here — reconciling
+    # it means either (a) making assemble_response consume the prepared
+    # packet's own ids instead of re-deriving from tool_results, or
+    # (b) rendering path 1 with the same assign_citation_ids ids restricted
+    # to the surviving evidence — both are a real design decision for
+    # whoever runs the "shadow → eval → GA" rollout this flag was staged
+    # for (see config.py), not a one-line patch.
     context_lines: list[str] = []
     citation_counter = 0
     use_packet_for_context = (
