@@ -81,6 +81,17 @@ class WorkspaceDataVersionBumper
 
         try {
             $newWorkspaceVersion = DB::transaction(function () use ($workspaceId, $projectId, &$newProjectVersion) {
+                // 2026-08-14 RLS hardening pass — bind the workspace GUC
+                // before writing. silver.workspaces / silver.projects are
+                // NOT flipped fail-closed by this pass, but their policy
+                // is a live candidate for a future one; this UPDATE
+                // already knows $workspaceId, so there is no reason for
+                // it to depend on the fail-open escape hatch (silent
+                // "0 rows updated" under a future fail-closed policy).
+                // SET LOCAL is transaction-scoped, matching
+                // SetsWorkspaceRlsContext's convention elsewhere.
+                DB::statement("SELECT set_config('app.workspace_id', ?, true)", [$workspaceId]);
+
                 $wsRow = DB::selectOne(
                     'UPDATE silver.workspaces
                      SET data_version = data_version + 1, updated_at = NOW()

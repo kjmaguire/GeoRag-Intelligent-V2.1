@@ -231,4 +231,106 @@ final class WorkspaceRlsCoverageTest extends TestCase
 
         $this->assertSame([], $list, $msg);
     }
+
+    /**
+     * SECURITY regression test for the 2026-08-14 fail-open→fail-closed
+     * pass (DB audit + security audit finding: EVERY workspace-scoped RLS
+     * policy admits all rows when `app.workspace_id` is unset instead of
+     * denying them — see 2026_05_13_160000_retrofit_rls_admin_escape_hatch
+     * and the database/raw/phase0/111-112 bulk sweep for how the
+     * escape-hatch shape became pervasive).
+     *
+     * Migration 2026_08_14_030000_close_rls_admin_escape_hatch_verified_
+     * subset converted a STATIC-ANALYSIS-VERIFIED subset of tables (no
+     * live Laravel or FastAPI request-time reader found that depends on
+     * the unset-GUC escape) to fail-closed. This test locks that subset
+     * in place so a future migration can't silently reintroduce the
+     * escape hatch on exactly these tables.
+     *
+     * This is intentionally NOT a blanket "no policy anywhere may have
+     * IS NULL OR" assertion — the large majority of workspace-scoped
+     * tables (silver.projects, collars, reports, samples, answer_runs,
+     * evidence_items, document_passages, exports, audit.audit_ledger,
+     * source_trust_scores, targeting.*, and more) are still intentionally
+     * fail-open, documented in the migration's docblock and the
+     * accompanying audit report, pending a live-DB-verified follow-up
+     * pass. Asserting them here would be testing a known, tracked gap,
+     * not a regression.
+     */
+    public function test_verified_subset_has_no_fail_open_escape_hatch(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('RLS is Postgres-only.');
+        }
+
+        // Mirrors the TABLES constant in
+        // 2026_08_14_030000_close_rls_admin_escape_hatch_verified_subset.
+        // Kept as a literal list (not re-parsed from the migration) so a
+        // typo in either place is caught by drift rather than silently
+        // agreeing with itself.
+        $converted = [
+            ['workspace', 'workspace_memberships', 'tenant_isolation'],
+            ['workspace', 'workspace_agent_config', 'tenant_isolation'],
+            ['workspace', 'dry_run_outputs', 'tenant_isolation'],
+            ['outbox', 'pending_propagations', 'tenant_isolation'],
+            ['outbox', 'propagation_attempts', 'tenant_isolation'],
+            ['usage', 'usage_events', 'usage_events_tenant_isolation'],
+            ['usage', 'workspace_cost_ceilings', 'workspace_cost_ceilings_tenant_isolation'],
+            ['silver', 'kg_formation_aliases', 'kg_formation_aliases_workspace_isolation'],
+            ['silver', 'kg_mineral_aliases', 'kg_mineral_aliases_workspace_isolation'],
+            ['silver', 'kg_report_aliases', 'kg_report_aliases_workspace_isolation'],
+            ['silver', 'kg_sample_aliases', 'kg_sample_aliases_workspace_isolation'],
+            ['silver', 'collaboration_audit_log', 'collaboration_audit_log_workspace_isolation'],
+            ['silver', 'collaboration_comments', 'collaboration_comments_workspace_isolation'],
+            ['silver', 'agent_conversation_messages', 'agent_conversation_messages_workspace_isolation'],
+            ['silver', 'agent_conversations', 'agent_conversations_workspace_isolation'],
+            ['silver', 'pdf_coordinates', 'pdf_coordinates_workspace_isolation'],
+            ['silver', 'pdf_layout_regions', 'pdf_layout_regions_workspace_isolation'],
+            ['silver', 'pdf_ocr_results', 'pdf_ocr_results_workspace_isolation'],
+            ['silver', 'pdf_table_cells', 'pdf_table_cells_workspace_isolation'],
+            ['silver', 'pdf_text_blocks', 'pdf_text_blocks_workspace_isolation'],
+            ['silver', 'pdf_vl_summaries', 'pdf_vl_summaries_workspace_isolation'],
+            ['silver', 'review_audit_log', 'review_audit_log_workspace_isolation'],
+            ['silver', 'assay_events', 'assay_events_workspace_isolation'],
+            ['silver', 'ingest_extractions', 'tenant_isolation'],
+            ['silver', 'ingest_layouts', 'tenant_isolation'],
+            ['silver', 'ingest_ocr_results', 'tenant_isolation'],
+            ['silver', 'collab_anchors', 'silver_collab_anchors_workspace_isolation'],
+            ['silver', 'tier3_unlock_requests', 'silver_tier3_unlock_requests_workspace_isolation'],
+        ];
+
+        $gaps = [];
+        foreach ($converted as [$schema, $table, $policy]) {
+            $row = DB::selectOne(
+                'SELECT qual, with_check FROM pg_policies '
+                .'WHERE schemaname = ? AND tablename = ? AND policyname = ?',
+                [$schema, $table, $policy],
+            );
+
+            if ($row === null) {
+                // Table/policy absent in this environment (e.g. a few of
+                // these are phase0-raw-SQL-only tables not provisioned in
+                // the migrate-only test DB — see the migration's
+                // tableExists() guard). Not a regression to flag here.
+                continue;
+            }
+
+            $qualified = "{$schema}.{$table}";
+            if (str_contains((string) $row->qual, 'IS NULL OR')) {
+                $gaps[] = "{$qualified} → {$policy} (USING still has an IS NULL OR escape)";
+            }
+            if ($row->with_check !== null && str_contains((string) $row->with_check, 'IS NULL OR')) {
+                $gaps[] = "{$qualified} → {$policy} (WITH CHECK still has an IS NULL OR escape)";
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $gaps,
+            'Fail-closed RLS regressed on the verified subset: '.PHP_EOL.implode(PHP_EOL, $gaps).
+            PHP_EOL.PHP_EOL.
+            'See 2026_08_14_030000_close_rls_admin_escape_hatch_verified_subset for the '
+            .'canonical fail-closed shape.',
+        );
+    }
 }
