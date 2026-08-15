@@ -295,6 +295,199 @@ jobs:
           QDRANT_PORT: "6333"
           EMBEDDING_DIMENSION: "1024"
 
+  # ─── E2E money-path smoke (ADVISORY — promote when green) ─────────────
+  # 2026-08-15 testing audit: the money path (upload -> parse -> OCR/native
+  # -> chunk -> embed -> index -> query -> cited answer) has never executed
+  # in CI. `python-test`'s Bucket 1 explicitly excludes integration/golden/
+  # live tests; `release-rehearsal.yml`'s Bucket 3 covers it in principle
+  # but only runs on tag push/dispatch and its LLM-dependent steps are
+  # continue-on-error; `e2e.yml` is permanently gated off (no self-hosted
+  # runner provisioned). This job closes that PR-time gap with a minimal,
+  # narrowly-scoped smoke test — NOT a substitute for the golden/
+  # hallucination suites (see eval-gate.yml).
+  #
+  # What's REAL vs STUBBED:
+  #   REAL: Postgres (silver.reports/document_passages writes via the
+  #     actual ingest_pdf.py persist() function — see e2e_smoke_ingest.py's
+  #     docstring for why persist() is called directly rather than
+  #     reimplemented), Qdrant (real upsert + real search against
+  #     georag_chunks), the FastAPI app booted via plain uvicorn, the SPLADE++
+  #     sparse encoder (local model), the cross-encoder reranker (local
+  #     bge-reranker-base, downloaded from HuggingFace at job time), JWT
+  #     auth, the SSE query endpoint, citation assembly.
+  #   STUBBED (tests/e2e_smoke/stub_backend.py): Azure AI Foundry's dense
+  #     embedding endpoint (deterministic marker-phrase encoder, NOT a real
+  #     semantic model — see that file's docstring) and the LLM chat-
+  #     completions endpoint (canned prose). Bronze/S3 object storage is
+  #     bypassed entirely (fixture PDF is read from the checkout, not S3).
+  #     No live Hatchet engine — the fire-and-forget embed-workflow dispatch
+  #     inside persist() fails open (logs a warning) and the embed step
+  #     runs explicitly afterwards as a plain function call instead.
+  #
+  # ADVISORY (continue-on-error: true) because this is a brand-new,
+  # multi-service integration test assembled from source-level research
+  # (no live GitHub Actions run to confirm green) — matching the phpstan/
+  # mypy precedent below. PROMOTION CRITERIA: drop continue-on-error once
+  # this job has passed on >= 2 consecutive main runs with no flakiness
+  # (watch especially for reranker-model-download flakiness and the
+  # marker-phrase retrieval-threshold rig described in stub_backend.py).
+  e2e-smoke:
+    name: E2E money-path smoke (advisory — promote when green)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+      qdrant:
+        image: qdrant/qdrant:v1.17.1@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+        ports: ["6333:6333"]
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    env:
+      POSTGRES_USER: georag
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: georag_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DIRECT_HOST: localhost
+      POSTGRES_DIRECT_PORT: "5432"
+      POSTGRES_SSLMODE: disable
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      QDRANT_HOST: localhost
+      QDRANT_PORT: "6333"
+      EMBEDDING_DIMENSION: "1024"
+      FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
+      # hatchet_sdk's ClientConfig() is a module-level singleton instantiated
+      # at import time (same gotcha documented on the python-test job above)
+      # — this job never dials a real Hatchet engine, but importing
+      # app.hatchet_workflows.ingest_pdf still requires a JWT-*shaped* token.
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+      # Route both ingest-time and query-time dense embeddings, plus the
+      # LLM synthesis call, at the stub backend started below.
+      EMBEDDING_BACKEND: foundry
+      AZURE_FOUNDRY_ENDPOINT: http://localhost:8899
+      AZURE_FOUNDRY_API_KEY: stub-key
+      AZURE_FOUNDRY_EMBED_DEPLOYMENT: stub-embed
+      AZURE_FOUNDRY_EMBED_DIMENSION: "1024"
+      LLM_BACKEND: vllm
+      VLLM_URL: http://localhost:8899/v1
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Run migrations
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Bootstrap Qdrant collections
+        working-directory: src/fastapi
+        run: uv run python scripts/init_qdrant.py
+
+      - name: Start stub Foundry backend (embeddings + LLM)
+        working-directory: src/fastapi
+        run: |
+          uv run python tests/e2e_smoke/stub_backend.py --port 8899 &
+          echo $! > /tmp/stub_backend.pid
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8899/health > /dev/null && exit 0
+            sleep 1
+          done
+          echo "::error::stub backend did not become healthy"
+          exit 1
+
+      - name: Run ingest leg (parse -> persist -> embed)
+        id: ingest
+        working-directory: src/fastapi
+        run: uv run python scripts/ci/e2e_smoke_ingest.py
+
+      - name: Start FastAPI (plain uvicorn, no Docker Compose)
+        working-directory: src/fastapi
+        run: |
+          uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+            > /tmp/fastapi_smoke.log 2>&1 &
+          echo $! > /tmp/fastapi.pid
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8000/health > /dev/null && exit 0
+            sleep 3
+          done
+          echo "::error::FastAPI did not become healthy within 180s"
+          tail -n 200 /tmp/fastapi_smoke.log
+          exit 1
+
+      - name: Run query leg (POST /internal/queries, assert cited answer)
+        working-directory: src/fastapi
+        run: |
+          uv run python scripts/ci/e2e_smoke_query.py \
+            --project-id "${{ steps.ingest.outputs.project_id }}" \
+            --workspace-id "${{ steps.ingest.outputs.workspace_id }}"
+
+      - name: Dump FastAPI log on failure
+        if: failure()
+        run: tail -n 300 /tmp/fastapi_smoke.log || true
+
+      - name: Stop background servers
+        if: always()
+        run: |
+          [ -f /tmp/fastapi.pid ] && kill "$(cat /tmp/fastapi.pid)" 2>/dev/null || true
+          [ -f /tmp/stub_backend.pid ] && kill "$(cat /tmp/stub_backend.pid)" 2>/dev/null || true
+
   # ─── Python tests ────────────────────────────────────────────────────
   python-test:
     name: Python (pytest)
