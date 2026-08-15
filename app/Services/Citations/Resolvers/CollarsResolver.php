@@ -24,7 +24,7 @@ final class CollarsResolver extends AbstractCitationResolver
         return 'silver.collars:';
     }
 
-    public function resolve(string $sourceId): JsonResponse
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
     {
         preg_match('/first=([^:]+)/', $sourceId, $matches);
         $collarId = $matches[1] ?? null;
@@ -36,15 +36,19 @@ final class CollarsResolver extends AbstractCitationResolver
             ]);
         }
 
+        // Belt and braces (security fix 2026-08-14): explicit tenant filter
+        // on top of the controller-bound RLS GUC; null scope fails CLOSED.
+        if ($workspaceId === null) {
+            return $this->notFound($sourceId);
+        }
+
         $collar = DB::table('silver.collars')
             ->where('collar_id', $collarId)
+            ->where('workspace_id', $workspaceId)
             ->first(['collar_id', 'hole_id', 'total_depth', 'hole_type', 'status', 'drill_date']);
 
         if (! $collar) {
-            return response()->json([
-                'source_type' => 'collars',
-                'text' => 'Collar not found',
-            ]);
+            return $this->notFound($sourceId);
         }
 
         return response()->json([
@@ -61,5 +65,18 @@ final class CollarsResolver extends AbstractCitationResolver
             ),
             'metadata' => (array) $collar,
         ]);
+    }
+
+    /**
+     * Structured 404 — identical for "missing" and "cross-tenant" so the
+     * endpoint is not an existence oracle.
+     */
+    private function notFound(string $sourceId): JsonResponse
+    {
+        return response()->json([
+            'source_type' => 'collars',
+            'source_chunk_id' => $sourceId,
+            'text' => 'Collar not found',
+        ], 404);
     }
 }

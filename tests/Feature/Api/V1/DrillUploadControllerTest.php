@@ -233,6 +233,38 @@ class DrillUploadControllerTest extends TestCase
         );
     }
 
+    public function test_persisted_mime_type_is_server_sniffed_not_client_declared(): void
+    {
+        // Security fix 2026-08-14 (MED): bronze.source_files.mime_type used
+        // to store the attacker-controlled client-declared MIME. Upload a
+        // real PDF while declaring a bogus client mime and assert the
+        // sniffed value wins.
+        $path = tempnam(sys_get_temp_dir(), 'georag_pdf_');
+        file_put_contents(
+            $path,
+            "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        );
+        $file = new UploadedFile($path, 'well_report.pdf', 'text/plain', null, true);
+
+        $response = $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $file]);
+
+        // 201 when the (faked) FastAPI dispatch succeeds, 502 when it does
+        // not — either way the bronze row must already be persisted.
+        $this->assertContains($response->status(), [201, 502]);
+
+        $sourceFileId = $response->json('source_file_id');
+        $this->assertNotEmpty($sourceFileId);
+
+        $row = DB::table('bronze.source_files')->where('id', $sourceFileId)->first();
+        $this->assertNotNull($row);
+        $this->assertSame(
+            'application/pdf',
+            $row->mime_type,
+            'mime_type must come from server-side content sniffing, not the client-declared value',
+        );
+    }
+
     /**
      * Replace the Dagster client with a mock that asserts the expected asset
      * key was launched, and returns a successful response.

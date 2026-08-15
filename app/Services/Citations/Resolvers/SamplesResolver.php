@@ -17,7 +17,7 @@ final class SamplesResolver extends AbstractCitationResolver
         return 'silver.samples:';
     }
 
-    public function resolve(string $sourceId): JsonResponse
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
     {
         preg_match('/element=([^:]+)/', $sourceId, $matches);
         $element = $matches[1] ?? 'unknown';

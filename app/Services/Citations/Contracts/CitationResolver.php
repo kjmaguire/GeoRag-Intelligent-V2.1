@@ -40,10 +40,19 @@ interface CitationResolver
      * Resolve a single `source_chunk_id` to a JSON envelope describing the
      * underlying record.
      *
-     * Returns a 200 response on success (even if the underlying record is
-     * not found — the response body explains the gap rather than 404'ing,
-     * because the caller is the citation viewer and an invisible 404 is
-     * worse UX than a "not found" message).
+     * $workspaceId is the tenant scope the caller (CitationController) has
+     * verified the authenticated user may read. Resolvers that query
+     * tenant-scoped tables (silver.reports, silver.collars,
+     * silver.assays_v2, …) MUST filter on it explicitly and MUST fail
+     * CLOSED (miss) when it is null — never rely on the fail-open NULL-GUC
+     * RLS fallback. Resolvers over workspace-global data (public
+     * geoscience open-data tables) may ignore it.
+     *
+     * Returns 200 for a resolved record. Returns 404 (with a structured
+     * body the citation viewer can still render) when the record is not
+     * visible in the given workspace — deliberately identical for
+     * "does not exist" and "exists in another tenant" so the endpoint is
+     * not an existence oracle.
      */
-    public function resolve(string $sourceId): JsonResponse;
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse;
 }

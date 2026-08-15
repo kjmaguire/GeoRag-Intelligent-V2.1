@@ -33,10 +33,19 @@ return Application::configure(basePath: dirname(__DIR__))
         // Module 9 Chunk 9.5 — trust the reverse proxy so X-Forwarded-* is
         // honoured (otherwise per-IP rate-limiting collapses to a single
         // bucket behind nginx/Traefik, and request->isSecure() reads false).
-        // Production overrides TRUSTED_PROXIES with an explicit CIDR allowlist;
-        // '*' is a dev-friendly default.
+        // Production sets TRUSTED_PROXIES to an explicit CIDR allowlist.
+        //
+        // Security fix 2026-08-14 (LOW): production fails CLOSED. When
+        // APP_ENV=production and TRUSTED_PROXIES is unset/empty, NO proxies
+        // are trusted (clients cannot spoof X-Forwarded-For to bypass per-IP
+        // rate limits or forge isSecure()). The '*' wildcard remains the
+        // dev-friendly default for every non-production environment.
+        $trustedProxies = env('TRUSTED_PROXIES');
+        if ($trustedProxies === null || $trustedProxies === '') {
+            $trustedProxies = env('APP_ENV') === 'production' ? [] : '*';
+        }
         $middleware->trustProxies(
-            at: env('TRUSTED_PROXIES', '*'),
+            at: $trustedProxies,
             headers: Request::HEADER_X_FORWARDED_FOR
                 | Request::HEADER_X_FORWARDED_HOST
                 | Request::HEADER_X_FORWARDED_PORT

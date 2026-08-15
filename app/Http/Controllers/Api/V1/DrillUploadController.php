@@ -147,6 +147,19 @@ class DrillUploadController extends Controller
 
         $selection = DrillAssetSelector::select($ext, $originalName);
 
+        // Security fix 2026-08-14 (MED): persist the server-sniffed MIME, not
+        // the client-declared one — the client value is attacker-controlled.
+        // finfo only inspects the file's leading magic bytes (not a full
+        // re-read), so the multi-GB concern that originally justified
+        // getClientMimeType() does not apply. Fall back to the client mime
+        // only if sniffing fails; column contract (string) is unchanged.
+        try {
+            $mimeType = $file->getMimeType();
+        } catch (Throwable) {
+            $mimeType = null;
+        }
+        $mimeType = $mimeType ?: $file->getClientMimeType();
+
         $sourceFileId = (string) Str::uuid();
         try {
             DB::table('bronze.source_files')->insert([
@@ -156,10 +169,7 @@ class DrillUploadController extends Controller
                 'original_filename' => $originalName,
                 'file_sha256' => $sha256,
                 'file_size_bytes' => $file->getSize(),
-                // Client-declared mime, not getMimeType(): the fileinfo
-                // guesser re-reads the file (third full pass on multi-GB
-                // uploads) and the extension is already allow-listed above.
-                'mime_type' => $file->getClientMimeType(),
+                'mime_type' => $mimeType,
                 'source_type' => 'drill_upload',
                 'data_type' => $selection['asset_key'] ?? 'unrouted',
                 'campaign_id' => null,

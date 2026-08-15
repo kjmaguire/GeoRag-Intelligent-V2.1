@@ -307,6 +307,8 @@ class CitationControllerPgeoTest extends TestCase
             ->withAnyArgs()
             ->andReturnUsing(fn ($expr) => new Expression($expr));
 
+        $this->mockWorkspaceRlsPassthrough();
+
         DB::shouldReceive('table')->with('silver.reports')->once()->andReturn($reportBuilder);
         DB::shouldReceive('table')->with('public_geo.document_entity_links')->andReturn($linksBuilder);
 

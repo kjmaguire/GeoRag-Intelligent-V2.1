@@ -17,9 +17,10 @@ use Illuminate\Support\Facades\DB;
  *   - The first 1–2 sections as a fallback excerpt when the section number
  *     is missing or out of range (citation viewer always shows *something*
  *     rather than blank).
- *   - A "Report not found" message when the report_id doesn't exist —
- *     intentional 200 with body explanation, not 404 (the citation viewer
- *     surfaces the gap to the user; an HTTP 404 would be invisible).
+ *   - A structured "Report not found" 404 when the report_id does not
+ *     resolve inside the caller-verified workspace — deliberately identical
+ *     for "does not exist" and "belongs to another tenant" (no existence
+ *     oracle; security fix 2026-08-14).
  */
 final class ReportResolver extends AbstractCitationResolver
 {
@@ -28,7 +29,7 @@ final class ReportResolver extends AbstractCitationResolver
         return 'georag_reports:';
     }
 
-    public function resolve(string $sourceId): JsonResponse
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
     {
         // Parse: georag_reports:{report_id}:section={num}:chunk={id}
         preg_match('/georag_reports:([^:]+)/', $sourceId, $matches);
@@ -44,15 +45,20 @@ final class ReportResolver extends AbstractCitationResolver
             ]);
         }
 
+        // Belt and braces: the controller already binds the app.workspace_id
+        // GUC for RLS, but silver RLS policies are fail-open when the GUC is
+        // unset — so ALSO filter explicitly. A null scope fails CLOSED.
+        if ($workspaceId === null) {
+            return $this->notFound($sourceId);
+        }
+
         $report = DB::table('silver.reports')
             ->where('report_id', $reportId)
+            ->where('workspace_id', $workspaceId)
             ->first(['report_id', 'title', 'company', 'filing_date', 'commodity', 'sections_text']);
 
         if (! $report) {
-            return response()->json([
-                'source_type' => 'report',
-                'text' => 'Report not found in database',
-            ]);
+            return $this->notFound($sourceId);
         }
 
         $sections = json_decode((string) $report->sections_text, true) ?? [];
@@ -85,6 +91,20 @@ final class ReportResolver extends AbstractCitationResolver
             // stays clean when no SMAD-style references have been extracted.
             'references_to_entities' => $this->loadDocumentReferencesSummary($report->report_id),
         ]);
+    }
+
+    /**
+     * Structured 404 for a report that is not visible in the caller's
+     * workspace — same body shape the viewer already renders, same response
+     * whether the report is missing or cross-tenant.
+     */
+    private function notFound(string $sourceId): JsonResponse
+    {
+        return response()->json([
+            'source_type' => 'report',
+            'source_chunk_id' => $sourceId,
+            'text' => 'Report not found in database',
+        ], 404);
     }
 
     /**

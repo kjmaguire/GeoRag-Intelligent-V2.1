@@ -135,6 +135,12 @@ abstract class TestCase extends BaseTestCase
                     '/^\s*SET\s+search_path\b/i',
                     '/^\s*SET\s+LOCAL\b/i',
                     '/^\s*RESET\b/i',
+                    // GUC binding via SELECT set_config(...) — the txn-local
+                    // RLS workspace bind (SetsWorkspaceRlsContext). SQLite has
+                    // no set_config() and no RLS; tenancy tests instead assert
+                    // the explicit workspace_id WHERE filters (belt-and-braces
+                    // layer of the 2026-08-14 citation IDOR fix).
+                    '/^\s*SELECT\s+set_config\s*\(/i',
 
                     // DML: PostgreSQL GRANT / REVOKE / ALTER DEFAULT PRIVILEGES
                     '/^\s*GRANT\b/i',
@@ -277,6 +283,10 @@ abstract class TestCase extends BaseTestCase
                 foreach ($noOpPatterns as $pattern) {
                     if (preg_match($pattern, $query)) {
                         $query = 'SELECT 1';
+                        // Parameterised statements (e.g. SELECT set_config(?, ?, true))
+                        // must drop their bindings too, or SQLite throws
+                        // "column index out of range" binding params into SELECT 1.
+                        $bindings = [];
 
                         return;
                     }

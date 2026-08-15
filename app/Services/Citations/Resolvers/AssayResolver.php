@@ -37,7 +37,7 @@ final class AssayResolver extends AbstractCitationResolver
         return 'silver.assays_v2:';
     }
 
-    public function resolve(string $sourceId): JsonResponse
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
     {
         // Two id shapes are supported:
         //   silver.assays_v2:assay_id=<uuid>
@@ -57,9 +57,16 @@ final class AssayResolver extends AbstractCitationResolver
             ]);
         }
 
+        // Belt and braces (security fix 2026-08-14): explicit tenant filter
+        // on top of the controller-bound RLS GUC; null scope fails CLOSED.
+        if ($workspaceId === null) {
+            return $this->notFound($sourceId);
+        }
+
         $row = DB::table('silver.assays_v2 as a')
             ->leftJoin('silver.collars as c', 'c.collar_id', '=', 'a.collar_id')
             ->where('a.id', $assayId)
+            ->where('a.workspace_id', $workspaceId)
             ->select([
                 'a.id',
                 'a.sample_id',
@@ -83,11 +90,7 @@ final class AssayResolver extends AbstractCitationResolver
             ->first();
 
         if (! $row) {
-            return response()->json([
-                'source_type' => 'assays',
-                'source_chunk_id' => $sourceId,
-                'text' => 'Assay interval not found',
-            ]);
+            return $this->notFound($sourceId);
         }
 
         // Format the value as the lab reported it ("12.34 g/t") plus
@@ -145,6 +148,19 @@ final class AssayResolver extends AbstractCitationResolver
                 'bronze_source_id' => $row->bronze_source_id,
             ],
         ]);
+    }
+
+    /**
+     * Structured 404 — identical for "missing" and "cross-tenant" so the
+     * endpoint is not an existence oracle.
+     */
+    private function notFound(string $sourceId): JsonResponse
+    {
+        return response()->json([
+            'source_type' => 'assays',
+            'source_chunk_id' => $sourceId,
+            'text' => 'Assay interval not found',
+        ], 404);
     }
 
     /**

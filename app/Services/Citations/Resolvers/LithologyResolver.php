@@ -18,7 +18,7 @@ final class LithologyResolver extends AbstractCitationResolver
         return 'silver.lithology_logs:';
     }
 
-    public function resolve(string $sourceId): JsonResponse
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
     {
         preg_match('/hole=([^:]+)/', $sourceId, $matches);
         $holeId = $matches[1] ?? 'unknown';

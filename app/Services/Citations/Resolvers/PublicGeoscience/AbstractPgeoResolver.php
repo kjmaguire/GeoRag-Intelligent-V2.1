@@ -58,7 +58,12 @@ abstract class AbstractPgeoResolver extends AbstractCitationResolver
      */
     abstract protected function mergePayload(array $envelope, ?object $entity, array $parts): array;
 
-    public function resolve(string $sourceId): JsonResponse
+    /**
+     * $workspaceId is accepted for contract compatibility but intentionally
+     * unused: PGEO entities are government-published open data, workspace-
+     * global by design (not tenant-scoped).
+     */
+    public function resolve(string $sourceId, ?string $workspaceId = null): JsonResponse
     {
         $parts = $this->parseChunkId($sourceId);
         $entity = $this->loadEntity($parts['pg_id']);

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Services\Citations\CitationResolverRegistry;
+use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -48,6 +49,16 @@ use Illuminate\Http\Request;
  */
 final class CitationController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
+    /**
+     * Sentinel workspace for users with no project memberships. Matches no
+     * row in any tenant table (workspace_id is a real workspace UUID or, at
+     * worst, NULL) so tenant-scoped resolvers fail CLOSED while
+     * workspace-global resolvers (public geoscience) still work.
+     */
+    private const NIL_WORKSPACE_ID = '00000000-0000-0000-0000-000000000000';
+
     public function __construct(
         private readonly CitationResolverRegistry $registry,
     ) {}
@@ -55,10 +66,20 @@ final class CitationController extends Controller
     /**
      * Resolve a source_chunk_id to its original content.
      *
-     * Returns 200 in every successful path — including "not recognised" and
-     * "record not found" cases. The citation viewer surfaces the gap to the
-     * user; an HTTP 404 would be invisible.
+     * Security fix 2026-08-14 (HIGH — cross-tenant IDOR): resolution now runs
+     * once per workspace the authenticated user can access (via the
+     * project_user pivot → silver.projects.workspace_id), inside
+     * {@see SetsWorkspaceRlsContext::withWorkspaceRls()} so the
+     * `app.workspace_id` GUC removes the fail-open NULL-GUC RLS fallback.
+     * Tenant-scoped resolvers additionally apply an explicit
+     * `workspace_id = ?` filter (belt and braces — never rely on fail-open
+     * RLS alone). A record that exists in a workspace the caller cannot
+     * access resolves exactly like a record that does not exist: 404. The
+     * same 404 is returned for genuinely missing records so the endpoint is
+     * not an existence oracle.
      *
+     * Returns 200 for resolved records and for unknown prefixes (structured
+     * "not recognised" payload — the citation viewer renders the gap).
      * Returns 400 only when the required query parameter is missing.
      */
     public function resolve(Request $request): JsonResponse
@@ -72,9 +93,31 @@ final class CitationController extends Controller
             );
         }
 
-        $resolved = $this->registry->resolve($sourceId);
+        $workspaceIds = $this->accessibleWorkspaceIds($request);
+
+        // Try each accessible workspace; a hit returns immediately. A user is
+        // almost always in exactly one workspace, so this loop is one pass in
+        // practice.
+        $resolved = null;
+        foreach ($workspaceIds as $workspaceId) {
+            $resolved = $this->withWorkspaceRls(
+                $workspaceId,
+                fn (): ?JsonResponse => $this->registry->resolve($sourceId, $workspaceId),
+            );
+
+            if ($resolved === null) {
+                // Unknown prefix — workspace-independent; stop looping.
+                break;
+            }
+
+            if ($resolved->getStatusCode() !== 404) {
+                return $resolved;
+            }
+        }
 
         if ($resolved !== null) {
+            // 404 in every accessible workspace: not found OR cross-tenant —
+            // indistinguishable by design (no existence oracle).
             return $resolved;
         }
 
@@ -86,5 +129,27 @@ final class CitationController extends Controller
             'text' => 'Source type not recognized.',
             'metadata' => [],
         ]);
+    }
+
+    /**
+     * Workspaces the authenticated user may read, derived from the same
+     * project_user membership pivot the other Api/V1 controllers gate on
+     * (User::hasProjectAccess). Falls back to a nil sentinel when the user
+     * has no memberships so tenant lookups match nothing (fail CLOSED).
+     *
+     * @return list<string>
+     */
+    private function accessibleWorkspaceIds(Request $request): array
+    {
+        $workspaceIds = $request->user()
+            ->projects()
+            ->pluck('silver.projects.workspace_id')
+            ->filter()
+            ->map(fn ($id): string => (string) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        return $workspaceIds === [] ? [self::NIL_WORKSPACE_ID] : $workspaceIds;
     }
 }
