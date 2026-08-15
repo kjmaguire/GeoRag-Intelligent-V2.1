@@ -310,7 +310,11 @@ class FindTablesResponse(BaseModel):
 
 # Literal type alias matching the model_backend CHECK constraint in
 # silver.pdf_vl_summaries.  Must stay in sync with the migration.
-VlBackend = Literal["ollama", "vllm", "anthropic"]
+# 'ollama' dropped 2026-08-15 — same stale-Literal drift as
+# app.models.assessment_summary.ModelBackend; see that module for the
+# full rationale. app.services.pdf_vl's own docstring already documents
+# PDF_VL_BACKEND as vllm|anthropic only, so this type was the outlier.
+VlBackend = Literal["vllm", "anthropic"]
 
 # Re-export VlClaim and VlSummaryShape from pdf_vl so the router and tests
 # can import them from models.pdf without creating a circular dependency.

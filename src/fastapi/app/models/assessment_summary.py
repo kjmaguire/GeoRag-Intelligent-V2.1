@@ -66,7 +66,12 @@ CANONICAL_SECTIONS: tuple[SectionId, ...] = (
 
 #: Backend strings allowed by ``silver.assessment_report_summaries.model_backend``
 #: CHECK constraint. Must stay in sync with the migration.
-ModelBackend = Literal["vllm", "anthropic", "ollama"]
+#: 'ollama' dropped 2026-08-15 — Ollama was fully sunset (see CLAUDE.md
+#: "Technology snapshot") and chk_assessment_summary_backend has rejected
+#: it at the DB layer since 2026_06_02_220000_drop_ollama_from_answer_runs_
+#: backend_check.php; this Literal was left stale, silently promising a
+#: value the DB would 500 on.
+ModelBackend = Literal["vllm", "anthropic"]
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +239,7 @@ class AssessmentReportSummary(BaseModel):
         description="Mean of per-claim confidence across all sections. None when zero claims.",
     )
     model_id: str = Field(..., description="VL model identifier (e.g. 'Qwen/Qwen2.5-VL-7B-Instruct')")
-    model_backend: ModelBackend = Field(..., description="vllm | anthropic | ollama")
+    model_backend: ModelBackend = Field(..., description="vllm | anthropic")
     generated_at: datetime = Field(..., description="Timestamp the summary completed")
     cache_hit: bool = Field(
         False,
