@@ -1705,15 +1705,20 @@ async def search_documents(
                 return _model.embed_query(_embed_input).tolist()
             return _model.encode(_embed_input, normalize_embeddings=True).tolist()
 
-        # Dense query embedding (sync inference, off the event loop).
-        query_vector: list[float] = await loop.run_in_executor(None, _encode_query)
-        # Sparse query encoding via SPLADE++ (sync inference, off the event loop).
+        # Dense query embedding + sparse SPLADE++ query encoding are mutually
+        # independent (different models, different executor threads) — gather
+        # them instead of awaiting serially. Perf audit 2026-08-15: this was
+        # dense-then-sparse back to back, needlessly stacking their latencies.
         # GI-11: if SPLADE fails, this raises and the outer wait_for propagates
-        # the exception -- no silent dense-only fallback.
+        # the exception -- no silent dense-only fallback. asyncio.gather
+        # (default return_exceptions=False) still raises on the first
+        # failing task, preserving that contract.
         from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
-        query_sparse: dict[int, float] = await loop.run_in_executor(
-            None,
-            lambda: encode_sparse(_expanded_query),
+        query_vector: list[float]
+        query_sparse: dict[int, float]
+        query_vector, query_sparse = await asyncio.gather(
+            loop.run_in_executor(None, _encode_query),
+            loop.run_in_executor(None, lambda: encode_sparse(_expanded_query)),
         )
 
         # _workspace_id was resolved (and the fail-closed refusal returned) in

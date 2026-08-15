@@ -14,6 +14,7 @@ re-implementing them.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import re
@@ -545,9 +546,12 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             ).workspace_id
             project_id = getattr(state.deps, "project_id", None)
             if project_id is not None:
-                for hid in hole_ids:
+                # Independent per-hole lookups — gather instead of awaiting
+                # serially. Each call is individually exception-guarded so a
+                # single bad hole_id can't sink the others.
+                async def _lookup_collar(hid: str) -> Any | None:
                     try:
-                        result = await query_collar_details(
+                        return await query_collar_details(
                             state.deps, workspace_id, project_id, hid
                         )
                     except Exception:
@@ -556,7 +560,12 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                             " hole=%s",
                             hid,
                         )
-                        continue
+                        return None
+
+                collar_results = await asyncio.gather(
+                    *(_lookup_collar(hid) for hid in hole_ids)
+                )
+                for result in collar_results:
                     if result is not None:
                         results.append(("query_collar_details", result))
                 logger.info(
@@ -567,14 +576,26 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 )
 
     # Primary pass — every primary tool is invoked once with the user query.
-    for tool_name in profile.primary_tools:
+    # Perf audit 2026-08-15: primary tools are mutually independent (each
+    # hits its own PostGIS/Qdrant/Neo4j path) and _call_tool_safely already
+    # exception-guards every call, so gathering them is safe — no tool's
+    # failure or slowness can affect another's result, and the appended
+    # order below still matches profile.primary_tools regardless of
+    # completion order (gather preserves input order).
+    async def _dispatch_primary(tool_name: str) -> tuple[str, Any | None]:
         if not _allowed(tool_name):
             logger.info(
                 "agentic_retrieval.execute: skipped %s (filtered out by data_sources)",
                 tool_name,
             )
-            continue
+            return tool_name, None
         result = await _call_tool_safely(tool_name, state.query, state.deps)
+        return tool_name, result
+
+    primary_results = await asyncio.gather(
+        *(_dispatch_primary(tool_name) for tool_name in profile.primary_tools)
+    )
+    for tool_name, result in primary_results:
         if result is not None:
             results.append((tool_name, result))
 
@@ -617,10 +638,18 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # to drive this branch.
     _SECONDARY_COVERAGE_THRESHOLD = 3
     if len(results) < _SECONDARY_COVERAGE_THRESHOLD and profile.secondary_tools:
-        for tool_name in profile.secondary_tools:
+        # Same independence argument as the primary pass — gather instead
+        # of serial awaits.
+        async def _dispatch_secondary(tool_name: str) -> tuple[str, Any | None]:
             if not _allowed(tool_name):
-                continue
+                return tool_name, None
             result = await _call_tool_safely(tool_name, state.query, state.deps)
+            return tool_name, result
+
+        secondary_results = await asyncio.gather(
+            *(_dispatch_secondary(tool_name) for tool_name in profile.secondary_tools)
+        )
+        for tool_name, result in secondary_results:
             if result is not None:
                 results.append((tool_name, result))
 
