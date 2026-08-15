@@ -8,7 +8,9 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Inertia\Inertia;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
+use Symfony\Component\HttpFoundation\Response;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -70,5 +72,21 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // UI/UX fix (2026-08-15, live-browser-observed): before this handler,
+        // any 403/404/419/429/500/503 fell through to Laravel's bare
+        // framework error page (plain "404 | Not Found" text - no header,
+        // no nav, no way back into the app). Reproduced live via a stale
+        // citation "Open in Reader ->" deep link. Route these statuses
+        // through the branded Inertia Error page instead so there's always
+        // a path back into the app. Skipped when APP_DEBUG is on so local
+        // debugging still gets Laravel's full Whoops trace.
+        $exceptions->respond(function (Response $response, Throwable $exception, Request $request) {
+            if (! config('app.debug') && in_array($response->getStatusCode(), [403, 404, 419, 429, 500, 503], true)) {
+                return Inertia::render('Error', ['status' => $response->getStatusCode()])
+                    ->toResponse($request)
+                    ->setStatusCode($response->getStatusCode());
+            }
+
+            return $response;
+        });
     })->create();

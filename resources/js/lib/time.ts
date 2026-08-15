@@ -74,8 +74,21 @@ export function formatStaleness(seconds: number | null | undefined): StalenessIn
 
 /**
  * Parse a server timestamp as UTC. Strings without a timezone designator
- * get 'Z' appended; a space separator is normalized to 'T'. Returns null
- * for unparseable input.
+ * get "Z" appended; a bare 2-digit offset (Postgres's abbreviated whole-
+ * hour form, e.g. "+00" for UTC) gets padded to the 4-digit form ("+00:00")
+ * that the JS Date constructor actually accepts -- "+00" alone parses as
+ * Invalid Date. A space separator is normalized to "T". Returns null for
+ * unparseable input.
+ *
+ * Bug fix (2026-08-15, live-browser-observed): chat message timestamps
+ * rendered as an em dash on every page reload. Root cause: Postgres
+ * timestamptz text output for UTC is "2026-08-15 19:49:41+00" (2-digit
+ * offset), but the old zone-detection regex required a 4-digit offset
+ * ("+00:00"), so it treated "+00" as "no zone" and appended another "Z" --
+ * "...+00Z" is unparseable, so every reloaded/history timestamp silently
+ * fell back to the "--" placeholder. Reproduced via GET /chat?thread=...
+ * and confirmed against the raw DB value (`timestamp with time zone`
+ * column, "+00" text form).
  */
 export function parseUtc(value: string | null | undefined): Date | null {
     if (!value) return null;
@@ -83,8 +96,15 @@ export function parseUtc(value: string | null | undefined): Date | null {
     if (s.length === 0) return null;
     // "YYYY-MM-DD HH:MM…" → ISO 'T' separator.
     if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s)) s = s.replace(' ', 'T');
-    // No explicit zone (Z or ±hh[:]mm) → server timestamps are UTC.
-    if (/T\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) s += 'Z';
+    if (/T\d{2}:\d{2}/.test(s)) {
+        if (/[+-]\d{2}$/.test(s)) {
+            // Bare 2-digit offset ("+00", "-05") -- pad to the 4-digit form.
+            s += ':00';
+        } else if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) {
+            // No zone designator at all -- server timestamps are UTC.
+            s += 'Z';
+        }
+    }
     const d = new Date(s);
     return Number.isNaN(d.getTime()) ? null : d;
 }
