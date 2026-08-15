@@ -74,10 +74,18 @@ return new class extends Migration
         // table is already present — this migration's whole stated purpose
         // is a no-op on any environment where phase0 already ran; the
         // table-existence check makes that literal instead of assumed.
-        $tableExists = DB::table('information_schema.tables')
-            ->where('table_schema', 'workspace')
-            ->where('table_name', 'workspace_roles')
-            ->exists();
+        //
+        // information_schema.tables is privilege-filtered per the SQL
+        // standard — it only lists objects the querying role has SOME
+        // grant on. `georag` has zero grants on the phase0-created table
+        // (that's the whole reason COMMENT fails), so this view reports
+        // zero rows even though the table demonstrably exists, live-
+        // verified via a direct connection as the `georag` role. Use
+        // to_regclass(), a pg_catalog-level lookup that reports existence
+        // regardless of the querying role's object-level privileges.
+        $tableExists = (bool) DB::selectOne(
+            "select to_regclass('workspace.workspace_roles') is not null as exists_",
+        )->exists_;
 
         if ($tableExists) {
             return;
