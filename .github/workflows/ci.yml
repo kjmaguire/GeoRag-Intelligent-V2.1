@@ -324,28 +324,32 @@ jobs:
   #     inside persist() fails open (logs a warning) and the embed step
   #     runs explicitly afterwards as a plain function call instead.
   #
-  # ADVISORY (continue-on-error: true) because this is a brand-new,
-  # multi-service integration test assembled from source-level research
-  # (no live GitHub Actions run to confirm green) — matching the phpstan/
-  # mypy precedent below. PROMOTION CRITERIA: drop continue-on-error once
-  # this job has passed on >= 2 consecutive main runs with no flakiness
-  # (watch especially for reranker-model-download flakiness and the
-  # marker-phrase retrieval-threshold rig described in stub_backend.py).
-  #
-  # 2026-08-15 CI-promotion audit: checked, NOT promoted. Every real run
-  # since this job landed has failed on the same real bug, not flakiness —
-  # runs 31873785695, 31876922565, 31880497530 all die identically in the
-  # "Run ingest leg" step:
-  #   asyncpg.exceptions.NotNullViolationError: null value in column "slug"
-  #   of relation "projects" violates not-null constraint
-  # (scripts/ci/e2e_smoke_ingest.py:75, _ensure_project() — the INSERT INTO
-  # silver.projects omits the slug column). Fix that INSERT, confirm two
-  # consecutive green main runs, then drop continue-on-error.
+  # PROMOTED 2026-08-15: was ADVISORY (continue-on-error: true) because this
+  # was a brand-new, multi-service integration test assembled from source-
+  # level research with no live run to confirm green — matching the phpstan/
+  # mypy precedent below. A same-day CI-promotion audit then caught it
+  # failing identically on all 3 real runs since it landed (31873785695,
+  # 31876922565, 31880497530): _ensure_project() in
+  # scripts/ci/e2e_smoke_ingest.py INSERTed into silver.projects without a
+  # slug value, which is NOT NULL + UNIQUE
+  # (2026_04_13_300000_add_dashboard_fields_to_projects.php) — a real bug,
+  # not flakiness. Fixed by deriving the slug the same way
+  # app/Models/Project.php's booted() hook does for real app-created
+  # projects (slugified name + first 8 chars of project_id), so repeated
+  # runs with fresh project_ids don't collide on the unique index either
+  # (PR #112). That same investigation also found the query leg blowing
+  # TIMEOUT_GATHER_S (8.0s) before the reranker finished — RERANKER_TORCH_
+  # THREADS defaults to 10, oversubscribing ubuntu-latest's 4 vCPUs, and the
+  # 8.0s budget was sized for bge-reranker-base while the actual default
+  # self-hosted reranker is now the heavier Qwen3-Reranker-0.6B; both are
+  # overridden via env in this job only, production defaults untouched
+  # (also PR #112). Confirmed >= 2 consecutive green main runs
+  # (31905750810, 31914309316) per the original PROMOTION CRITERIA before
+  # dropping continue-on-error below.
   e2e-smoke:
-    name: E2E money-path smoke (advisory — promote when green)
+    name: E2E money-path smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
 
     services:
       postgres:
