@@ -391,6 +391,22 @@ jobs:
       AZURE_FOUNDRY_EMBED_DIMENSION: "1024"
       LLM_BACKEND: vllm
       VLLM_URL: http://localhost:8899/v1
+      # 2026-08-15: the query leg was hitting TIMEOUT_GATHER_S (default 8.0s,
+      # app/config.py) before the reranker call finished. Two compounding CI-
+      # only causes, neither present in prod's tuning assumptions:
+      #   1. RERANKER_TORCH_THREADS defaults to 10 (app/services/reranker.py),
+      #      sized for a many-core host. ubuntu-latest has 4 vCPUs (confirmed
+      #      via torch's own interop=4 log line) — forcing 10 intra-op threads
+      #      there oversubscribes and adds scheduling/cache-thrash overhead
+      #      instead of speeding things up.
+      #   2. TIMEOUT_GATHER_S/TIMEOUT_RERANKER_S (8.0s each) were sized for
+      #      bge-reranker-base (~450ms/pair); the actual default self-hosted
+      #      reranker is now Qwen/Qwen3-Reranker-0.6B, a heavier CPU cross-
+      #      encoder, cold-loaded with no GPU on this runner.
+      # Override both here rather than touching the production defaults.
+      RERANKER_TORCH_THREADS: "4"
+      TIMEOUT_GATHER_S: "25"
+      TIMEOUT_RERANKER_S: "22"
 
     steps:
       - uses: actions/checkout@v7
