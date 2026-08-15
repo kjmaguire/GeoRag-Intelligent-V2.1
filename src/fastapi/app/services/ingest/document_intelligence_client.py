@@ -286,10 +286,7 @@ async def _analyze_document(
             content = getattr(line, "content", None)
             if isinstance(content, str) and content.strip():
                 line_texts.append(content.strip())
-    if line_texts:
-        text = "\n".join(line_texts)
-    else:
-        text = " ".join(word.text for word in words)
+    text = "\n".join(line_texts) if line_texts else " ".join(word.text for word in words)
     confidences = [word.confidence for word in words]
     mean_confidence = (sum(confidences) / len(confidences)) if confidences else 0.0
     # Count every detected word region, including empty-content regions that

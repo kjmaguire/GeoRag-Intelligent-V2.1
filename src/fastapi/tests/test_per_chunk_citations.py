@@ -239,11 +239,11 @@ class TestEmptyRetrievalSentinels:
         assert response.citations[0].source_chunk_id == "georag_reports:empty"
 
     def test_sentinel_set_contains_all_known_placeholders(self) -> None:
-        assert EMPTY_SOURCE_SENTINELS == {
+        assert {
             "no-tool-call",
             "georag_reports:empty",
             "pg_public_geoscience:empty",
-        }
+        } == EMPTY_SOURCE_SENTINELS
 
     def test_confidence_computer_uses_the_same_sentinels(self) -> None:
         """Lockstep regression — every sentinel excluded by the IND-6 guard
