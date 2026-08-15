@@ -110,9 +110,10 @@ RERANKER_REVISION = _os_pin.environ.get(
 RERANKER_VERSION = f"qwen3-reranker-0.6b@{RERANKER_REVISION[:8]}"
 
 # Version string of the backend _get_reranker() ACTUALLY loaded — set when the
-# singleton is built. RERANKER_VERSION above is only the bge default; reporting
-# it unconditionally (as the sidecar did pre-2026-07-02) mislabels the
-# qwen3_causal and RERANKER_MODEL_PATH deployments in answer_runs lineage.
+# singleton is built. RERANKER_VERSION above is only the cross_encoder default
+# (Qwen3-Reranker-0.6B); reporting it unconditionally (as the sidecar did
+# pre-2026-07-02) mislabels the qwen3_causal and RERANKER_MODEL_PATH
+# deployments in answer_runs lineage.
 _ACTIVE_VERSION: str | None = None
 
 
@@ -120,18 +121,22 @@ _ACTIVE_VERSION: str | None = None
 # ---------------------------------------------------------------------------
 # Qwen3-Reranker causal-LM backend (audit 2026-06-28, OPT-IN, NOT deployed)
 # ---------------------------------------------------------------------------
-# bge-reranker-base is a sequence-classification CrossEncoder. Qwen3-Reranker
-# is a CAUSAL LM: each (query, doc) pair is formatted with an instruction chat
-# template and scored from the next-token logits of the "yes"/"no" tokens
-# (relevance = softmax([no, yes])[yes]). It is NOT loadable via
-# sentence_transformers.CrossEncoder, so it gets its own backend selected by
-# RERANKER_BACKEND=qwen3_causal. Default stays "cross_encoder" (bge) — this code
-# path does nothing until explicitly enabled.
+# This is a SEPARATE loading path from the "cross_encoder" default above (which
+# loads Qwen3-Reranker-0.6B's sequence-classification checkpoint directly via
+# sentence_transformers.CrossEncoder since the 2026-06-03 bge swap). This path
+# instead treats Qwen3-Reranker as a CAUSAL LM: each (query, doc) pair is
+# formatted with an instruction chat template and scored from the next-token
+# logits of the "yes"/"no" tokens (relevance = softmax([no, yes])[yes]). That
+# scoring mechanism is NOT expressible via sentence_transformers.CrossEncoder,
+# so it gets its own backend selected by RERANKER_BACKEND=qwen3_causal.
+# Default stays "cross_encoder" — this code path does nothing until
+# explicitly enabled.
 #
 # ⚠️ NOT DEPLOYED: a 0.6B causal LM doing one forward pass per pair is far
-# slower than bge on CPU and will blow RERANKER_TIMEOUT_S. Run on GPU
-# (RERANKER_DEVICE=cuda, needs VRAM headroom) and validate against the golden
-# eval before enabling. See manual Ch18 §2 reranker note.
+# slower than the cross_encoder default on CPU and will blow
+# RERANKER_TIMEOUT_S. Run on GPU (RERANKER_DEVICE=cuda, needs VRAM headroom)
+# and validate against the golden eval before enabling. See manual Ch18 §2
+# reranker note.
 RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "cross_encoder").strip().lower()
 QWEN3_RERANKER_MODEL = (
     os.environ.get("QWEN3_RERANKER_MODEL") or "Qwen/Qwen3-Reranker-0.6B"
@@ -459,8 +464,8 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
     )
 
     # Audit 2026-06-28 — opt-in Qwen3-Reranker causal-LM backend. Default
-    # (RERANKER_BACKEND=cross_encoder) skips this and loads the bge CrossEncoder
-    # below; this path only runs when explicitly enabled.
+    # (RERANKER_BACKEND=cross_encoder) skips this and loads the Qwen3-Reranker
+    # CrossEncoder below; this path only runs when explicitly enabled.
     if RERANKER_BACKEND == "qwen3_causal":
         model_id = (
             os.environ.get("RERANKER_MODEL_PATH") or ""
