@@ -84,6 +84,13 @@ interface IngestionRunsProps {
 }
 
 const POLL_INTERVAL_MS = 5000;
+// Perf audit 2026-08-15 (item 4) — same in_flight-gated backoff as
+// Overview.tsx's ingest-summary poll: hitting the .json endpoint every 5s
+// forever, even on a project with nothing in flight, is wasted load. Widen
+// to 30s once there's nothing left to watch move; the Reverb subscription
+// below still flips `runs` immediately on the next real ingestion event,
+// so idle projects don't lose responsiveness, just poll less.
+const POLL_BACKOFF_MS = 30000;
 
 function formatBytes(bytes: number | null): string {
     if (bytes === null) return '—';
@@ -152,18 +159,24 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                 // Swallow — next tick will retry.
             } finally {
                 if (!cancelled) {
-                    timerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
+                    timerRef.current = setTimeout(
+                        tick,
+                        runs.totals.in_flight > 0 ? POLL_INTERVAL_MS : POLL_BACKOFF_MS,
+                    );
                 }
             }
         }
 
-        timerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
+        timerRef.current = setTimeout(
+            tick,
+            runs.totals.in_flight > 0 ? POLL_INTERVAL_MS : POLL_BACKOFF_MS,
+        );
 
         return () => {
             cancelled = true;
             if (timerRef.current) clearTimeout(timerRef.current);
         };
-    }, [polling, project.slug]);
+    }, [polling, project.slug, runs.totals.in_flight]);
 
     // Reverb subscription — flips the in-flight list immediately on any
     // ingestion.progress event for this project. The snapshot poll above

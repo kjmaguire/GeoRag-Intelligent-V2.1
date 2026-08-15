@@ -251,6 +251,14 @@ class IngestionRunsController extends Controller
      */
     private function loadReports(string $projectId): array
     {
+        // Perf audit 2026-08-15 (item 4) — the passage-count subquery used to
+        // aggregate the WHOLE silver.document_passages table (every project,
+        // every workspace) on every 5s poll tick, then throw away everything
+        // that didn't match this project's report_ids in the outer join.
+        // document_passages has no project_id column of its own (only
+        // document_id + workspace_id — see the 2026-04-20 migration), so the
+        // subquery is scoped by joining through silver.reports the same way
+        // the outer query already does, before it ever aggregates.
         $rows = DB::select(
             <<<'SQL'
             SELECT
@@ -263,15 +271,17 @@ class IngestionRunsController extends Controller
                 COALESCE(p.embedded, 0) AS embedded
             FROM silver.reports r
             LEFT JOIN (
-                SELECT document_id,
+                SELECT dp.document_id,
                        COUNT(*) AS passages,
-                       COUNT(*) FILTER (WHERE embedding_id IS NOT NULL) AS embedded
-                FROM silver.document_passages
-                GROUP BY document_id
+                       COUNT(*) FILTER (WHERE dp.embedding_id IS NOT NULL) AS embedded
+                FROM silver.document_passages dp
+                JOIN silver.reports r2 ON r2.report_id = dp.document_id
+                WHERE r2.project_id = ?
+                GROUP BY dp.document_id
             ) p ON p.document_id = r.report_id
             WHERE r.project_id = ?
             SQL,
-            [$projectId],
+            [$projectId, $projectId],
         );
 
         return array_map(static fn ($r) => [
