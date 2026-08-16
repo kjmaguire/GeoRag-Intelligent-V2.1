@@ -25,7 +25,22 @@ dependencies = [
     # the Anthropic fallback path + the OpenAI-compatible client against
     # vLLM (`app/agent/llm_calls.py`), so the slim variant with explicit
     # providers is the documented escape hatch.
-    "pydantic-ai-slim[anthropic,openai]>=1.56",
+    # 2026-08-15 — major bump 1.x -> 2.x. Per the V1->V2 upgrade guide,
+    # this codebase's actual runtime footprint of pydantic-ai is tiny:
+    # the real `Agent()` instance (formerly `geo_agent.py`) was archived
+    # when the RAG pipeline moved to the LangGraph-orchestrated
+    # `agentic_retrieval` graph. What remains are `RunContext[AgentDeps]`
+    # type annotations (never instantiated — call sites pass the
+    # `ToolContext` shim from app/agent/deps.py) and `ModelRetry`
+    # raised as a plain exception from the Layer 3/4/6 validator
+    # functions in app/agent/hallucination/layer*.py, which are
+    # themselves vestigial (imported only by app/agent/hallucination/
+    # __init__.py and tests — production validation runs through
+    # app/agent/hallucination/orchestrator_validators.py instead, which
+    # never touches pydantic_ai at all). Neither RunContext nor
+    # ModelRetry moved/renamed in the V2 upgrade guide, so no call-site
+    # changes were needed beyond the version bump itself.
+    "pydantic-ai-slim[anthropic,openai]>=2.0,<3.0",
     "pydantic-settings>=2.7",
     "asyncpg>=0.30.0",
     "redis>=7.0",
