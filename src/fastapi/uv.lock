@@ -1304,7 +1304,7 @@ wheels = [
 
 [[package]]
 name = "hatchet-sdk"
-version = "1.35.1"
+version = "1.37.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1320,9 +1320,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/17/29/ac22685ea76fc79a5777d7a706678362298ffd9031a804f44f99a04fb0b8/hatchet_sdk-1.35.1.tar.gz", hash = "sha256:ddc5cb82b665758b778771d7356e683a8e635612e19563a1c5f9cd3d06f71b96", size = 4652, upload-time = "2026-07-20T15:17:57.081Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/a4/391ba19d00b650462a9cd22a528ee65b5964d3caf989940a07391dd52234/hatchet_sdk-1.37.2.tar.gz", hash = "sha256:b4ecaa26b8c32599b52006ca3072ece4e09ab2bfb9cdd8bb0d6e9189c172e5f9", size = 4646, upload-time = "2026-08-13T12:47:54.286Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/54/c6/b55c4834016ec84c64bfbaae48e11bcd36cff474a22bd96729f4df6d8874/hatchet_sdk-1.35.1-py3-none-any.whl", hash = "sha256:a65c7dc3c5175b85561fec8df335aacb36b31f5a4a98fc4b2f28787b125757e8", size = 635803, upload-time = "2026-07-20T15:17:58.631Z" },
+    { url = "https://files.pythonhosted.org/packages/96/81/3cf9746238dad7842113f992a4ae70bc5b498f7a2e8969fa7a4655af8138/hatchet_sdk-1.37.2-py3-none-any.whl", hash = "sha256:fb8f57e1393cd2453408b45b904703d34bb885a354d62a3ec0d1923e8befa677", size = 644158, upload-time = "2026-08-13T12:47:55.851Z" },
 ]
 
 [[package]]
