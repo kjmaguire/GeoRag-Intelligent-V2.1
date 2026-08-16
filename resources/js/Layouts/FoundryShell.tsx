@@ -13,7 +13,7 @@ import type { PageProps } from '@/types';
  *        LEFT:  Brand · Projects · + New
  *        RIGHT: Search · User menu · Theme
  *   2. PROJECT sub-bar (horizontal, only when in-project)
- *        Overview · Chat · Data · Ingestion · Quality · Reader · Reports
+ *        Overview · Chat · Data · Ingestion · Quality · Reader · Reports · Map
  *   3. PROJECT left rail (vertical, only when in-project)
  *        Same nav as sub-bar, plus chat threads below.
  *
@@ -37,6 +37,7 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
     { id: 'ingest-quality', suffix: '/imports/quality', label: 'Quality', icon: 'shield' },
     { id: 'reader', suffix: '/corpus', label: 'Reader', icon: 'doc' },
     { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
+    { id: 'map', suffix: '/map', label: 'Map', icon: 'map' },
 ];
 
 interface SharedRailData {
@@ -57,6 +58,12 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
         doc: <path d="M7 3h8l4 4v14H7z M15 3v4h4" />,
         report: <path d="M6 3h12v18H6z M9 8h6 M9 12h6 M9 16h4" />,
         shield: <path d="M12 3 L20 7 L20 12 C20 16 16 20 12 22 C8 20 4 16 4 12 L4 7 Z" />,
+        map: (
+            <>
+                <path d="M9 4 L3 6 v14 l6 -2 6 2 6 -2 V4 l-6 2 -6 -2z" />
+                <path d="M9 4 v14 M15 6 v14" />
+            </>
+        ),
         search: <path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4" />,
         plus: <path d="M12 5v14 M5 12h14" />,
         chevron: <path d="M9 6 L15 12 L9 18" />,

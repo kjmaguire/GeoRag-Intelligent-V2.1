@@ -8,6 +8,7 @@ use App\Http\Controllers\Foundry\ChatController;
 use App\Http\Controllers\Foundry\CorpusController;
 use App\Http\Controllers\Foundry\IngestionRunsController;
 use App\Http\Controllers\Foundry\IngestQualityController;
+use App\Http\Controllers\Foundry\MapController;
 use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
 use App\Http\Controllers\Foundry\ReportController;
@@ -94,6 +95,12 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     Route::get('/projects/{slug}/sources', [SourcesController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.sources');
+    // Standalone Map surface. MapView.tsx was previously only reachable
+    // inline inside a chat answer (via InlineViz.tsx) — this route lets a
+    // user navigate to it directly. See MapController docblock for why
+    // GeoJSON is fetched client-side by MapView itself instead of here.
+    Route::get('/projects/{slug}/map', [MapController::class, 'show'])
+        ->where('slug', '[a-z0-9\-]+')->name('foundry.map');
     Route::get('/projects/{slug}/corpus', [CorpusController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.corpus');
     Route::get('/projects/{slug}/reports', [ReportController::class, 'index'])

@@ -62,6 +62,7 @@ final class FoundryRoutesSmokeTest extends TestCase
             'sources' => ['/sources', 'Foundry/Sources'],
             'corpus' => ['/corpus', 'Foundry/Corpus'],
             'reports' => ['/reports', 'Foundry/Report'],
+            'map' => ['/map', 'Foundry/Map'],
         ];
     }
 
