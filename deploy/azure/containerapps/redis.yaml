@@ -24,7 +24,7 @@ properties:
         value: REPLACE_AT_DEPLOY_TIME
   template:
     containers:
-      - image: redis:8.6.4-alpine
+      - image: redis:8.10.0-alpine
         name: redis
         command:
           - sh
