@@ -9,6 +9,7 @@ into the upload UI. This workflow:
   3. Routes each extracted file by extension:
        .las / .LAS  →  las_ingester.ingest_las_file
        .log         →  cameco_log_ingester (parse header + upsert collar)
+       .csv         →  csv_collar_ingester.ingest_csv_collar_file
        .tif / .tiff →  re-uploads to bronze tiff/ prefix + triggers tiff_normalize
        .xlsx / .xls →  xlsx_ingester.ingest_xlsx_file
        .pdf         →  re-uploads to bronze reports/ prefix + triggers ingest_pdf
@@ -237,7 +238,7 @@ async def run_zip_ingest(
 
                 # ── 4. Fan-out by extension ───────────────────────────────────
                 counts: dict[str, int] = {
-                    "las": 0, "log": 0, "tif": 0, "xlsx": 0, "pdf": 0,
+                    "las": 0, "log": 0, "csv": 0, "tif": 0, "xlsx": 0, "pdf": 0,
                     "skipped": 0, "errors": 0, "unknown": 0,
                 }
                 errors: list[dict[str, str]] = []
@@ -374,6 +375,36 @@ async def _ingest_one(
                     workspace_id=input.workspace_id,
                 )
             counts["log"] += 1
+
+    elif ext == "csv":
+        # Plain CSV collar/assay files → silver.collars. Restored 2026-08
+        # after the Dagster retirement (2026-07-28) left CSV uploads with
+        # no live ingestion path (Laravel's UploadController hard-rejects
+        # category=collar/assay with a 422) — this ZIP-archive path was
+        # the one live end-to-end route left, so it gets a .csv branch
+        # instead of reviving Dagster. See csv_collar_ingester.py for the
+        # expected column shape.
+        from app.services.ingest.csv_collar_ingester import ingest_csv_collar_file  # noqa: PLC0415
+
+        async with conn.transaction():
+            result = await ingest_csv_collar_file(
+                conn,
+                str(file_path),
+                workspace_id=input.workspace_id,
+                project_id=input.project_id,
+            )
+        if result.skipped:
+            counts["skipped"] += 1
+            log.debug(
+                "ingest_zip_archive: CSV skipped %s — %s", file_path.name, result.skipped_reason,
+            )
+        else:
+            counts["csv"] += 1
+            if result.skipped_rows:
+                log.info(
+                    "ingest_zip_archive: CSV %s landed %d/%d rows (%d skipped)",
+                    file_path.name, result.valid_rows, result.total_rows, result.skipped_rows,
+                )
 
     elif ext in ("tif", "tiff"):
         # TIFF scans → upload to bronze tiff/ prefix + trigger tiff_normalize
