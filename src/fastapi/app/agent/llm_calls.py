@@ -34,11 +34,13 @@ rare back-compat caller.
 """
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -142,40 +144,142 @@ class WorkspaceQuotaExceeded(RuntimeError):
         )
 
 
+# ---------------------------------------------------------------------------
+# 2026-08-15 — Postgres fallback for the Redis suspension flag.
+#
+# cost_burn_watcher._write_redis_suspension_flag writes
+# `workspace:{ws}:llm_suspended` with a HARD 1-hour TTL (SETEX). Its
+# docstring (and _suspend_workspace's) claims "if Redis is unavailable,
+# the check falls back to a DB read" — that fallback never existed until
+# now. Consequence: once a workspace hits the hard-stop, it stops
+# generating usage_events, so the watcher's next 5-min scan sees ~$0
+# spend and never re-suspends / never refreshes the TTL. When the Redis
+# key expires (≤1h later) `assert_workspace_not_suspended` sees a plain
+# miss and lets the workspace resume — even though
+# `usage.workspace_cost_ceilings.suspended_at` is still set and no admin
+# ever cleared it. Postgres is documented as the source of truth
+# (_suspend_workspace's own docstring); this makes that true.
+#
+# A Redis flag PRESENT is authoritative on its own (fast path, no DB
+# round trip). A Redis MISS is ambiguous — "never suspended" and "TTL
+# expired while still suspended" look identical — so a miss now falls
+# through to the Postgres check below instead of being treated as
+# proof of "not suspended."
+# ---------------------------------------------------------------------------
+
+# Short in-process TTL cache for the Postgres fallback lookup. A single
+# user query can invoke `_call_llm` up to MAX_LLM_CALLS_PER_QUERY times
+# (classifier, rephrase, primary synthesis, retry, follow-ups); without
+# this cache every one of those calls would be a DB round trip once
+# Redis has no opinion. `suspended_at` only ever changes via the 5-min
+# cron or an admin action, so a few seconds of staleness is an
+# acceptable trade for not adding a DB hit to every LLM call.
+_SUSPENSION_DB_CACHE_TTL_S = 15.0
+_suspension_db_cache: dict[str, tuple[float, bool]] = {}
+
+
+async def _is_suspended_in_postgres(pg_pool: Any, workspace_id: str) -> bool:
+    """Authoritative check: ``usage.workspace_cost_ceilings.suspended_at``.
+
+    ``workspace_id`` is the table's PRIMARY KEY, so this is a cheap
+    indexed point lookup — behind a short TTL cache (see
+    :data:`_SUSPENSION_DB_CACHE_TTL_S`) to keep it off the hot path of
+    every single LLM call within a query.
+
+    Fails OPEN on any DB error (same soft-contract as the Redis path):
+    a Postgres hiccup on top of an already-degraded Redis must not take
+    the whole chat product down. The one case this function is
+    specifically for — Redis flag expired but the workspace is still
+    suspended — is exactly the case we cannot silently ignore, so a
+    *successful* read of `suspended_at IS NOT NULL AND NOT
+    admin_override_enabled` is always honored.
+    """
+    now = time.monotonic()
+    cached = _suspension_db_cache.get(workspace_id)
+    if cached is not None and (now - cached[0]) < _SUSPENSION_DB_CACHE_TTL_S:
+        return cached[1]
+
+    try:
+        async with pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT suspended_at, admin_override_enabled "
+                "FROM usage.workspace_cost_ceilings "
+                "WHERE workspace_id = $1::uuid",
+                workspace_id,
+            )
+    except Exception:
+        logger.warning(
+            "assert_workspace_not_suspended: Postgres fallback lookup "
+            "failed for workspace=%s — failing open",
+            workspace_id, exc_info=True,
+        )
+        return False
+
+    suspended = bool(
+        row is not None
+        and row["suspended_at"] is not None
+        and not row["admin_override_enabled"]
+    )
+    _suspension_db_cache[workspace_id] = (now, suspended)
+    return suspended
+
+
 async def assert_workspace_not_suspended(
     workspace_id: str | None,
     *,
     redis_client: Any | None = None,
+    pg_pool: Any | None = None,
 ) -> None:
     """Cost-ceiling pre-check fired BEFORE every LLM call.
 
-    Reads the Redis flag ``workspace:{ws}:llm_suspended`` (written by
-    cost_burn_watcher). Failure modes:
+    Two-tier check, Redis fast-path then Postgres source-of-truth:
 
+      1. Redis flag ``workspace:{ws}:llm_suspended`` (written by
+         cost_burn_watcher, SETEX'd with a 1h TTL). A HIT is
+         authoritative — raise immediately, no DB round trip.
+      2. A MISS (key absent, Redis down, or no redis_client supplied)
+         falls through to ``usage.workspace_cost_ceilings.suspended_at``
+         in Postgres via :func:`_is_suspended_in_postgres`. This is what
+         keeps a suspension in force after the Redis TTL lapses — see
+         the module-level note above.
+
+    Failure modes:
       - workspace_id is None/empty → no-op (system-level calls have no
         workspace; they're not subject to per-tenant ceilings).
-      - Redis unavailable → fail OPEN (allow the call). Cost-burn
-        enforcement is a soft contract; an outage of the cost watcher
+      - Both Redis and Postgres unavailable/unsupplied → fail OPEN.
+        Cost-burn enforcement is a soft contract; an outage of its
         infrastructure must not take down the entire chat product.
-      - flag present and truthy → raise WorkspaceQuotaExceeded.
+      - Redis flag present and truthy → raise WorkspaceQuotaExceeded.
+      - Redis miss AND Postgres says suspended (and no admin override)
+        → raise WorkspaceQuotaExceeded.
 
     Called from `_call_llm` near the top, before any expensive work.
     """
-    if not workspace_id or redis_client is None:
+    if not workspace_id:
         return
-    try:
-        flag = await redis_client.get(
-            f"workspace:{workspace_id}:llm_suspended"
-        )
-    except Exception:
-        logger.debug(
-            "assert_workspace_not_suspended: Redis lookup failed — "
-            "failing open. workspace=%s",
-            workspace_id, exc_info=True,
-        )
+
+    if redis_client is not None:
+        try:
+            flag = await redis_client.get(
+                f"workspace:{workspace_id}:llm_suspended"
+            )
+        except Exception:
+            logger.debug(
+                "assert_workspace_not_suspended: Redis lookup failed — "
+                "falling through to Postgres. workspace=%s",
+                workspace_id, exc_info=True,
+            )
+            flag = None
+        if flag in ("1", b"1", 1, True, "true"):
+            raise WorkspaceQuotaExceeded(workspace_id)
+        # A miss here does NOT mean "not suspended" — it may just mean
+        # the 1h TTL expired while suspended_at is still set. Fall
+        # through to the Postgres check below rather than returning.
+
+    if pg_pool is None:
         return
-    if flag in ("1", b"1", 1, True, "true"):
-        raise WorkspaceQuotaExceeded(workspace_id)
+    if await _is_suspended_in_postgres(pg_pool, workspace_id):
+        raise WorkspaceQuotaExceeded(workspace_id, reason="cost_ceiling_suspended_db")
 
 
 def _default_system_prompt() -> str:
@@ -189,6 +293,123 @@ def _default_system_prompt() -> str:
     from app.agent.orchestrator import _SYSTEM_PROMPT_DEFAULT  # noqa: PLC0415
 
     return _SYSTEM_PROMPT_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-15 — pre-stream retry for the OpenAI-compatible chat-completions
+# call (Azure AI Foundry / Cohere Command A+ in production; also covers any
+# other OpenAI-compatible endpoint reachable via this path).
+#
+# `app.services._foundry_retry.with_foundry_retry` already gives the
+# embedding/reranker Foundry calls real 429/5xx backoff, but it backs off
+# with a blocking `time.sleep()` — safe there ONLY because both of its
+# callers invoke it via `loop.run_in_executor(...)`. The chat-completions
+# path here is async and NOT executor-wrapped (streaming needs to yield
+# tokens incrementally as they arrive; wrapping the whole call in an
+# executor would buffer the entire response before the caller saw
+# anything, defeating streaming). This is an async-native equivalent using
+# `asyncio.sleep()`, scoped to a strictly narrower retry window than a
+# generic retry-any-failure wrapper: only a failure that happens BEFORE any
+# token has reached the caller is retried.
+#
+# A 429/5xx/connection-refused/timeout on the initial connection or
+# response is safe to retry from scratch — nothing has been shown to the
+# user yet. A failure once tokens have started streaming is deliberately
+# NOT retried: the user has already seen a partial answer, so restarting
+# from scratch would duplicate or corrupt what they've seen. That case
+# still fails the query outright, which is the existing (correct)
+# behavior — see `_do_streaming_call`'s `sent_any_token` guard below.
+# ---------------------------------------------------------------------------
+
+_PRE_STREAM_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_PRE_STREAM_RETRYABLE_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+
+
+class _PreStreamTransientError(Exception):
+    """Internal sentinel — never escapes this module.
+
+    Raised by `_do_blocking_call` / `_do_streaming_call` to signal to
+    `_retry_pre_stream_call` "this failure happened before any content
+    reached the caller and is safe to retry from scratch." Every other
+    exception (a mid-stream failure once tokens have started, a
+    non-retryable 4xx, `WorkspaceQuotaExceeded`, `ExternalLlmEgressBlocked`,
+    a malformed-response bug) is left to propagate untouched — those are
+    correctly terminal and must not be retried.
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        self.original = original
+        super().__init__(str(original))
+
+
+async def _retry_pre_stream_call(
+    do_call: Callable[[], Awaitable[dict]],
+    *,
+    label: str,
+    max_attempts: int = 3,
+    max_backoff_s: float = 8.0,
+) -> dict:
+    """Retry `do_call()` on a pre-stream transient failure, async-native.
+
+    Backoff cadence mirrors `_foundry_retry.with_foundry_retry`'s 2s/4s/8s
+    pattern but sleeps via `asyncio.sleep()` so it never blocks the event
+    loop for other concurrent requests.
+
+    Two independent budgets stop a flaky backend from turning one logical
+    LLM call into an unbounded amount of work, so this retry loop can't
+    fight the two safeguards it shares the request with:
+
+    - Per-query LLM-call budget: each retry attempt after the first
+      increments `_llm_call_counter` — the SAME counter `_call_llm` checks
+      against `MAX_LLM_CALLS_PER_QUERY` — so retries here count against
+      the overall per-query call budget exactly like a distinct `_call_llm`
+      invocation would, and stop once that budget is exhausted.
+    - Wall-clock budget: retries stop once the time remaining under
+      `settings.TIMEOUT_GATHER_S` isn't enough to plausibly fit another
+      backoff + attempt, so retries alone can never consume the whole
+      per-query timeout budget.
+
+    Once either budget (or `max_attempts`) is exhausted, the ORIGINAL
+    exception is re-raised (not `_PreStreamTransientError`) so callers see
+    the same exception shape they would have without this wrapper.
+    """
+    start = time.monotonic()
+    timeout_budget = float(getattr(settings, "TIMEOUT_GATHER_S", 180.0) or 180.0)
+    attempt = 0
+    while True:
+        try:
+            return await do_call()
+        except _PreStreamTransientError as exc:
+            attempt += 1
+            cap = int(getattr(settings, "MAX_LLM_CALLS_PER_QUERY", 8))
+            n_so_far = _llm_call_counter.get()
+            delay = min(2.0 * (2 ** (attempt - 1)), max_backoff_s)
+            elapsed = time.monotonic() - start
+            remaining = timeout_budget - elapsed
+            if attempt >= max_attempts or n_so_far >= cap or remaining <= delay:
+                logger.warning(
+                    "%s: pre-stream retry exhausted (attempt=%d/%d "
+                    "call_budget=%d/%d elapsed=%.1fs remaining=%.1fs) — "
+                    "raising %s: %s",
+                    label, attempt, max_attempts, n_so_far, cap,
+                    elapsed, remaining, type(exc.original).__name__, exc.original,
+                )
+                raise exc.original from exc.original
+            _llm_call_counter.set(n_so_far + 1)
+            logger.warning(
+                "%s: transient pre-stream failure (attempt %d/%d) — "
+                "retrying in %.1fs err=%s: %s",
+                label, attempt, max_attempts, delay,
+                type(exc.original).__name__, exc.original,
+            )
+            await asyncio.sleep(delay)
 
 
 def _build_user_message(context: str, sanitized_query: str) -> str:
@@ -477,11 +698,18 @@ async def _call_openai_compatible_llm(
     backend_label = backend_kind
 
     async def _do_blocking_call(client: httpx.AsyncClient) -> dict:
-        response = await client.post(
-            f"{effective_url}/chat/completions{url_query_suffix}",
-            json=request_payload,
-            headers=request_headers or None,
-        )
+        # No tokens can have reached the caller on this path (it's
+        # non-streaming — the whole response is buffered before we return
+        # anything), so ANY retryable failure here — connection error or a
+        # 429/5xx status — is safe to retry from scratch.
+        try:
+            response = await client.post(
+                f"{effective_url}/chat/completions{url_query_suffix}",
+                json=request_payload,
+                headers=request_headers or None,
+            )
+        except _PRE_STREAM_RETRYABLE_EXCEPTIONS as exc:
+            raise _PreStreamTransientError(exc) from exc
         # Phase G overnight — log the upstream error body BEFORE raising so
         # the orchestrator's retry path has a chance to see *why* (model
         # name typo, context too long, banned token, schema violation).
@@ -506,64 +734,91 @@ async def _call_openai_compatible_llm(
                 sum(len(m["content"]) for m in request_payload["messages"]),
             )
         if hasattr(response, "raise_for_status"):
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if _status_code in _PRE_STREAM_RETRYABLE_STATUS:
+                    raise _PreStreamTransientError(exc) from exc
+                raise
         return response.json()
 
     async def _do_streaming_call(client: httpx.AsyncClient) -> dict:
         """SSE streaming path. Yields each delta to `token_callback`
-        and re-assembles the final usage block + completion text."""
+        and re-assembles the final usage block + completion text.
+
+        `sent_any_token` marks the retry boundary: a connection error,
+        429, or 5xx that happens before it flips True is a pre-stream
+        failure (nothing shown to the user yet) and is wrapped in
+        `_PreStreamTransientError` so `_retry_pre_stream_call` retries it.
+        The same failure classes occurring AFTER it flips True (a
+        connection drop mid-generation, say) propagate as the raw
+        exception instead — the query must fail outright rather than
+        restart and duplicate/corrupt what the user already saw.
+        """
         text_parts: list[str] = []
         usage: dict[str, Any] = {}
-        async with client.stream(
-            "POST",
-            f"{effective_url}/chat/completions{url_query_suffix}",
-            json=request_payload,
-            headers=request_headers or None,
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                # vLLM emits standard OpenAI SSE: `data: {...}` lines and a
-                # final `data: [DONE]` sentinel. The `data: ` prefix strip
-                # also covers any non-vLLM OpenAI-compat endpoint that
-                # substitutes here.
-                if line.startswith("data: "):
-                    line = line[len("data: "):]
-                if line.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.debug(
-                        "_call_openai_compatible_llm: skipping non-JSON line: %r",
-                        line[:120],
-                    )
-                    continue
+        sent_any_token = False
+        try:
+            async with client.stream(
+                "POST",
+                f"{effective_url}/chat/completions{url_query_suffix}",
+                json=request_payload,
+                headers=request_headers or None,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    # vLLM emits standard OpenAI SSE: `data: {...}` lines and a
+                    # final `data: [DONE]` sentinel. The `data: ` prefix strip
+                    # also covers any non-vLLM OpenAI-compat endpoint that
+                    # substitutes here.
+                    if line.startswith("data: "):
+                        line = line[len("data: "):]
+                    if line.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.debug(
+                            "_call_openai_compatible_llm: skipping non-JSON line: %r",
+                            line[:120],
+                        )
+                        continue
 
-                # Choice shape varies: SSE chunks carry `delta.content`,
-                # the final blocking-style chunk carries `message.content`.
-                choices = chunk.get("choices") or []
-                if choices:
-                    delta = choices[0].get("delta") or {}
-                    content = delta.get("content")
-                    if content is None:
-                        content = (choices[0].get("message") or {}).get("content")
-                    if content:
-                        text_parts.append(content)
-                        try:
-                            await token_callback(content)
-                        except Exception:
-                            logger.debug(
-                                "token_callback raised; ignoring", exc_info=True
-                            )
+                    # Choice shape varies: SSE chunks carry `delta.content`,
+                    # the final blocking-style chunk carries `message.content`.
+                    choices = chunk.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta") or {}
+                        content = delta.get("content")
+                        if content is None:
+                            content = (choices[0].get("message") or {}).get("content")
+                        if content:
+                            text_parts.append(content)
+                            sent_any_token = True
+                            try:
+                                await token_callback(content)
+                            except Exception:
+                                logger.debug(
+                                    "token_callback raised; ignoring", exc_info=True
+                                )
 
-                # Usage block lives on the final chunk in OpenAI-compat
-                # mode — keep the latest non-empty seen so a vLLM build
-                # that emits usage progressively still works.
-                u = chunk.get("usage")
-                if u:
-                    usage = u
+                    # Usage block lives on the final chunk in OpenAI-compat
+                    # mode — keep the latest non-empty seen so a vLLM build
+                    # that emits usage progressively still works.
+                    u = chunk.get("usage")
+                    if u:
+                        usage = u
+        except _PRE_STREAM_RETRYABLE_EXCEPTIONS as exc:
+            if not sent_any_token:
+                raise _PreStreamTransientError(exc) from exc
+            raise
+        except httpx.HTTPStatusError as exc:
+            _status = exc.response.status_code if exc.response is not None else None
+            if not sent_any_token and _status in _PRE_STREAM_RETRYABLE_STATUS:
+                raise _PreStreamTransientError(exc) from exc
+            raise
 
         return {
             "choices": [{"message": {"content": "".join(text_parts).strip()}}],
@@ -575,9 +830,15 @@ async def _call_openai_compatible_llm(
         # TIMEOUT_GATHER_S — same as the per-request ad-hoc construction
         # below — so no override needed.
         if stream_enabled:
-            data = await _do_streaming_call(http_client)
+            data = await _retry_pre_stream_call(
+                lambda: _do_streaming_call(http_client),
+                label=f"{backend_label}_chat_completions_stream",
+            )
         else:
-            data = await _do_blocking_call(http_client)
+            data = await _retry_pre_stream_call(
+                lambda: _do_blocking_call(http_client),
+                label=f"{backend_label}_chat_completions",
+            )
     else:
         # Ad-hoc fallback (tests, pre-pool startup). Mirror the split-timeout
         # shape used by the pooled client in lifespan so a vLLM-down condition
@@ -590,9 +851,15 @@ async def _call_openai_compatible_llm(
         )
         async with httpx.AsyncClient(timeout=_adhoc_timeout) as client:
             if stream_enabled:
-                data = await _do_streaming_call(client)
+                data = await _retry_pre_stream_call(
+                    lambda: _do_streaming_call(client),
+                    label=f"{backend_label}_chat_completions_stream",
+                )
             else:
-                data = await _do_blocking_call(client)
+                data = await _retry_pre_stream_call(
+                    lambda: _do_blocking_call(client),
+                    label=f"{backend_label}_chat_completions",
+                )
 
     # R15 — log prefix-cache hit rate when the backend reports it.
     # vLLM (and some Ollama builds) expose a `cached_tokens` field on
@@ -1171,7 +1438,9 @@ async def _call_llm(
     # up through assemble_node (no local catch — see nodes.py) to
     # queries.py's existing top-level handler, which already correctly
     # turns it into an SSE quota_exceeded event / HTTP 429.
-    await assert_workspace_not_suspended(workspace_id, redis_client=redis_client)
+    await assert_workspace_not_suspended(
+        workspace_id, redis_client=redis_client, pg_pool=pg_pool,
+    )
 
     # Sanitize user query — strip any prompt injection attempts.
     sanitized_query = _sanitize_query(query)
