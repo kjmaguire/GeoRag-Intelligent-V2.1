@@ -893,7 +893,7 @@ def _render_tool_results_context(
         out.append(_UNTRUSTED_GUARD)
         out.append("")
         total += len(_UNTRUSTED_GUARD) + 1
-    for i, (block, tool_name, cid) in enumerate(blocks):
+    for i, (block, _tool_name, _cid) in enumerate(blocks):
         if total + len(block) > _TOTAL_BUDGET:
             out.append("[context budget reached]")
             dropped = [(tn, c, len(b)) for b, tn, c in blocks[i:]]

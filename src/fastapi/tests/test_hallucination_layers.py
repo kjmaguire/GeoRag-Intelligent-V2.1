@@ -1247,11 +1247,10 @@ class TestProactiveInsightsSecurityBoundary:
     def test_append_and_strip_round_trip(self) -> None:
         """The sanctioned append/strip pair removes exactly the appended block."""
         from app.agent.anomaly_detector import (
+            PROACTIVE_INSIGHTS_HEADER,
             append_insights_block,
             strip_proactive_insights,
         )
-
-        from app.agent.anomaly_detector import PROACTIVE_INSIGHTS_HEADER
 
         llm_text = "There are 10 drill holes in this project [DATA-1]."
         combined, offset = append_insights_block(
