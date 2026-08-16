@@ -189,6 +189,7 @@ async def _get_or_create_document(
     project_id: str | None,
     workspace_id: str,
     source_sha256: str,
+    page_count: int | None = None,
 ) -> str:
     """Idempotently create a silver.reports row for the OCR'd TIFF."""
     row = await conn.fetchrow(
@@ -203,13 +204,13 @@ async def _get_or_create_document(
         INSERT INTO silver.reports
             (report_id, project_id, workspace_id, title, commodity,
              source_file_sha256, is_scanned, parser_used,
-             created_at, updated_at)
+             page_count, created_at, updated_at)
         VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, 'uranium',
                 $4, true, 'tesseract-tiff',
-                NOW(), NOW())
+                $5::int, NOW(), NOW())
         RETURNING report_id::text AS report_id
         """,
-        project_id, workspace_id, title[:500], source_sha256,
+        project_id, workspace_id, title[:500], source_sha256, page_count,
     )
     return row["report_id"]
 
@@ -319,6 +320,7 @@ async def ingest_tiff_file(
         project_id=project_id,
         workspace_id=workspace_id,
         source_sha256=sha,
+        page_count=len(pages),
     )
 
     # Insert one passage per usable page

@@ -288,6 +288,7 @@ async def _get_or_create_document(
     company: str | None = None,
     region: str | None = None,
     is_scanned: bool = False,
+    page_count: int | None = None,
 ) -> str:
     """Idempotently fetch or create a `silver.reports` row.
 
@@ -311,14 +312,14 @@ async def _get_or_create_document(
         INSERT INTO silver.reports
             (report_id, project_id, workspace_id, title, company, region,
              commodity, source_file_sha256, is_scanned, parser_used,
-             created_at, updated_at)
+             page_count, created_at, updated_at)
         VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5,
                 'uranium', $6, $7, 'pdfminer.six',
-                NOW(), NOW())
+                $8::int, NOW(), NOW())
         RETURNING report_id::text AS report_id
         """,
         project_id, workspace_id, title[:500], company, region,
-        source_sha256, is_scanned,
+        source_sha256, is_scanned, page_count,
     )
     return row["report_id"]
 
@@ -428,6 +429,7 @@ async def ingest_pdf_file(
         project_id=project_id,
         workspace_id=workspace_id,
         source_sha256=sha,
+        page_count=len(pages),
     )
 
     # Set the project-scope GUC for RLS on document_passages

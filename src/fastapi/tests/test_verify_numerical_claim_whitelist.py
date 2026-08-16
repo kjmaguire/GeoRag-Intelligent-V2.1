@@ -15,10 +15,15 @@ import pytest
 from app.agent.tools import verify_numerical_claim
 
 
-def _fake_ctx():
-    """Minimal RunContext stand-in — only pg_pool is needed here."""
+def _fake_ctx(row: dict | None = None):
+    """Minimal RunContext stand-in — only pg_pool is needed here.
+
+    ``row`` overrides the fake fetchrow result (default keeps the
+    pre-existing {"total_depth": 510.0} fixture so unrelated tests are
+    unaffected).
+    """
     pool = MagicMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn=AsyncMock()))
+    pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn=AsyncMock(), row=row))
     deps = SimpleNamespace(pg_pool=pool)
     return SimpleNamespace(deps=deps)
 
@@ -26,9 +31,9 @@ def _fake_ctx():
 class _AsyncCtxMgr:
     """Hand-rolled async context manager for the pool.acquire() mock."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, row: dict | None = None):
         self.conn = conn
-        self.conn.fetchrow = AsyncMock(return_value={"total_depth": 510.0})
+        self.conn.fetchrow = AsyncMock(return_value=row or {"total_depth": 510.0})
 
     async def __aenter__(self):
         return self.conn
@@ -121,6 +126,40 @@ async def test_each_table_has_its_own_column_scope():
         ctx,
         table="silver.collars",
         column="value",   # valid on silver.samples but not on silver.collars
+        row_id="00000000-0000-0000-0000-000000000001",
+        claimed_value=1.0,
+    )
+    assert result.verified is False
+    assert "BLOCKED" in result.verification_query
+
+
+@pytest.mark.asyncio
+async def test_reports_page_count_allowed():
+    """silver.reports.page_count is whitelisted (2026-08-15 follow-up) —
+    call goes through instead of the old fail-closed BLOCKED response.
+    """
+    ctx = _fake_ctx(row={"page_count": 42.0})
+    result = await verify_numerical_claim(
+        ctx,
+        table="silver.reports",
+        column="page_count",
+        row_id="00000000-0000-0000-0000-000000000001",
+        claimed_value=42.0,
+    )
+    assert result.verified is True
+    assert "BLOCKED" not in result.verification_query
+
+
+@pytest.mark.asyncio
+async def test_reports_version_number_still_blocked():
+    """version_number lives on silver.document_versions, not silver.reports
+    — must stay blocked rather than silently resolving to the wrong table.
+    """
+    ctx = _fake_ctx()
+    result = await verify_numerical_claim(
+        ctx,
+        table="silver.reports",
+        column="version_number",
         row_id="00000000-0000-0000-0000-000000000001",
         claimed_value=1.0,
     )

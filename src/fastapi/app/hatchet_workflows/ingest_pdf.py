@@ -811,13 +811,13 @@ INSERT INTO silver.reports (
     report_id, title, authors, company, filing_date, commodity,
     project_name, region, resource_estimate, sections_text,
     embedding_ids, parse_quality_pct, parser_used,
-    is_scanned, source_file_sha256, project_id, workspace_id
+    is_scanned, source_file_sha256, project_id, workspace_id, page_count
 )
 VALUES (
     $1, $2, $3::text[], $4, $5::date, $6,
     $7, $8, $9::jsonb, $10::jsonb,
     ARRAY[]::text[], $11, $12,
-    $13, $14, $16::uuid, $15::uuid
+    $13, $14, $16::uuid, $15::uuid, $17::int
 )
 ON CONFLICT (report_id) DO UPDATE SET
     title          = EXCLUDED.title,
@@ -832,6 +832,7 @@ ON CONFLICT (report_id) DO UPDATE SET
     parser_used    = EXCLUDED.parser_used,
     parse_quality_pct = EXCLUDED.parse_quality_pct,
     is_scanned     = EXCLUDED.is_scanned,
+    page_count     = EXCLUDED.page_count,
     updated_at     = NOW()
 """
 
@@ -1384,6 +1385,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     pre.get("sha256"),
                     workspace_id_str,
                     str(input.project_id) if input.project_id else None,
+                    int(pre.get("page_count", 0) or 0),
                 )
                 for ordinal, section in enumerate(parsed.get("sections") or []):
                     text = (section.get("text") or "").strip()

@@ -2358,14 +2358,19 @@ async def verify_numerical_claim(
         # NOTE (2026-08-15 audit): was "bronze.reports", which has never
         # existed as a table (report metadata lives in "silver.reports" —
         # bronze.* only holds pre-parse raw/manifest data). Renamed to the
-        # real table + its real PK ("report_id"). "page_count" and
-        # "version_number" are NOT columns on silver.reports (the latter
-        # lives on silver.document_versions, keyed by version_id, not
-        # report_id) and silver.reports has no other NUMERIC column to
-        # verify — left as an empty allowlist (BLOCKS every call, fail
-        # closed) rather than guessing a replacement column without a
-        # schema/product decision. Flagged separately for follow-up.
-        "silver.reports": ("report_id", set(), "direct"),
+        # real table + its real PK ("report_id"). "version_number" is NOT
+        # a column on silver.reports (it lives on silver.document_versions,
+        # keyed by version_id, not report_id, reachable via
+        # document_versions.document_id -> reports.report_id if ever
+        # needed). Follow-up decision (Kyle, 2026-08-15): added
+        # "page_count" as a real NUMERIC column on silver.reports
+        # (migration 2026_08_15_040000_add_page_count_to_silver_reports),
+        # populated at ingestion time from the PDF page count already
+        # computed in app/hatchet_workflows/ingest_pdf.py's preflight step
+        # (pikepdf) and app/services/ingest/{pdf,tiff_ocr}_ingester.py
+        # (pdfminer.six / Pillow frame count) — previously computed and
+        # discarded rather than persisted.
+        "silver.reports": ("report_id", {"page_count"}, "direct"),
     }
 
     if table not in allowed_by_table:
