@@ -964,6 +964,64 @@ async def test_validate_node_prepends_warning_banner_on_should_retry(monkeypatch
     assert updated.citations == original_citations
 
 
+@pytest.mark.asyncio
+async def test_validate_node_fails_closed_on_validation_exception(monkeypatch) -> None:
+    """A DB timeout, malformed tool-result shape, or bug inside numeric
+    grounding / entity resolution / constraint checking used to be caught by
+    a blanket ``except Exception`` that discarded ALL THREE guards' results
+    and shipped the answer with ``validation_warnings=[]`` — indistinguishable
+    from an answer that passed every check cleanly, and ``should_retry``
+    never got a chance to fire so the confidence-floor/banner mechanism
+    never engaged either. That's fail-OPEN on the exact path meant to catch
+    fabrication.
+
+    This pins the fail-CLOSED fix: an exception from
+    ``run_post_assembly_validation`` must floor confidence, prepend the same
+    unmissable warning banner used for a genuine should_retry=True guard
+    failure, and return a non-empty ``validation_warnings`` describing that
+    validation could not complete — never a silent, clean-looking answer.
+    It must NOT raise or refuse to answer (a transient failure shouldn't
+    make the query unanswerable).
+    """
+    import app.agent.hallucination.layer5_provenance as _layer5_mod
+    import app.agent.hallucination.orchestrator_validators as _validators
+
+    response = _minimal_response()
+    original_text = response.text
+    original_citations = response.citations
+
+    async def broken_validate(resp, tool_results, deps):
+        raise RuntimeError("Neo4j entity-resolution lookup timed out")
+
+    monkeypatch.setattr(_validators, "run_post_assembly_validation", broken_validate)
+
+    async def fake_enrich(resp, pg_pool):
+        return resp
+
+    monkeypatch.setattr(_layer5_mod, "enrich_provenance", fake_enrich)
+
+    state = AgenticRetrievalState(query="q", deps=_FakeDeps(pg_pool=None))
+    state = state.model_copy(update={"response": response})
+
+    result = await validate_node(state)  # must not raise
+
+    updated = result["response"]
+    # Fails CLOSED: floored confidence + unmissable banner, matching the
+    # should_retry=True UX exactly (not a new, separate failure mode).
+    assert updated.confidence <= 0.2
+    assert "automated fact-checking flagged" in updated.text.lower()
+    assert original_text in updated.text
+    assert updated.citations == original_citations
+
+    # validation_warnings must NOT be an empty list — an empty list is
+    # indistinguishable from "validated clean", which is exactly the bug.
+    assert result["validation_warnings"] != []
+    assert any(
+        "unverified" in w.lower() or "did not" in w.lower() or "raised" in w.lower()
+        for w in result["validation_warnings"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Regression — dispatcher passes the args every legacy tool actually declares
 # ---------------------------------------------------------------------------

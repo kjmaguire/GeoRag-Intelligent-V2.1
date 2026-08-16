@@ -773,6 +773,9 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
 def _render_tool_results_context(
     tool_results: list[tuple[str, Any]],
+    *,
+    query: str | None = None,
+    workspace_id: Any = None,
 ) -> str:
     """Render tool results into the LLM context block, chunk by chunk.
 
@@ -802,6 +805,19 @@ def _render_tool_results_context(
     document-chunk text and public-geoscience record dumps — mirroring
     exactly what ``_build_context`` fences (structured PostGIS/Neo4j/
     collar/graph blocks stay unfenced, same as there).
+
+    Truncation observability (2026-08-15): ``_TOTAL_BUDGET`` caps this
+    block at 24K chars. Blocks render in ``tool_results`` dispatch order
+    (NOT relevance order), so on document-heavy retrievals the budget can
+    be exhausted before structured collar/assay/downhole data ever
+    renders — silently, with only a bare ``"[context budget reached]"``
+    marker in the prompt and nothing in the logs. When truncation occurs
+    we now log a ``warning`` naming every dropped block's tool + citation
+    id and approximate size, plus the optional ``query``/``workspace_id``
+    context callers may supply, so a truncated-context incident can
+    actually be found and measured later. This does NOT change what gets
+    dropped or in what order — that prioritization problem is a separate,
+    larger design question — it only makes the drop observable.
     """
     from app.agent.context_builder import _UNTRUSTED_GUARD, _fence_untrusted  # noqa: PLC0415
     from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
@@ -812,7 +828,10 @@ def _render_tool_results_context(
     _TOTAL_BUDGET = 24_000    # whole context block
     _fence_enabled = bool(_settings.PROMPT_INJECTION_DELIMITING_ENABLED)
 
-    blocks: list[str] = []
+    # Each entry is (rendered_text, tool_name, citation_id) — the tool
+    # name + citation id are carried alongside the text purely so a
+    # budget-truncation event can name what got dropped (see docstring).
+    blocks: list[tuple[str, str, str]] = []
     id_bundles = assign_citation_ids(tool_results)
     for (tool_name, result), bundle in zip(
         tool_results, id_bundles, strict=False
@@ -847,36 +866,58 @@ def _render_tool_results_context(
                 text = (getattr(chunk, "text", "") or "")[:_CHUNK_TEXT_CAP]
                 if _fence_enabled:
                     text = _fence_untrusted(text)
-                blocks.append(f"{header}\n{text}")
+                blocks.append((f"{header}\n{text}", tool_name, cid))
         elif records is not None and len(bundle) == len(records):
             # PublicGeoscienceSearchResult-shaped — one id per record.
             for record, cid in zip(records, bundle, strict=False):
                 record_text = str(record)[:_STRUCTURED_CAP]
                 if _fence_enabled:
                     record_text = _fence_untrusted(record_text)
-                blocks.append(f"{cid} tool={tool_name} {record_text}")
+                blocks.append((f"{cid} tool={tool_name} {record_text}", tool_name, cid))
         else:
             # Structured results (collars / samples / graph / overview) —
             # one compact block per tool result. Sourced from our own
             # PostGIS/Neo4j tables, not externally-authored free text, so
             # (matching _build_context) these are NOT fenced.
             cid = bundle[0] if bundle else "[DATA-0]"
-            blocks.append(
-                f"{cid} tool={tool_name} {str(result)[:_STRUCTURED_CAP]}"
-            )
+            blocks.append((
+                f"{cid} tool={tool_name} {str(result)[:_STRUCTURED_CAP]}",
+                tool_name,
+                cid,
+            ))
 
     out: list[str] = []
     total = 0
+    dropped: list[tuple[str, str, int]] = []  # (tool_name, citation_id, size)
     if _fence_enabled and blocks:
         out.append(_UNTRUSTED_GUARD)
         out.append("")
         total += len(_UNTRUSTED_GUARD) + 1
-    for block in blocks:
+    for i, (block, tool_name, cid) in enumerate(blocks):
         if total + len(block) > _TOTAL_BUDGET:
             out.append("[context budget reached]")
+            dropped = [(tn, c, len(b)) for b, tn, c in blocks[i:]]
             break
         out.append(block)
         total += len(block)
+
+    if dropped:
+        _dropped_chars = sum(size for _, _, size in dropped)
+        logger.warning(
+            "agentic_retrieval.assemble: context budget reached "
+            "(%d/%d chars used) — dropped %d/%d tool-result block(s) "
+            "totalling ~%d chars that never reached the LLM context "
+            "(dropped tool/citation ids: %s); query=%r workspace_id=%s",
+            total,
+            _TOTAL_BUDGET,
+            len(dropped),
+            len(blocks),
+            _dropped_chars,
+            [f"{tn}:{c}" for tn, c, _ in dropped[:25]],
+            query,
+            workspace_id,
+        )
+
     return "\n\n".join(out) if out else "(no tool results)"
 
 
@@ -1031,7 +1072,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "\n".join(context_lines) if context_lines else "(no tool results)"
         )
     else:
-        context_block = _render_tool_results_context(state.tool_results)
+        context_block = _render_tool_results_context(
+            state.tool_results,
+            query=state.query,
+            workspace_id=getattr(state.deps, "workspace_id", None),
+        )
 
     # System prompt selection — empty categories dict so the routing falls
     # to DEFAULT (the per-intent base preamble doesn't change here, only
@@ -1166,6 +1211,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         token_callback=state.token_callback,
         workspace_id=getattr(state.deps, "workspace_id", None),
         redis_client=getattr(state.deps, "redis_client", None),
+        pg_pool=getattr(state.deps, "pg_pool", None),
     )
 
     # ADR-0007 PR-1 — for project_summary / coverage_gap, pre-build the
@@ -1541,6 +1587,39 @@ def _attach_envelope_notes_to_uncertainty(
 # ---------------------------------------------------------------------------
 
 
+def _floor_confidence_with_warning_banner(
+    response: GeoRAGResponse, reason: str,
+) -> GeoRAGResponse:
+    """Floor ``response.confidence`` to <=0.2 and prepend a caveat banner.
+
+    This is the single UX for "this answer must not ship looking like a
+    normal, cleanly-validated answer" — shared by the should_retry=True
+    guard-failure path and the fail-closed exception path in
+    ``validate_node`` (2026-08-15 fix) so a genuine failed check and an
+    exception that prevented checking from running at all look the same
+    to the user: unverified, low-confidence, clearly flagged. Never
+    raises — on any internal failure it logs and returns ``response``
+    unchanged rather than risk losing the answer entirely.
+    """
+    try:
+        floored = min(float(getattr(response, "confidence", 0.2) or 0.2), 0.2)
+        banner = (
+            "**Note: automated fact-checking flagged a potential issue "
+            f"with this answer** ({reason}) — treat the following with "
+            "caution and verify against the source documents directly.\n\n"
+        )
+        return response.model_copy(update={
+            "confidence": floored,
+            "text": banner + response.text,
+        })
+    except Exception:  # pragma: no cover — defensive
+        logger.debug(
+            "agentic_retrieval.validate: confidence floor/banner skipped",
+            exc_info=True,
+        )
+        return response
+
+
 async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Run the Layer-2/3/4/6 post-assembly validation the legacy path uses.
 
@@ -1562,6 +1641,27 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     pass (never rejects/mutates the answer text, only appends source-file
     provenance onto Citation.section) and is cheapest to run once the
     response is otherwise final.
+
+    Fail-closed exception posture (2026-08-15): ``run_post_assembly_validation``
+    wraps numeric grounding (Layer 3), entity resolution, and geological
+    constraint checking (Layer 4/6) in one call. Previously, ANY exception
+    from ANY of those sub-checks (a DB timeout, a malformed tool-result
+    shape, a bug in one guard) was caught here and discarded wholesale —
+    the response shipped with ``validation_warnings=[]``, indistinguishable
+    from an answer that passed every check cleanly, and ``should_retry``
+    never fired so the confidence-floor/banner mechanism below never
+    engaged either. That is a fail-OPEN posture on exactly the exception
+    path meant to protect against fabrication. Per
+    ``app.agent.hallucination.layer_completeness``'s documented "if any
+    guard raises, treat as failed" design intent, the except branch now
+    fails CLOSED: it reuses the same confidence-floor + warning-banner UX
+    as a genuine should_retry=True guard failure (via
+    ``_floor_confidence_with_warning_banner``) and returns
+    ``validation_warnings`` describing that validation could not run, so
+    downstream consumers can tell "unverified" apart from "verified
+    clean". This does not hard-refuse the answer — a transient DB blip
+    shouldn't make a query unanswerable — it only ensures the answer is
+    never silently presented as fully checked when it wasn't.
     """
     from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
         validate_and_repair,
@@ -1594,11 +1694,24 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
         )
     except Exception:
         logger.exception(
-            "agentic_retrieval.validate: post-assembly validation failed; "
-            "returning the un-validated response"
+            "agentic_retrieval.validate: post-assembly validation raised — "
+            "failing CLOSED: treating response as unverified (confidence "
+            "floored, warning banner applied) instead of shipping it as "
+            "cleanly validated"
+        )
+        _unverified_warning = (
+            "Layer 3/4/6: post-assembly validation raised an exception "
+            "before numeric grounding, entity resolution, and constraint "
+            "checks could complete — this answer is UNVERIFIED, not "
+            "confirmed clean."
+        )
+        response = _floor_confidence_with_warning_banner(
+            response,
+            "automated fact-checking could not complete due to an "
+            "internal error",
         )
         response = await _enrich_provenance_safely(response)
-        return {"response": response, "validation_warnings": []}
+        return {"response": response, "validation_warnings": [_unverified_warning]}
 
     if should_retry:
         warnings = [
@@ -1607,44 +1720,33 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "not re-generated (agentic path has no retry loop); confidence "
             "floored.",
         ]
-        try:
-            _floored = min(float(getattr(response, "confidence", 0.2) or 0.2), 0.2)
-            # Confidence-flooring ALONE used to be the only signal — nothing
-            # downstream (Laravel, FastAPI routers, the frontend) gates
-            # delivery on GeoRAGResponse.confidence, so a should_retry=True
-            # response (fabricated hole-ID/entity, an impossible geological
-            # value, or ≥3 ungrounded numbers) shipped as an ordinary-looking
-            # cited answer with only a quieter number attached. The agentic
-            # path genuinely has no re-generation loop yet (that's the
-            # separate, still-shadow-mode repair_shadow_node rollout — see
-            # docs/architecture/repair_loop_spec.md), so this doesn't try to
-            # fix or regenerate the answer; it makes the caveat impossible
-            # to miss by putting it in the text itself, since that's the one
-            # thing every consumer of this response actually renders.
-            # Citations/markers are left untouched (the retrieved evidence
-            # is real; what's unverified is the LLM's synthesis of it).
-            # Found in a full-app review, 2026-08-05.
-            _reason = warnings[0] if warnings else "an unverified claim"
-            _banner = (
-                "**Note: automated fact-checking flagged a potential issue "
-                f"with this answer** ({_reason}) — treat the following with "
-                "caution and verify against the source documents directly.\n\n"
-            )
-            response = response.model_copy(update={
-                "confidence": _floored,
-                "text": _banner + response.text,
-            })
-            logger.error(
-                "agentic_retrieval.validate: should_retry=True — confidence "
-                "floored to %.2f and warning banner prepended. warnings=%s",
-                _floored,
-                warnings,
-            )
-        except Exception:
-            logger.debug(
-                "agentic_retrieval.validate: confidence floor/banner skipped",
-                exc_info=True,
-            )
+        # Confidence-flooring ALONE used to be the only signal — nothing
+        # downstream (Laravel, FastAPI routers, the frontend) gates
+        # delivery on GeoRAGResponse.confidence, so a should_retry=True
+        # response (fabricated hole-ID/entity, an impossible geological
+        # value, or ≥3 ungrounded numbers) shipped as an ordinary-looking
+        # cited answer with only a quieter number attached. The agentic
+        # path genuinely has no re-generation loop yet (that's the
+        # separate, still-shadow-mode repair_shadow_node rollout — see
+        # docs/architecture/repair_loop_spec.md), so this doesn't try to
+        # fix or regenerate the answer; it makes the caveat impossible
+        # to miss by putting it in the text itself, since that's the one
+        # thing every consumer of this response actually renders.
+        # Citations/markers are left untouched (the retrieved evidence
+        # is real; what's unverified is the LLM's synthesis of it).
+        # Found in a full-app review, 2026-08-05. Flooring + banner logic
+        # now lives in ``_floor_confidence_with_warning_banner`` (shared
+        # with the fail-closed exception path above, 2026-08-15) so a
+        # genuine guard failure and a validation-couldn't-run exception
+        # present identically to the user.
+        _reason = warnings[0] if warnings else "an unverified claim"
+        response = _floor_confidence_with_warning_banner(response, _reason)
+        logger.error(
+            "agentic_retrieval.validate: should_retry=True — confidence "
+            "floored to %.2f and warning banner prepended. warnings=%s",
+            float(getattr(response, "confidence", 0.2) or 0.2),
+            warnings,
+        )
 
     response = await _enrich_provenance_safely(response)
     return {"response": response, "validation_warnings": warnings}
@@ -2076,7 +2178,11 @@ async def _reissue_llm_only(
 
     # Rebuild the context block + system prompt the same way
     # assemble_node would, then append the repair suffix.
-    context_block = _render_tool_results_context(state.tool_results)
+    context_block = _render_tool_results_context(
+        state.tool_results,
+        query=state.query,
+        workspace_id=getattr(state.deps, "workspace_id", None),
+    )
 
     system_prompt = _select_system_prompt(categories=None, query=state.query) + suffix
 
@@ -2093,6 +2199,7 @@ async def _reissue_llm_only(
         audit_label="agentic_retrieval_repair_stage3",
         workspace_id=getattr(state.deps, "workspace_id", None),
         redis_client=getattr(state.deps, "redis_client", None),
+        pg_pool=getattr(state.deps, "pg_pool", None),
     )
 
     new_response = assemble_response(text, state.tool_results)
