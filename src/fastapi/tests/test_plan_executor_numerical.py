@@ -80,6 +80,32 @@ def test_build_agg_sql_rejects_bad_table() -> None:
         )
 
 
+def test_build_agg_sql_structure_and_alteration_tables_resolve() -> None:
+    """Regression (2026-08-15): _ALLOWED_AGG_TABLES used to carry the plural
+    "structures"/"alterations", which don't correspond to any real table —
+    silver.structure / silver.alteration are singular (see
+    database/migrations/2026_05_20_060400_create_silver_geological_singulars.php).
+    NumericalAggregationInput.target_table (_SilverTable Literal) now emits
+    the singular names, so the allowlist must accept them, not the plurals."""
+    sql, _ = _build_agg_sql(
+        operation="count", table="structure", column="*",
+        group_by=[], filter_expr=None,
+    )
+    assert "FROM silver.structure" in sql
+
+    sql, _ = _build_agg_sql(
+        operation="count", table="alteration", column="*",
+        group_by=[], filter_expr=None,
+    )
+    assert "FROM silver.alteration" in sql
+
+    with pytest.raises(ValueError, match="table not allowed"):
+        _build_agg_sql(
+            operation="count", table="structures",
+            column="*", group_by=[], filter_expr=None,
+        )
+
+
 def test_build_agg_sql_rejects_unsafe_column() -> None:
     with pytest.raises(ValueError, match="column not a valid identifier"):
         _build_agg_sql(

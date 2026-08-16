@@ -505,8 +505,8 @@ async def _dispatch_document_passage_search(
 _ALLOWED_AGG_OPERATIONS = {"count", "sum", "avg", "min", "max", "stddev"}
 _ALLOWED_AGG_TABLES = {
     "collars", "lithology_logs", "samples", "drill_traces",
-    "seismic_surveys", "mineral_claims", "reports", "structures",
-    "alterations", "geochemistry",
+    "seismic_surveys", "mineral_claims", "reports", "structure",
+    "alteration", "geochemistry",
 }
 # Identifier validator — column names must be lowercase alphanumeric +
 # underscore + no dot / quote / space. Anything not matching this gets

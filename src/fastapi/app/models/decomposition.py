@@ -117,8 +117,8 @@ _SilverTable = Literal[
     "seismic_surveys",
     "mineral_claims",
     "reports",
-    "structures",
-    "alterations",
+    "structure",
+    "alteration",
     "geochemistry",
 ]
 
