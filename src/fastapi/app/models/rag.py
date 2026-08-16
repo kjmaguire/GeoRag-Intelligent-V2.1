@@ -455,3 +455,42 @@ class GeoRAGResponse(BaseModel):
             "rewrite happened."
         ),
     )
+
+    # Security fix (2026-08-15) — structural boundary for the deterministic
+    # "Proactive Insights" block, replacing a text-search boundary.
+    #
+    # ``app.agent.anomaly_detector.append_insights_block`` is the ONLY
+    # sanctioned way to attach the anomaly-detector's insight block to
+    # ``text``; it returns the character offset where the block begins and
+    # that value belongs here. The §04i guards (numeric grounding, entity
+    # resolution, constraint checking — see
+    # ``app.agent.hallucination.orchestrator_validators.run_post_assembly_validation``)
+    # read this field to know which suffix of ``text`` is deterministic
+    # system output that doesn't need adversarial verification.
+    #
+    # Previously the guards re-derived this boundary by searching the final
+    # ``text`` for the literal header string ("--- Proactive Insights ---")
+    # via ``str.partition()``. That was unsafe: the boundary was being
+    # located inside untrusted, LLM-authored content. If the model's own
+    # generated text contained that exact string — via prompt injection
+    # from an ingested document, or simply by imitating the header's
+    # phrasing — every fabricated number/entity/constraint-violating claim
+    # written after it became permanently unverifiable by all three guards.
+    # A boundary discovered by searching attacker-influenceable text is not
+    # a trustworthy boundary.
+    #
+    # None (the default, and the value for essentially every response
+    # today) means no insights block was appended — the entirety of
+    # ``text`` is LLM-generated and none of it should be skipped by the
+    # guards, regardless of what substrings it happens to contain.
+    proactive_insights_offset: int | None = Field(
+        default=None,
+        description=(
+            "Character offset into `text` where the deterministic "
+            "proactive-insights block begins, set by "
+            "anomaly_detector.append_insights_block at assembly time. "
+            "The hallucination guards use this to locate the block "
+            "structurally instead of searching `text` for its header. "
+            "None means no insights block was appended to this response."
+        ),
+    )

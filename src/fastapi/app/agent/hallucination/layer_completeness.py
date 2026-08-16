@@ -151,7 +151,9 @@ def _has_marker(sentence: str) -> bool:
     return bool(_MARKER_RE.search(sentence))
 
 
-def verify_completeness(answer_text: str) -> GuardResult:
+def verify_completeness(
+    answer_text: str, *, proactive_insights_offset: int | None = None
+) -> GuardResult:
     """Guard 3: Every declarative sentence must have a citation marker.
 
     Per spec B2: split answer into sentences; each declarative sentence must
@@ -163,16 +165,23 @@ def verify_completeness(answer_text: str) -> GuardResult:
     tool_results data) and aren't part of the LLM's surface — they carry
     aggregate-trace markers if the orchestrator appended them, but the
     completeness guard is only meant to catch *LLM* bare assertions.
+    ``proactive_insights_offset`` (normally
+    ``response.proactive_insights_offset``) is the structural boundary the
+    strip uses — see ``anomaly_detector.strip_proactive_insights`` for why
+    it must come from assembly-time bookkeeping rather than a text search.
 
     Args:
         answer_text: The LLM answer text (normalized, post-dash-rewrite).
+        proactive_insights_offset: Boundary recorded at assembly time by
+            ``anomaly_detector.append_insights_block``, or None if no
+            insights block was appended to this response.
 
     Returns:
         GuardResult with passed=True if all declarative sentences are cited,
         or passed=False with uncited_sentences populated.
     """
     from app.agent.anomaly_detector import strip_proactive_insights  # noqa: PLC0415
-    answer_text = strip_proactive_insights(answer_text)
+    answer_text = strip_proactive_insights(answer_text, proactive_insights_offset)
 
     sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(answer_text) if s.strip()]
 
@@ -225,6 +234,7 @@ async def evaluate_guards(
     pg_pool: object,
     neo4j_driver: object,
     query_class: str | None = None,
+    proactive_insights_offset: int | None = None,
 ) -> GuardBundle:
     """Guard 4: Evaluate all three content guards and aggregate into a GuardBundle.
 
@@ -242,6 +252,11 @@ async def evaluate_guards(
         project_id:     Current project UUID string.
         pg_pool:        asyncpg Pool (or None).
         neo4j_driver:   Neo4j async driver (or None).
+        proactive_insights_offset: Structural boundary recorded at assembly
+            time by ``anomaly_detector.append_insights_block`` (normally
+            ``response.proactive_insights_offset``), forwarded to every
+            sub-guard so none of them re-derive the boundary via a text
+            search — see ``anomaly_detector.strip_proactive_insights``.
 
     Returns:
         GuardBundle with all_passed and individual guard results.
@@ -268,15 +283,25 @@ async def evaluate_guards(
 
     t_guards_start = _time.monotonic()
 
-    numeric_task = asyncio.to_thread(_verify_numbers, answer_text, tool_results)
+    numeric_task = asyncio.to_thread(
+        _verify_numbers,
+        answer_text,
+        tool_results,
+        proactive_insights_offset=proactive_insights_offset,
+    )
     entity_task = _verify_entities(
         answer_text,
         project_id,
         pg_pool,
         neo4j_driver,
         tool_results=tool_results,
+        proactive_insights_offset=proactive_insights_offset,
     )
-    completeness_task = asyncio.to_thread(verify_completeness, answer_text)
+    completeness_task = asyncio.to_thread(
+        verify_completeness,
+        answer_text,
+        proactive_insights_offset=proactive_insights_offset,
+    )
 
     raw_numeric, raw_entity, raw_completeness = await asyncio.gather(
         numeric_task,

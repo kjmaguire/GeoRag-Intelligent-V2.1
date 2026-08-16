@@ -13,6 +13,17 @@ Anomaly types detected:
 Insights are appended as a block at the end of the response text (not
 inline) so they don't break citation flow. The frontend can later render
 them as collapsible "Insight" cards below the answer.
+
+Wiring status (2026-08-15): ``detect_anomalies`` / ``append_insights_block``
+are not currently invoked by any live orchestrator path — the step that
+used to call them lived in the deleted legacy orchestrator body. They're
+kept here, tested, and ready to re-wire (the natural call site is
+``app.agent.response_assembler.assemble_response``, before the
+``GeoRAGResponse`` is constructed). ``strip_proactive_insights`` and the
+§04i guards that call it are written defensively regardless of this: they
+trust only an explicit ``proactive_insights_offset``, never a text search,
+so re-wiring this feature later cannot silently reopen the guard-bypass
+that a text-search boundary would allow (see ``strip_proactive_insights``).
 """
 
 from __future__ import annotations
@@ -148,10 +159,9 @@ def _lithology_anomalies(result: DownholeLogsResult) -> list[str]:
 
 
 #: Header that marks the start of the proactive-insights block in response
-#: text.  Consumed by ``strip_proactive_insights`` so §04i validators (Layers
-#: 3, 4, 6 + completeness_guard) skip the block — the numbers, entities, and
-#: sentences inside it are deterministically computed from raw tool_results
-#: data and don't need adversarial grounding.
+#: text.  This is a human-readable label only — see the security note on
+#: ``strip_proactive_insights`` for why it must never be used to *locate*
+#: the block (i.e. never search the final response text for it).
 PROACTIVE_INSIGHTS_HEADER = "--- Proactive Insights ---"
 
 
@@ -171,12 +181,48 @@ def format_insights_block(insights: list[str]) -> str:
     return "\n".join(lines)
 
 
-def strip_proactive_insights(text: str) -> str:
+def append_insights_block(
+    llm_text: str, insights: list[str]
+) -> tuple[str, int | None]:
+    """Append the deterministic insights block to *llm_text* and return the
+    combined text plus the character offset where the appended block
+    begins.
+
+    This is the ONLY sanctioned way to attach the anomaly-detector's
+    insights to a response. Callers MUST propagate the returned offset onto
+    ``GeoRAGResponse.proactive_insights_offset`` — the §04i guards (numeric
+    grounding, entity resolution, constraint checking; see
+    ``app.agent.hallucination.orchestrator_validators.run_post_assembly_validation``)
+    read that field, not a search of the final text, to find the boundary
+    between LLM-authored content and this deterministic block. See
+    ``strip_proactive_insights`` for why locating the boundary via a text
+    search is unsafe.
+
+    Returns ``(llm_text, None)`` unchanged when there are no insights to
+    append (the common case).
+    """
+    block = format_insights_block(insights)
+    if not block:
+        return llm_text, None
+
+    # format_insights_block prefixes the header with a blank-line separator
+    # ("\n" + header + ...) for readability, so the header itself starts
+    # partway into `block`, not at its first character. The recorded offset
+    # must point at the header exactly — strip_proactive_insights asserts
+    # `text[offset:]` starts with the header as a defensive consistency
+    # check — so locate it within `block` (trusted, just-generated text,
+    # not a search over LLM output) rather than assuming offset == len(llm_text).
+    offset = len(llm_text) + block.index(PROACTIVE_INSIGHTS_HEADER)
+    return llm_text + block, offset
+
+
+def strip_proactive_insights(text: str, proactive_insights_offset: int | None) -> str:
     """Return *text* with the proactive-insights block removed.
 
-    The orchestrator appends a deterministic "Proactive Insights" block to
-    the LLM answer text after synthesis (see ``orchestrator.run_deterministic_rag``
-    step 4b).  Numbers and entities inside the block come from
+    ``proactive_insights_offset`` is ``GeoRAGResponse.proactive_insights_offset``
+    — the character index, recorded at assembly time by
+    ``append_insights_block``, where the deterministic insights block
+    begins. Numbers and entities inside that block come from
     ``anomaly_detector._depth_anomalies`` / ``_assay_anomalies`` /
     ``_lithology_anomalies`` — derived statistics (mean, sigma) computed
     deterministically from real tool_results rows, not LLM output.
@@ -186,20 +232,45 @@ def strip_proactive_insights(text: str) -> str:
     insights block produces noise: Layer 3 flags σ-derived stats that don't
     appear verbatim in tool_results, Layer 4 flags common-word
     TitleCase tokens like "Depth" / "Consider", and Layer 6 flags every
-    insight bullet as uncited.  Phase F.5 strips the block before each
-    validator runs so the layers grade only what the LLM actually wrote.
+    insight bullet as uncited.  Each validator strips the block before it
+    runs so the layers grade only what the LLM actually wrote.
 
-    Strip semantics: cut from the marker header to the end of the string.
-    The insights block is always the *last* thing the orchestrator appends
-    (assemble_response may add citation markers after, but those are
-    intentionally part of the LLM-answer surface for completeness_guard to
-    see).  We therefore conservatively strip from the header onward and
-    re-append any trailing citation markers if present.
+    SECURITY: the boundary is taken exclusively from
+    ``proactive_insights_offset``, an explicit, structurally-recorded value
+    set by trusted assembly code — it is never re-derived by searching
+    *text* for ``PROACTIVE_INSIGHTS_HEADER``. A previous version of this
+    function did exactly that (``text.partition(PROACTIVE_INSIGHTS_HEADER)``),
+    which is unsafe: *text* is the final, fully-concatenated response,
+    including whatever the LLM itself generated. If the model's own output
+    contains the literal header string — via prompt injection from an
+    ingested document, or simply by imitating the header's phrasing — a
+    text search finds that occurrence too, and everything the model wrote
+    afterwards (fabricated numbers, entities, constraint-violating claims)
+    would be silently excluded from every guard. A boundary discovered
+    inside attacker-influenceable text is not a trustworthy boundary.
+
+    ``proactive_insights_offset is None`` — true for essentially every
+    response, since no live orchestrator path currently calls
+    ``append_insights_block`` — means no insights block was appended, so
+    the entire string is LLM-generated and nothing is stripped, regardless
+    of what substrings it happens to contain.
     """
-    if PROACTIVE_INSIGHTS_HEADER not in text:
+    if proactive_insights_offset is None:
+        return text
+    if proactive_insights_offset < 0 or proactive_insights_offset > len(text):
+        # A recorded offset that no longer fits the text (e.g. text was
+        # mutated after assembly in a way that invalidated the offset) is
+        # treated as untrustworthy. Fail toward *not* stripping — the whole
+        # string stays subject to guard verification — rather than guessing.
         return text
 
-    head, _, tail = text.partition(PROACTIVE_INSIGHTS_HEADER)
+    head, tail = text[:proactive_insights_offset], text[proactive_insights_offset:]
+    if not tail.startswith(PROACTIVE_INSIGHTS_HEADER):
+        # Defensive consistency check only (not a search): the recorded
+        # offset should always point exactly at the header, since
+        # append_insights_block derives one from the other. A mismatch
+        # means the offset is stale — don't strip.
+        return text
 
     # The assembler may append a closing "[DATA-N] [NI43-M]." run after the
     # insights block.  Preserve those trailing markers so completeness_guard

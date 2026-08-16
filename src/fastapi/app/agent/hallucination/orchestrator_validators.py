@@ -335,7 +335,12 @@ def _expand_grounded_with_conversions(grounded: set[float]) -> set[float]:
     return expanded
 
 
-def verify_numbers(text: str, tool_results: list[tuple[str, Any]]) -> list[str]:
+def verify_numbers(
+    text: str,
+    tool_results: list[tuple[str, Any]],
+    *,
+    proactive_insights_offset: int | None = None,
+) -> list[str]:
     """Layer 3: Check that every number in the response is grounded in tool results.
 
     C3 tightening (Module 6 Chunk 3): removed the silent-skip for ≤ 3
@@ -346,7 +351,10 @@ def verify_numbers(text: str, tool_results: list[tuple[str, Any]]) -> list[str]:
     Those numbers (mean depth, σ multiples) are deterministically computed
     by ``anomaly_detector`` from raw tool_results rows and don't appear
     verbatim in the cited tool results — they're grounded by construction,
-    not by retrieval.
+    not by retrieval. ``proactive_insights_offset`` (normally
+    ``response.proactive_insights_offset``) is the structural boundary the
+    strip uses — see ``anomaly_detector.strip_proactive_insights`` for why
+    it must come from assembly-time bookkeeping rather than a text search.
 
     Returns a list of warning strings for ungrounded numbers.
     """
@@ -354,7 +362,7 @@ def verify_numbers(text: str, tool_results: list[tuple[str, Any]]) -> list[str]:
         return []
 
     from app.agent.anomaly_detector import strip_proactive_insights  # noqa: PLC0415
-    text = strip_proactive_insights(text)
+    text = strip_proactive_insights(text, proactive_insights_offset)
 
     response_numbers = _extract_numbers_from_text(text)
     if not response_numbers:
@@ -702,6 +710,8 @@ async def verify_entities(
     pg_pool: Any,
     neo4j_driver: Any,
     tool_results: list[tuple[str, Any]] | None = None,
+    *,
+    proactive_insights_offset: int | None = None,
 ) -> list[str]:
     """Layer 4: Check that entities in the response exist in the data stores.
 
@@ -724,8 +734,12 @@ async def verify_entities(
     # extraction.  Insight bullets contain common-word TitleCase tokens
     # ("Depth", "Consider") and the literal "Proactive Insights" header that
     # would otherwise be flagged as unresolved formations.
+    # ``proactive_insights_offset`` (normally
+    # ``response.proactive_insights_offset``) is the structural boundary —
+    # see ``anomaly_detector.strip_proactive_insights`` for why it must
+    # come from assembly-time bookkeeping rather than a text search.
     from app.agent.anomaly_detector import strip_proactive_insights  # noqa: PLC0415
-    text = strip_proactive_insights(text)
+    text = strip_proactive_insights(text, proactive_insights_offset)
 
     # Strip all citation markers before extraction.
     clean = _ALL_MARKER_RE.sub("", text)
@@ -857,13 +871,19 @@ async def verify_entities(
 # Delegates to the existing constraint checker which only needs the text.
 # ---------------------------------------------------------------------------
 
-def verify_constraints(text: str) -> list[str]:
+def verify_constraints(
+    text: str, *, proactive_insights_offset: int | None = None
+) -> list[str]:
     """Layer 6: Check geological plausibility of numerical claims.
 
     Phase F.5: strip the proactive-insights block before constraint checking.
     Anomaly insights are by definition statistical outliers (e.g. "445 m TD
     — 2.2σ deeper than project average of 374 m") and tripping the depth /
     grade ceilings on those numbers is exactly the noise the strip avoids.
+    ``proactive_insights_offset`` (normally
+    ``response.proactive_insights_offset``) is the structural boundary —
+    see ``anomaly_detector.strip_proactive_insights`` for why it must come
+    from assembly-time bookkeeping rather than a text search.
 
     Returns a list of warning strings for constraint violations.
     """
@@ -871,7 +891,7 @@ def verify_constraints(text: str) -> list[str]:
         return []
 
     from app.agent.anomaly_detector import strip_proactive_insights  # noqa: PLC0415
-    text = strip_proactive_insights(text)
+    text = strip_proactive_insights(text, proactive_insights_offset)
 
     from app.agent.hallucination.layer6_constraints import _find_violations
 
@@ -906,8 +926,22 @@ async def run_post_assembly_validation(
     """
     all_warnings: list[str] = []
 
+    # Security fix (2026-08-15): the proactive-insights boundary is read
+    # from the structured field the assembler recorded, not re-derived by
+    # searching response.text for the header string — see
+    # anomaly_detector.strip_proactive_insights for why a text search is
+    # unsafe (the LLM's own output could reproduce the header and hide
+    # fabricated content from every guard below).
+    _insights_offset = response.proactive_insights_offset
+
     # Layer 3 — numerical grounding
-    all_warnings.extend(verify_numbers(response.text, tool_results))
+    all_warnings.extend(
+        verify_numbers(
+            response.text,
+            tool_results,
+            proactive_insights_offset=_insights_offset,
+        )
+    )
 
     # Layer 4 — entity resolution (async — needs database)
     # Pass tool_results so commodity-code grounding can verify against cited evidence.
@@ -917,11 +951,14 @@ async def run_post_assembly_validation(
         deps.pg_pool,
         deps.neo4j_driver,
         tool_results=tool_results,
+        proactive_insights_offset=_insights_offset,
     )
     all_warnings.extend(entity_warnings)
 
     # Layer 6 — geological constraints
-    all_warnings.extend(verify_constraints(response.text))
+    all_warnings.extend(
+        verify_constraints(response.text, proactive_insights_offset=_insights_offset)
+    )
 
     # Classify warnings by severity — fabricated drill-hole IDs are
     # critical, constraints are high, numerical grounding is advisory
