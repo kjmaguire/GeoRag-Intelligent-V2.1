@@ -1886,10 +1886,28 @@ async def on_failure(input: IngestPdfInput, ctx: Context) -> dict:
     row = await ingest_progress.get_run(run_id=run_id)
     current_stage = (row or {}).get("current_stage") or "unknown"
 
+    # 2026-08-16 — capture the REAL upstream exception instead of a
+    # hardcoded placeholder. `ctx.task_run_errors` is Hatchet's own
+    # per-task error map, populated specifically for use inside an
+    # on_failure hook (engine >= v0.53.10; we run v0.89.7). Before this
+    # fix every failure — worker-restart interruption, a genuine bug, a
+    # cancellation — recorded the exact same uninformative fallback string
+    # in silver.ingest_progress.error_text, making root-causing recurring
+    # persist-stage failures from the IngestionRuns UI alone impossible.
+    try:
+        task_errors = ctx.task_run_errors
+    except Exception as exc:  # noqa: BLE001 — never let diagnostics block the hook
+        log.warning("ingest_pdf.on_failure: could not read task_run_errors: %s", exc)
+        task_errors = {}
+    if task_errors:
+        error_detail = "; ".join(f"{name}: {msg}" for name, msg in task_errors.items())
+    else:
+        error_detail = "no task_run_errors available (worker crash/cancellation with no captured exception)"
+
     transitioned = await ingest_progress.mark_failed_by_run(
         run_id=run_id,
         stage=current_stage,
-        error="ingest_pdf workflow failure hook fired",
+        error=error_detail,
     )
 
     if transitioned and project_id:

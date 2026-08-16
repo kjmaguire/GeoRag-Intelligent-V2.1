@@ -514,10 +514,24 @@ async def on_failure(input: IngestZipArchiveInput, ctx: Context) -> dict[str, An
         )
         return {"updated": False, "reason": "no_archive_run"}
 
+    # 2026-08-16 — capture the real upstream exception via Hatchet's
+    # task_run_errors (populated for on_failure hooks, engine >= v0.53.10;
+    # we run v0.89.7) instead of a hardcoded placeholder. Same fix as
+    # ingest_pdf.on_failure.
+    try:
+        task_errors = ctx.task_run_errors
+    except Exception as exc:  # noqa: BLE001 — never let diagnostics block the hook
+        log.warning("ingest_zip_archive.on_failure: could not read task_run_errors: %s", exc)
+        task_errors = {}
+    if task_errors:
+        error_detail = "; ".join(f"{name}: {msg}" for name, msg in task_errors.items())
+    else:
+        error_detail = "no task_run_errors available (worker crash/cancellation with no captured exception)"
+
     transitioned = await _archive_progress.mark_terminal(
         archive_run_id=archive_run_id,
         status="failed",
-        error_text="ingest_zip_archive workflow failure hook fired",
+        error_text=error_detail,
     )
     return {
         "updated": transitioned,
