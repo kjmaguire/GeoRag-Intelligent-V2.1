@@ -1029,7 +1029,33 @@ class Settings(BaseSettings):
     # only honest answer is to re-baseline via scripts/run_eval_120.py
     # after the swap. Re-baseline output committed under
     # ops/baselines/qwen3-reranker-2026-06-04.md.
+    #
+    # 2026-08-15 — audit finding: this threshold is applied in
+    # app/agent/tools.py:search_documents to the RAW pre-transform score
+    # (see ``needs_sigmoid`` in that function), and it is a NO-OP against
+    # RERANKER_BACKEND=foundry (live default). cross_encoder/qwen3_causal
+    # emit unbounded real-valued logits (~[-15,+15]) where "0.0" is a
+    # meaningful sign check. _FoundryReranker (Cohere Rerank v4) instead
+    # returns Cohere's own ``relevance_score`` — a calibrated [0,1]
+    # probability that is NEVER negative — so ``score >= 0.0`` passes
+    # every candidate through regardless of actual relevance. See
+    # RERANKER_SCORE_THRESHOLD_FOUNDRY below for the backend-aware fix.
     RERANKER_SCORE_THRESHOLD: float = 0.0
+
+    # Foundry-backend counterpart to RERANKER_SCORE_THRESHOLD above.
+    # Applied instead of RERANKER_SCORE_THRESHOLD whenever
+    # RERANKER_BACKEND=foundry (app.services.reranker.RERANKER_BACKEND),
+    # because Cohere Rerank v4's relevance_score lives in a completely
+    # different scale ([0,1] calibrated probability vs. the cross-encoder
+    # backends' unbounded logit). 0.2 is a "clearly irrelevant" floor per
+    # Cohere's documented score semantics — looser than the 0.5-0.6
+    # min_relevance gates applied further downstream in decomposer.py /
+    # plan_executor.py (§04i Layer 1), which are a second, stricter
+    # per-sub-query gate operating on the SAME post-transform [0,1] scale;
+    # this threshold only needs to reject the obviously-irrelevant tail at
+    # the search_documents stage, not duplicate that later gate. Re-tune
+    # against golden_queries (scripts/run_eval_120.py) before changing.
+    RERANKER_SCORE_THRESHOLD_FOUNDRY: float = 0.2
 
     # -------------------------------------------------------------------------
     # Hallucination prevention layer configuration (Section 04i)

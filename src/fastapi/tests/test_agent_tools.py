@@ -26,11 +26,17 @@ import pytest
 
 from app.agent.deps import AgentDeps
 from app.agent.tools import (
+    AssayDataResult,
     CollarRecord,
     DocumentSearchResult,
+    DownholeLogsResult,
     GraphTraversalResult,
     NumericalClaimVerification,
+    ProjectOverviewResult,
     SpatialQueryResult,
+    query_assay_data,
+    query_downhole_logs,
+    query_project_overview,
     query_spatial_collars,
     search_documents,
     traverse_knowledge_graph,
@@ -47,7 +53,7 @@ def _make_deps(
     pg_pool: object = None,
     qdrant_client: object = None,
     neo4j_driver: object = None,
-    project_id: str = "proj-test-uuid",
+    project_id: str = "00000000-0000-0000-0000-0000000000aa",
     embedding_model: object = None,
     reranker: object = None,
     workspace_id: str | None = None,
@@ -58,6 +64,14 @@ def _make_deps(
     it for retrieval-path tests: audit C3 makes search_documents FAIL CLOSED
     when no workspace can be resolved (no JWT and no pg_pool lookup), so the
     reranker/quality-gate tests must supply one to exercise the happy path.
+
+    ``project_id`` must be UUID-shaped: ``AgentDeps.acquire_scoped()``
+    (2026-08-15 audit — now used by query_spatial_collars,
+    query_project_overview, query_downhole_logs, query_assay_data) rejects
+    non-UUID project_id values before issuing the ``SET LOCAL app.project_id``
+    GUC bind. The tool-call-site ``project_id=...`` kwarg used throughout
+    this file's test bodies (e.g. ``project_id="proj-test-uuid"``) is a
+    SEPARATE value — the SQL bind for the WHERE clause — and is unaffected.
     """
     return AgentDeps(
         pg_pool=pg_pool,  # type: ignore[arg-type]
@@ -75,6 +89,29 @@ class _MockRunContext:
     """Minimal stand-in for pydantic_ai.RunContext[AgentDeps]."""
 
     deps: AgentDeps
+
+
+class _TxnCM:
+    """Async context manager stand-in for asyncpg's ``conn.transaction()``."""
+
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _wire_scoped_conn(mock_conn: AsyncMock) -> None:
+    """Make an ``AsyncMock`` connection usable with ``AgentDeps.acquire_scoped()``.
+
+    ``acquire_scoped()`` does ``async with conn.transaction():``. Calling
+    ``.transaction()`` on a bare ``AsyncMock`` returns an un-awaited coroutine
+    (AsyncMock's own async call semantics), which does not implement the
+    async context manager protocol and raises a TypeError. Override it with
+    a plain ``MagicMock`` that returns a real (trivial) async CM instead —
+    same pattern as ``tests/test_acquire_scoped.py``'s ``_make_pool`` helper.
+    """
+    mock_conn.transaction = MagicMock(return_value=_TxnCM())
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +145,7 @@ class TestQuerySpatialCollars:
 
         mock_conn = AsyncMock()
         mock_conn.fetch = AsyncMock(return_value=[fake_row])
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         # asyncpg pool.acquire() is an async context manager
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
@@ -141,6 +179,7 @@ class TestQuerySpatialCollars:
             return []
 
         mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -169,6 +208,7 @@ class TestQuerySpatialCollars:
 
         mock_conn = AsyncMock()
         mock_conn.fetch = _slow_fetch
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -191,6 +231,7 @@ class TestQuerySpatialCollars:
         """Tool returns empty SpatialQueryResult on database error — does not raise."""
         mock_conn = AsyncMock()
         mock_conn.fetch = AsyncMock(side_effect=RuntimeError("connection refused"))
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -215,6 +256,7 @@ class TestQuerySpatialCollars:
 
         mock_conn = AsyncMock()
         mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -477,6 +519,7 @@ class TestSearchDocuments:
             mock_settings.RETRIEVAL_TOP_N = 20
             mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
             mock_settings.RERANKER_SCORE_THRESHOLD = 0.0
+            mock_settings.RERANKER_SCORE_THRESHOLD_FOUNDRY = 0.2
             mock_settings.RERANKER_TOP_K = 5
 
             result: DocumentSearchResult = await search_documents(
@@ -488,6 +531,83 @@ class TestSearchDocuments:
         assert result.count == 1
         # Must be the raw Cohere score (0.95), NOT sigmoid(0.95) (~0.721).
         assert result.chunks[0].relevance_score == pytest.approx(0.95)
+
+    @pytest.mark.asyncio
+    async def test_reranker_foundry_threshold_drops_low_relevance_candidates(self) -> None:
+        """2026-08-15 audit fix: RERANKER_SCORE_THRESHOLD (0.0) was a no-op
+        against the foundry backend because Cohere's relevance_score is a
+        [0,1] probability that is never negative — ``score >= 0.0`` passed
+        every candidate through regardless of actual relevance. With
+        RERANKER_BACKEND="foundry", the gate must use
+        RERANKER_SCORE_THRESHOLD_FOUNDRY instead: a clearly-irrelevant
+        candidate (0.05) must be dropped while a relevant one (0.6) survives.
+        """
+        import numpy as np
+
+        fake_point_irrelevant = MagicMock()
+        fake_point_irrelevant.id = "chunk-uuid-irrelevant"
+        fake_point_irrelevant.score = 0.5
+        fake_point_irrelevant.payload = {
+            "text": "Unrelated boilerplate paragraph.",
+            "document_title": "NI 43-101 Tech Report",
+            "report_id": "rep-001",
+            "document_type": "NI43",
+        }
+        fake_point_relevant = MagicMock()
+        fake_point_relevant.id = "chunk-uuid-relevant"
+        fake_point_relevant.score = 0.5
+        fake_point_relevant.payload = {
+            "text": "Indicated resources: 12.5 Mt at 0.45% Cu",
+            "document_title": "NI 43-101 Tech Report",
+            "report_id": "rep-001",
+            "document_type": "NI43",
+        }
+
+        mock_qdrant_response = MagicMock()
+        mock_qdrant_response.points = [fake_point_irrelevant, fake_point_relevant]
+
+        mock_qdrant = AsyncMock()
+        mock_qdrant.query_points = AsyncMock(return_value=mock_qdrant_response)
+
+        mock_model = MagicMock()
+        mock_model.encode = MagicMock(
+            return_value=np.array([0.1] * 384, dtype="float32")
+        )
+
+        # Cohere relevance_score: 0.05 (clearly irrelevant) and 0.6 (relevant).
+        mock_reranker = MagicMock()
+        mock_reranker.predict = MagicMock(return_value=np.array([0.05, 0.6]))
+
+        deps = _make_deps(
+            qdrant_client=mock_qdrant,
+            embedding_model=mock_model,
+            reranker=mock_reranker,
+            workspace_id="a0000000-0000-0000-0000-000000000001",
+        )
+        ctx = _MockRunContext(deps=deps)
+
+        with patch("app.agent.tools.settings") as mock_settings, \
+             patch("app.agent.tools.RERANKER_BACKEND", "foundry"), \
+             patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
+            mock_settings.TIMEOUT_QDRANT_S = 5.0
+            mock_settings.TIMEOUT_RERANKER_S = 8.0
+            mock_settings.RETRIEVAL_TOP_N = 20
+            mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
+            # Sign-only threshold would pass BOTH (0.05 >= 0.0 and 0.6 >= 0.0).
+            mock_settings.RERANKER_SCORE_THRESHOLD = 0.0
+            mock_settings.RERANKER_SCORE_THRESHOLD_FOUNDRY = 0.2
+            mock_settings.RERANKER_TOP_K = 5
+
+            result: DocumentSearchResult = await search_documents(
+                ctx,  # type: ignore[arg-type]
+                query_text="What is the indicated copper resource?",
+                project_id="proj-test-uuid",
+            )
+
+        # Only the 0.6-relevance chunk survives the 0.2 foundry floor.
+        assert result.count == 1
+        assert result.chunks[0].chunk_id == "chunk-uuid-relevant"
+        assert result.chunks[0].relevance_score == pytest.approx(0.6)
 
     @pytest.mark.asyncio
     async def test_reranker_top_k_caps_results(self) -> None:
@@ -917,6 +1037,357 @@ class TestVerifyNumericalClaim:
             )
 
         assert result.verified is False
+
+    @pytest.mark.asyncio
+    async def test_direct_table_scoped_by_workspace_and_project(self) -> None:
+        """2026-08-15 audit fix: a direct table (silver.collars, which
+        carries workspace_id + project_id itself) must bind BOTH into the
+        WHERE clause when AgentDeps carries a workspace - previously this
+        tool was scoped only by primary key, with zero tenant check, despite
+        the query planner (_dispatch_factual_lookup) using it as a
+        general-purpose value-retrieval oracle.
+        """
+        captured: dict = {}
+
+        async def _capture_fetchrow(sql: str, *args: object) -> dict:
+            captured["sql"] = sql
+            captured["args"] = args
+            return {"total_depth": 350.0}
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = _capture_fetchrow
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ws_id = "a0000000-0000-0000-0000-000000000001"
+        proj_id = "b0000000-0000-0000-0000-000000000002"
+        deps = _make_deps(pg_pool=mock_pool, project_id=proj_id, workspace_id=ws_id)
+        ctx = _MockRunContext(deps=deps)
+
+        await verify_numerical_claim(
+            ctx,  # type: ignore[arg-type]
+            table="silver.collars",
+            column="total_depth",
+            row_id="collar-uuid-001",
+            claimed_value=350.0,
+        )
+
+        assert "workspace_id = $2::uuid" in captured["sql"]
+        assert "project_id = $3::uuid" in captured["sql"]
+        assert captured["args"] == ("collar-uuid-001", ws_id, proj_id)
+
+    @pytest.mark.asyncio
+    async def test_collar_join_table_scoped_via_collars(self) -> None:
+        """A collar-join table (silver.samples - carries workspace_id itself
+        but not project_id) must scope project_id via a join to
+        silver.collars, and must use the real "sample_id" pk column against
+        the "t" alias.
+        """
+        captured: dict = {}
+
+        async def _capture_fetchrow(sql: str, *args: object) -> dict:
+            captured["sql"] = sql
+            captured["args"] = args
+            return {"to_depth": 12.5}
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = _capture_fetchrow
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ws_id = "a0000000-0000-0000-0000-000000000001"
+        proj_id = "b0000000-0000-0000-0000-000000000002"
+        deps = _make_deps(pg_pool=mock_pool, project_id=proj_id, workspace_id=ws_id)
+        ctx = _MockRunContext(deps=deps)
+
+        await verify_numerical_claim(
+            ctx,  # type: ignore[arg-type]
+            table="silver.samples",
+            column="to_depth",
+            row_id="sample-uuid-001",
+            claimed_value=12.5,
+        )
+
+        assert "JOIN silver.collars c ON c.collar_id = t.collar_id" in captured["sql"]
+        assert "t.sample_id = $1::uuid" in captured["sql"]
+        assert "t.workspace_id = $2::uuid" in captured["sql"]
+        assert "c.project_id = $3::uuid" in captured["sql"]
+        assert captured["args"] == ("sample-uuid-001", ws_id, proj_id)
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_falls_back_to_unscoped(self) -> None:
+        """When AgentDeps carries no workspace (single-tenant / admin path),
+        the query stays unscoped by workspace - lenient/absent fallback,
+        matching acquire_scoped()'s own GUC-bind behaviour."""
+        captured: dict = {}
+
+        async def _capture_fetchrow(sql: str, *args: object) -> dict:
+            captured["sql"] = sql
+            captured["args"] = args
+            return {"total_depth": 350.0}
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = _capture_fetchrow
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        deps = _make_deps(pg_pool=mock_pool, workspace_id=None)
+        ctx = _MockRunContext(deps=deps)
+
+        await verify_numerical_claim(
+            ctx,  # type: ignore[arg-type]
+            table="silver.collars",
+            column="total_depth",
+            row_id="collar-uuid-001",
+            claimed_value=350.0,
+        )
+
+        assert "workspace_id" not in captured["sql"]
+        assert "project_id = $2::uuid" in captured["sql"]
+
+    @pytest.mark.asyncio
+    async def test_renamed_structure_table_resolves(self) -> None:
+        """silver.structure (singular - replaces the DROPPED "silver.structures"
+        plural table) must be reachable with its real "id" pk column, not the
+        old (never-real) "structure_id"."""
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"true_dip": 45.0})
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        deps = _make_deps(pg_pool=mock_pool)
+        ctx = _MockRunContext(deps=deps)
+
+        result = await verify_numerical_claim(
+            ctx,  # type: ignore[arg-type]
+            table="silver.structure",
+            column="true_dip",
+            row_id="structure-uuid-001",
+            claimed_value=45.0,
+        )
+
+        assert result.verified is True
+        assert "BLOCKED" not in result.verification_query
+
+    @pytest.mark.asyncio
+    async def test_old_plural_structures_table_now_blocked(self) -> None:
+        """The old "silver.structures" (plural) allowlist key pointed at a
+        table that was dropped from the schema; it is no longer in the
+        allowlist at all (renamed to the real "silver.structure")."""
+        deps = _make_deps(pg_pool=MagicMock())
+        ctx = _MockRunContext(deps=deps)
+
+        result = await verify_numerical_claim(
+            ctx,  # type: ignore[arg-type]
+            table="silver.structures",
+            column="true_dip",
+            row_id="structure-uuid-001",
+            claimed_value=45.0,
+        )
+
+        assert result.verified is False
+        assert "BLOCKED" in result.verification_query
+
+
+# ---------------------------------------------------------------------------
+# query_downhole_logs / query_project_overview / query_assay_data - tenancy
+# ---------------------------------------------------------------------------
+#
+# These three tools (alongside query_spatial_collars above) previously
+# acquired their PostGIS connection via ctx.deps.pg_pool.acquire()
+# directly and filtered SQL only on project_id - never workspace_id - so
+# no RLS GUC was ever bound and a caller from one workspace could read
+# another workspace's rows sharing the same project_id space (2026-08-15
+# audit). Fixed to use ctx.deps.acquire_scoped() + explicit workspace_id
+# SQL binds. These were previously untested at the unit level; the tests
+# below close that gap by asserting the workspace filter + bound value
+# appear in the generated SQL whenever AgentDeps carries a workspace_id.
+
+
+class TestQueryDownholeLogsTenancy:
+    """Tenancy-scoping tests for query_downhole_logs."""
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_bound_when_present(self) -> None:
+        captured_sql: list[str] = []
+        captured_args: list[tuple] = []
+
+        async def _capture_fetchrow(sql: str, *args: object) -> None:
+            captured_sql.append(sql)
+            captured_args.append(args)
+            return None
+
+        async def _capture_fetch(sql: str, *args: object) -> list:
+            captured_sql.append(sql)
+            captured_args.append(args)
+            return []
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = _capture_fetchrow
+        mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ws_id = "a0000000-0000-0000-0000-000000000001"
+        deps = _make_deps(pg_pool=mock_pool, workspace_id=ws_id)
+        ctx = _MockRunContext(deps=deps)
+
+        result: DownholeLogsResult = await query_downhole_logs(
+            ctx,  # type: ignore[arg-type]
+            project_id="proj-test-uuid",
+            hole_id="MS-117",
+        )
+
+        assert result.count == 0
+        # Both the collar_sql (fetchrow) and logs_sql (fetch) must scope by
+        # workspace_id, and the bound value must be the caller's workspace.
+        assert any("workspace_id = $3" in s for s in captured_sql)
+        assert any(ws_id in a for a in captured_args)
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_id_falls_back_unscoped(self) -> None:
+        """Absent workspace (single-tenant path) - SQL has no workspace filter."""
+        captured_sql: list[str] = []
+
+        async def _capture_fetchrow(sql: str, *args: object) -> None:
+            captured_sql.append(sql)
+            return None
+
+        async def _capture_fetch(sql: str, *args: object) -> list:
+            captured_sql.append(sql)
+            return []
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = _capture_fetchrow
+        mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        deps = _make_deps(pg_pool=mock_pool, workspace_id=None)
+        ctx = _MockRunContext(deps=deps)
+
+        await query_downhole_logs(
+            ctx,  # type: ignore[arg-type]
+            project_id="proj-test-uuid",
+            hole_id="MS-117",
+        )
+
+        assert all("workspace_id" not in s for s in captured_sql)
+
+
+class TestQueryProjectOverviewTenancy:
+    """Tenancy-scoping tests for query_project_overview."""
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_bound_on_every_query(self) -> None:
+        captured_sql: list[str] = []
+        captured_args: list[tuple] = []
+
+        async def _capture_fetchrow(sql: str, *args: object) -> dict | None:
+            captured_sql.append(sql)
+            captured_args.append(args)
+            return None
+
+        async def _capture_fetch(sql: str, *args: object) -> list:
+            captured_sql.append(sql)
+            captured_args.append(args)
+            return []
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = _capture_fetchrow
+        mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ws_id = "a0000000-0000-0000-0000-000000000001"
+        deps = _make_deps(pg_pool=mock_pool, workspace_id=ws_id)
+        ctx = _MockRunContext(deps=deps)
+
+        result: ProjectOverviewResult = await query_project_overview(
+            ctx,  # type: ignore[arg-type]
+            project_id="proj-test-uuid",
+        )
+
+        assert result.count == 0
+        # 5 underlying queries (project_sql, collar_count_sql, curves_sql,
+        # reports_count_sql, reports_breakdown_sql) - every one must scope
+        # by workspace_id, and every bind tuple must carry the workspace.
+        assert len(captured_sql) == 5
+        assert all("workspace_id = $2" in s for s in captured_sql)
+        assert all(args == ("proj-test-uuid", ws_id) for args in captured_args)
+
+
+class TestQueryAssayDataTenancy:
+    """Tenancy-scoping tests for query_assay_data."""
+
+    @pytest.mark.asyncio
+    async def test_workspace_id_bound_when_present(self) -> None:
+        captured_sql: list[str] = []
+        captured_args: list[tuple] = []
+
+        async def _capture_fetch(sql: str, *args: object) -> list:
+            captured_sql.append(sql)
+            captured_args.append(args)
+            return []
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        ws_id = "a0000000-0000-0000-0000-000000000001"
+        deps = _make_deps(pg_pool=mock_pool, workspace_id=ws_id)
+        ctx = _MockRunContext(deps=deps)
+
+        result: AssayDataResult = await query_assay_data(
+            ctx,  # type: ignore[arg-type]
+            project_id="proj-test-uuid",
+        )
+
+        # avail_sql returns no elements -> early-return, but it must still
+        # have been scoped by workspace_id.
+        assert result.count == 0
+        assert captured_sql, "avail_sql fetch was never called"
+        assert "s.workspace_id = $2" in captured_sql[0]
+        assert captured_args[0] == ("proj-test-uuid", ws_id)
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_id_falls_back_unscoped(self) -> None:
+        captured_sql: list[str] = []
+
+        async def _capture_fetch(sql: str, *args: object) -> list:
+            captured_sql.append(sql)
+            return []
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        deps = _make_deps(pg_pool=mock_pool, workspace_id=None)
+        ctx = _MockRunContext(deps=deps)
+
+        await query_assay_data(
+            ctx,  # type: ignore[arg-type]
+            project_id="proj-test-uuid",
+        )
+
+        assert captured_sql
+        assert "workspace_id" not in captured_sql[0]
 
 
 # ---------------------------------------------------------------------------

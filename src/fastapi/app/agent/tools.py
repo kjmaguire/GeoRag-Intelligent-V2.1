@@ -586,9 +586,22 @@ async def query_spatial_collars(
     """
     limit = min(limit, 200)
 
+    # Tenancy gap fix (2026-08-15 audit): silver.collars carries a
+    # workspace_id column directly (same table query_collar_details scopes
+    # on). Bind it whenever the caller's AgentDeps carries a workspace —
+    # lenient/absent like acquire_scoped()'s own GUC bind, so single-tenant
+    # / no-workspace call paths (admin scripts, cross-project chat) keep
+    # their historical behaviour unchanged.
+    workspace_id = ctx.deps.workspace_id
     spatial_filter = ""
     bind_args: list = [project_id]
     param_idx = 2  # $1 already used for project_id
+
+    workspace_filter = ""
+    if workspace_id:
+        workspace_filter = f" AND workspace_id = ${param_idx}"
+        bind_args.append(workspace_id)
+        param_idx += 1
 
     if center_easting is not None and center_northing is not None and radius_m is not None:
         # ST_DWithin operates on the geometry column; the CRS must match the
@@ -625,13 +638,14 @@ async def query_spatial_collars(
         "ST_X(ST_Transform(geom, 4326)) AS longitude, "
         "ST_Y(ST_Transform(geom, 4326)) AS latitude "
         "FROM silver.collars "
-        f"WHERE project_id = $1{spatial_filter}{type_filter}{status_clause}"
+        f"WHERE project_id = $1{workspace_filter}{spatial_filter}{type_filter}{status_clause}"
         f" ORDER BY hole_id{limit_clause}"
     )
 
     logger.info(
-        "query_spatial_collars: project=%s radius=%s hole_type=%s status=%s limit=%s",
+        "query_spatial_collars: project=%s workspace=%s radius=%s hole_type=%s status=%s limit=%s",
         project_id,
+        workspace_id,
         radius_m,
         hole_type,
         status_filter,
@@ -639,7 +653,7 @@ async def query_spatial_collars(
     )
 
     async def _run_query() -> list[CollarRecord]:
-        async with ctx.deps.pg_pool.acquire() as conn:
+        async with ctx.deps.acquire_scoped() as conn:
             rows = await conn.fetch(sql, *bind_args)
             return [
                 CollarRecord(
@@ -712,29 +726,40 @@ async def query_project_overview(
         empty-tool-result filter (Phase F.4) drops the result only when
         BOTH halves are empty.
     """
+    # Tenancy gap fix (2026-08-15 audit): silver.projects, silver.collars,
+    # and silver.reports all carry workspace_id directly; silver.well_log_curves
+    # does not, so its query scopes through the c.collar_id join instead.
+    # Bind whenever AgentDeps carries a workspace — lenient/absent otherwise,
+    # matching acquire_scoped()'s own GUC-bind fallback for single-tenant /
+    # no-workspace call paths.
+    workspace_id = ctx.deps.workspace_id
+    workspace_clause = " AND workspace_id = $2" if workspace_id else ""
+    workspace_clause_c = " AND c.workspace_id = $2" if workspace_id else ""
+    filter_args: tuple = (project_id, workspace_id) if workspace_id else (project_id,)
+
     project_sql = (
         "SELECT project_name, company, commodity, region, slug "
-        "FROM silver.projects WHERE project_id = $1"
+        f"FROM silver.projects WHERE project_id = $1{workspace_clause}"
     )
     collar_count_sql = (
-        "SELECT count(*) AS n FROM silver.collars WHERE project_id = $1"
+        f"SELECT count(*) AS n FROM silver.collars WHERE project_id = $1{workspace_clause}"
     )
     curves_sql = (
         "SELECT DISTINCT wlc.curve_name "
         "FROM silver.well_log_curves wlc "
         "JOIN silver.collars c ON c.collar_id = wlc.collar_id "
-        "WHERE c.project_id = $1 "
+        f"WHERE c.project_id = $1{workspace_clause_c} "
         "ORDER BY wlc.curve_name"
     )
     # Doc-count wiring: report rollup over silver.reports for the active
     # project. Empty / NULL parser values bucketed as 'unknown' so the
     # breakdown sums to the same total as the count query.
     reports_count_sql = (
-        "SELECT count(*) AS n FROM silver.reports WHERE project_id = $1"
+        f"SELECT count(*) AS n FROM silver.reports WHERE project_id = $1{workspace_clause}"
     )
     reports_breakdown_sql = (
         "SELECT COALESCE(parser_used, 'unknown') AS parser, count(*) AS n "
-        "FROM silver.reports WHERE project_id = $1 "
+        f"FROM silver.reports WHERE project_id = $1{workspace_clause} "
         "GROUP BY parser ORDER BY n DESC"
     )
 
@@ -748,24 +773,24 @@ async def query_project_overview(
     async def _run() -> None:
         nonlocal project_name, company, commodity, region, slug
         nonlocal collar_count, distinct_curves, report_count, parser_breakdown
-        async with ctx.deps.pg_pool.acquire() as conn:
-            row = await conn.fetchrow(project_sql, project_id)
+        async with ctx.deps.acquire_scoped() as conn:
+            row = await conn.fetchrow(project_sql, *filter_args)
             if row is not None:
                 project_name = row["project_name"] or ""
                 company = row["company"]
                 commodity = row["commodity"]
                 region = row["region"]
                 slug = row["slug"]
-            count_row = await conn.fetchrow(collar_count_sql, project_id)
+            count_row = await conn.fetchrow(collar_count_sql, *filter_args)
             collar_count = int(count_row["n"]) if count_row else 0
-            curve_rows = await conn.fetch(curves_sql, project_id)
+            curve_rows = await conn.fetch(curves_sql, *filter_args)
             distinct_curves = [r["curve_name"] for r in curve_rows]
-            reports_row = await conn.fetchrow(reports_count_sql, project_id)
+            reports_row = await conn.fetchrow(reports_count_sql, *filter_args)
             report_count = int(reports_row["n"]) if reports_row else 0
-            breakdown_rows = await conn.fetch(reports_breakdown_sql, project_id)
+            breakdown_rows = await conn.fetch(reports_breakdown_sql, *filter_args)
             parser_breakdown = {r["parser"]: int(r["n"]) for r in breakdown_rows}
 
-    logger.info("query_project_overview: project=%s", project_id)
+    logger.info("query_project_overview: project=%s workspace=%s", project_id, workspace_id)
     try:
         await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
     except TimeoutError:
@@ -829,9 +854,23 @@ async def query_downhole_logs(
         return an empty result rather than raising — partial data is
         always preferable to a hard failure mid-stream.
     """
+    # Tenancy gap fix (2026-08-15 audit): silver.collars carries workspace_id
+    # directly; silver.lithology_logs does not, so its query scopes through
+    # the c.collar_id join to silver.collars instead. Bind whenever AgentDeps
+    # carries a workspace — lenient/absent otherwise, matching
+    # acquire_scoped()'s own GUC-bind fallback for single-tenant /
+    # no-workspace call paths.
+    workspace_id = ctx.deps.workspace_id
+    workspace_clause = " AND workspace_id = $3" if workspace_id else ""
+    workspace_clause_c = " AND c.workspace_id = $3" if workspace_id else ""
+    filter_args: tuple = (
+        (project_id, hole_id, workspace_id) if workspace_id else (project_id, hole_id)
+    )
+
     logger.info(
-        "query_downhole_logs: project=%s hole_id=%s",
+        "query_downhole_logs: project=%s workspace=%s hole_id=%s",
         project_id,
+        workspace_id,
         hole_id,
     )
 
@@ -846,7 +885,7 @@ async def query_downhole_logs(
         "ST_X(ST_Transform(geom, 4326)) AS longitude, "
         "ST_Y(ST_Transform(geom, 4326)) AS latitude "
         "FROM silver.collars "
-        "WHERE project_id = $1 AND UPPER(hole_id) = UPPER($2) "
+        f"WHERE project_id = $1 AND UPPER(hole_id) = UPPER($2){workspace_clause} "
         "LIMIT 1"
     )
 
@@ -857,14 +896,14 @@ async def query_downhole_logs(
         "l.rqd, l.recovery, l.weathering "
         "FROM silver.lithology_logs l "
         "JOIN silver.collars c ON c.collar_id = l.collar_id "
-        "WHERE c.project_id = $1 AND UPPER(c.hole_id) = UPPER($2) "
+        f"WHERE c.project_id = $1 AND UPPER(c.hole_id) = UPPER($2){workspace_clause_c} "
         "ORDER BY l.from_depth ASC"
     )
 
     async def _run() -> tuple[CollarRecord | None, list[LithologyInterval]]:
-        async with ctx.deps.pg_pool.acquire() as conn:
-            collar_row = await conn.fetchrow(collar_sql, project_id, hole_id)
-            log_rows = await conn.fetch(logs_sql, project_id, hole_id)
+        async with ctx.deps.acquire_scoped() as conn:
+            collar_row = await conn.fetchrow(collar_sql, *filter_args)
+            log_rows = await conn.fetch(logs_sql, *filter_args)
 
         collar_rec: CollarRecord | None = None
         if collar_row is not None:
@@ -1294,24 +1333,35 @@ async def query_assay_data(
     # Guard the cap. The agent can ask for arbitrarily large limits via
     # tool calls; clamp here so a misrouted query can't OOM the worker.
     limit = max(1, min(int(limit or 5000), 20000))
+    # Tenancy gap fix (2026-08-15 audit): silver.samples carries workspace_id
+    # directly (same table query_collar_details's assay aggregates scope
+    # on). Bind whenever AgentDeps carries a workspace — lenient/absent
+    # otherwise, matching acquire_scoped()'s own GUC-bind fallback for
+    # single-tenant / no-workspace call paths.
+    workspace_id = ctx.deps.workspace_id
     logger.info(
-        "query_assay_data: project=%s element=%s hole=%s",
+        "query_assay_data: project=%s workspace=%s element=%s hole=%s",
         project_id,
+        workspace_id,
         element,
         hole_id,
     )
 
     async def _run() -> AssayDataResult:
-        async with ctx.deps.pg_pool.acquire() as conn:
+        async with ctx.deps.acquire_scoped() as conn:
             # Step 1: discover available elements in this project.
+            avail_workspace_clause = " AND s.workspace_id = $2" if workspace_id else ""
+            avail_bind: tuple = (
+                (project_id, workspace_id) if workspace_id else (project_id,)
+            )
             avail_sql = (
                 "SELECT DISTINCT jsonb_object_keys(s.commodity_assays) AS elem "
                 "FROM silver.samples s "
                 "JOIN silver.collars c ON c.collar_id = s.collar_id "
-                "WHERE c.project_id = $1 "
+                f"WHERE c.project_id = $1{avail_workspace_clause} "
                 "ORDER BY elem"
             )
-            avail_rows = await conn.fetch(avail_sql, project_id)
+            avail_rows = await conn.fetch(avail_sql, *avail_bind)
             available = [r["elem"] for r in avail_rows]
 
             if not available:
@@ -1383,6 +1433,12 @@ async def query_assay_data(
                 bind.append(hole_id)
                 param_idx += 1
 
+            workspace_filter = ""
+            if workspace_id:
+                workspace_filter = f" AND s.workspace_id = ${param_idx}"
+                bind.append(workspace_id)
+                param_idx += 1
+
             agg_sql = (
                 "SELECT "
                 "  MIN(val) AS min_v, MAX(val) AS max_v, "
@@ -1393,7 +1449,7 @@ async def query_assay_data(
                 "  SELECT (s.commodity_assays->>$2)::double precision AS val "
                 "  FROM silver.samples s "
                 "  JOIN silver.collars c ON c.collar_id = s.collar_id "
-                f"  WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter} "
+                f"  WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter}{workspace_filter} "
                 ") sub "
                 "WHERE val IS NOT NULL"
             )
@@ -1424,7 +1480,7 @@ async def query_assay_data(
                 "      (s.commodity_assays->>$2)::double precision AS val "
                 "FROM silver.samples s "
                 "JOIN silver.collars c ON c.collar_id = s.collar_id "
-                f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter} "
+                f"WHERE c.project_id = $1 AND s.commodity_assays ? $2{hole_filter}{workspace_filter} "
                 "  AND (s.commodity_assays->>$2) IS NOT NULL "
                 f"ORDER BY c.hole_id, s.from_depth "
                 f"LIMIT ${limit_idx}"
@@ -1573,13 +1629,17 @@ async def search_documents(
       string — a known query/corpus asymmetry pending an eval-gated fix.
 
     Stage 2 — Cross-encoder reranking (when reranker is available):
-      Each (query, chunk.text) pair is scored by the configured cross-encoder
-      (settings.RERANKER_MODEL_PATH — live default bge-reranker-base; set the
-      env to Qwen/Qwen3-Reranker-0.6B to use the Qwen3 reranker), which
-      produces raw logits.  Candidates are sorted by logit descending; only the
-      top RERANKER_TOP_K (5) with logit >= RERANKER_SCORE_THRESHOLD (0.0) are
-      returned.  The reranker score replaces the raw Qdrant cosine in the
-      returned relevance_score field.
+      Each (query, chunk.text) pair is scored by the configured reranker
+      backend (RERANKER_BACKEND — live default "foundry", Cohere Rerank v4;
+      "cross_encoder"/"qwen3_causal" for the self-hosted fallback).
+      Candidates are sorted by score descending; only the top RERANKER_TOP_K
+      (12) survive.  The score threshold is backend-aware:
+      RERANKER_SCORE_THRESHOLD (0.0, sign check) for cross_encoder/
+      qwen3_causal's unbounded logits, or RERANKER_SCORE_THRESHOLD_FOUNDRY
+      (0.2) for foundry's calibrated [0,1] Cohere relevance_score — the two
+      scales are not comparable, so a single threshold cannot gate both.
+      The reranker score replaces the raw Qdrant cosine in the returned
+      relevance_score field.
 
     When no reranker is available the tool falls back to Layer 1 quality gate
     filtering via filter_by_quality using RETRIEVAL_QUALITY_THRESHOLD.
@@ -1877,8 +1937,21 @@ async def search_documents(
             needs_sigmoid = RERANKER_BACKEND != "foundry"
 
             # Pair chunks with raw scores, threshold, sort, top-K.
+            #
+            # The threshold must be backend-aware (2026-08-15 audit fix):
+            # cross_encoder/qwen3_causal emit unbounded real-valued logits
+            # (~[-15,+15]) where RERANKER_SCORE_THRESHOLD's 0.0 default is a
+            # meaningful sign check ("any positive logit passes"). foundry's
+            # raw_scores are ALREADY Cohere's calibrated [0,1]
+            # relevance_score (never negative — see needs_sigmoid above), so
+            # gating those against the same 0.0 default was a no-op that let
+            # every candidate through regardless of actual relevance.
             pre_threshold_count = len(chunks)
-            min_score = settings.RERANKER_SCORE_THRESHOLD
+            min_score = (
+                settings.RERANKER_SCORE_THRESHOLD_FOUNDRY
+                if RERANKER_BACKEND == "foundry"
+                else settings.RERANKER_SCORE_THRESHOLD
+            )
             paired = [
                 (chunk, score)
                 for chunk, score in zip(chunks, raw_scores, strict=False)
@@ -2200,8 +2273,21 @@ async def verify_numerical_claim(
     claim before including it in the response.
 
     Allowed tables (to prevent SQL injection): silver.collars, silver.samples,
-    silver.lithology_logs, silver.alteration, silver.structures,
-    silver.geochemistry, silver.surveys, bronze.reports.
+    silver.lithology_logs, silver.alteration, silver.structure,
+    silver.geochemistry, silver.surveys, silver.reports.
+
+    Tenancy scoping (2026-08-15 audit): this tool used to be scoped ONLY by
+    primary key, with zero tenant check — a real gap given the query
+    planner (``plan_executor._dispatch_factual_lookup``) uses it as a
+    general-purpose value-retrieval oracle, not just post-hoc verification
+    of the LLM's own claims. Every allowlisted table is now scoped by
+    ``ctx.deps.workspace_id`` / ``ctx.deps.project_id`` (bound whenever
+    present — lenient/absent otherwise, matching ``acquire_scoped()``'s own
+    GUC-bind fallback for single-tenant / no-workspace call paths). Six
+    of the eight tables (``silver.samples``, ``silver.lithology_logs``,
+    ``silver.alteration``, ``silver.structure``, ``silver.geochemistry``,
+    ``silver.surveys``) don't carry both tenancy columns directly, so the
+    scope is applied via a join to ``silver.collars`` on ``collar_id``.
 
     Args:
         table: Schema-qualified table name (e.g. "silver.collars").
@@ -2221,32 +2307,65 @@ async def verify_numerical_claim(
     #
     # Only columns that store NUMERIC values (not text, geometry, arrays,
     # or JSON) belong here — verify_numerical_claim returns a float.
-    allowed_by_table: dict[str, tuple[str, set[str]]] = {
-        # (primary_key_column, allowed_value_columns)
+    #
+    # scope_mode drives how the tenancy WHERE clause + FROM clause are
+    # built below:
+    #   "direct"      — table carries workspace_id AND project_id itself.
+    #   "collar"      — table carries workspace_id itself; project_id only
+    #                   reachable via a join to silver.collars on collar_id.
+    #   "collar_full" — table carries neither column; both come from the
+    #                   silver.collars join.
+    allowed_by_table: dict[str, tuple[str, set[str], str]] = {
+        # (primary_key_column, allowed_value_columns, scope_mode)
         "silver.collars": ("collar_id", {
             "total_depth", "azimuth", "dip", "easting", "northing", "elevation",
-        }),
+        }, "direct"),
         "silver.samples": ("sample_id", {
             "from_depth", "to_depth", "sample_length", "recovery",
-        }),
+        }, "collar"),
         "silver.lithology_logs": ("log_id", {
             "from_depth", "to_depth", "rqd", "recovery",
-        }),
-        "silver.alteration": ("alteration_id", {
+        }, "collar"),
+        # NOTE (2026-08-15 audit): pk_col was previously "alteration_id",
+        # which has never existed on this table — the real schema
+        # (database/migrations/2026_05_20_060400_create_silver_geological_singulars.php)
+        # names the PK "id". Fixed here so the tenancy join added below is
+        # actually functional rather than erroring on every call.
+        "silver.alteration": ("id", {
             "from_depth", "to_depth", "intensity",
-        }),
-        "silver.structures": ("structure_id", {
-            "depth", "true_dip", "dip_direction", "apparent_dip",
-        }),
+        }, "collar"),
+        # NOTE (2026-08-15 audit): was "silver.structures" (plural) with
+        # pk_col "structure_id" — that table was DROPPED in the same
+        # migration above (zero rows at the time) in favour of the
+        # singular "silver.structure", whose PK is "id" and whose columns
+        # differ (alpha_angle/beta_angle/true_dip/true_dip_dir, not
+        # dip_direction/apparent_dip). Every call against the old name
+        # failed at the DB with "relation does not exist" — silently
+        # caught below and returned as unverifiable, so this was a dead
+        # entry, not a security issue, but it blocked writing a working
+        # tenancy join. Renamed + column set corrected to match the real
+        # table (see query_coverage_gap's _COVERAGE_ATTRIBUTES, which
+        # already uses "silver.structure").
+        "silver.structure": ("id", {
+            "depth", "true_dip", "true_dip_dir", "alpha_angle", "beta_angle",
+        }, "collar"),
         "silver.geochemistry": ("geochem_id", {
             "from_depth", "to_depth", "value", "detection_limit",
-        }),
+        }, "collar_full"),
         "silver.surveys": ("survey_id", {
             "depth", "azimuth", "dip",
-        }),
-        "bronze.reports": ("report_id", {
-            "page_count", "version_number",
-        }),
+        }, "collar_full"),
+        # NOTE (2026-08-15 audit): was "bronze.reports", which has never
+        # existed as a table (report metadata lives in "silver.reports" —
+        # bronze.* only holds pre-parse raw/manifest data). Renamed to the
+        # real table + its real PK ("report_id"). "page_count" and
+        # "version_number" are NOT columns on silver.reports (the latter
+        # lives on silver.document_versions, keyed by version_id, not
+        # report_id) and silver.reports has no other NUMERIC column to
+        # verify — left as an empty allowlist (BLOCKS every call, fail
+        # closed) rather than guessing a replacement column without a
+        # schema/product decision. Flagged separately for follow-up.
+        "silver.reports": ("report_id", set(), "direct"),
     }
 
     if table not in allowed_by_table:
@@ -2259,7 +2378,7 @@ async def verify_numerical_claim(
             verification_query=f"BLOCKED — table '{table}' not in allowlist",
         )
 
-    pk_col, allowed_columns = allowed_by_table[table]
+    pk_col, allowed_columns, scope_mode = allowed_by_table[table]
 
     if column not in allowed_columns:
         logger.error(
@@ -2279,22 +2398,63 @@ async def verify_numerical_claim(
             ),
         )
 
-    # Safe to interpolate — both identifiers are drawn from the static
-    # allowlist. `row_id` is bound via asyncpg $1 parameter.
-    sql = f"SELECT {column} FROM {table} WHERE {pk_col} = $1::uuid"
+    # Tenancy scope — bound whenever ctx.deps carries the value (getattr
+    # defensive: some call sites, e.g. the P0 #2 regression test fixture,
+    # pass a bare stand-in without these attributes).
+    workspace_id = getattr(ctx.deps, "workspace_id", None)
+    project_id = getattr(ctx.deps, "project_id", None)
+
+    bind_args: list = [row_id]
+    param_idx = 2
+    scope_clause = ""
+    if scope_mode == "direct":
+        # Safe to interpolate — table/pk_col are drawn from the static
+        # allowlist. `row_id` (+ scope values) are bound via asyncpg params.
+        select_col = column
+        from_clause = table
+        pk_ref = pk_col
+        if workspace_id:
+            scope_clause += f" AND workspace_id = ${param_idx}::uuid"
+            bind_args.append(workspace_id)
+            param_idx += 1
+        if project_id:
+            scope_clause += f" AND project_id = ${param_idx}::uuid"
+            bind_args.append(project_id)
+            param_idx += 1
+    else:
+        # "collar" / "collar_full" — join to silver.collars on collar_id
+        # so the tenancy columns it carries directly can scope this table
+        # too. "collar" tables carry workspace_id themselves (only
+        # project_id needs the join); "collar_full" tables carry neither.
+        select_col = f"t.{column}"
+        from_clause = f"{table} t JOIN silver.collars c ON c.collar_id = t.collar_id"
+        pk_ref = f"t.{pk_col}"
+        ws_ref = "t.workspace_id" if scope_mode == "collar" else "c.workspace_id"
+        if workspace_id:
+            scope_clause += f" AND {ws_ref} = ${param_idx}::uuid"
+            bind_args.append(workspace_id)
+            param_idx += 1
+        if project_id:
+            scope_clause += f" AND c.project_id = ${param_idx}::uuid"
+            bind_args.append(project_id)
+            param_idx += 1
+
+    sql = f"SELECT {select_col} FROM {from_clause} WHERE {pk_ref} = $1::uuid{scope_clause}"
 
     logger.info(
-        "verify_numerical_claim: %s.%s row=%s claimed=%.4f tol=%.4f",
+        "verify_numerical_claim: %s.%s row=%s workspace=%s project=%s claimed=%.4f tol=%.4f",
         table,
         column,
         row_id,
+        workspace_id,
+        project_id,
         claimed_value,
         tolerance,
     )
 
     async def _run_verify() -> float | None:
         async with ctx.deps.pg_pool.acquire() as conn:
-            row = await conn.fetchrow(sql, row_id)
+            row = await conn.fetchrow(sql, *bind_args)
             if row is None:
                 return None
             return float(row[column])
