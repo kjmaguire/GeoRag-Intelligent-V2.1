@@ -49,10 +49,25 @@ class EntityReferencesController extends Controller
             return response()->json(['message' => 'Invalid pg_id UUID.'], 400);
         }
 
+        // Tenancy gate — the public_geo entity itself is shared reference
+        // data, but the joined silver.reports row (title, company,
+        // commodity, filing_date) is tenant-owned. Without this, any
+        // authenticated user could enumerate which reports across every
+        // tenant reference a given public-geoscience entity. Switched the
+        // join from LEFT to INNER + scoped to the caller's project
+        // memberships so links to reports the caller can't see are
+        // dropped entirely rather than surfaced with report fields.
+        $user = $request->user();
+        if ($user === null) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
+        $projectIds = $user->projects()->pluck('silver.projects.project_id')->all();
+
         $minConfidence = (float) $request->query('min_confidence', 0.6);
 
         $rows = DB::table('public_geo.document_entity_links as l')
-            ->leftJoin('silver.reports as r', 'r.report_id', '=', 'l.document_id')
+            ->join('silver.reports as r', 'r.report_id', '=', 'l.document_id')
+            ->whereIn('r.project_id', $projectIds)
             ->where('l.entity_id', $pgId)
             ->where('l.canonical_type', $canonicalType)
             ->where('l.confidence', '>=', $minConfidence)
@@ -105,6 +120,26 @@ class EntityReferencesController extends Controller
     {
         if (! preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $reportId)) {
             return response()->json(['message' => 'Invalid report_id UUID.'], 400);
+        }
+
+        // Tenancy gate — resolve the report's project_id and verify
+        // membership before revealing which public-geoscience entities it
+        // references. Same shape as EvidenceController::show() /
+        // PublicApiController::answer(). 404 (not 403) to avoid an
+        // existence oracle for report_ids the caller can't see.
+        $user = $request->user();
+        if ($user === null) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
+        $report = DB::table('silver.reports')
+            ->where('report_id', $reportId)
+            ->select('project_id')
+            ->first();
+        if ($report === null
+            || $report->project_id === null
+            || ! $user->hasProjectAccess((string) $report->project_id)
+        ) {
+            return response()->json(['message' => 'not_found'], 404);
         }
 
         $minConfidence = (float) $request->query('min_confidence', 0.6);

@@ -13,31 +13,44 @@ use Tests\TestCase;
  *   GET /api/v1/public-geoscience/entities/{canonical_type}/{pg_id}/references
  *   GET /api/v1/public-geoscience/documents/{report_id}/references
  *
- * Scoping model: Public Geoscience entities and their cross-corpus links are
- * WORKSPACE-GLOBAL. They represent government-published open data (SK SMDI,
- * BC MINFILE) and are intentionally readable by any authenticated user. There
- * is no per-user or per-project ownership — a "mine" entity in the SMDI corpus
- * is the same record regardless of which project is querying it.
+ * Scoping model: the public_geo.* entities themselves (pg_mine,
+ * pg_mineral_occurrence, etc.) ARE workspace-global — government-published
+ * open data (SK SMDI, BC MINFILE) readable by any authenticated user. That
+ * part of the original docblock reasoning below still holds.
+ *
+ * CORRECTED 2026-08-16: the original version of this docblock concluded
+ * "no cross-tenant isolation to test" from that fact alone — but both
+ * actions JOIN the tenant-owned `silver.reports` table to attach
+ * title/company/commodity/filing_date, and until this fix neither action
+ * checked whether the caller could see that joined report. That was a
+ * real, live cross-tenant IDOR (also independently flagged, unfixed, in
+ * the codebase's own 2026_08_15_030000_close_rls_admin_escape_hatch_third_
+ * pass migration docblock). The fix and its regression coverage — mocked,
+ * since public_geo.* isn't available under SQLite — live in
+ * EntityReferencesControllerTest::
+ * test_for_entity_scopes_joined_reports_to_callers_accessible_projects and
+ * ::test_for_document_returns_404_when_report_belongs_to_inaccessible_project.
  *
  * The controller:
  *   - Validates canonical_type against a fixed whitelist (returns 404 on unknown type).
  *   - Validates pg_id and report_id as UUIDs (returns 400 on malformed input).
  *   - Returns an empty `documents: []` payload for a valid UUID that has no links.
+ *   - Scopes the joined silver.reports row to the caller's project memberships.
  *
- * IDOR analysis: there is no cross-tenant isolation to test because PGEO records
- * are shared. The IDOR surface is limited to:
+ * This file's IDOR surface is limited to what's testable without a real
+ * Postgres public_geo schema:
  *   1. Unauthenticated access must be denied (401).
  *   2. An invalid canonical_type returns 404 (not 500).
  *   3. A malformed UUID returns 400 (not 500).
  *   4. A valid UUID with no links returns a graceful empty payload (not a data leak).
- *
- * No user-A-vs-user-B cross-tenant test is appropriate here because there are no
- * user-owned records in the public_geoscience schema.
+ * The actual cross-tenant report-scoping tests live in
+ * EntityReferencesControllerTest (see above) since they need to assert on
+ * mocked query construction, which this file's real-request style doesn't
+ * do.
  *
  * Verified routes:
  *   GET /api/v1/public-geoscience/entities/{canonical_type}/{pg_id}/references
  *   GET /api/v1/public-geoscience/documents/{report_id}/references
- * Both are workspace-global (public government data). No per-user IDOR test needed.
  */
 class EntityReferencesControllerIDORTest extends TestCase
 {

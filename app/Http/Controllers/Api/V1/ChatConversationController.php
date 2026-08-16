@@ -120,6 +120,16 @@ class ChatConversationController extends Controller
             'messages.*.metadata' => ['sometimes', 'array'],
         ]);
 
+        // Tenancy gate — a client-supplied project_id was previously
+        // persisted with no ownership check, letting an attacker attach
+        // their own conversation to a victim workspace's project_id and
+        // trigger a WorkspaceActivityBroadcast on that workspace's
+        // activity channel below (a cross-tenant signal leak, even though
+        // the broadcast channel itself is separately membership-gated).
+        if (! empty($validated['project_id']) && ! $user->hasProjectAccess($validated['project_id'])) {
+            return response()->json(['error' => 'project_not_found'], 404);
+        }
+
         $resolvedProjectId = null;
         $wasNewThread = false;
         DB::transaction(function () use ($conversationId, $user, $validated, &$resolvedProjectId, &$wasNewThread) {

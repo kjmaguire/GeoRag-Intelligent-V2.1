@@ -22,6 +22,7 @@ class Export extends Model
 
     protected $fillable = [
         'project_id',
+        'workspace_id',
         'export_type',
         'status',
         'format',

@@ -90,17 +90,29 @@ class PublicApiController extends Controller
 
     public function reports(Request $request): JsonResponse
     {
-        $limit = (int) $request->query('limit', 25);
-        $rows = DB::select(
-            'SELECT report_id::text AS id, title, company, commodity,
-                    project_name, region, filing_date, created_at
-               FROM silver.reports
-              ORDER BY created_at DESC NULLS LAST
-              LIMIT ?',
-            [min($limit, 200)],
-        );
+        // Tenancy gate — this endpoint had NO scoping at all until this
+        // fix: any authenticated user could list every tenant's reports
+        // (title/company/commodity/region/filing_date). Scope to the
+        // caller's project memberships, same pattern as
+        // ProjectController::index(). Reports with no resolvable
+        // project_id (orphans, per the phase0 RLS backfill) are excluded
+        // rather than shown — there's no membership to check them against.
+        $user = $request->user();
+        if ($user === null) {
+            return response()->json(['error' => 'unauthenticated'], 401);
+        }
+        $projectIds = $user->projects()->pluck('silver.projects.project_id')->all();
 
-        return response()->json(['items' => $rows, 'count' => count($rows)]);
+        $limit = (int) $request->query('limit', 25);
+        $query = DB::table('silver.reports')->whereIn('project_id', $projectIds);
+        $query = DB::connection()->getDriverName() === 'pgsql'
+            ? $query->orderByRaw('created_at DESC NULLS LAST')
+            : $query->orderByDesc('created_at');
+        $rows = $query
+            ->limit(min($limit, 200))
+            ->get(['report_id as id', 'title', 'company', 'commodity', 'project_name', 'region', 'filing_date', 'created_at']);
+
+        return response()->json(['items' => $rows, 'count' => $rows->count()]);
     }
 
     public function targets(Request $request, string $projectId): JsonResponse

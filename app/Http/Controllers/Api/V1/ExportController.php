@@ -82,8 +82,13 @@ class ExportController extends Controller
 
             $project = Project::findOrFail($projectId);
 
+            // silver.exports.workspace_id is NOT NULL with no default
+            // (Tier C RLS migration, 97-rls-tenant-isolation-block2.sql)
+            // and RLS requires it to match app.workspace_id. Without it
+            // every insert here throws a NOT NULL violation.
             $export = Export::create([
                 'project_id' => $project->project_id,
+                'workspace_id' => $project->workspace_id,
                 'export_type' => $request->validated('export_type'),
                 'status' => 'pending',
                 'filters' => $request->validated('filters') ?? [],

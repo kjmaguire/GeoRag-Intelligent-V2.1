@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Api\V1\PublicGeoscience;
 
+use App\Models\Project;
 use App\Models\User;
 use Illuminate\Database\Query\Expression;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -17,12 +18,23 @@ use Tests\TestCase;
  *
  * DB::table() mocked throughout — public_geo.* schema not available
  * in the SQLite in-memory test environment.
+ *
+ * 2026-08-16 tenancy fix: both actions now require the caller to have
+ * access to the project owning the joined silver.reports row (the
+ * public_geo entity itself is shared reference data, but the report
+ * fields joined in — title/company/commodity/filing_date — are
+ * tenant-owned). $this->user is attached to $this->project so the
+ * existing "happy path" tests keep passing; see
+ * EntityReferencesControllerIDORTest for the cross-tenant regression
+ * coverage this fix added.
  */
 class EntityReferencesControllerTest extends TestCase
 {
     use RefreshDatabase;
 
     private User $user;
+
+    private Project $project;
 
     private const VALID_UUID = 'cccccccc-0000-0000-0000-000000000001';
 
@@ -32,6 +44,8 @@ class EntityReferencesControllerTest extends TestCase
     {
         parent::setUp();
         $this->user = User::factory()->create();
+        $this->project = Project::factory()->create();
+        $this->user->projects()->attach($this->project->project_id, ['role' => 'owner']);
     }
 
     // ── forEntity — 401 ──────────────────────────────────────────────────────
@@ -121,6 +135,82 @@ class EntityReferencesControllerTest extends TestCase
                 ->assertOk()
                 ->assertJsonPath('canonical_type', $type);
         }
+    }
+
+    // ── forEntity — tenancy scoping (2026-08-16 fix) ──────────────────────────
+
+    public function test_for_entity_scopes_joined_reports_to_callers_accessible_projects(): void
+    {
+        // The security-relevant behaviour: the joined silver.reports rows
+        // must be filtered to exactly the caller's project memberships, not
+        // left unscoped. Asserting the exact whereIn() argument (rather than
+        // withAnyArgs()) means this test fails if the scoping is ever
+        // dropped or loosened.
+        DB::shouldReceive('table')
+            ->with('public_geo.document_entity_links as l')
+            ->andReturnSelf();
+        DB::shouldReceive('join')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('whereIn')
+            ->with('r.project_id', [$this->project->project_id])
+            ->once()
+            ->andReturnSelf();
+        DB::shouldReceive('where')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('whereNull')->andReturnSelf();
+        DB::shouldReceive('orderByDesc')->andReturnSelf();
+        DB::shouldReceive('get')->andReturn(collect([]));
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/public-geoscience/entities/mine/'.self::VALID_UUID.'/references')
+            ->assertOk();
+    }
+
+    public function test_for_entity_returns_empty_result_when_caller_has_no_projects(): void
+    {
+        // A user with zero project memberships is still authenticated (200,
+        // not 401) but whereIn('r.project_id', []) must scope the query to
+        // nothing — confirms the empty-membership case fails closed rather
+        // than falling back to "no filter."
+        DB::shouldReceive('table')
+            ->with('public_geo.document_entity_links as l')
+            ->andReturnSelf();
+        DB::shouldReceive('join')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('whereIn')
+            ->with('r.project_id', [])
+            ->once()
+            ->andReturnSelf();
+        DB::shouldReceive('where')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('whereNull')->andReturnSelf();
+        DB::shouldReceive('orderByDesc')->andReturnSelf();
+        DB::shouldReceive('get')->andReturn(collect([]));
+
+        $userWithNoProjects = User::factory()->create();
+
+        $this->actingAs($userWithNoProjects)
+            ->getJson('/api/v1/public-geoscience/entities/mine/'.self::VALID_UUID.'/references')
+            ->assertOk()
+            ->assertJsonPath('total', 0)
+            ->assertJsonPath('documents', []);
+    }
+
+    // ── forDocument — tenancy scoping (2026-08-16 fix) ────────────────────────
+
+    public function test_for_document_returns_404_when_report_belongs_to_inaccessible_project(): void
+    {
+        $otherProjectId = 'ffffffff-1111-0000-0000-000000000001';
+        $this->mockReportProjectLookup(self::VALID_DOC_UUID, $otherProjectId);
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
+            ->assertNotFound();
+    }
+
+    public function test_for_document_returns_404_when_report_does_not_exist(): void
+    {
+        $this->mockReportProjectLookup(self::VALID_DOC_UUID, null);
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/public-geoscience/documents/'.self::VALID_DOC_UUID.'/references')
+            ->assertNotFound();
     }
 
     // ── forEntity — min_confidence filter ────────────────────────────────────
@@ -258,15 +348,36 @@ class EntityReferencesControllerTest extends TestCase
         DB::shouldReceive('table')
             ->with('public_geo.document_entity_links as l')
             ->andReturnSelf();
-        DB::shouldReceive('leftJoin')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('join')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('whereIn')->withAnyArgs()->andReturnSelf();
         DB::shouldReceive('where')->withAnyArgs()->andReturnSelf();
         DB::shouldReceive('whereNull')->andReturnSelf();
         DB::shouldReceive('orderByDesc')->andReturnSelf();
         DB::shouldReceive('get')->andReturn($rows);
     }
 
-    private function mockDocumentLinksQuery(string $reportId, $rows): void
+    /**
+     * Mocks the tenancy-gate lookup (`silver.reports` by report_id) that
+     * forDocument() now runs before the links query. Defaults to the
+     * report belonging to $this->project so the caller's membership check
+     * passes; pass $projectId explicitly to simulate a report owned by a
+     * different (inaccessible) project.
+     */
+    private function mockReportProjectLookup(string $reportId, ?string $projectId): void
     {
+        DB::shouldReceive('table')
+            ->with('silver.reports')
+            ->andReturnSelf();
+        DB::shouldReceive('where')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('select')->withAnyArgs()->andReturnSelf();
+        DB::shouldReceive('first')
+            ->andReturn($projectId === null ? null : (object) ['project_id' => $projectId]);
+    }
+
+    private function mockDocumentLinksQuery(string $reportId, $rows, ?string $projectId = null): void
+    {
+        $this->mockReportProjectLookup($reportId, $projectId ?? $this->project->project_id);
+
         DB::shouldReceive('table')
             ->with('public_geo.document_entity_links')
             ->andReturnSelf();
