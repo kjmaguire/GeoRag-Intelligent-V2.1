@@ -28,7 +28,7 @@
 # after a future PHP 8.5.x patch. Both builder + runtime stages MUST
 # use the same digest so the PECL extensions compiled in builder match
 # the runtime PHP ABI byte-for-byte.
-FROM php:8.5-cli@sha256:58b996c35ce0511cdbaa1fc0476a194fd0221097d721ff7df5af0b6f1a3d0202 AS builder
+FROM php:8.5-cli@sha256:54d82ff9be6bd198145e90c917fc9b2e24230b42e52def8deb3554baf61c451a AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -140,7 +140,7 @@ RUN npm run build
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli@sha256:58b996c35ce0511cdbaa1fc0476a194fd0221097d721ff7df5af0b6f1a3d0202 AS runtime
+FROM php:8.5-cli@sha256:54d82ff9be6bd198145e90c917fc9b2e24230b42e52def8deb3554baf61c451a AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"
