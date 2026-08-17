@@ -6,6 +6,8 @@ use App\Http\Controllers\Admin\IntegrationsController;
 use App\Http\Controllers\CitationFeedbackController;
 use App\Http\Controllers\Foundry\ChatController;
 use App\Http\Controllers\Foundry\CorpusController;
+use App\Http\Controllers\Foundry\DrillholeDetailController;
+use App\Http\Controllers\Foundry\HoleCompareController;
 use App\Http\Controllers\Foundry\IngestionRunsController;
 use App\Http\Controllers\Foundry\IngestQualityController;
 use App\Http\Controllers\Foundry\MapController;
@@ -13,6 +15,7 @@ use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
 use App\Http\Controllers\Foundry\ReportController;
 use App\Http\Controllers\Foundry\SourcesController;
+use App\Http\Controllers\Foundry\WorkspaceController;
 use App\Http\Controllers\Internal\MetricsController;
 use App\Http\Controllers\OAuthIngestController;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -103,6 +106,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->where('slug', '[a-z0-9\-]+')->name('foundry.map');
     Route::get('/projects/{slug}/corpus', [CorpusController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.corpus');
+    // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).
+    Route::get('/projects/{slug}/holes/{collarId}/detail', [DrillholeDetailController::class, 'show'])
+        ->where('slug', '[a-z0-9\-]+')->name('foundry.drillhole-detail');
+    Route::get('/projects/{slug}/compare', [HoleCompareController::class, 'show'])
+        ->where('slug', '[a-z0-9\-]+')->name('foundry.compare');
+    Route::get('/projects/{slug}/workspace', [WorkspaceController::class, 'show'])
+        ->where('slug', '[a-z0-9\-]+')->name('foundry.workspace');
+    Route::get('/projects/{slug}/holes/{hole}/payload', [WorkspaceController::class, 'holePayload'])
+        ->where('slug', '[a-z0-9\-]+')->name('foundry.hole_payload');
     Route::get('/projects/{slug}/reports', [ReportController::class, 'index'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.reports');
     Route::get('/projects/{slug}/reports/{report_id}', [ReportController::class, 'view'])

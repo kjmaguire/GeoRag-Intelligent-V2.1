@@ -124,6 +124,42 @@ const COVERAGE_KIND_OPTIONS: ReadonlyArray<{ value: CoverageKind; label: string 
     { value: 'spatial_features', label: 'Features' },
 ];
 
+// ── Public Geoscience layer types (2026-08-17 rebuild) ───────────────────────
+// GeoJSON overlay, NOT Martin vector tiles — see PublicGeoscienceMapController
+// docblock for why. Point-geometry entities only (mine / mineral_occurrence /
+// drillhole_collar / rock_sample); see that controller for the disclosed scope.
+interface PublicGeoFeature {
+    type: 'Feature';
+    geometry: { type: 'Point'; coordinates: [number, number] };
+    properties: {
+        id: string;
+        layer: 'mine' | 'mineral_occurrence' | 'drillhole_collar' | 'rock_sample';
+        label: string | null;
+        jurisdiction_code: string;
+        source_id: string;
+    };
+}
+
+interface PublicGeoFeatureCollection {
+    type: 'FeatureCollection';
+    feature_count: number;
+    features: PublicGeoFeature[];
+}
+
+const PUBLIC_GEO_LAYER_LABELS: Record<PublicGeoFeature['properties']['layer'], string> = {
+    mine: 'Mine',
+    mineral_occurrence: 'Mineral occurrence',
+    drillhole_collar: 'Drillhole (public)',
+    rock_sample: 'Rock sample',
+};
+
+const PUBLIC_GEO_LAYER_COLORS: Record<PublicGeoFeature['properties']['layer'], string> = {
+    mine: '#f97316',
+    mineral_occurrence: '#eab308',
+    drillhole_collar: '#38bdf8',
+    rock_sample: '#a78bfa',
+};
+
 // ── MapView component props ───────────────────────────────────────────────────
 interface MapViewProps {
     projectId?: string;
@@ -443,6 +479,16 @@ export default function MapView({
     const [coverageData, setCoverageData] = useState<CoverageFeatureCollection | null>(null);
     const [coverageLoading, setCoverageLoading] = useState(false);
     const [coverageError, setCoverageError] = useState<string | null>(null);
+
+    // ── Public Geoscience overlay (2026-08-17 rebuild) ───────────────────────
+    // GeoJSON points from public_geo.pg_mine / pg_mineral_occurrence /
+    // pg_drillhole_collar / pg_rock_sample — NOT project-scoped (public_geo
+    // isn't tenant data), so unlike coverage density this fetches regardless
+    // of whether a project is mounted.
+    const [publicGeoEnabled, setPublicGeoEnabled] = useState(false);
+    const [publicGeoData, setPublicGeoData] = useState<PublicGeoFeatureCollection | null>(null);
+    const [publicGeoLoading, setPublicGeoLoading] = useState(false);
+    const [publicGeoError, setPublicGeoError] = useState<string | null>(null);
 
     // ── Tile failure toast state (MAPVIEW-03) ────────────────────────────────
     interface TileToast {
@@ -1238,6 +1284,154 @@ export default function MapView({
         };
     }, [coverageEnabled, coverageKind, mapReady]);
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // ██  PUBLIC GEOSCIENCE LAYER (2026-08-17 rebuild — see controller docblock)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // Fetch once when enabled — not project-scoped, so no projectId gate and
+    // no re-fetch on project change.
+    useEffect(() => {
+        if (!publicGeoEnabled) {
+            setPublicGeoData(null);
+            return;
+        }
+        let cancelled = false;
+
+        const fetchPublicGeo = async () => {
+            setPublicGeoLoading(true);
+            setPublicGeoError(null);
+            try {
+                const res = await fetch('/api/v1/public-geoscience/map', {
+                    credentials: 'same-origin',
+                    headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const body = await res.json() as PublicGeoFeatureCollection;
+                if (!cancelled) setPublicGeoData(body);
+            } catch (err) {
+                if (!cancelled) {
+                    setPublicGeoError(err instanceof Error ? err.message : String(err));
+                    setPublicGeoData(null);
+                }
+            } finally {
+                if (!cancelled) setPublicGeoLoading(false);
+            }
+        };
+
+        void fetchPublicGeo();
+        return () => { cancelled = true; };
+    }, [publicGeoEnabled]);
+
+    // Add / update the public-geoscience source + circle layer, colour-coded
+    // by entity layer (mine / mineral_occurrence / drillhole_collar / rock_sample).
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !mapReady) return;
+
+        const sourceId = 'public-geoscience';
+        const circleId = 'public-geoscience-circle';
+
+        const teardown = () => {
+            if (map.getLayer(circleId)) map.removeLayer(circleId);
+            if (map.getSource(sourceId)) map.removeSource(sourceId);
+        };
+
+        if (!publicGeoEnabled || !publicGeoData) {
+            teardown();
+            return;
+        }
+
+        const geojson: GeoJSON.FeatureCollection = {
+            type: 'FeatureCollection',
+            features: publicGeoData.features as unknown as GeoJSON.Feature[],
+        };
+
+        const existing = map.getSource(sourceId);
+        if (existing) {
+            (existing as GeoJSONSource).setData(geojson);
+        } else {
+            map.addSource(sourceId, { type: 'geojson', data: geojson });
+        }
+
+        const colorExpr: unknown[] = ['match', ['get', 'layer']];
+        for (const [layer, color] of Object.entries(PUBLIC_GEO_LAYER_COLORS)) {
+            colorExpr.push(layer, color);
+        }
+        colorExpr.push('#9ca3af'); // fallback
+
+        if (!map.getLayer(circleId)) {
+            map.addLayer({
+                id: circleId,
+                type: 'circle',
+                source: sourceId,
+                paint: {
+                    'circle-radius': 5,
+                    'circle-color': colorExpr,
+                    'circle-stroke-width': 1,
+                    'circle-stroke-color': '#111827',
+                    'circle-opacity': 0.85,
+                },
+            } as unknown as AddLayerObject);
+        }
+
+        return () => {
+            // Same pattern as coverage density: full teardown only happens
+            // above when disabled; intermediate data updates leave the
+            // layer in place and just call setData.
+        };
+    }, [publicGeoData, publicGeoEnabled, mapReady]);
+
+    // Hover popup — own layer id, independent of the MVT / coverage popups.
+    useEffect(() => {
+        const map = mapRef.current;
+        if (!map || !mapReady || !publicGeoEnabled) return;
+
+        const circleId = 'public-geoscience-circle';
+        let activePopup: Popup | null = null;
+
+        const onMove = (e: maplibregl.MapMouseEvent) => {
+            if (!map.getLayer(circleId)) return;
+            const features = map.queryRenderedFeatures(e.point, { layers: [circleId] });
+            if (!features.length) {
+                activePopup?.remove();
+                activePopup = null;
+                map.getCanvas().style.cursor = '';
+                return;
+            }
+            const feat = features[0];
+            const props = feat.properties as PublicGeoFeature['properties'];
+            const layerLabel = PUBLIC_GEO_LAYER_LABELS[props.layer] ?? props.layer;
+
+            map.getCanvas().style.cursor = 'pointer';
+            activePopup?.remove();
+            const html = `<div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 8px;">
+                       <div style="font-weight: 700; color: #f9fafb;">${props.label ?? '(unnamed)'}</div>
+                       <div style="color: #9ca3af;">${layerLabel} · ${props.jurisdiction_code}</div>
+                   </div>`;
+            activePopup = new maplibregl.Popup({
+                closeButton: false, closeOnClick: false,
+                className: 'georag-map-popup', maxWidth: '260px', offset: 8,
+            })
+                .setLngLat(e.lngLat)
+                .setHTML(html)
+                .addTo(map);
+        };
+
+        const onLeave = () => {
+            activePopup?.remove();
+            activePopup = null;
+            map.getCanvas().style.cursor = '';
+        };
+
+        map.on('mousemove', circleId, onMove);
+        map.on('mouseleave', circleId, onLeave);
+        return () => {
+            map.off('mousemove', circleId, onMove);
+            map.off('mouseleave', circleId, onLeave);
+            activePopup?.remove();
+        };
+    }, [publicGeoEnabled, mapReady]);
+
     // ── MVT error handling + tile-failure watchdog (MAPVIEW-03) ─────────────
     useEffect(() => {
         const map = mapRef.current;
@@ -1757,6 +1951,45 @@ export default function MapView({
                                     )}
                                 </div>
                             )}
+
+                            {/* ── Public Geoscience toggle (2026-08-17 rebuild) ────────── */}
+                            <div className="mt-2 pt-2 border-t border-gray-700 space-y-1.5">
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="checkbox"
+                                        id="layer-toggle-public-geoscience"
+                                        checked={publicGeoEnabled}
+                                        onChange={() => setPublicGeoEnabled((v) => !v)}
+                                        className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 focus:ring-1 cursor-pointer"
+                                    />
+                                    <label
+                                        htmlFor="layer-toggle-public-geoscience"
+                                        className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-300 hover:text-gray-100 select-none"
+                                    >
+                                        <span
+                                            className="w-2 h-2 rounded-full inline-block flex-shrink-0"
+                                            style={{ background: PUBLIC_GEO_LAYER_COLORS.mine }}
+                                            aria-hidden="true"
+                                        />
+                                        Public geoscience
+                                    </label>
+                                </div>
+                                {publicGeoEnabled && (
+                                    <div className="pl-5 space-y-1">
+                                        {publicGeoLoading && (
+                                            <div className="text-[10px] text-gray-500">Loading public geoscience data…</div>
+                                        )}
+                                        {publicGeoError && (
+                                            <div className="text-[10px] text-red-400">{publicGeoError}</div>
+                                        )}
+                                        {!publicGeoLoading && !publicGeoError && publicGeoData && (
+                                            <div className="text-[10px] text-gray-500">
+                                                {publicGeoData.feature_count} features · mines, occurrences, public drillholes, rock samples
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>

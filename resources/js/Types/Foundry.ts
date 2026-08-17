@@ -171,6 +171,54 @@ export interface HoleCompareProps {
     empty: boolean;
 }
 
+// Restored 2026-08-17 (reader-core trim reversal) — §5.12 anchored-scroll
+// per-hole page. No `qa` field: the FastAPI /v1/viz/qa endpoint that fed it
+// no longer exists, see DrillholeDetailController's docblock.
+export interface DrillholeDetailProps {
+    project: Pick<FoundryProject, 'project_id' | 'project_name' | 'slug'>;
+    collar: {
+        collar_id: string;
+        hole_id: string;
+        project_id: string;
+        workspace_id?: string;
+        elevation_m?: number | null;
+        total_depth_m?: number | null;
+        azimuth_deg?: number | null;
+        dip_deg?: number | null;
+        spatial_uncertainty_m?: number | null;
+        crs_confidence?: number | null;
+        georef_method?: 'declared' | 'detected' | 'assumed' | 'manual' | 'survey' | null;
+    };
+    intervals: Array<{
+        depth_from: number;
+        depth_to: number;
+        interval_kind: string;
+        lithology_code?: string | null;
+        lithology_label?: string | null;
+        color_hint?: string | null;
+        assay_payload?: Record<string, unknown>;
+    }>;
+    assays: Array<{
+        sample_id?: string;
+        from_depth?: number;
+        to_depth?: number;
+        element?: string;
+        value?: number;
+        value_ppm?: number;
+    }>;
+    structures: Array<{
+        depth: number;
+        structure_type: string;
+        stereonet_x: number | null;
+        stereonet_y: number | null;
+        strike_deg?: number | null;
+        dip_deg?: number | null;
+    }>;
+    cross_sections: Array<{ panel_id: string; section_name: string; hole_count: number }>;
+    lithology_quality: { exact: number; fuzzy: number; unmapped: number; total: number } | null;
+    data_quality_flags?: import('@/Components/DataQualityFlagsBadge').DataQualityFlagsBadgeData | null;
+}
+
 export interface IngestQualityFileRow {
     file_id: string;
     name: string;

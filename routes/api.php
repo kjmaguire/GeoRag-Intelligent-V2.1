@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\V1\IngestProgressController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\PublicApiController;
 use App\Http\Controllers\Api\V1\PublicGeoscience\EntityReferencesController as PublicGeoscienceEntityReferencesController;
+use App\Http\Controllers\Api\V1\PublicGeoscience\PublicGeoscienceMapController;
 use App\Http\Controllers\Api\V1\QueryController;
 use App\Http\Controllers\Api\V1\TrustController;
 use App\Http\Controllers\Api\V1\UploadController;
@@ -178,6 +179,10 @@ Route::prefix('v1')->group(function () {
                 'documents/{report_id}/references',
                 [PublicGeoscienceEntityReferencesController::class, 'forDocument'],
             );
+            // Restored/rebuilt 2026-08-17 — GeoJSON feed for the Map page's
+            // Public Geoscience overlay (see plan addendum + controller
+            // docblock: rebuild, not a restore of the old Martin-tile path).
+            Route::get('map', [PublicGeoscienceMapController::class, 'index']);
         });
     });
 });

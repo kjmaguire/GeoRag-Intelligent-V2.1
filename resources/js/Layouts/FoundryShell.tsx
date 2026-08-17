@@ -38,6 +38,9 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
     { id: 'reader', suffix: '/corpus', label: 'Reader', icon: 'doc' },
     { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
     { id: 'map', suffix: '/map', label: 'Map', icon: 'map' },
+    // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).
+    { id: 'workspace', suffix: '/workspace', label: 'Workspace', icon: 'cube' },
+    { id: 'compare', suffix: '/compare', label: 'Compare', icon: 'compare' },
 ];
 
 interface SharedRailData {
@@ -68,6 +71,9 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
         plus: <path d="M12 5v14 M5 12h14" />,
         chevron: <path d="M9 6 L15 12 L9 18" />,
         pulse: <path d="M3 12h4l2-7 4 14 2-7h6" />,
+        // Restored 2026-08-17 (reader-core trim reversal).
+        cube: <path d="M12 2 L21 7 V17 L12 22 L3 17 V7 Z M3 7 L12 12 L21 7 M12 12 V22" />,
+        compare: <path d="M8 3 V21 M16 3 V21 M4 7 H8 M16 7 H20 M4 17 H8 M16 17 H20" />,
     };
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

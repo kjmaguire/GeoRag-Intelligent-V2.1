@@ -61,6 +61,8 @@ final class FoundryRoutesSmokeTest extends TestCase
             'ingestion-runs' => ['/ingestion-runs', 'Foundry/IngestionRuns'],
             'sources' => ['/sources', 'Foundry/Sources'],
             'corpus' => ['/corpus', 'Foundry/Corpus'],
+            'compare' => ['/compare', 'Foundry/HoleCompare'],
+            'workspace' => ['/workspace', 'Foundry/Workspace'],
             'reports' => ['/reports', 'Foundry/Report'],
             'map' => ['/map', 'Foundry/Map'],
         ];

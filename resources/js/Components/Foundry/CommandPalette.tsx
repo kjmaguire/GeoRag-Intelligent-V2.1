@@ -57,6 +57,11 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
             { kind: 'nav', title: 'Quality', sub: 'Ingest trust report', href: `${base}/imports/quality`, group: 'This project' },
             { kind: 'nav', title: 'Reader', sub: 'Document corpus', href: `${base}/corpus`, group: 'This project' },
             { kind: 'nav', title: 'Reports', sub: 'Ingested reports', href: `${base}/reports`, group: 'This project' },
+            // Restored 2026-08-17 (reader-core trim reversal) — a real
+            // page route (/projects/{slug}/compare), unrelated to the
+            // dead chat slash-commands described above.
+            { kind: 'nav', title: 'Workspace', sub: '3D drill-hole visualization', href: `${base}/workspace`, group: 'This project' },
+            { kind: 'nav', title: 'Compare holes', sub: 'Side-by-side hole comparison', href: `${base}/compare`, group: 'This project' },
         ];
     }, [projectSlug]);
 
