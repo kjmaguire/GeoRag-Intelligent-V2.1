@@ -30,6 +30,7 @@ final class FoundryRoutesSmokeTest extends TestCase
             'projects' => ['/projects', 'Foundry/Projects'],
             'imports' => ['/foundry/imports/wizard', 'Foundry/DataImportWizard'],
             'newproject' => ['/foundry/projects/new', 'Foundry/NewProject'],
+            'public-geoscience' => ['/public-geoscience', 'Foundry/PublicGeoscience'],
         ];
     }
 

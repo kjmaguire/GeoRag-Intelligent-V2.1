@@ -128,7 +128,7 @@ const COVERAGE_KIND_OPTIONS: ReadonlyArray<{ value: CoverageKind; label: string 
 // GeoJSON overlay, NOT Martin vector tiles — see PublicGeoscienceMapController
 // docblock for why. Point-geometry entities only (mine / mineral_occurrence /
 // drillhole_collar / rock_sample); see that controller for the disclosed scope.
-interface PublicGeoFeature {
+export interface PublicGeoFeature {
     type: 'Feature';
     geometry: { type: 'Point'; coordinates: [number, number] };
     properties: {
@@ -140,20 +140,20 @@ interface PublicGeoFeature {
     };
 }
 
-interface PublicGeoFeatureCollection {
+export interface PublicGeoFeatureCollection {
     type: 'FeatureCollection';
     feature_count: number;
     features: PublicGeoFeature[];
 }
 
-const PUBLIC_GEO_LAYER_LABELS: Record<PublicGeoFeature['properties']['layer'], string> = {
+export const PUBLIC_GEO_LAYER_LABELS: Record<PublicGeoFeature['properties']['layer'], string> = {
     mine: 'Mine',
     mineral_occurrence: 'Mineral occurrence',
     drillhole_collar: 'Drillhole (public)',
     rock_sample: 'Rock sample',
 };
 
-const PUBLIC_GEO_LAYER_COLORS: Record<PublicGeoFeature['properties']['layer'], string> = {
+export const PUBLIC_GEO_LAYER_COLORS: Record<PublicGeoFeature['properties']['layer'], string> = {
     mine: '#f97316',
     mineral_occurrence: '#eab308',
     drillhole_collar: '#38bdf8',
@@ -1794,11 +1794,17 @@ export default function MapView({
                 </div>
             )}
 
-            {/* ── Silver layer toggle panel (MVT path) — Deliverable C ─────────
+            {/* ── Layer toggle panel — Deliverable C ────────────────────────────
                 Collapsible panel, top-right below navigation controls.
                 role="region" + aria-label for screen readers.
-                Each checkbox has a real <label> association via htmlFor/id.   */}
-            {useMvt && !compact && (
+                Each checkbox has a real <label> association via htmlFor/id.
+                Panel itself no longer requires useMvt (2026-08-17) — Martin/MVT
+                is infrastructure-dead (see MapController docblock), so gating
+                the WHOLE panel on useMvt made the coverage-density and public
+                geoscience toggles below permanently unreachable even though
+                neither depends on MVT tiles. Only the MVT_LAYERS checkbox list
+                itself stays useMvt-gated. */}
+            {!compact && (
                 <div
                     className="absolute top-24 right-2 z-10 bg-gray-900/95 border border-gray-700 rounded shadow-lg min-w-[160px]"
                     role="region"
@@ -1819,6 +1825,7 @@ export default function MapView({
                     {/* Toggle list */}
                     {layerPanelOpen && (
                         <div id="map-layer-toggles" className="px-2.5 pb-2.5 space-y-1.5">
+                            {useMvt && <>
                             {MVT_LAYERS.map((layer) => {
                                 const checkId = `layer-toggle-${layer.id}`;
                                 // Pick a representative color for the swatch
@@ -1863,6 +1870,7 @@ export default function MapView({
                                 <span style={{ color: '#eab308' }}>◆ Active</span>
                                 <span style={{ color: '#ef4444' }}>✕ Abandoned</span>
                             </div>
+                            </>}
 
                             {/* ── Coverage density toggle (CC-03 Item 5) ─────────────── */}
                             {projectId && (

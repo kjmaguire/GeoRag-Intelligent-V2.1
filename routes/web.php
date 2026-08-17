@@ -13,6 +13,7 @@ use App\Http\Controllers\Foundry\IngestQualityController;
 use App\Http\Controllers\Foundry\MapController;
 use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
+use App\Http\Controllers\Foundry\PublicGeoscienceController;
 use App\Http\Controllers\Foundry\ReportController;
 use App\Http\Controllers\Foundry\SourcesController;
 use App\Http\Controllers\Foundry\WorkspaceController;
@@ -59,6 +60,11 @@ Route::get('/reset-password/{token}', function (Request $request, string $token)
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects', [ProjectsIndexController::class, 'show'])
         ->name('foundry.projects');
+
+    // Not project-scoped — public_geo data isn't tenant data. Linked from
+    // the top ORG nav bar. See PublicGeoscienceController docblock.
+    Route::get('/public-geoscience', [PublicGeoscienceController::class, 'show'])
+        ->name('foundry.public-geoscience');
 
     // /projects/new MUST be declared before any /projects/{slug} route —
     // the wildcard's slug constraint is [a-z0-9\-]+, which "new" matches,

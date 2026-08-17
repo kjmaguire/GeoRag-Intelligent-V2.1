@@ -27,6 +27,10 @@ interface FoundryShellProps {
 
 const ORG_NAV: Array<{ id: string; href: string; label: string }> = [
     { id: 'projects', href: '/projects', label: 'Projects' },
+    // Restored 2026-08-17 — the link existed pre-trim but pointed at a page
+    // that no longer exists (Martin-tile-backed, deleted with the trim).
+    // See PublicGeoscienceController for the from-scratch replacement page.
+    { id: 'public-geoscience', href: '/public-geoscience', label: 'Public Geo' },
 ];
 
 const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: string }> = [
