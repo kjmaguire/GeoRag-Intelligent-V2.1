@@ -6,6 +6,7 @@ use App\Models\Collar;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -211,5 +212,32 @@ class ProjectControllerTest extends TestCase
         $response = $this->deleteJson('/api/v1/projects/00000000-0000-0000-0000-000000000000');
 
         $response->assertNotFound();
+    }
+
+    /**
+     * Regression for 2026-08-17: silver.mineral_claims does not exist in the
+     * live (canadacentral) database at all — it was only ever created by an
+     * out-of-band raw-SQL bootstrap script, never a tracked migration, and
+     * the freshly-provisioned Azure Postgres server never got it. destroy()
+     * unconditionally ran `DELETE FROM silver.mineral_claims`, which threw a
+     * "relation does not exist" error on every call, rolling back the whole
+     * transaction — project deletion was 100% broken for every project.
+     *
+     * The test-DB parity migration (2026_06_29_020000_provision_project_
+     * delete_tables_for_test_db.php) always stubs a dummy mineral_claims
+     * table, which is why this bug was invisible to the SQLite suite until
+     * now — dropping that stub table here reproduces the exact live gap.
+     */
+    public function test_destroy_succeeds_when_a_listed_cleanup_table_does_not_exist(): void
+    {
+        Schema::dropIfExists('mineral_claims');
+
+        $project = Project::factory()->create();
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $response = $this->deleteJson("/api/v1/projects/{$project->project_id}");
+
+        $response->assertNoContent();
+        $this->assertDatabaseMissing('projects', ['project_id' => $project->project_id]);
     }
 }

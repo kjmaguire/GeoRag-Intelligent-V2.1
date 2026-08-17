@@ -17,6 +17,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 
 class ProjectController extends Controller
@@ -191,6 +192,25 @@ class ProjectController extends Controller
             // collaboration_*). The remaining tables either SET NULL (orphans the row)
             // or RESTRICT (blocks the delete). Per user choice "wipe everything for
             // this project", explicitly delete those before dropping the project row.
+            //
+            // 2026-08-17 — this loop unconditionally deleted from every table in
+            // the list, including silver.mineral_claims — which does not exist
+            // in the live database at all (it was only ever created by an
+            // out-of-band phase0 raw-SQL bootstrap script against the old
+            // self-hosted Postgres, never a tracked migration; the canadacentral
+            // Azure Postgres server provisioned during the Azure lift was built
+            // from migrations + tracked bootstrap SQL only, so it never got that
+            // table). `DELETE FROM silver.mineral_claims` therefore threw a
+            // Postgres 42P01 "relation does not exist" error on EVERY delete
+            // attempt, for every project, rolling back the whole transaction —
+            // project deletion was 100% broken, not intermittent. SQLite-based
+            // local tests never caught this because the test-DB parity
+            // migration (2026_06_29_020000_provision_project_delete_tables_
+            // for_test_db.php) always stubs a dummy mineral_claims table.
+            // Skipping a listed table that doesn't exist in this environment
+            // is now a no-op instead of a fatal error, so the same class of
+            // drift (a table present in dev but never migrated to a fresh
+            // environment) can't take project deletion down again.
             DB::transaction(function () use ($project, $projectId) {
                 $tables = [
                     // SET NULL relations — would orphan otherwise
@@ -208,6 +228,10 @@ class ProjectController extends Controller
                     'gold.element_correlations',
                 ];
                 foreach ($tables as $table) {
+                    if (! $this->tableExists($table)) {
+                        continue;
+                    }
+
                     DB::table($table)
                         ->where('project_id', $projectId)
                         ->delete();
@@ -232,6 +256,30 @@ class ProjectController extends Controller
                 'error' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Whether $qualifiedTable ("schema.table" or, under SQLite, just
+     * "table") actually exists in the connected database. Postgres-aware
+     * (splits on the schema prefix); falls back to Laravel's driver-agnostic
+     * Schema::hasTable() for SQLite, which has no schema concept.
+     */
+    private function tableExists(string $qualifiedTable): bool
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $table = str_contains($qualifiedTable, '.')
+                ? substr($qualifiedTable, strpos($qualifiedTable, '.') + 1)
+                : $qualifiedTable;
+
+            return Schema::hasTable($table);
+        }
+
+        [$schema, $table] = explode('.', $qualifiedTable, 2);
+
+        return DB::table('information_schema.tables')
+            ->where('table_schema', $schema)
+            ->where('table_name', $table)
+            ->exists();
     }
 
     /**
