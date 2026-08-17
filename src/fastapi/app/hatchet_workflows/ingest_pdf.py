@@ -190,16 +190,45 @@ def _reset_parse_pool() -> None:
     """Tear down the cached ProcessPoolExecutor so the next parse rebuilds.
 
     Called when a worker dies (BrokenProcessPool) — the pool is poisoned;
-    subsequent submit() calls would also fail. We shutdown(wait=False)
-    so the next _get_parse_pool() invocation creates a fresh pool with
-    fresh workers.
+    subsequent submit() calls would also fail.
+
+    2026-08-17 — `shutdown(wait=False, cancel_futures=True)` alone leaks
+    memory. `cancel_futures=True` only cancels futures that haven't
+    started yet; it does NOT touch worker processes that are already
+    mid-parse when one of their pool siblings OOM-killed and broke the
+    pool. Those survivors keep running — orphaned from the executor we
+    just dropped, with nothing left to ever await their result — holding
+    onto however much RAM their table extraction had allocated (multi-GB
+    for a large NI 43-101) until they happen to finish on their own.
+    Confirmed live: a container with PARSE_SUBPROCESS_MAX_WORKERS=2 had 3
+    live spawn_main processes (~5.7GB combined RSS) after a prior broken-
+    pool reset, permanently starving _wait_for_memory_headroom's 2500MB
+    threshold and failing every subsequent parse — the actual cause
+    behind a recurring "memory_guard: still N MB available" failure
+    pattern, not a genuine capacity/sizing problem.
+    ProcessPoolExecutor.kill_workers() (stdlib, Python 3.13+) SIGKILLs
+    every still-alive worker before we drop the reference, so a crashed
+    pool's memory is reclaimed immediately instead of leaking until
+    those orphans happen to exit or the whole container gets OOM-killed.
     """
     global _PARSE_POOL
     if _PARSE_POOL is not None:
         try:
-            _PARSE_POOL.shutdown(wait=False, cancel_futures=True)
+            _PARSE_POOL.kill_workers()
+        except AttributeError:
+            # Fallback for a stdlib without kill_workers() — best-effort,
+            # same leak this fix closes, but never worse than before.
+            log.warning(
+                "ingest_pdf: ProcessPoolExecutor.kill_workers() unavailable "
+                "on this Python version — falling back to shutdown(wait=False), "
+                "which does NOT reclaim already-running workers' memory."
+            )
+            try:
+                _PARSE_POOL.shutdown(wait=False, cancel_futures=True)
+            except Exception as exc:  # pragma: no cover — best-effort
+                log.warning("ingest_pdf: parse pool shutdown raised %s — ignoring", exc)
         except Exception as exc:  # pragma: no cover — best-effort
-            log.warning("ingest_pdf: parse pool shutdown raised %s — ignoring", exc)
+            log.warning("ingest_pdf: parse pool kill_workers raised %s — ignoring", exc)
         _PARSE_POOL = None
 
 

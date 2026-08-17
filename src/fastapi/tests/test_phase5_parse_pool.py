@@ -242,3 +242,79 @@ def test_get_parse_pool_honors_max_workers_env(monkeypatch):
     pool = mod._get_parse_pool()
     # ProcessPoolExecutor stores it on _max_workers (CPython internals)
     assert getattr(pool, "_max_workers", None) == 3
+
+
+# ---------------------------------------------------------------------------
+# 12. _reset_parse_pool — 2026-08-17 leak fix
+#
+# shutdown(wait=False, cancel_futures=True) alone only cancels futures that
+# haven't started — a worker that's already mid-parse when a pool sibling
+# OOM-kills and breaks the pool keeps running, orphaned, holding its RSS
+# (multi-GB for a large NI 43-101 table extraction) until it happens to
+# finish on its own. Live-confirmed: a container configured for 2 parse
+# workers had 3 live spawn_main processes (~5.7GB combined) after a broken-
+# pool reset, permanently starving the memory guard's threshold and failing
+# every subsequent parse. kill_workers() (stdlib Python 3.13+) SIGKILLs
+# still-alive workers immediately instead of leaking their memory.
+# ---------------------------------------------------------------------------
+
+def test_reset_parse_pool_kills_workers_when_available(monkeypatch):
+    from app.hatchet_workflows import ingest_pdf as mod
+
+    class _FakePool:
+        def __init__(self):
+            self.killed = False
+
+        def kill_workers(self):
+            self.killed = True
+
+    fake_pool = _FakePool()
+    monkeypatch.setattr(mod, "_PARSE_POOL", fake_pool)
+
+    mod._reset_parse_pool()
+
+    assert fake_pool.killed is True
+    assert mod._PARSE_POOL is None
+
+
+def test_reset_parse_pool_falls_back_to_shutdown_when_kill_workers_missing(monkeypatch):
+    from app.hatchet_workflows import ingest_pdf as mod
+
+    class _FakeLegacyPool:
+        def __init__(self):
+            self.shutdown_calls = []
+
+        # Deliberately no kill_workers() — simulates a stdlib without it.
+        def shutdown(self, wait=True, cancel_futures=False):
+            self.shutdown_calls.append((wait, cancel_futures))
+
+    fake_pool = _FakeLegacyPool()
+    monkeypatch.setattr(mod, "_PARSE_POOL", fake_pool)
+
+    mod._reset_parse_pool()
+
+    assert fake_pool.shutdown_calls == [(False, True)]
+    assert mod._PARSE_POOL is None
+
+
+def test_reset_parse_pool_swallows_kill_workers_exception(monkeypatch):
+    from app.hatchet_workflows import ingest_pdf as mod
+
+    class _FakeBrokenPool:
+        def kill_workers(self):
+            raise RuntimeError("already dead")
+
+    monkeypatch.setattr(mod, "_PARSE_POOL", _FakeBrokenPool())
+
+    mod._reset_parse_pool()  # must not raise
+
+    assert mod._PARSE_POOL is None
+
+
+def test_reset_parse_pool_noop_when_already_none(monkeypatch):
+    from app.hatchet_workflows import ingest_pdf as mod
+    monkeypatch.setattr(mod, "_PARSE_POOL", None)
+
+    mod._reset_parse_pool()  # must not raise
+
+    assert mod._PARSE_POOL is None
