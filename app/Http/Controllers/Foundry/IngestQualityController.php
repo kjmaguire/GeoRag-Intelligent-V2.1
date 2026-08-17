@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Foundry;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
@@ -38,10 +39,40 @@ use Inertia\Response;
  * the per-file table's flagged/rejected columns are left null (renders
  * as "—") rather than guessed.
  *
+ * 2026-08-17 (follow-up) — two more bugs found live on this exact page:
+ *
+ * 1. silver.document_passages carries fail-closed RLS
+ *    (document_passages_workspace_isolation — no NULL-GUC fallback,
+ *    unlike silver.reports/review_queue which are still permissive). This
+ *    controller never bound app.workspace_id, so the leftJoinSub above
+ *    silently joined zero rows for every project — rows/accepted always
+ *    rendered 0 even for projects with tens of thousands of real,
+ *    embedded passages. Confirmed live: a project with 20,613 passages
+ *    across document_passages showed 0/0 on every file row. Same class
+ *    of bug IngestionRunsController::loadReports() already hit and fixed
+ *    2026-08-15 — this controller was written after that fix and missed
+ *    it. Wrapped the query in withWorkspaceRls() to match.
+ *
+ * 2. Per-file status was gated on parse_quality_pct (fraction of the 17
+ *    baseline NI 43-101 numbered section headings found via regex — see
+ *    pdf_report.py's NI43_BASELINE_SECTIONS). That's a structural-coverage
+ *    metric, not an extraction-quality metric: a document that isn't
+ *    shaped like an NI 43-101 technical report (a corporate presentation,
+ *    an extracted drill-intercept table, a report using non-numbered or
+ *    differently-formatted headings) will never contain 17 "N. Title"
+ *    lines and will show "regex incomplete" even when every page parsed
+ *    and embedded cleanly. On this "trust moment" page that reads as an
+ *    ingestion failure when the ingestion actually succeeded. Status is
+ *    now derived from what actually determines whether chat can use the
+ *    document — passage count and embedded fraction — with structural
+ *    coverage left out of the gate.
+ *
  * Promotion gate: passes when acceptRate >= 95% AND fatalFiles == 0.
  */
 class IngestQualityController extends Controller
 {
+    use SetsWorkspaceRlsContext;
+
     public function show(Request $request, string $slug): Response
     {
         $project = Project::where('slug', $slug)->firstOrFail();
@@ -49,29 +80,37 @@ class IngestQualityController extends Controller
 
         $anomalies = collect();
 
-        $reports = DB::table('silver.reports AS r')
-            ->leftJoinSub(
-                DB::table('silver.document_passages')
-                    ->selectRaw('document_id, COUNT(*) AS passages, COUNT(*) FILTER (WHERE embedding_id IS NOT NULL) AS embedded')
-                    ->groupBy('document_id'),
-                'p',
-                'p.document_id',
-                '=',
-                'r.report_id',
-            )
-            ->where('r.project_id', $project->project_id)
-            ->orderByDesc('r.created_at')
-            ->limit(50)
-            ->select('r.report_id', 'r.title', 'r.is_scanned', 'r.parse_quality_pct', DB::raw('COALESCE(p.passages, 0) AS passages'), DB::raw('COALESCE(p.embedded, 0) AS embedded'))
-            ->get();
+        $reports = $this->withWorkspaceRls(
+            (string) $project->workspace_id,
+            fn () => DB::table('silver.reports AS r')
+                ->leftJoinSub(
+                    DB::table('silver.document_passages')
+                        ->selectRaw('document_id, COUNT(*) AS passages, COUNT(*) FILTER (WHERE embedding_id IS NOT NULL) AS embedded')
+                        ->groupBy('document_id'),
+                    'p',
+                    'p.document_id',
+                    '=',
+                    'r.report_id',
+                )
+                ->where('r.project_id', $project->project_id)
+                ->orderByDesc('r.created_at')
+                ->limit(50)
+                ->select('r.report_id', 'r.title', 'r.is_scanned', 'r.parse_quality_pct', DB::raw('COALESCE(p.passages, 0) AS passages'), DB::raw('COALESCE(p.embedded, 0) AS embedded'))
+                ->get(),
+        );
 
         $fileRows = $reports->map(function ($r) {
-            $quality = $r->parse_quality_pct !== null ? (float) $r->parse_quality_pct : null;
+            $passages = (int) $r->passages;
+            $embedded = (int) $r->embedded;
+            // Real signal for "did this document actually make it into
+            // the retrievable index" — not parse_quality_pct (see class
+            // docblock item 2). unassessed = nothing extracted yet;
+            // error = extracted but nothing embedded; warn = partial.
             $status = match (true) {
-                $quality === null => 'unassessed',
-                $quality >= 0.7 => 'ok',
-                $quality >= 0.3 => 'warn',
-                default => 'regex_incomplete',
+                $passages === 0 => 'unassessed',
+                $embedded === 0 => 'error',
+                $embedded < $passages => 'warn',
+                default => 'ok',
             };
 
             return [
@@ -79,8 +118,8 @@ class IngestQualityController extends Controller
                 'name' => (string) ($r->title ?? 'Untitled report'),
                 'format' => $r->is_scanned ? 'SCANNED PDF' : 'PDF',
                 'size_bytes' => null,
-                'rows' => (int) $r->passages,
-                'accepted' => (int) $r->embedded,
+                'rows' => $passages,
+                'accepted' => $embedded,
                 // review_queue (the real flag/reject source below) has no
                 // report_id column, so per-file attribution isn't possible
                 // with the live schema — left null rather than guessed.

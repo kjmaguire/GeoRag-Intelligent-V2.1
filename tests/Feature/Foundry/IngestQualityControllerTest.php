@@ -149,11 +149,31 @@ final class IngestQualityControllerTest extends TestCase
                     ->where('files.0.format', 'PDF')
                     ->where('files.0.rows', 10)
                     ->where('files.0.accepted', 8)
+                    // 8/10 embedded — partial, not full — even though
+                    // parse_quality_pct (0.85) would have scored "ok"
+                    // under the old regex-coverage gate.
+                    ->where('files.0.status', 'warn'),
+            );
+    }
+
+    public function test_fully_embedded_report_shows_ok_status_regardless_of_quality_pct(): void
+    {
+        // Deliberately low parse_quality_pct (this document doesn't look
+        // like an NI 43-101 report — e.g. a corporate presentation) but
+        // every passage made it into the retrievable index. Status must
+        // reflect that, not the NI 43-101 structural-coverage score.
+        $this->insertReport('CORPORATE PRESENTATION', passages: 19, embedded: 19, qualityPct: 0.06);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
                     ->where('files.0.status', 'ok'),
             );
     }
 
-    public function test_scanned_report_shows_scanned_format_and_status(): void
+    public function test_scanned_report_shows_scanned_format(): void
     {
         $this->insertReport('Scanned Drill Log', passages: 5, embedded: 5, qualityPct: 0.2, isScanned: true);
 
@@ -163,7 +183,56 @@ final class IngestQualityControllerTest extends TestCase
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
                     ->where('files.0.format', 'SCANNED PDF')
-                    ->where('files.0.status', 'regex_incomplete'),
+                    ->where('files.0.status', 'ok'),
+            );
+    }
+
+    public function test_report_with_zero_embedded_passages_shows_error_status(): void
+    {
+        $this->insertReport('Failed Embed Report', passages: 12, embedded: 0);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
+                    ->where('files.0.rows', 12)
+                    ->where('files.0.accepted', 0)
+                    ->where('files.0.status', 'error'),
+            );
+    }
+
+    public function test_report_with_zero_passages_shows_unassessed_status(): void
+    {
+        $this->insertReport('Not Yet Parsed', passages: 0, embedded: 0);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
+                    ->where('files.0.rows', 0)
+                    ->where('files.0.status', 'unassessed'),
+            );
+    }
+
+    public function test_passages_reflect_across_fail_closed_rls_on_document_passages(): void
+    {
+        // Regression for the 2026-08-17 bug: silver.document_passages
+        // carries fail-closed RLS (no NULL-GUC fallback, unlike
+        // silver.reports). A controller that queries it without binding
+        // app.workspace_id gets zero rows back for every project,
+        // regardless of how much real data exists. A large passage count
+        // makes an accidental fallback to "0 rows visible" obvious.
+        $this->insertReport('Large Report', passages: 500, embedded: 480);
+
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->assertOk()
+            ->assertInertia(
+                fn (AssertableInertia $page) => $page
+                    ->where('files.0.rows', 500)
+                    ->where('files.0.accepted', 480),
             );
     }
 

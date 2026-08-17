@@ -7,8 +7,9 @@ import type { IngestQualityProps } from '@/Types/Foundry';
 /**
  * Foundry IngestQuality — post-import trust-moment surface.
  *
- * Reads silver.document_ingestion_quality + silver.low_confidence_page_reviews
- * + silver.bronze_provenance via FoundryIngestQualityController.
+ * Reads silver.reports + silver.document_passages + silver.review_queue via
+ * FoundryIngestQualityController — see that controller's docblock for the
+ * 2026-08-17 rebuild off the dead §04p dual-write tables.
  */
 export default function FoundryIngestQuality({ import_id, project, files, anomalies, totals, pass_gate, empty }: IngestQualityProps) {
     const total = totals.accepted + totals.flagged + totals.rejected;
@@ -53,7 +54,7 @@ export default function FoundryIngestQuality({ import_id, project, files, anomal
                     <div className="px-8 py-12">
                         <EmptyState
                             title="No ingest validation records for this project yet."
-                            detail="Run an import (Data → Connect Source) to populate the trust report. Existing imports will appear here once Dagster writes silver.document_ingestion_quality rows."
+                            detail="Run an import (Data → Connect Source) to populate the trust report. Existing imports will appear here once a document finishes parsing."
                         />
                     </div>
                 ) : (
@@ -151,7 +152,7 @@ export default function FoundryIngestQuality({ import_id, project, files, anomal
 function statusToneFor(s: string): 'accent' | 'warn' | 'danger' | 'info' | 'neutral' {
     if (s === 'ok') return 'accent';
     if (s === 'awaiting_ocr') return 'info';
-    if (s === 'regex_incomplete' || s === 'warn') return 'warn';
+    if (s === 'warn') return 'warn';
     if (s === 'error') return 'danger';
     return 'neutral';
 }

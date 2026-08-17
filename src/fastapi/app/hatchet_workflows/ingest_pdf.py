@@ -840,13 +840,15 @@ INSERT INTO silver.reports (
     report_id, title, authors, company, filing_date, commodity,
     project_name, region, resource_estimate, sections_text,
     embedding_ids, parse_quality_pct, parser_used,
-    is_scanned, source_file_sha256, project_id, workspace_id, page_count
+    is_scanned, source_file_sha256, project_id, workspace_id, page_count,
+    created_at, updated_at
 )
 VALUES (
     $1, $2, $3::text[], $4, $5::date, $6,
     $7, $8, $9::jsonb, $10::jsonb,
     ARRAY[]::text[], $11, $12,
-    $13, $14, $16::uuid, $15::uuid, $17::int
+    $13, $14, $16::uuid, $15::uuid, $17::int,
+    NOW(), NOW()
 )
 ON CONFLICT (report_id) DO UPDATE SET
     title          = EXCLUDED.title,

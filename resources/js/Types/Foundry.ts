@@ -180,7 +180,7 @@ export interface IngestQualityFileRow {
     accepted: number | null;
     flagged: number | null;
     rejected: number | null;
-    status: 'ok' | 'warn' | 'error' | 'awaiting_ocr' | 'regex_incomplete';
+    status: 'ok' | 'warn' | 'error' | 'awaiting_ocr' | 'unassessed';
     crs_detected: string | null;
     crs_confidence: number | null;
     duration_seconds: number | null;
