@@ -106,7 +106,14 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
             });
             if (!res.ok && res.status !== 204) {
                 const body = await res.json().catch(() => ({}));
-                throw new Error(body.message || `HTTP ${res.status}`);
+                // ProjectController::destroy() returns both `message` (a
+                // generic label) and `error` (the real underlying exception
+                // text) on failure — surfacing only `message` here hid the
+                // actual cause ("relation does not exist" etc.) behind an
+                // unhelpful "Failed to delete project." with no way to
+                // diagnose it from the browser.
+                const detail = [body.message, body.error].filter(Boolean).join(': ');
+                throw new Error(detail || `HTTP ${res.status}`);
             }
             window.location.href = '/projects';
         } catch (err) {
