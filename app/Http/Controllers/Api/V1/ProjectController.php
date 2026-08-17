@@ -211,14 +211,35 @@ class ProjectController extends Controller
             // is now a no-op instead of a fatal error, so the same class of
             // drift (a table present in dev but never migrated to a fresh
             // environment) can't take project deletion down again.
+            //
+            // 2026-08-17 (second follow-up) — ORDER matters here and didn't
+            // used to: silver.answer_citation_items has
+            // `CHECK (evidence_id IS NOT NULL OR passage_id IS NOT NULL)`
+            // (answer_citation_items_has_target) alongside two SET NULL FKs
+            // — answer_run_id -> answer_runs (CASCADE) and
+            // passage_id -> document_passages (SET NULL). Deleting
+            // silver.reports first cascades to document_passages, which
+            // fires the passage_id SET NULL on every citation item pointing
+            // at those passages; a legacy citation row that only ever had
+            // passage_id set (pre-evidence_id write path — see
+            // 2026_04_21_150000_create_answer_citation_items's docblock)
+            // then has BOTH target columns null and violates the CHECK,
+            // aborting the whole transaction. Confirmed live on two
+            // projects with real chat history. Deleting silver.answer_runs
+            // FIRST cascades away its citation_items rows entirely before
+            // reports/document_passages ever gets a chance to SET NULL
+            // into them, so the CHECK is never evaluated against an
+            // already-doomed row. answer_runs moved to the front of the
+            // list for this reason — it must run before silver.reports.
             DB::transaction(function () use ($project, $projectId) {
                 $tables = [
+                    // Must run before silver.reports — see docblock above.
+                    'silver.answer_runs',
                     // SET NULL relations — would orphan otherwise
                     'silver.reports',
                     'silver.spatial_features',
                     'silver.seismic_surveys',
                     'silver.raster_layers',
-                    'silver.answer_runs',
                     'silver.geophysics_surveys',
                     // RESTRICT / NO ACTION relations — would block the delete
                     'silver.mineral_claims',
