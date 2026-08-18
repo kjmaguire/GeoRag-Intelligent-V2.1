@@ -389,7 +389,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                 {r.parser_used ?? '—'}
                                             </div>
                                             <div className="font-mono" style={{ color: qualityColor(r.parse_quality_pct) }}>
-                                                {r.parse_quality_pct === null ? '—' : `${Math.round(r.parse_quality_pct)}%`}
+                                                {r.parse_quality_pct === null ? '—' : `${qualityPct(r.parse_quality_pct)}%`}
                                             </div>
                                             <div className="font-mono" style={{ color: 'var(--fg-1)' }}>
                                                 {r.passages.toLocaleString()}
@@ -421,7 +421,23 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
     );
 }
 
-function qualityColor(pct: number | null): string {
+/**
+ * silver.reports.parse_quality_pct is stored as a FRACTION, not a 0-100
+ * percentage, despite the column name: pdf_report.py computes it as
+ * `unique_numbered_sections / NI43_BASELINE_SECTIONS` (17). Live values run
+ * 0.29–1.71. Rendering it directly as `${Math.round(v)}%` therefore showed
+ * every document as "0%"/"1%"/"2%" in warning red, which read as a total
+ * ingestion failure on documents that had parsed and embedded cleanly.
+ *
+ * It can also legitimately exceed 1.0 when a report carries more numbered
+ * sections than the 17-section baseline, so cap the display at 100%.
+ */
+function qualityPct(fraction: number | null): number | null {
+    return fraction === null ? null : Math.min(100, Math.round(fraction * 100));
+}
+
+function qualityColor(fraction: number | null): string {
+    const pct = qualityPct(fraction);
     if (pct === null) return 'var(--fg-3)';
     if (pct < 10) return 'var(--warn)';
     if (pct < 50) return 'var(--fg-2)';

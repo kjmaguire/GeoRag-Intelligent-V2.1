@@ -62,9 +62,16 @@ export default function FoundryReport({ project, reports, empty }: ReportProps) 
                                     <span className="flex items-center gap-2">
                                         <Pill tone="info">v{r.version}</Pill>
                                         {r.is_scanned && <Pill tone="warn">scanned</Pill>}
+                                        {/*
+                                          * parse_quality_pct is a FRACTION of the 17-section NI 43-101
+                                          * baseline (pdf_report.py NI43_BASELINE_SECTIONS), not a 0-100
+                                          * percentage, and may exceed 1.0. Rendered raw it showed every
+                                          * report as "parse 0%" in warn tone. Scale to a percentage and
+                                          * cap at 100.
+                                          */}
                                         {typeof r.parse_quality_pct === 'number' && (
-                                            <Pill tone={r.parse_quality_pct >= 90 ? 'accent' : 'warn'}>
-                                                parse {r.parse_quality_pct.toFixed(0)}%
+                                            <Pill tone={r.parse_quality_pct >= 0.9 ? 'accent' : 'warn'}>
+                                                parse {Math.min(100, Math.round(r.parse_quality_pct * 100))}%
                                             </Pill>
                                         )}
                                         {!r.has_content && <Pill tone="neutral">metadata only</Pill>}

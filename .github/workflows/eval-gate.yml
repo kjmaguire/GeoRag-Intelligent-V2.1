@@ -196,8 +196,23 @@ jobs:
             SELECT setval(pg_get_serial_sequence('users','id'), GREATEST((SELECT MAX(id) FROM users), 1));
           "
 
+      # 2026-08-18: this step used to omit the env: block that every other
+      # Laravel step here carries. Without it Laravel falls back to the .env
+      # copied from .env.example in "Prepare environment", which points at the
+      # docker-compose hostname (pgbouncer:6432) — unresolvable on a GitHub
+      # runner. The seeder therefore died with "could not translate host name
+      # \"pgbouncer\"" before a single golden question was written, and every
+      # downstream step (benchmark, baseline diff) never got real input, so the
+      # nightly gate had stopped measuring anything at all.
       - name: Seed golden questions (real SME corpus)
         run: php artisan db:seed --class=GoldenQuestionsSeeder --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v7

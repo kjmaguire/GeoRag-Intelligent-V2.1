@@ -3388,7 +3388,16 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         }
         numbered_sections = [s for s in sections if s.section_number is not None]
         subsection_count = len(SUBSECTION_HEADING_RE.findall(full_text))
-        parse_quality_pct = round(len(unique_section_numbers) / NI43_BASELINE_SECTIONS, 4)
+        # Clamp to 1.0. The dedupe above stops multi-chunk sections from
+        # inflating this, but a report that genuinely carries more numbered
+        # sections than the 17-section NI 43-101 baseline still overshoots:
+        # a live document with 29 numbered sections stored 1.706 here, i.e.
+        # "170.6% quality". This is a coverage-of-baseline ratio, so full
+        # coverage is the ceiling.
+        parse_quality_pct = min(
+            1.0,
+            round(len(unique_section_numbers) / NI43_BASELINE_SECTIONS, 4),
+        )
         _span.set_attribute("pdf.sections_total", len(sections))
         _span.set_attribute("pdf.sections_numbered", len(numbered_sections))
         _span.set_attribute("pdf.sections_unique_numbered", len(unique_section_numbers))
