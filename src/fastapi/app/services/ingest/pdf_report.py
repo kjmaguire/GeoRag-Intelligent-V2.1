@@ -2839,8 +2839,9 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
         raise RuntimeError("page count unavailable")
 
     logger.info(
-        "pdf_report: starting document_intelligence OCR on %d pages",
-        total_pages,
+        "pdf_report: starting document_intelligence OCR on %d pages "
+        "(concurrency=%s)",
+        total_pages, os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4"),
     )
 
     texts: list[str] = []
@@ -2848,14 +2849,58 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     low_confidence_pages: list[int] = []
     page_attempts: list[OcrPageAttempt] = []
 
-    for page_num in range(1, total_pages + 1):
-        page_text, mean_confidence, assessment, page_tables = _ocr_single_page(
-            path,
-            page_num,
-            return_confidence=True,
-            return_assessment=True,
-            return_tables=True,
-        )
+    # Perf 2026-08-18 — this loop used to be strictly serial: one page's
+    # full network round-trip to Document Intelligence, awaited, then the
+    # next. On a fully scanned report (the ONLY case that reaches this
+    # function) that made it the slowest path in the pipeline — a 300-page
+    # document did 300 sequential round-trips at ~1-3 s each.
+    #
+    # The per-page fallback in `_parse_with_fitz` already solved this; this
+    # path simply never got the same treatment. Same fix, same knob
+    # (PDF_OCR_PAGE_CONCURRENCY), same safety argument: `_ocr_single_page`
+    # blocks on network or on a tesseract subprocess, both of which release
+    # the GIL, and its shared mutable state (the cached pikepdf handle and
+    # the per-document DI page budget) is already guarded by _PIKEPDF_LOCK
+    # precisely because the other path calls it from several threads.
+    #
+    # Only the OCR calls run concurrently. All bookkeeping below stays
+    # sequential and in page order — executor.map yields results in INPUT
+    # order regardless of completion order — so texts, page_attempts,
+    # page_confidences and low_confidence_pages come out byte-identical to
+    # the serial version.
+    _ocr_concurrency = max(1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4")))
+
+    def _ocr_one(page_num: int):
+        try:
+            return page_num, _ocr_single_page(
+                path,
+                page_num,
+                return_confidence=True,
+                return_assessment=True,
+                return_tables=True,
+            ), None
+        except Exception as exc:  # noqa: BLE001
+            # Fail soft per page, matching ocr_page_sync's own contract: one
+            # bad page must not abort a 300-page document. The empty result
+            # simply contributes nothing, and the "no text at all" guard
+            # below still fires if every page fails.
+            return page_num, None, exc
+
+    _page_numbers = list(range(1, total_pages + 1))
+    with ThreadPoolExecutor(max_workers=_ocr_concurrency) as _executor:
+        _ocr_results = list(_executor.map(_ocr_one, _page_numbers))
+
+    for page_num, _outcome, _exc in _ocr_results:
+        if _outcome is None:
+            logger.warning(
+                "pdf_report: document_intelligence OCR failed on page %d of "
+                "'%s': %s", page_num, path, _exc,
+            )
+            page_text, mean_confidence, assessment, page_tables = (
+                "", 0.0, _assess_ocr_result("", [], detected_region_count=0), [],
+            )
+        else:
+            page_text, mean_confidence, assessment, page_tables = _outcome
         cleaned = _postprocess_ocr_text(page_text) if page_text.strip() else ""
         page_attempts.append(
             OcrPageAttempt(
@@ -2878,10 +2923,6 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
                 )
             texts.append(cleaned)
 
-        if page_num % 10 == 0 or page_num == 1:
-            logger.info(
-                "pdf_report: OCR progress %d/%d pages", page_num, total_pages,
-            )
 
     result_text = "\n\n".join(texts)
     avg_confidence = (
