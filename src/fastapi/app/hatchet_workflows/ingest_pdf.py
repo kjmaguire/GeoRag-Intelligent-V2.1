@@ -841,6 +841,7 @@ INSERT INTO silver.reports (
     project_name, region, resource_estimate, sections_text,
     embedding_ids, parse_quality_pct, parser_used,
     is_scanned, source_file_sha256, project_id, workspace_id, page_count,
+    extraction_confidence,
     created_at, updated_at
 )
 VALUES (
@@ -848,6 +849,7 @@ VALUES (
     $7, $8, $9::jsonb, $10::jsonb,
     ARRAY[]::text[], $11, $12,
     $13, $14, $16::uuid, $15::uuid, $17::int,
+    $18::real,
     NOW(), NOW()
 )
 ON CONFLICT (report_id) DO UPDATE SET
@@ -864,6 +866,7 @@ ON CONFLICT (report_id) DO UPDATE SET
     parse_quality_pct = EXCLUDED.parse_quality_pct,
     is_scanned     = EXCLUDED.is_scanned,
     page_count     = EXCLUDED.page_count,
+    extraction_confidence = EXCLUDED.extraction_confidence,
     updated_at     = NOW()
 """
 
@@ -1417,6 +1420,17 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     workspace_id_str,
                     str(input.project_id) if input.project_id else None,
                     int(pre.get("page_count", 0) or 0),
+                    # $18 — see ReportParseResult.extraction_confidence. This
+                    # column was in the table from the start but absent from
+                    # this INSERT, so it read NULL on every production row and
+                    # the OCR review-routing signal never had input. None is
+                    # preserved rather than coerced to 0.0 so "not computed"
+                    # stays distinguishable from "computed as zero confidence".
+                    (
+                        float(parsed["extraction_confidence"])
+                        if parsed.get("extraction_confidence") is not None
+                        else None
+                    ),
                 )
                 for ordinal, section in enumerate(parsed.get("sections") or []):
                     text = (section.get("text") or "").strip()

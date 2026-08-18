@@ -11,9 +11,14 @@ anything. RAGFlow was replaced by this in-process stack per ADR-0002; there
 is no other parser in front of it. Extraction order: pypdfium2 (fitz) native
 text first, pdfplumber as the structural fallback when native text is
 insufficient, and per-page OCR (Tesseract by default, or Azure Document
-Intelligence when `OCR_ENGINE=document_intelligence`) for scanned/image
+Intelligence when `OCR_ENGINE=azure_document_intelligence`) for scanned/image
 pages. See `_attempt_ocr`, `_attempt_ocr_document_intelligence`, and
 `document_intelligence_client` for the OCR dispatch.
+
+NOTE ON THE ENV VALUE: the selector is the exact string
+`azure_document_intelligence` — see `document_intelligence_client.is_engine_selected`.
+These docstrings previously said `document_intelligence`, which is NOT
+matched and silently leaves the engine on the Tesseract default.
 
 ---
 
@@ -26,7 +31,7 @@ parser exploits for high-confidence section boundary detection.
 
 Primary extraction engine: pypdfium2 (PDFium) for native text + per-page OCR
 routing to Tesseract (default) or Azure Document Intelligence (when
-`OCR_ENGINE=document_intelligence`) for image pages. Fallback engine:
+`OCR_ENGINE=azure_document_intelligence`) for image pages. Fallback engine:
 pdfplumber, used when the primary can't extract sufficient structure.
 
 Parse quality is reported as a float 0.0–1.0 representing the fraction of the
@@ -274,6 +279,14 @@ class ReportParseResult:
     # dataclass with no such field at all — silently always False, so
     # every silver.reports row claimed "not scanned" regardless of reality.
     is_scanned: bool = False
+    # Composite 0.0–1.0 extraction confidence (section coverage 50% + text
+    # volume 30% + metadata completeness 20%), computed near the end of
+    # parse_pdf_report. Same bug class as is_scanned above: it was computed
+    # and logged but had no field to land in, so it never reached the
+    # silver.reports INSERT and extraction_confidence was NULL on every row
+    # in production — leaving the OCR review-routing signal permanently
+    # blank. None only on the early-return path for an unparseable document.
+    extraction_confidence: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3534,4 +3547,5 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         resource_tables=resource_tables,
         page_languages=page_languages,
         is_scanned=is_scanned,
+        extraction_confidence=extraction_confidence,
     )
