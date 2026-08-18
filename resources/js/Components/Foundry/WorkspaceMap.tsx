@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { router } from '@inertiajs/react';
 import { useBasemapStyleUrl } from '@/lib/basemap';
+import { formatU3O8Pct } from '@/lib/grade';
 
 // CC-01 Item 2 — closed vocabulary for the georef_method column. Mirrors the
 // chk_*_georef_method DB constraint. Kept in sync with the same type in
@@ -1485,7 +1486,7 @@ export function WorkspaceMap({
                 <span>· {projectSummary.total_drilled_m.toLocaleString()} m drilled</span>
                 <span>· {projectSummary.total_ore_thickness_m.toFixed(1)} m derived ore</span>
                 {projectSummary.mean_u3o8_pct !== null && (
-                    <span>· mean {projectSummary.mean_u3o8_pct.toFixed(3)}% eU₃O₈</span>
+                    <span>· mean {formatU3O8Pct(projectSummary.mean_u3o8_pct)} eU₃O₈</span>
                 )}
             </div>
 

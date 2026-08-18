@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { DownholeMultiLog, LithologyStripColumn, type LithologyInterval } from '@/Components/Foundry/Charts';
+import { formatU3O8Pct } from '@/lib/grade';
 
 interface HolePayload {
     hole_id: string;
@@ -173,7 +174,9 @@ function DiffStats({ left, right }: { left: FetchState; right: FetchState }) {
         { label: 'Total depth', l: L.total_depth !== null ? `${L.total_depth.toFixed(1)} m` : '—', r: R.total_depth !== null ? `${R.total_depth.toFixed(1)} m` : '—' },
         { label: 'Derived ore bands', l: String(L.ore_bands), r: String(R.ore_bands), tone: L.ore_bands > 0 || R.ore_bands > 0 ? 'highlight' : undefined },
         { label: 'U-host thickness', l: `${L.ore_thickness_m.toFixed(1)} m`, r: `${R.ore_thickness_m.toFixed(1)} m`, tone: 'highlight' },
-        { label: 'Mean U₃O₈ (eU)', l: L.mean_u3o8_pct !== null ? `${(L.mean_u3o8_pct * 100).toFixed(3)}%` : '—', r: R.mean_u3o8_pct !== null ? `${(R.mean_u3o8_pct * 100).toFixed(3)}%` : '—' },
+        // Unit contract lives in lib/grade.ts — this row used to multiply by
+        // 100 and overstated every grade by 100x. See that module's docblock.
+        { label: 'Mean U₃O₈ (eU)', l: formatU3O8Pct(L.mean_u3o8_pct), r: formatU3O8Pct(R.mean_u3o8_pct) },
         { label: 'Curves rendered', l: String(L.log_tracks.length), r: String(R.log_tracks.length) },
         { label: 'Lithology bands', l: String(L.lithology_intervals.length), r: String(R.lithology_intervals.length) },
         { label: 'Easting (UTM 13N)', l: L.easting !== null ? Math.round(L.easting).toLocaleString() : '—', r: R.easting !== null ? Math.round(R.easting).toLocaleString() : '—' },
