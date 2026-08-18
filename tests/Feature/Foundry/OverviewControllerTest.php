@@ -144,7 +144,7 @@ final class OverviewControllerTest extends TestCase
             fn (AssertableInertia $page) => $page->where(
                 'next_action.title',
                 'Connect your first data source',
-            )
+            ),
         );
     }
 }
