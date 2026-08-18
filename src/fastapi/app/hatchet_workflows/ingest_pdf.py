@@ -280,8 +280,43 @@ def _run_parser_subprocess(
         result = parse_pdf_report(cached_path, progress_file=progress_file)
         elapsed_ms = int((_time.monotonic() - t_start) * 1000)
 
+        _sections_out = [
+            {
+                "section_number": getattr(s, "section_number", None),
+                "section_title": getattr(s, "section_title", None),
+                "text": getattr(s, "text", None),
+                "page_first": getattr(s, "page_first", None),
+                "page_last": getattr(s, "page_last", None),
+                # Phase 3 (2026-05-22) — OCR provenance per chunk.
+                # None for chunks that came from the PDF text layer
+                # (fitz_native, pdfplumber_native); 0.0–1.0 for
+                # OCR'd chunks. Travels through ParseOut → persist
+                # → silver.document_passages → qdrant payload.
+                "ocr_confidence": getattr(s, "ocr_confidence", None),
+                "ocr_method": getattr(s, "ocr_method", None),
+            }
+            for s in (getattr(result, "sections", None) or [])
+        ]
+
+        # Multimodal page renders (2026-08-18). Done here, in the parse task,
+        # because this is the only step with the PDF on local disk. Uploads
+        # land under a _pending key; persist renames them once report_id
+        # exists — same two-phase shape as the figure manifest above.
+        # Fail-soft: stage_page_images swallows per-page errors and returns
+        # whatever it got, so a render problem can't fail a good text parse.
+        from app.services.ingest.page_image import stage_page_images
+
+        try:
+            _page_images = stage_page_images(cached_path, sha256, _sections_out)
+        except Exception as _pi_exc:  # noqa: BLE001
+            log.warning(
+                "ingest_pdf: page-image staging failed for %s: %s", sha256, _pi_exc,
+            )
+            _page_images = []
+
         return {
             "sha256": sha256,
+            "page_image_manifest": _page_images,
             "title": getattr(result, "title", None),
             "authors": list(getattr(result, "authors", []) or []),
             "company": getattr(result, "company", None),
@@ -289,23 +324,7 @@ def _run_parser_subprocess(
             "commodity": getattr(result, "commodity", None),
             "project_name": getattr(result, "project_name", None),
             "region": getattr(result, "region", None),
-            "sections": [
-                {
-                    "section_number": getattr(s, "section_number", None),
-                    "section_title": getattr(s, "section_title", None),
-                    "text": getattr(s, "text", None),
-                    "page_first": getattr(s, "page_first", None),
-                    "page_last": getattr(s, "page_last", None),
-                    # Phase 3 (2026-05-22) — OCR provenance per chunk.
-                    # None for chunks that came from the PDF text layer
-                    # (fitz_native, pdfplumber_native); 0.0–1.0 for
-                    # OCR'd chunks. Travels through ParseOut → persist
-                    # → silver.document_passages → qdrant payload.
-                    "ocr_confidence": getattr(s, "ocr_confidence", None),
-                    "ocr_method": getattr(s, "ocr_method", None),
-                }
-                for s in (getattr(result, "sections", None) or [])
-            ],
+            "sections": _sections_out,
             "parse_quality_pct": float(getattr(result, "parse_quality_pct", 0.0) or 0.0),
             "parser_used": str(getattr(result, "parser_used", "unknown") or "unknown"),
             "skipped_elements": int(getattr(result, "skipped_elements", 0) or 0),
@@ -902,6 +921,41 @@ ON CONFLICT (document_id, revision_number, text_hash) DO UPDATE SET
     updated_at     = NOW()
 """
 
+# Multimodal page-image passages (2026-08-18). Separate statement from
+# INSERT_PASSAGE_SQL because the column set genuinely differs (modality,
+# page_number, image_object_key; no OCR provenance — a render has no OCR
+# confidence) and folding both into one statement with a pile of NULLs
+# obscured which columns each kind actually populates.
+#
+# chunk_kind='page_image' keeps these rows OUT of the narrative GC below,
+# which deletes by (document_id, chunk_kind='narrative', stale hash). Image
+# rows are re-derived from the page number, not from parsed text, so a
+# re-parse that changes chunking must not delete them.
+INSERT_IMAGE_PASSAGE_SQL = """
+INSERT INTO silver.document_passages (
+    document_id, workspace_id, revision_number,
+    text, text_hash, ordinal, chunk_kind,
+    page_first, page_last,
+    modality, page_number, image_object_key,
+    created_at, updated_at
+)
+VALUES ($1, $2::uuid, 1, $3, $4, $5, 'page_image', $6, $6,
+        'image', $6, $7, NOW(), NOW())
+-- Keyed on the PAGE, not the text hash (see migration
+-- 2026_08_18_020000_key_image_passages_by_page_not_text). Verbalization
+-- rewrites this row's text, changing its hash; a hash-keyed conflict target
+-- would therefore miss on re-parse and create a second row for the same page.
+ON CONFLICT (document_id, revision_number, page_number)
+    WHERE modality = 'image'
+DO UPDATE SET
+    image_object_key = EXCLUDED.image_object_key,
+    -- Deliberately NOT overwriting text/text_hash: if the verbalization
+    -- sweep has already described this page, a re-parse must not throw that
+    -- away and reinstate the placeholder. The description belongs to the
+    -- page image, which has not changed.
+    updated_at       = NOW()
+"""
+
 INSERT_OCR_REVIEW_SQL = """
 INSERT INTO silver.review_queue (
     queue_id, workspace_id, project_id, target_table, target_record_kind,
@@ -1459,6 +1513,90 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     )
                     if status.endswith(" 1"):
                         passages_written += 1
+
+                # Page-image passages. The renders were staged under
+                # _pending keys by the parse task (report_id wasn't known
+                # yet); rename each into place, then write its row.
+                #
+                # Fail-soft per page, deliberately: a page whose copy or
+                # insert fails is skipped with a warning rather than
+                # aborting the transaction. The text passages above are the
+                # product; image passages are additive coverage, and losing
+                # one page's render must not cost the document its text.
+                _page_images = parsed.get("page_image_manifest") or []
+                if _page_images:
+                    from app.services.ingest.page_image import (
+                        final_key as _page_final_key,
+                    )
+                    from app.services.ingest.page_image import (
+                        placeholder_text as _page_placeholder_text,
+                    )
+
+                    # Deliberately NOT reusing the `store` above: that name is
+                    # bound inside `if pending_manifest:`, and the figure
+                    # manifest is unconditionally empty (docling removed
+                    # 2026-07-29), so `store` is never actually assigned on
+                    # any live run. Depending on it would NameError on the
+                    # first document with page images.
+                    _img_store = get_storage_client()
+                    _images_written = 0
+                    for entry in _page_images:
+                        page_no = entry.get("page_number")
+                        pending = entry.get("pending_key")
+                        if not page_no or not pending:
+                            continue
+                        dest = _page_final_key(str(report_id), int(page_no))
+                        try:
+                            await asyncio.to_thread(
+                                _img_store.copy,
+                                Bucket.BRONZE_RASTER,
+                                pending,
+                                Bucket.BRONZE_RASTER,
+                                dest,
+                                metadata={
+                                    "report_id": str(report_id),
+                                    "page": str(page_no),
+                                },
+                                content_type="image/png",
+                            )
+                        except Exception as _copy_exc:  # noqa: BLE001
+                            log.warning(
+                                "ingest_pdf: page-image copy failed page=%s "
+                                "key=%s err=%s", page_no, pending, _copy_exc,
+                            )
+                            continue
+
+                        _img_text = _page_placeholder_text(
+                            int(page_no), parsed.get("title"),
+                        )
+                        try:
+                            _img_status = await conn.execute(
+                                INSERT_IMAGE_PASSAGE_SQL,
+                                report_id,
+                                workspace_id_str,
+                                _img_text,
+                                hashlib.sha256(_img_text.encode("utf-8")).hexdigest(),
+                                # $5 ordinal and $6 page number are both the
+                                # page: an image passage's position in the
+                                # document IS its page, unlike a text chunk
+                                # whose ordinal counts sections.
+                                int(page_no),
+                                int(page_no),
+                                dest,
+                            )
+                        except Exception as _img_exc:  # noqa: BLE001
+                            log.warning(
+                                "ingest_pdf: page-image row insert failed "
+                                "page=%s err=%s", page_no, _img_exc,
+                            )
+                            continue
+                        if _img_status.endswith(" 1"):
+                            _images_written += 1
+
+                    log.info(
+                        "ingest_pdf: wrote %d page-image passages for report %s",
+                        _images_written, report_id,
+                    )
 
                 for review_row in ocr_review_rows:
                     await conn.execute(

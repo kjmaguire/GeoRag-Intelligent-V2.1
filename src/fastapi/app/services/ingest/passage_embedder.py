@@ -255,6 +255,11 @@ async def embed_pending_passages(
             # passage came from the text layer (no OCR involved).
             "       dp.ocr_confidence, dp.ocr_method, dp.ocr_status, "
             "       dp.chunk_kind, "
+            # Multimodal (2026-08-18) — modality selects the encoder below:
+            # 'text' takes the batched Cohere text path, 'image' fetches the
+            # stored page render and takes the single-image path. Both land
+            # in the same 1024-dim dense slot.
+            "       dp.modality, dp.page_number, dp.image_object_key, "
             "       COALESCE(r.title, dp.chunk_kind, 'Passage') AS report_title, "
             "       r.project_id::text AS project_id "
             "  FROM silver.document_passages dp "
@@ -310,6 +315,54 @@ async def embed_pending_passages(
                 texts, normalize_embeddings=True, show_progress_bar=False,
             ).tolist()
 
+        def _encode_image_sync(rows: list) -> list[list[float] | None]:
+            """Dense-encode page-image passages, one Embed v4 call per page.
+
+            Returns None in a slot whose image could not be embedded (missing
+            object, unreadable render, model rejection). The caller SKIPS
+            those rows rather than substituting a text vector: a page-image
+            passage whose vector came from its placeholder caption would be
+            silently wrong — it would rank on the words "page image" instead
+            of on what the page depicts, and nothing downstream could tell.
+            Leaving embedding_id NULL lets the next sweep retry it.
+            """
+            from georag_object_storage import Bucket, get_storage_client  # noqa: PLC0415
+
+            out: list[list[float] | None] = []
+            storage = None
+            for row in rows:
+                key = row["image_object_key"]
+                if not key:
+                    log.warning(
+                        "embed_pending.image_missing_key passage=%s", row["passage_id"],
+                    )
+                    out.append(None)
+                    continue
+                try:
+                    if storage is None:
+                        storage = get_storage_client()
+                    png = storage.get_bytes(Bucket.BRONZE_RASTER, key)
+                    out.append(embedding_model.embed_image(png).tolist())
+                except AttributeError:
+                    # The active embedding backend is not Embed v4 (local
+                    # SentenceTransformer or the sidecar proxy — neither has
+                    # embed_image). This is a configuration error, not a data
+                    # error, and it would otherwise repeat per row per sweep.
+                    log.error(
+                        "embed_pending.image_backend_unsupported — image passages "
+                        "require EMBEDDING_BACKEND=foundry (Cohere Embed v4); "
+                        "skipping %d image passage(s) in this batch", len(rows),
+                    )
+                    out.extend([None] * (len(rows) - len(out)))
+                    break
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "embed_pending.image_encode_failed passage=%s key=%s err=%s",
+                        row["passage_id"], key, e,
+                    )
+                    out.append(None)
+            return out
+
         def _encode_sparse_sync(texts: list[str]) -> list[dict]:
             # Per-text loop preserved — see the 2026-08-07 OOM note in the
             # docstring. Peak memory stays one 512-token forward per
@@ -330,26 +383,74 @@ async def embed_pending_passages(
         total_batches = len(batches)
 
         async def _process_batch(batch_no: int, batch, *, first: bool) -> None:
-            texts = [r["contextualized_content"] or r["text"] for r in batch]
+            # Multimodal split (2026-08-18). Text and image passages take
+            # different encoders and CANNOT share a request — Embed v4
+            # rejects mixed text+image input outright ("cannot have both text
+            # and image inputs"). Positions are tracked explicitly so the
+            # results re-merge in batch order.
+            text_idx = [i for i, r in enumerate(batch) if (r["modality"] or "text") != "image"]
+            image_idx = [i for i, r in enumerate(batch) if (r["modality"] or "text") == "image"]
 
-            # Dense encode (Cohere Embed v4 / SentenceTransformer)
-            try:
-                dense_vectors = await loop.run_in_executor(
-                    executor, _encode_dense_sync, texts,
+            dense_by_idx: dict[int, list[float]] = {}
+            sparse_by_idx: dict[int, dict] = {}
+
+            if text_idx:
+                texts = [
+                    batch[i]["contextualized_content"] or batch[i]["text"]
+                    for i in text_idx
+                ]
+                # Dense encode (Cohere Embed v4 / SentenceTransformer)
+                try:
+                    dense_vectors = await loop.run_in_executor(
+                        executor, _encode_dense_sync, texts,
+                    )
+                except Exception as e:
+                    result.errors.append(f"dense_encode_failed:{type(e).__name__}:{e}")
+                    result.passages_skipped += len(batch)
+                    return
+
+                # Sparse encode (SPLADE++) — text only. An image passage's
+                # text is a caption or a generated description, so SPLADE on
+                # it would inject lexical matches for words that appear
+                # nowhere on the page. Image points are dense-only; Qdrant's
+                # RRF fusion unions the two prefetches, so a point absent
+                # from the sparse branch still ranks on its dense score.
+                sparse_vectors = await loop.run_in_executor(
+                    executor, _encode_sparse_sync, texts,
                 )
-            except Exception as e:
-                result.errors.append(f"dense_encode_failed:{type(e).__name__}:{e}")
-                result.passages_skipped += len(batch)
-                return
+                for pos, i in enumerate(text_idx):
+                    dense_by_idx[i] = dense_vectors[pos]
+                    if pos < len(sparse_vectors) and sparse_vectors[pos]:
+                        sparse_by_idx[i] = sparse_vectors[pos]
 
-            # Sparse encode (SPLADE++)
-            sparse_vectors = await loop.run_in_executor(
-                executor, _encode_sparse_sync, texts,
-            )
+            if image_idx:
+                image_vectors = await loop.run_in_executor(
+                    executor, _encode_image_sync, [batch[i] for i in image_idx],
+                )
+                for pos, i in enumerate(image_idx):
+                    iv = image_vectors[pos] if pos < len(image_vectors) else None
+                    if iv is None:
+                        # Left unembedded on purpose — see _encode_image_sync.
+                        result.passages_skipped += 1
+                        continue
+                    dense_by_idx[i] = iv
 
-            # Build Qdrant points
+            # Build Qdrant points.
+            # `point_passage_ids` is parallel to `points` and is what the
+            # embedding_id writeback below keys on. Do NOT reintroduce a
+            # positional zip(batch, points): a batch row can now be skipped
+            # (an image whose render failed to embed), which makes `points`
+            # shorter than `batch` and shifts every subsequent pairing —
+            # writing point N's id onto passage N+1. That corrupts silently:
+            # every row still looks embedded, and retrieval returns the wrong
+            # text for the vector.
             points: list[PointStruct] = []
-            for row, dv, sv in zip(batch, dense_vectors, sparse_vectors, strict=False):
+            point_passage_ids: list[str] = []
+            for idx, row in enumerate(batch):
+                dv = dense_by_idx.get(idx)
+                if dv is None:
+                    continue
+                sv = sparse_by_idx.get(idx)
                 point_id = _passage_to_point_id(row["passage_id"])
                 vector_dict: dict = {"": dv}
                 if sv:
@@ -377,6 +478,14 @@ async def embed_pending_passages(
                     # filter / score public_geo_synthesis differently
                     # from narrative report chunks.
                     "chunk_kind": row.get("chunk_kind") if isinstance(row, dict) else row["chunk_kind"],
+                    # Multimodal discriminator. Retrieval and the Reader use
+                    # this to know a hit is a page render — so the UI can show
+                    # the page instead of a caption, and so an operator
+                    # reading a citation knows whether the text is quoted from
+                    # the document or generated from a picture of it.
+                    "modality": row["modality"] or "text",
+                    "page_number": row["page_number"],
+                    "image_object_key": row["image_object_key"],
                 }
                 # Pre-upsert payload contract assertion. Failing here is a
                 # programmer error (the writer dropped a key it shouldn't have);
@@ -393,6 +502,7 @@ async def embed_pending_passages(
                 points.append(PointStruct(
                     id=point_id, vector=vector_dict, payload=payload,
                 ))
+                point_passage_ids.append(row["passage_id"])
 
             # Upsert. wait only on the first batch (needed for the verify
             # read below); later batches return as soon as Qdrant accepts
@@ -456,7 +566,10 @@ async def embed_pending_passages(
             # Update silver.document_passages.embedding_id — one batched
             # executemany round-trip; falls back to per-row on failure so a
             # single bad row can't lose the whole batch's writeback.
-            _wb = [(point.id, row["passage_id"]) for row, point in zip(batch, points, strict=False)]
+            _wb = [
+                (point.id, passage_id)
+                for point, passage_id in zip(points, point_passage_ids, strict=True)
+            ]
             try:
                 # pg_conn is a single shared asyncpg connection — one
                 # query at a time; the lock serialises concurrent batches'
