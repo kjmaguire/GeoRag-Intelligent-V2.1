@@ -138,6 +138,114 @@ class _FoundryEmbedding:
         """Query-time embedding using Cohere's recommended input_type="search_query"."""
         return self._post([text], "search_query")[0]
 
+    # -- multimodal (page-image) embedding -------------------------------
+    #
+    # Embed v4 is multimodal and places image vectors in the SAME output
+    # space as text vectors, so an image point lands in the existing
+    # `georag_chunks` dense slot ('' / 1024-dim / Cosine) and a plain text
+    # query matches it with no retrieval changes at all. That shared space
+    # is the entire reason this feature is cheap to add — do not "fix" it
+    # by giving images their own collection.
+    #
+    # Two hard constraints from the model card (verified against
+    # learn.microsoft.com 2026-08-18, `embed-v-4-0` on Foundry):
+    #   1. Images cap at 2M pixels. Callers MUST downscale first — see
+    #      app.services.ingest.page_image.render_page_png, which is the
+    #      only supported producer. A 250-DPI letter page is ~5.8M px and
+    #      is rejected outright.
+    #   2. Text and image inputs CANNOT be combined in one call
+    #      ("cannot have both text and image inputs"). So this is a
+    #      separate request from _post(), never a merged one.
+    #
+    # WIRE SHAPE: unlike the text path above (empirically verified against
+    # a live deployment 2026-07-30) the image path is written to Cohere's
+    # documented v2 contract but has NOT yet been confirmed against this
+    # deployment. Cohere shipped two accepted shapes for v4 — the older
+    # `images: [data-uri]` and the newer interleaved `inputs: [...]` — and
+    # which one a given Foundry build accepts is not documented. Rather
+    # than guess, the primary shape is tried first and a 400/422 falls
+    # back to the alternate ONCE, logging whichever succeeded so the first
+    # real run tells us definitively. Collapse this to the winner (and
+    # delete the fallback) once observed in production logs.
+    _IMAGE_WIRE_SHAPE: str | None = None  # None = undetermined; set on first success
+
+    def embed_image(self, png_bytes: bytes, *, mime: str = "image/png") -> np.ndarray:
+        """Embed ONE page image, returning a 1024-dim vector.
+
+        Deliberately single-image: Embed v4 accepts a batch, but a page
+        render is ~1-3 MB and batching them multiplies an already-large
+        request body by the batch size for no latency win worth the
+        memory. The 2026-08-07 SPLADE batching regression (OOM-killed the
+        worker, exit 137) is the cautionary precedent.
+        """
+        import base64  # noqa: PLC0415
+
+        import httpx  # noqa: PLC0415
+
+        from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
+
+        data_uri = f"data:{mime};base64,{base64.b64encode(png_bytes).decode('ascii')}"
+
+        def _body_images() -> dict[str, Any]:
+            return {
+                "model": self._deployment,
+                "images": [data_uri],
+                "input_type": "image",
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            }
+
+        def _body_inputs() -> dict[str, Any]:
+            return {
+                "model": self._deployment,
+                "inputs": [{"content": [{"type": "image_url", "image_url": {"url": data_uri}}]}],
+                "input_type": "image",
+                "embedding_types": ["float"],
+                "output_dimension": self._dimension,
+            }
+
+        shapes: list[tuple[str, Any]] = (
+            [("images", _body_images), ("inputs", _body_inputs)]
+            if _FoundryEmbedding._IMAGE_WIRE_SHAPE in (None, "images")
+            else [("inputs", _body_inputs), ("images", _body_images)]
+        )
+
+        last_exc: Exception | None = None
+        for name, build_body in shapes:
+            def _do(_b=build_body) -> httpx.Response:
+                return httpx.post(
+                    self._url,
+                    headers={"api-key": self._api_key},
+                    timeout=self._timeout_s,
+                    json=_b(),
+                )
+
+            try:
+                resp = with_foundry_retry(_do, label=f"foundry_embed_image[{name}]")
+            except httpx.HTTPStatusError as exc:
+                # Only a schema rejection is worth re-shaping for. Anything
+                # else (401, 429, 5xx) means the request was understood and
+                # retrying with different JSON just burns another call.
+                if exc.response is not None and exc.response.status_code in (400, 422):
+                    last_exc = exc
+                    logger.debug(
+                        "foundry image embed: wire shape %r rejected (%s) — trying alternate",
+                        name, exc.response.status_code,
+                    )
+                    continue
+                raise
+
+            if name != _FoundryEmbedding._IMAGE_WIRE_SHAPE:
+                _FoundryEmbedding._IMAGE_WIRE_SHAPE = name
+                logger.info("foundry image embed: using wire shape %r", name)
+            vectors = resp.json()["embeddings"]["float"]
+            return np.asarray(vectors, dtype=np.float32)[0]
+
+        raise RuntimeError(
+            "Cohere Embed v4 rejected both documented image wire shapes "
+            f"(images[], inputs[]) on deployment {self._deployment!r}"
+        ) from last_exc
+
     def get_sentence_embedding_dimension(self) -> int:
         return self._dimension
 

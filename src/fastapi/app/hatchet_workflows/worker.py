@@ -70,6 +70,7 @@ from app.hatchet_workflows.tiff_normalize import (
 )
 from app.hatchet_workflows.train_source_trust import train_source_trust  # doc-phase 102
 from app.hatchet_workflows.train_target_model import train_target_model  # doc-phase 101
+from app.hatchet_workflows.verbalize_page_images import verbalize_page_images_wf  # multimodal page descriptions
 from app.hatchet_workflows.what_changed_detector import what_changed_detector  # doc-phase 94
 from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc-phase 182 (§12 polish)
 
@@ -153,6 +154,10 @@ POOLS = {
         # sync. Runs BGE + SPLADE++ embeddings + upserts to the
         # georag_reports collection.
         embed_pending_passages_wf,
+        # 2026-08-18 — hourly page-image verbalization. Inert unless
+        # IMAGE_VERBALIZATION_ENABLED is set (the task returns before
+        # touching PG), so registering it is a no-op until opted in.
+        verbalize_page_images_wf,
         # 2026-06-01 Guard 2 — hourly payload-shape audit on georag_chunks.
         # Catches silent-degrade writers between FastAPI restarts (the
         # startup healthcheck at app/main.py section 6.5 only fires at

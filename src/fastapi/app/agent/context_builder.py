@@ -137,7 +137,11 @@ def _build_context(
                     record_lines.append(
                         f"  - [{chunk.document_title}] {section_ref}"
                     )
-                    _chunk_text = chunk.text[:1500]
+                    # annotated_text, not text: a page-image chunk's content
+                    # is a generated DESCRIPTION, and the prefix keeps that
+                    # visible in the context window so the model cannot
+                    # quote it as though the document said it.
+                    _chunk_text = chunk.annotated_text[:1500]
                     if settings.PROMPT_INJECTION_DELIMITING_ENABLED:
                         _chunk_text = _fence_untrusted(_chunk_text)
                     record_lines.append(f"    Text: {_chunk_text}")

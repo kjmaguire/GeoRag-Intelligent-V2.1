@@ -331,6 +331,37 @@ class DocumentChunk:
     # Phase 6 OCR Quality Agent will set thresholds.
     ocr_confidence: float | None = None
     ocr_method: str | None = None
+    # Multimodal (2026-08-18). modality='image' means this chunk's text is a
+    # vision model's DESCRIPTION of a rendered page, not text extracted from
+    # the document. That distinction is load-bearing for hallucination
+    # prevention: a description must never be presented as a quotation, and
+    # its content carries no OCR confidence because no OCR ran. See
+    # `annotated_text` — the answer path reads that, not `text`, so the
+    # provenance travels with the content instead of relying on every
+    # consumer remembering to check `modality`.
+    modality: str = "text"
+    page_number: int | None = None
+    image_object_key: str | None = None
+
+    @property
+    def is_page_image(self) -> bool:
+        return self.modality == "image"
+
+    @property
+    def annotated_text(self) -> str:
+        """Text as it should reach the LLM, with figure provenance inline.
+
+        A generated description that looks like an extract invites the model
+        to quote it as though the document said it. The prefix makes the
+        difference explicit in the context window itself.
+        """
+        if not self.is_page_image:
+            return self.text
+        where = f" (page {self.page_number})" if self.page_number else ""
+        return (
+            f"[Description of a figure or map image{where}, generated from the "
+            f"page image — not quoted text from the document]\n{self.text}"
+        )
 
 
 @dataclass
@@ -1846,6 +1877,12 @@ async def search_documents(
                         float(_ocr_conf_raw) if _ocr_conf_raw is not None else None
                     ),
                     ocr_method=payload.get("ocr_method"),
+                    # Written by passage_embedder._build_payload. Defaults
+                    # keep pre-multimodal points (every point written before
+                    # 2026-08-18) reading as plain text.
+                    modality=payload.get("modality") or "text",
+                    page_number=payload.get("page_number"),
+                    image_object_key=payload.get("image_object_key"),
                 )
             )
         return candidates

@@ -481,7 +481,9 @@ async def _dispatch_document_passage_search(
         passages.append(
             PassageHit(
                 passage_id=passage_id,
-                text=chunk.text,
+                # See DocumentChunk.annotated_text — figure descriptions
+                # must reach the answer path labelled as descriptions.
+                text=chunk.annotated_text,
                 relevance=min(max(chunk.relevance_score, 0.0), 1.0),
                 document_id=chunk.source_document_id or chunk.report_id or "unknown",
                 page_number=chunk.page,
