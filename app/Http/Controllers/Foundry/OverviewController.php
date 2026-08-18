@@ -50,7 +50,17 @@ class OverviewController extends Controller
 
         $reportsCount = 0;
         try {
-            $reportsCount = DB::table('silver.reports')->count();
+            // Must be project-scoped like every other count above. This was an
+            // unfiltered count(*) over silver.reports, i.e. every report in the
+            // database regardless of project — it only looked right because
+            // this deployment currently has a single project. A second project
+            // would show the first project's documents in its own Overview, and
+            // the $nextAction match below would mis-fire ("Connect your first
+            // data source" is gated on $reportsCount === 0, which an unscoped
+            // count can never reach once any project has ingested anything).
+            $reportsCount = DB::table('silver.reports')
+                ->where('project_id', $project->project_id)
+                ->count();
         } catch (\Throwable $e) { /* */
         }
 
