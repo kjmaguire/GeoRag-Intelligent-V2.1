@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 _PIPELINE: tuple[tuple[str, Any], ...] = (
     # Plan §3e — multi-turn rewrite runs FIRST so the classifier
     # sees the expanded query. No-op when MULTI_TURN_RESOLUTION_ENABLED
-    # is False (default) or when state.history is empty.
+    # is False or when state.history is empty. NOTE: that setting defaults
+    # to True (app/config.py) — this comment previously said "(default)"
+    # next to False, which reads as "multi-turn is off unless you opt in".
+    # It is on unless an operator turns it off.
     # See docs/architecture/multi_turn_resolution_spec.md §6.3.
     ("resolve", resolve_node),
     ("classify", classify_node),

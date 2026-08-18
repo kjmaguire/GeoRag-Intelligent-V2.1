@@ -136,11 +136,17 @@ class AgentDeps:
             async with deps.acquire_scoped() as conn:
                 rows = await conn.fetch(sql, *args)
 
-        When MULTI_TENANT_ENFORCEMENT_ENABLED is False (default), the GUC
-        is intentionally NOT set — single-tenant deploys keep their existing
+        When MULTI_TENANT_ENFORCEMENT_ENABLED is False the GUC is
+        intentionally NOT set — single-tenant deploys keep their existing
         behaviour. When True, the GUC is set to deps.project_id and any
         cross-project leak in a tool's WHERE clause is silently caught by
         the RLS policy.
+
+        NOTE: that setting defaults to True (app/config.py). This comment
+        used to say "False (default)", which reads as "tenant enforcement is
+        off unless you opt in" — the opposite of the shipped posture, and a
+        dangerous thing to believe when reasoning about whether a query path
+        is isolated.
         """
         from app.config import settings  # noqa: PLC0415
 
