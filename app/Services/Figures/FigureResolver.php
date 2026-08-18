@@ -47,6 +47,30 @@ final class FigureResolver
     /**
      * Return the figure manifest for a report with presigned PNG URLs.
      *
+     * DORMANT AS OF 2026-08-18 — this returns [] for every report in
+     * production, and that is currently expected, not a bug in this class.
+     * `silver.reports.resource_estimate->figures` is only written by
+     * ingest_pdf.py's persist step when the parse result carries a non-empty
+     * figure_manifest, and parse_pdf_report has returned figure_manifest=[]
+     * unconditionally since docling (its only producer) was removed
+     * 2026-07-29 — see that file's own comment, "This block stays wired up
+     * for a future producer". Live check on the 7-document corpus: 7 reports
+     * with a resource_estimate payload, 0 carrying a `figures` key. The
+     * Reader's figure panel is therefore empty everywhere.
+     *
+     * WHEN A PRODUCER IS REVIVED, the two sides do not currently agree and
+     * this method will silently return [] even with figures present:
+     *   - ingest_pdf.py writes `resource_estimate["figures"]` as a DICT,
+     *     `{"items": [...], "source": "figure_manifest_v1"}`, but the loop
+     *     below iterates `$payload['figures']` expecting a flat LIST of
+     *     figure entries. Iterating that dict yields the items array and the
+     *     source string, neither of which is a figure entry.
+     *   - the entries themselves record the object path as `minio_key`,
+     *     while the loop below reads `$f['key']`.
+     * Unwrap `['items']` and align the key name at that point; both are
+     * left as-is here rather than guessed at, since there is no producer to
+     * verify a change against.
+     *
      * @param string $reportId UUID of the silver.reports row
      * @param int $ttlSeconds presigned URL lifetime
      *
