@@ -10,6 +10,7 @@ use App\Services\Figures\FigureResolver;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -171,9 +172,9 @@ class ReportController extends Controller
      *      perfectly. Gating status on it reported healthy ingests as
      *      failures.
      *
-     * @return \Illuminate\Support\Collection<int, array<string, mixed>>
+     * @return Collection<int, array<string, mixed>>
      */
-    private function reportRows(Project $project): \Illuminate\Support\Collection
+    private function reportRows(Project $project): Collection
     {
         $rows = $this->withWorkspaceRls(
             (string) $project->workspace_id,
@@ -250,7 +251,8 @@ class ReportController extends Controller
      * per-document breakdown. That is why the document rows below expose
      * passages/embedded (which ARE per-document) and not flagged/rejected.
      *
-     * @param  \Illuminate\Support\Collection<int, array<string, mixed>>  $rows
+     * @param Collection<int, array<string, mixed>> $rows
+     *
      * @return array<string, mixed>
      */
     private function qualityRollup(Project $project, $rows): array
