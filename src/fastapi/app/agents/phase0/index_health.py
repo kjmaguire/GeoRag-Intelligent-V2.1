@@ -53,28 +53,40 @@ async def index_health_check(
     }
 
     # Every probe below reads a CLUSTER-scoped catalog — pg_stat_statements,
-    # pg_stat_user_tables, pg_stat_user_indexes. None of them is per-tenant.
-    # But silver.corpus_health_findings.workspace_id is NOT NULL REFERENCES
-    # silver.workspaces, and the cron trigger deliberately passes no workspace
-    # (AgentRunInput.workspace_id: "if None, runs system-wide"). So on its
-    # scheduled run this agent could never persist a finding: live logs showed
-    # `null value in column "workspace_id" ... violates not-null constraint`
-    # on every pass, swallowed by the probe's `except Exception`.
+    # pg_stat_user_tables, pg_stat_user_indexes. None of them is per-tenant, so
+    # on the scheduled run there is no workspace to attribute a finding to: the
+    # cron trigger deliberately passes none (AgentRunInput.workspace_id: "if
+    # None, runs system-wide").
     #
-    # Relaxing that NOT NULL is a tenancy decision, not a bug fix, so it is NOT
-    # made here. Instead system-wide findings are returned in the summary (the
-    # workflow output Hatchet retains) and counted, so the agent reports what it
-    # found instead of failing silently. When invoked WITH a workspace — via the
-    # on-demand route — persistence behaves exactly as before.
+    # silver.corpus_health_findings.workspace_id used to be NOT NULL, so that
+    # run could never persist anything — live logs showed `null value in column
+    # "workspace_id" ... violates not-null constraint` on every pass, swallowed
+    # by each probe's `except Exception`. Migration
+    # 2026_08_19_070000_allow_system_scoped_corpus_health_findings drops that
+    # constraint: a NULL workspace_id now means "system-scoped". The phase0
+    # tenant_isolation policy already admits such rows (its predicate is
+    # `workspace_id IS NOT DISTINCT FROM ...`, which is NULL-safe, and the GUC
+    # is unset on this path), so nothing else had to change.
+    #
+    # System-wide findings are ALSO still echoed into the summary, because that
+    # is the workflow output Hatchet retains and it is what makes a run legible
+    # without querying the table.
     system_wide = ctx.workspace_id is None
 
     async def _record(sql: str, *args: Any, kind: str, detail: dict[str, Any]) -> None:
-        """Persist a finding, or collect it when running system-wide."""
+        """Persist a finding; system-wide runs write workspace_id NULL."""
         if system_wide:
             summary["findings"].append({"finding_type": kind, **detail})
+        try:
+            await rt.pg_pool.execute(sql, ctx.workspace_id, *args)
+        except Exception as exc:
+            # Kept as a counter rather than a raise: a findings table that is
+            # unwritable must not take down the probe that produced the
+            # finding. findings_unpersisted is part of the workflow output
+            # contract (phase0_agents.py::IndexHealthOutput) and is now a real
+            # error signal instead of the steady-state it used to be.
             summary["findings_unpersisted"] += 1
-            return
-        await rt.pg_pool.execute(sql, ctx.workspace_id, *args)
+            logger.warning("could not persist %s finding: %s", kind, exc)
 
     # ---- 1. Slow queries (pg_stat_statements) -------------------------------
     slow = await rt.pg_pool.fetch(
