@@ -5,11 +5,9 @@ declare(strict_types=1);
 use App\Http\Controllers\Admin\IntegrationsController;
 use App\Http\Controllers\CitationFeedbackController;
 use App\Http\Controllers\Foundry\ChatController;
-use App\Http\Controllers\Foundry\CorpusController;
 use App\Http\Controllers\Foundry\DrillholeDetailController;
 use App\Http\Controllers\Foundry\HoleCompareController;
 use App\Http\Controllers\Foundry\IngestionRunsController;
-use App\Http\Controllers\Foundry\IngestQualityController;
 use App\Http\Controllers\Foundry\MapController;
 use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
@@ -78,7 +76,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::redirect('/projects/new', '/foundry/projects/new', 301)
         ->name('projects.new');
 
-    Route::get('/projects/{slug}/imports/quality', [IngestQualityController::class, 'show'])
+    // Merged 2026-08-18 into the reports surface — the quality page was the
+    // same silver.reports list with two extra per-document columns, so it now
+    // lives as the quality strip + per-document status + reader Quality tab on
+    // /reports. Kept as a named redirect (not deleted) so existing links,
+    // bookmarks and any route('foundry.ingest-quality') callers keep working.
+    //
+    // 302 rather than 301 on purpose: a permanent redirect is cached by
+    // browsers indefinitely and would be near-impossible to walk back if the
+    // quality view is ever split out again.
+    Route::get('/projects/{slug}/imports/quality', function (string $slug) {
+        return redirect()->route('foundry.reports', ['slug' => $slug], 302);
+    })
         ->where('slug', '[a-z0-9\-]+')
         ->name('foundry.ingest-quality');
 
@@ -110,7 +119,14 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // GeoJSON is fetched client-side by MapView itself instead of here.
     Route::get('/projects/{slug}/map', [MapController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.map');
-    Route::get('/projects/{slug}/corpus', [CorpusController::class, 'show'])
+    // Merged 2026-08-18 into /reports — see ReportController's docblock. The
+    // "Reader" nav item was a second document list over the same two tables;
+    // its cross-document passage sample and entity-link rollup now fill the
+    // reports pane when no document is selected. Named redirect so existing
+    // route('foundry.corpus') callers and bookmarks keep working.
+    Route::get('/projects/{slug}/corpus', function (string $slug) {
+        return redirect()->route('foundry.reports', ['slug' => $slug], 302);
+    })
         ->where('slug', '[a-z0-9\-]+')->name('foundry.corpus');
     // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).
     Route::get('/projects/{slug}/holes/{collarId}/detail', [DrillholeDetailController::class, 'show'])

@@ -115,6 +115,27 @@
                  fail-open escape hatch on the verified subset. Uses
                  RefreshDatabase to guarantee schema/policies are current. -->
             <file>tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php</file>
+            <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
+                 but were never added here — grep -rl "RequiresPostgres\|
+                 skipIfSqlite" tests/Feature turned up 7 files this config
+                 was missing (see .github/workflows/ci.yml laravel job
+                 comment for the full story on how they went undetected). -->
+            <file>tests/Feature/Api/V1/ProjectControllerDeleteOrderingTest.php</file>
+            <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapControllerTest.php</file>
+            <file>tests/Feature/Foundry/DrillholeDetailControllerTest.php</file>
+            <file>tests/Feature/Foundry/HoleCompareControllerTest.php</file>
+            <file>tests/Feature/Foundry/IngestQualityControllerTest.php</file>
+            <file>tests/Feature/Foundry/OverviewControllerTest.php</file>
+            <!-- 2026-08-18: the Reader's "Indexed passages" tab had the
+                 same dead bronze.provenance join SourcesControllerTest
+                 was written for; ReportController was missed in that
+                 2026-08-17 pass. -->
+            <file>tests/Feature/Foundry/ReportControllerTest.php</file>
+            <file>tests/Feature/Foundry/SourcesControllerTest.php</file>
+            <!-- Deliberately last: does NOT use RefreshDatabase, asserts
+                 against whatever project already exists after the
+                 RefreshDatabase group above has run — see its own docblock. -->
+            <file>tests/Feature/Foundry/WorkspaceThreeDPayloadTest.php</file>
         </testsuite>
         <testsuite name="Postgres (read-only)">
             <!--
@@ -140,6 +161,20 @@
         <env name="BCRYPT_ROUNDS" value="4" force="true"/>
         <env name="BROADCAST_CONNECTION" value="null" force="true"/>
         <env name="CACHE_STORE" value="array" force="true"/>
+
+        <!--
+          2026-08-17 CI-gap audit: IntegrationsController's sender-secret
+          encryption (usage.register_external_notification_sender /
+          lookup_..._secrets, both pgp_sym_encrypt/decrypt keyed on this
+          value) requires AUDIT_ENCRYPTION_KEY to be set — it was never
+          added here, so every IntegrationsControllerTest case that seeds
+          or reads a sender either failed its own
+          `AUDIT_ENCRYPTION_KEY must be configured` guard or 503'd via the
+          controller's own `abort(503, 'AUDIT_ENCRYPTION_KEY not
+          configured server-side')` check. Test-only value; unrelated to
+          any real secret.
+        -->
+        <env name="AUDIT_ENCRYPTION_KEY" value="phpunit-pgsql-test-only-encryption-key-not-a-real-secret" force="true"/>
 
         <!--
           PostgreSQL connection — direct to the `postgresql` service,
@@ -187,7 +222,7 @@
           matching the dev DB layout. Migrations that want silver/etc.
           already qualify explicitly (e.g., `silver.projects`).
         -->
-        <env name="DB_SEARCH_PATH" value="public,silver,bronze,gold,index,public_geo,audit,ops,eval,targeting,interpretation,outbox" force="true"/>
+        <env name="DB_SEARCH_PATH" value="public,silver,bronze,gold,index,public_geo,audit,ops,eval,targeting,interpretation,outbox,workspace,usage,workflow" force="true"/>
 
         <env name="MAIL_MAILER" value="array" force="true"/>
         <env name="QUEUE_CONNECTION" value="sync" force="true"/>

@@ -22,11 +22,46 @@ import httpx
 
 log = logging.getLogger(__name__)
 
+# Herd's local hostname. Correct for `php artisan serve` on a dev laptop and
+# nowhere else — inside any container it resolves to nothing.
 _DEFAULT_LARAVEL_URL = "http://laravel.test"
+
+# One-shot latch so the misconfiguration warning below is emitted once per
+# process instead of once per callback.
+_warned_unset_base = False
 
 
 def _laravel_base() -> str:
-    return os.environ.get("LARAVEL_INTERNAL_URL", _DEFAULT_LARAVEL_URL).rstrip("/")
+    """Resolve the Laravel base URL, complaining loudly if it isn't configured.
+
+    Incident 2026-08-18: LARAVEL_INTERNAL_URL was never set on fastapi-cc or
+    hatchet-worker-cc, so every bridge call in production silently fell back
+    to http://laravel.test and died on DNS. The only symptom was a per-call
+    warning reading `err=[Errno -2] Name or service not known` — which looks
+    like a transient network blip, not a missing environment variable, so it
+    went unread for weeks while the ENTIRE real-time layer (ingestion
+    progress, workspace-data-updated, admin surfaces, user inbox) was dead.
+
+    The default is kept so local Herd development keeps working, but falling
+    back to it is now reported once, at ERROR, naming the variable.
+    """
+    global _warned_unset_base
+
+    configured = os.environ.get("LARAVEL_INTERNAL_URL")
+    if configured:
+        return configured.rstrip("/")
+
+    if not _warned_unset_base:
+        _warned_unset_base = True
+        log.error(
+            "laravel_bridge: LARAVEL_INTERNAL_URL is not set; falling back to %s. "
+            "Every callback into Laravel (ingestion progress, workspace-data-updated, "
+            "admin surfaces, report-build progress, user inbox) will fail unless this "
+            "host resolves. In Azure Container Apps set it to http://laravel-octane-cc.",
+            _DEFAULT_LARAVEL_URL,
+        )
+
+    return _DEFAULT_LARAVEL_URL.rstrip("/")
 
 
 def _service_key() -> str | None:

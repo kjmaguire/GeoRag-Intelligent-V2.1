@@ -54,9 +54,9 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
             { kind: 'nav', title: 'Chat', sub: 'Ask the project corpus', href: `${base}/chat`, group: 'This project' },
             { kind: 'nav', title: 'Data', sub: 'Sources + lineage', href: `${base}/sources`, group: 'This project' },
             { kind: 'nav', title: 'Ingestion runs', sub: 'Live pipeline activity', href: `${base}/ingestion-runs`, group: 'This project' },
-            { kind: 'nav', title: 'Quality', sub: 'Ingest trust report', href: `${base}/imports/quality`, group: 'This project' },
-            { kind: 'nav', title: 'Reader', sub: 'Document corpus', href: `${base}/corpus`, group: 'This project' },
-            { kind: 'nav', title: 'Reports', sub: 'Ingested reports', href: `${base}/reports`, group: 'This project' },
+            // Reader (/corpus) and Quality (/imports/quality) merged into
+            // Reports 2026-08-18; both paths still redirect there.
+            { kind: 'nav', title: 'Reports', sub: 'Documents & ingest quality', href: `${base}/reports`, group: 'This project' },
             // Restored 2026-08-17 (reader-core trim reversal) — a real
             // page route (/projects/{slug}/compare), unrelated to the
             // dead chat slash-commands described above.

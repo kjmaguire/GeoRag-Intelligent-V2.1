@@ -279,16 +279,39 @@ jobs:
           echo "::error::migration job did not finish within 300s"
           exit 1
 
+      # LARAVEL_INTERNAL_URL is re-asserted on every deploy rather than left
+      # as one-time hand-set state. It was never set at all until 2026-08-18,
+      # so laravel_bridge fell back to its Herd-local default
+      # (http://laravel.test) and every FastAPI->Laravel callback died on DNS
+      # - ingestion progress, workspace-data-updated, admin surfaces and the
+      # user inbox were all silently dead in production. --set-env-vars
+      # merges (it does not replace the rest of the container env), so
+      # folding it into the same update keeps this to one new revision.
+      #
+      # http://laravel-octane-cc is Container Apps in-environment name for
+      # the Octane app; verified from inside hatchet-worker-cc on 2026-08-18
+      # (resolves to 100.100.235.221, /up -> 200). Deliberately NOT the
+      # public FQDN, which would hairpin every callback out to the internet.
       - name: Deploy fastapi image (fastapi-cc, hatchet-worker-cc)
         run: |
           for target in fastapi-cc hatchet-worker-cc; do
             az containerapp update -g "$AZURE_RG" -n "$target" \
-              --image "${ACR_LOGIN_SERVER}/georag/fastapi:${SHORT_SHA}"
+              --image "${ACR_LOGIN_SERVER}/georag/fastapi:${SHORT_SHA}" \
+              --set-env-vars "LARAVEL_INTERNAL_URL=http://laravel-octane-cc"
           done
 
-      - name: Deploy laravel image (octane, horizon, reverb)
+      # Order matters: queue CONSUMERS before the producer. These three are
+      # updated sequentially with no barrier (~30s end to end, measured on
+      # the 71ed325 run: octane 22:55:02, horizon 22:55:16, reverb 22:55:31),
+      # so there is always a window where one app runs new code and another
+      # still runs old. Rolling Horizon first makes that window safe: the
+      # worker is never BEHIND the web tier, so a deploy that changes a
+      # queued job payload can never hand a new-shape job to an old worker.
+      # Horizon already has to tolerate old-shape jobs regardless — anything
+      # queued before the deploy is still sitting in Redis.
+      - name: Deploy laravel image (horizon, reverb, octane)
         run: |
-          for target in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
+          for target in laravel-horizon-cc laravel-reverb-cc laravel-octane-cc; do
             az containerapp update -g "$AZURE_RG" -n "$target" \
               --image "${ACR_LOGIN_SERVER}/georag/laravel:${SHORT_SHA}"
           done

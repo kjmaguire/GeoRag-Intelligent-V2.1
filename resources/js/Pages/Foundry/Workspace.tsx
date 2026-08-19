@@ -425,7 +425,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                             <EmptyState
                                 title="No drill data in this project."
                                 detail="Ingest LAS / SEG-Y / AGS / KMZ via Data → Connect Source to populate the workspace canvases."
-                                action={<Link href={`/projects/${project.slug}/imports/quality`} className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border" style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}>Open import quality →</Link>}
+                                action={<Link href={`/projects/${project.slug}/reports`} className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border" style={{ color: 'var(--accent)', background: 'var(--accent-bg)', borderColor: 'var(--accent-dim)' }}>Open import quality →</Link>}
                             />
                         ) : (
                             <>

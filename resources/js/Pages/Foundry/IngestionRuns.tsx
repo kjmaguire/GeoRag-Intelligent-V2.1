@@ -240,7 +240,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     }
                     actions={
                         <Link
-                            href={`/projects/${project.slug}/imports/quality`}
+                            href={`/projects/${project.slug}/reports`}
                             className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                             style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)' }}
                         >

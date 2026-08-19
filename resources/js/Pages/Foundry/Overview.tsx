@@ -248,9 +248,7 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                 {[
                                     { label: 'Chat', href: `/projects/${project.slug}/chat`, sub: 'Threaded reasoning' },
                                     { label: 'Data', href: `/projects/${project.slug}/sources`, sub: 'Sources + lineage' },
-                                    { label: 'Reader', href: `/projects/${project.slug}/corpus`, sub: 'Document corpus' },
-                                    { label: 'Reports', href: `/projects/${project.slug}/reports`, sub: 'Ingested reports' },
-                                    { label: 'Quality', href: `/projects/${project.slug}/imports/quality`, sub: 'Ingest checks' },
+                                    { label: 'Reports', href: `/projects/${project.slug}/reports`, sub: 'Documents & ingest quality' },
                                 ].map((q) => (
                                     <Link
                                         key={q.label}

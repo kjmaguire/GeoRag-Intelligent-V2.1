@@ -434,6 +434,22 @@ them. Expect ~0.0 on the first query in a session (cold cache) and
   the channel callback's return value. Tests that validate channel
   authorization must invoke the `channels.php` callback directly (see
   `QueryChannelAuthorizationTest` for the pattern).
+- **`docker exec -e DB_CONNECTION=pgsql ... php artisan test` (no `-c`)
+  can throw a confusing hybrid PDOException** — "connection to server at
+  postgresql... FATAL: database ":memory:" does not exist". This is NOT
+  `phpunit.xml`'s `force="true"` failing; it's a SEPARATE local-dev-only
+  interaction: any container with `MIGRATE_DB_CONNECTION=pgsql_migrations`
+  set (see `config/database.php`'s `pgsql_migrations` connection —
+  deploy-time env, real host `postgresql`) makes `artisan migrate`/
+  `migrate:fresh` **always** run on that connection, regardless of
+  `database.default` — but that connection's `database` key still reads
+  `env('DB_DATABASE', 'georag')`, which `phpunit.xml` DOES force to
+  `:memory:`. The result: real Postgres host + a SQLite-only database
+  name. CI never sets `MIGRATE_DB_CONNECTION`, so this never happens
+  there. Locally, either unset `MIGRATE_DB_CONNECTION` for the shell
+  running SQLite-suite tests, or just use `composer run test` /
+  `-c phpunit.pgsql.xml` as documented above instead of ad hoc `-e`
+  overrides.
 
 ---
 
@@ -502,6 +518,69 @@ installs the policy (admits all rows when GUC unset — backwards
 compatible).
 
 ---
+
+## `LARAVEL_INTERNAL_URL` — the FastAPI → Laravel callback host
+
+**Incident 2026-08-18.** This variable was never set on `fastapi-cc` or
+`hatchet-worker-cc`. `laravel_bridge._laravel_base()` therefore fell back to
+its Herd-local default, `http://laravel.test`, which resolves to nothing
+inside a container. Every callback into Laravel had been failing in
+production, silently:
+
+| Helper | What was dead |
+| --- | --- |
+| `post_ingestion_progress` | IngestionRuns rows never flipped state in real time |
+| `post_workspace_data_updated` | No live refresh of Reader / Lakehouse / Overview |
+| `post_admin_surface_updated` | `cost_burn_watcher` + all admin surfaces |
+| `post_report_build_progress` | §15 report-build progress bar |
+| `post_workspace_activity`, `post_user_inbox_updated` | Activity feed, inbox badge |
+
+Every helper swallows its own exception by design (a broadcast must never
+fail the workflow that made real progress), so the only symptom was a
+`log.warning` per call:
+
+```
+laravel_bridge: admin.surface_updated broadcast failed surface=llm-cost err=[Errno -2] Name or service not known
+```
+
+That reads like a transient network blip, not a missing environment variable.
+`_laravel_base()` now logs **ERROR once per process, naming the variable**,
+when it takes the fallback — see `test_laravel_bridge_base_url.py`.
+
+### The correct value
+
+```
+LARAVEL_INTERNAL_URL=http://laravel-octane-cc
+```
+
+Container Apps resolves bare app names inside the environment. Verified from
+inside `hatchet-worker-cc` on 2026-08-18 — `laravel-octane-cc` →
+`100.100.235.221`, `/up` → 200. Two alternatives also resolve but are worse:
+
+- `laravel-octane-cc.internal.<env-domain>` — works, but pins the environment
+  domain into config for no benefit.
+- `laravel-octane-cc.<env-domain>` (the public FQDN) — works, but hairpins
+  every internal callback out through the public internet.
+
+`cd.yml`'s "Deploy fastapi image" step now re-asserts the variable on every
+deploy via `--set-env-vars`, so it cannot silently drift back out. To apply it
+to the currently-running revisions without waiting for a deploy:
+
+```bash
+for target in fastapi-cc hatchet-worker-cc; do
+  az containerapp update -g georag -n "$target" \
+    --set-env-vars "LARAVEL_INTERNAL_URL=http://laravel-octane-cc"
+done
+```
+
+Then confirm the 5-minute `cost_burn_watcher` warning stops:
+
+```bash
+az containerapp logs show -g georag -n hatchet-worker-cc --tail 200 | grep laravel_bridge
+```
+
+`hatchet-worker-cc` runs 2 replicas and `logs show` returns one — check both
+before concluding it is clean.
 
 ## Key separation note — `FASTAPI_SERVICE_KEY` does double duty
 

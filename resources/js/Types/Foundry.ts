@@ -219,38 +219,12 @@ export interface DrillholeDetailProps {
     data_quality_flags?: import('@/Components/DataQualityFlagsBadge').DataQualityFlagsBadgeData | null;
 }
 
-export interface IngestQualityFileRow {
-    file_id: string;
-    name: string;
-    format: 'LAS' | 'CSV' | 'PDF' | 'TIFF' | 'CAMECO_LOG' | 'AGS' | 'KMZ' | 'XLSX' | 'OTHER';
-    size_bytes: number | null;
-    rows: number | null;
-    accepted: number | null;
-    flagged: number | null;
-    rejected: number | null;
-    status: 'ok' | 'warn' | 'error' | 'awaiting_ocr' | 'unassessed';
-    crs_detected: string | null;
-    crs_confidence: number | null;
-    duration_seconds: number | null;
-}
-
-export interface IngestQualityAnomaly {
-    row: number | null;
-    column: string | null;
-    value: string | null;
-    rule: string;
-    action: 'flag' | 'reject' | 'review';
-}
-
-export interface IngestQualityProps {
-    import_id: string;
-    project: Pick<FoundryProject, 'project_id' | 'project_name' | 'slug'>;
-    files: IngestQualityFileRow[];
-    anomalies: IngestQualityAnomaly[];
-    totals: { accepted: number; flagged: number; rejected: number; awaiting_ocr: number };
-    pass_gate: boolean;
-    empty: boolean;
-}
+/*
+ * IngestQuality* types removed 2026-08-18. The /imports/quality page was
+ * merged into the reports surface; its per-document row and project rollup
+ * now live as ReportListRow / QualityRollup, exported from
+ * Pages/Foundry/Reports.tsx alongside the component that consumes them.
+ */
 
 export interface TargetsRecommendation {
     target_id: string;

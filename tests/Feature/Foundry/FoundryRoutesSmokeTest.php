@@ -58,14 +58,25 @@ final class FoundryRoutesSmokeTest extends TestCase
         return [
             'overview' => ['', 'Foundry/Overview'],
             'chat' => ['/chat', 'Foundry/Chat'],
-            'ingest-quality' => ['/imports/quality', 'Foundry/IngestQuality'],
             'ingestion-runs' => ['/ingestion-runs', 'Foundry/IngestionRuns'],
             'sources' => ['/sources', 'Foundry/Sources'],
-            'corpus' => ['/corpus', 'Foundry/Corpus'],
             'compare' => ['/compare', 'Foundry/HoleCompare'],
             'workspace' => ['/workspace', 'Foundry/Workspace'],
-            'reports' => ['/reports', 'Foundry/Report'],
+            'reports' => ['/reports', 'Foundry/Reports'],
             'map' => ['/map', 'Foundry/Map'],
+        ];
+    }
+
+    /**
+     * Routes merged into /reports on 2026-08-18. They are kept as named
+     * redirects rather than deleted, so the contract to lock is "still
+     * resolves, lands on the merged surface" — not a 404.
+     */
+    public static function mergedProjectRoutes(): array
+    {
+        return [
+            'ingest-quality' => ['/imports/quality'],
+            'corpus' => ['/corpus'],
         ];
     }
 
@@ -86,5 +97,24 @@ final class FoundryRoutesSmokeTest extends TestCase
 
         $response->assertStatus(200);
         $response->assertInertia(fn (AssertableInertia $page) => $page->component($expectedComponent));
+    }
+
+    #[DataProvider('mergedProjectRoutes')]
+    public function test_merged_route_redirects_to_reports(string $suffix): void
+    {
+        $project = Project::query()->first();
+
+        if (! $project) {
+            $this->markTestSkipped('No projects in DB.');
+        }
+
+        $user = User::factory()->create();
+        $user->projects()->syncWithoutDetaching([
+            $project->project_id => ['role' => 'owner'],
+        ]);
+
+        $this->actingAs($user)
+            ->get("/projects/{$project->slug}{$suffix}")
+            ->assertRedirect("/projects/{$project->slug}/reports");
     }
 }

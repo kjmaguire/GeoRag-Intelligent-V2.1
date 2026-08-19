@@ -147,7 +147,7 @@ export default function FoundrySources({
                                 ↑ Upload files
                             </Link>
                             <Link
-                                href={`/projects/${project.slug}/corpus`}
+                                href={`/projects/${project.slug}/reports`}
                                 className="text-xs font-mono uppercase tracking-wider px-3 py-1.5 rounded border"
                                 style={{
                                     color: 'var(--fg-2)',
