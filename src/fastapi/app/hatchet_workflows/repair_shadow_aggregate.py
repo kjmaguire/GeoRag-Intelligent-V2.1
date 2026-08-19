@@ -107,60 +107,14 @@ def _build_dsn() -> str:
 #
 # Reads silver.query_traces between window_start and window_end and
 # upserts one row per (workspace_id, for_date) into
-# gold.repair_shadow_daily. The target table is created lazily by the
-# workflow on first run when it doesn't exist (idempotent — the
-# CREATE TABLE IF NOT EXISTS pattern matches the rest of gold.* used
-# by other workflows).
+# gold.repair_shadow_daily. That table is declared by migration
+# 2026_08_19_060000 — it used to be created here at runtime, which
+# needed CREATE on the database and so failed on every scheduled run
+# as georag_app ('permission denied for database georag').
 #
 # IMPORTANT: every write sets app.workspace_id GUC so RLS applies
 # (gold.repair_shadow_daily is workspace-scoped). The cron path
 # acquires the workspace list via a separate query first, then loops.
-
-_DDL = """
-CREATE SCHEMA IF NOT EXISTS gold;
-
-CREATE TABLE IF NOT EXISTS gold.repair_shadow_daily (
-    workspace_id          UUID         NOT NULL,
-    for_date              DATE         NOT NULL,
-    total_queries         INTEGER      NOT NULL DEFAULT 0,
-    guard_pass_count      INTEGER      NOT NULL DEFAULT 0,
-    queries_with_failures INTEGER      NOT NULL DEFAULT 0,
-    top_guard_codes       JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    top_repair_strategies JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    evidence_kind_counts  JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    budget_pressure_buckets JSONB      NOT NULL DEFAULT '{}'::jsonb,
-    avg_latency_ms        INTEGER      NULL,
-    p95_latency_ms        INTEGER      NULL,
-    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (workspace_id, for_date)
-);
-
-ALTER TABLE gold.repair_shadow_daily ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gold.repair_shadow_daily FORCE ROW LEVEL SECURITY;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies
-        WHERE schemaname = 'gold'
-          AND tablename = 'repair_shadow_daily'
-          AND policyname = 'repair_shadow_daily_workspace_isolation'
-    ) THEN
-        CREATE POLICY repair_shadow_daily_workspace_isolation
-            ON gold.repair_shadow_daily
-            USING (
-                workspace_id::text = current_setting('app.workspace_id', true)
-            )
-            WITH CHECK (
-                workspace_id::text = current_setting('app.workspace_id', true)
-            );
-    END IF;
-END
-$$;
-
-GRANT SELECT, INSERT, UPDATE ON gold.repair_shadow_daily TO georag_app;
-"""
-
 
 _LIST_WORKSPACES_WITH_TRACES = """
     SELECT DISTINCT workspace_id::text
@@ -308,9 +262,6 @@ async def aggregate_window(
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)
     try:
-        # Ensure target table + RLS policy exist.
-        await conn.execute(_DDL)
-
         if input.workspace_id is not None:
             workspaces = [input.workspace_id]
         else:

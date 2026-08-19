@@ -115,6 +115,7 @@
                  fail-open escape hatch on the verified subset. Uses
                  RefreshDatabase to guarantee schema/policies are current. -->
             <file>tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php</file>
+            <file>tests/Feature/Database/RepairShadowDailySchemaTest.php</file>
             <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
                  but were never added here — grep -rl "RequiresPostgres\|
                  skipIfSqlite" tests/Feature turned up 7 files this config

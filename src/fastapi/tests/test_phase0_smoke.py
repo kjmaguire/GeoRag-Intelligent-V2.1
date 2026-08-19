@@ -1,8 +1,11 @@
 """Phase 0 ops agent smoke tests — all-nighter 2026-05-21.
 
-Lightweight coverage hook for the 9 Phase 0 agents that previously had
-no agent-level test. The existing `test_phase0_vllm_security_failure_modes.py`
-already covers vllm_security_check in depth; this file is the rest.
+Lightweight coverage hook for the Phase 0 agents that previously had
+no agent-level test.
+
+(The vllm_security_check agent and its dedicated failure-mode test were
+removed 2026-08-19 — it polled CVE feeds for a vLLM deployment that was
+retired on 2026-07-30.)
 
 Each agent gets:
   - import smoke
@@ -93,7 +96,7 @@ def _install_wrapper_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub every wrapper-side DB/circuit/usage hook so the decorated
     function can execute end-to-end without a live runtime.
 
-    Mirrors the pattern in test_phase0_vllm_security_failure_modes.py.
+    Mirrors the failure-mode pattern used across the Phase 0 agent tests.
     """
     from app.agents.runtime import register_runtime
 
