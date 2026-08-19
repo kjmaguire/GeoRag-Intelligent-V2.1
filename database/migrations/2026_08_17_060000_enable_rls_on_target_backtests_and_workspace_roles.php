@@ -94,15 +94,105 @@ return new class extends Migration
         $qualified = "{$schema}.{$table}";
         $policy = $this->policyName($schema, $table);
 
-        DB::statement("ALTER TABLE {$qualified} ENABLE ROW LEVEL SECURITY");
-        DB::statement("DROP POLICY IF EXISTS {$policy} ON {$qualified}");
-        DB::statement(<<<SQL
-            CREATE POLICY {$policy} ON {$qualified}
-              USING (
-                NULLIF(current_setting('app.workspace_id', true), '') IS NULL
-                OR workspace_id IS NULL
-                OR workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
-              )
-        SQL);
+        // ENABLE ROW LEVEL SECURITY and CREATE POLICY both require table
+        // OWNERSHIP — not merely privileges on it. That broke the 2026-08-19
+        // deploy:
+        //
+        //   SQLSTATE[42501]: must be owner of table workspace_roles
+        //   (SQL: ALTER TABLE workspace.workspace_roles
+        //         ENABLE ROW LEVEL SECURITY)
+        //
+        // workspace.workspace_roles and workspace.workspace_memberships are
+        // created on real deployments by
+        // database/raw/phase0/10-layer-a-workspace-foundation.sql, applied
+        // outside the migration chain, so they are owned by whichever role ran
+        // that bootstrap — not by `georag`, which is who migrations run as.
+        // targeting.target_backtests is migration-created and therefore
+        // georag-owned, which is why this file passed everywhere it was tested
+        // and failed only against a cluster that had the raw SQL applied.
+        //
+        // Assume the owning role for the duration when we are a member of it.
+        // That is the ordinary Postgres answer and needs no elevated grant —
+        // georag is already a member of the bootstrap role on deployments
+        // where that role created these tables.
+        $this->asTableOwner($schema, $table, function () use ($qualified, $policy): void {
+            DB::statement("ALTER TABLE {$qualified} ENABLE ROW LEVEL SECURITY");
+            DB::statement("DROP POLICY IF EXISTS {$policy} ON {$qualified}");
+            DB::statement(<<<SQL
+                CREATE POLICY {$policy} ON {$qualified}
+                  USING (
+                    NULLIF(current_setting('app.workspace_id', true), '') IS NULL
+                    OR workspace_id IS NULL
+                    OR workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+                  )
+            SQL);
+        });
+    }
+
+    /**
+     * Run $work with the table's owning role assumed, when that is necessary
+     * and possible.
+     *
+     * Deliberately does NOT skip silently when ownership cannot be obtained.
+     * RLS is a tenancy control; quietly leaving it off on the one environment
+     * that actually holds tenant data is a worse outcome than a failed deploy,
+     * and it is precisely the "looked green, protected nothing" shape the
+     * 2026-08-19 audit kept turning up. Fail loudly, and say what to run.
+     */
+    private function asTableOwner(string $schema, string $table, callable $work): void
+    {
+        $owner = DB::selectOne(
+            'SELECT pg_get_userbyid(c.relowner) AS owner
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = ? AND c.relname = ?',
+            [$schema, $table],
+        )?->owner;
+
+        if ($owner === null) {
+            // Table genuinely absent — the caller's tableExists() guard already
+            // covers the intended case; nothing to protect here.
+            return;
+        }
+
+        $current = DB::selectOne('SELECT current_user AS role')?->role;
+
+        if ($owner === $current) {
+            $work();
+
+            return;
+        }
+
+        $canAssume = (bool) (DB::selectOne(
+            "SELECT pg_has_role(current_user, ?, 'MEMBER') AS ok",
+            [$owner],
+        )?->ok ?? false);
+
+        if (! $canAssume) {
+            throw new RuntimeException(sprintf(
+                'Cannot enable RLS on %s.%s: it is owned by "%s" and "%s" is not '
+                .'a member of that role. Grant membership once with: '
+                .'GRANT "%s" TO "%s"; -- or reassign: ALTER TABLE %s.%s OWNER TO "%s";',
+                $schema, $table, $owner, $current,
+                $owner, $current, $schema, $table, $current,
+            ));
+        }
+
+        // SET ROLE rather than SET LOCAL ROLE so this behaves identically
+        // whether or not the migration runs inside a transaction, with an
+        // explicit reset in finally so a failure inside $work cannot leave the
+        // session wearing the wrong role.
+        DB::statement('SET ROLE '.$this->quoteIdentifier($owner));
+
+        try {
+            $work();
+        } finally {
+            DB::statement('RESET ROLE');
+        }
+    }
+
+    private function quoteIdentifier(string $identifier): string
+    {
+        return '"'.str_replace('"', '""', $identifier).'"';
     }
 };
