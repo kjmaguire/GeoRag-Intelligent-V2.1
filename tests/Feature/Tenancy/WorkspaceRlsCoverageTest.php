@@ -58,6 +58,14 @@ final class WorkspaceRlsCoverageTest extends TestCase
         // Verified 2026-06-28: only RLS-off workspace_id table across ALL
         // tenant schemas in production.
         'silver.tenant_isolation_audit',
+        // ops.* schema is GLOBAL by design — its own creating migration
+        // (2026_05_13_140100_create_ops_support_schema) documents "no
+        // workspace RLS; cross-workspace access is logged via
+        // app.audit.emit_audit(action_type='support_access')" per §25.3.
+        // Added 2026-08-17 after the CI-gap audit surfaced this table as a
+        // false-positive gap — RLS here would contradict the documented
+        // support-ops design, not fix a real leak.
+        'ops.support_tickets',
     ];
 
     /**
