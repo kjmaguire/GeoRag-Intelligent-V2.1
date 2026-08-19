@@ -264,22 +264,28 @@ jobs:
       # pdo_pgsql above and has just run `php artisan migrate` against
       # this very database.
       #
-      # The SQL uses Postgres dollar-quoting ($$...$$) so the whole script
-      # survives being nested inside a single-quoted `php -r` inside a YAML
-      # block scalar without a single escaped quote.
+      # The column names go in as bound parameters rather than inline
+      # literals, which keeps the SQL free of any quote character that
+      # would have to survive PHP string parsing inside a single-quoted
+      # `php -r` inside a YAML block scalar. Verified against a real
+      # database in both directions before landing: exit 0 with the
+      # "present" line when the columns exist, exit 1 naming the column
+      # when one does not.
       - name: Assert silver.document_passages has page_first/page_last
         run: |
           php -r '
             $dsn = "pgsql:host=localhost;port=5432;dbname=georag_test";
             $pdo = new PDO($dsn, "georag", "test_password", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-            $sql = "SELECT string_agg(col, $$, $$)
-                      FROM unnest(ARRAY[$$page_first$$, $$page_last$$]) AS col
-                     WHERE col NOT IN (
-                       SELECT column_name FROM information_schema.columns
-                        WHERE table_schema = $$silver$$
-                          AND table_name = $$document_passages$$
-                     )";
-            $missing = $pdo->query($sql)->fetchColumn();
+            $stmt = $pdo->prepare(
+              "SELECT string_agg(col, ?::text)
+                 FROM unnest(ARRAY[?::text, ?::text]) AS col
+                WHERE col NOT IN (
+                  SELECT column_name FROM information_schema.columns
+                   WHERE table_schema = ?::text AND table_name = ?::text
+                )"
+            );
+            $stmt->execute([", ", "page_first", "page_last", "silver", "document_passages"]);
+            $missing = $stmt->fetchColumn();
             if (is_string($missing) && $missing !== "") {
               fwrite(STDERR, "::error::silver.document_passages is missing column(s): " . $missing . " - a migration was reverted or never written. This is the exact live incident from 2026-08-04." . PHP_EOL);
               exit(1);
