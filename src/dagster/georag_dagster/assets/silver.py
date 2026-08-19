@@ -113,6 +113,16 @@ def _bbox_valid(easting: float, northing: float) -> bool:
 # ---------------------------------------------------------------------------
 
 INSERT_COLLAR_SQL = """
+-- geom_4326 is deliberately absent from this INSERT. It is derived from
+-- `geom` by the BEFORE INSERT OR UPDATE trigger
+-- silver.collars_derive_geom_4326 (migration
+-- 2026_08_19_010000_add_geom_4326_to_collars). Until 2026-08-19 this
+-- statement wrote geom without geom_4326 and no trigger existed, so every
+-- collar ingested here was invisible on the Workspace map, excluded from
+-- spatial RAG answers and skipped by cross-section panels. Do not "fix"
+-- that by adding the column back here — the trigger is the single owner,
+-- and a second writer would diverge from the FastAPI ingesters, which
+-- transform straight from the source CRS instead of via EPSG:32613.
 INSERT INTO silver.collars (
     collar_id,
     project_id,
