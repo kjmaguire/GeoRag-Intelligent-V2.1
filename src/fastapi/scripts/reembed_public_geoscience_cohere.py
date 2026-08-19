@@ -22,20 +22,31 @@ the gap by re-embedding them into Embed v4's 1024-dim space — the SAME space
 the internal corpus now occupies, which restores the original "one query
 vector searches both corpora" property that the bge pin existed to protect.
 
-Why it reads Qdrant, not Postgres
----------------------------------
-The obvious source would be ``public_geo.*`` in Postgres, but those tables are
-EMPTY on Azure — the ~514k Canadian rows were only ever loaded into the local
-Docker cluster, and the Qdrant points were indexed from there before Dagster
-went dormant (2026-07-28). Qdrant is the only place the corpus actually exists
-in the deployed environment.
+Where the corpus actually lives — READ THIS FIRST
+-------------------------------------------------
+Verified 2026-08-19, and it is not what the PR description originally claimed:
 
-That works because the indexer stores ``summary_text`` in every payload,
-documented as "human-readable — same as the embedded text". So the exact
-string that produced each 384-dim vector is recoverable, and re-embedding it
-is a faithful re-encode rather than a reconstruction.
+    local Docker Qdrant   182,826 points across 6 pg_* collections, all 384-dim
+    Azure Qdrant          NO pg_* collections at all (only georag_chunks,
+                          georag_reports)
+    local Postgres        ~514k public_geo.* rows
+    Azure Postgres        public_geo.* schema present, 0 rows
 
-This also means the script does NOT revive or modify any Dagster asset.
+So the public-geoscience corpus exists ONLY on the local development machine,
+in both stores. Running this script against the local stack produces 1024-dim
+collections that are still local-only; it does NOT by itself make public-geo
+work in production. Getting there additionally requires shipping the resulting
+collections (or the source rows) to Azure — a separate data migration that
+this script deliberately does not attempt.
+
+Why it reads Qdrant rather than Postgres
+----------------------------------------
+Because the indexer stores ``summary_text`` in every payload, documented as
+"human-readable — same as the embedded text". The exact string that produced
+each 384-dim vector is therefore recoverable from Qdrant alone, which makes
+the re-encode faithful rather than a reconstruction, and means the script
+needs neither the Postgres rows nor any Dagster asset. It does NOT revive or
+modify Dagster.
 
 Safety
 ------
@@ -225,14 +236,24 @@ async def _reembed_collection(
 
 
 async def _run(args: argparse.Namespace) -> int:
-    _require_foundry()
+    # A dry run embeds nothing and writes nothing — it only scrolls the source
+    # collections and counts what WOULD be re-encoded. Requiring Foundry
+    # credentials for that made the one safe, verifiable mode of this script
+    # unusable in exactly the environment that holds the data: the corpus
+    # lives in the local Docker stack, which runs EMBEDDING_BACKEND=local and
+    # has no Foundry credentials at all. Gate the check on the real run.
+    if not args.dry_run:
+        _require_foundry()
 
     from qdrant_client import AsyncQdrantClient
 
-    from app.services.embedding import get_embedding_model
     from app.services.qdrant_conn import qdrant_client_kwargs
 
-    model = get_embedding_model(model_name="")  # ignored on the foundry branch
+    model = None
+    if not args.dry_run:
+        from app.services.embedding import get_embedding_model
+
+        model = get_embedding_model(model_name="")  # ignored on the foundry branch
     client = AsyncQdrantClient(**qdrant_client_kwargs())
 
     try:
@@ -295,7 +316,8 @@ def main() -> int:
     )
     p.add_argument(
         "--dry-run", action="store_true",
-        help="Scroll + count only. Creates nothing, embeds nothing, writes nothing.",
+        help="Scroll + count only. Creates nothing, embeds nothing, writes "
+             "nothing, and needs no Foundry credentials.",
     )
     args = p.parse_args()
 
