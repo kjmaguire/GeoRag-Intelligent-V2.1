@@ -148,3 +148,42 @@ def test_workflow_marks_partial_when_per_file_errors_present():
         "The terminal-mark branch must consult per-file error counts to "
         "decide partial vs completed."
     )
+
+
+def test_workflow_derives_intervals_after_las_ingest():
+    """The workflow must call derive_project once LAS curves have landed.
+
+    gold.drillhole_intervals_visual — the lithology strip logs, ore-band
+    counts and mean grades behind Workspace / Compare / DrillholeDetail —
+    had NO automated writer: its Dagster asset was deleted in #124 and the
+    only correct writer, services/ingest/derive_intervals.derive_project,
+    was reachable only from the manual script scripts/ingest_one_cluster.py.
+    Archives ingested fine and then produced empty strip logs.
+
+    Pinned against the source (same style as the sibling tests here) so a
+    refactor that drops the call, or that stops gating on the LAS count,
+    fires loudly rather than silently reverting to hand-run derivation.
+    """
+    path = pathlib.Path(__file__).parents[1] / "app" / "hatchet_workflows" / "ingest_zip_archive.py"
+    src = path.read_text(encoding="utf-8")
+
+    assert "derive_project" in src, (
+        "ingest_zip_archive must call derive_intervals.derive_project — "
+        "without it gold.drillhole_intervals_visual has no automated writer "
+        "and every strip log in Workspace / Compare / DrillholeDetail stays "
+        "empty until someone runs scripts/ingest_one_cluster.py by hand."
+    )
+    assert 'counts["las"]' in src or "counts['las']" in src, (
+        "The derive step must be gated on the LAS count. derive_project "
+        "reads silver.well_log_curves, and LAS is the only extension in this "
+        "workflow that writes them (.log files upsert a collar header only), "
+        "so running it unconditionally would open a connection and sweep "
+        "every collar for archives that contain no curves at all."
+    )
+    assert "derive_intervals" in src.split("summary = {", 1)[1], (
+        "The derive result must be reported in the workflow summary — that "
+        "dict is the output Hatchet retains, and it is the only place a "
+        "derive failure becomes visible to an operator (the step is "
+        "deliberately non-fatal so it cannot fail an already-ingested "
+        "archive)."
+    )
