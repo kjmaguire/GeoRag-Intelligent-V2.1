@@ -156,6 +156,12 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->where('slug', '[a-z0-9\-]+')->name('foundry.hole_payload');
     Route::get('/projects/{slug}/reports', [ReportController::class, 'index'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.reports');
+    // Short-lived presigned URL for the bronze object a report was parsed
+    // from — powers the reader's ORIGINAL tab, where the extracted text sits
+    // next to the page it came from. Membership-gated in the controller;
+    // 404s rather than 403s across project boundaries.
+    Route::get('/projects/{slug}/reports/{report_id}/source', [ReportController::class, 'source'])
+        ->where('slug', '[a-z0-9\-]+')->name('foundry.report.source');
     Route::get('/projects/{slug}/reports/{report_id}', [ReportController::class, 'view'])
         ->where(['slug' => '[a-z0-9\-]+', 'report_id' => '[0-9a-f-]{36}'])
         ->name('foundry.reports.view');

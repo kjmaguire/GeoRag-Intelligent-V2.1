@@ -121,6 +121,81 @@ final class ReportControllerTest extends TestCase
         return $passageId;
     }
 
+    /**
+     * The reader's ORIGINAL tab exists so a geologist can check extracted
+     * text against the page it came from. These pin the three states it can
+     * be in, because two of them look identical from the outside if you only
+     * assert on the happy path: a document with no recorded source is NOT
+     * the same as a document that does not exist, and conflating them would
+     * have the UI claim a filing is missing when only the link is.
+     */
+    public function test_source_reports_unavailable_when_no_object_key_was_recorded(): void
+    {
+        $reportId = $this->insertReportViaLivePipelineShape(passages: 1);
+
+        $response = $this->actingAs($this->user)
+            ->getJson('/projects/'.$this->project->slug.'/reports/'.$reportId.'/source');
+
+        $response->assertOk();
+        $response->assertJsonPath('available', false);
+        $response->assertJsonPath('reason', 'no_source_object_recorded');
+    }
+
+    public function test_has_source_is_false_until_an_object_key_exists(): void
+    {
+        $reportId = $this->insertReportViaLivePipelineShape(passages: 1);
+
+        $response = $this->actingAs($this->user)
+            ->get('/projects/'.$this->project->slug.'/reports/'.$reportId);
+
+        $response->assertOk();
+        $response->assertInertia(fn (AssertableInertia $page) => $page
+            ->where('report.has_source', false),
+        );
+    }
+
+    public function test_has_source_is_true_once_the_ingest_records_the_bronze_key(): void
+    {
+        $reportId = $this->insertReportViaLivePipelineShape(passages: 1);
+        DB::table('silver.reports')
+            ->where('report_id', $reportId)
+            ->update(['source_object_key' => 'reports/'.$this->project->project_id.'/madsen-pfs.pdf']);
+
+        $response = $this->actingAs($this->user)
+            ->get('/projects/'.$this->project->slug.'/reports/'.$reportId);
+
+        $response->assertOk();
+        $response->assertInertia(fn (AssertableInertia $page) => $page
+            ->where('report.has_source', true),
+        );
+    }
+
+    /**
+     * Cross-project probing must not distinguish "not yours" from "does not
+     * exist" — same contract as figures(). A presigned URL is a bearer
+     * credential for the object, so the membership check is the only thing
+     * standing between a caller and another project's filing.
+     */
+    public function test_source_404s_for_a_report_in_another_project(): void
+    {
+        $otherProject = Project::factory()->create();
+        $otherReportId = (string) Str::uuid();
+        DB::table('silver.reports')->insert([
+            'report_id' => $otherReportId,
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $otherProject->project_id,
+            'title' => 'Another project filing',
+            'parser_used' => 'fitz',
+            'version' => 1,
+            'qp_name' => '{}',
+            'source_object_key' => 'reports/'.$otherProject->project_id.'/secret.pdf',
+        ]);
+
+        $this->actingAs($this->user)
+            ->getJson('/projects/'.$this->project->slug.'/reports/'.$otherReportId.'/source')
+            ->assertNotFound();
+    }
+
     public function test_outsider_cannot_open_the_reader(): void
     {
         $reportId = $this->insertReportViaLivePipelineShape(passages: 3);

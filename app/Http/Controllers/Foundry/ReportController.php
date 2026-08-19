@@ -7,6 +7,7 @@ namespace App\Http\Controllers\Foundry;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Services\Figures\FigureResolver;
+use App\Services\StorageService;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,6 +15,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
+use Throwable;
 
 /**
  * Foundry/ReportController — the project-scoped documents surface.
@@ -60,6 +62,13 @@ class ReportController extends Controller
 
     /** How many documents the master list shows. */
     private const REPORT_LIST_LIMIT = 60;
+
+    /**
+     * Lifetime of a presigned original-document URL. An hour matches
+     * FigureResolver's default and is long enough to read a filing without
+     * the tab going stale mid-scroll.
+     */
+    private const SOURCE_URL_TTL_SECONDS = 3600;
 
     /**
      * Per-request memo for passagesFor(). Request-scoped because the
@@ -399,6 +408,12 @@ class ReportController extends Controller
                 'parser_used' => (string) ($row->parser_used ?? ''),
                 'created_at' => (string) ($row->created_at ?? ''),
                 'updated_at' => (string) ($row->updated_at ?? ''),
+                // Drives the reader's ORIGINAL tab. A boolean rather than
+                // the key itself: the bronze object key is internal
+                // storage layout and the client has no use for it beyond
+                // "is there something to fetch", which the dedicated
+                // endpoint answers properly with a short-lived URL.
+                'has_source' => ($row->source_object_key ?? null) !== null,
             ],
             'sections' => fn () => $this->sectionsFor($row),
             'passages' => fn () => $this->passagesFor($project, $report_id)['rows'],
@@ -517,7 +532,7 @@ class ReportController extends Controller
                     return [$rows, (int) $total];
                 },
             );
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $rows = collect();
             $total = 0;
         }
@@ -544,7 +559,7 @@ class ReportController extends Controller
     {
         try {
             return app(FigureResolver::class)->manifestFor($report_id);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return [];
         }
     }
@@ -665,6 +680,76 @@ class ReportController extends Controller
         return response()->json([
             'report_id' => $report_id,
             'figures' => app(FigureResolver::class)->manifestFor($report_id),
+        ]);
+    }
+
+    /**
+     * GET /projects/{slug}/reports/{report_id}/source
+     *
+     * Short-lived presigned URL for the bronze object this report was
+     * parsed from, so the reader can show the original page beside the text
+     * extracted from it. Answering "did OCR actually read this page
+     * correctly" previously meant going and finding the PDF yourself.
+     *
+     * Presigned rather than proxied: these are whole NI 43-101 filings,
+     * frequently hundreds of megabytes, and streaming them through Octane
+     * would tie up a worker for the length of the download. The signature
+     * carries its own expiry, and the membership check below is what
+     * gates minting it at all.
+     *
+     * 404, never 403, when the report belongs to another project — the same
+     * shape figures() uses, so probing cannot distinguish "not yours" from
+     * "does not exist".
+     */
+    public function source(Request $request, string $slug, string $report_id): JsonResponse
+    {
+        $project = $this->resolveProject($request, $slug);
+
+        if (! preg_match('/^[0-9a-f-]{36}$/i', $report_id)) {
+            abort(404);
+        }
+
+        $row = DB::table('silver.reports')
+            ->where('report_id', $report_id)
+            ->where('project_id', $project->project_id)
+            ->first(['source_object_key', 'title', 'page_count']);
+
+        if (! $row) {
+            abort(404, 'Report not found in this project.');
+        }
+
+        $key = $row->source_object_key ?? null;
+        if (! is_string($key) || $key === '') {
+            // Ingested before the key was recorded, or backfill could not
+            // resolve it. Distinct from 404 so the UI can say "no original
+            // stored for this document" instead of implying the document
+            // itself is missing.
+            return response()->json([
+                'available' => false,
+                'reason' => 'no_source_object_recorded',
+            ], 200);
+        }
+
+        $expires = now()->addSeconds(self::SOURCE_URL_TTL_SECONDS);
+
+        try {
+            $url = app(StorageService::class)->bronzeReadOnly()
+                ->temporaryUrl($key, $expires);
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'available' => false,
+                'reason' => 'presign_failed',
+            ], 200);
+        }
+
+        return response()->json([
+            'available' => true,
+            'url' => $url,
+            'expires_at' => $expires->toIso8601String(),
+            'filename' => (string) ($row->title ?? 'document.pdf'),
+            'page_count' => isset($row->page_count) ? (int) $row->page_count : null,
         ]);
     }
 
