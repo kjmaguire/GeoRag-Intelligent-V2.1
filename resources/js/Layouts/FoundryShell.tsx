@@ -65,12 +65,9 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
                 <path d="M4 11v6c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5v-6" />
             </>
         ),
-        doc: <path d="M7 3h8l4 4v14H7z M15 3v4h4" />,
         report: <path d="M6 3h12v18H6z M9 8h6 M9 12h6 M9 16h4" />,
-        shield: <path d="M12 3 L20 7 L20 12 C20 16 16 20 12 22 C8 20 4 16 4 12 L4 7 Z" />,
         search: <path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4" />,
         plus: <path d="M12 5v14 M5 12h14" />,
-        chevron: <path d="M9 6 L15 12 L9 18" />,
         pulse: <path d="M3 12h4l2-7 4 14 2-7h6" />,
         // Restored 2026-08-17 (reader-core trim reversal).
         cube: <path d="M12 2 L21 7 V17 L12 22 L3 17 V7 Z M3 7 L12 12 L21 7 M12 12 V22" />,

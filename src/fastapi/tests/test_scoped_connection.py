@@ -210,10 +210,13 @@ def test_no_new_bespoke_workspace_id_set_config_outside_allowlist() -> None:
         # repair_shadow_aggregate, restore_workspace, shadow_diff,
         # train_source_trust, train_target_model, what_changed_detector,
         # workspace_export). 16 sites collapsed.
-        # _archived/shadow_diff.py is in the archived/ tree — DEAD CODE,
-        # left in the allowlist as a sentinel (will be deleted in a
-        # separate cleanup).
-        "hatchet_workflows/_archived/shadow_diff.py",
+        # _archived/shadow_diff.py — the "separate cleanup" this entry was
+        # waiting for happened 2026-08-19. Both copies of the workflow and
+        # the whole app/services/shadow_diff package are gone: they read and
+        # wrote silver.shadow_runs, which database/raw/phase4/90-drop-shadow-
+        # runs.sql deliberately dropped, and whose own header noted the
+        # workflows "are removed from the AI worker pool in code" — a removal
+        # that never landed until now.
         # support_replay.py — MIGRATED 2026-06-04 to ADR-0014
         # lookup_and_rescope (block A) + scoped_connection (block B).
         # No longer needs the allowlist entry.
