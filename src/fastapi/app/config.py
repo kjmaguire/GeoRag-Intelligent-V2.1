@@ -908,6 +908,24 @@ class Settings(BaseSettings):
     # to "query" to enable Qwen3's instruction prefix per its model card.
     EMBEDDING_QUERY_PROMPT_NAME: str = ""
 
+    # Suffix appended to every public-geoscience pg_* Qdrant collection name
+    # by app.agent.public_geoscience_tool.
+    #
+    # The pg_* collections were indexed at 384-dim (bge-small) by the now
+    # dormant Dagster asset, while the runtime embedder is 1024-dim, so every
+    # public-geo search returned `HTTP 400: expected dim: 384, got 1024` and
+    # 182,826 indexed points were unreachable.
+    # scripts/reembed_public_geoscience_cohere.py re-encodes those points into
+    # Cohere Embed v4 (1024-dim — the SAME space the internal corpus now
+    # occupies) and writes them to `<name><suffix>` collections, leaving the
+    # originals untouched.
+    #
+    # Empty string = read the original 384-dim collections, i.e. still broken.
+    # Set to the suffix used by that script (default "_v2") to cut over, and
+    # clear it again to roll back. Deliberately a runtime setting rather than
+    # a code change so the cutover does not require a deploy.
+    PUBLIC_GEO_COLLECTION_SUFFIX: str = ""
+
     # Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB) replaces
     # BAAI/bge-reranker-base per the 2026-06-03 swap. Architecturally a
     # CausalLM that returns a yes-token-logit minus no-token-logit ratio,

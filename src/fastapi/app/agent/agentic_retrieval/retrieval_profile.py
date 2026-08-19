@@ -124,7 +124,12 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
         intent="factual_lookup",
         # Standards corpus prioritised; spatial / assay tools rarely useful.
         primary_tools=["search_documents"],
-        secondary_tools=[],
+        # Public geoscience is a SECONDARY, not primary, tool: it only fires
+        # when the internal corpus came back under _SECONDARY_COVERAGE_
+        # THRESHOLD, which is exactly the "we have little in-house on this,
+        # check the government record" case. Keeping it off the primary list
+        # means a well-covered factual lookup never pays its latency.
+        secondary_tools=["search_public_geoscience"],
         # BM25-weighted because standards documents (NI 43-101, CRIRSCO,
         # ICS) carry precise clause language the sparse encoder matches well.
         bm25_weight=0.75,
@@ -147,7 +152,7 @@ _PROFILES: dict[Intent, RetrievalProfile] = {
             "query_downhole_logs",
             "query_assay_data",
         ],
-        secondary_tools=["query_project_overview"],
+        secondary_tools=["query_project_overview", "search_public_geoscience"],
         bm25_weight=0.5,
         conflict_detection_enabled=True,
         answer_emphasis="synthesis_with_conflicts",

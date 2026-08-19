@@ -76,6 +76,23 @@ _COLLECTION_FOR_TYPE: dict[str, str] = {
 
 _ALL_CANONICAL_TYPES = tuple(_COLLECTION_FOR_TYPE.keys())
 
+
+def _resolve_collection(canonical_type: str) -> str:
+    """Map a canonical type to its Qdrant collection, honouring the cutover suffix.
+
+    The base names above are the ORIGINAL 384-dim bge collections. Because the
+    runtime embedder is 1024-dim, querying those returns
+    ``HTTP 400: expected dim: 384, got 1024`` — which is why 182,826 indexed
+    points were unreachable. ``scripts/reembed_public_geoscience_cohere.py``
+    re-encodes them into Cohere Embed v4 and writes ``<name><suffix>``
+    collections; setting PUBLIC_GEO_COLLECTION_SUFFIX points the reader at
+    those. Read at call time, not import time, so the cutover is an env change
+    rather than a deploy.
+    """
+    from app.config import settings  # noqa: PLC0415
+
+    return f"{_COLLECTION_FOR_TYPE[canonical_type]}{settings.PUBLIC_GEO_COLLECTION_SUFFIX}"
+
 # Default limits. Lower than the internal search_documents cap because
 # payload summaries are short and the chat model doesn't need more than
 # ~10 per surface to reason over a jurisdiction.
@@ -367,7 +384,7 @@ async def _query_collection(
     commodities: list[str],
     limit: int,
 ) -> list[PublicGeoscienceRecord]:
-    collection = _COLLECTION_FOR_TYPE[canonical_type]
+    collection = _resolve_collection(canonical_type)
     query_filter = _qdrant_filter(jurisdictions=jurisdictions, commodities=commodities)
 
     response = await deps.qdrant_client.query_points(

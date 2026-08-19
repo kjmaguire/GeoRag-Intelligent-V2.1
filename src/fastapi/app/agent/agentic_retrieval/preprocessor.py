@@ -54,6 +54,14 @@ TOOL_DATA_SOURCE_MAP: dict[str, set[DataSource]] = {
     "query_assay_data": {"assays"},
     "traverse_knowledge_graph": {"technical_reports", "drill_logs"},
     "query_project_overview": {"drill_logs", "technical_reports"},
+    # The "public_geoscience" DataSource has existed in context_envelope.py
+    # since the envelope landed but was never mapped to a tool, because the
+    # tool itself was never reachable. Mapping it means a user who narrows
+    # the envelope to public_geoscience now actually gets this tool and only
+    # this tool — previously it fell through the `surfaces is None` default
+    # and was allowed under EVERY narrowing, including ones that explicitly
+    # excluded it.
+    "search_public_geoscience": {"public_geoscience"},
     # Geophysics surfaces aren't wired to a tool yet (Phase 4) — when they
     # land they should be added here so the data-source filter picks them up.
 }

@@ -4117,3 +4117,24 @@ async def query_drill_traces_3d(
         hole_id_filter=hole_id,
         source_row_ids=source_row_ids,
     )
+
+
+# ---------------------------------------------------------------------------
+# Deferred re-export: search_public_geoscience
+# ---------------------------------------------------------------------------
+# The agentic-retrieval dispatcher resolves tools by name against THIS module
+# — `getattr(app.agent.tools, tool_name)` in agentic_retrieval/nodes.py::
+# execute — so a tool implemented in its own module is invisible to the
+# planner unless it is bound onto this namespace. search_public_geoscience
+# never was, which is why it had never been invoked once despite 182,826
+# indexed points and a classifier that already emits a `public_geo` flag.
+#
+# The import sits at the BOTTOM, not with the others at the top, because
+# app.agent.public_geoscience_tool imports `_metered` from this module
+# (tools.py:209). Importing it at the top would mean tools.py re-entering
+# itself before `_metered` is defined, raising ImportError on a partially
+# initialised module. By the time execution reaches here every name that
+# module needs already exists, so the cycle resolves cleanly.
+from app.agent.public_geoscience_tool import (  # noqa: E402,F401
+    search_public_geoscience,
+)
