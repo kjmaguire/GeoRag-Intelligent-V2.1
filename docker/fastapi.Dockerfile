@@ -180,6 +180,42 @@ RUN uv pip install --system --no-cache /georag_object_storage \
 # `onnxruntime-gpu>=1.20; platform_system == 'Linux'` contain semicolons
 # and equals that get mangled when the shell re-tokenizes a space-joined
 # string. Writing to a file preserves each marker intact for `pip -r`.
+# ---------------------------------------------------------------------------
+# CPU-only torch, installed BEFORE the main resolve (2026-08-19).
+#
+# `torch` on PyPI is the CUDA build. torch 2.13.0's linux metadata pulls
+# cuda-bindings + cuda-toolkit[cublas,cudart,cufft,...] and triton, measured at
+# 3.4 GB inside the running container (nvidia/ 2,724 MB + triton/ 690 MB of a
+# 5,899 MB site-packages), and it reports itself as `2.13.0+cu130`. Nothing in
+# the Azure deployment has a GPU: the whole inference path is Azure AI Foundry
+# (Cohere Embed v4 / Rerank v4 / Command A+), and pyproject's own torch entry
+# already says "CPU-only build sufficient -- FastAPI container has no GPU
+# passthrough". Nothing enforced it until now.
+#
+# torch cannot simply be dropped. app/services/sparse_encoder.py loads SPLADE++
+# via transformers' AutoModelForMaskedLM, and per CLAUDE.md "SPLADE++ sparse
+# retrieval has no Foundry equivalent and stays self-hosted either way".
+#
+# Installing the +cpu wheel first leaves `torch>=2.13,<3.0` already satisfied,
+# so the `-r pyproject.toml` resolve below skips it (uv, like pip, does not
+# upgrade a satisfied requirement without --upgrade) and never reaches for the
+# CUDA metadata. Verified in a clean python:3.13-slim container: after both
+# steps torch reports 2.13.0+cpu with zero nvidia/triton/cuda- packages.
+#
+# TORCH_VERSION must be kept in step with pyproject's `torch>=2.13,<3.0` pin.
+# If the reranker LoRA fine-tune (src/fastapi/scripts/train_reranker_lora.py,
+# currently parked) is ever resumed on a GPU host, restore the CUDA build in
+# that environment only:
+#   uv pip install --system --reinstall-package torch "torch==2.13.0"
+# ---------------------------------------------------------------------------
+ARG TORCH_VERSION=2.13.0
+RUN uv pip install --system --no-cache \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${TORCH_VERSION}" \
+    || pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${TORCH_VERSION}"
+
 RUN uv pip install --system --no-cache -r pyproject.toml \
     || ( python3 -c "\
 import tomllib, pathlib; \
