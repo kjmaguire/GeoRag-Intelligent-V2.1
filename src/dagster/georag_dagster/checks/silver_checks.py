@@ -341,7 +341,8 @@ def silver_samples_check_parse_total_positive(
     asset="silver_well_logs",
     name="parse_total_positive",
     description=(
-        "Blocks commit if silver.well_logs is empty after materialization."
+        "Blocks commit if silver.well_log_curves is empty after "
+        "materialization."
     ),
     blocking=True,
 )
@@ -349,9 +350,20 @@ def silver_well_logs_check_parse_total_positive(
     context: AssetCheckExecutionContext,
     postgres: PostgresResource,
 ) -> AssetCheckResult:
-    """Verify silver.well_logs has at least one row."""
+    """Verify silver.well_log_curves has at least one row.
+
+    2026-08-19: this counted `silver.well_logs`, which has never existed
+    in any environment. The asset it guards (silver_well_logs, in
+    assets/silver_well_logs.py) parses LAS files and bulk-inserts into
+    silver.well_log_curves — the table name matches the ASSET name, not
+    the table it writes. Because the check is blocking=True with
+    severity=ERROR, the UndefinedTable it raised failed every
+    materialization of the asset, so LAS well-log ingestion through
+    Dagster could not commit at all. Those curves are what LOGS mode and
+    the hole-comparison panel render (GAMMA / GRADE / RES / SP).
+    """
     with postgres.get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM silver.well_logs;")
+        cur.execute("SELECT COUNT(*) FROM silver.well_log_curves;")
         row = cur.fetchone()
     count = row[0] if row else 0
     passed = count > 0
@@ -360,9 +372,9 @@ def silver_well_logs_check_parse_total_positive(
         passed=passed,
         severity=AssetCheckSeverity.ERROR,
         description=(
-            f"silver.well_logs has {count} rows."
+            f"silver.well_log_curves has {count} rows."
             if passed
-            else "silver.well_logs is empty — blocking commit."
+            else "silver.well_log_curves is empty — blocking commit."
         ),
         metadata={
             "parse_total": count,

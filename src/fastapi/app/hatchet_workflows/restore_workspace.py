@@ -168,11 +168,28 @@ async def _count_neo4j_nodes(workspace_str: str) -> tuple[int, str | None]:
 
 
 async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:
-    """Count Qdrant points in georag_reports carrying this workspace_id."""
+    """Count Qdrant points in the canonical collection for this workspace.
+
+    2026-08-19: this hardcoded "georag_reports". ADR-0010 moved the
+    canonical corpus to ``georag_chunks``; ``georag_reports`` is the legacy
+    collection and currently holds zero points, so the restore verification
+    reported 0 for every workspace regardless of what had actually been
+    restored — a verification step that could only ever agree with a
+    total failure. Resolved through the same
+    RETRIEVAL_USE_DOCUMENT_PASSAGES flag ``tools.search_documents`` and
+    ``ReingestProject`` already switch on, so all three stay in step.
+    """
     try:
         from qdrant_client import AsyncQdrantClient
     except ImportError:
         return -1, "qdrant client not available"
+
+    from app.config import settings as _settings  # noqa: PLC0415
+
+    collection = (
+        "georag_chunks" if _settings.RETRIEVAL_USE_DOCUMENT_PASSAGES
+        else "georag_reports"
+    )
 
     try:
         client = AsyncQdrantClient(**qdrant_client_kwargs())
@@ -181,7 +198,7 @@ async def _count_qdrant_points(workspace_str: str) -> tuple[int, str | None]:
             # (exact=True) so the result is deterministic.
             from qdrant_client.models import FieldCondition, Filter, MatchValue
             result = await client.count(
-                collection_name="georag_reports",
+                collection_name=collection,
                 count_filter=Filter(must=[
                     FieldCondition(
                         key="workspace_id",
