@@ -351,7 +351,18 @@ dependencies = [
     # 2026-06-23 sweep: xgboost cap lifted <3.0 -> <4.0 to track the active
     # 3.x line (latest 3.3.0). Default tree method + GPU pipeline changes
     # land in 3.x; the legacy 2.x APIs we use are preserved.
-    "xgboost>=2.1,<4.0",
+    # 2026-08-19: split to the CPU-only distribution on linux. Plain
+    # `xgboost` declares nvidia-nccl-cu13 (288 MB of multi-GPU collective
+    # comms) as a hard linux dependency for its GPU tree method, which no
+    # deployment uses -- nothing in the Azure stack has a GPU and the
+    # scoring paths in services/target_scoring_ml/ are CPU inference.
+    # `xgboost-cpu` is the upstream project's own CPU-only build: same
+    # `xgboost` module, same 3.4.1 version, no CUDA dependencies. It only
+    # publishes linux/windows wheels, so non-linux keeps the plain package
+    # (already CPU-only on macOS). Verified drop-in: `import xgboost`
+    # reports 3.4.1 with zero nvidia/nccl/cuda packages installed.
+    "xgboost-cpu>=2.1,<4.0; sys_platform == 'linux'",
+    "xgboost>=2.1,<4.0; sys_platform != 'linux'",
     "shap>=0.46,<1.0",
     "scikit-learn>=1.5,<2.0",
     # 2026-06-23 deps-rot fix: shap transitively depends on numba ->
