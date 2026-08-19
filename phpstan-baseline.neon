@@ -121,24 +121,6 @@ parameters:
 			path: app/Console/Commands/RestoreAuditPii.php
 
 		-
-			message: '#^Method App\\Events\\Dashboard\\ActivityEventBroadcast\:\:__construct\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
-			identifier: missingType.iterableValue
-			count: 1
-			path: app/Events/Dashboard/ActivityEventBroadcast.php
-
-		-
-			message: '#^Method App\\Events\\Dashboard\\ActivityEventBroadcast\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
-			identifier: missingType.iterableValue
-			count: 1
-			path: app/Events/Dashboard/ActivityEventBroadcast.php
-
-		-
-			message: '#^Method App\\Events\\Dashboard\\DocumentStageChanged\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
-			identifier: missingType.iterableValue
-			count: 1
-			path: app/Events/Dashboard/DocumentStageChanged.php
-
-		-
 			message: '#^Method App\\Events\\QueryStreamEvent\:\:__construct\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1

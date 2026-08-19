@@ -255,22 +255,43 @@ jobs:
       # The concrete check for the first live incident: assert every
       # column app/hatchet_workflows/ingest_pdf.py's INSERT_PASSAGE_SQL
       # writes actually exists after a from-scratch migration run.
+      # Queried through PDO rather than psql. This step used to run
+      # `sudo apt-get update && apt-get install postgresql-client` first,
+      # which hung often enough to cancel the whole job on its 8-minute
+      # timeout roughly 5 runs in 11. A gate that fails half the time
+      # teaches people to ignore it, which is worse than not having it.
+      # Nothing needed installing: this job already sets up PHP with
+      # pdo_pgsql above and has just run `php artisan migrate` against
+      # this very database.
+      #
+      # The column names go in as bound parameters rather than inline
+      # literals, which keeps the SQL free of any quote character that
+      # would have to survive PHP string parsing inside a single-quoted
+      # `php -r` inside a YAML block scalar. Verified against a real
+      # database in both directions before landing: exit 0 with the
+      # "present" line when the columns exist, exit 1 naming the column
+      # when one does not.
       - name: Assert silver.document_passages has page_first/page_last
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
-          MISSING=$(PGPASSWORD=test_password psql -h localhost -U georag -d georag_test -tAc "
-            SELECT string_agg(col, ', ')
-              FROM unnest(ARRAY['page_first','page_last']) AS col
-             WHERE col NOT IN (
-               SELECT column_name FROM information_schema.columns
-                WHERE table_schema='silver' AND table_name='document_passages'
-             );
-          ")
-          if [ -n "$MISSING" ]; then
-            echo "::error::silver.document_passages is missing column(s): $MISSING — a migration was reverted or never written. This is the exact live incident from 2026-08-04."
-            exit 1
-          fi
-          echo "silver.document_passages.page_first/page_last present."
+          php -r '
+            $dsn = "pgsql:host=localhost;port=5432;dbname=georag_test";
+            $pdo = new PDO($dsn, "georag", "test_password", [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $stmt = $pdo->prepare(
+              "SELECT string_agg(col, ?::text)
+                 FROM unnest(ARRAY[?::text, ?::text]) AS col
+                WHERE col NOT IN (
+                  SELECT column_name FROM information_schema.columns
+                   WHERE table_schema = ?::text AND table_name = ?::text
+                )"
+            );
+            $stmt->execute([", ", "page_first", "page_last", "silver", "document_passages"]);
+            $missing = $stmt->fetchColumn();
+            if (is_string($missing) && $missing !== "") {
+              fwrite(STDERR, "::error::silver.document_passages is missing column(s): " . $missing . " - a migration was reverted or never written. This is the exact live incident from 2026-08-04." . PHP_EOL);
+              exit(1);
+            }
+            echo "silver.document_passages.page_first/page_last present." . PHP_EOL;
+          '
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v7

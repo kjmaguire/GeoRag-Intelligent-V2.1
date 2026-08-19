@@ -77,9 +77,6 @@ from georag_dagster.assets.gold_cross_corpus_linker import (
     gold_cross_corpus_linker,
 )
 from georag_dagster.assets.gold_cross_section_panels import gold_cross_section_panels
-from georag_dagster.assets.gold_drillhole_intervals_visual import (
-    gold_drillhole_intervals_visual,
-)
 from georag_dagster.assets.gold_h3_density import (
     gold_h3_density_choropleth,
 )
@@ -760,7 +757,6 @@ defs = Definitions(
         gold_cross_corpus_linker,
         # §5 Phase H4 — drillhole intervals enriched for strip-log
         # rendering (lithology + max-assay + mineralisation flag).
-        gold_drillhole_intervals_visual,
         # --- Public Geoscience Index (Qdrant, Phase 3.2) ---
         # Four dedicated Qdrant collections for chat-tool retrieval.
         index_public_geoscience_qdrant,
