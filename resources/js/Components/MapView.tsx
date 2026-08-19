@@ -128,21 +128,63 @@ const COVERAGE_KIND_OPTIONS: ReadonlyArray<{ value: CoverageKind; label: string 
 // GeoJSON overlay, NOT Martin vector tiles — see PublicGeoscienceMapController
 // docblock for why. Point-geometry entities only (mine / mineral_occurrence /
 // drillhole_collar / rock_sample); see that controller for the disclosed scope.
-export interface PublicGeoFeature {
+export type PublicGeoLayerKey = 'mine' | 'mineral_occurrence' | 'drillhole_collar' | 'rock_sample';
+
+/**
+ * One real record. `cluster: false` is the discriminant — see
+ * PublicGeoClusterFeature for why this is a union rather than one shape with
+ * optional fields.
+ */
+export interface PublicGeoPointFeature {
     type: 'Feature';
     geometry: { type: 'Point'; coordinates: [number, number] };
     properties: {
         id: string;
-        layer: 'mine' | 'mineral_occurrence' | 'drillhole_collar' | 'rock_sample';
+        layer: PublicGeoLayerKey;
+        cluster: false;
         label: string | null;
         jurisdiction_code: string;
         source_id: string;
     };
 }
 
+/**
+ * An aggregated cell standing in for `point_count` records, emitted when a
+ * layer holds more points in the viewport than are worth drawing
+ * individually (2026-08-19 — see PublicGeoscienceMapController).
+ *
+ * Deliberately has NO id/label/jurisdiction_code: a cluster is not a record
+ * and has no single identity. Modelling it as a union rather than as
+ * PublicGeoPointFeature-with-optional-fields is what makes TypeScript reject
+ * `feature.properties.label` until the caller has narrowed on `cluster` —
+ * without that, cluster features would silently render "undefined" labels
+ * and popups pointing at nothing.
+ */
+export interface PublicGeoClusterFeature {
+    type: 'Feature';
+    geometry: { type: 'Point'; coordinates: [number, number] };
+    properties: {
+        layer: PublicGeoLayerKey;
+        cluster: true;
+        point_count: number;
+    };
+}
+
+export type PublicGeoFeature = PublicGeoPointFeature | PublicGeoClusterFeature;
+
 export interface PublicGeoFeatureCollection {
     type: 'FeatureCollection';
+    /** Features actually on the wire — clusters count as one each. */
     feature_count: number;
+    /**
+     * True number of underlying records matching the query, regardless of
+     * mode. Always report THIS to the user, never feature_count.
+     */
+    total_in_view: number;
+    /** Set when even the aggregated answer was clipped. */
+    truncated: boolean;
+    zoom: number;
+    modes: Partial<Record<PublicGeoLayerKey, 'points' | 'clustered'>>;
     features: PublicGeoFeature[];
 }
 
@@ -1301,7 +1343,20 @@ export default function MapView({
             setPublicGeoLoading(true);
             setPublicGeoError(null);
             try {
-                const res = await fetch('/api/v1/public-geoscience/map', {
+                // Scope the request to what's on screen. Without a bbox the
+                // endpoint answers for the whole world, which against the
+                // real corpus (412,537 mineral occurrences) means every
+                // layer comes back aggregated no matter how far you zoom in
+                // — the overlay could never resolve to individual records.
+                const params = new URLSearchParams();
+                const m = mapRef.current;
+                if (m) {
+                    const b = m.getBounds();
+                    params.set('bbox', [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+                        .map((n) => n.toFixed(5)).join(','));
+                    params.set('zoom', String(Math.round(m.getZoom() * 10) / 10));
+                }
+                const res = await fetch(`/api/v1/public-geoscience/map?${params.toString()}`, {
                     credentials: 'same-origin',
                     headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 });
@@ -1365,11 +1420,45 @@ export default function MapView({
                 type: 'circle',
                 source: sourceId,
                 paint: {
-                    'circle-radius': 5,
+                    // Cluster features stand for many records, so they must
+                    // not draw at the same size as a single one — a flat 5px
+                    // radius would render a 10,000-record cell and one rock
+                    // sample identically. Scale with point_count; plain
+                    // points (no such property) fall through to 5.
+                    'circle-radius': [
+                        'case',
+                        ['==', ['get', 'cluster'], true],
+                        ['interpolate', ['linear'], ['get', 'point_count'],
+                            1, 8, 100, 15, 1000, 22, 10000, 30],
+                        5,
+                    ],
                     'circle-color': colorExpr,
                     'circle-stroke-width': 1,
                     'circle-stroke-color': '#111827',
                     'circle-opacity': 0.85,
+                },
+            } as unknown as AddLayerObject);
+        }
+
+        // Counts on the aggregated cells. Without these a cluster is just a
+        // bigger dot and the viewer has no way to know it stands for more
+        // than one record.
+        const clusterCountId = `${circleId}-count`;
+        if (!map.getLayer(clusterCountId)) {
+            map.addLayer({
+                id: clusterCountId,
+                type: 'symbol',
+                source: sourceId,
+                filter: ['==', ['get', 'cluster'], true],
+                layout: {
+                    'text-field': ['number-format', ['get', 'point_count'], { 'max-fraction-digits': 0 }],
+                    'text-size': 10,
+                    'text-allow-overlap': true,
+                },
+                paint: {
+                    'text-color': '#f9fafb',
+                    'text-halo-color': '#111827',
+                    'text-halo-width': 1,
                 },
             } as unknown as AddLayerObject);
         }
@@ -1404,9 +1493,18 @@ export default function MapView({
 
             map.getCanvas().style.cursor = 'pointer';
             activePopup?.remove();
+            // A cluster stands for many records and has no name or
+            // jurisdiction of its own — reporting its count is the only
+            // honest thing to show. MapLibre flattens feature properties
+            // through the tile boundary, so `cluster` arrives as the
+            // string "true" in some paths; compare loosely on purpose.
+            const body = props.cluster
+                ? `<div style="font-weight: 700; color: #f9fafb;">${props.point_count.toLocaleString()} records</div>
+                       <div style="color: #9ca3af;">${layerLabel} · zoom in to resolve</div>`
+                : `<div style="font-weight: 700; color: #f9fafb;">${props.label ?? '(unnamed)'}</div>
+                       <div style="color: #9ca3af;">${layerLabel} · ${props.jurisdiction_code}</div>`;
             const html = `<div style="font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.5; color: #f3f4f6; background: #111827; padding: 6px 8px;">
-                       <div style="font-weight: 700; color: #f9fafb;">${props.label ?? '(unnamed)'}</div>
-                       <div style="color: #9ca3af;">${layerLabel} · ${props.jurisdiction_code}</div>
+                       ${body}
                    </div>`;
             activePopup = new maplibregl.Popup({
                 closeButton: false, closeOnClick: false,
