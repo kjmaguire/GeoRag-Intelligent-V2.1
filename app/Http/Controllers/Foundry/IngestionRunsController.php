@@ -11,6 +11,7 @@ use App\Support\SetsWorkspaceRlsContext;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -30,6 +31,13 @@ use Inertia\Response;
 class IngestionRunsController extends Controller
 {
     use SetsWorkspaceRlsContext;
+
+    /**
+     * TTL for the cached bronze upload listing. Short enough that a new
+     * upload surfaces within about one 5-second poll cycle, long enough that
+     * many open tabs share one S3 listing instead of each paying for it.
+     */
+    private const UPLOAD_LISTING_TTL_SECONDS = 8;
 
     public function __construct(
         private readonly StorageService $storage,
@@ -54,15 +62,13 @@ class IngestionRunsController extends Controller
         $project = $this->loadProject($request, $slug);
 
         return response()->json([
-            // The 5s poll skips the bronze S3 listing: listUploads() costs
-            // ~2 HEAD round-trips per object per poll (a 200-report project
-            // = ~400 S3 calls every 5 seconds per open tab) and only feeds
-            // the Phase-A fallback for pre-instrumentation runs, which the
-            // initial page load already rendered.
+            // The poll DOES include the bronze upload listing — see
+            // listUploads()'s cache. Skipping it (as this endpoint did
+            // between 2f332f2 and 2026-08-19) made a freshly-uploaded file
+            // appear on page load and then vanish on the very next poll.
             'runs' => $this->buildSnapshot(
                 $project->project_id,
                 (string) $project->workspace_id,
-                includeUploadListing: false,
             ),
             'fetched_at' => CarbonImmutable::now()->toIso8601String(),
         ]);
@@ -88,11 +94,15 @@ class IngestionRunsController extends Controller
      *     totals: array<string, int>,
      * }
      */
-    private function buildSnapshot(string $projectId, string $workspaceId, bool $includeUploadListing = true): array
+    private function buildSnapshot(string $projectId, string $workspaceId): array
     {
         $reports = $this->loadReports($projectId, $workspaceId);
         $progress = $this->loadProgressRows($projectId);
-        $uploads = $includeUploadListing ? $this->listUploads($projectId) : [];
+        // Both callers (page load and the JSON poll) now take the same path.
+        // The $includeUploadListing toggle that used to let progress() skip
+        // this is gone: it was the flicker, and the cache removes the cost
+        // that motivated it.
+        $uploads = $this->listUploads($projectId);
 
         // Phase B: prefer real progress rows from silver.ingest_progress. Build
         // a set of MinIO keys we already have authoritative state for so we
@@ -371,6 +381,42 @@ class IngestionRunsController extends Controller
      * @return list<array{key: string, filename: string, size_bytes: ?int, uploaded_at: ?string}>
      */
     private function listUploads(string $projectId): array
+    {
+        // Cached because this is the expensive part of the snapshot: ~2 S3
+        // round-trips (size + lastModified) per object, so a 200-report
+        // project costs ~400 calls per uncached build.
+        //
+        // That cost is why 2f332f2 (2026-08-11) dropped the listing from the
+        // 5-second poll entirely — but doing so broke the page. The Phase-A
+        // fallback below turns an unmatched bronze object into an in_flight
+        // row, and there is a real window between upload and the first
+        // silver.ingest_progress row (Laravel dispatches to Hatchet; the row
+        // is written by FastAPI's _progress.start_run() only once a worker
+        // actually picks the job up). During that window a just-uploaded file
+        // rendered on page load and then DISAPPEARED on the next poll — and
+        // because in_flight then read 0, the UI's own backoff dropped it from
+        // a 5s to a 30s poll, so the real progress row took up to 30s to
+        // appear. Refreshing brought the file back, which is exactly the
+        // "I have to reload it myself" symptom.
+        //
+        // A short shared TTL fixes both: correctness is restored, and the S3
+        // cost drops from (400 calls x every open tab / 5s) to 400 calls per
+        // TTL window TOTAL, since the cache is shared across tabs and
+        // requests. Keyed by project so nothing leaks across tenants.
+        //
+        // TTL is deliberately shorter than the 5s poll x 2 so a new upload
+        // surfaces within roughly one poll cycle of landing in bronze.
+        return Cache::remember(
+            "ingestion-runs:uploads:{$projectId}",
+            now()->addSeconds(self::UPLOAD_LISTING_TTL_SECONDS),
+            fn (): array => $this->listUploadsUncached($projectId),
+        );
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function listUploadsUncached(string $projectId): array
     {
         $disk = $this->storage->bronzeReadOnly();
         $out = [];
