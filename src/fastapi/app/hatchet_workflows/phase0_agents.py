@@ -21,17 +21,30 @@ On-demand only (no cron — triggered via FastAPI route or manual run):
     llm_incident_diagnosis_run
     support_packet_assemble
 
-Pool assignment for the worker pool split (Step 2):
+Pool assignment for the worker pool split (Step 2).
 
-    ingestion pool  (georag-hatchet-worker-ingestion):
-        outbox_dispatcher, storage_tiering_run, index_health_check,
-        store_reconciliation_run
+This module contributes exactly two tuples, defined at the bottom of the
+file and consumed by ``worker.py``'s ``POOLS``:
 
-    ai pool  (georag-hatchet-worker-ai):
-        audit_ledger_verify, tenant_isolation_audit, lineage_walk,
-        model_upgrade_watch_run,
-        model_cost_summary_run, llm_incident_diagnosis_run,
-        support_packet_assemble
+    INGESTION_AGENT_WORKFLOWS:
+        storage_tiering_run, index_health_check, store_reconciliation_run
+
+    AI_AGENT_WORKFLOWS:
+        tenant_isolation_audit, graph_tenant_audit, lineage_walk,
+        model_upgrade_watch_run, model_cost_summary_run,
+        llm_incident_diagnosis_run, support_packet_assemble
+
+Those tuples are the contract — read them, not this docstring, if the two
+ever disagree. Non-agent workflows that also sit in those pools
+(outbox_dispatcher, ingest_pdf, audit_ledger_verify, the backup crons, …)
+are added directly in ``worker.py`` and are deliberately NOT listed here.
+
+The split is latent, not active: ``WORKER_POOL`` selects a pool at boot and
+defaults to ``all`` (``POOLS["all"] = ingestion + ai``), which is what
+docker-compose sets and what every deployed worker actually runs. Splitting
+the workers across two pools is still supported — that is why the tuples are
+kept separate — but no environment does it today, so do not assume a
+workflow listed under "ingestion" is isolated from the ai workload.
 
 Only ``app.agents.phase0`` modules are exported here. Later domain-agent
 phases are not worker workflows and must not be added to these pool lists.

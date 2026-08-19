@@ -1,11 +1,18 @@
-"""§11.1 — unit tests for the backup_postgres + backup_neo4j workflows."""
+"""§11.1 — unit tests for the backup_* workflows.
+
+backup_neo4j was removed 2026-08-19. Neo4j itself was dropped entirely
+2026-07-28 (B1), the workflow was unregistered from the ai pool shortly
+after, and the module it kept alive shelled out via `docker exec` to a
+container that no longer exists — and never could on Azure Container Apps
+regardless, which has no docker daemon access from inside a Container App.
+The remaining four backup workflows are unaffected.
+"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
 import pytest
 
-from app.hatchet_workflows import backup_neo4j as bn4
 from app.hatchet_workflows import backup_postgres as bpg
 from app.hatchet_workflows import backup_qdrant as bqd
 from app.hatchet_workflows import backup_redis as brd
@@ -18,11 +25,6 @@ from app.hatchet_workflows import backup_seaweedfs as bsw
 def test_backup_postgres_workflow_registered() -> None:
     assert bpg.backup_postgres is not None
     assert bpg.backup_postgres.name == "backup_postgres"
-
-
-def test_backup_neo4j_workflow_registered() -> None:
-    assert bn4.backup_neo4j is not None
-    assert bn4.backup_neo4j.name == "backup_neo4j"
 
 
 def test_backup_qdrant_workflow_registered() -> None:
@@ -51,14 +53,6 @@ def test_postgres_object_key_layout() -> None:
     assert key == "postgres/2026/05/16/020007-11111111-1111-1111-1111-111111111111.dump"
 
 
-def test_neo4j_object_key_layout() -> None:
-    when = datetime(2026, 5, 16, 2, 15, 30, tzinfo=UTC)
-    key = bn4._build_object_key(
-        "neo4j", "22222222-2222-2222-2222-222222222222", when,
-    )
-    assert key == "neo4j/2026/05/16/021530-22222222-2222-2222-2222-222222222222.dump"
-
-
 def test_object_keys_sort_lexicographically_by_time() -> None:
     """A listing of objects under the prefix should naturally come back
     in chronological order — i.e., zero-padded date + time components."""
@@ -79,14 +73,6 @@ def test_postgres_input_defaults() -> None:
     inp = bpg.BackupPostgresInput()
     assert inp.bucket == "georag-backups"
     assert inp.prefix == "postgres"
-
-
-def test_neo4j_input_defaults() -> None:
-    inp = bn4.BackupNeo4jInput()
-    assert inp.bucket == "georag-backups"
-    assert inp.prefix == "neo4j"
-    assert inp.database == "neo4j"
-    assert inp.neo4j_container == "georag-neo4j"
 
 
 def test_postgres_input_override() -> None:
@@ -122,11 +108,10 @@ def test_workflows_are_in_ai_pool() -> None:
     from app.hatchet_workflows.worker import POOLS
     names = {wf.name for wf in POOLS["ai"]}
     assert "backup_postgres" in names
-    # backup_neo4j deliberately NOT registered — Neo4j was dropped entirely
-    # 2026-07-28 (B1); the cron would guarantee a nightly failure against a
-    # container that no longer exists. See worker.py's comment at the same
-    # spot. The module itself (backup_neo4j.py) still exists and is still
-    # tested above/below as an importable, directly-invokable script.
+    # backup_neo4j is gone entirely as of 2026-08-19 — unregistered from this
+    # pool when Neo4j was dropped (2026-07-28, B1), then the module itself
+    # deleted once it was clear nothing invoked it. Asserted by absence so a
+    # re-add has to be deliberate.
     assert "backup_neo4j" not in names
     assert "backup_qdrant" in names
     assert "backup_redis" in names
@@ -137,7 +122,6 @@ def test_all_backup_workflows_input_defaults_share_bucket() -> None:
     """Every backup workflow defaults to the SAME bucket so an operator
     rotation only has to touch one env var / config."""
     assert bpg.BackupPostgresInput().bucket == "georag-backups"
-    assert bn4.BackupNeo4jInput().bucket == "georag-backups"
     assert bqd.BackupQdrantInput().bucket == "georag-backups"
     assert brd.BackupRedisInput().bucket == "georag-backups"
     assert bsw.BackupSeaweedFsInput().dest_bucket == "georag-backups"
@@ -187,9 +171,6 @@ def test_record_start_completion_failure_helpers_exposed() -> None:
     assert callable(bpg._record_start)
     assert callable(bpg._record_completion)
     assert callable(bpg._record_failure)
-    assert callable(bn4._record_start)
-    assert callable(bn4._record_completion)
-    assert callable(bn4._record_failure)
 
 
 # ---------------------------------------------------------------------------
