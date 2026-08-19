@@ -38,8 +38,9 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
     { id: 'chat', suffix: '/chat', label: 'Chat', icon: 'chat' },
     { id: 'data', suffix: '/sources', label: 'Data', icon: 'db' },
     { id: 'ingestion-runs', suffix: '/ingestion-runs', label: 'Ingestion Runs', icon: 'pulse' },
-    { id: 'ingest-quality', suffix: '/imports/quality', label: 'Quality', icon: 'shield' },
-    { id: 'reader', suffix: '/corpus', label: 'Reader', icon: 'doc' },
+    // Merged 2026-08-18: 'Quality' (/imports/quality) and 'Reader' (/corpus)
+    // were both views of the same silver.reports + document_passages pair as
+    // 'Reports'. One entry now, master-detail; both old paths redirect here.
     { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
     { id: 'map', suffix: '/map', label: 'Map', icon: 'map' },
     // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).

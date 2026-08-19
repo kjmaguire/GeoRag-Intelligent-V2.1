@@ -173,7 +173,7 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
                             {lithology_quality && (
                                 <DataQualityBadge
                                     counters={lithology_quality}
-                                    href={`/projects/${project.slug}/imports/quality?hole=${encodeURIComponent(collar.hole_id)}`}
+                                    href={`/projects/${project.slug}/reports`}
                                 />
                             )}
                             <SpatialConfidenceBadge collar={collar} />

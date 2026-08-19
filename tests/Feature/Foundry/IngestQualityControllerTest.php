@@ -14,15 +14,29 @@ use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
 /**
- * IngestQualityController — the "trust moment" surface.
+ * Ingest-quality coverage — now asserted against the merged reports surface.
  *
- * Regression coverage for the 2026-08-17 rebuild: this page previously
- * read exclusively from the §04p dual-write OCR quality stack
- * (silver.document_ingestion_quality, silver.low_confidence_page_reviews),
- * which has no writer on the live path (P04P_DUAL_WRITE_ENABLED=false) —
- * so it always rendered "empty" for every real project. Rebuilt to read
- * silver.reports/document_passages (live per-file data) and
- * silver.review_queue (the real, live OCR review-routing table).
+ * The "trust moment" page (/imports/quality, Foundry/IngestQuality) was
+ * merged into /reports on 2026-08-18; the controller behind it is gone and
+ * the URL redirects. Every assertion below survived the merge unchanged in
+ * substance — only the route, the component and the prop paths moved:
+ *
+ *     /imports/quality  →  /reports
+ *     files.0.name      →  reports.0.title
+ *     files.0.rows      →  reports.0.passages
+ *     files.0.accepted  →  reports.0.embedded
+ *     files.0.format    →  reports.0.is_scanned
+ *     totals.*          →  quality.totals.*
+ *
+ * The original coverage is what matters and it is all still here: the
+ * 2026-08-17 rebuild off the dead §04p dual-write stack
+ * (silver.document_ingestion_quality, silver.low_confidence_page_reviews,
+ * which have no writer on the live path), the fail-closed-RLS regression on
+ * silver.document_passages, and status being derived from embedded/passages
+ * rather than the NI 43-101 structural-coverage score.
+ *
+ * Kept in this file rather than folded into ReportControllerTest so the
+ * quality contract stays greppable by the name it was written under.
  *
  * Postgres-only. Run with:
  *   php artisan test -c phpunit.pgsql.xml --filter=IngestQualityControllerTest
@@ -114,45 +128,45 @@ final class IngestQualityControllerTest extends TestCase
         ]);
     }
 
-    public function test_show_redirects_outsider_to_404(): void
+    public function test_reports_surface_404s_for_an_outsider(): void
     {
         $outsider = User::factory()->create();
 
         $this->actingAs($outsider)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertStatus(404);
     }
 
     public function test_empty_project_shows_empty_state(): void
     {
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->component('Foundry/IngestQuality')
+                    ->component('Foundry/Reports')
                     ->where('empty', true),
             );
     }
 
-    public function test_files_list_reflects_reports_with_no_document_ingestion_quality_row(): void
+    public function test_document_list_reflects_reports_with_no_document_ingestion_quality_row(): void
     {
         $this->insertReport('NI 43-101 Madsen PFS', passages: 10, embedded: 8, qualityPct: 0.85);
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
                     ->where('empty', false)
-                    ->where('files.0.name', 'NI 43-101 Madsen PFS')
-                    ->where('files.0.format', 'PDF')
-                    ->where('files.0.rows', 10)
-                    ->where('files.0.accepted', 8)
+                    ->where('reports.0.title', 'NI 43-101 Madsen PFS')
+                    ->where('reports.0.is_scanned', false)
+                    ->where('reports.0.passages', 10)
+                    ->where('reports.0.embedded', 8)
                     // 8/10 embedded — partial, not full — even though
                     // parse_quality_pct (0.85) would have scored "ok"
                     // under the old regex-coverage gate.
-                    ->where('files.0.status', 'warn'),
+                    ->where('reports.0.status', 'warn'),
             );
     }
 
@@ -165,11 +179,11 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReport('CORPORATE PRESENTATION', passages: 19, embedded: 19, qualityPct: 0.06);
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->where('files.0.status', 'ok'),
+                    ->where('reports.0.status', 'ok'),
             );
     }
 
@@ -178,12 +192,12 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReport('Scanned Drill Log', passages: 5, embedded: 5, qualityPct: 0.2, isScanned: true);
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->where('files.0.format', 'SCANNED PDF')
-                    ->where('files.0.status', 'ok'),
+                    ->where('reports.0.is_scanned', true)
+                    ->where('reports.0.status', 'ok'),
             );
     }
 
@@ -192,13 +206,13 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReport('Failed Embed Report', passages: 12, embedded: 0);
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->where('files.0.rows', 12)
-                    ->where('files.0.accepted', 0)
-                    ->where('files.0.status', 'error'),
+                    ->where('reports.0.passages', 12)
+                    ->where('reports.0.embedded', 0)
+                    ->where('reports.0.status', 'error'),
             );
     }
 
@@ -207,12 +221,12 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReport('Not Yet Parsed', passages: 0, embedded: 0);
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->where('files.0.rows', 0)
-                    ->where('files.0.status', 'unassessed'),
+                    ->where('reports.0.passages', 0)
+                    ->where('reports.0.status', 'unassessed'),
             );
     }
 
@@ -227,12 +241,12 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReport('Large Report', passages: 500, embedded: 480);
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->where('files.0.rows', 500)
-                    ->where('files.0.accepted', 480),
+                    ->where('reports.0.passages', 500)
+                    ->where('reports.0.embedded', 480),
             );
     }
 
@@ -244,16 +258,16 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReviewQueueRow(lifecycle: 'committed', decisionKind: 'approve_as_parsed');
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
                     // 2 pending rows are "flagged"; the committed one is not.
-                    ->where('totals.flagged', 2)
-                    ->where('totals.awaiting_ocr', 2)
-                    ->where('totals.rejected', 0)
+                    ->where('quality.totals.flagged', 2)
+                    ->where('quality.totals.awaiting_ocr', 2)
+                    ->where('quality.totals.rejected', 0)
                     // accepted = 20 passages - 2 flagged - 0 rejected
-                    ->where('totals.accepted', 18),
+                    ->where('quality.totals.accepted', 18),
             );
     }
 
@@ -263,14 +277,14 @@ final class IngestQualityControllerTest extends TestCase
         $this->insertReviewQueueRow(lifecycle: 'decided', decisionKind: 'reject');
 
         $this->actingAs($this->user)
-            ->get("/projects/{$this->project->slug}/imports/quality")
+            ->get("/projects/{$this->project->slug}/reports")
             ->assertOk()
             ->assertInertia(
                 fn (AssertableInertia $page) => $page
-                    ->where('totals.rejected', 1)
+                    ->where('quality.totals.rejected', 1)
                     // decided+reject is not 'pending', so it doesn't count as
                     // awaiting_ocr — it's already been decided.
-                    ->where('totals.awaiting_ocr', 0),
+                    ->where('quality.totals.awaiting_ocr', 0),
             );
     }
 }
