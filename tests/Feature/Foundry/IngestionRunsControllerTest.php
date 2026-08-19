@@ -218,4 +218,49 @@ final class IngestionRunsControllerTest extends TestCase
             ->assertJsonPath('runs.totals.in_flight', 0)
             ->assertJsonPath('runs.totals.completed', 1);
     }
+
+    public function test_poll_endpoint_and_page_load_agree_on_in_flight(): void
+    {
+        // Regression: 2f332f2 (2026-08-11) made the JSON poll skip the bronze
+        // upload listing to save S3 calls. That broke the page. There is a real
+        // window between upload and the first silver.ingest_progress row —
+        // Laravel dispatches to Hatchet, and the row is only written by
+        // FastAPI's _progress.start_run() once a worker picks the job up — and
+        // during it the Phase-A fallback is the ONLY thing that surfaces the
+        // file. So a just-uploaded file rendered on page load and then vanished
+        // on the very next 5s poll, and because in_flight then read 0 the
+        // frontend's own backoff dropped it to a 30s poll. Reloading brought it
+        // back, which is the "I have to refresh it myself" symptom.
+        //
+        // The two endpoints must therefore agree. Asserting parity rather than
+        // a literal count so this keeps holding as the snapshot shape evolves.
+        $key = "reports/{$this->project->project_id}/20260819_101500_Parity_Check.pdf";
+        Storage::disk('s3-bronze')->put($key, 'fake-pdf-bytes');
+
+        $pageInFlight = null;
+        $this->actingAs($this->user)
+            ->get("/projects/{$this->project->slug}/ingestion-runs")
+            ->assertOk()
+            ->assertInertia(function (AssertableInertia $page) use (&$pageInFlight) {
+                $pageInFlight = $page->toArray()['props']['runs']['totals']['in_flight'];
+            });
+
+        $poll = $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk();
+
+        $this->assertSame(
+            1,
+            $pageInFlight,
+            'Page load should surface the unmatched bronze upload as in-flight.',
+        );
+        $this->assertSame(
+            $pageInFlight,
+            $poll->json('runs.totals.in_flight'),
+            'The JSON poll disagreed with the page load on in_flight. A file '
+            .'the user can see would disappear on the next poll — and the '
+            .'frontend backs off from a 5s to a 30s poll when in_flight hits '
+            .'0, so real progress would then take up to 30s to appear.',
+        );
+    }
 }
