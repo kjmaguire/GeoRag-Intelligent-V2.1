@@ -6,7 +6,9 @@ namespace Tests\Feature\Foundry;
 
 use App\Models\Project;
 use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia;
 use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
@@ -27,32 +29,81 @@ use Tests\TestCase;
  *   - Structure Discs        → structures_visual_3d
  *   - Commodity Samples      → commodity_samples_3d / commodity_keys_3d
  *
- * Deliberately does NOT use RefreshDatabase — it asserts against whatever
- * project already exists in the connected Postgres test DB (building
- * realistic collars/surveys/assay-composite/structure fixtures for every
- * run would be heavy for a prop-key-shape smoke test). Skipped when no
- * project exists yet, same as always.
+ * 2026-08-19 — REWRITTEN to seed its own fixture.
  *
- * 2026-08-17 — restored after the 2026-07-29 reader-core trim; added
- * RequiresPostgres alongside the pre-existing null-project skip (kept
- * as-is: it's the real gate under a freshly-seeded Postgres DB, while
- * RequiresPostgres additionally guards the 3D queries' Postgres-only SQL
- * — ST_X, jsonb operators — from ever running under the default SQLite
- * suite).
+ * Every one of these five tests was skipping. The file deliberately avoided
+ * RefreshDatabase and asserted against "whatever project already exists in
+ * the connected Postgres test DB", on the reasoning that building fixtures
+ * would be heavy for a prop-key smoke test. Under RefreshDatabase-based
+ * siblings the test DB is empty at this point, so `Project::query()->first()`
+ * returned null and all five hit `markTestSkipped('No projects in DB.')`.
+ * The suite reported green. The 1,127-line controller these tests exist to
+ * protect had, in practice, no coverage at all — which is worse than having
+ * no test, because the green tick actively said otherwise.
+ *
+ * The stated cost turned out not to be real: seeding a workspace, a project
+ * and two collars runs in well under a second, and the prop-key assertions
+ * do not need populated child tables — an empty `assay_composites_3d` still
+ * proves the key is emitted, which is the whole contract being pinned.
+ *
+ * RequiresPostgres stays: the 3D queries use ST_X and jsonb operators that
+ * would not run under the SQLite fast suite.
+ *
+ * One incidental proof that these tests had never executed: every one of
+ * them called `$project->users()`, a relation App\Models\Project does not
+ * define. The first line of the first test would have thrown
+ * BadMethodCallException. Membership is attached from the other side,
+ * `$user->projects()`, as the sibling Foundry tests do.
  */
 final class WorkspaceThreeDPayloadTest extends TestCase
 {
+    use RefreshDatabase;
     use RequiresPostgres;
+
+    /**
+     * @return array{user: User, project: Project}
+     */
+    private function seedProjectWithCollars(int $collarCount = 2): array
+    {
+        $user = User::factory()->create();
+
+        $workspaceId = (string) Str::uuid();
+        DB::statement(
+            'INSERT INTO silver.workspaces (workspace_id, name, slug, created_at, updated_at)
+             VALUES (?::uuid, ?, ?, NOW(), NOW())
+             ON CONFLICT (workspace_id) DO NOTHING',
+            [$workspaceId, '3D Payload Test Workspace', 'w3d-'.substr($workspaceId, 0, 8)],
+        );
+
+        $project = Project::factory()->create();
+        DB::statement(
+            'UPDATE silver.projects SET workspace_id = ?::uuid WHERE project_id = ?::uuid',
+            [$workspaceId, $project->project_id],
+        );
+        $user->projects()->syncWithoutDetaching([$project->project_id => ['role' => 'viewer']]);
+
+        for ($i = 1; $i <= $collarCount; $i++) {
+            DB::statement(
+                "INSERT INTO silver.collars (
+                    collar_id, hole_id, project_id, workspace_id,
+                    easting, northing, elevation, total_depth, azimuth, dip,
+                    hole_type, status, geom
+                 ) VALUES (
+                    ?::uuid, ?, ?::uuid, ?::uuid,
+                    500000, 4500000, 1000, 150, 180, -60,
+                    'DDH', 'completed',
+                    ST_SetSRID(ST_MakePoint(500000, 4500000), 32613)
+                 )",
+                [(string) Str::uuid(), 'W3D-'.$i, $project->project_id, $workspaceId],
+            );
+        }
+
+        return ['user' => $user, 'project' => $project];
+    }
 
     public function test_workspace_emits_every_3d_subview_prop_key(): void
     {
-        $project = Project::query()->first();
-        if (! $project) {
-            $this->markTestSkipped('No projects in DB.');
-        }
-
-        $user = User::factory()->create();
-        $project->users()->syncWithoutDetaching([$user->id => ['role' => 'viewer']]);
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
 
         $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
 
@@ -84,13 +135,7 @@ final class WorkspaceThreeDPayloadTest extends TestCase
      */
     public function test_surveys_3d_rows_have_required_keys(): void
     {
-        $project = Project::query()->first();
-        if (! $project) {
-            $this->markTestSkipped('No projects in DB.');
-        }
-
-        $user = User::factory()->create();
-        $project->users()->syncWithoutDetaching([$user->id => ['role' => 'viewer']]);
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
 
         $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
 
@@ -130,13 +175,7 @@ final class WorkspaceThreeDPayloadTest extends TestCase
      */
     public function test_workspace_renders_with_project_layers_prop(): void
     {
-        $project = Project::query()->first();
-        if (! $project) {
-            $this->markTestSkipped('No projects in DB.');
-        }
-
-        $user = User::factory()->create();
-        $project->users()->syncWithoutDetaching([$user->id => ['role' => 'viewer']]);
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
 
         $response = $this->actingAs($user)->get('/projects/'.$project->slug.'/workspace');
 
@@ -156,20 +195,12 @@ final class WorkspaceThreeDPayloadTest extends TestCase
      */
     public function test_hole_payload_returns_json_for_a_real_collar(): void
     {
-        $project = Project::query()->first();
-        if (! $project) {
-            $this->markTestSkipped('No projects in DB.');
-        }
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
 
         $collar = DB::table('silver.collars')
             ->where('project_id', $project->project_id)
             ->first();
-        if (! $collar) {
-            $this->markTestSkipped('No collars for this project.');
-        }
-
-        $user = User::factory()->create();
-        $project->users()->syncWithoutDetaching([$user->id => ['role' => 'viewer']]);
+        $this->assertNotNull($collar, 'fixture must have seeded a collar');
 
         $hole = $collar->hole_id_canonical ?? $collar->hole_id;
         $response = $this->actingAs($user)
@@ -185,13 +216,7 @@ final class WorkspaceThreeDPayloadTest extends TestCase
 
     public function test_hole_payload_404s_for_unknown_hole(): void
     {
-        $project = Project::query()->first();
-        if (! $project) {
-            $this->markTestSkipped('No projects in DB.');
-        }
-
-        $user = User::factory()->create();
-        $project->users()->syncWithoutDetaching([$user->id => ['role' => 'viewer']]);
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars();
 
         $response = $this->actingAs($user)
             ->get('/projects/'.$project->slug.'/holes/DOES-NOT-EXIST/payload');

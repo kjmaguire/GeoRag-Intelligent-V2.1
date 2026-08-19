@@ -123,7 +123,7 @@
             <file>tests/Feature/Api/V1/ProjectControllerDeleteOrderingTest.php</file>
             <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapControllerTest.php</file>
             <file>tests/Feature/Foundry/DrillholeDetailControllerTest.php</file>
-            <file>tests/Feature/Foundry/HoleCompareControllerTest.php</file>
+            <file>tests/Feature/Foundry/WorkspaceCompareMergeTest.php</file>
             <file>tests/Feature/Foundry/IngestQualityControllerTest.php</file>
             <file>tests/Feature/Foundry/OverviewControllerTest.php</file>
             <!-- 2026-08-18: the Reader's "Indexed passages" tab had the

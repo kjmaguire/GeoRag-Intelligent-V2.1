@@ -58,10 +58,15 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
             // Reports 2026-08-18; both paths still redirect there.
             { kind: 'nav', title: 'Reports', sub: 'Documents & ingest quality', href: `${base}/reports`, group: 'This project' },
             // Restored 2026-08-17 (reader-core trim reversal) — a real
-            // page route (/projects/{slug}/compare), unrelated to the
+            // page route (/projects/{slug}/workspace), unrelated to the
             // dead chat slash-commands described above.
-            { kind: 'nav', title: 'Workspace', sub: '3D drill-hole visualization', href: `${base}/workspace`, group: 'This project' },
-            { kind: 'nav', title: 'Compare holes', sub: 'Side-by-side hole comparison', href: `${base}/compare`, group: 'This project' },
+            { kind: 'nav', title: 'Workspace', sub: 'Map, sections, 3D, logs', href: `${base}/workspace`, group: 'This project' },
+            // Merged 2026-08-19 — Compare is a mode inside Workspace now, so
+            // this deep-links straight to it rather than to the deleted
+            // /compare page. Kept as its own palette entry because "compare"
+            // is what a user types when they want it; it is not discoverable
+            // by searching for "workspace".
+            { kind: 'nav', title: 'Compare holes', sub: 'Side-by-side hole comparison', href: `${base}/workspace?mode=compare`, group: 'This project' },
         ];
     }, [projectSlug]);
 

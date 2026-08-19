@@ -860,7 +860,7 @@ INSERT INTO silver.reports (
     project_name, region, resource_estimate, sections_text,
     embedding_ids, parse_quality_pct, parser_used,
     is_scanned, source_file_sha256, project_id, workspace_id, page_count,
-    extraction_confidence,
+    extraction_confidence, source_object_key,
     created_at, updated_at
 )
 VALUES (
@@ -868,7 +868,7 @@ VALUES (
     $7, $8, $9::jsonb, $10::jsonb,
     ARRAY[]::text[], $11, $12,
     $13, $14, $16::uuid, $15::uuid, $17::int,
-    $18::real,
+    $18::real, $19,
     NOW(), NOW()
 )
 ON CONFLICT (report_id) DO UPDATE SET
@@ -886,6 +886,10 @@ ON CONFLICT (report_id) DO UPDATE SET
     is_scanned     = EXCLUDED.is_scanned,
     page_count     = EXCLUDED.page_count,
     extraction_confidence = EXCLUDED.extraction_confidence,
+    -- The bronze object this row was parsed from. Needed by the Reader's
+    -- side-by-side view: without it there is no link from a report back to
+    -- the PDF whose pages the extracted text is supposed to correspond to.
+    source_object_key = EXCLUDED.source_object_key,
     updated_at     = NOW()
 """
 
@@ -1485,6 +1489,12 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                         if parsed.get("extraction_confidence") is not None
                         else None
                     ),
+                    # $19 — the bronze key this document was parsed from.
+                    # Persisted so the Reader can put the original page next
+                    # to the text extracted from it; previously minio_key was
+                    # only ever a workflow input and nothing on the produced
+                    # row pointed back at its source.
+                    input.minio_key,
                 )
                 for ordinal, section in enumerate(parsed.get("sections") or []):
                     text = (section.get("text") or "").strip()

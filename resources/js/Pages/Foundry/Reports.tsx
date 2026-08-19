@@ -81,6 +81,13 @@ interface ReportDetail {
     parser_used: string;
     created_at: string;
     updated_at: string;
+    /**
+     * Whether a bronze object key was recorded for this document. Reports
+     * ingested before the key was persisted have no original to show, which
+     * is different from the fetch failing — the ORIGINAL tab says so rather
+     * than rendering an empty frame.
+     */
+    has_source: boolean;
 }
 
 interface Figure {
@@ -133,12 +140,16 @@ interface ReportsProps {
     overview?: ProjectOverview | null;
 }
 
-type Tab = 'sections' | 'passages' | 'figures' | 'quality' | 'metadata';
+type Tab = 'sections' | 'passages' | 'figures' | 'original' | 'quality' | 'metadata';
 
 const TABS: Array<{ id: Tab; label: string }> = [
     { id: 'sections', label: 'Sections' },
     { id: 'passages', label: 'Passages' },
     { id: 'figures', label: 'Figures' },
+    // 2026-08-19 — the page as it actually looks, next to the text OCR
+    // pulled out of it. Answering "did OCR read this right?" used to mean
+    // going and finding the PDF yourself.
+    { id: 'original', label: 'Original' },
     { id: 'quality', label: 'Quality' },
     { id: 'metadata', label: 'Metadata' },
 ];
@@ -243,6 +254,7 @@ export default function FoundryReports({
                             <section className="flex-1 min-w-0 overflow-y-auto">
                                 {report ? (
                                     <DetailPane
+                                        projectSlug={project.slug}
                                         report={report}
                                         row={selectedRow}
                                         sections={sections}
@@ -526,6 +538,7 @@ function DocumentList({
 /* ------------------------------------------------------------------ */
 
 function DetailPane({
+    projectSlug,
     report,
     row,
     sections,
@@ -535,6 +548,7 @@ function DetailPane({
     flags,
     highlightSection,
 }: {
+    projectSlug: string;
     report: ReportDetail;
     row: ReportListRow | null;
     sections: Section[];
@@ -555,12 +569,21 @@ function DetailPane({
                 ? 'figures'
                 : 'quality';
     const [tab, setTab] = useState<Tab>(initial);
+    // Page the ORIGINAL tab should open at. Set when the reader jumps from a
+    // passage; null means "start at the beginning".
+    const [originalPage, setOriginalPage] = useState<number | null>(null);
+
+    function openOriginalAt(page: number | null) {
+        setOriginalPage(page);
+        setTab('original');
+    }
 
     // Selecting a different document swaps every prop below without
     // remounting this component, so the tab has to follow the new document
     // rather than stay on a tab that may now be empty.
     useEffect(() => {
         setTab(initial);
+        setOriginalPage(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [report.report_id]);
 
@@ -633,8 +656,22 @@ function DetailPane({
                         highlightHeading={highlightSection}
                     />
                 )}
-                {tab === 'passages' && <PassagesTab passages={passages} total={passagesTotal} />}
+                {tab === 'passages' && (
+                    <PassagesTab
+                        passages={passages}
+                        total={passagesTotal}
+                        onOpenPage={report.has_source ? openOriginalAt : null}
+                    />
+                )}
                 {tab === 'figures' && <FiguresTab figures={figures} />}
+                {tab === 'original' && (
+                    <OriginalTab
+                        projectSlug={projectSlug}
+                        report={report}
+                        page={originalPage}
+                        onPageChange={setOriginalPage}
+                    />
+                )}
                 {tab === 'quality' && <QualityTab report={report} row={row} flags={flags} />}
                 {tab === 'metadata' && <MetadataTab report={report} />}
             </div>
@@ -838,7 +875,184 @@ function SectionsTab({
     );
 }
 
-function PassagesTab({ passages, total }: { passages: Passage[]; total: number }) {
+interface SourceDocumentResponse {
+    available: boolean;
+    reason?: string;
+    url?: string;
+    expires_at?: string;
+    filename?: string;
+    page_count?: number | null;
+}
+
+/**
+ * The original document, so the extracted text can be checked against the
+ * page it came from.
+ *
+ * The URL is fetched on demand rather than shipped with the page props: it
+ * is a presigned bronze URL with a one-hour expiry, and minting one for
+ * every document in the list on every page load would be both wasteful and
+ * a wider grant than the user asked for. Fetching per-selection also means
+ * the URL is always fresh when the tab opens.
+ *
+ * Rendered in an iframe with the PDF Open Parameters fragment (`#page=N`)
+ * rather than through a bundled PDF renderer: browsers already ship a
+ * capable viewer, and adding pdf.js would be ~350 kB on a page whose whole
+ * point is reading text. The trade-off is that `#page=` is a hint — Firefox
+ * and Chrome honour it, some embedded viewers ignore it — so the page is
+ * also shown as text next to the control, and the reader can navigate
+ * inside the viewer regardless.
+ */
+function OriginalTab({
+    projectSlug,
+    report,
+    page,
+    onPageChange,
+}: {
+    projectSlug: string;
+    report: ReportDetail;
+    page: number | null;
+    onPageChange: (page: number | null) => void;
+}) {
+    const [state, setState] = useState<
+        | { kind: 'idle' }
+        | { kind: 'loading' }
+        | { kind: 'error'; message: string }
+        | { kind: 'unavailable'; reason: string }
+        | { kind: 'ready'; source: SourceDocumentResponse }
+    >({ kind: 'idle' });
+
+    useEffect(() => {
+        if (!report.has_source) {
+            setState({ kind: 'unavailable', reason: 'no_source_object_recorded' });
+            return;
+        }
+
+        let cancelled = false;
+        setState({ kind: 'loading' });
+
+        fetch(`/projects/${projectSlug}/reports/${report.report_id}/source`, {
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        })
+            .then((r) => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json() as Promise<SourceDocumentResponse>;
+            })
+            .then((body) => {
+                if (cancelled) return;
+                if (!body.available || !body.url) {
+                    setState({ kind: 'unavailable', reason: body.reason ?? 'unknown' });
+                    return;
+                }
+                setState({ kind: 'ready', source: body });
+            })
+            .catch((e: unknown) => {
+                if (cancelled) return;
+                setState({
+                    kind: 'error',
+                    message: e instanceof Error ? e.message : 'fetch failed',
+                });
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [projectSlug, report.report_id, report.has_source]);
+
+    if (state.kind === 'loading' || state.kind === 'idle') {
+        return (
+            <div className="text-[12px] px-1 py-6" style={{ color: 'var(--fg-3)' }}>
+                Fetching the original document…
+            </div>
+        );
+    }
+
+    if (state.kind === 'error') {
+        return (
+            <EmptyState
+                title="Could not load the original document."
+                detail={`The source request failed (${state.message}). The document itself is still indexed — this only affects the side-by-side view.`}
+            />
+        );
+    }
+
+    if (state.kind === 'unavailable') {
+        return (
+            <EmptyState
+                title="No original stored for this document."
+                detail={
+                    state.reason === 'presign_failed'
+                        ? 'The bronze object is recorded but a download URL could not be minted. Check the s3-bronze disk credentials.'
+                        : 'This document was ingested before the source object key was recorded, so there is no file to show beside the extracted text. Re-ingesting it will populate the link.'
+                }
+            />
+        );
+    }
+
+    const { source } = state;
+    const pageCount = source.page_count ?? report.page_count ?? null;
+    const src = page && page > 0 ? `${source.url}#page=${page}` : (source.url as string);
+
+    return (
+        <Card
+            eyebrow="BRONZE · ORIGINAL"
+            title={source.filename ?? report.title}
+            className="flex flex-col min-h-0"
+            contentClassName="flex flex-col min-h-0"
+        >
+            <div className="flex items-center gap-3 mb-3 shrink-0 text-[11px] font-mono">
+                <label className="flex items-center gap-2">
+                    <span style={{ color: 'var(--fg-3)' }}>PAGE</span>
+                    <input
+                        type="number"
+                        min={1}
+                        max={pageCount ?? undefined}
+                        value={page ?? 1}
+                        onChange={(e) => {
+                            const n = Number.parseInt(e.target.value, 10);
+                            onPageChange(Number.isFinite(n) && n > 0 ? n : null);
+                        }}
+                        className="w-20 px-2 py-1 rounded border"
+                        style={{
+                            background: 'var(--bg-2)',
+                            color: 'var(--fg-0)',
+                            borderColor: 'var(--line-2)',
+                        }}
+                    />
+                </label>
+                {pageCount !== null && (
+                    <span style={{ color: 'var(--fg-3)' }}>of {pageCount.toLocaleString()}</span>
+                )}
+                <span className="ml-auto" style={{ color: 'var(--fg-3)' }}>
+                    Open a passage&rsquo;s page pill to jump here
+                </span>
+            </div>
+
+            <iframe
+                key={src}
+                src={src}
+                title={`Original document — ${source.filename ?? report.title}`}
+                className="w-full rounded border"
+                style={{ height: '72vh', borderColor: 'var(--line-1)', background: 'var(--bg-2)' }}
+            />
+        </Card>
+    );
+}
+
+function PassagesTab({
+    passages,
+    total,
+    onOpenPage,
+}: {
+    passages: Passage[];
+    total: number;
+    /**
+     * Jump to this passage's page in the ORIGINAL tab. Null when the
+     * document has no stored source, in which case the page pill stays a
+     * plain label rather than becoming a button that would go nowhere.
+     */
+    onOpenPage: ((page: number | null) => void) | null;
+}) {
     if (passages.length === 0) {
         return (
             <EmptyState
@@ -865,14 +1079,30 @@ function PassagesTab({ passages, total }: { passages: Passage[]; total: number }
                             style={{ color: 'var(--fg-3)' }}
                         >
                             <Pill tone="neutral">ord {p.ordinal}</Pill>
-                            {p.page_first !== null && (
-                                <Pill tone="info">
-                                    p.{p.page_first}
-                                    {p.page_last && p.page_last !== p.page_first
-                                        ? `-${p.page_last}`
-                                        : ''}
-                                </Pill>
-                            )}
+                            {p.page_first !== null &&
+                                (onOpenPage ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => onOpenPage(p.page_first)}
+                                        title="Show this page of the original document"
+                                        className="cursor-pointer"
+                                    >
+                                        <Pill tone="info">
+                                            p.{p.page_first}
+                                            {p.page_last && p.page_last !== p.page_first
+                                                ? `-${p.page_last}`
+                                                : ''}
+                                            {' ↗'}
+                                        </Pill>
+                                    </button>
+                                ) : (
+                                    <Pill tone="info">
+                                        p.{p.page_first}
+                                        {p.page_last && p.page_last !== p.page_first
+                                            ? `-${p.page_last}`
+                                            : ''}
+                                    </Pill>
+                                ))}
                             {p.chunk_kind && <Pill tone="neutral">{p.chunk_kind}</Pill>}
                             <span className="ml-auto" style={{ color: 'var(--fg-3)' }}>
                                 {p.id.slice(0, 8)}

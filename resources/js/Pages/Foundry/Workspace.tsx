@@ -10,7 +10,7 @@ import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Segmented, EmptyState } from '@/Components/Foundry/primitives';
 import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStripColumn, type StratUnit, type LithologyInterval } from '@/Components/Foundry/Charts';
 import { WorkspaceMap, type MapProjectInfo, type MapProjectSummary, type MapCollar, type BasemapId } from '@/Components/Foundry/WorkspaceMap';
-import { CompareHolesModal } from '@/Components/Foundry/CompareHolesModal';
+import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/CompareHolesModal';
 import { SectionView } from '@/Components/Foundry/SectionView';
 import { Borehole3DView } from '@/Components/Foundry/Borehole3DView';
 import { useFullscreenToggle } from '@/Hooks/useFullscreenToggle';
@@ -211,7 +211,24 @@ type View3D =
     | 'structure_discs'
     | 'commodity_samples';
 
-type Mode = 'map' | 'section' | '3d' | 'structure' | 'logs';
+type Mode = 'map' | 'section' | '3d' | 'structure' | 'logs' | 'compare';
+
+const MODES: readonly Mode[] = ['map', 'section', '3d', 'structure', 'logs', 'compare'] as const;
+
+/**
+ * Initial mode from ?mode= on the URL.
+ *
+ * 2026-08-19 — the standalone /projects/{slug}/map and
+ * /projects/{slug}/compare pages were deleted; both now 302 here, compare
+ * carrying ?mode=compare. Without this the redirect would silently land the
+ * user on MAP and look like the Compare feature had been dropped rather
+ * than moved. Anything unrecognised falls back to 'map'.
+ */
+function initialMode(): Mode {
+    if (typeof window === 'undefined') return 'map';
+    const requested = new URLSearchParams(window.location.search).get('mode');
+    return MODES.includes(requested as Mode) ? (requested as Mode) : 'map';
+}
 type Tool = 'pan' | 'draw' | 'measure' | 'select';
 
 export default function FoundryWorkspace({ project, project_summary, project_aoi, collars, sections_count, intervals_count, structures_count, structures_visual_count, well_log_curves_count, curve_summary, log_tracks, log_hole_id, log_depth_max, log_hole_options, log_hole_total_depth, log_hole_easting, log_hole_northing, log_lithology_intervals, first_holes_intervals, project_layers, strat_units, strat_source, project_country, surveys_3d, structures_3d, assay_composites_3d, assay_elements_3d, significant_intersections_3d, structures_visual_3d, commodity_samples_3d, commodity_keys_3d, empty }: WorkspaceProps) {
@@ -224,7 +241,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
         }
     });
 
-    const [mode, setMode] = useState<Mode>('map');
+    const [mode, setMode] = useState<Mode>(initialMode);
     const [view3d, setView3d] = useState<View3D>('lithology');
     const [tool, setTool] = useState<Tool>('pan');
     const [projectLayersOn, setProjectLayersOn] = useState<Record<string, boolean>>(
@@ -234,6 +251,13 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     const [copilotPrompt, setCopilotPrompt] = useState('');
     const [compareSet, setCompareSet] = useState<string[]>([]);
     const [compareOpen, setCompareOpen] = useState(false);
+    // COMPARE mode's own left/right selection. Deliberately separate from
+    // `compareSet` above: that one is the map's "queue two holes by clicking
+    // pins" flow which auto-opens the modal, this one is an explicit
+    // two-dropdown pick inside the panel. Sharing a single state would make
+    // picking a hole in the panel pop the modal open over top of it.
+    const [compareLeft, setCompareLeft] = useState<string>('');
+    const [compareRight, setCompareRight] = useState<string>('');
     const [basemap, setBasemap] = useState<BasemapId>('dark_matter');
     const [terrainOn, setTerrainOn] = useState(false);
     // activeHole lifted up from WorkspaceMap so the compare-close handlers
@@ -249,7 +273,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     // display: none for non-active modes). Avoids the heavy
     // teardown+rebuild every switch — MapLibre instance, Plotly 3D
     // scene, and SectionView fetches all persist between switches.
-    const [visitedModes, setVisitedModes] = useState<Set<Mode>>(() => new Set<Mode>(['map']));
+    const [visitedModes, setVisitedModes] = useState<Set<Mode>>(() => new Set<Mode>([initialMode()]));
     useEffect(() => {
         setVisitedModes((prev) => {
             if (prev.has(mode)) return prev;
@@ -363,6 +387,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                 { value: '3d', label: '3D' },
                                 { value: 'structure', label: 'Structure' },
                                 { value: 'logs', label: 'Logs' },
+                                { value: 'compare', label: 'Compare' },
                             ]}
                         />
                         <div className="flex-1" />
@@ -925,6 +950,81 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                         )}
                                     </Card>
                                 ))}
+
+                                {/* COMPARE — absorbed 2026-08-19 from the standalone
+                                    /projects/{slug}/compare page (HoleCompareController
+                                    + Foundry/HoleCompare.tsx, both deleted). That page
+                                    was a strictly weaker duplicate of machinery this
+                                    surface already had: it hydrated collar metadata plus
+                                    a plain-text lithology list server-side, with
+                                    grade_avg / grade_top / rock_summary / intercepts
+                                    hardcoded to null, while holePayload() +
+                                    CompareHolesPanel render real log curves, colour-coded
+                                    lithology bands, ore-band counts and mean grade.
+                                    Nothing was ported — the weaker path was removed and
+                                    the existing renderer given a picker. */}
+                                {renderModePanel('compare', (
+                                    <Card
+                                        eyebrow="COMPARE · HOLE VS HOLE"
+                                        title={
+                                            compareLeft && compareRight
+                                                ? `${compareLeft} vs ${compareRight}`
+                                                : 'Pick two holes'
+                                        }
+                                        className="flex-1 flex flex-col min-h-0"
+                                        contentClassName="flex-1 flex flex-col min-h-0"
+                                    >
+                                        {empty ? (
+                                            <EmptyState
+                                                title="No drill holes in this project yet."
+                                                detail="Ingest at least two collars before this surface can compare them. Use Data → Connect Source to add drill logs."
+                                            />
+                                        ) : (
+                                            <>
+                                                <div className="flex items-center gap-3 mb-4 shrink-0">
+                                                    <ComparePicker label="LEFT" value={compareLeft} collars={collars} onChange={setCompareLeft} />
+                                                    <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>vs</span>
+                                                    <ComparePicker label="RIGHT" value={compareRight} collars={collars} onChange={setCompareRight} />
+                                                    {collars.length >= 2 && !(compareLeft && compareRight) && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setCompareLeft(collars[0].hole_id_canonical ?? collars[0].hole_id);
+                                                                setCompareRight(collars[1].hole_id_canonical ?? collars[1].hole_id);
+                                                            }}
+                                                            className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border"
+                                                            style={{ color: 'var(--fg-2)', borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+                                                        >
+                                                            Use first two
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <div className="flex-1 overflow-y-auto min-h-0">
+                                                    {compareLeft && compareRight ? (
+                                                        compareLeft === compareRight ? (
+                                                            <EmptyState
+                                                                title="Pick two different holes."
+                                                                detail="Comparing a hole against itself renders two identical columns and no useful diff."
+                                                            />
+                                                        ) : (
+                                                            <CompareHolesPanel
+                                                                projectSlug={project.slug}
+                                                                leftHole={compareLeft}
+                                                                rightHole={compareRight}
+                                                                chartHeight={Math.max(360, chartH - 120)}
+                                                            />
+                                                        )
+                                                    ) : (
+                                                        <EmptyState
+                                                            title="Pick two holes to compare."
+                                                            detail={`Choose any two of this project's ${collars.length} holes from the dropdowns above. You can also queue a pair by clicking two pins in MAP mode.`}
+                                                        />
+                                                    )}
+                                                </div>
+                                            </>
+                                        )}
+                                    </Card>
+                                ))}
                             </>
                         )}
                     </section>
@@ -1028,6 +1128,38 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                 />
             )}
         </AppLayout>
+    );
+}
+
+/**
+ * LEFT / RIGHT hole selector for COMPARE mode.
+ *
+ * Reads the `collars` prop the page already loaded rather than issuing the
+ * separate 200-row `pickable` query the deleted HoleCompareController ran —
+ * one fewer round trip, and the two lists can no longer disagree.
+ */
+function ComparePicker({ label, value, collars, onChange }: {
+    label: string;
+    value: string;
+    collars: Collar[];
+    onChange: (v: string) => void;
+}) {
+    return (
+        <label className="flex items-center gap-2">
+            <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>{label}</span>
+            <select
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="px-2 py-1 text-xs font-mono rounded border"
+                style={{ background: 'var(--bg-2)', color: 'var(--fg-0)', borderColor: 'var(--line-2)' }}
+            >
+                <option value="">— pick hole —</option>
+                {collars.map((c) => {
+                    const id = c.hole_id_canonical ?? c.hole_id;
+                    return <option key={c.collar_id} value={id}>{id}</option>;
+                })}
+            </select>
+        </label>
     );
 }
 

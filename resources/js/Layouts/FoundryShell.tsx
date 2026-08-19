@@ -42,10 +42,12 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
     // were both views of the same silver.reports + document_passages pair as
     // 'Reports'. One entry now, master-detail; both old paths redirect here.
     { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
-    { id: 'map', suffix: '/map', label: 'Map', icon: 'map' },
-    // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).
+    // Merged 2026-08-19: 'Map' (/map) and 'Compare' (/compare) were both
+    // narrower views of what Workspace already renders — Map's page was a
+    // second MapView over the same collars, Compare's a weaker version of
+    // the hole-vs-hole panel. One entry now, mode-switched inside; both old
+    // paths redirect here. Restored 2026-08-17 (reader-core trim reversal).
     { id: 'workspace', suffix: '/workspace', label: 'Workspace', icon: 'cube' },
-    { id: 'compare', suffix: '/compare', label: 'Compare', icon: 'compare' },
 ];
 
 interface SharedRailData {
@@ -66,19 +68,12 @@ function Icon({ name, size = 12 }: { name: string; size?: number }) {
         doc: <path d="M7 3h8l4 4v14H7z M15 3v4h4" />,
         report: <path d="M6 3h12v18H6z M9 8h6 M9 12h6 M9 16h4" />,
         shield: <path d="M12 3 L20 7 L20 12 C20 16 16 20 12 22 C8 20 4 16 4 12 L4 7 Z" />,
-        map: (
-            <>
-                <path d="M9 4 L3 6 v14 l6 -2 6 2 6 -2 V4 l-6 2 -6 -2z" />
-                <path d="M9 4 v14 M15 6 v14" />
-            </>
-        ),
         search: <path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4" />,
         plus: <path d="M12 5v14 M5 12h14" />,
         chevron: <path d="M9 6 L15 12 L9 18" />,
         pulse: <path d="M3 12h4l2-7 4 14 2-7h6" />,
         // Restored 2026-08-17 (reader-core trim reversal).
         cube: <path d="M12 2 L21 7 V17 L12 22 L3 17 V7 Z M3 7 L12 12 L21 7 M12 12 V22" />,
-        compare: <path d="M8 3 V21 M16 3 V21 M4 7 H8 M16 7 H20 M4 17 H8 M16 17 H20" />,
     };
     return (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
