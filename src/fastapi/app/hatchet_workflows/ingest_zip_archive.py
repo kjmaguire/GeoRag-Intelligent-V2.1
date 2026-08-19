@@ -304,6 +304,50 @@ async def run_zip_ingest(
                 error_text=terminal_error,
             )
 
+    # ── 5. Derive lithology / interval strip logs from the LAS curves ──────
+    # gold.drillhole_intervals_visual — the lithology strip logs, ore-band
+    # counts and mean grades behind Workspace / Compare / DrillholeDetail —
+    # had no automated writer. Its Dagster asset was deleted in #124 (it read
+    # a table that never existed) and the only correct writer,
+    # services/ingest/derive_intervals.derive_project, was reachable only from
+    # the manual script scripts/ingest_one_cluster.py. So every archive
+    # ingested through this workflow produced well-log curves that never
+    # became a strip log unless someone ran that script by hand.
+    #
+    # Gated on counts["las"]: derive_project reads silver.well_log_curves, and
+    # LAS is the only extension in this workflow that writes them (.log files
+    # upsert a collar header only).
+    #
+    # Runs once per archive rather than per file — derive_project sweeps every
+    # collar in the project, and its writes are idempotent: each collar's
+    # DERIVED-% lithology rows, derived_composite samples and 'lithology'
+    # interval rows are deleted and re-emitted. A re-run, or an archive that
+    # only adds some of a project's holes, simply recomputes from whatever
+    # curves are present.
+    #
+    # A failure here must not fail the archive. Every file is already ingested
+    # by this point and the terminal status has already been marked, so the
+    # error is recorded in the summary and left for the next run to correct —
+    # same "one bad step doesn't kill the run" posture as the per-file loop.
+    derive_intervals_summary: dict[str, Any] | None = None
+    if counts["las"] > 0:
+        from app.services.ingest.derive_intervals import derive_project  # noqa: PLC0415
+
+        try:
+            derive_intervals_summary = await derive_project(input.project_id)
+            log.info(
+                "ingest_zip_archive.derive_intervals run_id=%s %s",
+                input.run_id,
+                derive_intervals_summary,
+            )
+        except Exception as exc:
+            derive_intervals_summary = {"error": str(exc)[:200]}
+            log.warning(
+                "ingest_zip_archive: derive_intervals failed run_id=%s — %s (continuing)",
+                input.run_id,
+                exc,
+            )
+
     summary = {
         "run_id": input.run_id,
         "archive_run_id": archive_run_id,
@@ -312,6 +356,7 @@ async def run_zip_ingest(
         "counts": counts,
         "error_count": len(errors),
         "errors_sample": errors[:20],  # cap sample to keep payload small
+        "derive_intervals": derive_intervals_summary,
         "completed_at": datetime.now(UTC).isoformat(),
     }
     log.info("ingest_zip_archive.complete run_id=%s summary=%s", input.run_id, counts)
