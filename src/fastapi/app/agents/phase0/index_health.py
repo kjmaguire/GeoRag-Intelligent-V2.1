@@ -247,11 +247,18 @@ async def index_health_check(
                     reach_results[coll.name] = {"status": "empty", "reachable": None}
                     continue
                 point = points[0]
-                vec = point.vector
-                # Multi-vector collections return a dict; pick the default ("").
-                if isinstance(vec, dict):
-                    vec = vec.get("") or next(iter(vec.values()))
-                if not vec:
+                raw_vector = point.vector
+                # Multi-vector collections return a dict of named vectors;
+                # prefer the default ("") and otherwise take any one of them.
+                candidate = (
+                    (raw_vector.get("") or next(iter(raw_vector.values()), None))
+                    if isinstance(raw_vector, dict)
+                    else raw_vector
+                )
+                # query_points wants a bare dense vector. A sparse vector or a
+                # still-nested dict cannot be used as a round-trip probe, and
+                # neither can an absent one.
+                if not isinstance(candidate, list) or not candidate:
                     reach_results[coll.name] = {"status": "no_vector", "reachable": None}
                     continue
                 # query_points, not search: qdrant-client removed
@@ -264,7 +271,7 @@ async def index_health_check(
                 # whose .points is the old return value.
                 response = await qc.query_points(
                     collection_name=coll.name,
-                    query=vec,
+                    query=candidate,
                     limit=1,
                 )
                 hits = response.points
