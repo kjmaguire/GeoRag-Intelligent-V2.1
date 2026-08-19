@@ -187,7 +187,7 @@ POOLS = {
         # Master-plan §11.1 — nightly backup crons. Staggered 15 min
         # apart starting 02:00 UTC (per kickoff locked defaults).
         backup_postgres,    # 02:00 UTC
-        # backup_neo4j (was 02:15 UTC) removed — Neo4j dropped entirely
+        # backup_neo4j (was 02:15 UTC) deleted 2026-08-19 — Neo4j dropped entirely
         # 2026-07-28 (B1), and the workflow shelled out via `docker exec`
         # to a container that no longer exists (and never would on Azure
         # Container Apps regardless — no docker daemon access from within
