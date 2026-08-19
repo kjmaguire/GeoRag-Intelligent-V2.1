@@ -71,10 +71,15 @@ Usage
     python -m scripts.reembed_public_geoscience_cohere \
         --collections pg_mine --batch-size 32
 
-Requires EMBEDDING_BACKEND=foundry plus AZURE_FOUNDRY_ENDPOINT /
-AZURE_FOUNDRY_API_KEY / AZURE_FOUNDRY_EMBED_DEPLOYMENT. The script refuses to
-run against any other embedding backend rather than silently writing vectors
-from a different model into collections labelled Embed v4.
+A real run uses whatever embedder EMBEDDING_* is configured for — the SAME
+resolution path ``search_public_geoscience`` uses, so index-time and
+query-time always agree with each other. The only hard requirement is that
+the embedder is 1024-dim, so the vectors land in the space the reader
+queries.
+
+It deliberately does NOT require a particular vendor. On the local stack that
+means the self-hosted 1024-dim model and **no Azure contact whatsoever** —
+which is the correct way to make a local-only corpus searchable locally.
 """
 from __future__ import annotations
 
@@ -105,22 +110,60 @@ DEFAULT_BATCH_SIZE = 96
 SCROLL_PAGE = 256
 
 
-def _require_foundry() -> None:
-    """Refuse to run on any backend but Foundry.
+def _require_query_parity(model: Any) -> str:
+    """Assert the index-time embedder matches what the reader will query with.
 
-    Writing vectors from a different model into collections that the cutover
-    will label as Embed v4 would be silently wrong — cosine distances across
-    embedding spaces are meaningless, and the failure mode is bad results
-    rather than an error.
+    The real invariant is NOT "must be Cohere". It is "the vectors written
+    here must live in the same space as the vector the reader embeds its
+    query into" — cosine distance across two embedding spaces is meaningless,
+    and the failure mode is quietly bad results rather than an error.
+
+    That invariant is satisfied structurally: this script and
+    ``search_public_geoscience`` both resolve their embedder through
+    ``get_embedding_model()`` against the same config, so whatever backend is
+    configured is used on both sides. Whichever environment you run in, index
+    and query agree with each other.
+
+    An earlier version of this hard-required EMBEDDING_BACKEND=foundry. That
+    was wrong twice over: it expressed a dimension invariant as a vendor lock,
+    and it made the script unrunnable in the only environment that holds the
+    corpus — the local stack, which runs a self-hosted 1024-dim embedder and
+    has no Azure credentials by design. Re-embedding locally with the local
+    model is correct and self-consistent; it just produces local vectors,
+    which is exactly what a local-only corpus needs.
+
+    So the check that remains is the one that actually protects the data: the
+    embedder's dimension must equal TARGET_DIMENSION, i.e. what the target
+    collections are created with and what the reader queries with.
+
+    Returns a short backend label, recorded in the run log so the provenance
+    of a set of vectors is never ambiguous.
     """
-    backend = (os.environ.get("EMBEDDING_BACKEND") or "").strip().lower()
-    if backend != "foundry":
+    backend = (os.environ.get("EMBEDDING_BACKEND") or "").strip().lower() or "unset"
+
+    dim = None
+    getter = getattr(model, "get_sentence_embedding_dimension", None)
+    if callable(getter):
+        try:
+            dim = int(getter())
+        except Exception:  # noqa: BLE001 — fall through to the probe below
+            dim = None
+    if dim is None:
+        # No dimension accessor: probe with one throwaway encode rather than
+        # assume. Cheaper than discovering the mismatch 180k points later.
+        dim = len(model.encode("dimension probe"))
+
+    if dim != TARGET_DIMENSION:
         raise SystemExit(
-            f"EMBEDDING_BACKEND={backend or '<unset>'} — this script only runs "
-            "with EMBEDDING_BACKEND=foundry (Cohere Embed v4). Re-embedding "
-            "with any other model would put vectors from a different space "
-            "into collections the cutover treats as Embed v4."
+            f"embedder reports {dim}-dim but the target collections are "
+            f"{TARGET_DIMENSION}-dim (backend={backend}). Writing these "
+            "vectors would recreate exactly the mismatch this script exists "
+            "to fix. Point EMBEDDING_* at a "
+            f"{TARGET_DIMENSION}-dim model and re-run."
         )
+
+    log.info("embedder OK: backend=%s dim=%d", backend, dim)
+    return backend
 
 
 async def _ensure_target(client: Any, name: str, *, recreate: bool) -> None:
@@ -242,9 +285,6 @@ async def _run(args: argparse.Namespace) -> int:
     # unusable in exactly the environment that holds the data: the corpus
     # lives in the local Docker stack, which runs EMBEDDING_BACKEND=local and
     # has no Foundry credentials at all. Gate the check on the real run.
-    if not args.dry_run:
-        _require_foundry()
-
     from qdrant_client import AsyncQdrantClient
 
     from app.services.qdrant_conn import qdrant_client_kwargs
@@ -253,7 +293,8 @@ async def _run(args: argparse.Namespace) -> int:
     if not args.dry_run:
         from app.services.embedding import get_embedding_model
 
-        model = get_embedding_model(model_name="")  # ignored on the foundry branch
+        model = get_embedding_model(model_name=os.environ.get("EMBEDDING_MODEL_NAME", ""))
+        _require_query_parity(model)
     client = AsyncQdrantClient(**qdrant_client_kwargs())
 
     try:
