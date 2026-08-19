@@ -298,10 +298,12 @@ class IndexHealthCheckOutput(BaseModel):
     zero_hit_indices: int = 0
     qdrant_reachability: Any = None
     neo4j_page_cache_hit_ratio: Any = None
-    # Populated only on the system-wide (cron) path, where the findings are
-    # cluster-scoped and silver.corpus_health_findings.workspace_id is NOT
-    # NULL. The agent returns them here instead of dropping them — see
-    # index_health.py's `system_wide` comment.
+    # Non-zero means a finding could not be written to
+    # silver.corpus_health_findings at all. Since migration
+    # 2026_08_19_070000 made workspace_id nullable, the system-wide (cron)
+    # path persists its cluster-scoped findings as NULL-workspace rows, so
+    # this is now a genuine error signal rather than the steady state it used
+    # to be — see index_health.py's `system_wide` comment.
     findings_unpersisted: int = 0
     findings: list[dict[str, Any]] = Field(default_factory=list)
 
