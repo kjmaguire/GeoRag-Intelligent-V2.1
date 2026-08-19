@@ -397,6 +397,20 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
                 deps, workspace_id, project_id,
                 hole_ids[0] if hole_ids else None,
             )
+        if real_name == "search_public_geoscience":
+            # Keyword-only after ctx, and takes no project_id at all: the
+            # public-geoscience corpus is government-published data that is
+            # not scoped to a workspace's projects.
+            #
+            # Filter hints (jurisdiction / canonical type / commodity) are
+            # deliberately left None here so the tool searches all active
+            # jurisdictions and all six canonical types. _classify_query
+            # already extracts those hints for the deterministic
+            # orchestrator, but they are not threaded through the agentic
+            # planner's state — narrowing on hints this layer cannot see
+            # would silently drop results, whereas the unfiltered call is
+            # merely slower.
+            return await fn(ctx, text_query=query)
         if real_name == "query_downhole_logs":
             # Hole-ID NER lands via extract_hole_ids (PR-3 / 2026-05-25).
             # When the query names a hole we route through; otherwise we
