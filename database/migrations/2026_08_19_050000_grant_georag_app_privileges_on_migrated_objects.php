@@ -83,16 +83,31 @@ return new class extends Migration
             DB::statement(sprintf('GRANT USAGE ON SCHEMA %s TO georag_app', $schema));
 
             // 1. Catch up everything that already exists.
-            DB::statement(sprintf(
-                'GRANT %s ON ALL TABLES IN SCHEMA %s TO georag_app',
-                $tablePrivileges,
-                $schema,
-            ));
-            DB::statement(sprintf(
-                'GRANT %s ON ALL SEQUENCES IN SCHEMA %s TO georag_app',
-                $sequencePrivileges,
-                $schema,
-            ));
+            //
+            // NOT `GRANT ... ON ALL TABLES IN SCHEMA`. That form is atomic and
+            // requires the grantor to hold grant option on EVERY relation in
+            // the schema — one object it doesn't own aborts the whole
+            // statement. That is exactly what broke the 2026-08-19 deploy:
+            //
+            //   SQLSTATE[42501]: permission denied for table
+            //   integration_credentials_audit
+            //   (SQL: GRANT INSERT, SELECT, UPDATE ON ALL TABLES IN SCHEMA
+            //    audit TO georag_app)
+            //
+            // audit.integration_credentials_audit is deliberately owned by a
+            // more privileged role — it is admin-only, gated by RBAC rather
+            // than RLS (see database/raw/phase0/95-rls-policies.sql's "Tables
+            // that DO NOT get RLS" list). georag must not own it, so this
+            // migration must not try to grant on it.
+            //
+            // Granting per-relation and skipping what we cannot grant on
+            // keeps the intent (georag_app can reach the objects migrations
+            // create) without asserting authority over objects migrations did
+            // not create. Skips are RAISE NOTICE'd rather than swallowed
+            // silently so a genuinely-missing grant is still discoverable in
+            // the migrate job log.
+            $this->grantPerObject($schema, $tablePrivileges, isSequence: false);
+            $this->grantPerObject($schema, $sequencePrivileges, isSequence: true);
 
             // 2. Cover everything a future migration creates. FOR ROLE georag
             //    is the important part — default privileges apply per grantor,
@@ -120,6 +135,64 @@ return new class extends Migration
     public function down(): void
     {
         //
+    }
+
+    /**
+     * GRANT the given privileges on every relation in $schema that the
+     * current role is actually allowed to grant on, skipping the rest.
+     *
+     * "Allowed to grant on" is tested as ownership —
+     * pg_has_role(current_user, relowner, 'USAGE') — which is true when the
+     * current role owns the object or is a member of the owning role. That
+     * is the condition Postgres itself applies for the ordinary case, and it
+     * is what distinguishes migration-created objects (owned by georag) from
+     * out-of-band admin objects that are deliberately owned elsewhere.
+     *
+     * relkind filter mirrors what `ON ALL TABLES` covers: ordinary tables
+     * ('r'), partitioned tables ('p'), views ('v') and foreign tables ('f').
+     * Sequences ('S') are handled by the same helper via $isSequence so the
+     * ownership rule cannot drift between the two paths.
+     */
+    private function grantPerObject(string $schema, string $privileges, bool $isSequence): void
+    {
+        $relkinds = $isSequence ? "'S'" : "'r','p','v','f'";
+        $objectWord = $isSequence ? 'SEQUENCE' : 'TABLE';
+
+        DB::statement(<<<SQL
+            DO \$\$
+            DECLARE
+                rec record;
+                skipped int := 0;
+            BEGIN
+                FOR rec IN
+                    SELECT c.oid::regclass AS qualified,
+                           pg_has_role(current_user, c.relowner, 'USAGE') AS grantable
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = '{$schema}'
+                      AND c.relkind IN ({$relkinds})
+                LOOP
+                    IF rec.grantable THEN
+                        EXECUTE format(
+                            'GRANT {$privileges} ON {$objectWord} %s TO georag_app',
+                            rec.qualified
+                        );
+                    ELSE
+                        skipped := skipped + 1;
+                        RAISE NOTICE
+                            'skipping % — not owned by %, cannot grant',
+                            rec.qualified, current_user;
+                    END IF;
+                END LOOP;
+
+                IF skipped > 0 THEN
+                    RAISE NOTICE
+                        '{$schema}: {$objectWord} grants skipped for % object(s) not owned by %',
+                        skipped, current_user;
+                END IF;
+            END
+            \$\$;
+        SQL);
     }
 
     private function schemaExists(string $schema): bool
