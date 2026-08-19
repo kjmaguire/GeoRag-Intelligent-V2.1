@@ -48,7 +48,33 @@ async def index_health_check(
         "zero_hit_indices": 0,
         "qdrant_reachability": None,
         "neo4j_page_cache_hit_ratio": None,
+        "findings_unpersisted": 0,
+        "findings": [],
     }
+
+    # Every probe below reads a CLUSTER-scoped catalog — pg_stat_statements,
+    # pg_stat_user_tables, pg_stat_user_indexes. None of them is per-tenant.
+    # But silver.corpus_health_findings.workspace_id is NOT NULL REFERENCES
+    # silver.workspaces, and the cron trigger deliberately passes no workspace
+    # (AgentRunInput.workspace_id: "if None, runs system-wide"). So on its
+    # scheduled run this agent could never persist a finding: live logs showed
+    # `null value in column "workspace_id" ... violates not-null constraint`
+    # on every pass, swallowed by the probe's `except Exception`.
+    #
+    # Relaxing that NOT NULL is a tenancy decision, not a bug fix, so it is NOT
+    # made here. Instead system-wide findings are returned in the summary (the
+    # workflow output Hatchet retains) and counted, so the agent reports what it
+    # found instead of failing silently. When invoked WITH a workspace — via the
+    # on-demand route — persistence behaves exactly as before.
+    system_wide = ctx.workspace_id is None
+
+    async def _record(sql: str, *args: Any, kind: str, detail: dict[str, Any]) -> None:
+        """Persist a finding, or collect it when running system-wide."""
+        if system_wide:
+            summary["findings"].append({"finding_type": kind, **detail})
+            summary["findings_unpersisted"] += 1
+            return
+        await rt.pg_pool.execute(sql, ctx.workspace_id, *args)
 
     # ---- 1. Slow queries (pg_stat_statements) -------------------------------
     slow = await rt.pg_pool.fetch(
@@ -65,25 +91,25 @@ async def index_health_check(
         top_n_slow,
     )
     for r in slow:
-        await rt.pg_pool.execute(
+        detail = {
+            "queryid": r["queryid"],
+            "calls": r["calls"],
+            "mean_exec_time_ms": float(r["mean_exec_time"]),
+            "total_exec_time_ms": float(r["total_exec_time"]),
+            "query_excerpt": r["query_excerpt"],
+        }
+        await _record(
             """
             INSERT INTO silver.corpus_health_findings
                 (workspace_id, finding_type, severity, target_schema, target_table,
                  target_id, payload, status)
             VALUES ($1, 'slow_query', $2, NULL, NULL, $3, $4::jsonb, 'open')
             """,
-            ctx.workspace_id,
             "high" if r["mean_exec_time"] > 1000 else "medium",
             str(r["queryid"]),
-            json.dumps(
-                {
-                    "queryid": r["queryid"],
-                    "calls": r["calls"],
-                    "mean_exec_time_ms": float(r["mean_exec_time"]),
-                    "total_exec_time_ms": float(r["total_exec_time"]),
-                    "query_excerpt": r["query_excerpt"],
-                }
-            ),
+            json.dumps(detail),
+            kind="slow_query",
+            detail=detail,
         )
         summary["slow_queries_flagged"] += 1
 
@@ -104,24 +130,26 @@ async def index_health_check(
         bloat_dead_tup_ratio_threshold,
     )
     for r in bloat:
-        await rt.pg_pool.execute(
+        detail = {
+            "schema": r["schemaname"],
+            "table": r["relname"],
+            "n_live_tup": r["n_live_tup"],
+            "n_dead_tup": r["n_dead_tup"],
+            "bloat_ratio": float(r["bloat_ratio"]),
+            "suggested_action": "VACUUM (or pg_repack for online reorg)",
+        }
+        await _record(
             """
             INSERT INTO silver.corpus_health_findings
                 (workspace_id, finding_type, severity, target_schema, target_table,
                  payload, status)
             VALUES ($1, 'table_bloat', 'medium', $2, $3, $4::jsonb, 'open')
             """,
-            ctx.workspace_id,
             r["schemaname"],
             r["relname"],
-            json.dumps(
-                {
-                    "n_live_tup": r["n_live_tup"],
-                    "n_dead_tup": r["n_dead_tup"],
-                    "bloat_ratio": float(r["bloat_ratio"]),
-                    "suggested_action": "VACUUM (or pg_repack for online reorg)",
-                }
-            ),
+            json.dumps(detail),
+            kind="table_bloat",
+            detail=detail,
         )
         summary["bloat_findings"] += 1
 
@@ -146,23 +174,27 @@ async def index_health_check(
             """
         )
         for r in zero_hits:
-            await rt.pg_pool.execute(
+            detail = {
+                "schema": r["schemaname"],
+                "table": r["relname"],
+                "indexrelname": r["indexrelname"],
+                "idx_scan": int(r["idx_scan"]),
+                "size": r["index_size"],
+                "suggested_action": "review for removal (no scans recorded since last reset)",
+            }
+            await _record(
                 """
                 INSERT INTO silver.corpus_health_findings
                     (workspace_id, finding_type, severity, target_schema, target_table,
                      target_id, payload, status)
                 VALUES ($1, 'zero_hit_index', 'low', $2, $3, $4, $5::jsonb, 'open')
                 """,
-                ctx.workspace_id,
                 r["schemaname"],
                 r["relname"],
                 r["indexrelname"],
-                json.dumps({
-                    "indexrelname": r["indexrelname"],
-                    "idx_scan": int(r["idx_scan"]),
-                    "size": r["index_size"],
-                    "suggested_action": "review for removal (no scans recorded since last reset)",
-                }),
+                json.dumps(detail),
+                kind="zero_hit_index",
+                detail=detail,
             )
             summary["zero_hit_indices"] += 1
     except Exception as exc:
@@ -222,14 +254,24 @@ async def index_health_check(
                 if not vec:
                     reach_results[coll.name] = {"status": "no_vector", "reachable": None}
                     continue
-                hits = await qc.search(
+                # query_points, not search: qdrant-client removed
+                # AsyncQdrantClient.search in the 1.x line, and every run of
+                # this probe since the upgrade died with
+                # "'AsyncQdrantClient' object has no attribute 'search'" —
+                # caught in the agent's broad `except Exception`, so the
+                # summary recorded a probe error rather than an index fault
+                # and nothing escalated. query_points returns a QueryResponse
+                # whose .points is the old return value.
+                response = await qc.query_points(
                     collection_name=coll.name,
-                    query_vector=vec,
+                    query=vec,
                     limit=1,
                 )
+                hits = response.points
+                round_trips = bool(hits) and hits[0].id == point.id
                 reach_results[coll.name] = {
-                    "status": "ok" if hits and hits[0].id == point.id else "broken",
-                    "reachable": bool(hits) and hits[0].id == point.id,
+                    "status": "ok" if round_trips else "broken",
+                    "reachable": round_trips,
                     "points_inspected": 1,
                 }
             summary["qdrant_reachability"] = reach_results

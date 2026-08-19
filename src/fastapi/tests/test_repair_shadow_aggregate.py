@@ -19,7 +19,6 @@ from datetime import date
 
 from app.hatchet_workflows.repair_shadow_aggregate import (
     _AGGREGATE_SQL,
-    _DDL,
     _LIST_WORKSPACES_WITH_TRACES,
     RepairShadowAggregateInput,
     RepairShadowAggregateOutput,
@@ -28,32 +27,19 @@ from app.hatchet_workflows.repair_shadow_aggregate import (
 
 # ---------------------------------------------------------------------------
 # DDL shape
+#
+# The _DDL literal these tests used to assert on is gone: the table is now
+# declared by migration 2026_08_19_060000_create_gold_repair_shadow_daily.
+# Creating it at runtime needed CREATE on the database, which georag_app does
+# not have, so the workflow failed on every scheduled run in production.
+#
+# The guarantees these tests protected — composite PK, forced RLS, the
+# workspace-isolation policy, the georag_app grant — are now asserted against
+# the real database in tests/Feature/Database/RepairShadowDailySchemaTest.php,
+# which is stronger than matching substrings in a Python string. This module
+# cannot make those assertions: it runs inside the FastAPI container, which
+# mounts only src/fastapi and cannot see database/migrations.
 # ---------------------------------------------------------------------------
-
-
-def test_ddl_creates_gold_schema_and_table():
-    assert "CREATE SCHEMA IF NOT EXISTS gold" in _DDL
-    assert "CREATE TABLE IF NOT EXISTS gold.repair_shadow_daily" in _DDL
-
-
-def test_ddl_enforces_workspace_pk_for_one_row_per_workspace_per_day():
-    """The composite PK ensures idempotent upserts — same workspace +
-    same day always lands on the same row."""
-    assert "PRIMARY KEY (workspace_id, for_date)" in _DDL
-
-
-def test_ddl_enables_row_level_security():
-    """The aggregated table is workspace-scoped — RLS prevents cross-
-    workspace reads from a single Grafana data source."""
-    assert "ENABLE ROW LEVEL SECURITY" in _DDL
-    assert "FORCE ROW LEVEL SECURITY" in _DDL
-    assert "CREATE POLICY repair_shadow_daily_workspace_isolation" in _DDL
-
-
-def test_ddl_grants_app_role_select_insert_update():
-    """georag_app needs the upsert permissions; the policy enforces
-    tenancy. SELECT for Grafana via PostgREST or the app."""
-    assert "GRANT SELECT, INSERT, UPDATE ON gold.repair_shadow_daily TO georag_app" in _DDL
 
 
 # ---------------------------------------------------------------------------

@@ -66,12 +66,6 @@ WORKFLOW_TYPING = [
         {"checked_at": "2026-05-29T00:00:00Z"},
     ),
     (
-        "vllm_security_check_run",
-        "_run_vllm_security",
-        p0.VllmSecurityCheckRunOutput,
-        {"http_status": 502, "note": "VLLM_VERSION env unset"},
-    ),
-    (
         "model_cost_summary_run",
         "_run_model_cost_summary",
         p0.ModelCostSummaryRunOutput,

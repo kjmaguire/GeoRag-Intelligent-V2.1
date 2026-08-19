@@ -25,7 +25,6 @@ Prometheus rules, not a Python agent):
     - Index Health Agent            index_health_check
     - Store Reconciliation Agent    store_reconciliation_run
     - Model Upgrade Watch Agent     model_upgrade_watch_run
-    - vLLM Security Check Agent     vllm_security_check_run
     - Model Cost Summary Agent      model_cost_summary_run
     - LLM Incident Diagnosis Agent  llm_incident_diagnosis_run
 
@@ -44,7 +43,6 @@ from .storage_tiering import storage_tiering_run
 from .store_reconciliation import store_reconciliation_run
 from .support_packet import support_packet_assemble
 from .tenant_isolation_auditor import tenant_isolation_audit
-from .vllm_security_check import vllm_security_check_run
 
 __all__ = [
     "tenant_isolation_audit",
@@ -54,7 +52,6 @@ __all__ = [
     "store_reconciliation_run",
     "storage_tiering_run",
     "model_upgrade_watch_run",
-    "vllm_security_check_run",
     "model_cost_summary_run",
     "llm_incident_diagnosis_run",
     "support_packet_assemble",

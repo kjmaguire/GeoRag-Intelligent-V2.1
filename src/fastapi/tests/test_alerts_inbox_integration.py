@@ -72,7 +72,7 @@ async def test_alerts_inbox_lists_inserted_rows(pg_conn: asyncpg.Connection) -> 
     tag = f"it-{uuid.uuid4().hex[:8]}"
     try:
         await _insert_alert(pg_conn, "cost.burn.alert", f"{tag}-1", "high")
-        await _insert_alert(pg_conn, "vllm_security.alert", f"{tag}-2", "critical")
+        await _insert_alert(pg_conn, "stale.run.alert", f"{tag}-2", "critical")
 
         async with httpx.AsyncClient(base_url=FASTAPI_URL) as client:
             r = await client.get(

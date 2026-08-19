@@ -12,7 +12,6 @@ Schedules per Phase 0 kickoff §Step 6:
     storage_tiering_run             0 3  * * *    daily   03:00 UTC
     store_reconciliation_run        0 4  * * *    nightly 04:00 UTC
     model_upgrade_watch_run         0 5  * * *    daily   05:00 UTC
-    vllm_security_check_run         0 1  * * *    daily   01:00 UTC
     model_cost_summary_run          0 6  * * *    daily   06:00 UTC
     index_health_check              0 */6 * * *    every 6 h
 
@@ -30,7 +29,7 @@ Pool assignment for the worker pool split (Step 2):
 
     ai pool  (georag-hatchet-worker-ai):
         audit_ledger_verify, tenant_isolation_audit, lineage_walk,
-        model_upgrade_watch_run, vllm_security_check_run,
+        model_upgrade_watch_run,
         model_cost_summary_run, llm_incident_diagnosis_run,
         support_packet_assemble
 
@@ -80,9 +79,6 @@ from app.agents.phase0 import (
 )
 from app.agents.phase0 import (
     tenant_isolation_audit as _tenant_isolation_agent,
-)
-from app.agents.phase0 import (
-    vllm_security_check_run as _vllm_security_agent,
 )
 from app.hatchet_workflows import hatchet
 
@@ -302,6 +298,12 @@ class IndexHealthCheckOutput(BaseModel):
     zero_hit_indices: int = 0
     qdrant_reachability: Any = None
     neo4j_page_cache_hit_ratio: Any = None
+    # Populated only on the system-wide (cron) path, where the findings are
+    # cluster-scoped and silver.corpus_health_findings.workspace_id is NOT
+    # NULL. The agent returns them here instead of dropping them — see
+    # index_health.py's `system_wide` comment.
+    findings_unpersisted: int = 0
+    findings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 index_health_check = hatchet.workflow(
@@ -386,43 +388,6 @@ async def _run_model_upgrade_watch(
     async with _agent_runtime():
         r = await _model_upgrade_watch_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
         return ModelUpgradeWatchRunOutput.model_validate(r.value or {})
-
-
-# =============================================================================
-# 7. vLLM Security Check Agent — daily 01:00 UTC
-# =============================================================================
-class VllmSecurityCheckRunOutput(BaseModel):
-    """Output schema for the vllm_security_check_run workflow.
-
-    Mirrors ``app.agents.phase0.vllm_security_check.vllm_security_check_run``.
-    Conditional keys (``note``, ``error_message``, ``http_status``) appear
-    on the unset-version / fetch-error branches.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    checked: bool = False
-    current_vllm: str = ""
-    advisories_seen: int = 0
-    matches: list[dict[str, Any]] = Field(default_factory=list)
-    alerts_emitted: int = 0
-    errors: int = 0
-
-
-vllm_security_check_run = hatchet.workflow(
-    name="vllm_security_check_run",
-    on_crons=["0 1 * * *"],
-    input_validator=AgentRunInput,
-)
-
-
-@vllm_security_check_run.task(execution_timeout="2m")
-async def _run_vllm_security(
-    input: AgentRunInput, ctx: Context
-) -> VllmSecurityCheckRunOutput:
-    async with _agent_runtime():
-        r = await _vllm_security_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return VllmSecurityCheckRunOutput.model_validate(r.value or {})
 
 
 # =============================================================================
@@ -550,7 +515,6 @@ AI_AGENT_WORKFLOWS: tuple = (
     graph_tenant_audit,
     lineage_walk,
     model_upgrade_watch_run,
-    vllm_security_check_run,
     model_cost_summary_run,
     llm_incident_diagnosis_run,
     support_packet_assemble,
@@ -566,7 +530,6 @@ __all__ = [
     "index_health_check",
     "store_reconciliation_run",
     "model_upgrade_watch_run",
-    "vllm_security_check_run",
     "model_cost_summary_run",
     "llm_incident_diagnosis_run",
     "support_packet_assemble",
@@ -580,7 +543,6 @@ __all__ = [
     "IndexHealthCheckOutput",
     "StoreReconciliationRunOutput",
     "ModelUpgradeWatchRunOutput",
-    "VllmSecurityCheckRunOutput",
     "ModelCostSummaryRunOutput",
     "LlmIncidentDiagnosisRunOutput",
     "SupportPacketAssembleOutput",

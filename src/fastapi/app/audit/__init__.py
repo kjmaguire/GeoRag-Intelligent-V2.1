@@ -177,7 +177,7 @@ async def emit_audit(
     # ends in '.alert' or '.acknowledged' is surfaced live on the
     # Admin/AlertsInbox page. Hooking the central emit helper covers every
     # alert writer in one place (cost_burn_watcher, reliability_metrics_publisher,
-    # stale_run_detector, vllm_security, plus future ones) without per-workflow
+    # stale_run_detector, plus future ones) without per-workflow
     # code edits.
     #
     # Mirror of the App\Services\Audit\AuditEmitter.php hook on the Laravel
