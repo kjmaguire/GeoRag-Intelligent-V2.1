@@ -41,31 +41,6 @@ export interface FoundryActivityItem {
     text: string;
 }
 
-export interface FoundryCollar {
-    collar_id: string;
-    project_id: string;
-    hole_id: string;
-    hole_id_canonical: string | null;
-    total_depth: number | null;
-    latitude: number | null;
-    longitude: number | null;
-    plss_section: string | null;
-    state_plane_easting: number | null;
-    state_plane_northing: number | null;
-    utm_easting: number | null;
-    utm_northing: number | null;
-    utm_zone: number | null;
-    status: string | null;
-    completed_at: string | null;
-}
-
-export interface FoundryHoleSummary extends FoundryCollar {
-    grade_avg: number | null;
-    grade_top: number | null;
-    grade_unit: string | null;
-    rock_summary: string | null;
-}
-
 export interface FoundryCitation {
     n: number;
     src: string;
@@ -141,33 +116,6 @@ export interface RationaleProps {
     alternates: RationaleAltTarget[];
     citations: FoundryCitation[];
     deposit_model_slug: string | null;
-    empty: boolean;
-}
-
-export interface CompareLithoSegment {
-    from_depth: number;
-    to_depth: number;
-    kind: string;
-    color?: string;
-}
-
-export interface CompareHoleDetail extends FoundryHoleSummary {
-    azimuth: number | null;
-    dip: number | null;
-    lithology: CompareLithoSegment[];
-    intercepts: Array<{
-        from_depth: number;
-        to_depth: number;
-        grade: number;
-        grade_unit: string;
-    }>;
-}
-
-export interface HoleCompareProps {
-    project: Pick<FoundryProject, 'project_id' | 'project_name' | 'slug'>;
-    pickable: Array<Pick<FoundryCollar, 'hole_id' | 'hole_id_canonical'>>;
-    left: CompareHoleDetail | null;
-    right: CompareHoleDetail | null;
     empty: boolean;
 }
 

@@ -6,9 +6,7 @@ use App\Http\Controllers\Admin\IntegrationsController;
 use App\Http\Controllers\CitationFeedbackController;
 use App\Http\Controllers\Foundry\ChatController;
 use App\Http\Controllers\Foundry\DrillholeDetailController;
-use App\Http\Controllers\Foundry\HoleCompareController;
 use App\Http\Controllers\Foundry\IngestionRunsController;
-use App\Http\Controllers\Foundry\MapController;
 use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
 use App\Http\Controllers\Foundry\PublicGeoscienceController;
@@ -113,11 +111,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     Route::get('/projects/{slug}/sources', [SourcesController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.sources');
-    // Standalone Map surface. MapView.tsx was previously only reachable
-    // inline inside a chat answer (via InlineViz.tsx) — this route lets a
-    // user navigate to it directly. See MapController docblock for why
-    // GeoJSON is fetched client-side by MapView itself instead of here.
-    Route::get('/projects/{slug}/map', [MapController::class, 'show'])
+    // Merged 2026-08-19 into /workspace — see WorkspaceController's docblock.
+    // The standalone Map page rendered MapView with a self-fetch against
+    // /api/v1/projects/{project}/collars; the workspace's MAP mode renders
+    // WorkspaceMap over the same collars with uncertainty rings, ore-band
+    // styling, basemap + terrain switching, layer toggles and the
+    // click-two-pins compare queue. Keeping both meant two map surfaces to
+    // maintain and a nav that implied they showed different things.
+    // Named redirect so route('foundry.map') callers and bookmarks keep
+    // working; MAP is the workspace's default mode, so no ?mode= is needed.
+    Route::get('/projects/{slug}/map', function (string $slug) {
+        return redirect()->route('foundry.workspace', ['slug' => $slug], 302);
+    })
         ->where('slug', '[a-z0-9\-]+')->name('foundry.map');
     // Merged 2026-08-18 into /reports — see ReportController's docblock. The
     // "Reader" nav item was a second document list over the same two tables;
@@ -131,7 +136,19 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Restored 2026-08-17 (reader-core trim reversal, see plan addendum).
     Route::get('/projects/{slug}/holes/{collarId}/detail', [DrillholeDetailController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.drillhole-detail');
-    Route::get('/projects/{slug}/compare', [HoleCompareController::class, 'show'])
+    // Merged 2026-08-19 into /workspace's COMPARE mode. The standalone page
+    // was a strictly weaker duplicate: it hydrated collar metadata plus a
+    // plain-text lithology list and hardcoded grade_avg / grade_top /
+    // rock_summary / intercepts to null, while the workspace's
+    // holePayload() + CompareHolesPanel render real log curves, colour-coded
+    // lithology bands, ore-band counts and mean grade. ?mode=compare so the
+    // redirect lands on the comparison rather than on MAP — see
+    // Workspace.tsx's initialMode(). The old ?left=/?right= query pair is
+    // NOT carried across: selection is now client-side in the panel's
+    // dropdowns, so there is no server-side prop for them to populate.
+    Route::get('/projects/{slug}/compare', function (string $slug) {
+        return redirect()->to(route('foundry.workspace', ['slug' => $slug]).'?mode=compare', 302);
+    })
         ->where('slug', '[a-z0-9\-]+')->name('foundry.compare');
     Route::get('/projects/{slug}/workspace', [WorkspaceController::class, 'show'])
         ->where('slug', '[a-z0-9\-]+')->name('foundry.workspace');

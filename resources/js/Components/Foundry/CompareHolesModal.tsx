@@ -43,22 +43,37 @@ async function fetchHolePayload(slug: string, holeId: string): Promise<HolePaylo
     return r.json();
 }
 
-export function CompareHolesModal({
+/**
+ * The comparison content itself — diff table + two rendered hole columns.
+ *
+ * Extracted from CompareHolesModal 2026-08-19 so the Workspace COMPARE mode
+ * can render the identical comparison inline as a full panel while the map
+ * popup keeps rendering it as an overlay. Both call sites share one fetch
+ * path and one renderer; there is no second implementation of "compare two
+ * holes" anywhere in the app.
+ *
+ * `chartHeight` is passed in rather than derived here because the two hosts
+ * have different vertical budgets: the modal owns 96vh, the Workspace panel
+ * sits under the page header and mode toolbar.
+ */
+export function CompareHolesPanel({
     projectSlug,
     leftHole,
     rightHole,
-    onClose,
+    chartHeight,
 }: {
     projectSlug: string;
     leftHole: string;
     rightHole: string;
-    onClose: () => void;
+    chartHeight: number;
 }) {
     const [left, setLeft] = useState<FetchState>({ kind: 'loading' });
     const [right, setRight] = useState<FetchState>({ kind: 'loading' });
 
     useEffect(() => {
         let cancelled = false;
+        setLeft({ kind: 'loading' });
+        setRight({ kind: 'loading' });
         fetchHolePayload(projectSlug, leftHole)
             .then((p) => !cancelled && setLeft({ kind: 'ready', payload: p }))
             .catch((e) => !cancelled && setLeft({ kind: 'error', message: e.message ?? 'fetch failed' }));
@@ -77,6 +92,48 @@ export function CompareHolesModal({
         600,
     );
 
+    return (
+        <>
+            <DiffStats left={left} right={right} />
+
+            <div className="grid grid-cols-2 gap-6 mt-6">
+                {[left, right].map((state, i) => {
+                    const label = i === 0 ? leftHole : rightHole;
+                    return (
+                        <div key={label} className="space-y-3">
+                            <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
+                                {i === 0 ? 'LEFT' : 'RIGHT'} · {label}
+                            </div>
+                            {state.kind === 'loading' && (
+                                <div className="text-xs" style={{ color: 'var(--fg-3)' }}>Loading hole payload…</div>
+                            )}
+                            {state.kind === 'error' && (
+                                <div className="text-xs" style={{ color: 'var(--warn, #d97706)' }}>
+                                    Failed to load: {state.message}
+                                </div>
+                            )}
+                            {state.kind === 'ready' && (
+                                <HoleColumn payload={state.payload} depthMax={depthMax} chartH={chartHeight} />
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
+        </>
+    );
+}
+
+export function CompareHolesModal({
+    projectSlug,
+    leftHole,
+    rightHole,
+    onClose,
+}: {
+    projectSlug: string;
+    leftHole: string;
+    rightHole: string;
+    onClose: () => void;
+}) {
     // Chart height tied to modal viewport so charts breathe on tall windows
     // without forcing a page scroll on short ones.
     const [windowHeight, setWindowHeight] = useState<number>(() =>
@@ -126,31 +183,12 @@ export function CompareHolesModal({
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-6">
-                    <DiffStats left={left} right={right} />
-
-                    <div className="grid grid-cols-2 gap-6 mt-6">
-                        {[left, right].map((state, i) => {
-                            const label = i === 0 ? leftHole : rightHole;
-                            return (
-                                <div key={label} className="space-y-3">
-                                    <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
-                                        {i === 0 ? 'LEFT' : 'RIGHT'} · {label}
-                                    </div>
-                                    {state.kind === 'loading' && (
-                                        <div className="text-xs" style={{ color: 'var(--fg-3)' }}>Loading hole payload…</div>
-                                    )}
-                                    {state.kind === 'error' && (
-                                        <div className="text-xs" style={{ color: 'var(--warn, #d97706)' }}>
-                                            Failed to load: {state.message}
-                                        </div>
-                                    )}
-                                    {state.kind === 'ready' && (
-                                        <HoleColumn payload={state.payload} depthMax={depthMax} chartH={chartH} />
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
+                    <CompareHolesPanel
+                        projectSlug={projectSlug}
+                        leftHole={leftHole}
+                        rightHole={rightHole}
+                        chartHeight={chartH}
+                    />
                 </div>
             </div>
         </div>
