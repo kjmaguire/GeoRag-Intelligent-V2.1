@@ -16,6 +16,135 @@ env:
   PYTHON_VERSION: "3.13"
 
 jobs:
+  # ==========================================================================
+  # Production-privilege migration gate
+  #
+  # Every other job here runs migrations as a SUPERUSER against a database
+  # built only by the migration chain. Azure is neither of those things, and
+  # the gap cost two red deploys on 2026-08-19:
+  #
+  #   #132  GRANT ... ON ALL TABLES IN SCHEMA audit
+  #         -> permission denied for table integration_credentials_audit
+  #   #136  ALTER TABLE workspace.workspace_roles ENABLE ROW LEVEL SECURITY
+  #         -> must be owner of table workspace_roles
+  #
+  # Both are the same shape: DDL that requires OWNERSHIP, against a table that
+  # database/raw/ created out of band under a different role. Neither is
+  # reproducible in the jobs above, for two independent reasons — the local
+  # role is a superuser (superusers bypass ownership checks entirely), and CI
+  # never applies database/raw/ at all, so those tables are migration-created
+  # and therefore owned by the migrating role.
+  #
+  # This job reproduces production's privilege model instead:
+  #   - `bootstrap` applies database/raw/, so it OWNS those objects
+  #   - `georag_ci` runs the migrations, is NOT a superuser, and is NOT a
+  #     member of `bootstrap`
+  #
+  # Advisory to start with. Promote to blocking once it has been green for a
+  # few runs — it is a new gate over a chain that has never been exercised
+  # this way, so an initial red is likelier to be a gap in this job than a
+  # real regression.
+  # ==========================================================================
+  migrations-production-privileges:
+    name: Migrations under production privileges (advisory — promote when green)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_root_password
+          POSTGRES_DB: georag_privtest
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Create production-shaped roles
+        env:
+          PGPASSWORD: ci_root_password
+        run: |
+          psql -h localhost -U postgres -d georag_privtest -v ON_ERROR_STOP=1 <<'SQL'
+          -- Mirrors Azure: no superusers anywhere, and the role that applies
+          -- the raw bootstrap is distinct from the one running migrations.
+          CREATE ROLE bootstrap  NOSUPERUSER LOGIN PASSWORD 'bootstrap_pw';
+          CREATE ROLE georag_ci  NOSUPERUSER LOGIN PASSWORD 'georag_ci_pw' CREATEDB;
+          CREATE ROLE georag_app NOSUPERUSER LOGIN PASSWORD 'georag_app_pw';
+          -- Deliberately NO membership between bootstrap and georag_ci: that
+          -- absence is the whole point of this job.
+          GRANT ALL ON DATABASE georag_privtest TO bootstrap, georag_ci;
+          SQL
+
+      - name: Apply database/raw as the bootstrap role
+        env:
+          PGPASSWORD: bootstrap_pw
+        run: |
+          # Best-effort: some raw files assume objects the migration chain
+          # creates later, so a clean apply is not expected and not required.
+          # What matters is that the objects which DO land are owned by
+          # `bootstrap`, reproducing Azure's split ownership.
+          shopt -s nullglob
+          for f in database/raw/phase0/*.sql; do
+            psql -h localhost -U bootstrap -d georag_privtest -f "$f" >/dev/null 2>&1 || true
+          done
+          psql -h localhost -U bootstrap -d georag_privtest -At -c             "SELECT 'bootstrap owns ' || count(*) || ' relation(s)'
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind IN ('r','p')
+               AND pg_get_userbyid(c.relowner) = 'bootstrap';"
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_privtest
+          DB_USERNAME: georag_ci
+          DB_PASSWORD: georag_ci_pw
+
+      - name: Run migrations as a non-superuser, non-owner
+        # The actual gate. A migration issuing ownership-requiring DDL against
+        # a bootstrap-owned table fails HERE instead of in a deploy.
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_privtest
+          DB_USERNAME: georag_ci
+          DB_PASSWORD: georag_ci_pw
+
+      - name: Report ownership split
+        if: always()
+        env:
+          PGPASSWORD: georag_ci_pw
+        run: |
+          psql -h localhost -U georag_ci -d georag_privtest -c             "SELECT pg_get_userbyid(c.relowner) AS owner, count(*) AS relations
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind IN ('r','p')
+               AND n.nspname NOT IN ('pg_catalog','information_schema')
+             GROUP BY 1 ORDER BY 2 DESC;" || true
+
   # ─── Laravel lint + test ──────────────────────────────────────────────
   laravel:
     name: Laravel (Pint + PHPUnit)
@@ -36,7 +165,19 @@ jobs:
         image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
         env:
           POSTGRES_USER: georag
-          POSTGRES_PASSWORD: test_password
+          # 2026-08-17 CI-gap audit: matches phpunit.pgsql.xml's hardcoded
+          # DB_PASSWORD (kept in sync with the dev docker-compose
+          # `postgresql` service's real password — see that file's own
+          # header) rather than the arbitrary `test_password` this job used
+          # to use, so the new "Run PHPUnit (Postgres-gated suite)" step
+          # below can authenticate without editing phpunit.pgsql.xml
+          # itself (which would break the documented local-dev workflow).
+          # Every other step in THIS job that connects directly (Prepare
+          # environment / Run migrations / SQLite fast suite) was updated
+          # to match; the pgtap / schema-and-qdrant-drift / e2e-smoke jobs
+          # below have their own independent postgres service and are
+          # unaffected.
+          POSTGRES_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
           POSTGRES_DB: georag_test
         ports: ["5432:5432"]
         options: >-
@@ -89,7 +230,7 @@ jobs:
           DB_PORT: 5432
           DB_DATABASE: georag_test
           DB_USERNAME: georag
-          DB_PASSWORD: test_password
+          DB_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
 
       - name: Run migrations
         run: php artisan migrate --force
@@ -99,9 +240,22 @@ jobs:
           DB_PORT: 5432
           DB_DATABASE: georag_test
           DB_USERNAME: georag
-          DB_PASSWORD: test_password
+          DB_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
 
-      - name: Run PHPUnit
+      # 2026-08-17 CI-gap audit: this step's own env: block sets
+      # DB_CONNECTION=pgsql, but `php artisan test` loads phpunit.xml by
+      # default, and phpunit.xml declares
+      # `<env name="DB_CONNECTION" value="sqlite" force="true"/>` —
+      # `force="true"` overwrites the process environment regardless of
+      # how it was set (see phpunit.pgsql.xml's own header / docs/
+      # RUNBOOK.md "Test environment gotchas"), so this step has always
+      # run the entire suite under SQLite. That's correct FOR THIS STEP —
+      # it's the fast/mockable suite — but it means every
+      # `Tests\Concerns\RequiresPostgres` / `skipIfSqlite()`-gated test
+      # (real Postgres/PostGIS/RLS/tenancy regression coverage) has been
+      # silently self-skipping here forever, with no PR-time gate ever
+      # actually exercising them. The step below closes that gap.
+      - name: Run PHPUnit (SQLite fast suite)
         run: php artisan test --parallel
         env:
           DB_CONNECTION: pgsql
@@ -109,7 +263,29 @@ jobs:
           DB_PORT: 5432
           DB_DATABASE: georag_test
           DB_USERNAME: georag
-          DB_PASSWORD: test_password
+          DB_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
+
+      # phpunit.pgsql.xml hardcodes DB_HOST=postgresql to match the dev
+      # docker-compose service name it's normally run against (see its
+      # own header and docs/RUNBOOK.md) — that hostname doesn't exist on
+      # a bare `ubuntu-latest` runner, whose service container is only
+      # reachable at `localhost`. Alias it via /etc/hosts rather than
+      # editing phpunit.pgsql.xml's forced env (which would break the
+      # documented local-dev workflow). The service's password was
+      # updated above to match phpunit.pgsql.xml's hardcoded value.
+      #
+      # Not run with --parallel: phpunit.pgsql.xml's testsuite ordering
+      # is hand-authored so RefreshDatabase suites populate the schema
+      # before the read-only/catalog suite inspects it (see its header) —
+      # ParaTest's default per-file worker split doesn't preserve that,
+      # and the config targets one literal database name rather than
+      # Laravel's parallel-testing per-process DB suffixing. The suite is
+      # ~30 files; serial execution here is a non-issue on time.
+      - name: Alias postgres service as `postgresql` for phpunit.pgsql.xml
+        run: echo "127.0.0.1 postgresql" | sudo tee -a /etc/hosts
+
+      - name: Run PHPUnit (Postgres-gated suite)
+        run: php artisan test -c phpunit.pgsql.xml
 
   # ─── Python lint ──────────────────────────────────────────────────────
   python-lint:
