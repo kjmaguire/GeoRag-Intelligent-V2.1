@@ -3,6 +3,7 @@ import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
 import { acceptedExtensions, categoryForExtension } from '@/lib/uploadCategories';
+import { groupShapefiles } from '@/lib/shapefileBundle';
 
 /**
  * Foundry / DataImportWizard
@@ -48,7 +49,11 @@ interface UploadOutcome {
     message: string;
 }
 
-const ACCEPTED_EXTENSIONS = ['pdf', 'tif', 'tiff', 'zip'];
+// The drop zone gate. #144 moved uploadOne() onto the shared category map but
+// left this list behind, so the wizard still refused drill, Excel, GIS and LAS
+// files at intake - the API accepted them, but nothing got that far. Derive it
+// from the same source as everything else.
+const ACCEPTED_EXTENSIONS = acceptedExtensions();
 
 let nextQueueId = 0;
 function newQueueId(): string {
@@ -114,13 +119,30 @@ export default function FoundryDataImportWizard() {
     // Shared intake path for the picker AND the drop zone: filter to the
     // accepted extensions up front and surface anything rejected as an
     // inline message instead of letting the server 422 it later.
-    function addFiles(incoming: FileList | File[] | null) {
+    async function addFiles(incoming: FileList | File[] | null) {
         if (!incoming) return;
         const arr = Array.from(incoming);
         if (arr.length === 0) return;
         const accepted: QueuedFile[] = [];
         const rejected: string[] = [];
-        for (const f of arr) {
+
+        // Zip each .shp back together with its .shx/.dbf/.prj siblings before
+        // anything else looks at the list. Uploaded alone, a .shp cannot be
+        // parsed; the sidecars have no category of their own and would
+        // otherwise be rejected here as unsupported.
+        // Falling back to the raw list keeps a zip failure (out of memory on a
+        // very large .dbf, say) from swallowing the whole selection: the .shp
+        // is queued and fails server-side with a message, which beats a drop
+        // zone that silently does nothing.
+        const { bundles, passthrough, orphanSidecars } = await groupShapefiles(arr).catch(
+            () => ({ bundles: [], passthrough: arr, orphanSidecars: [] }),
+        );
+        for (const b of bundles) {
+            accepted.push({ id: newQueueId(), file: b.file });
+        }
+        for (const f of orphanSidecars) rejected.push(f.name);
+
+        for (const f of passthrough) {
             if (ACCEPTED_EXTENSIONS.includes(fileExtension(f.name))) {
                 accepted.push({ id: newQueueId(), file: f });
             } else {
@@ -134,7 +156,7 @@ export default function FoundryDataImportWizard() {
             rejected.length > 0
                 ? `Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${rejected
                       .slice(0, 3)
-                      .join(', ')}${rejected.length > 3 ? ', …' : ''}) — accepted types: PDF, TIF/TIFF, ZIP.`
+                      .join(', ')}${rejected.length > 3 ? ', …' : ''}) — accepted types: ${ACCEPTED_EXTENSIONS.join(', ')}.`
                 : null,
         );
         // Keep successful outcomes (their pills + the no-re-upload guard in

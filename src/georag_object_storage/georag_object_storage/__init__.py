@@ -3,6 +3,11 @@ from georag_object_storage.buckets import Bucket
 from georag_object_storage.config import StorageConfig
 from georag_object_storage.exceptions import BucketNotFoundError, ObjectNotFoundError, ObjectStorageError
 from georag_object_storage.factory import get_async_storage_client, get_storage_client
+from georag_object_storage.metadata import (
+    InvalidMetadataKeyError,
+    is_valid_metadata_key,
+    validate_metadata,
+)
 from georag_object_storage.protocols import AsyncObjectStorage, ObjectStorage
 from georag_object_storage.sync_client import build_boto3_client
 
@@ -10,6 +15,7 @@ __all__ = [
     "AsyncObjectStorage",
     "Bucket",
     "BucketNotFoundError",
+    "InvalidMetadataKeyError",
     "ObjectNotFoundError",
     "ObjectStorage",
     "ObjectStorageError",
@@ -18,4 +24,6 @@ __all__ = [
     "build_boto3_client",
     "get_async_storage_client",
     "get_storage_client",
+    "is_valid_metadata_key",
+    "validate_metadata",
 ]

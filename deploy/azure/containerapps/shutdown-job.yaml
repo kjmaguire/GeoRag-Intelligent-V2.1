@@ -1,32 +1,60 @@
-# Azure Container Apps Job — nightly cost-control shutdown (plan C6).
-# Cron is UTC-only (no timezone support in Container Apps Jobs). 0 0 * * *
-# = 8:00pm US Eastern during EDT (UTC-4, in effect as of this deploy,
-# 2026-07-30). Switch to `0 1 * * *` when DST ends in November (EST is
-# UTC-5) if the 8pm-local intent should hold year-round — Container Apps
-# gives no DST-aware option, so this is a manual biannual adjustment.
+# Azure Container Apps Job - nightly cost-control shutdown (plan C6).
 #
-# Runs `az containerapp update --min-replicas 0 --max-replicas 0` on every
-# scalable Container App plus `az postgres flexible-server stop`, using a
-# system-assigned managed identity scoped to Contributor on the `georag`
-# resource group (granted at deploy time, see deploy/azure/README.md).
-# Uses az CLI directly rather than the REST API for readability/
-# maintainability — this runs once a day, so the extra ~10s of az CLI
-# startup overhead doesn't matter.
+# WHAT THIS ACTUALLY ACHIEVES (measured 2026-08-20, do not assume more)
+# ---------------------------------------------------------------------
+# `--min-replicas 0` is applied successfully to all eight apps every night.
+# Only some of them then scale down, because minReplicas is a floor, not an
+# off switch: a Container App scales in when a scaler reports no work, and
+# an app with no scale rule only has the implicit default HTTP rule.
 #
-# Region migration note (2026-07-31): live resource names carry a `-cc`
-# suffix (`georag-pg-cc`, `redis-cc`, `qdrant-cc`) — an artifact of the
-# eastus->canadacentral migration, see the plan's "Region migration to
-# canadacentral" section. Updated below to match the live names. The
-# still-undeployed app tier (fastapi/laravel-*/hatchet*, C8) keeps its
-# plain names since those were never created in eastus and so never
-# collided.
+#   fastapi-cc          HTTP ingress, no rules -> default HTTP rule -> reaches 0
+#   laravel-*-cc        HTTP ingress                                -> reaches 0
+#   hatchet-cc          TCP ingress; the default rule is HTTP-only   -> stays 1
+#   redis-cc/qdrant-cc  TCP ingress, same                            -> stays 1
+#   hatchet-worker-cc   no ingress AND 32 registered Hatchet crons, two of
+#                       them every minute, most of the rest scheduled 02:00
+#                       to 06:00 UTC - i.e. inside this very window. It is
+#                       not idle at night, it is at its busiest.
+#
+# So this job saves the Postgres server and the HTTP tier. It does not stop
+# hatchet-worker-cc (4 vCPU / 8 GiB, the largest single line item), and no
+# amount of replica-count tuning will while the crons are scheduled here.
+# Turning that worker off is a scheduling decision - move the nightly crons
+# into the waking window, or split the every-minute crons onto a small
+# always-on worker pool (app.hatchet_workflows.worker already supports
+# WORKER_POOL) - not a shutdown-script change. Left as-is deliberately.
+#
+# `--max-replicas 0` is NOT valid: maxReplicas has a minimum of 1, and the
+# az CLI does not reject it loudly. An earlier version of this file passed
+# it. Do not put it back.
+#
+# TIMING
+# ------
+# Cron is UTC-only (Container Apps Jobs have no timezone support), so this
+# fires at both candidate hours and the guard below exits 0 on the wrong
+# one. That keeps 8:00pm US-Eastern correct across DST without a biannual
+# manual edit.
+#
+# replicaTimeout was 300s while the sweep measured 301s wall-clock: three of
+# the five real runs before 2026-08-20 were marked Failed on the timeout
+# after the sweep had already completed, and replicaRetryLimit 1 meant the
+# whole sweep then ran a second time. 900s leaves real headroom.
+#
+# Identity: system-assigned, Contributor on the `georag` resource group
+# (granted at deploy time, see deploy/azure/README.md).
+#
+# NOT APPLIED BY CD. .github/workflows/cd.yml only touches
+# laravel-migrate-job. Changes here must be applied by hand:
+#   az containerapp job update -g georag -n shutdown-scheduler-cc --yaml <this file>
 properties:
   configuration:
     triggerType: Schedule
-    replicaTimeout: 300
+    replicaTimeout: 900
     replicaRetryLimit: 1
     scheduleTriggerConfig:
-      cronExpression: "0 0 * * *"
+      # Both candidate hours; the DST guard drops whichever is not 20:00
+      # US-Eastern.
+      cronExpression: "0 0,1 * * *"
       parallelism: 1
       replicaCompletionCount: 1
   template:
@@ -37,14 +65,15 @@ properties:
           - /bin/bash
           - -c
         args:
-          - >-
-            set -euo pipefail;
-            az login --identity;
-            for app in redis-cc qdrant-cc fastapi hatchet-worker hatchet laravel-octane laravel-horizon laravel-reverb; do
-              az containerapp update -g georag -n "$app" --min-replicas 0 --max-replicas 0 || echo "skip $app (not deployed yet)";
-            done;
-            az postgres flexible-server stop -g georag -n georag-pg-cc || echo "skip postgres (not deployed yet)";
-            echo "shutdown sweep complete"
+          - |
+            YEAR=$(date -u +%Y); fd=$(date -u -d "${YEAR}-03-01" +%u); add=$(( (7 - fd) % 7 )); DST_START=$(date -u -d "${YEAR}-03-01 +$((add+7)) days" +%s); fdn=$(date -u -d "${YEAR}-11-01" +%u); addn=$(( (7 - fdn) % 7 )); DST_END=$(date -u -d "${YEAR}-11-01 +${addn} days" +%s); NOW=$(date -u +%s); if [ "$NOW" -ge "$DST_START" ] && [ "$NOW" -lt "$DST_END" ]; then OFF=-4; else OFF=-5; fi; LOCAL_HOUR=$(date -u -d "@$((NOW + OFF*3600))" +%H); if [ "$LOCAL_HOUR" != "20" ]; then echo "DST-safety double-fire: US-Eastern local hour is ${LOCAL_HOUR} (offset ${OFF}h), not 20 -- skipping"; exit 0; fi
+            set -euo pipefail
+            az login --identity
+            for app in redis-cc qdrant-cc hatchet-worker-cc hatchet-cc fastapi-cc laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
+              az containerapp update -g georag -n "$app" --min-replicas 0 || echo "skip $app";
+            done
+            az postgres flexible-server stop -g georag -n georag-pg-cc || echo "skip postgres"
+            echo shutdown sweep complete
         resources:
           cpu: 0.5
           memory: 1Gi

@@ -54,11 +54,18 @@ def test_put_bytes_with_metadata(config):
         "reports/derived.pdf",
         b"payload",
         content_type="application/pdf",
-        metadata={"x-georag-derived-from-tiff-sha256": "abc123"},
+        metadata={"derived_from_tiff_sha256": "abc123"},
     )
 
     info = store.head(Bucket.BRONZE, "reports/derived.pdf")
-    assert info["metadata"] == {"x-georag-derived-from-tiff-sha256": "abc123"}
+    assert info["metadata"] == {"derived_from_tiff_sha256": "abc123"}
+
+
+# The key here used to be "x-georag-derived-from-tiff-sha256", copied from
+# tiff_normalize. S3 accepts it, so this test passed for months while the
+# same call 400ed against Azure Blob on every single TIFF upload. The
+# rule is now enforced on this backend too, which is the point: a test
+# that only exercises the permissive backend cannot catch the bug.
 
 
 @mock_aws

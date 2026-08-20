@@ -12,6 +12,7 @@ import {
     extensionOf,
     type Category,
 } from '@/lib/uploadCategories';
+import { groupShapefiles } from '@/lib/shapefileBundle';
 
 const STEPS = ['Identity', 'Jurisdiction', 'Corpus', 'Review'] as const;
 type Step = typeof STEPS[number];
@@ -128,7 +129,40 @@ export default function FoundryNewProject() {
     const addFiles = useCallback(async (files: FileList | File[]) => {
         const arr: QueuedFile[] = [];
         const skippedNames: string[] = [];
-        for (const f of Array.from(files)) {
+
+        // A shapefile arrives as .shp + .shx/.dbf/.prj siblings. None of the
+        // sidecars has an upload category, so the loop below used to drop them
+        // as "unrecognised" and queue the .shp alone - which the server can
+        // never parse ("Unable to open <name>.shx"). Zip each group back
+        // together first; the spatial workflow already reads that shape.
+        // Falling back to the raw list keeps a zip failure (out of memory on a
+        // very large .dbf, say) from swallowing the whole selection.
+        const all = Array.from(files);
+        const { bundles, passthrough, orphanSidecars } = await groupShapefiles(all).catch(
+            () => ({ bundles: [], passthrough: all, orphanSidecars: [] }),
+        );
+        for (const b of bundles) {
+            arr.push({
+                id: newId(),
+                file: b.file,
+                name: b.file.name,
+                size: b.file.size,
+                ext: 'zip',
+                category: 'spatial',
+                status: 'queued',
+                // Not an error - the upload proceeds. GDAL can often still
+                // read a shapefile missing its index, and a missing .prj only
+                // costs the declared CRS, so say what is absent and let it go.
+                error: b.missing.length
+                    ? `Bundled ${b.members.length} files; no .${b.missing.join(', .')} found`
+                    : undefined,
+            });
+        }
+        // A sidecar with no .shp beside it is genuinely unusable - report it
+        // as skipped rather than leaving the user to wonder where it went.
+        for (const f of orphanSidecars) skippedNames.push(f.name);
+
+        for (const f of passthrough) {
             const ext = extensionOf(f.name);
             // Drop files we can't categorise (unknown extension, raster images,
             // or 0-byte folder shells dragged in instead of using Select Folder).

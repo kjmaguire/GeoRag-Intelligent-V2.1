@@ -258,6 +258,15 @@ for _noisy in (
     "unstructured", "unstructured.partition",
     "matplotlib", "matplotlib.font_manager",
     "urllib3.connectionpool", "botocore", "boto3", "s3transfer",
+    # Azure Blob replaced S3 as the storage backend but this list did not
+    # follow. azure.core's http_logging_policy logs a URL plus a full
+    # request/response header block at INFO for EVERY blob call: ~9.6k
+    # lines a day on this worker, about a third of its total output, all
+    # of it burying the errors it sits between. Real failures still
+    # surface - they are raised, and our own handlers log them.
+    "azure", "azure.core", "azure.core.pipeline.policies",
+    "azure.core.pipeline.policies.http_logging_policy", "azure.identity",
+    "azure.storage", "azure.storage.blob",
     "grpc", "grpc._cython", "grpc._cython.cygrpc",
 ):
     logging.getLogger(_noisy).setLevel(logging.WARNING)

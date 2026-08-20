@@ -17,6 +17,7 @@ from botocore.exceptions import ClientError
 from georag_object_storage.buckets import Bucket
 from georag_object_storage.config import StorageConfig
 from georag_object_storage.exceptions import ObjectNotFoundError, ObjectStorageError
+from georag_object_storage.metadata import validate_metadata
 
 _NOT_FOUND_CODES = ("404", "NoSuchKey", "NoSuchBucket")
 
@@ -94,7 +95,7 @@ class AsyncS3CompatibleStorage:
             "ContentType": content_type,
         }
         if metadata is not None:
-            params["Metadata"] = metadata
+            params["Metadata"] = validate_metadata(metadata)
         async with self._client() as client:
             try:
                 await client.put_object(**params)
@@ -111,7 +112,7 @@ class AsyncS3CompatibleStorage:
     ) -> None:
         extra_args: dict[str, object] = {"ContentType": content_type}
         if metadata is not None:
-            extra_args["Metadata"] = metadata
+            extra_args["Metadata"] = validate_metadata(metadata)
         async with self._client() as client:
             try:
                 await client.upload_file(
@@ -203,7 +204,7 @@ class AsyncS3CompatibleStorage:
         if metadata is not None or content_type is not None:
             params["MetadataDirective"] = "REPLACE"
             if metadata is not None:
-                params["Metadata"] = metadata
+                params["Metadata"] = validate_metadata(metadata)
             if content_type is not None:
                 params["ContentType"] = content_type
         async with self._client() as client:

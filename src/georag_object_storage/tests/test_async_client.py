@@ -79,11 +79,35 @@ async def test_put_bytes_with_metadata(config):
         "reports/derived.pdf",
         b"payload",
         content_type="application/pdf",
-        metadata={"x-georag-derived-from-tiff-sha256": "abc123"},
+        metadata={"derivedfromtiffsha256": "abc123"},
     )
 
     info = await store.head(Bucket.BRONZE, "reports/derived.pdf")
-    assert info["metadata"] == {"x-georag-derived-from-tiff-sha256": "abc123"}
+    assert info["metadata"] == {"derivedfromtiffsha256": "abc123"}
+
+
+# Two things about the key above.
+#
+# It used to be "x-georag-derived-from-tiff-sha256", copied from
+# tiff_normalize. S3 accepts hyphens, so this test passed for months while
+# the same call 400ed against Azure Blob on every single TIFF upload. The
+# rule is now enforced on this backend too, which is the point: a test that
+# only exercises the permissive backend cannot catch the bug.
+#
+# It has no underscore either, unlike the sync suite's equivalent, and that
+# is a limitation of THIS harness rather than of the contract. These tests
+# run against ThreadedMotoServer, i.e. real HTTP through werkzeug, and the
+# CGI convention folds "-" to "_" when mapping header names into the WSGI
+# environ -- so x-amz-meta-a_b and x-amz-meta-a-b become the same variable
+# and werkzeug drops the ambiguous one. (nginx refuses underscore headers
+# by default for the same reason.) test_sync_client's @mock_aws is
+# in-process, never serialises to HTTP, and so keeps underscores happily.
+#
+# Underscores are correct and required in production: Azure Blob wants C#
+# identifier names, and ingest_pdf has been writing report_id / project_id
+# / page / sha256 through this same interface for months. Do not narrow the
+# rule in metadata.py to alphanumeric-only on the strength of this test --
+# it would be designing the production contract around a test double.
 
 
 async def test_put_file_with_metadata(config, tmp_path):

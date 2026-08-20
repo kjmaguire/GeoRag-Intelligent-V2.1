@@ -241,8 +241,12 @@ async def run_ingest_well_logs(
 
     except Exception as exc:
         if run_id:
+            # The kwarg is `error`, not `error_text`. Passing the wrong
+            # name raised TypeError *inside* the handler, so the real
+            # failure was replaced by the TypeError and the progress row
+            # never reached a terminal state.
             await _progress.mark_failed_by_run(
-                run_id=run_id, error_text=str(exc)[:1000],
+                run_id=run_id, error=str(exc)[:1000],
             )
         log.exception("ingest_well_logs failed for %s", input.minio_key)
         raise
