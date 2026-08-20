@@ -313,6 +313,25 @@ async def run_ingest_spatial(
     empty_skipped = 0
     source_format = suffix.lstrip(".")
 
+    # A lone ".shp" cannot be read: pyogrio opens it and then goes looking for
+    # the ".shx" index and ".dbf" table beside it, which a single-object upload
+    # never has. GDAL's own message for this ("Unable to open <name>.shx ... Set
+    # SHAPE_RESTORE_SHX") tells a user nothing they can act on, and until this
+    # check it was the only thing they got. Refuse before the download with the
+    # instruction that actually resolves it.
+    if suffix == ".shp":
+        detail = (
+            f"'{filename}' was uploaded on its own. A shapefile is not one "
+            "file - it needs its .shx, .dbf and .prj siblings, which cannot be "
+            "uploaded separately. Zip the .shp together with them and upload "
+            "the .zip."
+        )
+        if run_id:
+            await _progress.mark_failed_by_run(
+                run_id=run_id, stage="preflight", error=detail,
+            )
+        raise ValueError(detail)
+
     try:
         if run_id:
             await _progress.mark_stage_started(run_id=run_id, stage="preflight")
@@ -476,8 +495,12 @@ async def run_ingest_spatial(
 
     except Exception as exc:
         if run_id:
+            # kwarg is `error`, not `error_text` � passing the wrong name
+            # raised TypeError *inside* the handler, so the real failure
+            # was replaced by the TypeError and the progress row never
+            # reached a terminal state.
             await _progress.mark_failed_by_run(
-                run_id=run_id, error_text=str(exc)[:1000],
+                run_id=run_id, error=str(exc)[:1000],
             )
         log.exception("ingest_spatial failed for %s", input.minio_key)
         raise

@@ -221,8 +221,12 @@ class UploadController extends Controller
             // parser's job.
             $putOptions = [];
             if ($vendorProfileId !== null) {
+                // Metadata keys must be valid C# identifiers to survive Azure
+                // Blob, which answers HTTP 400 InvalidMetadata for a hyphen.
+                // The old 'x-georag-vendor-profile-id' was S3-legal and would
+                // have failed every upload that supplied a vendor profile.
                 $putOptions['Metadata'] = [
-                    'x-georag-vendor-profile-id' => (string) $vendorProfileId,
+                    'vendor_profile_id' => (string) $vendorProfileId,
                 ];
             }
 

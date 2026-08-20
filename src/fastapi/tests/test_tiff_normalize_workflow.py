@@ -79,3 +79,45 @@ def test_derived_key_sanitises_unsafe_stem_characters():
     basename = derived.rsplit("/", 1)[-1]
     for ch in (" ", "&", "!", "?"):
         assert ch not in basename, f"unsafe char {ch!r} leaked into {basename!r}"
+
+
+def test_provenance_metadata_keys_are_legal_on_every_storage_backend():
+    """The keys tiff_normalize writes must survive Azure Blob.
+
+    This is the bug that made the RedStar Test import fail: the tags were
+    ``x-georag-derived-from-tiff-sha256`` and friends. S3 and MinIO take
+    hyphenated metadata names, so nothing here or in staging ever
+    complained. Azure Blob requires C# identifier names and answered
+
+        HTTP 400 InvalidMetadata - The metadata specified is invalid.
+        It has characters that are not permitted.
+
+    on the upload of the derived PDF - after a successful multi-page wrap,
+    so every TIFF was decoded, re-encoded and then thrown away.
+
+    The keys are asserted against georag_object_storage's shared rule
+    rather than a copy of it here, so this test tracks the contract
+    instead of restating it.
+    """
+    import re
+    from pathlib import Path
+
+    from georag_object_storage.metadata import is_valid_metadata_key
+
+    from app.hatchet_workflows import tiff_normalize as mod
+
+    # The idempotency tag is the one that also has to round-trip on read.
+    assert is_valid_metadata_key(mod._TIFF_DERIVED_TAG), mod._TIFF_DERIVED_TAG
+
+    # And every other literal key in the metadata dict the workflow builds.
+    # Read from source: the dict is assembled inside an async task that
+    # cannot be called without a live Hatchet context and object store.
+    source = Path(mod.__file__).read_text(encoding="utf-8")
+    block = source.split("metadata={", 1)[1].split("},", 1)[0]
+    keys = re.findall(r'"([^"]+)":', block)
+
+    assert keys, "expected to find the provenance metadata keys in the source"
+    for key in keys:
+        assert is_valid_metadata_key(key), (
+            f"{key!r} is not a legal metadata key on Azure Blob"
+        )

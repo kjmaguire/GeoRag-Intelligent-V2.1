@@ -20,6 +20,7 @@ from azure.storage.blob.aio import BlobServiceClient
 from georag_object_storage.azure_config import AzureBlobConfig
 from georag_object_storage.buckets import Bucket
 from georag_object_storage.exceptions import ObjectNotFoundError, ObjectStorageError
+from georag_object_storage.metadata import validate_metadata
 
 
 def _read_file(file_path: str) -> bytes:
@@ -81,6 +82,10 @@ class AsyncAzureBlobStorage:
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
     ) -> None:
+        # Checked before the try: the generic handler below re-wraps
+        # everything as ObjectStorageError, which would flatten the
+        # InvalidMetadataKeyError and lose the offending key.
+        metadata = validate_metadata(metadata)
         try:
             await self._blob_client(bucket, key).upload_blob(
                 data,
@@ -99,6 +104,10 @@ class AsyncAzureBlobStorage:
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
     ) -> None:
+        # Checked before the try: the generic handler below re-wraps
+        # everything as ObjectStorageError, which would flatten the
+        # InvalidMetadataKeyError and lose the offending key.
+        metadata = validate_metadata(metadata)
         try:
             data = await asyncio.to_thread(_read_file, file_path)
             await self._blob_client(bucket, key).upload_blob(
@@ -177,6 +186,8 @@ class AsyncAzureBlobStorage:
         metadata: dict[str, str] | None = None,
         content_type: str | None = None,
     ) -> None:
+        # Before the try, for the same reason as put_bytes above.
+        metadata = validate_metadata(metadata)
         src_client = self._blob_client(src_bucket, src_key)
         dst_client = self._blob_client(dst_bucket, dst_key)
         try:
@@ -194,7 +205,9 @@ class AsyncAzureBlobStorage:
                     f"src={src_bucket}/{src_key} dst={dst_bucket}/{dst_key}"
                 )
             if metadata is not None or content_type is not None:
-                new_metadata = metadata if metadata is not None else (props.metadata or {})
+                new_metadata = (
+                    metadata if metadata is not None else (props.metadata or {})
+                )
                 new_content_settings = ContentSettings(
                     content_type=content_type or (props.content_settings.content_type if props.content_settings else None)
                 )

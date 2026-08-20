@@ -9,8 +9,14 @@ inline embedding dispatch run unchanged on the derived PDF.
 
 Idempotency: derived key is deterministic
 (``reports/{project_id}/tiff-derived-{sha256:8}-{stem}.pdf``); if the
-object exists with a matching ``x-georag-derived-from-tiff-sha256`` tag
-we skip normalise and trigger ingest_pdf directly.
+object exists with a matching ``derived_from_tiff_sha256`` tag we skip
+normalise and trigger ingest_pdf directly.
+
+Metadata keys here are identifier-safe (letters, digits, underscore).
+Azure Blob requires C# identifier names and answers HTTP 400
+InvalidMetadata for anything containing a hyphen, which is what the
+original keys used; georag_object_storage now enforces that rule on
+every backend so the S3/MinIO path rejects them identically.
 """
 from __future__ import annotations
 
@@ -37,7 +43,9 @@ log = logging.getLogger("georag.hatchet.tiff_normalize")
 
 
 _REPORTS_PREFIX = "reports"
-_TIFF_DERIVED_TAG = "x-georag-derived-from-tiff-sha256"
+# Must be a valid C# identifier to survive Azure Blob (Set Blob Metadata,
+# REST 2009-09-19+). See georag_object_storage.metadata.
+_TIFF_DERIVED_TAG = "derived_from_tiff_sha256"
 
 
 class TiffNormalizeInput(BaseModel):
@@ -212,9 +220,9 @@ async def normalize(
             content_type="application/pdf",
             metadata={
                 _TIFF_DERIVED_TAG: source_sha256,
-                "x-georag-tiff-source-key": input.minio_key,
-                "x-georag-tiff-frames": str(result.page_count),
-                "x-georag-tiff-truncated": "true" if truncated else "false",
+                "tiff_source_key": input.minio_key,
+                "tiff_frames": str(result.page_count),
+                "tiff_truncated": "true" if truncated else "false",
             },
         )
 
@@ -231,10 +239,10 @@ async def normalize(
         head = await asyncio.to_thread(store.head, Bucket.BRONZE, derived_key)
         meta = head.get("metadata") or {}
         try:
-            page_count = int(meta.get("x-georag-tiff-frames", "0"))
+            page_count = int(meta.get("tiff_frames", "0"))
         except (TypeError, ValueError):
             page_count = 0
-        truncated = (meta.get("x-georag-tiff-truncated") == "true")
+        truncated = (meta.get("tiff_truncated") == "true")
 
     # 5. Trigger ingest_pdf against the derived key. We pass through
     # workspace_id / project_id / vendor_profile_id / actor_id /

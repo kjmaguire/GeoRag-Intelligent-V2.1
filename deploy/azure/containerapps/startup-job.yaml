@@ -1,28 +1,38 @@
-# Azure Container Apps Job — morning restore (plan C6). Companion to
-# shutdown-job.yaml — see that file's header for the UTC/DST cron caveat.
-# 0 10 * * * = 6:00am US Eastern during EDT (UTC-4). Switch to `0 11 * * *`
-# when DST ends in November.
+# Azure Container Apps Job - morning restore (plan C6). Companion to
+# shutdown-job.yaml; read that file's header first, it explains which apps
+# the nightly shutdown actually stops (fewer than you would think).
 #
-# Restores each app to min-replicas 1 and starts the Postgres server.
-# Per-app max-replicas values match what each app was created with —
-# hardcoded here rather than read back dynamically, since Container Apps
-# Jobs have no state store between runs; if an app's real max-replicas
-# changes, update this file to match.
+# Restores every app to min-replicas 1 and starts the Postgres server, in
+# dependency order: foundational services first, then the app tier that
+# talks to them, then Laravel. Each tier waits for the previous one rather
+# than firing all eight updates at once, because Laravel booting before
+# fastapi-cc is healthy produces a first-request failure that looks like an
+# outage.
 #
-# Region migration note (2026-07-31): live resource names carry a `-cc`
-# suffix (`georag-pg-cc`, `redis-cc`, `qdrant-cc`) — an artifact of the
-# eastus->canadacentral migration, see the plan's "Region migration to
-# canadacentral" section. Updated below to match the live names. The
-# still-undeployed app tier (fastapi/laravel-*/hatchet*, C8) keeps its
-# plain names since those were never created in eastus and so never
-# collided.
+# Cron is UTC-only (Container Apps Jobs have no timezone support), so this
+# fires at both candidate hours and the guard below exits 0 on the wrong
+# one - 6:00am US-Eastern across DST with no biannual manual edit.
+#
+# max-replicas is set to 1 alongside min-replicas because the shutdown job
+# leaves min at 0 and an `update` that changes nothing creates no new
+# revision. Per-app maxima are hardcoded rather than read back: Container
+# Apps Jobs have no state store between runs. If an app's real max-replicas
+# changes, change it here too.
+#
+# Identity: system-assigned, Contributor on the `georag` resource group.
+#
+# NOT APPLIED BY CD. .github/workflows/cd.yml only touches
+# laravel-migrate-job. Changes here must be applied by hand:
+#   az containerapp job update -g georag -n startup-scheduler-cc --yaml <this file>
 properties:
   configuration:
     triggerType: Schedule
-    replicaTimeout: 300
+    replicaTimeout: 600
     replicaRetryLimit: 1
     scheduleTriggerConfig:
-      cronExpression: "0 10 * * *"
+      # Both candidate hours; the DST guard drops whichever is not 06:00
+      # US-Eastern.
+      cronExpression: "0 10,11 * * *"
       parallelism: 1
       replicaCompletionCount: 1
   template:
@@ -33,13 +43,61 @@ properties:
           - /bin/bash
           - -c
         args:
-          - >-
-            set -euo pipefail;
-            az login --identity;
-            az postgres flexible-server start -g georag -n georag-pg-cc || echo "skip postgres (not deployed yet)";
-            for app in redis-cc qdrant-cc hatchet hatchet-worker fastapi laravel-octane laravel-horizon laravel-reverb; do
-              az containerapp update -g georag -n "$app" --min-replicas 1 --max-replicas 1 || echo "skip $app (not deployed yet)";
-            done;
+          - |
+            YEAR=$(date -u +%Y); fd=$(date -u -d "${YEAR}-03-01" +%u); add=$(( (7 - fd) % 7 )); DST_START=$(date -u -d "${YEAR}-03-01 +$((add+7)) days" +%s); fdn=$(date -u -d "${YEAR}-11-01" +%u); addn=$(( (7 - fdn) % 7 )); DST_END=$(date -u -d "${YEAR}-11-01 +${addn} days" +%s); NOW=$(date -u +%s); if [ "$NOW" -ge "$DST_START" ] && [ "$NOW" -lt "$DST_END" ]; then OFF=-4; else OFF=-5; fi; LOCAL_HOUR=$(date -u -d "@$((NOW + OFF*3600))" +%H); if [ "$LOCAL_HOUR" != "06" ]; then echo "DST-safety double-fire: US-Eastern local hour is ${LOCAL_HOUR} (offset ${OFF}h), not 06 -- skipping"; exit 0; fi
+            set -euo pipefail
+            az login --identity
+            az postgres flexible-server start -g georag -n georag-pg-cc || echo "skip postgres"
+
+            wait_running() {
+              app="$1"; timeout="${2:-90}"; waited=0
+              while [ "$waited" -lt "$timeout" ]; do
+                state=$(az containerapp revision list -g georag -n "$app" --query "[?properties.active]|[0].properties.runningState" -o tsv 2>/dev/null || echo "")
+                if [ "$state" = "RunningAtMaxScale" ]; then
+                  echo "$app: running ($waited s)"
+                  return 0
+                fi
+                sleep 5; waited=$((waited + 5))
+              done
+              echo "$app: did not reach RunningAtMaxScale within ${timeout}s (state=$state) -- continuing anyway"
+            }
+
+            wait_healthy() {
+              app="$1"; timeout="${2:-90}"; waited=0
+              while [ "$waited" -lt "$timeout" ]; do
+                health=$(az containerapp revision list -g georag -n "$app" --query "[?properties.active]|[0].properties.healthState" -o tsv 2>/dev/null || echo "")
+                if [ "$health" = "Healthy" ]; then
+                  echo "$app: healthy ($waited s)"
+                  return 0
+                fi
+                sleep 5; waited=$((waited + 5))
+              done
+              echo "$app: did not report Healthy within ${timeout}s (health=$health) -- continuing anyway"
+            }
+
+            echo "--- tier 1: foundational services (redis, qdrant, hatchet engine) ---"
+            for app in redis-cc qdrant-cc hatchet-cc; do
+              az containerapp update -g georag -n "$app" --min-replicas 1 --max-replicas 1 || echo "skip $app"
+            done
+            for app in redis-cc qdrant-cc hatchet-cc; do
+              wait_running "$app" 90
+            done
+
+            echo "--- tier 2: app services that depend on tier 1 ---"
+            for app in hatchet-worker-cc fastapi-cc; do
+              az containerapp update -g georag -n "$app" --min-replicas 1 --max-replicas 1 || echo "skip $app"
+            done
+            wait_running hatchet-worker-cc 90
+            wait_healthy fastapi-cc 90
+
+            echo "--- tier 3: Laravel tier (depends on fastapi-cc for chat/query bridge) ---"
+            for app in laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
+              az containerapp update -g georag -n "$app" --min-replicas 1 --max-replicas 1 || echo "skip $app"
+            done
+            wait_healthy laravel-octane-cc 90
+            wait_running laravel-horizon-cc 90
+            wait_running laravel-reverb-cc 90
+
             echo "startup sweep complete"
         resources:
           cpu: 0.5
