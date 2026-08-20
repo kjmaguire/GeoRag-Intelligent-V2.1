@@ -25,6 +25,18 @@ The rule: start with a letter or underscore, then letters, digits and
 underscores. ASCII only. Azure also treats names case-insensitively and
 returns them lowercased, so ``Report_ID`` and ``report_id`` are the same
 key; callers should write lowercase and not depend on case surviving.
+
+One caveat on the underscore, since it will look wrong from the S3 side.
+An HTTP intermediary that follows the CGI convention folds ``-`` to ``_``
+when mapping header names into its environment, which makes
+``x-amz-meta-a_b`` and ``x-amz-meta-a-b`` the same variable; werkzeug drops
+the ambiguous one, and nginx refuses underscore headers by default for the
+same reason. Real S3, MinIO and Azure Blob all handle them, and ingest_pdf
+has been writing ``report_id`` / ``project_id`` / ``page`` / ``sha256``
+through this interface against Azure for months — but if an S3-compatible
+endpoint ever sits behind such a proxy, underscore keys are the thing that
+will go quietly missing. Test harnesses hit this first: see the note in
+tests/test_async_client.py.
 """
 
 from __future__ import annotations
