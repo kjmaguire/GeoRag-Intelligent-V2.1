@@ -228,6 +228,83 @@ async def query_features(
     return list(payload.get("features") or [])
 
 
+async def iter_all_features(
+    source: PublicGeoSource,
+    *,
+    page_size: int = 1000,
+    max_features: int | None = None,
+    timeout_s: float = 60.0,
+):
+    """Yield every feature in a layer, paging until exhausted.
+
+    This is the BULK path, used by the sync job — distinct from
+    ``query_features``, which is deliberately capped for interactive use.
+
+    Paging uses ``resultOffset``/``resultRecordCount``. Two failure modes are
+    guarded because both are silent otherwise:
+
+      - Services cap ``resultRecordCount`` server-side (commonly 1000-2000)
+        and simply return fewer rows than asked, so the loop advances by what
+        it actually received rather than by ``page_size``.
+      - A service that ignores ``resultOffset`` entirely would return page 1
+        forever. Tracking seen OBJECTIDs turns that into a clean stop with a
+        warning instead of an infinite loop writing duplicates.
+
+    A longer default timeout than the interactive path: bulk pages are large
+    and this runs on a schedule, not in a user's request.
+    """
+    offset = 0
+    seen: set[str] = set()
+    yielded = 0
+
+    while True:
+        params: dict[str, Any] = {
+            "where": "1=1",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "outSR": 4326,
+            "f": "geojson",
+            "resultOffset": offset,
+            "resultRecordCount": int(page_size),
+        }
+        payload = await _get_json(
+            _query_url(source), params, timeout_s=timeout_s, source_id=source.source_id
+        )
+        if not payload:
+            return
+
+        features = list(payload.get("features") or [])
+        if not features:
+            return
+
+        fresh = 0
+        for f in features:
+            oid = object_id_of(f)
+            key = oid or f"{offset}:{fresh}"
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh += 1
+            yielded += 1
+            yield f
+            if max_features is not None and yielded >= max_features:
+                return
+
+        if fresh == 0:
+            logger.warning(
+                "public_geo: %s returned only already-seen features at offset %d "
+                "— the service is likely ignoring resultOffset; stopping",
+                source.source_id, offset,
+            )
+            return
+
+        # Advance by what the service actually gave us, not what we asked for.
+        offset += len(features)
+
+        if payload.get("properties", {}).get("exceededTransferLimit") is False:
+            return
+
+
 async def fetch_feature(
     source: PublicGeoSource,
     object_id: str | int,
