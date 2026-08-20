@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from app.services.public_geo.registry import PublicGeoSource
@@ -131,7 +132,8 @@ async def _get_json(
         try:
             resp = httpx.get(url, params=params, timeout=timeout_s)
             resp.raise_for_status()
-            return resp.json()
+            body: dict[str, Any] = resp.json()
+            return body
         except Exception as exc:  # noqa: BLE001 — degrade, never propagate
             logger.warning("public_geo: %s request failed: %s", source_id, exc)
             return None
@@ -236,7 +238,7 @@ async def iter_all_features(
     page_size: int = 1000,
     max_features: int | None = None,
     timeout_s: float = 60.0,
-):
+) -> AsyncIterator[dict[str, Any]]:
     """Yield every feature in a layer, paging until exhausted.
 
     This is the BULK path, used by the sync job — distinct from

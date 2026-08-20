@@ -52,6 +52,7 @@ from __future__ import annotations
 import logging
 import time as _t
 from datetime import UTC, datetime
+from typing import Any
 
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
@@ -91,7 +92,7 @@ class PublicGeoSyncOut(BaseModel):
     upserted: int
     errors: int
     skipped: list[str]
-    per_source: list[dict]
+    per_source: list[dict[str, Any]]
     duration_ms: int
     synced_at: str  # ISO-8601 UTC
 

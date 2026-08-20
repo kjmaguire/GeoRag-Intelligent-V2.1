@@ -48,8 +48,9 @@ use Illuminate\Support\Facades\DB;
 return new class extends Migration
 {
     /**
+     * Rows of [jurisdiction_code, canonical_type, source_value, canonical_status].
+     *
      * @var list<array{0: string, 1: string, 2: string, 3: string}>
-     *      [jurisdiction_code, canonical_type, source_value, canonical_status]
      */
     private const ALIASES = [
         // ── CA-SK mines (Mineral_Exploration/1) ──────────────────────────
