@@ -3,6 +3,15 @@ import { Head } from '@inertiajs/react';
 import JSZip from 'jszip';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card } from '@/Components/Foundry/primitives';
+import {
+    CATEGORY_EXTS,
+    CATEGORY_LABEL,
+    RETIRED_CATEGORIES,
+    UNSUPPORTED_EXTS,
+    categoryForExtension,
+    extensionOf,
+    type Category,
+} from '@/lib/uploadCategories';
 
 const STEPS = ['Identity', 'Jurisdiction', 'Corpus', 'Review'] as const;
 type Step = typeof STEPS[number];
@@ -50,56 +59,12 @@ const STATES_BY_COUNTRY: Record<string, Array<{ code: string; name: string }>> =
 
 const COMMODITIES = ['Uranium', 'Gold', 'Copper', 'Nickel', 'Lithium', 'Zinc', 'Silver', 'Lead', 'REE'];
 
-// Backend categories accepted by POST /api/v1/projects/{id}/upload.
-// Source of truth: App\Http\Controllers\Api\V1\UploadController::CATEGORIES.
-type Category =
-    | 'collars' | 'surveys' | 'lithology' | 'samples'
-    | 'reports' | 'well_logs' | 'spatial' | 'excel'
-    | 'seismic' | 'xyz';
-
-const CATEGORY_LABEL: Record<Category, string> = {
-    collars:   'Drill collars (CSV)',
-    surveys:   'Down-hole surveys (CSV)',
-    lithology: 'Lithology logs (CSV)',
-    samples:   'Assay samples (CSV)',
-    reports:   'NI 43-101 / reports (PDF)',
-    well_logs: 'Well logs (LAS)',
-    spatial:   'Spatial / GIS (GeoJSON, SHP, KMZ, ZIP)',
-    excel:     'Excel workbooks (XLSX)',
-    seismic:   'Seismic (SEG-Y)',
-    xyz:       'XYZ grids / point data',
-};
-
-const CATEGORY_EXTS: Record<Category, string[]> = {
-    collars: ['csv'],
-    surveys: ['csv'],
-    lithology: ['csv'],
-    samples: ['csv'],
-    reports: ['pdf', 'tif', 'tiff'],
-    well_logs: ['las'],
-    spatial: ['geojson', 'shp', 'zip', 'kmz', 'kml'], // kmz/kml accepted at backend? falls under spatial; backend allows geojson/shp/zip.
-    excel: ['xlsx', 'xls'],
-    seismic: ['sgy', 'segy'],
-    xyz: ['xyz', 'dat', 'txt'],
-};
-
-// Extensions the backend's UploadController will outright reject. TIFF scans
-// route through `reports` → tiff_normalize per ADR-0005 and are supported.
-const UNSUPPORTED_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp']);
+// Categories, labels and extensions live in one shared module so this
+// picker, DataImportWizard and UploadController cannot drift apart again —
+// they had, in both directions. See resources/js/lib/uploadCategories.ts.
 
 const MAX_FILE_BYTES = 6 * 1024 * 1024 * 1024; // 6 GB — matches UploadController + Octane limits (ZIP archive support)
 
-function extOf(name: string): string {
-    return name.split('.').pop()?.toLowerCase() ?? '';
-}
-
-function autoCategory(ext: string): Category | null {
-    if (UNSUPPORTED_EXTS.has(ext)) return null;
-    for (const [cat, exts] of Object.entries(CATEGORY_EXTS) as [Category, string[]][]) {
-        if (exts.includes(ext)) return cat;
-    }
-    return null;
-}
 
 function humanSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -164,11 +129,11 @@ export default function FoundryNewProject() {
         const arr: QueuedFile[] = [];
         const skippedNames: string[] = [];
         for (const f of Array.from(files)) {
-            const ext = extOf(f.name);
+            const ext = extensionOf(f.name);
             // Drop files we can't categorise (unknown extension, raster images,
             // or 0-byte folder shells dragged in instead of using Select Folder).
             // Keep ZIPs — they're handled below with their own error message.
-            if (ext !== 'zip' && (autoCategory(ext) === null || f.size === 0)) {
+            if (ext !== 'zip' && (categoryForExtension(ext) === null || f.size === 0)) {
                 skippedNames.push(f.name);
                 continue;
             }
@@ -193,7 +158,7 @@ export default function FoundryNewProject() {
                 name: f.name,
                 size: f.size,
                 ext,
-                category: autoCategory(ext),
+                category: categoryForExtension(ext),
                 status: 'queued',
             });
         }
@@ -613,15 +578,19 @@ export default function FoundryNewProject() {
                                                                 style={inputStyle}
                                                             >
                                                                 {(Object.keys(CATEGORY_LABEL) as Category[])
+                                                                    .filter((cat) => !RETIRED_CATEGORIES.has(cat))
                                                                     .filter((cat) => CATEGORY_EXTS[cat].includes(q.ext))
                                                                     .map((cat) => (
                                                                         <option key={cat} value={cat}>{CATEGORY_LABEL[cat]}</option>
                                                                     ))}
-                                                                {/* If no category exactly matches the ext, still allow forcing one */}
+                                                                {/* If no category exactly matches the ext, still allow forcing one --
+                                                                    but never a retired one, which the backend would 422. */}
                                                                 {(Object.keys(CATEGORY_LABEL) as Category[]).every((cat) => !CATEGORY_EXTS[cat].includes(q.ext)) &&
-                                                                    (Object.keys(CATEGORY_LABEL) as Category[]).map((cat) => (
-                                                                        <option key={cat} value={cat}>{CATEGORY_LABEL[cat]}</option>
-                                                                    ))
+                                                                    (Object.keys(CATEGORY_LABEL) as Category[])
+                                                                        .filter((cat) => !RETIRED_CATEGORIES.has(cat))
+                                                                        .map((cat) => (
+                                                                            <option key={cat} value={cat}>{CATEGORY_LABEL[cat]}</option>
+                                                                        ))
                                                                 }
                                                             </select>
                                                         )}
