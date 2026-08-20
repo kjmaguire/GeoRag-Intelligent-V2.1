@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
+import { acceptedExtensions, categoryForExtension } from '@/lib/uploadCategories';
 
 /**
  * Foundry / DataImportWizard
@@ -163,22 +164,22 @@ export default function FoundryDataImportWizard() {
     }
 
     async function uploadOne(projectId: string, qf: QueuedFile): Promise<UploadOutcome> {
-        // UploadController requires `category` (in:reports,archive) — omitting
-        // it 422'd EVERY wizard upload while the create-project flow (which
-        // sends it) worked, so the gap went unnoticed. Derive from extension;
-        // anything the server would reject is refused here with a clear
-        // message instead of a validator error.
+        // UploadController requires `category` — omitting it 422'd EVERY
+        // wizard upload while the create-project flow (which sends it)
+        // worked, so the gap went unnoticed. Derived from the extension via
+        // the shared map, which is what keeps this screen and the picker in
+        // NewProject agreeing with the backend. This wizard previously
+        // hardcoded PDF/TIFF/ZIP and refused drill and GIS files client-side
+        // even after the API began accepting them.
         const ext = fileExtension(qf.file.name);
-        const category = ['pdf', 'tif', 'tiff'].includes(ext)
-            ? 'reports'
-            : ext === 'zip'
-              ? 'archive'
-              : null;
+        const category = categoryForExtension(ext);
         if (!category) {
             return {
                 id: qf.id,
                 ok: false,
-                message: `Unsupported type .${ext} — accepted: PDF, TIF/TIFF, ZIP`,
+                message:
+                    `Unsupported type .${ext} — accepted: ` +
+                    acceptedExtensions().join(', '),
             };
         }
         const fd = new FormData();
