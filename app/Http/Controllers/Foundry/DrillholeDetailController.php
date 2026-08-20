@@ -83,19 +83,15 @@ class DrillholeDetailController extends Controller
                     ->get(),
             );
 
-            // JSONB containment via the collars_projected[] array — the
-            // canonical shape per the 2026-07-02 cross-section decision
-            // (collars_projected is itself the array of projected collars,
-            // there is no wrapping panel_payload/holes envelope). Index-
-            // friendly under a GIN(collars_projected jsonb_path_ops) once
-            // large enough to matter. Beats
-            // `collars_projected::text ILIKE '%uuid%'` which forces a full
+            // JSONB containment via the holes[] array — index-friendly under a
+            // GIN(panel_payload jsonb_path_ops) once large enough to matter.
+            // Beats `panel_payload::text ILIKE '%uuid%'` which forces a full
             // sequential scan + stringification on every row.
             $crossSections = $this->safeQuery(
                 fn () => DB::table('gold.cross_section_panels')
                     ->where('project_id', $project->project_id)
                     ->whereRaw(
-                        'collars_projected @> ?::jsonb',
+                        "panel_payload -> 'holes' @> ?::jsonb",
                         [json_encode([['collar_id' => $collarId]])],
                     )
                     ->orderBy('section_name')
