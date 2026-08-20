@@ -79,7 +79,6 @@ class UploadRetiredCategoryTest extends TestCase
         // test below rather than here. What remains is what is still
         // genuinely consumer-less.
         return [
-            'well logs' => ['well_logs', 'hole.las'],
             'seismic volumes' => ['seismic', 'line.sgy'],
             'xyz grids' => ['xyz', 'grid.xyz'],
             'geophysics summaries' => ['geophysics', 'survey.json'],
@@ -149,7 +148,7 @@ class UploadRetiredCategoryTest extends TestCase
         // consumer returns 201, writes the object, and is never processed —
         // the exact failure the retired list was created to stop.
         foreach (['reports', 'archive', 'collars', 'surveys', 'lithology',
-            'samples', 'excel', 'spatial'] as $expected) {
+            'samples', 'excel', 'spatial', 'well_logs'] as $expected) {
             $this->assertArrayHasKey(
                 $expected, $live, "'{$expected}' should be a live category",
             );
@@ -162,10 +161,11 @@ class UploadRetiredCategoryTest extends TestCase
             'A category cannot be both live and retired',
         );
 
-        // Still genuinely consumer-less: parsers exist for LAS/SEGY/XYZ but
+        // Still genuinely consumer-less: parsers exist for SEGY and XYZ but
         // no workflow calls them yet.
-        $this->assertArrayHasKey('well_logs', $retired);
+        $this->assertArrayHasKey('seismic', $retired);
         $this->assertArrayNotHasKey('collars', $retired);
+        $this->assertArrayNotHasKey('well_logs', $retired);
     }
 
     public function test_restored_geology_categories_accept_their_formats(): void
@@ -182,6 +182,7 @@ class UploadRetiredCategoryTest extends TestCase
             ['excel', 'book.xlsx'],
             ['spatial', 'claims.geojson'],
             ['spatial', 'project.qgz'],
+            ['well_logs', 'EL-001.las'],
         ] as [$category, $filename]) {
             $response = $this->postJson($this->uploadUrl(), [
                 'file' => UploadedFile::fake()->create($filename, 4),

@@ -29,6 +29,10 @@ from app.hatchet_workflows.ingest_tabular import (
     IngestTabularInput,
     ingest_tabular,
 )
+from app.hatchet_workflows.ingest_well_logs import (
+    IngestWellLogsInput,
+    ingest_well_logs,
+)
 from app.hatchet_workflows.ingest_zip_archive import (
     IngestZipArchiveInput,
     ingest_zip_archive,
@@ -396,6 +400,41 @@ async def trigger_ingest_tabular(
 
     ref = await ingest_tabular.aio_run_no_wait(payload)
     return TriggerIngestTabularResponse(
+        workflow_run_id=ref.workflow_run_id,
+        run_id=payload.run_id,
+    )
+
+
+class TriggerIngestWellLogsResponse(BaseModel):
+    workflow_run_id: str
+    run_id: str | None
+
+
+@router.post(
+    "/ingest_well_logs/trigger",
+    response_model=TriggerIngestWellLogsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_check_service_key)],
+)
+async def trigger_ingest_well_logs(
+    payload: IngestWellLogsInput,
+    request: Request,
+) -> TriggerIngestWellLogsResponse:
+    """Trigger ingest_well_logs — LAS downhole curves.
+
+    Writes silver.well_log_curves, one row per curve with depth/value arrays.
+    Curves attach to a collar; a LAS file whose hole has no collar completes
+    with `orphaned` set rather than failing.
+    """
+    log.info(
+        "trigger_ingest_well_logs: workspace_id=%s project_id=%s key=%s hole_id=%s",
+        payload.workspace_id, payload.project_id, payload.minio_key,
+        payload.hole_id,
+    )
+    await _guard_active_project(request, payload)
+
+    ref = await ingest_well_logs.aio_run_no_wait(payload)
+    return TriggerIngestWellLogsResponse(
         workflow_run_id=ref.workflow_run_id,
         run_id=payload.run_id,
     )
