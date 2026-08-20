@@ -86,11 +86,36 @@ jobs:
           -- Mirrors Azure: no superusers anywhere, and the role that applies
           -- the raw bootstrap is distinct from the one running migrations.
           CREATE ROLE bootstrap  NOSUPERUSER LOGIN PASSWORD 'bootstrap_pw';
-          CREATE ROLE georag_ci  NOSUPERUSER LOGIN PASSWORD 'georag_ci_pw' CREATEDB;
+          -- CREATEROLE because the chain provisions its own roles --
+          -- 2026_04_09_173750 issues `CREATE ROLE georag_app NOLOGIN` and
+          -- three siblings. Production's migration role can plainly do this
+          -- (those roles exist on Azure), so withholding it here would make
+          -- the gate fail on something production allows, which is the
+          -- opposite of the fidelity this job is for.
+          --
+          -- Still NOSUPERUSER: superuser is what would defeat the whole gate,
+          -- because superusers bypass the ownership checks it exists to
+          -- reproduce.
+          CREATE ROLE georag_ci  NOSUPERUSER LOGIN PASSWORD 'georag_ci_pw' CREATEDB CREATEROLE;
           CREATE ROLE georag_app NOSUPERUSER LOGIN PASSWORD 'georag_app_pw';
           -- Deliberately NO membership between bootstrap and georag_ci: that
           -- absence is the whole point of this job.
           GRANT ALL ON DATABASE georag_privtest TO bootstrap, georag_ci;
+          -- PostgreSQL 15 revoked the implicit CREATE that every role used
+          -- to hold on schema `public`. Without this the job died on its
+          -- FIRST statement --
+          --   create table "migrations" ... -> permission denied for schema public
+          -- so the gate has never once run a migration since it was added.
+          -- It is advisory, so it failed quietly and looked like coverage
+          -- while providing none: exactly the failure mode it exists to
+          -- catch elsewhere.
+          --
+          -- GRANT ON SCHEMA, deliberately not ALTER DEFAULT PRIVILEGES or a
+          -- role membership: the point of this job is that georag_ci can
+          -- create its own objects but does NOT inherit rights over the ones
+          -- `bootstrap` already owns. Widening it further would dissolve the
+          -- ownership split the gate is built to reproduce.
+          GRANT ALL ON SCHEMA public TO bootstrap, georag_ci;
           SQL
 
       - name: Apply database/raw as the bootstrap role
@@ -344,6 +369,12 @@ jobs:
       # Storage-abstraction plan PR1 — new shared package, own lint target.
       - name: Lint georag_object_storage
         run: ruff check src/georag_object_storage/
+
+      # Geology format parsers — shared by the Hatchet ingestion workflows.
+      # Own lint target for the same reason as georag_object_storage: it is a
+      # sibling package, so `ruff check src/fastapi/` never reaches it.
+      - name: Lint georag_geoparsers
+        run: ruff check src/georag_geoparsers/
 
       # Doc-phase 125 — incident-driven gate. Catches the doc-phase 122
       # failure mode (app/main.py imports `sentry_sdk` but pyproject's

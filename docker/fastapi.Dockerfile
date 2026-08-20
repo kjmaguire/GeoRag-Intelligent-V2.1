@@ -131,6 +131,10 @@ WORKDIR /app
 # in the host checkout.
 COPY georag_object_storage /georag_object_storage
 
+# Geology format parsers (CSV/XLSX/spatial/raster/LAS/XYZ). Same reachability
+# and path-resolution story as georag_object_storage above.
+COPY georag_geoparsers /georag_geoparsers
+
 # Copy dependency manifest first to maximise Docker layer caching.
 # The heavy "install all deps" layer only re-runs when pyproject.toml changes.
 COPY fastapi/pyproject.toml ./
@@ -146,6 +150,12 @@ COPY fastapi/uv.lock* ./
 # path and the pip fallback below skip it.
 RUN uv pip install --system --no-cache /georag_object_storage \
     || pip install --no-cache-dir /georag_object_storage
+
+# Same pre-install reasoning: `uv pip install -r pyproject.toml` ignores
+# [tool.uv.sources], so a bare `georag-geoparsers` in project.dependencies
+# would be resolved against PyPI (where it does not exist) and fail the build.
+RUN uv pip install --system --no-cache /georag_geoparsers \
+    || pip install --no-cache-dir /georag_geoparsers
 
 # Install all project dependencies into the system Python (no virtualenv —
 # simpler single-env model inside containers). Falls back to plain pip if

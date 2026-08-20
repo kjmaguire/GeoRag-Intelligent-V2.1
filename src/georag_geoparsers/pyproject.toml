@@ -1,0 +1,80 @@
+[project]
+name = "georag-geoparsers"
+version = "0.1.0"
+description = "GeoRAG Intelligence — geology file-format parsers (CSV, XLSX, spatial vector, raster, LAS, XYZ) shared by the Hatchet ingestion workflows"
+requires-python = ">=3.13"
+dependencies = [
+    # Tabular parsing. Eight of these modules are written against polars'
+    # API; rewriting them for pandas to save a dependency would be a large,
+    # risky edit to the most heavily audited code in the ingestion path.
+    "polars>=1.0",
+
+    # Spatial vector IO — SHP, GeoJSON, GPKG, and the layers inside a QGIS
+    # project. pyogrio is the GDAL-backed engine geopandas 1.x defaults to;
+    # naming it explicitly keeps the read path from silently falling back to
+    # fiona, which is not installed.
+    "geopandas>=1.0",
+    "pyogrio>=0.10",
+    "pyproj>=3.6",
+    "shapely>=2.0",
+
+    # Raster (GeoTIFF) — CRS, transform and band metadata.
+    "rasterio>=1.4",
+
+    # Well logs.
+    "lasio>=0.31",
+
+    # XLSX. polars reads xlsx THROUGH openpyxl, so it is a real runtime
+    # requirement rather than an optional accelerator.
+    "openpyxl>=3.1,<4.0",
+    # Legacy .xls (BIFF OLE). xlrd >= 2 dropped .xls support, hence the pin —
+    # and .xls is exactly what a decades-old drill archive arrives as.
+    "xlrd>=1.2,<2.0",
+
+    # Hole-ID collision detection. csv_collar calls
+    # _hole_id.suggest_collisions on EVERY parse to catch "EL-1" vs "EL-01"
+    # naming the same hole, so this is on the main path, not an extra.
+    "rapidfuzz>=3.0",
+
+    # DXF block extraction (spatial_parser). CAD files are a normal delivery
+    # format for claim boundaries and grid lines.
+    "ezdxf>=1.1",
+
+    # Encoding detection for CSVs. Survey software emits Latin-1 and cp1252
+    # far more often than UTF-8.
+    "charset-normalizer>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["georag_geoparsers"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+# Matches src/fastapi's selection so a file moving between the two does not
+# change its lint verdict.
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501", "B008", "SIM108",
+    # These all fire ONLY on parser modules copied verbatim from
+    # src/dagster. Keeping the two byte-comparable is worth more than the
+    # idioms while the duplication exists — restyling here makes every future
+    # diff against the origin noisy, and the origin is frozen. Revisit when
+    # the two collapse into one copy.
+    "SIM105",  # try/except/pass -> contextlib.suppress  (spatial_parser)
+    "SIM102",  # nested if -> single if                  (csv_sample)
+    "B007",    # unused loop variable   (_unit_ambiguity, csv_collar)
+    "UP015",   # redundant open() mode  (xyz_parser)
+]

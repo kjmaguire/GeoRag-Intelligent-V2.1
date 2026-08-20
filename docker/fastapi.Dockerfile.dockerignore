@@ -4,8 +4,13 @@
 # must be complete — it cannot rely on src/.dockerignore as a base).
 #
 # Context root is ./src (see docker-compose.yml + .github/workflows/ci.yml).
-# The fastapi image needs only fastapi/ + georag_object_storage/; the
-# sibling dagster/ tree is dead weight in this build's context.
+# The fastapi image needs fastapi/, georag_object_storage/ and
+# georag_geoparsers/; the sibling dagster/ tree is dead weight in this
+# build's context.
+#
+# That exclusion is also why georag_geoparsers exists as its own package
+# rather than importing the parsers from dagster/georag_dagster/parsers: this
+# build cannot see that tree at all, so there was nothing to import.
 
 dagster/
 
