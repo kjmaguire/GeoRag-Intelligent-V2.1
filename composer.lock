@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "251060a0cd70f35c1b0f50b70eafc102",
+    "content-hash": "5db576996f79bc7bb1b98b3636de9533",
     "packages": [
         {
             "name": "aws/aws-crt-php",
@@ -3003,20 +3003,20 @@
         },
         {
             "name": "league/flysystem-azure-blob-storage",
-            "version": "3.0.5",
+            "version": "3.31.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/thephpleague/flysystem-azure-blob-storage.git",
-                "reference": "a005aae0ec156edc1cabeb38a2209608b16b6a0d"
+                "reference": "1d1cf31cab62bd85cfbab91687d35e668423401f"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/thephpleague/flysystem-azure-blob-storage/zipball/a005aae0ec156edc1cabeb38a2209608b16b6a0d",
-                "reference": "a005aae0ec156edc1cabeb38a2209608b16b6a0d",
+                "url": "https://api.github.com/repos/thephpleague/flysystem-azure-blob-storage/zipball/1d1cf31cab62bd85cfbab91687d35e668423401f",
+                "reference": "1d1cf31cab62bd85cfbab91687d35e668423401f",
                 "shasum": ""
             },
             "require": {
-                "league/flysystem": "^2.0.0 || ^3.0.0",
+                "league/flysystem": "^3.10.0",
                 "microsoft/azure-storage-blob": "^1.1",
                 "php": "^8.0.2"
             },
@@ -3037,11 +3037,10 @@
                 }
             ],
             "support": {
-                "issues": "https://github.com/thephpleague/flysystem-azure-blob-storage/issues",
-                "source": "https://github.com/thephpleague/flysystem-azure-blob-storage/tree/3.0.5"
+                "source": "https://github.com/thephpleague/flysystem-azure-blob-storage/tree/3.31.0"
             },
             "abandoned": "azure-oss/storage-blob-flysystem",
-            "time": "2022-01-17T21:17:13+00:00"
+            "time": "2026-01-23T15:30:45+00:00"
         },
         {
             "name": "league/flysystem-local",
