@@ -186,6 +186,28 @@ jobs:
           --health-timeout=5s
           --health-retries=3
 
+      # 2026-08-20: added because IngestionProgressBroadcastControllerTest
+      # exists to verify the Redis-backed side effects of a terminal
+      # ingestion — the data_version bump (SETNX-guarded) and the
+      # MV-refresh debounce stamp. With no Redis service those tests were
+      # asserting against a connection error, not against behaviour.
+      #
+      # They were previously invisible: the whole Postgres suite was failing
+      # on an unrelated 27-byte APP_KEY, so nobody read the results. With
+      # that fixed, the controller was hardened to degrade rather than 500
+      # when Redis is gone — and this service is what lets the HAPPY path be
+      # tested too, instead of only the degraded one.
+      redis:
+        # Digest captured 2026-08-20 from `docker pull redis:8-alpine`,
+        # matching how the postgres service above is pinned.
+        image: redis:8-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - uses: actions/checkout@v7
 
@@ -283,6 +305,15 @@ jobs:
       # ~30 files; serial execution here is a non-issue on time.
       - name: Alias postgres service as `postgresql` for phpunit.pgsql.xml
         run: echo "127.0.0.1 postgresql" | sudo tee -a /etc/hosts
+
+      # Same trick for Redis. .env.example sets REDIS_HOST=redis (the
+      # docker-compose service name) and phpunit.pgsql.xml does not override
+      # it, so the suite resolves `redis` — which on a runner is nothing.
+      # Aliasing is preferable to overriding REDIS_HOST in phpunit.pgsql.xml,
+      # which would break the documented local-dev workflow the same way
+      # editing DB_HOST would.
+      - name: Alias redis service as `redis`
+        run: echo "127.0.0.1 redis" | sudo tee -a /etc/hosts
 
       - name: Run PHPUnit (Postgres-gated suite)
         run: php artisan test -c phpunit.pgsql.xml
