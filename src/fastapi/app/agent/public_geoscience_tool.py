@@ -1,118 +1,179 @@
-"""Public Geoscience agent tool — LIVE queries against provincial surveys.
+"""Public Geoscience agent tool — attribute + spatial search over public_geo.*.
 
     search_public_geoscience(
         ctx,
         jurisdiction_codes,   # e.g. ["CA-SK"]
         canonical_types,      # subset of the seven canonical types
-        commodities,          # canonical commodity codes — ["Au", "U"]
+        commodities,          # commodity names or codes — ["Au", "uranium"]
         bbox,                 # [minLon, minLat, maxLon, maxLat] or None
         text_query,           # free-text name filter
         limit_per_type,
     ) -> PublicGeoscienceSearchResult
 
-What changed, and why it matters when reading results
------------------------------------------------------
-This used to search a stored, embedded copy: six Qdrant collections holding
-182,826 points, fed by a Dagster pipeline dormant since 2026-07-28. Public
-geoscience is a look-through onto what surveys already publish, so the copy
-was the wrong shape — it went stale, it never reached Azure at all, and its
-384-dim vectors could not be queried by a 1024-dim reader
-(``HTTP 400: expected dim: 384, got 1024``). It is gone.
+Where the data comes from
+-------------------------
+``public_geo.*``, kept fresh by the ``public_geo_sync`` workflow (03:30 UTC
+Sundays), which pulls each survey's live ArcGIS service and upserts it. This
+tool reads that mirror rather than calling the surveys itself, for two
+reasons:
 
-Queries now hit the survey's own ArcGIS REST service and return what it is
-serving at that moment. Three consequences worth knowing:
+1. **Latency.** Querying live meant one HTTP request per feed — twenty-eight
+   of them, fanned out concurrently but still bounded only by a 20-second
+   ceiling. That is not a budget a chat turn can afford. The same search over
+   the synced tables is one indexed query.
+2. **Agreement.** The map layers and all eight citation resolvers read
+   ``public_geo.*``. A chat answer sourced from somewhere else could cite a
+   feature the map cannot draw and the citation panel cannot resolve.
 
-1. **No semantic ranking.** You cannot rank by meaning over data you never
-   embedded. ``relevance_score`` is therefore 0.0 on every record — the field
-   is kept so the response assembler's shape is unchanged, but it carries no
-   information and must not be presented as confidence. Ordering is whatever
-   the survey returns.
-2. **``text_query`` is a name filter, not a search.** It becomes a
-   case-insensitive LIKE against that layer's name-bearing columns. "uranium
-   deposits near Key Lake" will not work; "Key Lake" will.
-3. **Spatial filtering got better.** ``bbox`` is now an indexed envelope query
-   executed by the survey's own database, instead of a post-filter over
-   whatever the vector search happened to return.
+The cost is staleness bounded by the sync cadence, which every record reports
+honestly in ``staleness_seconds`` (computed from ``last_seen_at``) rather than
+implying it is current.
 
-Latency is a network call per feed rather than a local index hit. Feeds are
-queried concurrently and every failure degrades to "no results from that
-feed", so one unreachable survey never fails an answer.
+What this is NOT
+----------------
+**Semantic search.** The previous implementation ranked against six Qdrant
+collections holding 182,826 embedded points, fed by a Dagster pipeline dormant
+since 2026-07-28. That corpus never reached Azure and its 384-dim vectors
+could not be read by a 1024-dim reader (``HTTP 400: expected dim: 384, got
+1024``). It is gone and is not being rebuilt: embedding a copy of someone
+else's structured feature service buys ranking-by-meaning over records that
+are already precisely filterable by commodity, status, name and geometry.
+
+Two consequences for anyone reading results:
+
+* ``relevance_score`` is 0.0 on every record. The field is kept so the
+  response assembler's shape is unchanged, but it carries no information and
+  must never be rendered as confidence.
+* ``text_query`` is a name filter, not a query. "uranium deposits near Key
+  Lake" will not work; "Key Lake" will, and the rest of that sentence belongs
+  in the ``commodities`` and ``bbox`` arguments.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from app.agent.tools import _metered  # P1 #16 — per-tool latency metric
-from app.services.public_geo import arcgis
 from app.services.public_geo.registry import (
     CANONICAL_TYPES,
-    PublicGeoSource,
     jurisdiction_for,
-    sources_for,
+    source_by_id,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Per-type field mappings
-# ---------------------------------------------------------------------------
-# ArcGIS layers do not share a schema, so nothing may assume one. These
-# candidate lists were read off the live services (2026-08-20) rather than
-# guessed; `arcgis.first_present` walks them case-insensitively and takes the
-# first non-empty hit, so a layer that spells a column differently degrades to
-# "no name" instead of raising.
-_NAME_FIELDS: dict[str, list[str]] = {
-    "mine": ["NAME", "PROPERTY", "MINE_NAME", "SITE_NAME"],
-    "mineral_occurrence": [
-        "MINFILE_NAME", "NAME", "OCCURRENCE_NAME", "SHOWING_NAME", "PROPERTY",
-    ],
-    "drillhole_collar": [
-        "DRILLHOLE_NAME", "HOLE_ID", "HOLE_NAME", "DRILLHOLE_ID", "NAME", "COMPANY",
-    ],
-    "resource_potential_zone": ["COMMODITY", "MAPKEY", "NAME", "ZONE_NAME"],
-    "rock_sample": ["SAMPLE_ID", "SAMPLE_NUMBER", "NAME", "STATION"],
-    "assessment_survey": ["TITLE", "SURVEY_NAME", "NAME", "FILE_NAME", "ASSESSMENT_FILE"],
-    "mineral_disposition": ["DISPOSITION", "DISPOSITION_NUMBER", "NAME", "CLIENT_NAME"],
-}
-
-_COMMODITY_FIELDS: list[str] = [
-    "COMMODITY",
-    "COMMODITY_OF_INTEREST",
-    "COMMODITIES",
-    "COMMODITY_DESCRIPTION1",
-    "COMMODITY_CODE1",
-]
-
-_STATUS_FIELDS: list[str] = ["STATUS", "DEP_CLASS", "DEPOSIT_STATUS", "OPERATING_STATUS"]
-
 _DEFAULT_LIMIT_PER_TYPE = 6
 _MAX_LIMIT_PER_TYPE = 25
 
-# Whole-call ceiling. Individual feeds have their own per-request timeout; this
-# bounds the fan-out so a slow survey cannot hold an answer open indefinitely.
-_TOTAL_TIMEOUT_S = 20.0
+# Whole-query ceiling. Generous for an indexed read; it exists so a lock or a
+# bad plan cannot hold a chat turn open.
+_QUERY_TIMEOUT_S = 6.0
+
+
+# ---------------------------------------------------------------------------
+# Per-type projections
+# ---------------------------------------------------------------------------
+# The seven canonical tables do not share a schema, so each contributes its own
+# SELECT normalised to a common shape, UNION ALL'd into one statement — one
+# round trip regardless of how many types the caller asked for.
+#
+# Every branch takes the SAME parameter list ($1..$8), which is what makes a
+# single bind for the whole union possible.
+
+_TABLES: dict[str, str] = {
+    "mine": "public_geo.pg_mine",
+    "mineral_occurrence": "public_geo.pg_mineral_occurrence",
+    "drillhole_collar": "public_geo.pg_drillhole_collar",
+    "resource_potential_zone": "public_geo.pg_resource_potential_zone",
+    "rock_sample": "public_geo.pg_rock_sample",
+    "assessment_survey": "public_geo.pg_assessment_survey",
+    "mineral_disposition": "public_geo.pg_mineral_disposition",
+}
+
+# Name expression per type. Referenced from both the SELECT list and the WHERE
+# clause (the filter runs before the output alias exists), so it is declared
+# once here rather than written twice.
+_NAME_EXPR: dict[str, str] = {
+    "mine": "name",
+    "mineral_occurrence": "name",
+    "drillhole_collar": "COALESCE(drillhole_name, drillhole_id, project_name)",
+    # These zones have no name — the commodity IS the identity.
+    "resource_potential_zone": "commodity",
+    "rock_sample": "COALESCE(sample_number, station)",
+    # The assessment FILE NUMBER is how these are cited and asked for; it lives
+    # in source_attributes because the table keeps only survey_type as a typed
+    # column.
+    "assessment_survey": "source_attributes->>'FILENUMBER'",
+    "mineral_disposition": "disposition_number",
+}
+
+_COMMODITY_EXPR: dict[str, str] = {
+    "mine": "commodities",
+    # Both lists are searchable: a geologist asking for copper wants the
+    # occurrence where copper is associated, not only the ones where it is the
+    # headline commodity.
+    "mineral_occurrence": "(primary_commodities || associated_commodities)",
+    "drillhole_collar": "commodity_of_interest",
+    "resource_potential_zone": "ARRAY[commodity]",
+    "rock_sample": "'{}'::text[]",
+    "assessment_survey": "'{}'::text[]",
+    "mineral_disposition": "COALESCE(commodity_codes, '{}'::text[])",
+}
+
+_GROUPING_EXPR: dict[str, str] = {
+    "mine": "commodity_grouping",
+    "mineral_occurrence": "commodity_grouping",
+    "drillhole_collar": "NULL::varchar",
+    "resource_potential_zone": "commodity_grouping",
+    "rock_sample": "NULL::varchar",
+    "assessment_survey": "NULL::varchar",
+    "mineral_disposition": "NULL::varchar",
+}
+
+_STATUS_EXPR: dict[str, str] = {
+    "mine": "status",
+    "mineral_occurrence": "status",
+    "drillhole_collar": "core_availability",
+    "resource_potential_zone": "NULL::varchar",
+    "rock_sample": "NULL::varchar",
+    "assessment_survey": "survey_type",
+    "mineral_disposition": "status",
+}
+
+# Commodity match, deliberately NOT a substring test.
+#
+# Commodity codes are one or two letters, so `LIKE '%U%'` is catastrophically
+# loose: searching "U" matched "Ind*u*strial Mineral" and returned 24 of 25
+# Saskatchewan mines, including chloride and salt deposits (verified against
+# CA-SK-MINE-LOC, 2026-08-20). This compares whole values, and separately
+# whole WORDS inside multi-word values, so "uranium" matches "Uranium Mine"
+# while "U" still does not match "Industrial".
+_COMMODITY_MATCH = """
+        EXISTS (
+            SELECT 1 FROM unnest({expr}) AS c
+             WHERE lower(trim(c)) = ANY($3::text[])
+                OR string_to_array(
+                       regexp_replace(lower(c), '[^a-z0-9]+', ' ', 'g'), ' '
+                   ) && $3::text[]
+        )"""
 
 
 @dataclass
 class PublicGeoscienceRecord:
-    """One entity retrieved live from a public survey.
+    """One entity from the public-geoscience mirror.
 
     Field set is unchanged from the stored-corpus era so the response
-    assembler and citation layer need no edits, but two fields changed meaning:
+    assembler and citation layer need no edits.
 
-    ``pg_id`` was a UUID minted when we stored the row. Nothing is stored now,
-    so it is ``"<source_id>:<OBJECTID>"`` — a composite of two upstream-stable
-    identifiers, which is what makes a citation re-resolvable later.
-
-    ``staleness_seconds`` is 0 by construction: the record was fetched during
-    this request. It is retained because the citation envelope renders it.
+    ``pg_id`` is ``"<source_id>:<source_feature_id>"`` — a composite of two
+    upstream-stable identifiers rather than our internal UUID, so a citation
+    stays resolvable against the survey itself even if our row is rebuilt.
     """
 
     pg_id: str
@@ -130,8 +191,10 @@ class PublicGeoscienceRecord:
     source_url: str | None = None
     license_summary: str | None = None
     license_url: str | None = None
-    staleness_seconds: int | None = 0
-    # Always 0.0 — live results carry no semantic score. See module docstring.
+    #: Seconds since the sync last confirmed this feature upstream. Real, not
+    #: a placeholder zero.
+    staleness_seconds: int | None = None
+    #: Always 0.0 — nothing here is semantically ranked. See module docstring.
     relevance_score: float = 0.0
 
 
@@ -143,7 +206,46 @@ class PublicGeoscienceSearchResult:
     count: int
     jurisdictions_queried: list[str]
     canonical_types_queried: list[str]
-    data_source: str = "Live ArcGIS REST (provincial + federal surveys)"
+    data_source: str = "public_geo.* (synced from provincial + federal survey APIs)"
+
+
+def _build_query(types: list[str]) -> str:
+    """UNION ALL one independently-limited SELECT per requested type.
+
+    Each branch is limited on its own so a type with a million rows cannot
+    crowd out a type with fifty. The caller asked for ``limit_per_type``, and
+    a single outer LIMIT would not deliver that.
+    """
+    branches = [
+        f"""(
+    SELECT '{t}'::text AS canonical_type,
+           jurisdiction_code,
+           source_id,
+           source_feature_id,
+           {_NAME_EXPR[t]} AS name,
+           {_COMMODITY_EXPR[t]} AS commodities,
+           {_GROUPING_EXPR[t]} AS commodity_grouping,
+           {_STATUS_EXPR[t]} AS status,
+           last_seen_at,
+           CASE WHEN geom IS NULL THEN NULL ELSE ARRAY[
+               ST_XMin(geom), ST_YMin(geom), ST_XMax(geom), ST_YMax(geom)
+           ] END AS bbox
+      FROM {_TABLES[t]}
+     WHERE ($1::text[] IS NULL OR jurisdiction_code = ANY($1::text[]))
+       AND ($2::text   IS NULL OR {_NAME_EXPR[t]} ILIKE '%' || $2::text || '%')
+       AND ($3::text[] IS NULL OR{_COMMODITY_MATCH.format(expr=_COMMODITY_EXPR[t])})
+       AND ($4::float8 IS NULL
+            OR (geom IS NOT NULL
+                AND geom && ST_MakeEnvelope($4, $5, $6, $7, 4326)))
+     -- Most recently reaffirmed upstream first: if the caller will see only
+     -- six of four hundred, they should be the six the survey most recently
+     -- confirmed still exist.
+     ORDER BY last_seen_at DESC
+     LIMIT $8::int
+)"""
+        for t in types
+    ]
+    return "\nUNION ALL\n".join(branches)
 
 
 @_metered("search_public_geoscience")
@@ -157,11 +259,11 @@ async def search_public_geoscience(
     text_query: str | None = None,
     limit_per_type: int = _DEFAULT_LIMIT_PER_TYPE,
 ) -> PublicGeoscienceSearchResult:
-    """Query government-published geoscience records live.
+    """Search government-published geoscience records.
 
     Use this when the user asks about:
-      - Government-published mineral occurrences, mines, drillholes, or
-        resource potential zones.
+      - Government-published mineral occurrences, mines, drillholes, resource
+        potential zones, rock samples, assessment surveys or mineral tenure.
       - Saskatchewan SMDI or BC MINFILE records.
       - "What's around X, Y" questions that hit external survey data rather
         than the internal project archive.
@@ -172,237 +274,167 @@ async def search_public_geoscience(
 
     Args:
         jurisdiction_codes: Restrict to these jurisdictions ("CA-SK", "CA-BC").
-            None/empty means every registered jurisdiction.
+            None/empty means every jurisdiction.
         canonical_types: Subset of the seven canonical types. None/empty means
-            all of them. Restricting cuts latency roughly proportionally,
-            because each type is one or more live HTTP calls.
-        commodities: Canonical commodity codes ("Au", "U", "Li"). Applied as a
-            case-insensitive substring match against whichever commodity
-            column the layer exposes.
-        bbox: [minLon, minLat, maxLon, maxLat]. Executed as a native spatial
-            query by the survey — the most selective filter available here.
-        text_query: Case-insensitive LIKE against the layer's name columns.
-            NOT semantic search; see the module docstring.
-        limit_per_type: Max records per feed. Capped at 25 so a bad caller
-            cannot flood the prompt.
+            all of them.
+        commodities: Commodity names or codes ("Au", "uranium"). Matched
+            whole-value or whole-word — never as a substring.
+        bbox: [minLon, minLat, maxLon, maxLat] in WGS84. The most selective
+            filter available; runs against the GIST index on geom.
+        text_query: Case-insensitive contains-match against the type's name
+            column. NOT semantic search; see the module docstring.
+        limit_per_type: Max records per canonical type. Capped at 25 so a bad
+            caller cannot flood the prompt.
 
     Returns:
-        PublicGeoscienceSearchResult. Any failure degrades to fewer (or zero)
-        records rather than raising.
+        PublicGeoscienceSearchResult. Any failure degrades to an empty result
+        rather than raising, matching the convention in `app.agent.tools`.
     """
     t0 = time.monotonic()
 
-    juris_list = _normalize_strings(jurisdiction_codes) or []
-    types_to_query = _normalize_strings(canonical_types) or list(CANONICAL_TYPES)
-    types_to_query = [t for t in types_to_query if t in CANONICAL_TYPES]
-    commodity_list = _normalize_strings(commodities) or []
+    juris_list = _normalize_strings(jurisdiction_codes)
+    types_to_query = [
+        t for t in (_normalize_strings(canonical_types) or list(CANONICAL_TYPES))
+        if t in _TABLES
+    ]
+    commodity_tokens = _commodity_tokens(commodities)
     effective_limit = max(
         1, min(int(limit_per_type or _DEFAULT_LIMIT_PER_TYPE), _MAX_LIMIT_PER_TYPE)
     )
     bbox_tuple = _normalize_bbox(bbox)
 
+    empty = PublicGeoscienceSearchResult(
+        records=[], count=0,
+        jurisdictions_queried=juris_list,
+        canonical_types_queried=types_to_query,
+    )
+
     if not types_to_query:
-        logger.info("search_public_geoscience: empty canonical_types, nothing to do")
-        return PublicGeoscienceSearchResult(
-            records=[], count=0,
-            jurisdictions_queried=juris_list,
-            canonical_types_queried=[],
-        )
+        logger.info("search_public_geoscience: no valid canonical_types requested")
+        return empty
 
-    feeds = sources_for(canonical_types=types_to_query, jurisdiction_codes=juris_list)
-    if not feeds:
-        logger.info(
-            "search_public_geoscience: no queryable feed for types=%s juris=%s",
-            types_to_query, juris_list,
-        )
-        return PublicGeoscienceSearchResult(
-            records=[], count=0,
-            jurisdictions_queried=juris_list,
-            canonical_types_queried=types_to_query,
-        )
+    pool = getattr(getattr(ctx, "deps", None), "pg_pool", None)
+    if pool is None:
+        logger.warning("search_public_geoscience: deps.pg_pool is None — empty result")
+        return empty
 
-    async def _one(src: PublicGeoSource) -> list[PublicGeoscienceRecord]:
-        try:
-            features = await arcgis.query_features(
-                src,
-                text=text_query,
-                text_fields=_NAME_FIELDS.get(src.canonical_type),
-                bbox=bbox_tuple,
-                limit=effective_limit,
-            )
-        except Exception:  # noqa: BLE001 — one feed must never sink the fan-out
-            logger.exception("search_public_geoscience: %s failed", src.source_id)
-            return []
-        return [_to_record(src, f) for f in features]
+    sql = _build_query(types_to_query)
+    args = (
+        juris_list or None,
+        (text_query or "").strip() or None,
+        commodity_tokens or None,
+        bbox_tuple[0] if bbox_tuple else None,
+        bbox_tuple[1] if bbox_tuple else None,
+        bbox_tuple[2] if bbox_tuple else None,
+        bbox_tuple[3] if bbox_tuple else None,
+        effective_limit,
+    )
 
     try:
-        batches = await asyncio.wait_for(
-            asyncio.gather(*(_one(s) for s in feeds), return_exceptions=True),
-            timeout=_TOTAL_TIMEOUT_S,
-        )
-    except TimeoutError:
-        logger.warning(
-            "search_public_geoscience: fan-out exceeded %.0fs across %d feed(s)",
-            _TOTAL_TIMEOUT_S, len(feeds),
-        )
-        batches = []
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args, timeout=_QUERY_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — degrade, never fail an answer
+        logger.exception("search_public_geoscience: query failed")
+        return empty
 
-    records: list[PublicGeoscienceRecord] = []
-    for b in batches:
-        if isinstance(b, list):
-            records.extend(b)
-
-    if commodity_list:
-        records = [r for r in records if _matches_commodity(r, commodity_list)]
+    records = [_to_record(r) for r in rows]
 
     logger.info(
-        "search_public_geoscience: %d record(s) from %d feed(s) in %.0fms "
-        "(types=%s juris=%s bbox=%s text=%s)",
-        len(records), len(feeds), (time.monotonic() - t0) * 1000,
-        types_to_query, juris_list or "all", bool(bbox_tuple), bool(text_query),
+        "search_public_geoscience: %d record(s) across %d type(s) in %.0fms "
+        "(juris=%s bbox=%s text=%s commodities=%s)",
+        len(records), len(types_to_query), (time.monotonic() - t0) * 1000,
+        juris_list or "all", bool(bbox_tuple), bool(text_query),
+        commodity_tokens or "any",
     )
 
     return PublicGeoscienceSearchResult(
         records=records,
         count=len(records),
-        jurisdictions_queried=sorted({s.jurisdiction_code for s in feeds}),
+        jurisdictions_queried=juris_list or sorted({r.jurisdiction_code for r in records}),
         canonical_types_queried=types_to_query,
     )
 
 
 # ---------------------------------------------------------------------------
-# Feature -> record
+# Row -> record
 # ---------------------------------------------------------------------------
 
-def _to_record(src: PublicGeoSource, feature: dict[str, Any]) -> PublicGeoscienceRecord:
-    props = feature.get("properties") or {}
-    oid = arcgis.object_id_of(feature)
-    juris = jurisdiction_for(src)
+def _to_record(row: Any) -> PublicGeoscienceRecord:
+    canonical_type = row["canonical_type"]
+    source_id = row["source_id"]
+    feature_id = row["source_feature_id"]
 
+    # Licence and display name come from the code registry rather than a join:
+    # they are static addressing metadata, and keeping them out of the query
+    # avoids two more table reads on every chat turn.
+    src = source_by_id(source_id)
+    juris = jurisdiction_for(src) if src else None
+
+    commodities = [c for c in (row["commodities"] or []) if c]
     name = (
-        arcgis.first_present(props, _NAME_FIELDS.get(src.canonical_type, ["NAME"]))
-        or f"{src.canonical_type.replace('_', ' ').title()} {oid or ''}".strip()
+        row["name"]
+        or f"{canonical_type.replace('_', ' ').title()} {feature_id or ''}".strip()
     )
-    commodities = _commodities_of(props)
-    status = arcgis.first_present(props, _STATUS_FIELDS)
+    status = row["status"]
 
     return PublicGeoscienceRecord(
-        # Composite of two upstream-stable identifiers — this is what lets a
-        # citation be re-resolved by fetching that OBJECTID again later.
-        pg_id=f"{src.source_id}:{oid}" if oid else src.source_id,
-        canonical_type=src.canonical_type,
-        jurisdiction_code=src.jurisdiction_code,
+        pg_id=f"{source_id}:{feature_id}" if feature_id else source_id,
+        canonical_type=canonical_type,
+        jurisdiction_code=row["jurisdiction_code"],
         jurisdiction_name=juris.display_name if juris else None,
-        source_id=src.source_id,
-        source_feature_id=oid,
+        source_id=source_id,
+        source_feature_id=feature_id,
         name=name,
-        summary_text=_summarize(src, name, commodities, status, juris),
-        commodities=commodities,
-        commodity_grouping=arcgis.first_present(props, ["COMMODITY_GROUPING"]),
+        summary_text=_summarize(
+            name, canonical_type, commodities, status,
+            (juris.display_name if juris else None) or row["jurisdiction_code"],
+            src.name if src else source_id,
+        ),
+        commodities=commodities[:12],
+        commodity_grouping=row["commodity_grouping"],
         status=status,
-        geom_bbox=_bbox_of(feature),
-        source_url=src.service_url,
-        license_summary=(juris.license_summary if juris else None) or src.license_summary,
-        license_url=(juris.license_url if juris else None) or src.license_url,
-        staleness_seconds=0,  # fetched during this request
-        relevance_score=0.0,  # no semantic score exists — see module docstring
+        geom_bbox=[float(v) for v in row["bbox"]] if row["bbox"] else None,
+        source_url=src.service_url if src else None,
+        license_summary=(juris.license_summary if juris else None)
+        or (src.license_summary if src else None),
+        license_url=(juris.license_url if juris else None)
+        or (src.license_url if src else None),
+        staleness_seconds=_staleness(row["last_seen_at"]),
+        relevance_score=0.0,  # nothing here is semantically ranked
     )
+
+
+def _staleness(last_seen_at: Any) -> int | None:
+    """Seconds since the sync last confirmed this feature upstream."""
+    if last_seen_at is None:
+        return None
+    seen = last_seen_at
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    return max(0, int((datetime.now(UTC) - seen).total_seconds()))
 
 
 def _summarize(
-    src: PublicGeoSource,
     name: str,
+    canonical_type: str,
     commodities: list[str],
     status: str | None,
-    juris: Any,
+    where: str,
+    source_name: str,
 ) -> str:
     """Human-readable one-liner — what the LLM actually reads.
 
-    Mirrors the shape the stored pipeline used to bake into `summary_text`, so
-    prompts and the response assembler see a familiar sentence.
+    Mirrors the sentence the stored pipeline used to bake into
+    ``summary_text``, so prompts and the response assembler see a familiar
+    shape.
     """
-    where = juris.display_name if juris else src.jurisdiction_code
-    bits = [f"{name} ({src.canonical_type.replace('_', ' ')}) in {where}"]
+    bits = [f"{name} ({canonical_type.replace('_', ' ')}) in {where}"]
     if commodities:
-        bits.append(f"Commodities: {', '.join(commodities)}")
+        bits.append(f"Commodities: {', '.join(commodities[:8])}")
     if status:
         bits.append(f"Status: {status}")
-    bits.append(f"Source: {src.name}")
+    bits.append(f"Source: {source_name}")
     return ". ".join(bits) + "."
-
-
-def _commodities_of(props: dict[str, Any]) -> list[str]:
-    """Collect commodity values across the several spellings layers use.
-
-    BC MINFILE splits them across COMMODITY_DESCRIPTION1..8; Saskatchewan uses
-    a single delimited COMMODITY. Handle both without assuming either.
-    """
-    found: list[str] = []
-    lowered = {str(k).lower(): v for k, v in props.items()}
-
-    for key, val in lowered.items():
-        if not key.startswith(("commodity", "commodities")):
-            continue
-        if val in (None, "", " "):
-            continue
-        for part in str(val).replace(";", ",").split(","):
-            p = part.strip()
-            if p and p not in found:
-                found.append(p)
-    return found[:12]
-
-
-def _matches_commodity(rec: PublicGeoscienceRecord, wanted: list[str]) -> bool:
-    """Token match against the record's commodity values.
-
-    Deliberately NOT a substring match. Commodity codes are one or two letters,
-    so substring matching is catastrophically loose: searching "U" matched
-    "Ind*u*strial Mineral" and returned 24 of 25 mines including chloride and
-    salt deposits. Verified against CA-SK-MINE-LOC, 2026-08-20.
-
-    Compares whole values case-insensitively, and also accepts a full-word hit
-    inside a multi-word value so "uranium" matches "Uranium Mine" while "U"
-    still does not match "Industrial".
-    """
-    wanted_l = {w.lower() for w in wanted}
-    for value in rec.commodities:
-        v = value.strip().lower()
-        if v in wanted_l:
-            return True
-        if any(w in v.split() for w in wanted_l):
-            return True
-    return False
-
-
-def _bbox_of(feature: dict[str, Any]) -> list[float] | None:
-    """Derive [minLon, minLat, maxLon, maxLat] from GeoJSON geometry."""
-    geom = feature.get("geometry") or {}
-    coords = geom.get("coordinates")
-    if coords is None:
-        return None
-
-    xs: list[float] = []
-    ys: list[float] = []
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, (int, float)):
-            return
-        if (
-            isinstance(node, (list, tuple))
-            and len(node) >= 2
-            and all(isinstance(v, (int, float)) for v in node[:2])
-        ):
-            xs.append(float(node[0]))
-            ys.append(float(node[1]))
-            return
-        if isinstance(node, (list, tuple)):
-            for child in node:
-                _walk(child)
-
-    _walk(coords)
-    if not xs or not ys:
-        return None
-    return [min(xs), min(ys), max(xs), max(ys)]
 
 
 # ---------------------------------------------------------------------------
@@ -410,9 +442,42 @@ def _bbox_of(feature: dict[str, Any]) -> list[float] | None:
 # ---------------------------------------------------------------------------
 
 def _normalize_strings(values: Iterable[str] | None) -> list[str]:
+    """Trim and drop blanks.
+
+    ``None`` entries are dropped BEFORE stringification. Coercing first turns
+    them into the literal ``"None"``, which is truthy and survives the filter,
+    so a caller passing ``jurisdiction_codes=[None]`` would silently search for
+    a jurisdiction named "None" and get an empty result that looks like
+    "no data there".
+    """
     if not values:
         return []
-    return [str(v).strip() for v in values if str(v).strip()]
+    out = []
+    for v in values:
+        if v is None:
+            continue
+        text = str(v).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _commodity_tokens(values: Iterable[str] | None) -> list[str]:
+    """Lowercase whole-value and whole-word forms to match against.
+
+    A caller may pass "Rare Earth Elements"; the whole-value comparison
+    handles that, and the individual words feed the array-overlap test for
+    values the survey spells differently.
+    """
+    tokens: list[str] = []
+    for raw in _normalize_strings(values):
+        low = raw.lower()
+        if low not in tokens:
+            tokens.append(low)
+        for word in re.split(r"[^a-z0-9]+", low):
+            if word and word not in tokens:
+                tokens.append(word)
+    return tokens
 
 
 def _normalize_bbox(bbox: Any) -> tuple[float, float, float, float] | None:

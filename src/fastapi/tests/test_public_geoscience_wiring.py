@@ -105,29 +105,36 @@ def test_dispatcher_has_a_call_branch_for_the_tool() -> None:
     )
 
 
-def test_collection_names_honour_the_cutover_suffix() -> None:
-    """The 384→1024 cutover is an env change, not a deploy.
+def test_every_canonical_type_has_a_table_and_a_sync_mapper() -> None:
+    """Replaces the old `_resolve_collection` suffix test.
 
-    scripts/reembed_public_geoscience_cohere.py writes `<name><suffix>`
-    collections; PUBLIC_GEO_COLLECTION_SUFFIX points the reader at them and
-    clearing it rolls back. Resolution must therefore read the setting at
-    call time rather than baking names in at import.
+    That test guarded the 384→1024 Qdrant cutover for the six `pg_*`
+    collections. There is no embedded copy any more — the tool reads
+    `public_geo.*`, refreshed by the public_geo_sync workflow — so the
+    invariant worth guarding moved: every canonical type the tool will query
+    must have both a table it can SELECT from and a mapper that fills it.
+
+    Without this, adding a type to CANONICAL_TYPES yields a tool that silently
+    returns nothing for it (no table branch) or a table that silently never
+    fills (no mapper), and both look like "no data in that jurisdiction".
     """
-    from app.agent.public_geoscience_tool import _resolve_collection
-    from app.config import settings
+    from app.agent.public_geoscience_tool import _TABLES
+    from app.services.public_geo.registry import CANONICAL_TYPES
+    from app.services.public_geo.sync import MAPPERS, SPECS
 
-    original = settings.PUBLIC_GEO_COLLECTION_SUFFIX
-    try:
-        settings.PUBLIC_GEO_COLLECTION_SUFFIX = ""
-        assert _resolve_collection("mine") == "pg_mine"
-
-        settings.PUBLIC_GEO_COLLECTION_SUFFIX = "_v2"
-        assert _resolve_collection("mine") == "pg_mine_v2", (
-            "_resolve_collection ignored the suffix — the cutover would "
-            "silently keep reading the broken 384-dim collections."
+    for canonical_type in CANONICAL_TYPES:
+        assert canonical_type in _TABLES, (
+            f"{canonical_type} is offered by the registry but the tool has no "
+            "table branch for it — searches would silently skip the type."
         )
-    finally:
-        settings.PUBLIC_GEO_COLLECTION_SUFFIX = original
+        assert canonical_type in SPECS, f"{canonical_type} has no TableSpec"
+        assert canonical_type in MAPPERS, (
+            f"{canonical_type} has no sync mapper — its table would never fill."
+        )
+        assert _TABLES[canonical_type] == SPECS[canonical_type].table, (
+            f"{canonical_type}: the tool reads {_TABLES[canonical_type]} but "
+            f"the sync writes {SPECS[canonical_type].table}."
+        )
 
 
 def test_tool_is_mapped_to_the_public_geoscience_data_source() -> None:

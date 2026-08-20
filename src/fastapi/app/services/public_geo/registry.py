@@ -1,31 +1,40 @@
-"""Public-geoscience source registry — the ArcGIS feeds we query LIVE.
+"""Public-geoscience source registry — the ArcGIS feeds we sync from.
 
-This lives in CODE, not in the database, and that is the whole point.
+This is ADDRESSING, and it lives in CODE rather than in the database.
 
-Public geoscience is a look-through onto what provincial and federal surveys
-already publish. We do not copy it, index it, or embed it — a query hits the
-upstream ArcGIS REST service and returns what is there right now. That means
-there is no `public_geo.*` schema to keep in sync, no Qdrant collection to
-re-embed when the embedding model changes, and no staleness: the data is
-whatever the survey is serving at the moment you ask.
+Public geoscience is a mirror of what provincial and federal surveys already
+publish. We do not author any of it: ``public_geo_sync`` pulls each feed from
+the survey's own ArcGIS REST service and upserts it into ``public_geo.*``,
+where the map layers, the chat tool and the citation resolvers read it.
 
-The previous design stored all of it — ~514k rows in Postgres and 182,826
-embedded points across six Qdrant collections, built by a Dagster pipeline
-that has been dormant since 2026-07-28. That corpus never reached Azure at
-all, and by 2026-08-19 it had drifted three weeks stale while its embeddings
-sat at 384 dimensions against a 1024-dim reader, so every search returned
-`HTTP 400: expected dim: 384, got 1024`. All of it is removed.
+Why the addressing is here and not in a table
+---------------------------------------------
+``public_geo.sources`` still exists and is still required — the canonical
+tables carry a foreign key to it. What that row is NOT is the thing anyone
+should edit to point a feed somewhere new. Thirty-two feeds were added to the
+local cluster out of band and never declared in a migration, so Azure held
+nine placeholder rows pointing at layers that do not answer, and no amount of
+correct pull code could have bootstrapped from them. Addressing that ships
+with the code cannot diverge per environment that way.
 
-What is lost by not indexing: semantic search. You cannot rank by meaning
-over data you never embedded. What replaces it is the query model these
-services were built for — spatial (bounding box) and attribute (commodity,
-status, name) filtering, executed by the survey's own database. For
-structured government feature services that is the more faithful interface,
-not a downgrade.
+Nothing here is runtime state. The columns the old source table carried for
+that (``last_refreshed_at``, ``last_service_edit_ms``) are deliberately
+absent: freshness is a property of the synced rows (``last_seen_at``), not of
+the address.
 
-Registry entries are transcribed from the source table that used to hold
-them, minus every runtime-state column (last_refreshed_at,
-last_service_edit_ms) — nothing here is state, only addressing.
+What is NOT rebuilt: the embedded copy
+--------------------------------------
+The previous design also embedded all of it — 182,826 points across six
+Qdrant collections, built by the same Dagster pipeline, dormant since
+2026-07-28. That corpus never reached Azure, and its 384-dim vectors could not
+be read by a 1024-dim reader, so every search returned `HTTP 400: expected
+dim: 384, got 1024`. It is gone and stays gone.
+
+What that costs is ranking by meaning. What replaces it is the query model
+these services were built for — spatial (bounding box) and attribute
+(commodity, status, name) filtering, now executed against our own indexed
+copy. For structured government feature services that is the more faithful
+interface, not a downgrade.
 """
 
 from __future__ import annotations

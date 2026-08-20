@@ -1,15 +1,16 @@
-"""Live ArcGIS REST client for public geoscience.
+"""ArcGIS REST client for public geoscience.
 
 Every call here goes to a provincial or federal survey's own service and
-returns what it is serving right now. Nothing is cached to disk, written to
-Postgres, or embedded — see ``registry`` for why that is the design rather
-than an omission.
+returns what it is serving right now. This module is transport only — it does
+not decide what to keep or where to put it. ``services.public_geo.sync`` is
+what maps and persists; see ``registry`` for the addressing.
 
-Three access patterns, which is all the surfaces above need:
+Four access patterns, which is all the callers need:
 
-  ``query_features``  spatial + attribute filtering, for search and the map
-  ``fetch_feature``   one feature by OBJECTID, for citation resolution
-  ``count_features``  a cheap COUNT, for "how much is out there" affordances
+  ``iter_all_features`` paged full-layer walk, for the sync job
+  ``query_features``    spatial + attribute filtering, for ad-hoc live lookups
+  ``fetch_feature``     one feature by OBJECTID, for citation resolution
+  ``count_features``    a cheap COUNT, for "how much is out there" affordances
 
 Shape notes that cost time if you rediscover them:
 
@@ -23,9 +24,10 @@ Shape notes that cost time if you rediscover them:
   - ArcGIS returns HTTP 200 with an ``error`` object in the body on failure.
     Checking status alone silently yields zero features, so the body is
     inspected too.
-  - Services cap ``resultRecordCount`` (commonly 1000-2000). We request small
-    pages deliberately: this is an interactive path, not a bulk export, and
-    the old bulk-export design is exactly what we removed.
+  - Services cap ``resultRecordCount`` server-side (commonly 1000-2000) and
+    simply return fewer rows than asked rather than erroring, so the bulk
+    walker advances by what it actually received. ``query_features`` pages
+    much smaller on purpose — it serves interactive callers, not exports.
 
 Every function degrades to empty/None rather than raising, matching the
 convention in ``app.agent.tools`` — one unreachable survey must not fail a
@@ -366,12 +368,21 @@ def first_present(props: dict[str, Any], candidates: list[str]) -> str | None:
     Layers disagree on what the name column is called (NAME, MINE_NAME,
     DEPOSIT_NAME, SHOWING_NAME...). Callers pass a candidate list per
     canonical type rather than this module pretending to know a schema.
+
+    Values are stripped. Several layers publish fixed-width CHAR columns and
+    return them space-padded — CA-BC-MINFILE's COMMODITY_DESCRIPTION1..8 come
+    back as ``"Uranium                       "`` — which otherwise propagates
+    into stored commodity arrays, breaks equality matching against "uranium",
+    and renders with a trailing gutter in every citation.
     """
     lowered = {str(k).lower(): v for k, v in props.items()}
     for c in candidates:
         v = lowered.get(c.lower())
-        if v not in (None, "", " "):
-            return str(v)
+        if v is None:
+            continue
+        text = str(v).strip()
+        if text:
+            return text
     return None
 
 

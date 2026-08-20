@@ -54,6 +54,7 @@ from app.hatchet_workflows.phase0_agents import (
     INGESTION_AGENT_WORKFLOWS,
 )
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
+from app.hatchet_workflows.public_geo_sync import public_geo_sync  # weekly ArcGIS refresh
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
 from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
 from app.hatchet_workflows.reliability_metrics_publisher import (
@@ -212,6 +213,13 @@ POOLS = {
         # superseded by Dagster Bronze→Silver pipeline. Stale cron entries on
         # the Hatchet engine side were cleared via the de-registration sweep
         # documented in docs/smdi_ingestion_2026_05_25.md.
+        #
+        # That Dagster pipeline then went dormant on 2026-07-28, leaving
+        # public_geo.* with no writer at all: the local copy went three weeks
+        # stale and Azure never received a row. public_geo_sync (03:30 UTC
+        # Sundays) takes the job back, pulling the surveys' live ArcGIS
+        # services directly instead of via a Bronze staging hop.
+        public_geo_sync,
         # Master-plan §11.3 wave 1 — per-workspace logical export
         # (manual trigger; complements the §11.1 full-store backups).
         # Produces the JSONL.gz manifest that restore_workspace
