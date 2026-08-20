@@ -73,14 +73,13 @@ class UploadRetiredCategoryTest extends TestCase
      */
     public static function retiredCategoryProvider(): array
     {
+        // 2026-08-20: collars / surveys / lithology / samples / excel /
+        // spatial were restored — ingest_tabular and ingest_spatial give them
+        // live Hatchet consumers, so they now belong in the live-category
+        // test below rather than here. What remains is what is still
+        // genuinely consumer-less.
         return [
-            'drillhole collars' => ['collars', 'collars.csv'],
-            'downhole surveys' => ['surveys', 'surveys.csv'],
-            'lithology intervals' => ['lithology', 'litho.csv'],
-            'assay samples' => ['samples', 'samples.csv'],
             'well logs' => ['well_logs', 'hole.las'],
-            'spatial layers' => ['spatial', 'claims.geojson'],
-            'excel workbooks' => ['excel', 'book.xlsx'],
             'seismic volumes' => ['seismic', 'line.sgy'],
             'xyz grids' => ['xyz', 'grid.xyz'],
             'geophysics summaries' => ['geophysics', 'survey.json'],
@@ -145,8 +144,16 @@ class UploadRetiredCategoryTest extends TestCase
         $this->assertIsArray($live);
         $this->assertIsArray($retired);
 
-        // Only the two Hatchet-dispatching categories remain live.
-        $this->assertSame(['reports', 'archive'], array_keys($live));
+        // Every live category must dispatch to a workflow that exists. This
+        // is the invariant that matters: a category listed as live with no
+        // consumer returns 201, writes the object, and is never processed —
+        // the exact failure the retired list was created to stop.
+        foreach (['reports', 'archive', 'collars', 'surveys', 'lithology',
+            'samples', 'excel', 'spatial'] as $expected) {
+            $this->assertArrayHasKey(
+                $expected, $live, "'{$expected}' should be a live category",
+            );
+        }
 
         // A category must never appear in both — that would let a client offer
         // an upload the API refuses.
@@ -155,6 +162,40 @@ class UploadRetiredCategoryTest extends TestCase
             'A category cannot be both live and retired',
         );
 
-        $this->assertArrayHasKey('collars', $retired);
+        // Still genuinely consumer-less: parsers exist for LAS/SEGY/XYZ but
+        // no workflow calls them yet.
+        $this->assertArrayHasKey('well_logs', $retired);
+        $this->assertArrayNotHasKey('collars', $retired);
+    }
+
+    public function test_restored_geology_categories_accept_their_formats(): void
+    {
+        Storage::fake('s3');
+        $this->actingAs($this->user, 'sanctum');
+
+        // The upload must be ACCEPTED (not 422'd as retired). Dispatch itself
+        // reaches FastAPI, which is not running under test — a 502
+        // 'ingestion_dispatch_failed' is therefore a pass here, because it
+        // proves the request got past category validation and into dispatch.
+        foreach ([
+            ['collars', 'collars.csv'],
+            ['excel', 'book.xlsx'],
+            ['spatial', 'claims.geojson'],
+            ['spatial', 'project.qgz'],
+        ] as [$category, $filename]) {
+            $response = $this->postJson($this->uploadUrl(), [
+                'file' => UploadedFile::fake()->create($filename, 4),
+                'category' => $category,
+            ]);
+
+            $this->assertNotSame(
+                422, $response->status(),
+                "'{$category}' + {$filename} was refused; it should be accepted",
+            );
+            $this->assertNull(
+                $response->json('retired_category'),
+                "'{$category}' should no longer report as retired",
+            );
+        }
     }
 }

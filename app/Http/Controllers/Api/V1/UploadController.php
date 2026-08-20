@@ -51,6 +51,28 @@ class UploadController extends Controller
         // XLSX, PDF ≤10 MB each). The Hatchet ingest_zip_archive workflow
         // extracts each entry and fans it out to the appropriate ingester.
         'archive' => ['zip'],
+
+        // ── Restored 2026-08-20, each with a live Hatchet consumer ──────
+        // These were retired on 2026-07-28 with the Dagster services and
+        // answered 422 until now. The bar for being in this list is the one
+        // RETIRED_CATEGORIES sets below: a workflow that actually runs.
+        //
+        // Drill data → ingest_tabular → silver.collars / surveys /
+        // lithology_logs / samples. Collars are written before the interval
+        // tables that reference them; the category name is passed through as
+        // the sheet_type hint so a file with unusual headers still routes.
+        'collars' => ['csv', 'txt', 'tsv'],
+        'surveys' => ['csv', 'txt', 'tsv'],
+        'lithology' => ['csv', 'txt', 'tsv'],
+        'samples' => ['csv', 'txt', 'tsv'],
+        // Workbooks → ingest_tabular, which classifies EVERY sheet rather
+        // than assuming the first one is the data.
+        'excel' => ['xlsx', 'xls', 'xlsm'],
+        // Vector data + QGIS projects → ingest_spatial →
+        // silver.spatial_features. `.zip` is here because a shapefile is
+        // never one file: .shp/.shx/.dbf/.prj travel together, and a lone
+        // .shp cannot be read without its siblings.
+        'spatial' => ['geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'fgb', 'zip', 'qgs', 'qgz'],
     ];
 
     /**
@@ -72,20 +94,24 @@ class UploadController extends Controller
      * workflow, or Dagster brought back with the sensor actually RUNNING),
      * then moving the entry back into CATEGORIES.
      *
+     * 2026-08-20: collars / surveys / lithology / samples / excel / spatial
+     * met that bar and moved up into CATEGORIES — ingest_tabular and
+     * ingest_spatial are registered in the Hatchet worker and have their own
+     * trigger endpoints. The four below are still genuinely consumer-less and
+     * stay here until they are not.
+     *
      * @var array<string, list<string>>
      */
     private const RETIRED_CATEGORIES = [
-        'collars' => ['csv'],
-        'surveys' => ['csv'],
-        'lithology' => ['csv'],
-        'samples' => ['csv'],
+        // The parsers for these three exist and are tested (las_parser,
+        // segy_parser, xyz_parser) — what is missing is a workflow to call
+        // them and a silver table shape settled enough to write. Wiring them
+        // is the same shape of work ingest_tabular just did.
         'well_logs' => ['las'],
-        'spatial' => ['geojson', 'shp', 'zip'],
-        'excel' => ['xlsx', 'xls'],
         'seismic' => ['sgy', 'segy'],
         'xyz' => ['xyz', 'dat', 'txt'],
         // Geophysics interpretation summary JSON — was consumed by the Dagster
-        // silver_geophysics asset.
+        // silver_geophysics asset. No parser survives for it.
         'geophysics' => ['json'],
     ];
 
@@ -289,6 +315,18 @@ class UploadController extends Controller
                     vendorProfileId: $vendorProfileId,
                     responseData: $responseData,
                     isTiff: in_array($ext, ['tif', 'tiff'], true),
+                );
+            }
+
+            // Geology data — drill tables (CSV/XLSX) and vector/QGIS files.
+            // Restored 2026-08-20; see GEOLOGY_WORKFLOWS.
+            if (array_key_exists($category, self::GEOLOGY_WORKFLOWS)) {
+                $this->dispatchGeologyIngest(
+                    user: $user,
+                    category: $category,
+                    projectId: $projectId,
+                    minioKey: $minioKey,
+                    responseData: $responseData,
                 );
             }
 
@@ -578,6 +616,169 @@ class UploadController extends Controller
             }
         } catch (Throwable $e) {
             Log::warning('UploadController: dispatchZipExtraction failed', [
+                'project_id' => $projectId,
+                'minio_key' => $minioKey,
+                'error' => $e->getMessage(),
+            ]);
+            $responseData['ingest'] = [
+                'dispatched' => false,
+                'reason' => 'exception: '.$e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Category → the Hatchet workflow that consumes it.
+     *
+     * Kept next to CATEGORIES on purpose: an entry there without an entry
+     * here is precisely the failure RETIRED_CATEGORIES documents — a 201
+     * with the object written and nothing downstream ever reading it.
+     * dispatchGeologyIngest() refuses to dispatch a category it cannot map,
+     * so the mistake surfaces as an explicit reason rather than as silence.
+     *
+     * @var array<string, string>
+     */
+    private const GEOLOGY_WORKFLOWS = [
+        'collars' => 'ingest_tabular',
+        'surveys' => 'ingest_tabular',
+        'lithology' => 'ingest_tabular',
+        'samples' => 'ingest_tabular',
+        'excel' => 'ingest_tabular',
+        'spatial' => 'ingest_spatial',
+    ];
+
+    /**
+     * Dispatch a geology-data upload to ingest_tabular or ingest_spatial.
+     *
+     * Mirrors dispatchZipExtraction(): same JWT + X-Service-Key handshake,
+     * same per-workspace throttle, same "never throw out of the upload
+     * request" contract. A dispatch failure is recorded in the response body
+     * and surfaced by the caller as a non-201, because a silent
+     * `dispatched: false` read as success is the exact bug these categories
+     * were retired over.
+     */
+    private function dispatchGeologyIngest(
+        $user,
+        string $category,
+        string $projectId,
+        string $minioKey,
+        array &$responseData,
+    ): void {
+        try {
+            $workflow = self::GEOLOGY_WORKFLOWS[$category] ?? null;
+            if ($workflow === null) {
+                Log::warning('UploadController: no workflow mapped for category', [
+                    'category' => $category,
+                ]);
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'no workflow mapped for category '.$category,
+                ];
+
+                return;
+            }
+
+            $row = DB::selectOne(
+                'SELECT CAST(workspace_id AS TEXT) AS workspace_id FROM silver.projects WHERE project_id = ?',
+                [$projectId],
+            );
+            if ($row === null || empty($row->workspace_id)) {
+                Log::info('UploadController: geology ingest skip — no workspace_id', [
+                    'project_id' => $projectId,
+                ]);
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'no workspace_id for project',
+                ];
+
+                return;
+            }
+            $workspaceId = $row->workspace_id;
+
+            $fastApiBase = rtrim(
+                config('services.fastapi.internal_url')
+                    ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                '/',
+            );
+            $serviceKey = config('services.fastapi.service_key')
+                ?? env('FASTAPI_SERVICE_KEY');
+            if (! $serviceKey) {
+                Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — geology ingest not dispatched');
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'FASTAPI_SERVICE_KEY not configured',
+                ];
+
+                return;
+            }
+
+            $jwt = app(FastApiJwtMinter::class)->mint(
+                (string) ($user->id ?? 'unknown'),
+                $projectId,
+                [],
+            );
+
+            $runId = Str::uuid()->toString();
+            $payload = [
+                'workspace_id' => $workspaceId,
+                'project_id' => $projectId,
+                'minio_key' => $minioKey,
+                'run_id' => $runId,
+            ];
+
+            // The category IS the sheet-type hint for a single-table CSV.
+            // `excel` is deliberately excluded: a workbook holds several
+            // tables, and pinning one type would make ingest_tabular treat
+            // every sheet as that type instead of classifying each on its own.
+            if ($workflow === 'ingest_tabular' && $category !== 'excel') {
+                $payload['sheet_type'] = match ($category) {
+                    'collars' => 'collar',
+                    'surveys' => 'survey',
+                    'lithology' => 'lithology',
+                    'samples' => 'sample',
+                    default => null,
+                };
+            }
+
+            $this->dispatchThrottle->wait($workspaceId);
+
+            $resp = Http::withHeaders([
+                'X-Service-Key' => $serviceKey,
+                'Authorization' => 'Bearer '.$jwt,
+                'Accept' => 'application/json',
+            ])->timeout(15)->retry(3, 500)->post(
+                $fastApiBase.'/internal/v1/shadow/'.$workflow.'/trigger',
+                $payload,
+            );
+
+            if ($resp->successful()) {
+                $body = $resp->json();
+                $responseData['ingest'] = [
+                    'dispatched' => true,
+                    'workflow' => $workflow,
+                    'hatchet_workflow_run_id' => $body['workflow_run_id'] ?? null,
+                    'run_id' => $runId,
+                ];
+                Log::info('UploadController: geology ingest dispatched', [
+                    'workflow' => $workflow,
+                    'category' => $category,
+                    'workspace_id' => $workspaceId,
+                    'minio_key' => $minioKey,
+                ]);
+            } else {
+                Log::warning('UploadController: geology ingest returned non-2xx', [
+                    'workflow' => $workflow,
+                    'status' => $resp->status(),
+                    'body' => $resp->body(),
+                ]);
+                $responseData['ingest'] = [
+                    'dispatched' => false,
+                    'reason' => 'fastapi non-2xx '.$resp->status(),
+                ];
+            }
+        } catch (Throwable $e) {
+            Log::warning('UploadController: dispatchGeologyIngest failed', [
+                'category' => $category,
                 'project_id' => $projectId,
                 'minio_key' => $minioKey,
                 'error' => $e->getMessage(),

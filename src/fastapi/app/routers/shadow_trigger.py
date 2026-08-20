@@ -21,6 +21,14 @@ from app.config import settings
 from app.db import bind_workspace_scope
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
+from app.hatchet_workflows.ingest_spatial import (
+    IngestSpatialInput,
+    ingest_spatial,
+)
+from app.hatchet_workflows.ingest_tabular import (
+    IngestTabularInput,
+    ingest_tabular,
+)
 from app.hatchet_workflows.ingest_zip_archive import (
     IngestZipArchiveInput,
     ingest_zip_archive,
@@ -290,6 +298,104 @@ async def trigger_ingest_zip_archive(
 
     ref = await ingest_zip_archive.aio_run_no_wait(payload)
     return TriggerZipArchiveResponse(
+        workflow_run_id=ref.workflow_run_id,
+        run_id=payload.run_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Geology data formats — restored 2026-08-20
+# ---------------------------------------------------------------------------
+# The `spatial`, `excel` and drill-CSV upload categories answered
+# 422 retired_pipeline from 2026-07-28 (Dagster removal) until these two
+# workflows gave them a live consumer again. Same thin pass-through shape as
+# the three above: Laravel has no Hatchet client, FastAPI does.
+
+
+class TriggerIngestSpatialResponse(BaseModel):
+    workflow_run_id: str
+    run_id: str | None
+
+
+class TriggerIngestTabularResponse(BaseModel):
+    workflow_run_id: str
+    run_id: str | None
+
+
+async def _guard_active_project(request: Request, payload) -> None:
+    """Refuse ingest into a non-active project, with the workspace bound.
+
+    Both inputs type workspace_id/project_id as `str` for downstream
+    ergonomics, so bind_workspace_scope is what actually enforces UUID shape —
+    it raises on anything malformed rather than binding it as an opaque GUC.
+    """
+    if not payload.project_id:
+        return
+    pool = request.app.state.pg_pool
+    async with pool.acquire() as conn, conn.transaction():
+        if payload.workspace_id:
+            await bind_workspace_scope(
+                conn,
+                workspace_id=str(payload.workspace_id),
+                site="routers.shadow_trigger.geology_ingest",
+            )
+        await require_active_project(project_id=str(payload.project_id), conn=conn)
+
+
+@router.post(
+    "/ingest_spatial/trigger",
+    response_model=TriggerIngestSpatialResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_check_service_key)],
+)
+async def trigger_ingest_spatial(
+    payload: IngestSpatialInput,
+    request: Request,
+) -> TriggerIngestSpatialResponse:
+    """Trigger ingest_spatial — SHP / GeoJSON / GPKG / GML / DXF / QGIS.
+
+    Writes silver.spatial_features. A QGIS project whose data was not bundled
+    completes successfully with `manifest_only` set rather than failing;
+    see the workflow's docstring for why that is not a parse error.
+    """
+    log.info(
+        "trigger_ingest_spatial: workspace_id=%s project_id=%s key=%s",
+        payload.workspace_id, payload.project_id, payload.minio_key,
+    )
+    await _guard_active_project(request, payload)
+
+    ref = await ingest_spatial.aio_run_no_wait(payload)
+    return TriggerIngestSpatialResponse(
+        workflow_run_id=ref.workflow_run_id,
+        run_id=payload.run_id,
+    )
+
+
+@router.post(
+    "/ingest_tabular/trigger",
+    response_model=TriggerIngestTabularResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_check_service_key)],
+)
+async def trigger_ingest_tabular(
+    payload: IngestTabularInput,
+    request: Request,
+) -> TriggerIngestTabularResponse:
+    """Trigger ingest_tabular — drill CSV and multi-sheet XLSX.
+
+    Writes silver.collars first, then surveys / lithology_logs / samples
+    against it. Intervals whose hole has no collar are reported as orphaned,
+    not dropped.
+    """
+    log.info(
+        "trigger_ingest_tabular: workspace_id=%s project_id=%s key=%s sheet_type=%s",
+        payload.workspace_id, payload.project_id, payload.minio_key,
+        payload.sheet_type,
+    )
+    await _guard_active_project(request, payload)
+
+    ref = await ingest_tabular.aio_run_no_wait(payload)
+    return TriggerIngestTabularResponse(
         workflow_run_id=ref.workflow_run_id,
         run_id=payload.run_id,
     )

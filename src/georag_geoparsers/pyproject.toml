@@ -27,6 +27,22 @@ dependencies = [
     # XLSX. polars reads xlsx THROUGH openpyxl, so it is a real runtime
     # requirement rather than an optional accelerator.
     "openpyxl>=3.1,<4.0",
+    # Legacy .xls (BIFF OLE). xlrd >= 2 dropped .xls support, hence the pin —
+    # and .xls is exactly what a decades-old drill archive arrives as.
+    "xlrd>=1.2,<2.0",
+
+    # Hole-ID collision detection. csv_collar calls
+    # _hole_id.suggest_collisions on EVERY parse to catch "EL-1" vs "EL-01"
+    # naming the same hole, so this is on the main path, not an extra.
+    "rapidfuzz>=3.0",
+
+    # DXF block extraction (spatial_parser). CAD files are a normal delivery
+    # format for claim boundaries and grid lines.
+    "ezdxf>=1.1",
+
+    # Encoding detection for CSVs. Survey software emits Latin-1 and cp1252
+    # far more often than UTF-8.
+    "charset-normalizer>=3.0",
 ]
 
 [project.optional-dependencies]
