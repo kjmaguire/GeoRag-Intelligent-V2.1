@@ -908,23 +908,20 @@ class Settings(BaseSettings):
     # to "query" to enable Qwen3's instruction prefix per its model card.
     EMBEDDING_QUERY_PROMPT_NAME: str = ""
 
-    # Suffix appended to every public-geoscience pg_* Qdrant collection name
-    # by app.agent.public_geoscience_tool.
+    # PUBLIC_GEO_COLLECTION_SUFFIX removed 2026-08-20, along with
+    # scripts/reembed_public_geoscience_cohere.py and the six pg_* Qdrant
+    # collections it targeted.
     #
-    # The pg_* collections were indexed at 384-dim (bge-small) by the now
-    # dormant Dagster asset, while the runtime embedder is 1024-dim, so every
-    # public-geo search returned `HTTP 400: expected dim: 384, got 1024` and
-    # 182,826 indexed points were unreachable.
-    # scripts/reembed_public_geoscience_cohere.py re-encodes those points into
-    # Cohere Embed v4 (1024-dim — the SAME space the internal corpus now
-    # occupies) and writes them to `<name><suffix>` collections, leaving the
-    # originals untouched.
-    #
-    # Empty string = read the original 384-dim collections, i.e. still broken.
-    # Set to the suffix used by that script (default "_v2") to cut over, and
-    # clear it again to roll back. Deliberately a runtime setting rather than
-    # a code change so the cutover does not require a deploy.
-    PUBLIC_GEO_COLLECTION_SUFFIX: str = ""
+    # It existed to cut the public-geoscience reader over from 384-dim
+    # (bge-small, written by a Dagster asset dormant since 2026-07-28) to
+    # 1024-dim Cohere Embed v4, because every public-geo search was returning
+    # `HTTP 400: expected dim: 384, got 1024` against 182,826 unreachable
+    # points. Re-encoding them was the wrong fix: public geoscience is a
+    # mirror of someone else's structured feature service, and every question
+    # asked of it — commodity, status, name, bounding box — is answerable by
+    # an indexed SQL query over public_geo.*, which is what
+    # app.agent.public_geoscience_tool now does. There is no embedded copy to
+    # keep in a particular vector space any more.
 
     # Qwen/Qwen3-Reranker-0.6B (Apache 2.0, ~1.2 GB) replaces
     # BAAI/bge-reranker-base per the 2026-06-03 swap. Architecturally a

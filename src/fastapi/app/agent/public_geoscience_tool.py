@@ -1,138 +1,201 @@
-"""Public Geoscience agent tool — Qdrant semantic search + PostGIS hydration.
-
-Phase 3.4. One tool exposed to the deterministic orchestrator:
+"""Public Geoscience agent tool — attribute + spatial search over public_geo.*.
 
     search_public_geoscience(
         ctx,
         jurisdiction_codes,   # e.g. ["CA-SK"]
-        canonical_types,      # subset of {"mine","mineral_occurrence",
-                              #            "drillhole_collar","resource_potential_zone",
-                              #            "rock_sample","assessment_survey"}
-        commodities,          # canonical codes — ["Au", "U"]
+        canonical_types,      # subset of the seven canonical types
+        commodities,          # commodity names or codes — ["Au", "uranium"]
         bbox,                 # [minLon, minLat, maxLon, maxLat] or None
-        text_query,           # free-text semantic query
-        limit,
+        text_query,           # free-text name filter
+        limit_per_type,
     ) -> PublicGeoscienceSearchResult
 
-Retrieval pipeline (plan §05d + §08):
+Where the data comes from
+-------------------------
+``public_geo.*``, kept fresh by the ``public_geo_sync`` workflow (03:30 UTC
+Sundays), which pulls each survey's live ArcGIS service and upserts it. This
+tool reads that mirror rather than calling the surveys itself, for two
+reasons:
 
-  1. For each requested canonical_type, run a filtered Qdrant semantic
-     search against the matching `pg_*` collection (populated by the
-     Phase-3.2 index_public_geoscience_qdrant asset).
-  2. Hydrate each hit from the Phase-3.2 Qdrant payload — that payload
-     already carries `jurisdiction_code`, `source_id`, `commodities`,
-     `status`, `geom_bbox`, `source_url`, and a pre-built `summary_text`
-     so we can return useful records *without* a PostGIS round-trip in
-     the hot path.
-  3. Join against `public_geo.sources` + `public_geo.jurisdictions`
-     once per run (small reference tables, cached in-memory for the call)
-     to add license attribution + staleness metadata. This is the "evidence
-     binding" stage of plan §08's two-stage citation model.
+1. **Latency.** Querying live meant one HTTP request per feed — twenty-eight
+   of them, fanned out concurrently but still bounded only by a 20-second
+   ceiling. That is not a budget a chat turn can afford. The same search over
+   the synced tables is one indexed query.
+2. **Agreement.** The map layers and all eight citation resolvers read
+   ``public_geo.*``. A chat answer sourced from somewhere else could cite a
+   feature the map cannot draw and the citation panel cannot resolve.
 
-The tool is side-effect-free; it owns no LLM calls, no agent reasoning,
-and no text generation. Just retrieval + hydration.
+The cost is staleness bounded by the sync cadence, which every record reports
+honestly in ``staleness_seconds`` (computed from ``last_seen_at``) rather than
+implying it is current.
 
-Timeout + graceful degradation: matches the existing tool conventions in
-tools.py — each I/O is wrapped in `asyncio.wait_for`, and any failure
-returns an empty result set with an audit-friendly `data_source` label
-rather than raising.
+What this is NOT
+----------------
+**Semantic search.** The previous implementation ranked against six Qdrant
+collections holding 182,826 embedded points, fed by a Dagster pipeline dormant
+since 2026-07-28. That corpus never reached Azure and its 384-dim vectors
+could not be read by a 1024-dim reader (``HTTP 400: expected dim: 384, got
+1024``). It is gone and is not being rebuilt: embedding a copy of someone
+else's structured feature service buys ranking-by-meaning over records that
+are already precisely filterable by commodity, status, name and geometry.
+
+Two consequences for anyone reading results:
+
+* ``relevance_score`` is 0.0 on every record. The field is kept so the
+  response assembler's shape is unchanged, but it carries no information and
+  must never be rendered as confidence.
+* ``text_query`` is a name filter, not a query. "uranium deposits near Key
+  Lake" will not work; "Key Lake" will, and the rest of that sentence belongs
+  in the ``commodities`` and ``bbox`` arguments.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
-from app.agent.deps import AgentDeps
 from app.agent.tools import _metered  # P1 #16 — per-tool latency metric
-from app.config import settings
+from app.services.public_geo.registry import (
+    CANONICAL_TYPES,
+    jurisdiction_for,
+    source_by_id,
+)
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Map canonical_type → Qdrant collection name (matches index_public_geoscience.py).
-# Tier 1 expansion added rock_sample + assessment_survey collections; this
-# dict is the single gate that opens them to the chat tool.
-_COLLECTION_FOR_TYPE: dict[str, str] = {
-    "mine":                    "pg_mine",
-    "mineral_occurrence":      "pg_mineral_occurrence",
-    "drillhole_collar":        "pg_drillhole_collar",
-    "resource_potential_zone": "pg_resource_potential_zone",
-    "rock_sample":             "pg_rock_sample",
-    "assessment_survey":       "pg_assessment_survey",
-    # Tier 2 Mineral Tenure. The collection only carries rows once the
-    # paired index_public_geoscience_qdrant asset has been extended to
-    # populate it — until then queries here return empty gracefully.
-    "mineral_disposition":     "pg_mineral_disposition",
-}
-
-_ALL_CANONICAL_TYPES = tuple(_COLLECTION_FOR_TYPE.keys())
-
-
-def _resolve_collection(canonical_type: str) -> str:
-    """Map a canonical type to its Qdrant collection, honouring the cutover suffix.
-
-    The base names above are the ORIGINAL 384-dim bge collections. Because the
-    runtime embedder is 1024-dim, querying those returns
-    ``HTTP 400: expected dim: 384, got 1024`` — which is why 182,826 indexed
-    points were unreachable. ``scripts/reembed_public_geoscience_cohere.py``
-    re-encodes them into Cohere Embed v4 and writes ``<name><suffix>``
-    collections; setting PUBLIC_GEO_COLLECTION_SUFFIX points the reader at
-    those. Read at call time, not import time, so the cutover is an env change
-    rather than a deploy.
-    """
-    from app.config import settings  # noqa: PLC0415
-
-    return f"{_COLLECTION_FOR_TYPE[canonical_type]}{settings.PUBLIC_GEO_COLLECTION_SUFFIX}"
-
-# Default limits. Lower than the internal search_documents cap because
-# payload summaries are short and the chat model doesn't need more than
-# ~10 per surface to reason over a jurisdiction.
 _DEFAULT_LIMIT_PER_TYPE = 6
 _MAX_LIMIT_PER_TYPE = 25
 
+# Whole-query ceiling. Generous for an indexed read; it exists so a lock or a
+# bad plan cannot hold a chat turn open.
+_QUERY_TIMEOUT_S = 6.0
+
 
 # ---------------------------------------------------------------------------
-# Dataclasses (match the style of tools.py — plain dataclasses, not Pydantic)
+# Per-type projections
 # ---------------------------------------------------------------------------
+# The seven canonical tables do not share a schema, so each contributes its own
+# SELECT normalised to a common shape, UNION ALL'd into one statement — one
+# round trip regardless of how many types the caller asked for.
+#
+# Every branch takes the SAME parameter list ($1..$8), which is what makes a
+# single bind for the whole union possible.
+
+_TABLES: dict[str, str] = {
+    "mine": "public_geo.pg_mine",
+    "mineral_occurrence": "public_geo.pg_mineral_occurrence",
+    "drillhole_collar": "public_geo.pg_drillhole_collar",
+    "resource_potential_zone": "public_geo.pg_resource_potential_zone",
+    "rock_sample": "public_geo.pg_rock_sample",
+    "assessment_survey": "public_geo.pg_assessment_survey",
+    "mineral_disposition": "public_geo.pg_mineral_disposition",
+}
+
+# Name expression per type. Referenced from both the SELECT list and the WHERE
+# clause (the filter runs before the output alias exists), so it is declared
+# once here rather than written twice.
+_NAME_EXPR: dict[str, str] = {
+    "mine": "name",
+    "mineral_occurrence": "name",
+    "drillhole_collar": "COALESCE(drillhole_name, drillhole_id, project_name)",
+    # These zones have no name — the commodity IS the identity.
+    "resource_potential_zone": "commodity",
+    "rock_sample": "COALESCE(sample_number, station)",
+    # The assessment FILE NUMBER is how these are cited and asked for; it lives
+    # in source_attributes because the table keeps only survey_type as a typed
+    # column.
+    "assessment_survey": "source_attributes->>'FILENUMBER'",
+    "mineral_disposition": "disposition_number",
+}
+
+_COMMODITY_EXPR: dict[str, str] = {
+    "mine": "commodities",
+    # Both lists are searchable: a geologist asking for copper wants the
+    # occurrence where copper is associated, not only the ones where it is the
+    # headline commodity.
+    "mineral_occurrence": "(primary_commodities || associated_commodities)",
+    "drillhole_collar": "commodity_of_interest",
+    "resource_potential_zone": "ARRAY[commodity]",
+    "rock_sample": "'{}'::text[]",
+    "assessment_survey": "'{}'::text[]",
+    "mineral_disposition": "COALESCE(commodity_codes, '{}'::text[])",
+}
+
+_GROUPING_EXPR: dict[str, str] = {
+    "mine": "commodity_grouping",
+    "mineral_occurrence": "commodity_grouping",
+    "drillhole_collar": "NULL::varchar",
+    "resource_potential_zone": "commodity_grouping",
+    "rock_sample": "NULL::varchar",
+    "assessment_survey": "NULL::varchar",
+    "mineral_disposition": "NULL::varchar",
+}
+
+_STATUS_EXPR: dict[str, str] = {
+    "mine": "status",
+    "mineral_occurrence": "status",
+    "drillhole_collar": "core_availability",
+    "resource_potential_zone": "NULL::varchar",
+    "rock_sample": "NULL::varchar",
+    "assessment_survey": "survey_type",
+    "mineral_disposition": "status",
+}
+
+# Commodity match, deliberately NOT a substring test.
+#
+# Commodity codes are one or two letters, so `LIKE '%U%'` is catastrophically
+# loose: searching "U" matched "Ind*u*strial Mineral" and returned 24 of 25
+# Saskatchewan mines, including chloride and salt deposits (verified against
+# CA-SK-MINE-LOC, 2026-08-20). This compares whole values, and separately
+# whole WORDS inside multi-word values, so "uranium" matches "Uranium Mine"
+# while "U" still does not match "Industrial".
+_COMMODITY_MATCH = """
+        EXISTS (
+            SELECT 1 FROM unnest({expr}) AS c
+             WHERE lower(trim(c)) = ANY($3::text[])
+                OR string_to_array(
+                       regexp_replace(lower(c), '[^a-z0-9]+', ' ', 'g'), ' '
+                   ) && $3::text[]
+        )"""
+
 
 @dataclass
 class PublicGeoscienceRecord:
-    """One canonical entity retrieved from a Public Geoscience Qdrant collection.
+    """One entity from the public-geoscience mirror.
 
-    Fields mirror the Qdrant payload built by the Phase-3.2 index asset
-    plus post-hoc license/staleness metadata joined from PostGIS.
+    Field set is unchanged from the stored-corpus era so the response
+    assembler and citation layer need no edits.
 
-    All fields are either primitive types or dict/list so the response
-    assembler can serialize them into the GeoRAGResponse without additional
-    coercion.
+    ``pg_id`` is ``"<source_id>:<source_feature_id>"`` — a composite of two
+    upstream-stable identifiers rather than our internal UUID, so a citation
+    stays resolvable against the survey itself even if our row is rebuilt.
     """
 
     pg_id: str
-    canonical_type: str                   # "mine" | "mineral_occurrence" | …
+    canonical_type: str
     jurisdiction_code: str
     jurisdiction_name: str | None
     source_id: str
     source_feature_id: str | None
-    name: str                             # display title derived from summary
-    summary_text: str                     # structured NL summary from Qdrant
+    name: str
+    summary_text: str
     commodities: list[str] = field(default_factory=list)
     commodity_grouping: str | None = None
     status: str | None = None
-    geom_bbox: list[float] | None = None  # [minLon, minLat, maxLon, maxLat]
-    source_url: str | None = None         # deep link back to upstream
+    geom_bbox: list[float] | None = None
+    source_url: str | None = None
     license_summary: str | None = None
     license_url: str | None = None
-    staleness_seconds: int | None = None  # None if last_refreshed_at is NULL
-    relevance_score: float = 0.0          # raw Qdrant cosine (no reranker here)
+    #: Seconds since the sync last confirmed this feature upstream. Real, not
+    #: a placeholder zero.
+    staleness_seconds: int | None = None
+    #: Always 0.0 — nothing here is semantically ranked. See module docstring.
+    relevance_score: float = 0.0
 
 
 @dataclass
@@ -143,17 +206,51 @@ class PublicGeoscienceSearchResult:
     count: int
     jurisdictions_queried: list[str]
     canonical_types_queried: list[str]
-    # Audit-only: supports hallucination Layer 5 (chunk provenance).
-    data_source: str = "Qdrant public_geo.* collections"
+    data_source: str = "public_geo.* (synced from provincial + federal survey APIs)"
 
 
-# ---------------------------------------------------------------------------
-# The tool
-# ---------------------------------------------------------------------------
+def _build_query(types: list[str]) -> str:
+    """UNION ALL one independently-limited SELECT per requested type.
+
+    Each branch is limited on its own so a type with a million rows cannot
+    crowd out a type with fifty. The caller asked for ``limit_per_type``, and
+    a single outer LIMIT would not deliver that.
+    """
+    branches = [
+        f"""(
+    SELECT '{t}'::text AS canonical_type,
+           jurisdiction_code,
+           source_id,
+           source_feature_id,
+           {_NAME_EXPR[t]} AS name,
+           {_COMMODITY_EXPR[t]} AS commodities,
+           {_GROUPING_EXPR[t]} AS commodity_grouping,
+           {_STATUS_EXPR[t]} AS status,
+           last_seen_at,
+           CASE WHEN geom IS NULL THEN NULL ELSE ARRAY[
+               ST_XMin(geom), ST_YMin(geom), ST_XMax(geom), ST_YMax(geom)
+           ] END AS bbox
+      FROM {_TABLES[t]}
+     WHERE ($1::text[] IS NULL OR jurisdiction_code = ANY($1::text[]))
+       AND ($2::text   IS NULL OR {_NAME_EXPR[t]} ILIKE '%' || $2::text || '%')
+       AND ($3::text[] IS NULL OR{_COMMODITY_MATCH.format(expr=_COMMODITY_EXPR[t])})
+       AND ($4::float8 IS NULL
+            OR (geom IS NOT NULL
+                AND geom && ST_MakeEnvelope($4, $5, $6, $7, 4326)))
+     -- Most recently reaffirmed upstream first: if the caller will see only
+     -- six of four hundred, they should be the six the survey most recently
+     -- confirmed still exist.
+     ORDER BY last_seen_at DESC
+     LIMIT $8::int
+)"""
+        for t in types
+    ]
+    return "\nUNION ALL\n".join(branches)
+
 
 @_metered("search_public_geoscience")
 async def search_public_geoscience(
-    ctx: Any,   # ToolContext | RunContext[AgentDeps] — keeping duck-typed like the other tools
+    ctx: Any,   # ToolContext | RunContext[AgentDeps] — duck-typed like the other tools
     *,
     jurisdiction_codes: list[str] | None = None,
     canonical_types: list[str] | None = None,
@@ -162,404 +259,234 @@ async def search_public_geoscience(
     text_query: str | None = None,
     limit_per_type: int = _DEFAULT_LIMIT_PER_TYPE,
 ) -> PublicGeoscienceSearchResult:
-    """Search the Public Geoscience corpus across one or more canonical types.
+    """Search government-published geoscience records.
 
-    Use this tool when the user asks about:
-      - Government-published mineral occurrences, mines, drillholes, or
-        resource potential zones.
-      - Saskatchewan SMDI records (or, later, BC MINFILE / Ontario MDI / …).
-      - Any "what's around X, Y" question that hits external geological-
-        survey data rather than the internal project archive.
+    Use this when the user asks about:
+      - Government-published mineral occurrences, mines, drillholes, resource
+        potential zones, rock samples, assessment surveys or mineral tenure.
+      - Saskatchewan SMDI or BC MINFILE records.
+      - "What's around X, Y" questions that hit external survey data rather
+        than the internal project archive.
 
-    When the user's intent is ambiguous between internal archive and Public
-    Geoscience, the orchestrator is expected to call BOTH `search_documents`
-    and this tool and let the response assembler label results by source
-    surface.
+    When intent is ambiguous between internal archive and public geoscience,
+    the orchestrator calls BOTH this and `search_documents`, and the response
+    assembler labels results by surface.
 
     Args:
-        jurisdiction_codes: Whitelist of jurisdictions to query. If None or
-            empty, all active jurisdictions registered in PostGIS are searched.
-        canonical_types: Subset of {"mine","mineral_occurrence",
-            "drillhole_collar","resource_potential_zone","rock_sample",
-            "assessment_survey"}. If None or empty, all six are queried.
-            Restricting reduces latency proportionally.
-        commodities: Canonical commodity codes (e.g. "Au", "U", "Li"). Matches
-            any hit whose `commodities` payload list contains any of these.
-        bbox: [minLon, minLat, maxLon, maxLat] or None. When provided we
-            post-filter the Qdrant hits by overlap with this bbox (Qdrant
-            doesn't natively index our geom_bbox arrays as a spatial type).
-        text_query: Free-text semantic query. When provided we embed it and
-            use the result as the query vector; when None we fall back to
-            an empty-string-embedded "match all" vector so filter-only
-            retrieval still works (useful for "list all producing uranium
-            mines in Saskatchewan" style queries).
-        limit_per_type: Max hits per canonical_type per Qdrant call. Hard-
-            capped at 25 so a misbehaving caller can't DOS the LLM prompt.
+        jurisdiction_codes: Restrict to these jurisdictions ("CA-SK", "CA-BC").
+            None/empty means every jurisdiction.
+        canonical_types: Subset of the seven canonical types. None/empty means
+            all of them.
+        commodities: Commodity names or codes ("Au", "uranium"). Matched
+            whole-value or whole-word — never as a substring.
+        bbox: [minLon, minLat, maxLon, maxLat] in WGS84. The most selective
+            filter available; runs against the GIST index on geom.
+        text_query: Case-insensitive contains-match against the type's name
+            column. NOT semantic search; see the module docstring.
+        limit_per_type: Max records per canonical type. Capped at 25 so a bad
+            caller cannot flood the prompt.
 
     Returns:
-        PublicGeoscienceSearchResult with hydrated records and audit metadata.
-        On timeout or Qdrant error, returns an empty result with a descriptive
-        data_source label rather than raising.
+        PublicGeoscienceSearchResult. Any failure degrades to an empty result
+        rather than raising, matching the convention in `app.agent.tools`.
     """
-    deps: AgentDeps = ctx.deps  # type: ignore[attr-defined]
     t0 = time.monotonic()
 
-    juris_list = _normalize_strings(jurisdiction_codes) or []
-    types_to_query = _normalize_strings(canonical_types) or list(_ALL_CANONICAL_TYPES)
-    types_to_query = [t for t in types_to_query if t in _COLLECTION_FOR_TYPE]
-    commodity_list = _normalize_strings(commodities) or []
-    effective_limit = max(1, min(int(limit_per_type or _DEFAULT_LIMIT_PER_TYPE), _MAX_LIMIT_PER_TYPE))
+    juris_list = _normalize_strings(jurisdiction_codes)
+    types_to_query = [
+        t for t in (_normalize_strings(canonical_types) or list(CANONICAL_TYPES))
+        if t in _TABLES
+    ]
+    commodity_tokens = _commodity_tokens(commodities)
+    effective_limit = max(
+        1, min(int(limit_per_type or _DEFAULT_LIMIT_PER_TYPE), _MAX_LIMIT_PER_TYPE)
+    )
     bbox_tuple = _normalize_bbox(bbox)
 
+    empty = PublicGeoscienceSearchResult(
+        records=[], count=0,
+        jurisdictions_queried=juris_list,
+        canonical_types_queried=types_to_query,
+    )
+
     if not types_to_query:
-        logger.info("search_public_geoscience: empty canonical_types, nothing to do")
-        return PublicGeoscienceSearchResult(
-            records=[], count=0,
-            jurisdictions_queried=juris_list,
-            canonical_types_queried=[],
-            data_source="Qdrant public_geo.* collections (no types requested)",
-        )
+        logger.info("search_public_geoscience: no valid canonical_types requested")
+        return empty
 
-    # ── Embed the query once, reuse across collections. ────────────────
-    query_vector = await _embed_query(deps, text_query)
-    if query_vector is None:
-        # No embedding model at all → cannot run semantic search. Rather
-        # than returning nothing we could build a payload-only filter path,
-        # but the response assembler needs *some* ranking signal and the
-        # internal tools would also degrade here, so just log and exit.
-        logger.info("search_public_geoscience: embedding model unavailable")
-        return PublicGeoscienceSearchResult(
-            records=[], count=0,
-            jurisdictions_queried=juris_list,
-            canonical_types_queried=types_to_query,
-            data_source="Qdrant public_geo.* (embedding model not loaded)",
-        )
+    pool = getattr(getattr(ctx, "deps", None), "pg_pool", None)
+    if pool is None:
+        logger.warning("search_public_geoscience: deps.pg_pool is None — empty result")
+        return empty
 
-    # ── Fan out across canonical types in parallel. ─────────────────────
+    sql = _build_query(types_to_query)
+    args = (
+        juris_list or None,
+        (text_query or "").strip() or None,
+        commodity_tokens or None,
+        bbox_tuple[0] if bbox_tuple else None,
+        bbox_tuple[1] if bbox_tuple else None,
+        bbox_tuple[2] if bbox_tuple else None,
+        bbox_tuple[3] if bbox_tuple else None,
+        effective_limit,
+    )
+
     try:
-        fetched = await asyncio.wait_for(
-            asyncio.gather(
-                *[
-                    _query_collection(
-                        deps=deps,
-                        canonical_type=ct,
-                        query_vector=query_vector,
-                        jurisdictions=juris_list,
-                        commodities=commodity_list,
-                        limit=effective_limit,
-                    )
-                    for ct in types_to_query
-                ],
-                return_exceptions=True,
-            ),
-            timeout=settings.TIMEOUT_QDRANT_S * 2,  # 2× because we fan out
-        )
-    except TimeoutError:
-        logger.warning("search_public_geoscience: Qdrant fan-out timed out")
-        return PublicGeoscienceSearchResult(
-            records=[], count=0,
-            jurisdictions_queried=juris_list,
-            canonical_types_queried=types_to_query,
-            data_source="Qdrant public_geo.* (timeout)",
-        )
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args, timeout=_QUERY_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — degrade, never fail an answer
+        logger.exception("search_public_geoscience: query failed")
+        return empty
 
-    records: list[PublicGeoscienceRecord] = []
-    for ct, result in zip(types_to_query, fetched, strict=False):
-        if isinstance(result, Exception):
-            logger.warning(
-                "search_public_geoscience: %s collection failed: %s",
-                ct, result,
-            )
-            continue
-        for rec in result:
-            if _passes_bbox(rec.geom_bbox, bbox_tuple):
-                records.append(rec)
+    records = [_to_record(r) for r in rows]
 
-    # ── Hydrate license + staleness from PostGIS. ──────────────────────
-    # One query per run, not per record.
-    await _hydrate_registry_metadata(deps, records)
-
-    # Sort hits across all collections by score descending so the top-k
-    # spans surfaces naturally (occurrences can outrank mines if the query
-    # semantically prefers them).
-    records.sort(key=lambda r: r.relevance_score, reverse=True)
-
-    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
     logger.info(
-        "search_public_geoscience: %d hits across %d types in %.1fms "
-        "(jurisdictions=%s, commodities=%s, bbox=%s)",
-        len(records),
-        len(types_to_query),
-        elapsed_ms,
-        juris_list or "all",
-        commodity_list or "all",
-        "yes" if bbox_tuple else "no",
+        "search_public_geoscience: %d record(s) across %d type(s) in %.0fms "
+        "(juris=%s bbox=%s text=%s commodities=%s)",
+        len(records), len(types_to_query), (time.monotonic() - t0) * 1000,
+        juris_list or "all", bool(bbox_tuple), bool(text_query),
+        commodity_tokens or "any",
     )
 
     return PublicGeoscienceSearchResult(
         records=records,
         count=len(records),
-        jurisdictions_queried=juris_list,
+        jurisdictions_queried=juris_list or sorted({r.jurisdiction_code for r in records}),
         canonical_types_queried=types_to_query,
-        data_source=f"Qdrant public_geo.* ({len(records)} hits, {elapsed_ms}ms)",
     )
 
 
 # ---------------------------------------------------------------------------
-# Internals
+# Row -> record
 # ---------------------------------------------------------------------------
 
-async def _embed_query(deps: AgentDeps, text_query: str | None) -> list[float] | None:
-    model = deps.embedding_model
-    if model is None:
+def _to_record(row: Any) -> PublicGeoscienceRecord:
+    canonical_type = row["canonical_type"]
+    source_id = row["source_id"]
+    feature_id = row["source_feature_id"]
+
+    # Licence and display name come from the code registry rather than a join:
+    # they are static addressing metadata, and keeping them out of the query
+    # avoids two more table reads on every chat turn.
+    src = source_by_id(source_id)
+    juris = jurisdiction_for(src) if src else None
+
+    commodities = [c for c in (row["commodities"] or []) if c]
+    name = (
+        row["name"]
+        or f"{canonical_type.replace('_', ' ').title()} {feature_id or ''}".strip()
+    )
+    status = row["status"]
+
+    return PublicGeoscienceRecord(
+        pg_id=f"{source_id}:{feature_id}" if feature_id else source_id,
+        canonical_type=canonical_type,
+        jurisdiction_code=row["jurisdiction_code"],
+        jurisdiction_name=juris.display_name if juris else None,
+        source_id=source_id,
+        source_feature_id=feature_id,
+        name=name,
+        summary_text=_summarize(
+            name, canonical_type, commodities, status,
+            (juris.display_name if juris else None) or row["jurisdiction_code"],
+            src.name if src else source_id,
+        ),
+        commodities=commodities[:12],
+        commodity_grouping=row["commodity_grouping"],
+        status=status,
+        geom_bbox=[float(v) for v in row["bbox"]] if row["bbox"] else None,
+        source_url=src.service_url if src else None,
+        license_summary=(juris.license_summary if juris else None)
+        or (src.license_summary if src else None),
+        license_url=(juris.license_url if juris else None)
+        or (src.license_url if src else None),
+        staleness_seconds=_staleness(row["last_seen_at"]),
+        relevance_score=0.0,  # nothing here is semantically ranked
+    )
+
+
+def _staleness(last_seen_at: Any) -> int | None:
+    """Seconds since the sync last confirmed this feature upstream."""
+    if last_seen_at is None:
         return None
-    loop = asyncio.get_event_loop()
-    # Empty/None text_query → use a neutral sentinel so the vector has
-    # consistent dimensionality and filters still work. The embedding is
-    # then effectively just "Canadian geological-survey records" noise.
-    q = text_query if text_query and text_query.strip() else "Canadian public geological-survey records"
-    # Qwen3-Embedding query template (matches tools.search_documents). When
-    # EMBEDDING_QUERY_PROMPT_NAME is unset we fall back to raw encoding.
-    from app.config import settings as _settings  # noqa: PLC0415
-    _prompt_name = _settings.EMBEDDING_QUERY_PROMPT_NAME or None
-
-    def _encode() -> list[float]:
-        # See tools.search_documents's matching comment: Cohere Embed v4
-        # (Azure AI Foundry) wants input_type="search_query" here, exposed
-        # only via embed_query() since plain SentenceTransformer has no
-        # equivalent slot. Falls back to .encode() + prompt_name for
-        # backends without that distinction.
-        if hasattr(model, "embed_query"):
-            return model.embed_query(q).tolist()
-        return model.encode(q, normalize_embeddings=True, prompt_name=_prompt_name).tolist()
-
-    try:
-        vec = await loop.run_in_executor(None, _encode)
-        return vec
-    except Exception:
-        logger.exception("search_public_geoscience: embedding failed for '%.80s'", q)
-        return None
+    seen = last_seen_at
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    return max(0, int((datetime.now(UTC) - seen).total_seconds()))
 
 
-def _qdrant_filter(
-    *,
-    jurisdictions: list[str],
-    commodities: list[str],
-) -> Any | None:
-    """Build a Qdrant Filter from whitelisted jurisdictions + commodities.
-
-    None = no filter (all points eligible). Both arrays are OR-within,
-    AND-across (standard Qdrant must/should semantics).
-    """
-    from qdrant_client.models import FieldCondition, Filter, MatchAny
-
-    must: list[Any] = []
-    if jurisdictions:
-        must.append(
-            FieldCondition(
-                key="jurisdiction_code",
-                match=MatchAny(any=list(jurisdictions)),
-            )
-        )
-    if commodities:
-        # `commodities` is a keyword array in the payload; MatchAny works
-        # because Qdrant treats array fields as "set of keywords".
-        must.append(
-            FieldCondition(
-                key="commodities",
-                match=MatchAny(any=list(commodities)),
-            )
-        )
-    if not must:
-        return None
-    return Filter(must=must)
-
-
-async def _query_collection(
-    *,
-    deps: AgentDeps,
+def _summarize(
+    name: str,
     canonical_type: str,
-    query_vector: list[float],
-    jurisdictions: list[str],
     commodities: list[str],
-    limit: int,
-) -> list[PublicGeoscienceRecord]:
-    collection = _resolve_collection(canonical_type)
-    query_filter = _qdrant_filter(jurisdictions=jurisdictions, commodities=commodities)
+    status: str | None,
+    where: str,
+    source_name: str,
+) -> str:
+    """Human-readable one-liner — what the LLM actually reads.
 
-    response = await deps.qdrant_client.query_points(
-        collection_name=collection,
-        query=query_vector,
-        limit=limit,
-        with_payload=True,
-        query_filter=query_filter,
-    )
-
-    out: list[PublicGeoscienceRecord] = []
-    for point in response.points:
-        payload = point.payload or {}
-        name = _derive_name(payload, canonical_type)
-        out.append(
-            PublicGeoscienceRecord(
-                pg_id=str(payload.get("pg_id") or point.id),
-                canonical_type=str(payload.get("canonical_type") or canonical_type),
-                jurisdiction_code=str(payload.get("jurisdiction_code") or ""),
-                jurisdiction_name=None,  # hydrated below
-                source_id=str(payload.get("source_id") or ""),
-                source_feature_id=_maybe_str(payload.get("source_feature_id")),
-                name=name,
-                summary_text=str(payload.get("summary_text") or ""),
-                commodities=list(payload.get("commodities") or []),
-                commodity_grouping=_maybe_str(payload.get("commodity_grouping")),
-                status=_maybe_str(payload.get("status")),
-                geom_bbox=_maybe_bbox(payload.get("geom_bbox")),
-                source_url=_maybe_str(payload.get("source_url")),
-                license_summary=None,     # hydrated below
-                license_url=None,         # hydrated below
-                staleness_seconds=None,   # hydrated below
-                relevance_score=float(point.score or 0.0),
-            )
-        )
-    return out
-
-
-def _derive_name(payload: dict[str, Any], canonical_type: str) -> str:
-    """Return a short display title. We avoid fetching the canonical table
-    again by using the payload summary's first clause; most summaries are
-    'STATUS NAME in JURISDICTION…' so the first 80 chars are meaningful.
+    Mirrors the sentence the stored pipeline used to bake into
+    ``summary_text``, so prompts and the response assembler see a familiar
+    shape.
     """
-    summary = str(payload.get("summary_text") or "").strip()
-    if summary:
-        # Clip at the first period for a clean one-liner.
-        first = summary.split(".", 1)[0]
-        return first[:120]
-    # Fall back to a generic type-qualified label.
-    pretty = canonical_type.replace("_", " ").title()
-    return f"{pretty} record"
-
-
-async def _hydrate_registry_metadata(
-    deps: AgentDeps,
-    records: list[PublicGeoscienceRecord],
-) -> None:
-    """Attach jurisdiction_name + license + staleness_seconds to each record.
-
-    One query per unique (jurisdiction, source) pair, not per record.
-    """
-    if not records:
-        return
-
-    source_ids = sorted({r.source_id for r in records if r.source_id})
-    jurisdiction_codes = sorted({r.jurisdiction_code for r in records if r.jurisdiction_code})
-
-    if not source_ids or not jurisdiction_codes:
-        return
-
-    sql = """
-    SELECT
-        s.source_id,
-        s.jurisdiction_code,
-        s.license_summary,
-        s.license_url,
-        s.last_refreshed_at,
-        EXTRACT(EPOCH FROM (NOW() - s.last_refreshed_at))::BIGINT AS staleness_seconds,
-        j.display_name AS jurisdiction_name
-      FROM public_geo.sources s
-      JOIN public_geo.jurisdictions j
-           ON j.jurisdiction_code = s.jurisdiction_code
-     WHERE s.source_id = ANY($1::text[])
-       AND s.jurisdiction_code = ANY($2::text[])
-    """
-
-    async def _run() -> list[dict[str, Any]]:
-        async with deps.pg_pool.acquire() as conn:
-            rows = await conn.fetch(sql, source_ids, jurisdiction_codes)
-        return [dict(r) for r in rows]
-
-    try:
-        rows = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
-    except TimeoutError:
-        logger.warning("search_public_geoscience: registry hydration timed out")
-        return
-    except Exception:
-        logger.exception("search_public_geoscience: registry hydration failed")
-        return
-
-    # Build a lookup keyed on (source_id, jurisdiction_code).
-    lookup: dict[tuple[str, str], dict[str, Any]] = {
-        (r["source_id"], r["jurisdiction_code"]): r for r in rows
-    }
-
-    for rec in records:
-        ref = lookup.get((rec.source_id, rec.jurisdiction_code))
-        if not ref:
-            continue
-        rec.jurisdiction_name = ref.get("jurisdiction_name")
-        rec.license_summary = ref.get("license_summary")
-        rec.license_url = ref.get("license_url")
-        staleness = ref.get("staleness_seconds")
-        rec.staleness_seconds = int(staleness) if staleness is not None else None
+    bits = [f"{name} ({canonical_type.replace('_', ' ')}) in {where}"]
+    if commodities:
+        bits.append(f"Commodities: {', '.join(commodities[:8])}")
+    if status:
+        bits.append(f"Status: {status}")
+    bits.append(f"Source: {source_name}")
+    return ". ".join(bits) + "."
 
 
 # ---------------------------------------------------------------------------
-# Small utilities
+# Normalisation helpers
 # ---------------------------------------------------------------------------
 
 def _normalize_strings(values: Iterable[str] | None) -> list[str]:
+    """Trim and drop blanks.
+
+    ``None`` entries are dropped BEFORE stringification. Coercing first turns
+    them into the literal ``"None"``, which is truthy and survives the filter,
+    so a caller passing ``jurisdiction_codes=[None]`` would silently search for
+    a jurisdiction named "None" and get an empty result that looks like
+    "no data there".
+    """
     if not values:
         return []
-    return [str(v).strip() for v in values if v is not None and str(v).strip()]
+    out = []
+    for v in values:
+        if v is None:
+            continue
+        text = str(v).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _commodity_tokens(values: Iterable[str] | None) -> list[str]:
+    """Lowercase whole-value and whole-word forms to match against.
+
+    A caller may pass "Rare Earth Elements"; the whole-value comparison
+    handles that, and the individual words feed the array-overlap test for
+    values the survey spells differently.
+    """
+    tokens: list[str] = []
+    for raw in _normalize_strings(values):
+        low = raw.lower()
+        if low not in tokens:
+            tokens.append(low)
+        for word in re.split(r"[^a-z0-9]+", low):
+            if word and word not in tokens:
+                tokens.append(word)
+    return tokens
 
 
 def _normalize_bbox(bbox: Any) -> tuple[float, float, float, float] | None:
-    if bbox is None:
+    if not bbox:
         return None
     try:
-        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-            return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        vals = [float(v) for v in list(bbox)[:4]]
     except (TypeError, ValueError):
         return None
-    return None
-
-
-def _maybe_str(value: Any) -> str | None:
-    if value is None:
+    if len(vals) != 4:
         return None
-    s = str(value).strip()
-    return s or None
-
-
-def _maybe_bbox(value: Any) -> list[float] | None:
-    if value is None:
-        return None
-    try:
-        if isinstance(value, (list, tuple)) and len(value) == 4:
-            return [float(v) for v in value]
-    except (TypeError, ValueError):
-        return None
-    return None
-
-
-def _passes_bbox(
-    hit: list[float] | None,
-    requested: tuple[float, float, float, float] | None,
-) -> bool:
-    """Return True if the hit's bbox overlaps the requested bbox.
-
-    No requested bbox → everything passes.
-    Missing hit bbox → we can't tell; fail open (keep the record).
-    """
-    if requested is None or hit is None:
-        return True
-    try:
-        h_min_lon, h_min_lat, h_max_lon, h_max_lat = hit
-        r_min_lon, r_min_lat, r_max_lon, r_max_lat = requested
-    except (TypeError, ValueError):
-        return True
-    # Standard AABB overlap test.
-    return not (
-        h_max_lon < r_min_lon
-        or h_min_lon > r_max_lon
-        or h_max_lat < r_min_lat
-        or h_min_lat > r_max_lat
-    )
+    return (vals[0], vals[1], vals[2], vals[3])
