@@ -1,7 +1,10 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
+
+// Vite's `?raw` import, matching the pattern in
+// Components/__tests__/MapView.auth.test.ts. Reading the file through the
+// bundler rather than node:fs keeps this test free of @types/node, which is
+// not a declared dependency and is not in tsconfig's `types`.
+import uploadControllerSource from '../../../../app/Http/Controllers/Api/V1/UploadController.php?raw';
 
 import {
   CATEGORY_EXTS,
@@ -31,13 +34,8 @@ import {
  * together.
  */
 
-const CONTROLLER = resolve(
-  __dirname,
-  '../../../../app/Http/Controllers/Api/V1/UploadController.php',
-);
-
 function phpCategoryBlock(constName: string): Record<string, string[]> {
-  const php = readFileSync(CONTROLLER, 'utf8');
+  const php = uploadControllerSource;
   const block = new RegExp(
     `private const ${constName} = \\[(.*?)\\n    \\];`,
     's',
