@@ -63,7 +63,25 @@ VECTOR_EXTENSIONS = frozenset({
     ".dxf", ".dgn", ".gdb", ".fgb",
 })
 QGIS_PROJECT_EXTENSIONS = frozenset({".qgs", ".qgz"})
-SUPPORTED_EXTENSIONS = VECTOR_EXTENSIONS | QGIS_PROJECT_EXTENSIONS
+
+#: A shapefile is never one file. ".shp" is meaningless without the ".shx"
+#: index, the ".dbf" attribute table and — critically — the ".prj" that says
+#: what coordinate system it is in. They travel as a ZIP, which is how
+#: shapefiles are actually delivered, so refusing ZIP would refuse the normal
+#: case while accepting the rare one.
+ARCHIVE_EXTENSIONS = frozenset({".zip"})
+
+SUPPORTED_EXTENSIONS = (
+    VECTOR_EXTENSIONS | QGIS_PROJECT_EXTENSIONS | ARCHIVE_EXTENSIONS
+)
+
+#: Files inside an archive that are worth opening. A zipped shapefile also
+#: contains .shx/.dbf/.prj/.cpg — those are read by pyogrio through the .shp
+#: and must NOT be opened directly.
+_ARCHIVE_MEMBER_EXTENSIONS = VECTOR_EXTENSIONS | QGIS_PROJECT_EXTENSIONS
+
+#: Same ceiling as the QGIS extractor. A zip bomb must not fill the worker.
+_MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 
 #: Rows per executemany batch. Large enough to amortise round trips, small
 #: enough that one oversized layer cannot build a single multi-hundred-MB
@@ -130,6 +148,58 @@ INSERT INTO silver.spatial_features (
     ST_SetSRID(ST_GeomFromText($14::text), 4326)
 )
 """
+
+
+def _extract_archive(archive: Path, dest: Path) -> list[Path]:
+    """Expand a ZIP and return the vector/project files worth parsing.
+
+    Guarded against Zip Slip — a member named ``../../etc/passwd`` is a real
+    attack against naive extraction, and geology data arrives from third
+    parties by definition.
+
+    Sidecars are extracted but not returned: a zipped shapefile carries
+    ``.shx``, ``.dbf``, ``.prj`` and often ``.cpg`` beside the ``.shp``, and
+    pyogrio reads them through the ``.shp``. Returning them would parse the
+    same layer four times and, for the ``.prj``, fail outright.
+
+    Anything else in the archive (READMEs, metadata XML, stray PDFs) is left
+    alone rather than guessed at.
+    """
+    import zipfile  # noqa: PLC0415
+
+    total = 0
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            target = (dest / info.filename).resolve()
+            if not str(target).startswith(str(dest.resolve())):
+                log.warning(
+                    "ingest_spatial: refusing archive member escaping the "
+                    "extraction root: %r", info.filename,
+                )
+                continue
+            total += info.file_size
+            if total > _MAX_EXPANDED_BYTES:
+                log.warning(
+                    "ingest_spatial: archive exceeds %d bytes expanded; stopping",
+                    _MAX_EXPANDED_BYTES,
+                )
+                break
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as out:
+                out.write(src.read())
+
+    # __MACOSX/ and dot-underscore files are AppleDouble resource forks that
+    # macOS adds when zipping. They mirror the real names, so including them
+    # would double every layer.
+    return sorted(
+        p for p in dest.rglob("*")
+        if p.is_file()
+        and p.suffix.lower() in _ARCHIVE_MEMBER_EXTENSIONS
+        and "__MACOSX" not in p.parts
+        and not p.name.startswith("._")
+    )
 
 
 def _crs_epsg(source_crs: str | None) -> int | None:
@@ -293,6 +363,61 @@ async def run_ingest_spatial(
                         warnings.append({
                             "code": "layer_parse_failed",
                             "layer": lyr.name,
+                            "detail": str(exc)[:300],
+                        })
+            elif suffix in ARCHIVE_EXTENSIONS:
+                # A zipped shapefile — the normal delivery shape. Every
+                # readable member is parsed and tagged with its own file name
+                # as source_layer, so a bundle holding faults.shp and
+                # claims.shp stays two distinguishable layers.
+                members = _extract_archive(local, Path(tmpdir) / "_unzipped")
+                if not members:
+                    warnings.append({
+                        "code": "archive_has_no_vector_data",
+                        "detail": (
+                            "The archive contains no readable vector or QGIS "
+                            "file. A zipped shapefile must include the .shp "
+                            "itself, not only its .dbf/.shx sidecars."
+                        ),
+                    })
+                parsed = []
+                for member in members:
+                    try:
+                        if member.suffix.lower() in QGIS_PROJECT_EXTENSIONS:
+                            # A project inside a zip: catalogue it, and read
+                            # whatever layers the same archive resolved.
+                            proj = parse_qgis_project(str(member))
+                            project_layers.extend(
+                                {
+                                    "name": lyr.name, "provider": lyr.provider,
+                                    "crs": lyr.crs, "resolved": lyr.resolved,
+                                    "sublayer": lyr.sublayer,
+                                }
+                                for lyr in proj.layers
+                            )
+                            warnings.extend(proj.warnings)
+                            for lyr in proj.layers:
+                                if lyr.resolved and lyr.resolved_path:
+                                    parsed.append((
+                                        lyr.name,
+                                        parse_spatial_file(
+                                            lyr.resolved_path,
+                                            feature_type=input.feature_type,
+                                            layer=lyr.sublayer,
+                                        ),
+                                    ))
+                            continue
+
+                        parsed.append((
+                            member.stem,
+                            parse_spatial_file(
+                                str(member), feature_type=input.feature_type,
+                            ),
+                        ))
+                    except Exception as exc:  # noqa: BLE001 — one bad member must not sink the archive
+                        warnings.append({
+                            "code": "archive_member_failed",
+                            "member": member.name,
                             "detail": str(exc)[:300],
                         })
             else:
