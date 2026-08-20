@@ -4120,21 +4120,33 @@ async def query_drill_traces_3d(
 
 
 # ---------------------------------------------------------------------------
-# Deferred re-export: search_public_geoscience
+# Lazy re-export: search_public_geoscience
 # ---------------------------------------------------------------------------
 # The agentic-retrieval dispatcher resolves tools by name against THIS module
 # — `getattr(app.agent.tools, tool_name)` in agentic_retrieval/nodes.py::
 # execute — so a tool implemented in its own module is invisible to the
-# planner unless it is bound onto this namespace. search_public_geoscience
-# never was, which is why it had never been invoked once despite 182,826
-# indexed points and a classifier that already emits a `public_geo` flag.
+# planner unless it is reachable on this namespace.
 #
-# The import sits at the BOTTOM, not with the others at the top, because
-# app.agent.public_geoscience_tool imports `_metered` from this module
-# (tools.py:209). Importing it at the top would mean tools.py re-entering
-# itself before `_metered` is defined, raising ImportError on a partially
-# initialised module. By the time execution reaches here every name that
-# module needs already exists, so the cycle resolves cleanly.
-from app.agent.public_geoscience_tool import (  # noqa: E402,F401
-    search_public_geoscience,
-)
+# It is resolved lazily rather than imported, because a plain import in either
+# position creates a cycle: app.agent.public_geoscience_tool imports
+# `_metered` from here, so this module importing it back means whichever of
+# the two is imported FIRST re-enters the other while still partially
+# initialised. A bottom-of-file import papered over that only while
+# `app.agent.tools` happened to be imported first; importing
+# public_geoscience_tool directly still raised
+#
+#     ImportError: cannot import name 'search_public_geoscience' from
+#     partially initialized module ... (most likely due to a circular import)
+#
+# PEP 562 module __getattr__ removes the cycle instead of ordering around it:
+# nothing is imported until the dispatcher actually asks for the name, by
+# which point both modules are fully loaded. getattr() triggers this, so the
+# dispatcher's lookup is unchanged.
+def __getattr__(name: str) -> Any:  # noqa: D401 — module-level hook, PEP 562
+    if name == "search_public_geoscience":
+        from app.agent.public_geoscience_tool import (  # noqa: PLC0415
+            search_public_geoscience,
+        )
+
+        return search_public_geoscience
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

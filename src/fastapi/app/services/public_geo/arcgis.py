@@ -142,6 +142,38 @@ async def _get_json(
     return payload
 
 
+# Layer field names, cached per process. Introspection is one extra request
+# the first time a layer is touched; without it a WHERE naming a column the
+# layer lacks makes ArcGIS reject the ENTIRE query with a 400, so a text search
+# silently returns nothing (observed on CA-SK-MINE-LOC, which has NAME but
+# neither MINE_NAME nor SITE_NAME).
+_FIELD_CACHE: dict[str, set[str]] = {}
+
+
+async def layer_fields(
+    source: PublicGeoSource, *, timeout_s: float = DEFAULT_TIMEOUT_S
+) -> set[str]:
+    """Field names this layer exposes, lowercased. Empty set if unknown."""
+    if source.source_id in _FIELD_CACHE:
+        return _FIELD_CACHE[source.source_id]
+
+    meta_url = _query_url(source).rsplit("/query", 1)[0]
+    payload = await _get_json(
+        meta_url, {"f": "json"}, timeout_s=timeout_s, source_id=source.source_id
+    )
+    fields: set[str] = set()
+    if payload:
+        for f in payload.get("fields") or []:
+            nm = f.get("name")
+            if nm:
+                fields.add(str(nm).lower())
+
+    # Cache even an empty result: a layer that will not describe itself will
+    # not do so on retry either, and callers treat empty as "skip text filter".
+    _FIELD_CACHE[source.source_id] = fields
+    return fields
+
+
 async def query_features(
     source: PublicGeoSource,
     *,
@@ -157,8 +189,28 @@ async def query_features(
     Always reprojects to WGS84 (``outSR=4326``) so callers never handle the
     native CRS.
     """
+    # Narrow the caller's candidate name columns to the ones this layer really
+    # has. Passing a non-existent column is not a soft failure in ArcGIS — it
+    # 400s the whole request.
+    usable_text_fields: list[str] | None = None
+    if text and text_fields:
+        present = await layer_fields(source, timeout_s=timeout_s)
+        if present:
+            usable_text_fields = [f for f in text_fields if f.lower() in present]
+            if not usable_text_fields:
+                logger.info(
+                    "public_geo: %s exposes none of %s — running unfiltered and "
+                    "letting the caller filter",
+                    source.source_id, text_fields,
+                )
+        else:
+            # Could not introspect; safer to drop the filter than to 400.
+            usable_text_fields = None
+
     params: dict[str, Any] = {
-        "where": _where_clause(text=text, text_fields=text_fields, extra=where_extra),
+        "where": _where_clause(
+            text=text, text_fields=usable_text_fields, extra=where_extra
+        ),
         "outFields": "*",
         "returnGeometry": "true",
         "outSR": 4326,

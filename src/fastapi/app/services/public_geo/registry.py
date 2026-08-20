@@ -62,6 +62,25 @@ class PublicGeoSource:
     license_summary: str | None
     license_url: str | None
 
+    @property
+    def is_queryable(self) -> bool:
+        """Whether this row addresses a LAYER rather than a service root.
+
+        Three registry rows — CA-SK-RESOURCE-POTENTIAL,
+        CA-SK-MINERAL-DISPOSITION-CROWN and CA-SK-MINERAL-DISPOSITION-MINING —
+        point at a MapServer root and exist only as parents of the per-layer
+        children beside them (…-URANIUM, …-MINING-0, and so on). They carry no
+        layer index, so `/query` against them is a 400:
+
+            GET .../Economy/Resource_Map/MapServer/query -> 400 Bad Request
+
+        Filtering them here rather than at each call site means a caller
+        asking for every resource_potential_zone feed gets the eleven that
+        actually answer, instead of ten answers and one error.
+        """
+        tail = self.service_url.rstrip("/").rsplit("/", 1)[-1]
+        return tail.isdigit() or self.layer_index is not None
+
 
 JURISDICTIONS: dict[str, Jurisdiction] = {
     "CA-AB": Jurisdiction(code="CA-AB", display_name="Alberta", license_summary="Open Government Licence — Alberta", license_url="https://open.alberta.ca/licence"),
@@ -464,6 +483,8 @@ def sources_for(
 
     out = []
     for s in SOURCES:
+        if not s.is_queryable:
+            continue
         if s.canonical_type not in wanted_types:
             continue
         if wanted_juris and s.jurisdiction_code not in wanted_juris:
