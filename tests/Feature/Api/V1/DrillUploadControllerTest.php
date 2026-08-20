@@ -6,15 +6,12 @@ namespace Tests\Feature\Api\V1;
 
 use App\Models\Project;
 use App\Models\User;
-use App\Services\Dagster\DagsterGraphQLClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Mockery;
-use Mockery\MockInterface;
 use Tests\Concerns\RequiresPostgres;
 use Tests\TestCase;
 
@@ -85,6 +82,14 @@ class DrillUploadControllerTest extends TestCase
         return UploadedFile::fake()->createWithContent($name, $content);
     }
 
+    private function pdf(string $name = 'report.pdf', ?string $content = null): UploadedFile
+    {
+        return UploadedFile::fake()->createWithContent(
+            $name,
+            $content ?? "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n",
+        );
+    }
+
     public function test_unknown_slug_returns_404(): void
     {
         $this->actingAs($this->user)
@@ -113,79 +118,54 @@ class DrillUploadControllerTest extends TestCase
             ->assertJsonPath('error', 'unsupported_extension');
     }
 
-    public function test_collar_csv_upload_persists_source_file_and_dispatches_silver_collars(): void
+    /**
+     * 2026-08-17 CI-gap audit: this file predates the 2026-07-28 Dagster
+     * retirement (trim B2) and, because CI never actually ran the
+     * Postgres-gated suite (see phpunit.pgsql.xml's own header /
+     * docs/RUNBOOK.md), that drift was never caught. `DrillUploadController
+     * ::store()` (line 77-83) now rejects every non-PDF extension with a
+     * 422 `retired_pipeline` BEFORE `DrillAssetSelector::select()` is ever
+     * called — so the 'dagster' route, and DrillAssetSelector's csv/xlsx
+     * keyword-routing branches, are unreachable from this controller.
+     * `DrillAssetSelector` and `DagsterGraphQLClient` have no other caller
+     * (confirmed via `grep -rln DagsterGraphQLClient app/` and
+     * `grep -rn DrillAssetSelector:: app/`), so the previous six
+     * Dagster-mock tests plus the "unrouted csv" test were exercising dead
+     * code the whole time. Replaced with one test asserting the actual,
+     * intended retirement behavior.
+     */
+    public function test_non_pdf_extension_returns_422_retired_pipeline_without_persisting(): void
     {
-        $this->mockDagsterDispatch('silver_collars');
+        foreach (['collars_2024.csv', 'lithology_log.csv', 'mixed.xlsx', 'legacy.xls'] as $name) {
+            $ext = pathinfo($name, PATHINFO_EXTENSION);
+            $file = $ext === 'csv'
+                ? $this->csv($name)
+                : UploadedFile::fake()->createWithContent($name, 'stub-'.$ext);
 
-        $response = $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')]);
+            $this->actingAs($this->user)
+                ->postJson($this->url(), ['file' => $file])
+                ->assertStatus(422)
+                ->assertJsonPath('error', 'retired_pipeline');
+        }
 
-        $response
-            ->assertCreated()
-            ->assertJsonPath('route', 'dagster')
-            ->assertJsonPath('asset_key', 'silver_collars')
-            ->assertJsonPath('dispatch.dispatched', true);
-
-        $sourceFileId = $response->json('source_file_id');
-        $this->assertNotEmpty($sourceFileId);
-
-        $row = DB::table('bronze.source_files')->where('id', $sourceFileId)->first();
-        $this->assertNotNull($row, 'bronze.source_files row was not written');
-        $this->assertSame($this->workspaceId, (string) $row->workspace_id);
-        $this->assertSame('drill_upload', $row->source_type);
-        $this->assertSame('silver_collars', $row->data_type);
-        $this->assertStringStartsWith("drill-uploads/{$this->workspaceId}/", $row->seaweedfs_key);
-        $this->assertStringEndsWith('_collars_2024.csv', $row->seaweedfs_key);
-
-        $stored = Storage::disk('s3')->allFiles();
-        $this->assertContains($row->seaweedfs_key, $stored);
-    }
-
-    public function test_lithology_csv_routes_to_silver_lithology(): void
-    {
-        $this->mockDagsterDispatch('silver_lithology');
-
-        $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('lithology_log.csv')])
-            ->assertCreated()
-            ->assertJsonPath('asset_key', 'silver_lithology');
-    }
-
-    public function test_sample_csv_routes_to_silver_samples(): void
-    {
-        $this->mockDagsterDispatch('silver_samples');
-
-        $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('assay_results.csv')])
-            ->assertCreated()
-            ->assertJsonPath('asset_key', 'silver_samples');
-    }
-
-    public function test_xlsx_routes_to_silver_xlsx(): void
-    {
-        $this->mockDagsterDispatch('silver_xlsx');
-
-        $xlsx = UploadedFile::fake()->createWithContent('mixed.xlsx', 'stub-xlsx');
-
-        $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $xlsx])
-            ->assertCreated()
-            ->assertJsonPath('asset_key', 'silver_xlsx');
+        $this->assertSame(
+            0,
+            DB::table('bronze.source_files')->where('workspace_id', $this->workspaceId)->count(),
+            'a retired-pipeline extension must be rejected before anything is stored',
+        );
     }
 
     public function test_duplicate_sha256_returns_existing_row_without_re_uploading(): void
     {
-        $this->mockDagsterDispatch('silver_collars');
-
-        $payload = "hole_id,east,north\nDH002,1,2\n";
+        $payload = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
         $first = $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('collars_a.csv', $payload)])
+            ->postJson($this->url(), ['file' => $this->pdf('report_a.pdf', $payload)])
             ->assertCreated();
 
         // Same content under a different filename — SHA matches, so we
         // expect a 200 + duplicate=true pointing at the original row.
         $second = $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('collars_b.csv', $payload)])
+            ->postJson($this->url(), ['file' => $this->pdf('report_b.pdf', $payload)])
             ->assertOk()
             ->assertJsonPath('duplicate', true);
 
@@ -193,59 +173,6 @@ class DrillUploadControllerTest extends TestCase
         $this->assertCount(1, DB::table('bronze.source_files')
             ->where('workspace_id', $this->workspaceId)
             ->get(), 'a duplicate SHA must not create a second row');
-    }
-
-    public function test_dagster_route_dispatch_failure_returns_502_not_201(): void
-    {
-        // Distinct from test_unrouted_csv_still_persists_source_file: here
-        // DrillAssetSelector DID classify the file (route='dagster',
-        // asset_key='silver_collars') but the downstream Dagster call itself
-        // failed — the exact shape of a Dagster-decommissioned deployment
-        // (Phase B2 trim) receiving a classified upload. Previously this
-        // still returned 201 with dispatched=false buried in the response,
-        // reading as unqualified success while the row was never processed.
-        $this->mock(DagsterGraphQLClient::class, function (MockInterface $m): void {
-            $m->shouldReceive('launchAssetMaterialization')
-                ->with('silver_collars', Mockery::type('array'))
-                ->andReturn([
-                    'dispatched' => false,
-                    'run_id' => null,
-                    'error' => 'connection_refused',
-                ]);
-        });
-
-        $response = $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
-            ->assertStatus(502)
-            ->assertJsonPath('route', 'dagster')
-            ->assertJsonPath('dispatch.dispatched', false)
-            ->assertJsonPath('error', 'ingestion_dispatch_failed');
-
-        // The file must still be stored and the bronze row still written —
-        // 502 signals "not processed yet", not "nothing happened".
-        $sourceFileId = $response->json('source_file_id');
-        $this->assertNotEmpty($sourceFileId);
-        $this->assertNotNull(
-            DB::table('bronze.source_files')->where('id', $sourceFileId)->first(),
-            'the upload must still be durably stored even when dispatch fails',
-        );
-    }
-
-    public function test_unrouted_csv_still_persists_source_file(): void
-    {
-        // No keyword — DrillAssetSelector returns route='unrouted'.
-        $this->actingAs($this->user)
-            ->postJson($this->url(), ['file' => $this->csv('random_data.csv')])
-            ->assertCreated()
-            ->assertJsonPath('route', 'unrouted')
-            ->assertJsonPath('asset_key', null)
-            ->assertJsonPath('dispatch.dispatched', false);
-
-        $this->assertGreaterThan(
-            0,
-            DB::table('bronze.source_files')->where('workspace_id', $this->workspaceId)->count(),
-            'an unrouted CSV must still anchor a bronze.source_files row',
-        );
     }
 
     public function test_persisted_mime_type_is_server_sniffed_not_client_declared(): void
@@ -278,22 +205,5 @@ class DrillUploadControllerTest extends TestCase
             $row->mime_type,
             'mime_type must come from server-side content sniffing, not the client-declared value',
         );
-    }
-
-    /**
-     * Replace the Dagster client with a mock that asserts the expected asset
-     * key was launched, and returns a successful response.
-     */
-    private function mockDagsterDispatch(string $expectedAssetKey): void
-    {
-        $this->mock(DagsterGraphQLClient::class, function (MockInterface $m) use ($expectedAssetKey): void {
-            $m->shouldReceive('launchAssetMaterialization')
-                ->with($expectedAssetKey, Mockery::type('array'))
-                ->andReturn([
-                    'dispatched' => true,
-                    'run_id' => 'mock-run-'.uniqid(),
-                    'error' => null,
-                ]);
-        });
     }
 }
