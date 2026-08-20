@@ -21,7 +21,6 @@ import pytest
 from app.services.public_geo import sync as S
 from app.services.public_geo.registry import CANONICAL_TYPES, source_by_id
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

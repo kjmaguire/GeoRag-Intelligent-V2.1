@@ -57,10 +57,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable
+from typing import Any
 
 from app.services.public_geo import arcgis
 from app.services.public_geo.registry import PublicGeoSource, sources_for
@@ -761,7 +762,7 @@ def _map_mineral_disposition(
 
 
 MAPPERS: dict[
-    str, Callable[[PublicGeoSource, dict[str, Any], "AliasTables"], dict[str, Any] | None]
+    str, Callable[[PublicGeoSource, dict[str, Any], AliasTables], dict[str, Any] | None]
 ] = {
     "mine": _map_mine,
     "mineral_occurrence": _map_mineral_occurrence,
