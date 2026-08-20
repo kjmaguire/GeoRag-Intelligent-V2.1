@@ -50,6 +50,7 @@ from georag_object_storage import Bucket, get_storage_client
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import _progress, hatchet
 
 log = logging.getLogger("georag.hatchet.ingest_spatial")
@@ -304,14 +305,24 @@ async def run_ingest_spatial(
 
             conn = await asyncpg.connect(_build_dsn())
             try:
-                # Bind the workspace GUC so silver.spatial_features' RLS
-                # policy applies to these inserts rather than being bypassed
-                # by the owner role. is_local=false because this is a plain
-                # connection, not a transaction block — see the Hyperdrive
-                # GUC note in the tenancy docs before changing it.
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    input.workspace_id,
+                # Bind the workspace GUC so the table's RLS policy applies to
+                # these inserts rather than being bypassed by the owner role.
+                #
+                # bind_workspace_scope, NOT a bespoke set_config: the helper
+                # validates the UUID shape (a malformed value would otherwise
+                # bind as an opaque GUC and silently match nothing) and is the
+                # single place the is_local semantics are decided. A bespoke
+                # call here is exactly what test_scoped_connection's
+                # monotonically-shrinking allowlist exists to prevent.
+                #
+                # is_local=False because this connection is not inside a
+                # transaction block — the per-feature inserts are autocommit,
+                # so a transaction-local GUC would be discarded immediately.
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id=input.workspace_id,
+                    site="hatchet.ingest_spatial",
+                    is_local=False,
                 )
                 for layer_name, result in parsed:
                     empty_skipped += result.empty_geom_skipped

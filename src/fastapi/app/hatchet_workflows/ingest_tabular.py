@@ -56,6 +56,7 @@ from georag_object_storage import Bucket, get_storage_client
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
+from app.db import bind_workspace_scope
 from app.hatchet_workflows import _progress, hatchet
 
 log = logging.getLogger("georag.hatchet.ingest_tabular")
@@ -528,9 +529,16 @@ async def run_ingest_tabular(
 
             conn = await asyncpg.connect(_build_dsn())
             try:
-                await conn.execute(
-                    "SELECT set_config('app.workspace_id', $1, false)",
-                    input.workspace_id,
+                # bind_workspace_scope, NOT a bespoke set_config — see
+                # test_scoped_connection's allowlist. It validates the UUID
+                # shape and owns the is_local semantics. is_local=False
+                # because the writes below are autocommit, not wrapped in one
+                # outer transaction.
+                await bind_workspace_scope(
+                    conn,
+                    workspace_id=input.workspace_id,
+                    site="hatchet.ingest_tabular",
+                    is_local=False,
                 )
 
                 for sheet_type, sheet_name in work:
