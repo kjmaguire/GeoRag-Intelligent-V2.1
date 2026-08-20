@@ -46,6 +46,7 @@ class WorkspaceDataVersionBumper
      * @return array{
      *   bumped: bool,
      *   reason: string,
+     *   idempotency_enforced: bool,
      *   workspace_version: int|null,
      *   project_version: int|null
      * }
@@ -60,9 +61,36 @@ class WorkspaceDataVersionBumper
         // SETNX so a Hatchet retry of the same terminal-state broadcast
         // can't trigger a second bump. set() with NX + EX is the atomic
         // form supported by every Predis/PhpRedis backend.
-        $acquired = $this->redis->connection()->set(
-            $key, '1', 'EX', self::IDEMPOTENCY_TTL_SECONDS, 'NX',
-        );
+        //
+        // Redis being unreachable must NOT fail the caller. This call used to
+        // sit outside any try/catch, so a `RedisException: Connection refused`
+        // propagated out of bump(), out of IngestionProgressBroadcastController
+        // and returned 500 to FastAPI's progress callback. The visible symptom
+        // is the one that matters: data_version never bumps, so every cache
+        // reader keeps serving the pre-ingest value and the UI stops
+        // self-updating until someone hard-refreshes.
+        //
+        // So the guard fails OPEN. What it protects against is a DOUBLE
+        // increment, and a double increment is benign — data_version is an
+        // opaque monotonic cache token, and invalidating a cache twice costs
+        // one extra refresh. Losing the bump entirely is the expensive
+        // failure. `idempotency_enforced` records which mode ran so a
+        // duplicate is explicable rather than mysterious.
+        $idempotencyEnforced = true;
+        try {
+            $acquired = $this->redis->connection()->set(
+                $key, '1', 'EX', self::IDEMPOTENCY_TTL_SECONDS, 'NX',
+            );
+        } catch (\Throwable $e) {
+            $idempotencyEnforced = false;
+            $acquired = true;
+            Log::warning('data_version.bump.idempotency_unavailable', [
+                'workspace_id' => $workspaceId,
+                'project_id' => $projectId,
+                'pipeline_run_id' => $pipelineRunId,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         if (! $acquired) {
             Log::info('data_version.bump.skipped_idempotent', [
@@ -74,6 +102,7 @@ class WorkspaceDataVersionBumper
             return [
                 'bumped' => false,
                 'reason' => 'idempotent_skip',
+                'idempotency_enforced' => true,
                 'workspace_version' => null,
                 'project_version' => null,
             ];
@@ -122,6 +151,7 @@ class WorkspaceDataVersionBumper
             return [
                 'bumped' => true,
                 'reason' => 'incremented',
+                'idempotency_enforced' => $idempotencyEnforced,
                 'workspace_version' => $newWorkspaceVersion !== null ? (int) $newWorkspaceVersion : null,
                 'project_version' => isset($newProjectVersion) && $newProjectVersion !== null
                     ? (int) $newProjectVersion : null,
@@ -130,7 +160,19 @@ class WorkspaceDataVersionBumper
             // Release the lock so a manual retry can re-attempt. We don't
             // want a failed bump to permanently shadow the workspace's
             // ability to ever refresh.
-            $this->redis->connection()->del($key);
+            //
+            // Guarded for the same reason as the acquire above: if Redis is
+            // what is down, this del() would throw and replace a reported
+            // db_error with an unhandled RedisException — turning a
+            // diagnosable 200-with-reason into an opaque 500.
+            try {
+                $this->redis->connection()->del($key);
+            } catch (\Throwable $releaseFailure) {
+                Log::warning('data_version.bump.lock_release_failed', [
+                    'pipeline_run_id' => $pipelineRunId,
+                    'error' => $releaseFailure->getMessage(),
+                ]);
+            }
 
             Log::warning('data_version.bump.failed', [
                 'workspace_id' => $workspaceId,
@@ -142,6 +184,7 @@ class WorkspaceDataVersionBumper
             return [
                 'bumped' => false,
                 'reason' => 'db_error: '.$e->getMessage(),
+                'idempotency_enforced' => $idempotencyEnforced,
                 'workspace_version' => null,
                 'project_version' => null,
             ];

@@ -158,6 +158,27 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing" force="true"/>
+
+        <!--
+          2026-08-20: forced here, mirroring phpunit.xml, because this file
+          was relying on .env.testing for it and that key decoded to 27 bytes
+          — aes-256-cbc requires exactly 32. Every encryption-touching test
+          threw:
+
+              Unsupported cipher or incorrect key length. Supported ciphers
+              are: aes-128-cbc, aes-256-cbc, aes-128-gcm, aes-256-gcm.
+
+          That was 74 of the 215 cases in this suite, on every branch and on
+          main, for long enough that nobody read the failure any more. A
+          BLOCKING gate that is permanently red catches nothing, which is the
+          real cost.
+
+          .env.testing is fixed too, but this suite forces every other env it
+          depends on rather than inheriting it, and APP_KEY should not have
+          been the exception. Decodes to "phpunit-testing-key-not-a-secret".
+        -->
+        <env name="APP_KEY" value="base64:cGhwdW5pdC10ZXN0aW5nLWtleS1ub3QtYS1zZWNyZXQ=" force="true"/>
+
         <env name="APP_MAINTENANCE_DRIVER" value="file" force="true"/>
         <env name="BCRYPT_ROUNDS" value="4" force="true"/>
         <env name="BROADCAST_CONNECTION" value="null" force="true"/>
