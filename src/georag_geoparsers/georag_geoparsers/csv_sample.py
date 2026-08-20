@@ -953,7 +953,16 @@ def parse_csv_samples(
             records.append(record)
             pivot_indices_kept.append(pivot_idx)
         else:
-            logger.warning("Skipping sample row: %s", skip_entry.get("reason"))
+            # Log the stable reason CODE, never the free-text `reason` —
+            # that string interpolates raw cell values, so logging it
+            # ships arbitrary spreadsheet content to the application log
+            # and on to Log Analytics. The full reason (and the raw row)
+            # stays in skipped_details for the ingest report.
+            logger.warning(
+                "Skipping sample row %s: %s",
+                skip_entry.get("row"),
+                skip_entry.get("code"),
+            )
             skipped.append(skip_entry)
 
     valid_rows = len(records)

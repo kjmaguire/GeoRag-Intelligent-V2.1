@@ -370,7 +370,22 @@ def parse_csv_geochronology(
         if record is not None:
             records.append(record)
         else:
-            logger.warning("Skipping geochron row: %s", skip_entry.get("reason"))
+            # Log the stable reason CODE and the row number, never the
+            # free-text `reason` — that string interpolates raw cell values
+            # (`isotopic_system {raw!r}`, `uncertainty_kind {raw_uk!r}`), so
+            # logging it ships arbitrary spreadsheet content to the
+            # application log and on to Log Analytics. CodeQL flags this as
+            # py/clear-text-logging-sensitive-data and is correct to.
+            #
+            # Nothing is lost: the full reason, including the raw row, stays
+            # in skipped_details on the parse result, which is what the
+            # ingest report surfaces to the geologist who needs to fix the
+            # file.
+            logger.warning(
+                "Skipping geochron row %s: %s",
+                skip_entry.get("row"),
+                skip_entry.get("code"),
+            )
             skipped.append(skip_entry)
 
     result = GeochronParseResult(
