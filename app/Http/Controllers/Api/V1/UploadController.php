@@ -73,6 +73,10 @@ class UploadController extends Controller
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone
         // .shp cannot be read without its siblings.
         'spatial' => ['geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'fgb', 'zip', 'qgs', 'qgz'],
+        // LAS downhole curves -> ingest_well_logs -> silver.well_log_curves.
+        // One row per CURVE with depth/value arrays, not a row per sample:
+        // a 3,000 m hole logged every 15 cm is 20,000 samples per curve.
+        'well_logs' => ['las'],
     ];
 
     /**
@@ -103,11 +107,9 @@ class UploadController extends Controller
      * @var array<string, list<string>>
      */
     private const RETIRED_CATEGORIES = [
-        // The parsers for these three exist and are tested (las_parser,
-        // segy_parser, xyz_parser) — what is missing is a workflow to call
-        // them and a silver table shape settled enough to write. Wiring them
-        // is the same shape of work ingest_tabular just did.
-        'well_logs' => ['las'],
+        // Parsers exist and are tested for both, but neither has a workflow
+        // or a settled silver table shape yet. Wiring them is the same shape
+        // of work ingest_well_logs just did for LAS.
         'seismic' => ['sgy', 'segy'],
         'xyz' => ['xyz', 'dat', 'txt'],
         // Geophysics interpretation summary JSON — was consumed by the Dagster
@@ -645,6 +647,7 @@ class UploadController extends Controller
         'samples' => 'ingest_tabular',
         'excel' => 'ingest_tabular',
         'spatial' => 'ingest_spatial',
+        'well_logs' => 'ingest_well_logs',
     ];
 
     /**

@@ -46,6 +46,7 @@ from app.hatchet_workflows.idempotency_keys_cleanup import idempotency_keys_clea
 from app.hatchet_workflows.ingest_pdf import ingest_pdf
 from app.hatchet_workflows.ingest_spatial import ingest_spatial  # SHP/GeoJSON/GPKG/QGIS vector ingest
 from app.hatchet_workflows.ingest_tabular import ingest_tabular  # drill CSV + multi-sheet XLSX
+from app.hatchet_workflows.ingest_well_logs import ingest_well_logs  # LAS downhole curves
 from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
@@ -105,6 +106,7 @@ POOLS = {
         # The parsers never stopped working; nothing was calling them.
         ingest_spatial,
         ingest_tabular,
+        ingest_well_logs,
         *INGESTION_AGENT_WORKFLOWS,
     ],
     "ai": [
