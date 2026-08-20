@@ -48,19 +48,85 @@ return new class extends Migration
             return;
         }
 
-        DB::statement('ALTER TABLE workspace.workspace_memberships ENABLE ROW LEVEL SECURITY');
-        DB::statement('ALTER TABLE workspace.workspace_memberships FORCE ROW LEVEL SECURITY');
+        // Same ownership problem as 2026_08_17_060000 — see that file's
+        // asTableOwner() docblock. ENABLE/FORCE ROW LEVEL SECURITY and
+        // CREATE POLICY all require table OWNERSHIP, and
+        // workspace.workspace_memberships is created on real deployments by
+        // database/raw/phase0/10-layer-a-workspace-foundation.sql, outside the
+        // migration chain, so it is not owned by `georag`. This migration runs
+        // immediately after 060000 and would have failed the same way against
+        // Azure the moment 060000 was fixed.
+        $this->asTableOwner('workspace', 'workspace_memberships', static function (): void {
+            DB::statement('ALTER TABLE workspace.workspace_memberships ENABLE ROW LEVEL SECURITY');
+            DB::statement('ALTER TABLE workspace.workspace_memberships FORCE ROW LEVEL SECURITY');
 
-        DB::statement('DROP POLICY IF EXISTS tenant_isolation ON workspace.workspace_memberships');
-        DB::statement(<<<'SQL'
-            CREATE POLICY tenant_isolation ON workspace.workspace_memberships
-                USING (
-                    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
-                )
-                WITH CHECK (
-                    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
-                )
-        SQL);
+            DB::statement('DROP POLICY IF EXISTS tenant_isolation ON workspace.workspace_memberships');
+            DB::statement(<<<'SQL'
+                CREATE POLICY tenant_isolation ON workspace.workspace_memberships
+                    USING (
+                        workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+                    )
+                    WITH CHECK (
+                        workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+                    )
+            SQL);
+        });
+    }
+
+    /**
+     * Run $work with the table's owning role assumed, when necessary and
+     * possible. Mirrors 2026_08_17_060000's helper — duplicated rather than
+     * shared because migrations must stay self-contained and replayable
+     * independently of each other.
+     *
+     * Deliberately does NOT skip silently when ownership cannot be obtained:
+     * RLS is a tenancy control, and leaving it off on the one environment that
+     * holds tenant data is worse than a failed deploy.
+     */
+    private function asTableOwner(string $schema, string $table, callable $work): void
+    {
+        $owner = DB::selectOne(
+            'SELECT pg_get_userbyid(c.relowner) AS owner
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = ? AND c.relname = ?',
+            [$schema, $table],
+        )?->owner;
+
+        if ($owner === null) {
+            return;
+        }
+
+        $current = DB::selectOne('SELECT current_user AS role')?->role;
+
+        if ($owner === $current) {
+            $work();
+
+            return;
+        }
+
+        $canAssume = (bool) (DB::selectOne(
+            "SELECT pg_has_role(current_user, ?, 'MEMBER') AS ok",
+            [$owner],
+        )?->ok ?? false);
+
+        if (! $canAssume) {
+            throw new RuntimeException(sprintf(
+                'Cannot enable RLS on %s.%s: it is owned by "%s" and "%s" is not '
+                .'a member of that role. Grant membership once with: '
+                .'GRANT "%s" TO "%s"; -- or reassign: ALTER TABLE %s.%s OWNER TO "%s";',
+                $schema, $table, $owner, $current,
+                $owner, $current, $schema, $table, $current,
+            ));
+        }
+
+        DB::statement('SET ROLE "'.str_replace('"', '""', $owner).'"');
+
+        try {
+            $work();
+        } finally {
+            DB::statement('RESET ROLE');
+        }
     }
 
     public function down(): void
