@@ -86,7 +86,17 @@ jobs:
           -- Mirrors Azure: no superusers anywhere, and the role that applies
           -- the raw bootstrap is distinct from the one running migrations.
           CREATE ROLE bootstrap  NOSUPERUSER LOGIN PASSWORD 'bootstrap_pw';
-          CREATE ROLE georag_ci  NOSUPERUSER LOGIN PASSWORD 'georag_ci_pw' CREATEDB;
+          -- CREATEROLE because the chain provisions its own roles --
+          -- 2026_04_09_173750 issues `CREATE ROLE georag_app NOLOGIN` and
+          -- three siblings. Production's migration role can plainly do this
+          -- (those roles exist on Azure), so withholding it here would make
+          -- the gate fail on something production allows, which is the
+          -- opposite of the fidelity this job is for.
+          --
+          -- Still NOSUPERUSER: superuser is what would defeat the whole gate,
+          -- because superusers bypass the ownership checks it exists to
+          -- reproduce.
+          CREATE ROLE georag_ci  NOSUPERUSER LOGIN PASSWORD 'georag_ci_pw' CREATEDB CREATEROLE;
           CREATE ROLE georag_app NOSUPERUSER LOGIN PASSWORD 'georag_app_pw';
           -- Deliberately NO membership between bootstrap and georag_ci: that
           -- absence is the whole point of this job.
