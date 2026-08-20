@@ -91,6 +91,21 @@ jobs:
           -- Deliberately NO membership between bootstrap and georag_ci: that
           -- absence is the whole point of this job.
           GRANT ALL ON DATABASE georag_privtest TO bootstrap, georag_ci;
+          -- PostgreSQL 15 revoked the implicit CREATE that every role used
+          -- to hold on schema `public`. Without this the job died on its
+          -- FIRST statement --
+          --   create table "migrations" ... -> permission denied for schema public
+          -- so the gate has never once run a migration since it was added.
+          -- It is advisory, so it failed quietly and looked like coverage
+          -- while providing none: exactly the failure mode it exists to
+          -- catch elsewhere.
+          --
+          -- GRANT ON SCHEMA, deliberately not ALTER DEFAULT PRIVILEGES or a
+          -- role membership: the point of this job is that georag_ci can
+          -- create its own objects but does NOT inherit rights over the ones
+          -- `bootstrap` already owns. Widening it further would dissolve the
+          -- ownership split the gate is built to reproduce.
+          GRANT ALL ON SCHEMA public TO bootstrap, georag_ci;
           SQL
 
       - name: Apply database/raw as the bootstrap role
