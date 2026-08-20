@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
+from app.services.ingest.raster_metadata import persist_raster_metadata
 from app.services.ingest.tiff_to_pdf import (
     TiffNormalizeError,
     tiff_to_pdf,
@@ -196,6 +197,19 @@ async def normalize(
     )
     page_count = 0
     truncated = False
+
+    # 2b. Capture georeferencing before the wrap throws it away. The PDF
+    # container preserves every pixel and no coordinates, so a scanned map
+    # sheet would otherwise arrive as a picture with no idea where it is.
+    # Additive and non-fatal by construction — see raster_metadata's
+    # docstring for why it lives outside this module.
+    await persist_raster_metadata(
+        source_bytes=source_bytes,
+        source_key=input.minio_key,
+        source_sha256=source_sha256,
+        project_id=str(input.project_id),
+        workspace_id=str(input.workspace_id),
+    )
 
     if not normalize_skipped:
         # 3. Wrap to PDF (lossless, in-memory).
