@@ -568,13 +568,63 @@ async def _fetch_long_section_collars(
     }
 
 
+class HeatmapCapabilityMissing(RuntimeError):
+    """The H3 stack this chart needs is not installed on this server.
+
+    Raised instead of returning empty cells so ``render`` can answer 503
+    rather than dropping into its generic "fall back to demo params" path —
+    see the comment on that handler for why silence is the wrong answer here.
+    """
+
+
+async def _h3_capability_missing(conn) -> str | None:
+    """Return a human-readable reason the H3 heatmap cannot be served, or None.
+
+    The target heatmap needs three things that arrive together or not at all:
+    the `h3` extension (for silver.h3_cell_to_latlng), the `h3_postgis`
+    extension, and gold.h3_density_mineral. All three are declared only in
+    `database/raw/`, which CD never applies, so on Azure none of them exist.
+
+    This is not a fixable-by-migration gap. Azure Database for PostgreSQL
+    Flexible Server does not offer `h3` at all — it is absent from the
+    server's `azure.extensions` allowedValues, so `CREATE EXTENSION h3` can
+    never succeed there regardless of privileges. The chart is therefore
+    permanently unavailable on Azure until it is rewritten without H3, and the
+    honest thing is to say so.
+    """
+    has_extension = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'h3')"
+    )
+    if not has_extension:
+        return "the h3 extension is not installed on this server"
+
+    has_table = await conn.fetchval(
+        "SELECT to_regclass('gold.h3_density_mineral') IS NOT NULL"
+    )
+    if not has_table:
+        return "gold.h3_density_mineral does not exist on this server"
+
+    return None
+
+
 async def _fetch_target_heatmap_cells(
     *, pg_pool, workspace_id: str, commodity: str | None,
 ) -> dict[str, Any]:
-    """Pull gold.h3_density_mineral cells, convert h3 → lng/lat for plot."""
+    """Pull gold.h3_density_mineral cells, convert h3 → lng/lat for plot.
+
+    Raises HeatmapCapabilityMissing when the H3 stack is absent. Without that
+    check the query raises UndefinedFunction/UndefinedTable, `render` catches
+    it with the rest of the real-data fetches, and the caller is served
+    `body.params` — demo placeholder data — with only a WARNING in the log.
+    A fabricated heatmap that looks real is a worse failure than an error.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_target_heatmap_cells"
     ) as conn:
+        reason = await _h3_capability_missing(conn)
+        if reason is not None:
+            raise HeatmapCapabilityMissing(reason)
+
         rows = await conn.fetch(
             """
             SELECT silver.h3_cell_to_latlng(h3_index) AS center,
@@ -861,6 +911,20 @@ async def render_chart_endpoint(
             )
             if real["samples"]:
                 params = real
+    except HeatmapCapabilityMissing as exc:
+        # Deliberately NOT the demo fallback below. Every other chart kind
+        # degrades to placeholder data on a fetch failure, which is fine when
+        # the cause is transient. This one is a permanent server capability
+        # gap (h3 is not available on Azure Flexible Server at all), so demo
+        # data would mean shipping a fabricated exploration-target heatmap
+        # that a geologist cannot distinguish from a real one.
+        logger.warning(
+            "target_heatmap unavailable on this server: %s", exc,
+        )
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"target_heatmap is not available on this server: {exc}",
+        ) from exc
     except Exception:  # noqa: BLE001
         logger.warning(
             "chart real-data fetch failed, falling back to demo: %s",

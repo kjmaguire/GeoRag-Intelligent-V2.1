@@ -115,6 +115,14 @@
                  fail-open escape hatch on the verified subset. Uses
                  RefreshDatabase to guarantee schema/policies are current. -->
             <file>tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php</file>
+            <!-- 2026-08-20 database review: pins audit.run_verification()'s
+                 column + status-CHECK contract against the table, after a
+                 *_for_test_db mirror migration defined a narrower table than
+                 database/raw/ and won on every migration-chain-only cluster.
+                 Must use RefreshDatabase — the bug is only reproducible in a
+                 database built from migrations alone, which is exactly what
+                 Azure is and what a hand-provisioned dev cluster is not. -->
+            <file>tests/Feature/Tenancy/AuditVerificationSchemaContractTest.php</file>
             <file>tests/Feature/Database/RepairShadowDailySchemaTest.php</file>
             <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
                  but were never added here — grep -rl "RequiresPostgres\|
