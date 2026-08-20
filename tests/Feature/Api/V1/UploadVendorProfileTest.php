@@ -216,10 +216,20 @@ class UploadVendorProfileTest extends TestCase
         $this->assertNotNull($capturedOptions, 'Storage::disk(s3)->put() was never called');
         $this->assertIsArray($capturedOptions);
         $this->assertArrayHasKey('Metadata', $capturedOptions);
+        // The key was 'x-georag-vendor-profile-id' until Azure Blob turned out
+        // to reject hyphens in metadata names (400 InvalidMetadata; names must
+        // be valid C# identifiers). S3 accepted it, so this assertion passed
+        // while the same upload would have failed in production the moment
+        // anyone supplied a vendor profile.
+        $this->assertArrayNotHasKey(
+            'x-georag-vendor-profile-id',
+            $capturedOptions['Metadata'],
+            'hyphenated metadata keys are rejected by Azure Blob',
+        );
         $this->assertSame(
             (string) $profile->id,
-            $capturedOptions['Metadata']['x-georag-vendor-profile-id'],
-            'x-georag-vendor-profile-id metadata must match the profile ID',
+            $capturedOptions['Metadata']['vendor_profile_id'],
+            'vendor_profile_id metadata must match the profile ID',
         );
     }
 
@@ -276,7 +286,7 @@ class UploadVendorProfileTest extends TestCase
         $this->assertIsArray($capturedOptions);
 
         // When vendor_profile_id is absent the options must be empty so we
-        // don't write a spurious x-georag-vendor-profile-id S3 header.
+        // do not write a spurious vendor_profile_id metadata key.
         $this->assertEmpty(
             $capturedOptions,
             'No Metadata should be set when vendor_profile_id is omitted',

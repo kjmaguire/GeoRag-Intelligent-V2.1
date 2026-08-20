@@ -149,3 +149,53 @@ class TestAzureClientEnforcement:
         blob = azure_service.get_container_client.return_value.get_blob_client
         kwargs = blob.return_value.upload_blob.call_args.kwargs
         assert kwargs["metadata"] == meta
+
+
+class TestS3ClientEnforcement:
+    """The rule has to bite on the permissive backend too.
+
+    This is the whole point of the fix. The moto-backed suites already
+    exercised ``put_bytes`` with metadata and passed for months, because S3
+    accepts hyphens; the identical call was failing against Azure Blob on
+    every TIFF upload in production. A rule enforced only where it is
+    already being broken is a rule nobody finds until it ships.
+
+    No moto here on purpose: validation happens before boto3 is ever asked
+    to do anything, so this runs anywhere.
+    """
+
+    @pytest.fixture
+    def s3_config(self):
+        from georag_object_storage.config import StorageConfig
+
+        return StorageConfig(
+            endpoint_url="http://localhost:9000",
+            access_key="testing",
+            secret_key="testing",
+            region="us-east-1",
+            bucket_names={Bucket.BRONZE: "bronze-test", Bucket.EXPORTS: "exports-test"},
+        )
+
+    def test_put_bytes_refuses_a_hyphenated_key(self, s3_config):
+        from georag_object_storage.sync_client import S3CompatibleStorage
+
+        store = S3CompatibleStorage(s3_config)
+        with pytest.raises(InvalidMetadataKeyError):
+            store.put_bytes(
+                Bucket.BRONZE,
+                "reports/derived.pdf",
+                b"payload",
+                metadata={"x-georag-derived-from-tiff-sha256": "abc123"},
+            )
+
+    def test_put_file_refuses_a_hyphenated_key(self, s3_config, tmp_path):
+        from georag_object_storage.sync_client import S3CompatibleStorage
+
+        local = tmp_path / "scan.tif"
+        local.write_bytes(b"tiff-bytes")
+        store = S3CompatibleStorage(s3_config)
+        with pytest.raises(InvalidMetadataKeyError):
+            store.put_file(
+                Bucket.BRONZE, "tiff/scan.tif", str(local),
+                metadata={"x-georag-tiff-frames": "1"},
+            )
