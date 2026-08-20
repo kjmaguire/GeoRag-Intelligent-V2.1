@@ -157,8 +157,18 @@ final class IngestionRunsControllerTest extends TestCase
     public function test_progress_endpoint_surfaces_real_step_progress_from_ingest_progress_table(): void
     {
         // Phase B — a row in silver.ingest_progress should appear in in_flight
-        // with progress_pct derived from step_index / total_steps and the
-        // pretty step name surfaced as the stage.
+        // with the pretty step name surfaced as the stage.
+        //
+        // progress_pct is COMPLETED steps, not the current step's index:
+        //
+        //     (max(0, step_index - 1) + stage_pct) / total_steps
+        //
+        // On step 2 of 5 with no sub-step progress reported, exactly one step
+        // is finished — 20%, not 40%. This asserted 40 until 2026-08-20,
+        // matching the older step-quantized formula the smooth-bar change
+        // replaced; the assertion was never updated because
+        // "Laravel (Pint + PHPUnit)" was permanently red on an unrelated
+        // APP_KEY fault and nobody was reading it.
         $key = "reports/{$this->project->project_id}/20260524_990000_BigPdf.pdf";
         DB::table('silver.ingest_progress')->insert([
             'workspace_id' => $this->workspaceId,
@@ -179,8 +189,37 @@ final class IngestionRunsControllerTest extends TestCase
             ->assertJsonPath('runs.in_flight.0.stage', 'parse')
             ->assertJsonPath('runs.in_flight.0.step_index', 2)
             ->assertJsonPath('runs.in_flight.0.total_steps', 5)
-            ->assertJsonPath('runs.in_flight.0.progress_pct', 40)
+            ->assertJsonPath('runs.in_flight.0.progress_pct', 20)
             ->assertJsonPath('runs.in_flight.0.has_real_progress', true);
+    }
+
+    public function test_progress_endpoint_blends_sub_step_progress_into_the_bar(): void
+    {
+        // The half of the smooth-bar formula the test above cannot reach:
+        // stage_pct is the worker's fractional progress WITHIN the current
+        // step (0..1, written by the page-level relay during a long parse).
+        // Without a case that sets it, the `+ stage_pct` term could be
+        // deleted and every existing assertion would still pass.
+        //
+        // Step 2 of 5, 60% through that step: (1 + 0.6) / 5 = 32%.
+        $key = "reports/{$this->project->project_id}/20260524_990001_MidParse.pdf";
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $this->project->project_id,
+            'minio_key' => $key,
+            'filename' => 'MidParse.pdf',
+            'current_step' => 'parse',
+            'step_index' => 2,
+            'total_steps' => 5,
+            'stage_pct' => 0.6,
+            'started_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk()
+            ->assertJsonPath('runs.in_flight.0.progress_pct', 32);
     }
 
     public function test_progress_row_marked_completed_drops_out_of_in_flight(): void

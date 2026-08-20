@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+use Throwable;
 
 /**
  * Internal — FastAPI → Laravel bridge for ingestion progress events.
@@ -72,29 +73,56 @@ class IngestionProgressBroadcastController extends Controller
             $sideEffects['data_version_bumped'] = $bump['bumped'];
             $sideEffects['data_version'] = $bump['workspace_version'];
 
-            // Stamp the last-dispatch time so an already-queued debounce
-            // job whose delay window predates this dispatch can coalesce
-            // itself (see DebounceWorkspaceMvRefresh::handle).
-            $now = time();
-            Redis::setex(
-                "mv_refresh:last_dispatch:{$payload['workspace_id']}",
-                600,
-                (string) $now,
-            );
+            // The MV-refresh debounce is a secondary optimisation, and it is
+            // the only part of this endpoint that needs Redis. Guarded for
+            // the same reason WorkspaceDataVersionBumper::bump() is: an
+            // unreachable Redis threw `RedisException: Connection refused`
+            // straight out of the controller and returned 500 to FastAPI's
+            // progress callback.
+            //
+            // That is the worst possible response to this particular outage.
+            // The primary job here — recording terminal progress so the UI
+            // can stop showing a spinner — is a Postgres write that already
+            // succeeded above. Turning a degraded refresh into a failed
+            // callback means the run looks stuck forever instead of
+            // completing with a slightly stale materialised view.
+            //
+            // So: report what did not happen, return 200, and let the
+            // nightly MV refresh catch up.
+            try {
+                // Stamp the last-dispatch time so an already-queued debounce
+                // job whose delay window predates this dispatch can coalesce
+                // itself (see DebounceWorkspaceMvRefresh::handle).
+                $now = time();
+                Redis::setex(
+                    "mv_refresh:last_dispatch:{$payload['workspace_id']}",
+                    600,
+                    (string) $now,
+                );
 
-            // Unique-job dispatch: if another DebounceWorkspaceMvRefresh
-            // for this workspace is already queued or running, this is a
-            // no-op (ShouldBeUnique). When the existing job runs, it
-            // will read the fresh last_dispatch stamp and pick up this
-            // completion's work.
-            DebounceWorkspaceMvRefresh::dispatch(
-                $payload['workspace_id'],
-                $payload['project_id'],
-                $payload['pipeline_run_id'],
-                $now,
-            );
+                // Unique-job dispatch: if another DebounceWorkspaceMvRefresh
+                // for this workspace is already queued or running, this is a
+                // no-op (ShouldBeUnique). When the existing job runs, it
+                // will read the fresh last_dispatch stamp and pick up this
+                // completion's work.
+                DebounceWorkspaceMvRefresh::dispatch(
+                    $payload['workspace_id'],
+                    $payload['project_id'],
+                    $payload['pipeline_run_id'],
+                    $now,
+                );
 
-            $sideEffects['mv_refresh_dispatched'] = true;
+                $sideEffects['mv_refresh_dispatched'] = true;
+            } catch (Throwable $e) {
+                $sideEffects['mv_refresh_dispatched'] = false;
+                $sideEffects['mv_refresh_error'] = $e->getMessage();
+                Log::warning('ingestion.progress.mv_refresh_dispatch_failed', [
+                    'workspace_id' => $payload['workspace_id'],
+                    'project_id' => $payload['project_id'],
+                    'pipeline_run_id' => $payload['pipeline_run_id'],
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         Log::info('ingestion.progress.broadcast', [
