@@ -37,7 +37,7 @@ from georag_object_storage.exceptions import ObjectStorageError
 #: than either backend alone: the intersection, not the union.
 _VALID_METADATA_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-__all__ = ["InvalidMetadataKeyError", "validate_metadata", "is_valid_metadata_key"]
+__all__ = ["InvalidMetadataKeyError", "is_valid_metadata_key", "validate_metadata"]
 
 
 class InvalidMetadataKeyError(ObjectStorageError):

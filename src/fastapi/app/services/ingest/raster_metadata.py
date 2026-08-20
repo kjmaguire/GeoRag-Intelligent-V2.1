@@ -35,6 +35,7 @@ nothing to preserve, so nothing is written.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -128,10 +129,8 @@ def _extract(source_bytes: bytes, suffix: str) -> Any:
             fh.write(source_bytes)
         return parse_raster_file(tmp_path)
     finally:
-        try:
+        with contextlib.suppress(OSError):  # best effort — the dir is temp anyway
             os.unlink(tmp_path)
-        except OSError:  # pragma: no cover — best effort
-            pass
 
 
 async def persist_raster_metadata(
