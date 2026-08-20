@@ -11,6 +11,10 @@ dependencies = [
     # shared with src/dagster via a uv path dependency (see [tool.uv.sources]
     # below). Local package, not published; version is unused by uv sources.
     "georag-object-storage",
+    # Geology format parsers (CSV/XLSX/spatial/raster/LAS/XYZ) for the
+    # Hatchet ingestion workflows. Brings polars back with it — see that
+    # package's pyproject for why the parsers stay on polars.
+    "georag-geoparsers",
     # Phase H — bumped from >=1.0 to >=1.56 to close two GHSAs flagged by
     # osv-scanner against the installed 1.38.0:
     #   GHSA-2jrp-274c-jhv3 — SSRF in URL Download Handler (fix: 1.56.0)
@@ -403,6 +407,9 @@ packages = ["app"]
 # to. A non-editable path install builds a real wheel into site-packages
 # so the package survives the multi-stage copy.
 georag-object-storage = { path = "../georag_object_storage" }
+# Same non-editable path-install rationale as above: the builder stage copies
+# site-packages, not the source tree.
+georag-geoparsers = { path = "../georag_geoparsers" }
 
 [tool.ruff]
 target-version = "py313"

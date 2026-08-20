@@ -314,6 +314,12 @@ jobs:
       - name: Lint georag_object_storage
         run: ruff check src/georag_object_storage/
 
+      # Geology format parsers — shared by the Hatchet ingestion workflows.
+      # Own lint target for the same reason as georag_object_storage: it is a
+      # sibling package, so `ruff check src/fastapi/` never reaches it.
+      - name: Lint georag_geoparsers
+        run: ruff check src/georag_geoparsers/
+
       # Doc-phase 125 — incident-driven gate. Catches the doc-phase 122
       # failure mode (app/main.py imports `sentry_sdk` but pyproject's
       # `dependencies` had been edited to remove `sentry-sdk[fastapi]`).

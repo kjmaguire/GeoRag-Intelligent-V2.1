@@ -44,6 +44,7 @@ from app.hatchet_workflows.flow_jwt_key_reaper import flow_jwt_key_reaper
 from app.hatchet_workflows.generate_report import generate_report  # doc-phase 83
 from app.hatchet_workflows.idempotency_keys_cleanup import idempotency_keys_cleanup  # §35.1 TTL cleanup
 from app.hatchet_workflows.ingest_pdf import ingest_pdf
+from app.hatchet_workflows.ingest_spatial import ingest_spatial  # SHP/GeoJSON/GPKG/QGIS vector ingest
 from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
@@ -98,6 +99,10 @@ POOLS = {
         nightly_ingestion_integrity,
         reliability_metrics_publisher,
         ingest_zip_archive,
+        # 2026-08-20 — the `spatial` upload category was answered with
+        # 422 retired_pipeline from 2026-07-28, when Dagster was removed.
+        # The parsers never stopped working; nothing was calling them.
+        ingest_spatial,
         *INGESTION_AGENT_WORKFLOWS,
     ],
     "ai": [
