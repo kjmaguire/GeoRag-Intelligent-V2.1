@@ -145,13 +145,50 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Build + push fastapi image
+      # `az acr build` exposes NO cache options at all — no --cache-from, no
+      # --no-cache (check `az acr build --help`). Every deploy therefore
+      # rebuilt this image from scratch: recompiling Tesseract 5.5.2 from
+      # source, reinstalling ~2 GB of Python deps, and re-downloading and
+      # baking the SPLADE++ weights, none of which change between deploys.
+      # Measured 15-29 min per run, against a 2 min actual deploy.
+      #
+      # buildx on the runner is the only way to get cross-run layer caching
+      # here. Cache lives in ACR itself under a `buildcache` tag, so it
+      # survives runner recycling and is shared across branches. That tag
+      # deliberately does not match the purge task's `^[0-9a-f]{7}$` filter
+      # (see reference-acr-purge-task), so hygiene automation will not delete
+      # the cache out from under us.
+      - name: Free runner disk
+        # ubuntu-latest ships ~14 GB free; this image's builder stage (Python
+        # deps + a full C toolchain for Tesseract) can exceed that once buildx
+        # also holds a layer cache. Reclaims ~20 GB of preinstalled SDKs we
+        # never use. Cheap insurance against a no-space-left failure that
+        # would look like a flaky build.
         run: |
-          az acr build --registry "$ACR_NAME" \
-            --image "georag/fastapi:${SHORT_SHA}" \
-            --image "georag/fastapi:latest" \
-            --file docker/fastapi.Dockerfile \
-            src
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h / | tail -1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: ACR login
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build + push fastapi image
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: docker/fastapi.Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/georag/fastapi:${{ env.SHORT_SHA }}
+            ${{ env.ACR_NAME }}.azurecr.io/georag/fastapi:latest
+          cache-from: type=registry,ref=${{ env.ACR_NAME }}.azurecr.io/georag/fastapi:buildcache
+          # mode=max caches intermediate stages too — without it the
+          # tesseract-builder and builder stages, which are the whole cost
+          # here, would not be cached at all.
+          cache-to: type=registry,ref=${{ env.ACR_NAME }}.azurecr.io/georag/fastapi:buildcache,mode=max
 
   # ==========================================================================
   # Build laravel — sibling of build-fastapi, see that job's comment for why
@@ -180,6 +217,12 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: ACR login
+        run: az acr login --name "$ACR_NAME"
+
       - name: Build + push laravel image
         # VITE_REVERB_* are baked into the Vite bundle at build time. On Azure,
         # Reverb runs on its own Container App hostname, so the browser cannot
@@ -187,16 +230,26 @@ jobs:
         # ships a bundle whose websocket dials the octane host and every chat
         # stream / progress event is silently lost (live failure 2026-08-07).
         # The app key is public by design (it is embedded in the JS bundle).
-        run: |
-          az acr build --registry "$ACR_NAME" \
-            --image "georag/laravel:${SHORT_SHA}" \
-            --image "georag/laravel:latest" \
-            --file docker/laravel.Dockerfile \
-            --build-arg VITE_REVERB_APP_KEY=gxk7h5w2ato1zq9pm4b8rucy0fedlvj3 \
-            --build-arg VITE_REVERB_HOST=laravel-reverb-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io \
-            --build-arg VITE_REVERB_PORT=443 \
-            --build-arg VITE_REVERB_SCHEME=https \
-            .
+        #
+        # Cached the same way as the fastapi image — see that job for why
+        # `az acr build` had to go. This one is 11 min and runs in parallel, so
+        # it was never the critical path, but composer + npm install are just
+        # as re-runnable and there is no reason to pay for them twice.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/laravel.Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/georag/laravel:${{ env.SHORT_SHA }}
+            ${{ env.ACR_NAME }}.azurecr.io/georag/laravel:latest
+          build-args: |
+            VITE_REVERB_APP_KEY=gxk7h5w2ato1zq9pm4b8rucy0fedlvj3
+            VITE_REVERB_HOST=laravel-reverb-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io
+            VITE_REVERB_PORT=443
+            VITE_REVERB_SCHEME=https
+          cache-from: type=registry,ref=${{ env.ACR_NAME }}.azurecr.io/georag/laravel:buildcache
+          cache-to: type=registry,ref=${{ env.ACR_NAME }}.azurecr.io/georag/laravel:buildcache,mode=max
 
   # ==========================================================================
   # Deploy — migrate, roll over each Container App, health-check, roll back
