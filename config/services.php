@@ -127,40 +127,4 @@ return [
     |
     */
 
-    /*
-    |--------------------------------------------------------------------------
-    | Dagster GraphQL
-    |--------------------------------------------------------------------------
-    |
-    | CC-01 Item 1 Slice 1 — Laravel synchronously launches asset
-    | materialisations (silver_collars / silver_lithology / silver_samples /
-    | silver_xlsx) via Dagster's GraphQL endpoint to avoid the 5-minute MinIO
-    | sensor poll on the drill-upload UX path. The location/repository defaults
-    | match the standard georag_dagster package layout; override when the
-    | code-location naming diverges.
-    |
-    */
-    'dagster' => [
-        'url' => env('DAGSTER_GRAPHQL_URL', 'http://dagster-webserver:3001'),
-        'location' => env('DAGSTER_LOCATION', 'georag_dagster'),
-        'repository' => env('DAGSTER_REPOSITORY', '__repository__'),
-        'timeout' => (int) env('DAGSTER_GRAPHQL_TIMEOUT', 10),
-
-        // Direct PDO connection to the Dagster runs DB — used by
-        // MetricsController::dagsterRunsRowsViaPdo() to surface
-        // dagster_runs_total{status=...} on /internal/metrics. Without
-        // these, every scrape tick logged `dagster_metrics_query_failed:
-        // no password supplied` because config(...pg_db) and friends
-        // resolved to null → empty string. (Added 2026-05-25 after a
-        // 15-second-cadence log spam was traced back here.)
-        //
-        // The controller hard-codes host=postgresql:5432 because
-        // PgBouncer doesn't proxy the Dagster DB; only the credentials
-        // + DB name are taken from config. Defaults mirror the .env
-        // example so a fresh checkout works without manual wiring.
-        'pg_db' => env('DAGSTER_PG_DB', 'georag_dagster'),
-        'pg_user' => env('DAGSTER_PG_USER', 'georag'),
-        'pg_password' => env('DAGSTER_PG_PASSWORD', ''),
-    ],
-
 ];

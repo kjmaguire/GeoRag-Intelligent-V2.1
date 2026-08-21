@@ -51,7 +51,10 @@ doc for the reading order.
    constraints. Don't change enumeration values without SME approval.
 
 7. **Don't duplicate orchestration.** Laravel queues handle user-triggered
-   async work. Dagster handles scheduled/bulk data pipelines. Never overlap.
+   async work. Hatchet handles scheduled/bulk data pipelines and every
+   durable ingestion workflow. Never overlap. (Dagster held the second half
+   of this rule until its tree was retired — it had been dormant since
+   2026-07-28 and deployed nowhere on Azure.)
 
 8. **MapLibre GL, not Mapbox GL.** Licensing matters for on-prem deployments.
 
@@ -65,7 +68,7 @@ doc for the reading order.
 - **Application**: Laravel 13 on Octane (Swoole/RoadRunner), Horizon, Reverb, Sanctum, Pulse
 - **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
 - **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (with PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.17, Redis 8.6, SeaweedFS (S3-compatible, replaces MinIO per ADR-0001)
-- **Ingestion**: Dagster, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002)
+- **Ingestion**: Hatchet workflows, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002)
 - **LLM**: Azure AI Foundry, Cohere Command A+ (`Cohere-command-a-plus-05-2026`, Preview; dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Served via the unified **OpenAI v1 API** (`{endpoint}/openai/v1/chat/completions`) — empirically confirmed 2026-07-30 against a live deployment, including JSON `response_format` support, a separate `reasoning_content` field, and Cohere's `<|START_TEXT|>`/`<|END_TEXT|>` sentinel-token wrapping on JSON output — see `app/config.py` `AZURE_FOUNDRY_*` for the exact wire contract. Anthropic Claude is wired as optional fallback. Embedding/reranker default to self-hosted (Qwen3-Embedding-0.6B / Qwen3-Reranker-0.6B / SPLADE++ on hatchet-worker-ai) but support an Azure AI Foundry backend (`EMBEDDING_BACKEND=foundry` → Cohere Embed v4, `RERANKER_BACKEND=foundry` → Cohere Rerank v4) — both empirically verified 2026-07-30 against live deployments (`{endpoint}/providers/cohere/v2/embed` and `/v2/rerank`, distinct from the LLM's chat-completions surface). SPLADE++ sparse retrieval has no Foundry equivalent and stays self-hosted either way. Embed v4 requests 1024-dim output to match the existing `georag_chunks` schema — no Qdrant migration, but a full re-embed is still mandatory when switching (`scripts/reset_embeddings_for_reencode.py`).
 
 ## Agent delegation

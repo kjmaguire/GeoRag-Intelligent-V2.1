@@ -46,7 +46,7 @@ echo "[smoke] script copied to $CONTAINER:/tmp/ocr_cpu_smoke.py"
 # container only mounts the FastAPI source tree; the dagster fixtures live
 # under a different mount that the worker doesn't see. So we ship the PDF
 # in via docker cp to a known /tmp path.
-HOST_NATIVE_PDF="${OCR_SMOKE_NATIVE_PDF_HOST:-src/dagster/tests/fixtures/reports/PLS-2024-Technical-Report.pdf}"
+HOST_NATIVE_PDF="${OCR_SMOKE_NATIVE_PDF_HOST:-tests/fixtures/reports/PLS-2024-Technical-Report.pdf}"
 if [ ! -f "$HOST_NATIVE_PDF" ]; then
     echo "FATAL: native input PDF not found on host at: $HOST_NATIVE_PDF" >&2
     exit 2

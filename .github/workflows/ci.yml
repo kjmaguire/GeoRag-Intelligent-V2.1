@@ -363,9 +363,6 @@ jobs:
       - name: Lint FastAPI
         run: ruff check src/fastapi/
 
-      - name: Lint Dagster
-        run: ruff check src/dagster/
-
       # Storage-abstraction plan PR1 — new shared package, own lint target.
       - name: Lint georag_object_storage
         run: ruff check src/georag_object_storage/
@@ -382,11 +379,6 @@ jobs:
       # Pure-stdlib script; runs in <1 second.
       - name: Pyproject covers app imports (FastAPI)
         run: python3 scripts/check_pyproject_covers_imports.py
-
-      # Doc-phase 126 — same gate, Dagster side. Both targets share the
-      # one script + allow-list.
-      - name: Pyproject covers app imports (Dagster)
-        run: python3 scripts/check_pyproject_covers_imports.py src/dagster/pyproject.toml src/dagster/georag_dagster
 
       # Phase 0 #16 — orchestration-boundary gate. Fails the build if
       # LangGraph code starts doing work owned by Hatchet (durable
@@ -1119,12 +1111,6 @@ jobs:
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: docker/laravel.Dockerfile
-          failure-threshold: error
-
-      - name: Lint docker/dagster.Dockerfile
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: docker/dagster.Dockerfile
           failure-threshold: error
 
   # ─── Docker build + Trivy + SBOM: MOVED (2026-08-14) ────────────────────

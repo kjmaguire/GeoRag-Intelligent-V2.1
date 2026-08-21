@@ -90,14 +90,11 @@ final class MetricsController extends Controller
             $lines[] = '# warning: laravel_authz_deny_total unavailable: '.$e->getMessage();
         }
 
-        // V1.5-08 — Dagster run state surfaced through Laravel's /metrics so
-        // we don't need a Dagster-side exporter. The `runs` table lives in
-        // a separate PG database (`georag_dagster`); short-lived connection.
-        try {
-            $lines = array_merge($lines, $this->dagsterRunsByStatus());
-        } catch (Throwable $e) {
-            $lines[] = '# warning: dagster_runs_total unavailable: '.$e->getMessage();
-        }
+        // `dagster_runs_total` was emitted here until the Dagster tree was
+        // retired. It had been dead on Azure the whole time: the query
+        // hard-coded host=postgresql:5432, a compose-only hostname, so every
+        // scrape tick logged dagster_metrics_query_failed and appended a
+        // `# warning:` line to the scrape body.
 
         // V1.5-08 — Reverb broadcast volume via Pulse aggregates (cache_set
         // events on the broadcast channel). Reverb itself doesn't expose a
@@ -307,84 +304,6 @@ final class MetricsController extends Controller
         }
 
         return $lines;
-    }
-
-    /**
-     * V1.5-08 — Dagster run state by status.
-     *
-     * Queries the `runs` table in the dedicated `georag_dagster` PG database
-     * (separate from the application schema). Emits a counter-style gauge
-     * `dagster_runs_total{status="..."}` so the GeoRAG — Service Health
-     * dashboard can render the Dagster row.
-     *
-     * @return list<string>
-     */
-    private function dagsterRunsByStatus(): array
-    {
-        $lines = [
-            '# HELP dagster_runs_total Total Dagster runs by terminal status (since DB inception)',
-            '# TYPE dagster_runs_total gauge',
-        ];
-
-        // The Dagster `runs` table lives in a separate PG database
-        // (default `georag_dagster`). Laravel's PDO doesn't cross-database
-        // query so we open a short-lived dedicated connection.
-        $dbName = (string) config('services.dagster.pg_db');
-        $rows = $this->dagsterRunsRowsViaPdo($dbName);
-
-        foreach ($rows as $row) {
-            $status = strtolower((string) ($row['status'] ?? 'unknown'));
-            $count = (int) ($row['count'] ?? 0);
-            $lines[] = sprintf(
-                'dagster_runs_total{status="%s"} %d',
-                $this->escapeLabelValue($status),
-                $count,
-            );
-        }
-        if (count($rows) === 0) {
-            $lines[] = 'dagster_runs_total{status="none"} 0';
-        }
-
-        return $lines;
-    }
-
-    /**
-     * Direct PDO connection to the dagster database. Returns rows as
-     * associative arrays so the caller doesn't depend on Laravel's
-     * connection-config plumbing.
-     *
-     * @return array<int,array{status:string,count:int}>
-     */
-    private function dagsterRunsRowsViaPdo(string $dbName): array
-    {
-        // PgBouncer doesn't proxy the Dagster DB (it's configured for the
-        // application DB only). Hard-code postgresql:5432 here regardless
-        // of DAGSTER_PG_HOST in .env (which is set to pgbouncer:6432 because
-        // Dagster CONNECTS through pgbouncer for everything else).
-        // The username + password match across DBs.
-        $host = 'postgresql';
-        $port = '5432';
-        $user = (string) config('services.dagster.pg_user');
-        $pass = (string) config('services.dagster.pg_password');
-
-        try {
-            $dsn = "pgsql:host={$host};port={$port};dbname={$dbName}";
-            $pdo = new \PDO($dsn, $user, $pass, [
-                \PDO::ATTR_TIMEOUT => 2,
-                \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
-            ]);
-            $stmt = $pdo->query('SELECT status, COUNT(*) AS count FROM runs GROUP BY status');
-
-            return $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-        } catch (Throwable $e) {
-            Log::warning('dagster_metrics_query_failed', [
-                'dsn_host' => $host,
-                'dsn_db' => $dbName,
-                'error' => $e->getMessage(),
-            ]);
-
-            return [];
-        }
     }
 
     /**
