@@ -1,0 +1,68 @@
+name: ACR orphan sweep
+
+# =============================================================================
+# Reclaim ACR storage that the registry's own `purge-old-images` task cannot.
+#
+# `acr purge --untagged` only deletes legacy docker-v2 manifests. Since CD
+# moved to buildx (2026-08-20) every image is pushed as an OCI index plus
+# untagged children, and every build orphans the previous ~4 GB `buildcache`
+# generation — none of which that task will ever touch. Left alone the Basic
+# registry grew to 59 GB against a 10 GB included quota.
+#
+# scripts/ci/acr_orphan_sweep.py deletes a manifest only when it is untagged
+# AND not referenced by any surviving index, so the untagged children of live
+# tags — including whatever is running in production right now — are never
+# candidates. See that file's docstring for the full reasoning.
+#
+# Runs after the daily 08:00 UTC `purge-old-images` task, so tags it retires
+# are already gone and their newly-orphaned children get swept the same day.
+# =============================================================================
+
+on:
+  schedule:
+    # 08:30 UTC daily — 30 min after the ACR purge task's timer trigger.
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be deleted without deleting it'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sweep:
+    name: Sweep unreachable manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same OIDC identity CD uses (georag-github-cd). Its federated credential
+      # trusts refs/heads/main, which is the ref a scheduled run executes as.
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Registry size before
+        run: |
+          az acr show-usage -n georagacrcc \
+            --query "value[?name=='Size'].currentValue" -o tsv \
+            | awk '{printf "before: %.2f GB\n", $1/1024/1024/1024}'
+
+      - name: Sweep
+        run: |
+          python3 scripts/ci/acr_orphan_sweep.py \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Registry size after
+        if: always()
+        run: |
+          az acr show-usage -n georagacrcc \
+            --query "value[?name=='Size'].currentValue" -o tsv \
+            | awk '{printf "after: %.2f GB\n", $1/1024/1024/1024}'
