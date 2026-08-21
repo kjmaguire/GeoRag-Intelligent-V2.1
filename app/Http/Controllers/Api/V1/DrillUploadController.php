@@ -6,8 +6,6 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
-use App\Services\Dagster\DagsterGraphQLClient;
-use App\Services\Dagster\DrillAssetSelector;
 use App\Services\FastApiJwtMinter;
 use App\Services\Ingestion\HatchetDispatchThrottle;
 use App\Services\StorageService;
@@ -145,7 +143,11 @@ class DrillUploadController extends Controller
             ], 500);
         }
 
-        $selection = DrillAssetSelector::select($ext, $originalName);
+        // Invariant, not a lookup: the guard above returns 422 for every
+        // extension except pdf, so DrillAssetSelector — whose only other
+        // outcomes routed to Dagster — could never return anything else by
+        // the time control reached here. It went with the Dagster tree.
+        $selection = ['asset_key' => null, 'route' => 'fastapi_pdf'];
 
         // Security fix 2026-08-14 (MED): persist the server-sniffed MIME, not
         // the client-declared one — the client value is attacker-controlled.
@@ -270,32 +272,8 @@ class DrillUploadController extends Controller
             );
         }
 
-        if ($route === 'dagster' && is_string($selection['asset_key'])) {
-            $opsConfig = [
-                // The bronze→silver asset pair both read object_key from
-                // the ops config — mirrors what minio_upload_sensor builds
-                // via sensor_helpers.build_sensor_run_config.
-                $selection['asset_key'] => [
-                    'config' => [
-                        'object_key' => $seaweedfsKey,
-                        'source_file_id' => $sourceFileId,
-                        'vendor_profile_id' => $vendorProfileId,
-                    ],
-                ],
-            ];
-
-            $result = app(DagsterGraphQLClient::class)->launchAssetMaterialization(
-                $selection['asset_key'],
-                $opsConfig,
-            );
-
-            return [
-                'dispatched' => $result['dispatched'],
-                'run_id' => $result['run_id'],
-                'error' => $result['error'],
-                'route' => 'dagster',
-            ];
-        }
+        // The 'dagster' route went with the Dagster services. It was already
+        // unreachable: the non-pdf 422 guard fires long before dispatch().
 
         return [
             'dispatched' => false,

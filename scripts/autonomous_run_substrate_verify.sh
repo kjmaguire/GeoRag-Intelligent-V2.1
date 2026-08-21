@@ -409,15 +409,10 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-TOTAL=$((TOTAL + 1))
-if python3 "$SCRIPT_DIR/check_pyproject_covers_imports.py" \
-        "$REPO_ROOT/src/dagster/pyproject.toml" \
-        "$REPO_ROOT/src/dagster/georag_dagster" >/dev/null 2>&1; then
-    note "[pyproject-coverage:dagster] PASS — every georag_dagster/ import is in pyproject (or allow-listed)"
-else
-    note "[pyproject-coverage:dagster] FAIL — see scripts/check_pyproject_covers_imports.py output"
-    FAIL=$((FAIL + 1))
-fi
+# The matching [pyproject-coverage:dagster] gate was dropped with src/dagster.
+# It had to go rather than be left in place: the checker exits non-zero on a
+# missing tree, and its output is swallowed by `>/dev/null 2>&1`, so leaving it
+# would have reported a permanent unexplained FAIL.
 
 # ----------------------------------------------------------------------
 # Hatchet workflow registrations
