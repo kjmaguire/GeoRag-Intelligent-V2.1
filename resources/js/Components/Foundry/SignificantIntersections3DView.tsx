@@ -213,6 +213,7 @@ export default function SignificantIntersections3DView({
             <div className="flex items-center gap-3 mb-2 shrink-0 flex-wrap">
                 <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Element</span>
                 <select
+                    aria-label="Element to plot"
                     value={selected}
                     onChange={(e) => setSelected(e.target.value)}
                     className="text-[11px] font-mono px-2 py-1 rounded border"

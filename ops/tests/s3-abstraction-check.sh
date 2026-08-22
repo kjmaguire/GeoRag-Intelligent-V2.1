@@ -137,7 +137,7 @@ log "  Deletion verified: OK"
 # Step 7 — Vendor-SDK import scan (Addendum §02a rule 1)
 #
 # Static grep over application source for a vendor-named SDK import
-# (`minio`, `seaweedfs`, etc.) — the runbook (ops/runbooks/s3-abstraction.md)
+# (`minio`, `seaweedfs`, etc.) — the runbook (ops/runbooks/_archived/s3-abstraction.md)
 # has documented this as check 7/7 since it was first written, but the
 # script itself never implemented it. Requires the repo checkout to be
 # present (true when run from the host, or a container with the source

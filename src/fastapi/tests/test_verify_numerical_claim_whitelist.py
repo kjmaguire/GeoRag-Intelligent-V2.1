@@ -24,7 +24,15 @@ def _fake_ctx(row: dict | None = None):
     """
     pool = MagicMock()
     pool.acquire = MagicMock(return_value=_AsyncCtxMgr(conn=AsyncMock(), row=row))
-    deps = SimpleNamespace(pg_pool=pool)
+    # verify_numerical_claim acquires through AgentDeps.acquire_scoped()
+    # (2026-08-22) so RLS applies the fence its conditional WHERE
+    # clause cannot build when workspace_id is absent. The stand-in
+    # yields the same connection; what is being tested here is the
+    # column allowlist, not the transaction.
+    deps = SimpleNamespace(
+        pg_pool=pool,
+        acquire_scoped=lambda: _AsyncCtxMgr(conn=AsyncMock(), row=row),
+    )
     return SimpleNamespace(deps=deps)
 
 

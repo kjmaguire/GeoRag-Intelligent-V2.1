@@ -156,16 +156,16 @@ class ReingestProject extends Command
             $this->line("  silver.reports: {$cnt} row(s) removed");
         }
 
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             $this->error('FASTAPI_SERVICE_KEY not configured.');
 
             return self::FAILURE;
         }
-        $triggerUrl = rtrim(
-            config('services.fastapi.url') ?: env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
-            '/',
-        ).'/internal/v1/shadow/ingest_pdf/trigger';
+        // See DebounceWorkspaceMvRefresh: `services.fastapi.url` is not a
+        // key. `internal_url` is.
+        $triggerUrl = rtrim((string) config('services.fastapi.internal_url'), '/')
+            .'/internal/v1/shadow/ingest_pdf/trigger';
 
         $jwt = $jwtMinter->mint(
             userId: $actorId,

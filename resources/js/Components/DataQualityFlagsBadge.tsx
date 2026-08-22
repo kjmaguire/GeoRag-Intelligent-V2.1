@@ -5,8 +5,15 @@
  * grey (INFO) with the count of open flags per severity. Clicking
  * expands to the flag list with description + rule_id + flagged_at.
  *
- * Hidden entirely when there are zero flags — collars in good shape
- * shouldn't have UI noise pulling attention.
+ * Hidden entirely when rules ran and found nothing — collars in good
+ * shape shouldn't have UI noise pulling attention.
+ *
+ * NOT hidden when nothing has been checked. "No flags" and "nobody
+ * looked" are opposite claims about a hole, and rendering both as blank
+ * space made the second one read as the first. A geologist deciding
+ * whether to trust an assay interval is entitled to know which they are
+ * looking at. `evaluated` comes from the controller; see
+ * DrillholeDetailController::dataQualityFlagSummary for what it measures.
  *
  * Used on the DrillholeDetail page. The same shape works for any
  * record_type — when the badge ships on Document/Report views the
@@ -29,6 +36,14 @@ export interface DataQualityFlagsBadgeData {
     counts: { ERROR: number; WARNING: number; INFO: number };
     open_total: number;
     flags: DataQualityFlag[];
+    /**
+     * Has any quality rule ever produced a finding in this project?
+     *
+     * Optional so a caller that predates it keeps its old behaviour
+     * (undefined is treated as "don't know", which renders nothing rather
+     * than asserting either way).
+     */
+    evaluated?: boolean;
 }
 
 interface DataQualityFlagsBadgeProps {
@@ -74,9 +89,33 @@ export default function DataQualityFlagsBadge({
 }: DataQualityFlagsBadgeProps) {
     const [expanded, setExpanded] = useState(false);
 
-    if (!data || data.open_total === 0) {
-        // No flags → no UI noise. Returning null keeps the parent
-        // layout clean for the well-behaved-collar happy path.
+    if (!data) {
+        // The prop was not supplied at all — no basis for any claim.
+        return null;
+    }
+
+    if (data.open_total === 0) {
+        if (data.evaluated === false) {
+            // Rules exist; none has ever run here. Say so, quietly.
+            return (
+                <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-gray-700/60 bg-gray-900/50 text-[10px] uppercase tracking-wider text-gray-500"
+                    title={
+                        'No data-quality rule has produced a finding in this project, '
+                        + 'so this hole has not been checked. This is not the same as '
+                        + 'a clean hole.'
+                    }
+                >
+                    <span
+                        className="w-1.5 h-1.5 rounded-full border border-gray-600"
+                        aria-hidden="true"
+                    />
+                    {label} · not checked
+                </span>
+            );
+        }
+        // Rules ran and found nothing → no UI noise. Returning null keeps
+        // the parent layout clean for the well-behaved-collar happy path.
         return null;
     }
 

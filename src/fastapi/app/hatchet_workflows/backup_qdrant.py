@@ -41,6 +41,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.backup_postgres import _put_s3
 
@@ -65,18 +66,20 @@ class BackupQdrantOutput(BaseModel):
 
 backup_qdrant = hatchet.workflow(
     name="backup_qdrant",
-    on_crons=["30 2 * * *"],
+    # Moved out of the 00:00-10:00 UTC shutdown window; see backup_postgres.
+    # Moved 2026-08-21: 15:30 UTC — staggered behind backup_postgres.
+    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
+    # scales hatchet-worker-cc to zero and both DST candidate hours of
+    # each sweep count as closed. See
+    # tests/test_crons_avoid_the_shutdown_window.py.
+    on_crons=["30 15 * * *"],
     input_validator=BackupQdrantInput,
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 def _build_object_key(prefix: str, run_id: str, when: datetime, collection: str) -> str:

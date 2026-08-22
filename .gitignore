@@ -98,16 +98,38 @@ src/fastapi/models/
 #
 #   src/fastapi/data/      — older local mirror of reranker_dataset_v1
 #                            (the same data lives in MinIO reranker-labels)
-#   src/fastapi/scripts/   — Docker bind-mount echo of repo /scripts;
-#                            edits belong in /scripts only.
 #   tmp/                   — ad-hoc PHP/Python probe scripts left behind by
 #                            older debugging sessions; not source files
 #   bronze/                — textbook PDF dumps, belong in SeaweedFS/MinIO
 #                            not git (GBs of binary corpus data)
 src/fastapi/data/
-src/fastapi/scripts/
 /tmp/
 /bronze/
+
+# 2026-08-21 — `src/fastapi/scripts/` was ignored here on the stated grounds
+# that it is a "Docker bind-mount echo of repo /scripts; edits belong in
+# /scripts only". That was not true, and the rule was silently costing real
+# work:
+#
+#   * 26 of the 44 .py files under it ARE tracked (added before the rule, or
+#     force-added since), so it was never a mirror — it is a live source
+#     directory that git was told to ignore.
+#   * only 19 of the 44 share a basename with repo-root /scripts, so most of
+#     it has no counterpart to "belong in" at all.
+#   * the 18 untracked files are 4,071 lines and include the entire reranker
+#     and embedder fine-tuning toolchain (_train_reranker_full.py,
+#     train_reranker_lora.py, _train_bge_small_finetune.py,
+#     _mine_real_hard_negatives.py, _extend_reranker_tokenizer.py, ...) plus
+#     bench_retrieval_ndcg.py, the retrieval benchmark whose "committed
+#     baseline" of 0.601 is quoted in review documents. Neither the script
+#     nor the baseline JSON was ever in the repository. They exist on one
+#     Windows workstation.
+#   * the size rationale does not hold either: the whole directory is 704K
+#     of .py, one .json and one .sh. There is no bulky data in it.
+#
+# Anything written here was invisible to CI, to the container image build,
+# and to any other machine. Un-ignored; __pycache__ is already covered by the
+# global rule above.
 
 # Claude Code agent scratch worktrees (never commit)
 .claude/worktrees/

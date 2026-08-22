@@ -6,6 +6,15 @@
         "moduleResolution": "bundler",
         "jsx": "react-jsx",
         "strict": true,
+        // Cancels most of what `strict` above buys: every untyped
+        // parameter in the TS/TSX tree becomes an implicit `any`, so a
+        // typo in a callback over an API response compiles clean and
+        // fails at runtime as a blank panel behind the ErrorBoundary.
+        //
+        // Still false because nobody has measured the flip, and
+        // `tsc --noEmit` is a blocking CI step. The frontend job now
+        // prints the count to its step summary ("noImplicitAny
+        // burn-down"); flip this when that number is small.
         "noImplicitAny": false,
         "noEmit": true,
         "isolatedModules": true,

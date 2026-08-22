@@ -40,9 +40,9 @@ shouldn't pollute the production cold-tier.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
-import os
 from datetime import UTC, datetime
 
 import asyncpg
@@ -50,6 +50,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.backup_postgres")
@@ -81,18 +82,22 @@ class BackupPostgresOutput(BaseModel):
 
 backup_postgres = hatchet.workflow(
     name="backup_postgres",
-    on_crons=["0 2 * * *"],
+    # 11:00 UTC, not 02:00. Postgres is deliberately stopped 00:00-10:00 UTC
+    # to save cost, so a pg_dump scheduled at 02:00 had nothing to connect to
+    # even once pg_dump itself was present in the image.
+    # Moved 2026-08-21: 15:00 UTC — after the startup sweep's later candidate hour (14:00).
+    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
+    # scales hatchet-worker-cc to zero and both DST candidate hours of
+    # each sweep count as closed. See
+    # tests/test_crons_avoid_the_shutdown_window.py.
+    on_crons=["0 15 * * *"],
     input_validator=BackupPostgresInput,
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 def _build_object_key(prefix: str, run_id: str, when: datetime) -> str:
@@ -156,6 +161,16 @@ async def _record_failure(
     )
 
 
+#: Hard cap on one pg_dump run.
+#:
+#: Both the stdout read loop and proc.wait() were unbounded, so a dump
+#: that never produced output and never exited held the task open for
+#: Hatchet's full execution_timeout with nothing logged to explain it.
+#: Two hours is generous for this corpus and still far short of a silent
+#: all-night hang.
+_PG_DUMP_TIMEOUT_S = 2 * 3600
+
+
 async def _stream_pg_dump_to_seaweedfs(
     bucket: str, object_key: str, dsn: str,
 ) -> tuple[int, str]:
@@ -182,15 +197,36 @@ async def _stream_pg_dump_to_seaweedfs(
     chunks: list[bytes] = []
     total = 0
     assert proc.stdout is not None
-    while True:
-        chunk = await proc.stdout.read(4 * 1024 * 1024)
-        if not chunk:
-            break
-        hasher.update(chunk)
-        chunks.append(chunk)
-        total += len(chunk)
 
-    return_code = await proc.wait()
+    async def _drain() -> int:
+        nonlocal total
+        while True:
+            chunk = await proc.stdout.read(4 * 1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            chunks.append(chunk)
+            total += len(chunk)
+        return await proc.wait()
+
+    # Bounded. The read loop and proc.wait() were both open-ended, so a
+    # pg_dump that produced no output and never exited -- what connecting
+    # to a Flexible Server that is still starting up looks like -- held the
+    # task until Hatchet's own execution_timeout with no error to explain
+    # it. These crons ran INSIDE the nightly shutdown window until
+    # 2026-08-21, so that was the ordinary case rather than an edge.
+    try:
+        return_code = await asyncio.wait_for(
+            _drain(), timeout=_PG_DUMP_TIMEOUT_S,
+        )
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise RuntimeError(
+            "pg_dump produced no completed dump within "
+            f"{_PG_DUMP_TIMEOUT_S}s and was killed after {total} bytes"
+        ) from None
     if return_code != 0:
         stderr = (await proc.stderr.read()).decode("utf-8", errors="replace") if proc.stderr else ""
         raise RuntimeError(f"pg_dump exited with status {return_code}: {stderr[:500]}")
@@ -200,26 +236,35 @@ async def _stream_pg_dump_to_seaweedfs(
 
 
 async def _put_s3(bucket: str, key: str, body: bytes) -> None:
-    """Upload to SeaweedFS via its S3 API using aioboto3.
+    """Upload a backup artefact to the configured object store.
 
-    ``bucket`` is a workflow-input string (default "georag-backups",
-    overridable per BackupPostgresInput's own docstring) — genuinely
-    dynamic, not one of georag_object_storage's four fixed logical Bucket
-    members, so this uses the raw-client escape hatch (async_client_kwargs)
-    rather than the higher-level AsyncObjectStorage interface. Credentials/
-    endpoint/region come from StorageConfig.from_env() — canonical AWS_*
-    env vars, falling back through S3_*/MINIO_*/SEAWEEDFS_*/SEAWEEDFS_S3_*
-    names (see georag_object_storage.config for the full chain).
+    Named `_put_s3` for its three callers' sake; it is not S3-specific any
+    more. It used to build a raw aioboto3 client from
+    ``StorageConfig.from_env()`` and PUT to a SeaweedFS endpoint. On Azure
+    that endpoint does not exist and none of the AWS_*/S3_*/MINIO_*/
+    SEAWEEDFS_* credentials it looks for are set on hatchet-worker-cc — which
+    runs STORAGE_BACKEND=azure_blob like the rest of the application — so
+    every backup upload raised, every night, silently.
 
-    Bucket must exist (SeaweedFS S3 returns NoSuchBucket otherwise).
-    Production deploys pre-create the bucket via the operator runbook.
+    Routing through the same factory the rest of the app uses means the
+    backups follow the deployment instead of a decommissioned service.
+
+    ``bucket`` is kept in the signature because the workflow inputs still
+    expose it, but the logical Bucket.BACKUPS is what the backend resolves;
+    a caller asking for a different physical bucket is a configuration
+    change, not a per-run argument.
     """
-    import aioboto3
-    from georag_object_storage import StorageConfig, async_client_kwargs
+    from georag_object_storage import Bucket, get_async_storage_client
 
-    session = aioboto3.Session()
-    async with session.client("s3", **async_client_kwargs(StorageConfig.from_env())) as s3:
-        await s3.put_object(Bucket=bucket, Key=key, Body=body)
+    if bucket not in ("", "georag-backups", Bucket.BACKUPS.value):
+        log.warning(
+            "backup upload: ignoring per-run bucket %r — the storage backend "
+            "resolves Bucket.BACKUPS from configuration",
+            bucket,
+        )
+
+    storage = get_async_storage_client()
+    await storage.put_bytes(Bucket.BACKUPS, key, body)
 
 
 @backup_postgres.task(execution_timeout="60m")

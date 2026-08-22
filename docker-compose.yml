@@ -335,9 +335,18 @@ services:
 
   # ---------------------------------------------------------------------------
   # REDIS 8 — cache + Horizon queue backend
-  # maxmemory 512MB with allkeys-lru eviction for the dev workstation budget.
-  # AOF persistence is OFF (cache-only mode). If you need durable queues,
-  # provision a second Redis instance with AOF on.
+  # maxmemory 512MB for the dev workstation budget, volatile-lru eviction.
+  # AOF persistence is ON and durable, because this service mounts
+  # redis_data:/data. (This header used to claim "AOF persistence is OFF
+  # (cache-only mode)" directly above a command that sets --appendonly
+  # yes, and directly above a second comment block explaining why it is
+  # on. Corrected 2026-08-22.)
+  #
+  # volatile-lru, not allkeys-lru: one instance holds queue jobs (no TTL)
+  # alongside cache and sessions (TTL'd), so allkeys-lru can evict a
+  # queued job. See deploy/azure/containerapps/redis.yaml for the full
+  # argument, and scripts/check_redis_manifests.py for the invariants
+  # every Redis manifest in this repo has to satisfy.
   # ---------------------------------------------------------------------------
   redis:
     # B8 — digest pinned 2026-04-19
@@ -375,7 +384,7 @@ services:
     command: >
       redis-server
         --maxmemory ${REDIS_MAXMEMORY:-512mb}
-        --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-allkeys-lru}
+        --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
         --appendonly ${REDIS_APPENDONLY:-yes}
         --appendfsync ${REDIS_APPENDFSYNC:-everysec}
         --save ""
@@ -883,7 +892,6 @@ services:
       # Azure AI Foundry is the default primary backend post Phase-C
       # cutover (2026-07-30), replacing self-hosted vLLM.
       LLM_BACKEND: ${LLM_BACKEND:-azure}
-      LLM_BACKEND_FALLBACK: ${LLM_BACKEND_FALLBACK:-downshift}
       LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-http://vllm:8000/v1}
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
       LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
@@ -898,7 +906,6 @@ services:
       AZURE_FOUNDRY_ENDPOINT: ${AZURE_FOUNDRY_ENDPOINT:-}
       AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
       AZURE_FOUNDRY_DEPLOYMENT: ${AZURE_FOUNDRY_DEPLOYMENT:-}
-      AZURE_FOUNDRY_API_VERSION: ${AZURE_FOUNDRY_API_VERSION:-2024-05-01-preview}
       AZURE_FOUNDRY_MAX_MODEL_LEN: ${AZURE_FOUNDRY_MAX_MODEL_LEN:-128000}
       # vLLM — retained only for operators who point LLM_BACKEND=vllm at an
       # external OpenAI-compatible endpoint; the local `vllm` compose
@@ -914,7 +921,6 @@ services:
       PDF_VL_MODEL_VERSION: ${PDF_VL_MODEL_VERSION:-2}
       PDF_VL_MODEL_ID_V3: ${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}
       PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-http://vllm:8000/v1}
-      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEM_UTIL:-0.92}
       # Anthropic — set ANTHROPIC_API_KEY in .env + flip LLM_BACKEND
       # to "anthropic" to activate. See docs/RUNBOOK.md "LLM backend
       # selection" for the full flip procedure.
@@ -924,8 +930,6 @@ services:
       ANTHROPIC_ENABLE_PROMPT_CACHING: ${ANTHROPIC_ENABLE_PROMPT_CACHING:-true}
       ANTHROPIC_USE_PRIORITY_TIER: ${ANTHROPIC_USE_PRIORITY_TIER:-false}
       MODEL_TIER_FAST: ${MODEL_TIER_FAST:-claude-haiku-4-5}
-      MODEL_TIER_STANDARD: ${MODEL_TIER_STANDARD:-claude-sonnet-4-6}
-      MODEL_TIER_DEEP: ${MODEL_TIER_DEEP:-claude-opus-4-8}
       # Cross-database timeouts (Section 06e)
       TIMEOUT_POSTGIS_S: ${TIMEOUT_POSTGIS_S:-5}
       TIMEOUT_NEO4J_S: ${TIMEOUT_NEO4J_S:-3}
@@ -1011,7 +1015,7 @@ services:
     # Dockerfile already chowns /app to www-data. Existing dev environments
     # may need to recreate the fastapi_hf_cache named volume once after this
     # change so first-mount ownership matches.
-    # See ops/runbooks/container-hardening.md for migration steps.
+    # See ops/runbooks/_archived/container-hardening.md for migration steps.
     user: "33:33"
     volumes:
       - ./src/fastapi:/app:cached
@@ -1746,12 +1750,19 @@ services:
       OCR_ENGINE: ${OCR_ENGINE:-azure_document_intelligence}
       AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: ${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT:-}
       AZURE_DOCUMENT_INTELLIGENCE_KEY: ${AZURE_DOCUMENT_INTELLIGENCE_KEY:-}
-      # Calibrated OCR routing thresholds (ocr_quality.OcrRoutingThresholds
-      # schema). Without this var every OCR page fail-closes to
-      # review_required ("routing_thresholds_not_calibrated") — pure noise.
+      # OCR routing thresholds (ocr_quality.OcrRoutingThresholds schema).
+      # Without this var every OCR page fail-closes to review_required
+      # ("routing_thresholds_not_calibrated") — pure noise.
       # Bands: mean confidence >= 0.90 (+ clean text signals) auto-accepts,
       # 0.60-0.90 lands in the review bands (spot_check/mandatory), below
       # 0.60 is mandatory review, below 0.30 is catastrophic failure.
+      #
+      # NOT CALIBRATED, despite what this comment said until 2026-08-21.
+      # These are round numbers chosen by hand with no artefact behind them.
+      # Add "calibrated_from": "<path>" once real ones exist; see the long
+      # note on OCR_ROUTING_THRESHOLDS_JSON in .env.example for why the
+      # single 0.90 cut-off is wrong for BOTH engines at once and how to
+      # express per-engine bands.
       OCR_ROUTING_THRESHOLDS_JSON: '${OCR_ROUTING_THRESHOLDS_JSON:-{"catastrophic_max_mean_confidence":0.30,"catastrophic_max_coverage_ratio":0.20,"mandatory_min_mean_confidence":0.60,"mandatory_min_median_confidence":0.60,"mandatory_max_low_confidence_word_ratio":0.40,"mandatory_min_coverage_ratio":0.50,"mandatory_max_gibberish_word_ratio":0.30,"mandatory_max_repeated_character_ratio":0.20,"mandatory_max_seam_duplicate_ratio":0.20,"spot_check_min_mean_confidence":0.90,"spot_check_min_median_confidence":0.90,"spot_check_max_low_confidence_word_ratio":0.10,"spot_check_min_coverage_ratio":0.80,"spot_check_max_gibberish_word_ratio":0.10,"spot_check_max_repeated_character_ratio":0.05,"spot_check_max_seam_duplicate_ratio":0.05}}'
       PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
       PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}

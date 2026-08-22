@@ -110,6 +110,7 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
                 <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--line-1)' }}>
                     <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>⌘K</span>
                     <input
+                        aria-label="Search navigation"
                         type="text"
                         autoFocus
                         value={q}

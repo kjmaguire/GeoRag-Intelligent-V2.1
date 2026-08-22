@@ -271,7 +271,10 @@ class CgiVocabSeederTest extends TestCase
 
     private function setWorkspaceGuc(): void
     {
-        DB::statement("SELECT set_config('georag.workspace_id', ?, true)",
+        // `app.workspace_id`, not the legacy `georag.workspace_id` the
+        // 2026-05-28 sweeps retired — the policies read the canonical name
+        // and would simply never see this binding.
+        DB::statement("SELECT set_config('app.workspace_id', ?, true)",
             [self::TEST_WORKSPACE_ID]);
     }
 

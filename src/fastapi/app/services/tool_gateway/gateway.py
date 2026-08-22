@@ -333,7 +333,17 @@ async def invoke_tool(
 
     # Real execution
     try:
-        output = await impl(inputs)
+        # ctx is AUTHORITATIVE for the tenant. This used to dispatch the
+        # caller's raw `inputs` dict, so the gateway knew the workspace
+        # (it uses workspace_id_str for every audit write, below and
+        # above) and never handed it to the implementation. A caller that
+        # omitted workspace_id then got whatever each impl does with a
+        # missing tenant — an unfiltered Qdrant scroll in one case, a
+        # silent rebind to the legacy default tenant in the other.
+        #
+        # Injecting last means the caller CANNOT under-specify and cannot
+        # override: whatever the gateway authenticated wins.
+        output = await impl({**inputs, "workspace_id": workspace_id_str})
         outcome_str = "allowed"
         output_hash = _canonical_hash(output)
     except Exception as exc:  # noqa: BLE001

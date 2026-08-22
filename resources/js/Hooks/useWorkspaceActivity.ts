@@ -32,6 +32,8 @@
 
 import { useEffect, useRef } from 'react';
 
+import { listenPrivate } from '@/lib/echoChannel';
+
 export interface WorkspaceActivityEvent {
     workspace_id: string;
     affected_types: string[];
@@ -60,7 +62,6 @@ export function useWorkspaceActivity(
         let pendingEvent: WorkspaceActivityEvent | null = null;
 
         const channelName = `workspace.${workspaceId}.activity`;
-        const ch = window.Echo.private(channelName);
 
         const fire = (): void => {
             if (!isMounted) return;
@@ -74,7 +75,10 @@ export function useWorkspaceActivity(
             }
         };
 
-        ch.listen('.workspace.activity', (raw: unknown) => {
+        // Ref-counted for the same reason the ingestion-channel hooks are:
+        // a second subscriber joining this channel must not be able to
+        // unbind the first one by unmounting.
+        const unsubscribe = listenPrivate(channelName, '.workspace.activity', (raw) => {
             if (!isMounted) return;
             const event = raw as WorkspaceActivityEvent;
             if (event.workspace_id !== workspaceId) return;
@@ -92,7 +96,7 @@ export function useWorkspaceActivity(
                 clearTimeout(debounceTimer);
                 debounceTimer = null;
             }
-            window.Echo?.leave(channelName);
+            unsubscribe();
         };
     }, [workspaceId]);
 }

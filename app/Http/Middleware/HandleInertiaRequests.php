@@ -56,7 +56,19 @@ class HandleInertiaRequests extends Middleware
                 'env' => app()->environment(),
                 'debug' => (bool) config('app.debug'),
             ],
+            // MapLibre network dependencies, so an air-gapped deployment can
+            // repoint every one of them from the environment. Until
+            // config/services.php gained a `basemap` block these resolved to
+            // null on every response and resources/js/lib/basemap.ts silently
+            // used its hard-coded public-CDN fallbacks instead.
             'basemap_styles' => config('services.basemap.styles'),
+            'basemap_glyphs' => config('services.basemap.glyphs'),
+            'basemap_satellite' => [
+                'tiles' => config('services.basemap.satellite_tiles'),
+                'attribution' => config('services.basemap.satellite_attribution'),
+            ],
+            'basemap_dem' => config('services.basemap.dem_tiles'),
+            'basemap_imagery' => config('services.basemap.imagery_tiles'),
 
             // Foundry shell project-scoped chat threads.
             'project_threads' => fn () => $this->resolveProjectThreads($request),

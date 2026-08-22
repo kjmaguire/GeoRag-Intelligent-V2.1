@@ -88,13 +88,13 @@ reads `WORKER_POOL` and registers a different subset.
 - `embed_pending_passages_wf` ([embed_pending_passages.py](../../../src/fastapi/app/hatchet_workflows/embed_pending_passages.py))
 - `audit_ledger_verify` (cron `0 2 * * *`)
 - `score_targets`
-- `evaluate_workspace`
+- ~~`evaluate_workspace`~~ — removed 09d1d35 (2026-07-27); not registered
 - `external_notification`
 - `support_replay`
 - `cost_burn_watcher`
 - `continuous_learning_loop`
 - `field_outcome_learning`
-- `eval_real_rag_nightly`
+- ~~`eval_real_rag_nightly`~~ — removed 09d1d35 (2026-07-27); not registered
 - `restore_workspace`
 - `shadow_diff`
 - `public_geoscience_pull`

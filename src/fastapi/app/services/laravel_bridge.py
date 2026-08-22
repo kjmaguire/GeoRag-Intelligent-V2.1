@@ -11,14 +11,19 @@ Failure semantics
 - All callbacks are best-effort. We log + swallow on error. A broadcast
   failure must NEVER fail the workflow that's making real progress.
 - Timeout is short (3 s) — if Laravel is down, we don't want to stall.
+- Terminal ingestion statuses are the one exception to fire-and-forget: they
+  are retried. See ``post_ingestion_progress``.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
 
 import httpx
+
+from app.ingest_status import TERMINAL_STATUSES
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +34,12 @@ _DEFAULT_LARAVEL_URL = "http://laravel.test"
 # One-shot latch so the misconfiguration warning below is emitted once per
 # process instead of once per callback.
 _warned_unset_base = False
+
+#: Backoff between retries of a TERMINAL ingestion callback, in seconds.
+#: Three attempts total. Sized against a container restart rather than a
+#: prolonged outage: past a few seconds the run is better served by the
+#: nightly MV refresh than by a workflow step sitting on a socket.
+_INGESTION_RETRY_DELAYS: tuple[float, ...] = (0.5, 2.0)
 
 
 def _laravel_base() -> str:
@@ -133,8 +144,31 @@ async def post_ingestion_progress(
     Reverb channel so IngestionRuns.tsx can flip the row state
     immediately instead of waiting for its next poll.
 
-    Best-effort: a broadcast failure must not cascade — the durable
-    record is the DB row, the broadcast is the latency optimisation.
+    Best-effort on progress events: the durable record is the
+    silver.ingest_progress row and the broadcast is a latency optimisation,
+    and a dropped one is superseded by the next.
+
+    NOT best-effort on a terminal status, which is why those are retried.
+    The Laravel endpoint does three things beyond broadcasting when the
+    status is in DATA_LANDED_STATUSES, and this POST is the only trigger for
+    any of them:
+
+      * ``WorkspaceDataVersionBumper::bump()`` — the cache-invalidation token
+        the MVT tile proxy and the answer-run cache compare against. Nothing
+        else ever increments it, so a dropped POST means tile caches keep
+        serving pre-ingest geometry indefinitely, not until some later sweep.
+      * ``DebounceWorkspaceMvRefresh`` — the materialised-view refresh. The
+        only other trigger is the 03:00 UTC ``mv_refresh_silver`` cron, so
+        the data is missing from every MV-derived surface until tomorrow.
+      * ``WorkspaceDataUpdated`` — the SPA's partial reload.
+
+    A Laravel rollout restarting its container for twenty seconds was enough
+    to lose all three for every document that finished in that window, with
+    a single WARNING line as the only trace.
+
+    Retries are bounded and only cover failures that can plausibly clear:
+    transport errors and 5xx. A 4xx means Laravel understood us and said no,
+    and replaying it just makes the same rejection three times.
     """
     key = _service_key()
     if not key:
@@ -154,23 +188,41 @@ async def post_ingestion_progress(
     if pct is not None:
         payload["pct"] = pct
 
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.post(
-                url,
-                json=payload,
-                headers={"X-Service-Key": key, "Accept": "application/json"},
-            )
-        if r.status_code >= 400:
-            log.warning(
-                "laravel_bridge: ingestion broadcast non-2xx run=%s status=%s http=%s body=%s",
-                run_id, status, r.status_code, r.text[:200],
-            )
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "laravel_bridge: ingestion broadcast failed run=%s status=%s err=%s",
-            run_id, status, exc,
-        )
+    attempts = _INGESTION_RETRY_DELAYS if status in TERMINAL_STATUSES else ()
+    last_error: str | None = None
+
+    for attempt in range(len(attempts) + 1):
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.post(
+                    url,
+                    json=payload,
+                    headers={"X-Service-Key": key, "Accept": "application/json"},
+                )
+            if r.status_code < 400:
+                if attempt:
+                    log.info(
+                        "laravel_bridge: ingestion broadcast succeeded on retry "
+                        "run=%s status=%s attempt=%d",
+                        run_id, status, attempt + 1,
+                    )
+                return
+            last_error = f"http={r.status_code} body={r.text[:200]}"
+            if r.status_code < 500:
+                # Laravel understood the request and refused it. Replaying
+                # changes nothing.
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"err={exc}"
+
+        if attempt < len(attempts):
+            await asyncio.sleep(attempts[attempt])
+
+    log.warning(
+        "laravel_bridge: ingestion broadcast failed run=%s status=%s "
+        "attempts=%d %s",
+        run_id, status, len(attempts) + 1, last_error,
+    )
 
 
 async def post_workspace_data_updated(

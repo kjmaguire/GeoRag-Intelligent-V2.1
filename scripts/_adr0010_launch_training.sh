@@ -43,17 +43,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# The S3 secret used to be a literal in both heredocs below, in a public
+# repository. It is read from the environment now; export it from your .env
+# (the compose stack's S3_SECRET_KEY / SEAWEEDFS secret) before running:
+#
+#   set -a; . ./.env; set +a; ./scripts/_adr0010_launch_training.sh
+if [ -z "${S3_SECRET_KEY:-}" ]; then
+    echo "S3_SECRET_KEY is not set. Export it (or source .env) first — it used" >&2
+    echo "to be hardcoded here, which published it. See" >&2
+    echo "scripts/check-no-committed-secrets.php." >&2
+    exit 2
+fi
+
 echo "=== §5e training launcher ==="
 echo "epochs=$EPOCHS lr=$LR batch_size=$BATCH_SIZE"
 
 # Step 1 — detect newest run_id in S3
 echo ""
 echo "Step 1: detecting newest run_id in s3://reranker-labels/v1/ ..."
-RUN_ID=$(docker exec georag-dagster-webserver python -c "
+RUN_ID=$(docker exec -e S3_ACCESS_KEY -e S3_SECRET_KEY georag-dagster-webserver python -c "
+import os
 import boto3
 s3 = boto3.client('s3', endpoint_url='http://minio:8333',
-    aws_access_key_id='georag-admin',
-    aws_secret_access_key='Urxdoc6n4shTshytkhJIv3SHJorbATqq',
+    aws_access_key_id=os.environ.get('S3_ACCESS_KEY', 'georag-admin'),
+    aws_secret_access_key=os.environ['S3_SECRET_KEY'],
     region_name='us-east-1')
 r = s3.list_objects_v2(Bucket='reranker-labels', Prefix='v1/')
 runs = {}
@@ -79,14 +92,14 @@ echo "  newest run_id: $RUN_ID"
 # Step 2 — download splits into fastapi
 echo ""
 echo "Step 2: downloading splits into georag-fastapi:/tmp/reranker-train ..."
-docker exec georag-fastapi bash -c "
+docker exec -e S3_ACCESS_KEY -e S3_SECRET_KEY georag-fastapi bash -c "
     mkdir -p /tmp/reranker-train
     cd /tmp/reranker-train
     python -c \"
 import boto3, os
 s3 = boto3.client('s3', endpoint_url='http://minio:8333',
-    aws_access_key_id='georag-admin',
-    aws_secret_access_key='Urxdoc6n4shTshytkhJIv3SHJorbATqq',
+    aws_access_key_id=os.environ.get('S3_ACCESS_KEY', 'georag-admin'),
+    aws_secret_access_key=os.environ['S3_SECRET_KEY'],
     region_name='us-east-1')
 for fname in ('manifest.json', 'train.jsonl', 'val.jsonl', 'test.jsonl'):
     key = f'v1/run_id=$RUN_ID/{fname}'

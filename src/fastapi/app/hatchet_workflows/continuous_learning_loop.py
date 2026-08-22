@@ -8,9 +8,16 @@ Daily cron orchestrator that:
    per-deposit-model retraining threshold (default +25 new outcomes).
 3. Triggers ``train_source_trust`` if the workspace's citation count
    delta crosses threshold (default +500 new citations).
-4. Runs ``evaluate_workspace`` on all active workspaces and records
-   pass/fail trends.
-5. Emits ``continuous_learning_loop.completed`` to the audit ledger.
+4. Emits ``continuous_learning_loop.completed`` to the audit ledger.
+
+It does NOT evaluate answer quality, whatever this docstring said
+for the month after the code stopped doing it. ``evaluate_workspace`` was deleted in
+09d1d35 (2026-07-27) and nothing replaced the call. Two audit fields
+outlived it -- ``workspaces_evaluated`` (always identical to
+``workspaces_scanned``) and ``eval_regressions_detected`` (a constant
+0 that could never rise) -- and were removed on 2026-08-22. Answer
+quality is measured by ``answer_quality_watch`` against
+silver.answer_runs; look there, not here.
 
 This is the "closed-loop intelligence" anchor from §20.8.
 
@@ -33,7 +40,6 @@ The shell:
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -42,6 +48,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.continuous_learning_loop")
@@ -63,20 +70,14 @@ class ContinuousLearningLoopOutput(BaseModel):
     success: bool
     target_models_retrained: int = 0
     source_trust_models_retrained: int = 0
-    workspaces_evaluated: int = 0
-    eval_regressions_detected: int = 0
     workspaces_scanned: int = 0
     workspaces_pending_training: int = 0
     failure_reason: str | None = None
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 continuous_learning_loop = hatchet.workflow(
@@ -119,16 +120,19 @@ async def execute(
         workspaces_pending_training = 0
         target_models_retrained = 0
         source_trust_models_retrained = 0
-        workspaces_evaluated = 0
-        eval_regressions_detected = 0
 
         for ws in ws_rows:
             ws_id = ws["workspace_id"]
             # REC#2 Phase-2 (2026-06-03) — bind_workspace_scope replaces
             # the bespoke set_config call. Same effect; centralised UUID
             # validation; loud failure if ws_id ever falls through as None.
+            # is_local=False: dedicated asyncpg.connect() (line 94) with
+            # no wrapping transaction, rebound once per workspace as the
+            # loop advances. SET LOCAL would be discarded here and every
+            # query below would run unscoped.
             await bind_workspace_scope(
-                conn, workspace_id=ws_id, site="continuous_learning_loop"
+                conn, workspace_id=ws_id, site="continuous_learning_loop",
+                is_local=False,
             )
 
             outcome_delta = await conn.fetchval(
@@ -179,8 +183,6 @@ async def execute(
                     ws_id, citation_delta, input.source_trust_retraining_threshold,
                 )
 
-            workspaces_evaluated += 1
-
         # Emit the loop's audit anchor.
         try:
             from app.audit import emit_audit
@@ -197,8 +199,6 @@ async def execute(
                     "workspaces_pending_training":   workspaces_pending_training,
                     "target_retraining_pending":     target_models_retrained,
                     "source_trust_retraining_pending": source_trust_models_retrained,
-                    "workspaces_evaluated":          workspaces_evaluated,
-                    "eval_regressions_detected":     eval_regressions_detected,
                     "since":                         last_loop_at.isoformat(),
                     "deterministic_orchestrator":    True,
                     "training_spawn_mode":           "trigger_recorded_not_auto_spawned",
@@ -210,10 +210,9 @@ async def execute(
 
         log.info(
             "continuous_learning_loop.complete workspaces=%d pending_training=%d "
-            "target_pending=%d source_trust_pending=%d evaluated=%d",
+            "target_pending=%d source_trust_pending=%d",
             workspaces_scanned, workspaces_pending_training,
             target_models_retrained, source_trust_models_retrained,
-            workspaces_evaluated,
         )
 
         # Phase 5 admin surface push — reverses the Phase 1 skip. The loop
@@ -227,7 +226,6 @@ async def execute(
                 "workflow_kind": "continuous_learning_loop",
                 "workspaces_scanned": workspaces_scanned,
                 "pending_training": workspaces_pending_training,
-                "evaluated": workspaces_evaluated,
                 "status": "success",
             }
             await post_admin_surface_updated(
@@ -250,8 +248,6 @@ async def execute(
             success=True,
             target_models_retrained=target_models_retrained,
             source_trust_models_retrained=source_trust_models_retrained,
-            workspaces_evaluated=workspaces_evaluated,
-            eval_regressions_detected=eval_regressions_detected,
             workspaces_scanned=workspaces_scanned,
             workspaces_pending_training=workspaces_pending_training,
         )

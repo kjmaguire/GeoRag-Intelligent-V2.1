@@ -272,8 +272,12 @@ Surfaced to the frontend in the `QueryComplete` Reverb event.
   - **Refusal-on-bad-input ≥ 90 %** (the bad-input adversarial sub-set).
   - **Hallucination-block ratio ≥ 99 %** (claims that *should* have been
     blocked actually were).
-- Nightly run: Hatchet `eval_real_rag_nightly` workflow; results into
-  `eval.eval_runs` and `eval.eval_metrics_*` tables, plus a Grafana panel.
+- Nightly run: **none.** The `eval_real_rag_nightly` workflow was
+  removed in 09d1d35 (2026-07-27) and nothing replaced it, so the
+  targets above are not measured on any schedule. `eval.eval_runs` and
+  `eval.eval_metrics_*` have had no writer since; the Grafana panel
+  reads empty tables. The only surviving measurement is the operator
+  CLI `src/fastapi/scripts/run_golden_benchmark.py`, run by hand.
 
 ## 13. Workspace fence at every leg
 

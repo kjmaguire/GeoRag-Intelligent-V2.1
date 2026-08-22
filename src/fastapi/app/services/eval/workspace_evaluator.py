@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any, NamedTuple
 from uuid import UUID
@@ -55,6 +54,7 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.services.eval.thresholds import (
     DEFAULT_REGRESSION_THRESHOLDS,
     RegressionThresholds,
@@ -64,13 +64,9 @@ from app.services.eval.thresholds import (
 log = logging.getLogger("georag.eval.workspace_evaluator")
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 class QuestionRecord(NamedTuple):
@@ -273,9 +269,10 @@ async def run_workspace_evaluation(
             we don't dedupe on it; the caller does).
         thresholds: optional override of regression thresholds.
         pool: optional asyncpg pool to reuse (tests pass one in).
-        evaluator_kind: 'synthetic_stub' (doc-phase 132 default) or
-            'real_llm_v1' (doc-phase 159; calls vLLM + applies
-            refusal-correctness validator).
+        evaluator_kind: 'synthetic_stub' (doc-phase 132 default;
+            always-pass) or 'real_rag_v1' (doc-phase 162; full RAG +
+            refusal-correctness validator). 'real_llm_v1' was REMOVED
+            2026-08-21 — see the selection block below.
 
     Returns:
         WorkspaceEvaluationResult with run_id + counts +
@@ -283,24 +280,35 @@ async def run_workspace_evaluation(
     """
     # Doc-phase 159+162 — pick the per-question evaluator function:
     #   - 'synthetic_stub' (doc-phase 132 default; always-pass)
-    #   - 'real_llm_v1'    (doc-phase 159; vLLM only, refusal validator)
     #   - 'real_rag_v1'    (doc-phase 162; full RAG + refusal validator)
+    #
+    # 'real_llm_v1' was removed 2026-08-21. Its module,
+    # app/services/eval/real_llm_evaluator.py, was deleted in 09d1d35
+    # ("refactor(eval): remove runtime quality harness", 2026-07-27) and was
+    # not among the 2026-08-14 restorations — but the branch, the docstring
+    # and the ValueError message all still advertised it as a valid choice.
+    # An operator following the docstring got a ModuleNotFoundError from the
+    # deferred import rather than the clear ValueError the else-branch exists
+    # to give, and the traceback pointed at an import line rather than at the
+    # argument that was wrong.
     if evaluator_kind == "real_rag_v1":
         from app.services.eval.real_rag_evaluator import (
             evaluate_question_real_rag,
         )
         per_question_evaluator = evaluate_question_real_rag
-    elif evaluator_kind == "real_llm_v1":
-        from app.services.eval.real_llm_evaluator import (
-            evaluate_question_real_llm,
-        )
-        per_question_evaluator = evaluate_question_real_llm
     elif evaluator_kind == "synthetic_stub":
         per_question_evaluator = evaluate_question
+    elif evaluator_kind == "real_llm_v1":
+        raise ValueError(
+            "evaluator_kind='real_llm_v1' was removed 2026-08-21: its "
+            "module was deleted in 09d1d35 (2026-07-27) and never "
+            "restored. Use 'real_rag_v1' for a live evaluation, or "
+            "'synthetic_stub' for a harness self-check.",
+        )
     else:
         raise ValueError(
             f"unknown evaluator_kind={evaluator_kind!r}; "
-            f"valid: 'synthetic_stub' | 'real_llm_v1' | 'real_rag_v1'"
+            f"valid: 'synthetic_stub' | 'real_rag_v1'"
         )
     thresholds = thresholds or DEFAULT_REGRESSION_THRESHOLDS
     trigger_payload = dict(trigger_payload or {})
@@ -445,8 +453,19 @@ async def run_workspace_evaluation(
                     "fail_count": fail_count,
                     "regression_count": regression_count,
                     "promotion_blocked": promotion_blocked,
-                    "evaluator": "synthetic_stub",
-                    "doc_phase": 132,
+                    # Not a literal. This anchor is the record of which
+                    # method produced the numbers above it, and it read
+                    # "synthetic_stub" on every run until 2026-08-22 --
+                    # including real_rag_v1 runs against the live stack.
+                    # The stub returns passed=True unconditionally, so a
+                    # mislabelled real run reads as meaningless and a
+                    # correctly-labelled stub run reads as a 100% pass.
+                    "evaluator": evaluator_kind,
+                    # `doc_phase` was 132 here, which is the STUB's phase
+                    # marker; the real evaluator stamps 168 in its own
+                    # payload. A run-level anchor spans whichever ran, so
+                    # there is no correct single value and the evaluator
+                    # name carries the provenance instead.
                 },
             )
 

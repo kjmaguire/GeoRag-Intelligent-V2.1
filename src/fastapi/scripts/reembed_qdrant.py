@@ -277,7 +277,16 @@ def _reembed_collection(
                     vector=vec.tolist(),
                     payload=pay,
                 )
-                for pid, vec, pay in zip(sub_ids, sub_vectors, sub_payloads)
+                # strict=True, unlike every other zip in scripts/.
+                # These three are slices of the same index range, so a
+                # length disagreement means the encoder returned fewer
+                # vectors than texts -- and silent truncation would
+                # then pair a vector with the wrong payload, or skip
+                # points entirely, in a re-embed of the whole corpus.
+                # It cannot fire unless something is already wrong.
+                for pid, vec, pay in zip(
+                    sub_ids, sub_vectors, sub_payloads, strict=True,
+                )
             ]
 
             client.upsert(

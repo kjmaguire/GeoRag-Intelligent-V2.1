@@ -134,16 +134,27 @@ class OAuthIngestController extends Controller
             return response()->json(['error' => 'state expired'], 400);
         }
 
-        // Exchange code for tokens
+        // Exchange code for tokens.
+        //
+        // The timeouts are the point: this was the only outbound HTTP call in
+        // the application without one, and Guzzle's default is to wait
+        // forever. It runs in the request path on a four-worker Octane
+        // container with a single replica, so an identity provider that
+        // accepts the connection and then stops responding takes a quarter of
+        // the site's request capacity with it, per stuck callback, until the
+        // container is restarted.
         $cfg = self::PROVIDER_CONFIG[$provider];
         try {
-            $resp = Http::asForm()->post(env($cfg['token_url_env'], $cfg['default_token_url']), [
-                'client_id' => env($cfg['client_id_env']),
-                'client_secret' => env($cfg['client_secret_env']),
-                'code' => $code,
-                'redirect_uri' => route('oauth.callback', ['provider' => $provider]),
-                'grant_type' => 'authorization_code',
-            ]);
+            $resp = Http::asForm()
+                ->connectTimeout(5)
+                ->timeout(15)
+                ->post(env($cfg['token_url_env'], $cfg['default_token_url']), [
+                    'client_id' => env($cfg['client_id_env']),
+                    'client_secret' => env($cfg['client_secret_env']),
+                    'code' => $code,
+                    'redirect_uri' => route('oauth.callback', ['provider' => $provider]),
+                    'grant_type' => 'authorization_code',
+                ]);
         } catch (\Throwable $exc) {
             Log::error("OAuth token exchange failed for {$provider}", ['exc' => $exc->getMessage()]);
 

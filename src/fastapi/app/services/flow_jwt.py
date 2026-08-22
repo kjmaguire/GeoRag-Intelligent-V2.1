@@ -32,6 +32,7 @@ fallback).
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -41,6 +42,9 @@ import jwt
 from fastapi import HTTPException, status
 
 from app.config import settings
+from app.db.dsn import build_dsn
+
+logger = logging.getLogger(__name__)
 
 ISSUER = "georag-kestra"
 AUDIENCE = "georag-fastapi-flows"
@@ -57,10 +61,24 @@ LEEWAY_SECONDS = 2
 # ---------------------------------------------------------------------------
 # Per-flow key cache (Phase 5 Step 2)
 # ---------------------------------------------------------------------------
-# Synchronous + thread-safe cache keyed on flow_name → (kid, secret).
-# TTL matches the flow_registry cache so mints + verifies see consistent
-# state. The DB lookup is sync (psycopg2) because mint_flow_jwt is called
-# from sync contexts (rotation CLI, smoke). Verify also uses this path.
+# Thread-safe cache keyed on flow_name -> [(kid, secret), ...]. TTL matches
+# the flow_registry cache so mints + verifies see consistent state.
+#
+# There are two entry points because there are two kinds of caller, and
+# 2026-08-22 separated them:
+#
+#   _aget_per_flow_keys   awaited from the FastAPI route. The DB fetch is
+#                         asyncpg and always was; only the wrapper was sync.
+#   _get_per_flow_keys    for genuinely synchronous callers (the rotation
+#                         CLI, the smoke scripts). Keeps the thread bridge,
+#                         which is correct OUTSIDE a loop.
+#
+# Before the split, the sync wrapper detected a running loop and spawned a
+# single-worker ThreadPoolExecutor per call, blocking the event loop on
+# `future.result(timeout=10)` -- and the timeout was not a bound, because
+# the executor is a context manager and `__exit__` waits for the worker
+# regardless. Every cache miss (per flow, per worker, per 60s, and always
+# after a restart) froze every concurrent SSE stream on that worker.
 
 _PER_FLOW_KEY_TTL_SECONDS = 60
 _per_flow_lock = threading.Lock()
@@ -72,80 +90,150 @@ _per_flow_cache: dict[str, tuple[list[tuple[str, str]], float]] = {}
 # value: (list_of_(kid, secret), fetched_at_monotonic)
 
 
-def _dsn_sync() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn_sync = build_dsn
+
+
+class FlowKeyLookupError(RuntimeError):
+    """The per-flow key lookup could not be completed.
+
+    Distinct from "this flow has no per-flow keys", which is an empty list
+    and a normal state. Both used to be `[]`: `except Exception: return []`
+    turned an unreachable database, a missing AUDIT_ENCRYPTION_KEY and a
+    permissions error into the same value, after which the caller fell
+    back to the global env-var key with nothing logged. A silent auth
+    downgrade that reads as normal operation.
+    """
+
+
+async def _fetch_per_flow_keys(flow_name: str) -> list[tuple[str, str]]:
+    """The actual DB call. asyncpg, and always was.
+
+    Returns (kid, plaintext) for every kid whose valid window includes
+    now(); an empty list when the flow has no per-flow keys configured.
+    The first element is the most recently activated kid (the mint
+    target); every element is a valid verify target during a rotation
+    overlap (Phase 6 Step 3 / R-P5-2).
+
+    Raises FlowKeyLookupError when the lookup itself failed.
+    """
+    enc_key = os.environ.get("AUDIT_ENCRYPTION_KEY", "")
+    if not enc_key:
+        # Not an error: a deployment with no per-flow keys provisioned
+        # never sets this. Logged at debug so the env-var fallback that
+        # follows is traceable.
+        logger.debug(
+            "flow_jwt: AUDIT_ENCRYPTION_KEY unset — no per-flow keys for %s",
+            flow_name,
+        )
+        return []
+
+    try:
+        conn = await asyncpg.connect(_dsn_sync())
+    except Exception as exc:
+        raise FlowKeyLookupError(
+            f"could not connect to look up per-flow keys for {flow_name}"
+        ) from exc
+
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.audit_encryption_key', $1, true)",
+                enc_key,
+            )
+            rows = await conn.fetch(
+                "SELECT kid, plain FROM workflow.get_flow_jwt_keys($1)",
+                flow_name,
+            )
+        return [(r["kid"], r["plain"]) for r in rows]
+    except Exception as exc:
+        raise FlowKeyLookupError(
+            f"per-flow key lookup failed for {flow_name}"
+        ) from exc
+    finally:
+        await conn.close()
 
 
 def _load_per_flow_keys_sync(flow_name: str) -> list[tuple[str, str]]:
-    """Synchronous DB fetch — calls workflow.get_flow_jwt_keys(flow).
-    Returns a list of (kid, plaintext) for every kid whose valid window
-    includes now(); empty list if no per-flow keys are configured.
+    """Blocking wrapper, for callers that are genuinely synchronous.
 
-    The first element is the most recently activated kid (mint target);
-    every element is a valid verify target during a rotation overlap
-    (Phase 6 Step 3 / R-P5-2)."""
+    The rotation CLI and the smoke scripts. NOT the FastAPI route — see
+    `_aget_per_flow_keys`.
+
+    Refuses to run inside an event loop rather than bridging into one.
+    The bridge is what made this a blocker: it stopped the loop for an
+    unbounded connect / query / close. If this raises, the caller is an
+    async context that should be awaiting the async path instead.
+    """
     import asyncio
 
-    enc_key = os.environ.get("AUDIT_ENCRYPTION_KEY", "")
-    if not enc_key:
-        return []
-
-    async def _fetch() -> list[tuple[str, str]]:
-        conn = await asyncpg.connect(_dsn_sync())
-        try:
-            async with conn.transaction():
-                await conn.execute(
-                    "SELECT set_config('app.audit_encryption_key', $1, true)",
-                    enc_key,
-                )
-                rows = await conn.fetch(
-                    "SELECT kid, plain FROM workflow.get_flow_jwt_keys($1)",
-                    flow_name,
-                )
-            return [(r["kid"], r["plain"]) for r in rows]
-        finally:
-            await conn.close()
-
     try:
-        try:
-            asyncio.get_running_loop()
-            inside_loop = True
-        except RuntimeError:
-            inside_loop = False
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "_load_per_flow_keys_sync called from a running event loop; "
+            "await _aget_per_flow_keys() instead. Bridging to a thread "
+            "here blocks the loop for the whole DB round trip."
+        )
 
-        if inside_loop:
-            # Called from inside an async context (FastAPI route handler).
-            # asyncio.run() can't nest; run _fetch in a worker thread
-            # with its own event loop instead.
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                future = ex.submit(lambda: asyncio.run(_fetch()))
-                return future.result(timeout=10)
-
-        return asyncio.run(_fetch())
-    except Exception:
-        return []
+    return asyncio.run(_fetch_per_flow_keys(flow_name))
 
 
-def _get_per_flow_keys(flow_name: str) -> list[tuple[str, str]]:
-    """Cached per-flow key lookup. Returns the full list of (kid,
-    secret) currently in their valid window; first element is the
-    mint target."""
+def _cached_keys(flow_name: str) -> list[tuple[str, str]] | None:
+    """Live cache entry for this flow, or None when it must be fetched."""
     now = time.monotonic()
     with _per_flow_lock:
         entry = _per_flow_cache.get(flow_name)
-        if entry is not None:
-            keys, fetched_at = entry
-            if (now - fetched_at) < _PER_FLOW_KEY_TTL_SECONDS:
-                return keys
-    keys = _load_per_flow_keys_sync(flow_name)
+    if entry is None:
+        return None
+    keys, fetched_at = entry
+    if (now - fetched_at) >= _PER_FLOW_KEY_TTL_SECONDS:
+        return None
+    return keys
+
+
+def _store_keys(flow_name: str, keys: list[tuple[str, str]]) -> None:
     with _per_flow_lock:
-        _per_flow_cache[flow_name] = (keys, now)
+        _per_flow_cache[flow_name] = (keys, time.monotonic())
+
+
+async def _aget_per_flow_keys(flow_name: str) -> list[tuple[str, str]]:
+    """Cached per-flow key lookup, for async callers.
+
+    This is the path the FastAPI route takes. Returns every (kid, secret)
+    currently inside its valid window; the first element is the mint
+    target.
+
+    A failed LOOKUP propagates as FlowKeyLookupError rather than becoming
+    an empty list, so an unreachable database surfaces as a 503 instead
+    of silently downgrading auth to the global env-var key. A flow with
+    no per-flow keys still returns [] — that is a normal state, and the
+    env-var fallback below it is the intended behaviour.
+    """
+    cached = _cached_keys(flow_name)
+    if cached is not None:
+        return cached
+
+    keys = await _fetch_per_flow_keys(flow_name)
+    _store_keys(flow_name, keys)
+    return keys
+
+
+def _get_per_flow_keys(flow_name: str) -> list[tuple[str, str]]:
+    """Cached per-flow key lookup, for synchronous callers.
+
+    Same contract as `_aget_per_flow_keys`; see `_load_per_flow_keys_sync`
+    for why this one refuses to run inside an event loop.
+    """
+    cached = _cached_keys(flow_name)
+    if cached is not None:
+        return cached
+
+    keys = _load_per_flow_keys_sync(flow_name)
+    _store_keys(flow_name, keys)
     return keys
 
 
@@ -196,12 +284,35 @@ def mint_flow_jwt(flow_name: str, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str
     )
 
 
-def verify_flow_jwt_token(token: str, expected_flow_name: str) -> dict:
-    """Pure verification — no FastAPI types. Phase 5 Step 2: if the
-    JWT carries a ``kid`` header, look up the matching per-flow key;
-    otherwise verify against the env-var fallback. The decoded scope
-    must still match ``flow:<expected_flow_name>``."""
-    # Peek the kid without verifying signature.
+async def averify_flow_jwt_token(token: str, expected_flow_name: str) -> dict:
+    """Async verification — the path FastAPI routes take.
+
+    Identical to `verify_flow_jwt_token` except that the key lookup is
+    awaited instead of bridged into a thread. The sync version remains
+    for the rotation CLI and the smoke scripts.
+    """
+    inbound_kid = _peek_kid(token)
+    try:
+        per_flow_keys = await _aget_per_flow_keys(expected_flow_name)
+    except FlowKeyLookupError as exc:
+        # Deliberately NOT an empty list. Falling through to the env-var
+        # key here would downgrade auth because the database was
+        # unreachable, and would look identical to a flow that simply has
+        # no per-flow key.
+        logger.error(
+            "flow_jwt: per-flow key lookup failed for %s — refusing to fall "
+            "back to the global key", expected_flow_name, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="flow key lookup unavailable",
+        ) from exc
+
+    return _verify_with_keys(token, expected_flow_name, inbound_kid, per_flow_keys)
+
+
+def _peek_kid(token: str) -> str | None:
+    """Read the `kid` header without verifying the signature."""
     try:
         unverified_header = jwt.get_unverified_header(token)
     except jwt.PyJWTError as e:
@@ -209,9 +320,30 @@ def verify_flow_jwt_token(token: str, expected_flow_name: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"flow JWT malformed: {e}",
         ) from e
+    return unverified_header.get("kid")
 
-    inbound_kid = unverified_header.get("kid")
+
+def verify_flow_jwt_token(token: str, expected_flow_name: str) -> dict:
+    """Pure verification — no FastAPI types. Phase 5 Step 2: if the
+    JWT carries a ``kid`` header, look up the matching per-flow key;
+    otherwise verify against the env-var fallback. The decoded scope
+    must still match ``flow:<expected_flow_name>``.
+
+    Synchronous. Async callers must use `averify_flow_jwt_token`.
+    """
+    inbound_kid = _peek_kid(token)
     per_flow_keys = _get_per_flow_keys(expected_flow_name)
+
+    return _verify_with_keys(token, expected_flow_name, inbound_kid, per_flow_keys)
+
+
+def _verify_with_keys(
+    token: str,
+    expected_flow_name: str,
+    inbound_kid: str | None,
+    per_flow_keys: list[tuple[str, str]],
+) -> dict:
+    """The verification itself, shared by both entry points."""
 
     if inbound_kid is not None:
         # Phase 6 Step 3 (R-P5-2) — token was minted with a per-flow
@@ -294,6 +426,7 @@ def invalidate_per_flow_key_cache(flow_name: str | None = None) -> None:
 
 __all__ = [
     "mint_flow_jwt",
+    "averify_flow_jwt_token",
     "verify_flow_jwt_token",
     "ISSUER",
     "AUDIENCE",

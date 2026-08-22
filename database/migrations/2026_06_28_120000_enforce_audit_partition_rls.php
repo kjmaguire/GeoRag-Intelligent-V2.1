@@ -22,6 +22,14 @@ use Illuminate\Support\Facades\DB;
  *   3. An event trigger that runs the same enforcement on every new audit
  *      partition CREATE TABLE — fail-SAFE (a failure RAISEs WARNING, never
  *      aborts pg_partman maintenance).
+ *
+ * NOTE (2026-08-21): part 3 does NOT exist on Azure and never has. Creating
+ * an event trigger requires superuser, which Flexible Server grants to no
+ * role, so the CREATE raised 42501 and aborted the migration. It is now
+ * guarded (see below) — but guarding it does not create it. Part 2's
+ * `audit.enforce_audit_partition_rls()` is the working fallback and has no
+ * caller other than the one-shot backfill at 2b, because this application
+ * has no Laravel scheduler. Wiring a periodic caller is tracked separately.
  */
 return new class extends Migration
 {
@@ -132,16 +140,45 @@ return new class extends Migration
             $$;
         SQL);
 
+        // The existence guard below was the ONLY guard until 2026-08-21,
+        // and existence was never the thing that failed. CREATE EVENT
+        // TRIGGER requires superuser — a privilege Azure Database for
+        // PostgreSQL Flexible Server grants to nobody, azure_pg_admin
+        // included, and which the CI role does not have either. So this
+        // statement raised 42501 on every run, took the whole migration
+        // chain down with it, and made ci.yml's `migrations-production-
+        // privileges` job permanently red. Being advisory
+        // (continue-on-error), nothing ever forced the fix, and a gate
+        // that is always red cannot signal a NEW regression.
+        //
+        // Fail-SAFE on privilege only, matching the pattern
+        // enforce_new_partition_rls() already uses twenty lines above.
+        // WHEN insufficient_privilege — deliberately NOT `WHEN OTHERS`:
+        // a typo'd function name or a bad TAG list must still fail loudly,
+        // because those are defects, whereas this one is a platform fact.
         DB::statement(<<<'SQL'
             DO $$
             BEGIN
                 IF NOT EXISTS (
                     SELECT 1 FROM pg_event_trigger WHERE evtname = 'audit_partition_rls_enforce'
                 ) THEN
-                    CREATE EVENT TRIGGER audit_partition_rls_enforce
-                        ON ddl_command_end
-                        WHEN TAG IN ('CREATE TABLE')
-                        EXECUTE FUNCTION audit.enforce_new_partition_rls();
+                    BEGIN
+                        CREATE EVENT TRIGGER audit_partition_rls_enforce
+                            ON ddl_command_end
+                            WHEN TAG IN ('CREATE TABLE')
+                            EXECUTE FUNCTION audit.enforce_new_partition_rls();
+                    EXCEPTION WHEN insufficient_privilege THEN
+                        RAISE WARNING
+                            'audit_partition_rls_enforce NOT created (needs superuser; '
+                            'Azure Flexible Server grants it to no role). CONSEQUENCE: new '
+                            'pg_partman partitions of audit.audit_ledger are created with '
+                            'their OWN row-level security OFF, so DIRECT-partition reads are '
+                            'unfiltered by tenant. Access through the parent audit.audit_ledger '
+                            'is still filtered by its tenant_isolation policy, so this is a '
+                            'defence-in-depth gap, not an open door. Until a scheduled caller '
+                            'exists, run SELECT audit.enforce_audit_partition_rls(); after each '
+                            'monthly partition creation.';
+                    END;
                 END IF;
             END
             $$;

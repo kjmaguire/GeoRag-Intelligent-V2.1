@@ -25,7 +25,7 @@ Services with no profile are always-on infrastructure (PostgreSQL, PgBouncer, Re
 | `dev-monitor` | Prometheus + Grafana | Skip by default. Start when you need metrics dashboards. |
 | `dev-full` | Everything | Use only for end-to-end integration testing. Never leave running unattended. |
 | `gpu-llm-prod` | vLLM (GPU, production inference) | Production-shaped testing only. Requires a compatible GPU with sufficient VRAM for the target model. |
-| `staging` | 3-instance Redis topology (cache / queue / sessions) + per-instance exporters | Staging deployments. Layered on top of `dev-light`+`dev-data` via `-f docker/compose.redis-staging.yml`. See `ops/runbooks/redis-3-instance-rollout.md`. |
+| `staging` | 3-instance Redis topology (cache / queue / sessions) + per-instance exporters | Staging deployments. Layered on top of `dev-light`+`dev-data` via `-f docker/compose.redis-staging.yml`. See `ops/runbooks/_archived/redis-3-instance-rollout.md`. |
 | `prod` | Same set as `staging` — 3-instance Redis with role-separated eviction policies | Production deployments. Identical service shape to `staging`; differences are env-only (passwords, memory limits, resource reservations). |
 
 ---

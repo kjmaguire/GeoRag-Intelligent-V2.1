@@ -1,0 +1,39 @@
+# Objects that database/raw/ creates and no migration does.
+#
+# CD deploys by running `php artisan migrate` and nothing else, so every line
+# here is an object that has never existed on Azure — while live code queries
+# several of them (ShadowRouter reads workspace.feature_flags on every ingest
+# decision; the tool gateway inserts into workspace.tool_invocations on every
+# tool call; routers/interpretation.py reads all four interpretation.* tables).
+#
+# This file is a to-do list, not a permission slip. The gate
+# (scripts/check-raw-migration-parity.php) fails on anything NEW, and also
+# fails when a line here is closed but left behind — so the list can only
+# shrink. Close one by porting the DDL into database/migrations/, or by
+# adding its file to database/raw/manifest.json if it is genuinely
+# deploy-time raw SQL that `php artisan db:apply-raw` should carry.
+#
+# Regenerate with: php scripts/check-raw-migration-parity.php --update-baseline
+
+function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-function.sql
+function workspace.feature_flags_audit  # raw/phase1/30-feature-flag-history.sql
+table backups.snapshot_runs  # raw/phase0/103-section11-backups-schema.sql
+table interpretation.interpretation_comments  # raw/phase0/107-section19-3-interpretation-schema.sql
+table interpretation.interpretation_notes  # raw/phase0/107-section19-3-interpretation-schema.sql
+table interpretation.interpretation_section_lines  # raw/phase0/107-section19-3-interpretation-schema.sql
+table interpretation.interpretation_target_zones  # raw/phase0/107-section19-3-interpretation-schema.sql
+table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
+table silver.claim_ledger  # raw/phase0/110-section7-4-claim-ledger.sql
+table silver.shadow_runs  # raw/phase1/20-shadow-runs-and-feature-flags.sql
+table silver.storage_tier_policy  # raw/phase0/70-layer-g-findings.sql
+table silver.structure_measurements  # raw/phase5/30-structure-measurements-visual.sql
+table workspace.agent_permissions  # raw/phase0/108-section4-tool-gateway-schema.sql
+table workspace.agent_prompt_pins  # raw/phase0/50-layer-e-operational-contract.sql
+table workspace.agent_risk_tiers  # raw/phase0/108-section4-tool-gateway-schema.sql
+table workspace.agent_timeouts  # raw/phase0/50-layer-e-operational-contract.sql
+table workspace.approval_requirements  # raw/phase0/108-section4-tool-gateway-schema.sql
+table workspace.feature_flag_history  # raw/phase1/30-feature-flag-history.sql
+table workspace.feature_flags  # raw/phase1/20-shadow-runs-and-feature-flags.sql
+table workspace.idempotency_keys  # raw/phase0/50-layer-e-operational-contract.sql
+table workspace.prompt_versions  # raw/phase0/50-layer-e-operational-contract.sql
+table workspace.tool_invocations  # raw/phase0/108-section4-tool-gateway-schema.sql

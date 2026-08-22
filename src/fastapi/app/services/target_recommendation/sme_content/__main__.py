@@ -16,11 +16,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 
 import asyncpg
 
+from app.db.dsn import build_dsn
 from app.services.target_recommendation.sme_content.seed_runner import (
     SmeContentNotReadyError,
     seed_deposit_model_from_module,
@@ -30,13 +30,9 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("sme_seeder")
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 async def _main_async(args: argparse.Namespace) -> int:

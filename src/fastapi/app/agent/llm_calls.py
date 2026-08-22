@@ -112,6 +112,71 @@ def reset_run_token_usage() -> None:
     _run_output_tokens.set(0)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Per-run answering model (2026-08-21).
+#
+# `query_audit_log.llm_model` is meant to record which model produced the
+# answer, so the analytics panel can break latency and cost down by model.
+# It recorded the wrong value for months, and the reason was structural:
+#
+#   * Laravel stamped the column at RESERVATION time from a config default
+#     — before any model had been chosen, let alone called.
+#   * The refresh that was supposed to correct it read a "routing" SSE
+#     frame carrying {tier, model, reason}. Nothing emitted that frame.
+#     The producer lived in the flat `app/agent/orchestrator.py` module and
+#     was dropped when that module became the `app/agent/orchestrator/`
+#     package; the only surviving trace is the string `__routing__:` inside
+#     a stale May-14 .pyc. The consumer in `app/routers/queries.py` and the
+#     one in Laravel both stayed, so the pipeline looked wired end to end.
+#
+# The replacement carries the model on the `completed` payload, which is
+# already the durable terminal frame Laravel reads for text, citations and
+# confidence — no sentinel string, no second protocol to keep alive.
+#
+# Only answer-producing calls are recorded. A classifier call may
+# legitimately use a smaller, cheaper model, and it did not write the
+# answer. Later answer calls overwrite earlier ones on purpose: after a
+# repair pass, the model that served is the LAST one, not the first.
+#
+# This is a DENYLIST, not an allowlist, and the choice is deliberate. The
+# first draft here allowlisted {"primary", "retry", "failover"} — the label
+# vocabulary `_call_llm`'s own docstring documents. Not one of those three
+# strings exists anywhere in this codebase; the real labels are the two
+# below plus "intent_classifier". An allowlist that has already drifted
+# once from its documentation will drift again, and its failure mode is
+# silent: a new answer path records nothing and the column goes back to
+# being empty. A denylist fails the other way — a new non-answer label
+# would record the wrong model — but the flow order protects against it,
+# since classification runs before synthesis and the answer call
+# overwrites. `test_every_audit_label_is_classified` forces the decision
+# either way by failing when a new literal appears in the tree.
+# ──────────────────────────────────────────────────────────────────────────
+
+#: `audit_label` values for calls that CANNOT have produced the answer.
+#: Everything else is treated as answer-producing.
+NON_ANSWER_AUDIT_LABELS: frozenset[str] = frozenset({"intent_classifier"})
+
+_run_llm_model: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "georag_run_llm_model", default=None
+)
+
+
+def record_run_llm_model(model: str | None) -> None:
+    """Record the model that produced this run's answer."""
+    if model:
+        _run_llm_model.set(str(model))
+
+
+def get_run_llm_model() -> str | None:
+    """The model that produced this run's answer, or None if none has yet."""
+    return _run_llm_model.get()
+
+
+def reset_run_llm_model() -> None:
+    """Clear the recorded model; call at run start alongside the counters."""
+    _run_llm_model.set(None)
+
+
 class LLMCallBudgetExceeded(RuntimeError):
     """Raised when a single RAG run exceeds settings.MAX_LLM_CALLS_PER_QUERY.
 
@@ -431,6 +496,7 @@ async def _call_openai_compatible_llm(
     project_facts: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    user_id: str | None = None,
     http_client: Any = None,
     token_callback: Callable[[str], Awaitable[None]] | None = None,
     # Module 5 Chunk 2 — Qwen3 thinking-mode discipline.
@@ -881,10 +947,38 @@ async def _call_openai_compatible_llm(
             (cached_tokens / prompt_tokens) if prompt_tokens else 0.0,
         )
         try:
-            from app.metrics import PROMPT_CACHE_TOKENS, PROMPT_TOTAL_TOKENS  # noqa: PLC0415
+            from app.agent.pricing import (  # noqa: PLC0415
+                estimate_cost_usd,
+                has_pricing,
+                user_bucket,
+            )
+            from app.metrics import (  # noqa: PLC0415
+                LLM_COST_USD,
+                LLM_TOKENS_OUTPUT,
+                PROMPT_CACHE_TOKENS,
+                PROMPT_TOTAL_TOKENS,
+            )
             PROMPT_TOTAL_TOKENS.labels(backend=backend_label).inc(prompt_tokens)
             if cached_tokens > 0:
                 PROMPT_CACHE_TOKENS.labels(backend=backend_label).inc(cached_tokens)
+
+            # Cost accounting existed only on the Anthropic branch,
+            # which is dead in production (LLM_BACKEND=azure). This is
+            # the same bookkeeping for the branch that actually runs.
+            if completion_tokens > 0:
+                LLM_TOKENS_OUTPUT.labels(model=effective_model).inc(completion_tokens)
+            if has_pricing(effective_model):
+                cost_usd = estimate_cost_usd(
+                    model=effective_model,
+                    input_tokens=max(prompt_tokens - cached_tokens, 0),
+                    output_tokens=completion_tokens,
+                    cached_input_tokens=cached_tokens,
+                )
+                if cost_usd > 0:
+                    LLM_COST_USD.labels(
+                        model=effective_model,
+                        user_bucket=user_bucket(user_id),
+                    ).inc(cost_usd)
         except ImportError:
             pass
 
@@ -1403,11 +1497,25 @@ async def _call_llm(
     is uncached. Splicing into the user message invalidated the cache on
     every retry, doubling token spend on the validation-fail path.
 
-    P1 #14 — `audit_label` is a short tag ("primary", "retry", "failover",
-    "follow_ups", "classifier") used for structured per-attempt logging
-    so operators can see which code path is driving call volume. The
-    contextvar-tracked counter increments on every call and aborts the
+    P1 #14 — `audit_label` is a short tag used for structured per-attempt
+    logging so operators can see which code path is driving call volume.
+    The contextvar-tracked counter increments on every call and aborts the
     run when it crosses MAX_LLM_CALLS_PER_QUERY.
+
+    The labels actually in use are, exhaustively (2026-08-21):
+
+        "agentic_retrieval"                 — synthesis; produces the answer
+        "agentic_retrieval_repair_stage3"   — re-synthesis after a guard
+                                              failure; produces the answer
+        "intent_classifier"                 — routing only, never the answer
+
+    This paragraph previously listed "primary", "retry", "failover",
+    "follow_ups" and "classifier". None of those five strings appears
+    anywhere in the codebase, and the list is load-bearing: the answering
+    model recorded for query_audit_log.llm_model is selected by label. See
+    NON_ANSWER_AUDIT_LABELS above, and
+    `test_every_audit_label_is_classified`, which fails when a new label
+    appears here without a decision about which side of that line it is on.
     """
     # P1 #14 — global cap check.
     n_so_far = _llm_call_counter.get()
@@ -1427,6 +1535,15 @@ async def _call_llm(
         "_call_llm: attempt=%d/%d label=%s model=%s temperature=%.2f",
         n_so_far + 1, cap, audit_label, model or "default", temperature,
     )
+
+    # Record the answering model for query_audit_log.llm_model. This uses
+    # the SAME expression both callees use to pick their model
+    # (`model or settings.effective_llm_model`, llm_calls.py L547 and
+    # L1176), so the recorded name cannot drift from the name actually put
+    # on the wire without both drifting together through
+    # settings.effective_llm_model.
+    if audit_label not in NON_ANSWER_AUDIT_LABELS:
+        record_run_llm_model(model or settings.effective_llm_model)
 
     # §35.1 cost-ceiling pre-check — was documented on
     # assert_workspace_not_suspended's own docstring as "called from
@@ -1482,6 +1599,7 @@ async def _call_llm(
         system_prompt=system_prompt,
         project_preamble=project_preamble,
         project_facts=project_facts,
+        user_id=user_id,
         http_client=openai_http_client,
         token_callback=token_callback,
         enable_thinking=enable_thinking,
@@ -1493,9 +1611,13 @@ async def _call_llm(
 __all__ = [
     "_llm_call_counter",
     "LLMCallBudgetExceeded",
+    "NON_ANSWER_AUDIT_LABELS",
     "_build_user_message",
     "_call_openai_compatible_llm",
     "_resolve_local_llm_fallback_target",
     "_call_anthropic_llm",
     "_call_llm",
+    "get_run_llm_model",
+    "record_run_llm_model",
+    "reset_run_llm_model",
 ]

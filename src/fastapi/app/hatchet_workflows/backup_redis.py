@@ -29,9 +29,9 @@ Operator notes
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
-import os
 from datetime import UTC, datetime
 
 import asyncpg
@@ -39,6 +39,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.backup_postgres import _put_s3
 
@@ -63,20 +64,28 @@ class BackupRedisOutput(BaseModel):
     completed_at: datetime
 
 
+# No cron. _trigger_bgsave_and_fetch shells out to `docker exec <container>
+# redis-cli` and then cats the RDB off that container's filesystem. There is
+# no Docker socket in Azure Container Apps and no shared filesystem with
+# redis-cc, so this died on `FileNotFoundError: [Errno 2] No such file or
+# directory: 'docker'` on every scheduled run — nightly, silently.
+#
+# Left uncronned rather than repaired, deliberately. Redis here holds the
+# Horizon queues and the application cache: state that is rebuilt, not
+# authored. Losing it costs in-flight jobs, which are re-dispatchable, and a
+# cold cache. Nothing in it is a system of record, so a nightly RDB snapshot
+# was buying very little even when it worked — and the mechanism cannot work
+# on this platform at all. Reviving it would mean an in-cluster sidecar with
+# a shared volume, which is a real design decision, not a repair.
 backup_redis = hatchet.workflow(
     name="backup_redis",
-    on_crons=["45 2 * * *"],
     input_validator=BackupRedisInput,
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 def _build_object_key(prefix: str, run_id: str, when: datetime) -> str:
@@ -139,6 +148,39 @@ async def _record_failure(
     )
 
 
+#: Cap on one `docker exec redis-cli` round trip.
+#:
+#: Each of these was a bare communicate(). redis-cli against a Redis that
+#: accepts the connection but never answers blocks forever, and the task
+#: has no other way out before its execution_timeout.
+_REDIS_CLI_TIMEOUT_S = 60
+
+#: Cap on streaming the RDB file out of the container.
+#:
+#: Larger than the command cap because this one moves the whole dataset;
+#: bounded all the same, because the read loop had no exit condition other
+#: than the pipe closing.
+_RDB_READ_TIMEOUT_S = 900
+
+
+async def _bounded_communicate(
+    proc: asyncio.subprocess.Process, label: str,
+) -> tuple[bytes, bytes]:
+    """communicate() with a cap, killing the process if it expires."""
+    try:
+        return await asyncio.wait_for(
+            proc.communicate(), timeout=_REDIS_CLI_TIMEOUT_S,
+        )
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise RuntimeError(
+            f"redis-cli {label} did not answer within "
+            f"{_REDIS_CLI_TIMEOUT_S}s and was killed"
+        ) from None
+
+
 async def _trigger_bgsave_and_fetch(
     container: str, rdb_path: str,
 ) -> bytes:
@@ -150,7 +192,7 @@ async def _trigger_bgsave_and_fetch(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    pre_out, _ = await pre_proc.communicate()
+    pre_out, _ = await _bounded_communicate(pre_proc, "LASTSAVE")
     pre_lastsave = int(pre_out.decode().strip() or "0")
 
     # Trigger BGSAVE, retry up to 3x if "save already in progress"
@@ -162,7 +204,7 @@ async def _trigger_bgsave_and_fetch(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        bg_out, bg_err = await bg_proc.communicate()
+        bg_out, bg_err = await _bounded_communicate(bg_proc, "BGSAVE")
         out_text = bg_out.decode().strip()
         if "Background save started" in out_text or out_text == "Background saving started":
             break
@@ -180,7 +222,7 @@ async def _trigger_bgsave_and_fetch(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        poll_out, _ = await poll_proc.communicate()
+        poll_out, _ = await _bounded_communicate(poll_proc, "LASTSAVE")
         if int(poll_out.decode().strip() or "0") > pre_lastsave:
             break
     else:
@@ -195,12 +237,28 @@ async def _trigger_bgsave_and_fetch(
     )
     chunks: list[bytes] = []
     assert cat_proc.stdout is not None
-    while True:
-        chunk = await cat_proc.stdout.read(4 * 1024 * 1024)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    await cat_proc.wait()
+
+    async def _drain_rdb() -> None:
+        while True:
+            chunk = await cat_proc.stdout.read(4 * 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        await cat_proc.wait()
+
+    # An RDB file is bounded; the pipe carrying it is not. A `docker exec
+    # cat` against a container that stops responding mid-stream blocks in
+    # read() with no error and no exit.
+    try:
+        await asyncio.wait_for(_drain_rdb(), timeout=_RDB_READ_TIMEOUT_S)
+    except TimeoutError:
+        cat_proc.kill()
+        with contextlib.suppress(Exception):
+            await cat_proc.wait()
+        raise RuntimeError(
+            f"reading {rdb_path} stalled after "
+            f"{sum(len(c) for c in chunks)} bytes and was killed"
+        ) from None
     if cat_proc.returncode != 0:
         raise RuntimeError(f"cat {rdb_path} exited with {cat_proc.returncode}")
 

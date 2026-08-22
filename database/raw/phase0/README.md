@@ -53,10 +53,33 @@ UUID or unset (single-tenant fallback).
 
 ### `app.workspace_id` (uuid, transaction-local) — CANONICAL
 
-* **Set by**: `AgentDeps.acquire_scoped()` (Module 9 Chunk 9.3 onward),
-  Laravel's `App\Database\GUCConnection` mixin (Octane pipeline), and
-  every Hatchet workflow / seeder / Dagster asset that needs to write
-  workspace-scoped silver rows.
+* **Set by** (corrected 2026-08-21 — the previous list named a class
+  that does not exist):
+  * FastAPI: `AgentDeps.acquire_scoped()`, and
+    `app/db/scoped_pool.py`'s `scoped_connection()` /
+    `bind_workspace_scope()` — the canonical binders, used by every
+    Hatchet workflow and service that writes workspace-scoped rows.
+  * Laravel: the `SetsWorkspaceRlsContext` trait's
+    `withWorkspaceRls()`, and NOTHING ELSE.
+
+* **Laravel has NO global GUC binder.** This entry previously read
+  "Laravel's `App\Database\GUCConnection` mixin (Octane pipeline)".
+  There is no such class — `grep -rn "GUCConnection" --include=*.php .`
+  returns zero matches, and it appears in no migration, provider or
+  config. Nothing binds `app.workspace_id` connection-wide on the PHP
+  side.
+
+  That matters because the trait is therefore not belt-and-braces, it is
+  the ONLY binder — and **7 of 38 controllers use it**. In the other 31,
+  tenancy rests entirely on the application-level
+  `$request->user()->projects()->...->firstOrFail()` scoping, with no RLS
+  backstop underneath it. Several silver policies are also fail-open on a
+  NULL setting (`NULLIF(current_setting('app.workspace_id', true), '')
+  IS NULL OR ...`), so an unbound GUC on those tables means every
+  workspace's rows are visible rather than none.
+
+  Anyone extending this platform should read the line above as: bind
+  explicitly, every time. Do not assume a connection arrives scoped.
 * **Read by**: All current RLS policies. The May-25 → May-29 sweeps
   ([[bronze-tenancy-rls-2026-05-25]], [[rls-coverage-audit-2026-05-25]],
   [[legacy-guc-rls-third-sweep-2026-05-28]],

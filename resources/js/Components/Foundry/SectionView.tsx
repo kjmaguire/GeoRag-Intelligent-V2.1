@@ -112,6 +112,7 @@ export function SectionView({
             <div className="flex flex-col gap-1">
                 <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>{side}</span>
                 <select
+                    aria-label={`${side} hole`}
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     className="text-[11px] font-mono px-2 py-1 rounded border"

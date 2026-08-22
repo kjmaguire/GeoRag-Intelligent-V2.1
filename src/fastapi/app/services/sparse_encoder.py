@@ -3,11 +3,22 @@
 This module provides the shared SPLADE++ sparse encoder used at query time
 (FastAPI) and at index time (Dagster index_reports).
 
-KEEP IN SYNC -- see counterpart in:
-    src/dagster/georag_dagster/assets/sparse_encoder.py
+FORKED COPY -- do NOT sync back
+-------------------------------
+There is a near-identical file at
+``src/dagster/georag_dagster/assets/sparse_encoder.py``. This header used to
+say "both copies must be identical; when changing this file, change the other
+too" (last sync 2026-04-21). That instruction is now actively harmful:
 
-Both copies must be identical. When changing this file, change the other too.
-Last sync: 2026-04-21 (Module 4 Chunk 2)
+  * the Dagster tree has been dormant since 2026-07-28 and nothing in it
+    executes, so its copy is documentation rather than code;
+  * this copy diverged on 2026-08-22 to stop logging 80 characters of raw
+    customer text on the empty-vector branch, using ``app.agent.log_safe``
+    -- which the Dagster package cannot import.
+
+Copying that change back is impossible, and copying the Dagster version
+FORWARD would silently reinstate the leak. Treat this file as the only live
+one.
 
 Model choice
 ------------
@@ -72,6 +83,8 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
+
+from app.agent.log_safe import query_hash, text_shape
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +236,21 @@ def encode_sparse(text: str) -> dict[int, float]:
     # Extract non-zero vocabulary entries
     nz = weights[0].nonzero(as_tuple=False).squeeze(-1)
     if nz.numel() == 0:
-        logger.warning("encode_sparse: produced 0 non-zero terms for text=%r", text[:80])
+        # NOT the text. This runs on the user's expanded query
+        # (tools.py) and on document passage text (passage_embedder.py)
+        # -- customer exploration data -- and stdout here lands in
+        # ContainerAppConsoleLogs_CL for 30 days. `log_safe` was written
+        # to close this exact leak in the agent tree; the embedding tree
+        # was never swept.
+        #
+        # The shape summary keeps what a debugger actually needs. An
+        # empty SPLADE vector is a property of the input's CHARACTER
+        # CLASSES, not its meaning: symbol-heavy or non-Latin text is
+        # what produces one.
+        logger.warning(
+            "encode_sparse: produced 0 non-zero terms for query_hash=%s %s",
+            query_hash(text), text_shape(text),
+        )
         return {}
 
     indices: list[int] = nz.tolist()

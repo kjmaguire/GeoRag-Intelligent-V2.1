@@ -102,5 +102,5 @@ on arm64 nodes and use Ollama instead.
 
 - `docker-compose.yml` — authoritative service definition for V1
 - `.env.production.example` — full env surface (143 keys)
-- `ops/runbooks/secret-rotation.md` — credential management
+- `ops/runbooks/_archived/secret-rotation.md` — credential management
 - `docs/acceptance-criteria.md` — V1 ship checklist

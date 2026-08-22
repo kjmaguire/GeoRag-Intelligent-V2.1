@@ -89,15 +89,54 @@ _TIMEOUT_S = float(os.environ.get("IMAGE_VERBALIZATION_TIMEOUT_S", "120"))
 # attach a confidence to each one. What we want from the picture is the thing
 # OCR cannot give us — what it IS, what it SHOWS, and the named entities on it
 # that make it findable.
-PROMPT = (
+#: What the model is asked for at each detail level.
+#:
+#: These MUST move together. Until 2026-08-22 the prompt asked for the
+#: figure's "title and caption, quoted exactly" and for drill-hole IDs,
+#: grid and scale -- while the image was sent at detail="low", a single
+#: downsampled tile. A model asked to quote exactly from an image it
+#: cannot read does not refuse; it writes plausible text. Correctly
+#: formatted hole IDs that appear on no sheet then become
+#: silver.document_passages.text and reach the answer path.
+#:
+#: Derived rather than written side by side, for the same reason the DI
+#: timeout pair is derived: raising IMAGE_VERBALIZATION_DETAIL now
+#: changes what is asked for, so the two cannot disagree again.
+_HIGH_DETAIL_ASKS = (
+    "- Its title and caption, quoted exactly.\n"
+    "- Named entities: property, deposit, zone, formation, fault, drill-hole "
+    "IDs, grid or coordinate system, scale, orientation.\n"
+)
+
+#: At low detail the page is one downsampled tile. Labels, hole IDs and
+#: scale bars are below the resolution the model receives, so asking for
+#: them invites invention. Subject matter survives downsampling; text on
+#: the sheet does not.
+_LOW_DETAIL_ASKS = (
+    "- The property, deposit or area it covers, ONLY if it is legible. If "
+    "any label, title or identifier is not clearly readable, say so rather "
+    "than guessing it.\n"
+)
+
+
+def image_detail() -> str:
+    """The detail level the vision request is sent at."""
+    value = (os.environ.get("IMAGE_VERBALIZATION_DETAIL", "low") or "low").strip()
+    return value.lower() or "low"
+
+
+def build_prompt(detail: str | None = None) -> str:
+    """The verbalization prompt, matched to the resolution being sent."""
+    level = (detail or image_detail()).lower()
+    asks = _HIGH_DETAIL_ASKS if level == "high" else _LOW_DETAIL_ASKS
+
+    return (
     "You are describing one page of a geological or mining technical report so "
     "that it can be found by search. Describe what this page depicts.\n\n"
     "Include, when present:\n"
     "- The kind of figure it is (geological map, cross-section, plan view, "
     "long section, drill-hole trace, stratigraphic column, photograph, chart).\n"
-    "- Its title and caption, quoted exactly.\n"
-    "- Named entities: property, deposit, zone, formation, fault, drill-hole "
-    "IDs, grid or coordinate system, scale, orientation.\n"
+    + asks +
     "- What the figure shows in geological terms: units, structures, "
     "mineralisation, alteration, spatial relationships.\n\n"
     "Rules:\n"
@@ -105,10 +144,19 @@ PROMPT = (
     "assay results, grades or tonnages. Say that a table is present and what "
     "it concerns.\n"
     "- Do not infer or estimate anything the page does not state.\n"
+    "- Never write an identifier, title or caption you cannot actually read "
+    "on the page. A description that omits a label is useful; one that "
+    "invents a plausible label is worse than nothing.\n"
     "- If the page is blank, a cover sheet, or plain body text with no figure, "
     "say exactly that in one short sentence.\n"
     "- Write plain prose. No preamble, no markdown headings."
-)
+    )
+
+
+#: Back-compat alias. Several docstrings in this module and in
+#: page_verbalizer refer to "PROMPT"; it is the low-detail form, which is
+#: what the live worker sends.
+PROMPT = build_prompt("low")
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +206,11 @@ def verbalize_page(png_bytes: bytes, *, mime: str = "image/png") -> Verbalizatio
     url = f"{endpoint.rstrip('/')}/openai/v1/chat/completions"
     data_uri = f"data:{mime};base64,{base64.b64encode(png_bytes).decode('ascii')}"
 
+    # Resolved once, then used for BOTH the prompt and the image detail.
+    # Reading the environment twice would let the two halves of a request
+    # describe different resolutions.
+    _detail = image_detail()
+
     try:
         resp = httpx.post(
             url,
@@ -170,7 +223,7 @@ def verbalize_page(png_bytes: bytes, *, mime: str = "image/png") -> Verbalizatio
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": PROMPT},
+                            {"type": "text", "text": build_prompt(_detail)},
                             {
                                 "type": "image_url",
                                 "image_url": {
@@ -181,9 +234,14 @@ def verbalize_page(png_bytes: bytes, *, mime: str = "image/png") -> Verbalizatio
                                     # more tokens per page. At scope=all that
                                     # multiplies across every page of every
                                     # document.
-                                    "detail": os.environ.get(
-                                        "IMAGE_VERBALIZATION_DETAIL", "low",
-                                    ),
+                                    #
+                                    # The PROMPT is derived from this value
+                                    # (see build_prompt). It used to ask for
+                                    # captions "quoted exactly" and for
+                                    # drill-hole IDs regardless, which at low
+                                    # detail asks the model to read text it
+                                    # was not sent.
+                                    "detail": _detail,
                                 },
                             },
                         ],

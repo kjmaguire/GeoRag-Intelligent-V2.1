@@ -57,7 +57,7 @@ by more than 20%.
 The values in the YAML block are conservative initial estimates derived
 from §05c expected-latency commentary in the architecture doc. They are
 **not measured**. The first real measurement happens on the first nightly
-run after `STAGING_URL` is configured (see `ops/runbooks/secret-management.md`).
+run after `STAGING_URL` is configured (see `ops/runbooks/_archived/secret-management.md`).
 
 When that first run completes:
 1. The CI job uploads the JSON results as `perf-baseline-<run>` artifact.

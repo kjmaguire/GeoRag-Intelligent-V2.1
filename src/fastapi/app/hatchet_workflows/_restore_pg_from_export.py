@@ -26,13 +26,13 @@ import gzip
 import io
 import json
 import logging
-import os
 from typing import Any
 from urllib.parse import urlparse
 
 import asyncpg
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 
 log = logging.getLogger("georag.hatchet._restore_pg_from_export")
 
@@ -50,13 +50,9 @@ _TABLE_KEY_TO_QUALIFIED = {
 }
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 async def _fetch_manifest_bytes(manifest_uri: str) -> bytes:
@@ -185,8 +181,15 @@ async def restore_postgres_from_export(
     tables_touched: list[str] = []
     try:
         # Set RLS scope so writes land under the target workspace.
+        #
+        # is_local=False: this is a dedicated asyncpg.connect() (above)
+        # with no wrapping transaction -- the per-row SAVEPOINTs below are
+        # opened individually, not under one outer txn. SET LOCAL would be
+        # discarded here, so the scope these writes depend on was never
+        # actually applied.
         await bind_workspace_scope(
-            conn, workspace_id=workspace_id, site="hatchet.restore_pg_from_export"
+            conn, workspace_id=workspace_id,
+            site="hatchet.restore_pg_from_export", is_local=False,
         )
         # Per-row SAVEPOINTs so a single constraint violation (e.g.
         # FK to a workspace that exists at export time but not at

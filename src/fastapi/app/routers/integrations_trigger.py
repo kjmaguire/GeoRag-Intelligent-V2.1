@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ValidationError
 
 from app.config import settings
-from app.services.flow_jwt import verify_flow_jwt_token
+from app.services.flow_jwt import averify_flow_jwt_token
 from app.services.flow_registry import get_flow, list_flow_names
 
 log = logging.getLogger("georag.integrations_trigger")
@@ -68,9 +68,17 @@ def _check_diagnostic_auth(x_service_key: str | None = Header(default=None)) -> 
         )
 
 
-def _check_trigger_auth(flow_name: str, authorization: str | None) -> None:
+async def _check_trigger_auth(
+    flow_name: str, authorization: str | None,
+) -> None:
     """Per-flow trigger auth — Bearer JWT only. The legacy X-Service-Key
-    fallback was removed at Phase 3 Step 7 after Kestra sunset."""
+    fallback was removed at Phase 3 Step 7 after Kestra sunset.
+
+    Async because the key lookup underneath is. It used to be sync, and
+    the verifier bridged into a worker thread to reach an asyncpg
+    connection — which blocked the whole event loop, and every concurrent
+    SSE stream on this worker, for the length of a cold DB round trip.
+    """
     if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -82,7 +90,7 @@ def _check_trigger_auth(flow_name: str, authorization: str | None) -> None:
             detail="Authorization header must be Bearer <jwt>",
         )
     token = authorization[7:]
-    verify_flow_jwt_token(token, flow_name)
+    await averify_flow_jwt_token(token, flow_name)
 
 
 # =============================================================================
@@ -131,7 +139,7 @@ async def trigger_integration(
 
     Auth: per-flow Bearer JWT only. See module docstring.
     """
-    _check_trigger_auth(flow_name, authorization)
+    await _check_trigger_auth(flow_name, authorization)
 
     entry = await get_flow(flow_name)
     if entry is None:

@@ -166,7 +166,7 @@ tests/fixtures/<format>/
     real-file-05.expected.json
 ```
 
-See `ops/runbooks/validation-corpora.md` for the expected-output JSON shape and the baseline entry procedure.
+See `ops/runbooks/_archived/validation-corpora.md` for the expected-output JSON shape and the baseline entry procedure.
 
 The corpus must include at minimum:
 - 1 happy-path file (well-formed, expected output)

@@ -77,4 +77,24 @@ class PasswordResetTest extends TestCase
             'password_confirmation' => 'new-secure-password',
         ])->assertUnprocessable();
     }
+
+    public function test_reset_says_so_when_no_mailer_is_configured(): void
+    {
+        // Production runs MAIL_MAILER=log. sendResetLink() then writes the
+        // reset URL to the log stream and reports success, so the user was
+        // told "a link has been sent" and never received one — and the
+        // deliberately non-committal wording meant neither they nor support
+        // could tell that from "no such account".
+        config(['mail.default' => 'log']);
+
+        $response = $this->postJson('/api/v1/auth/forgot-password', [
+            'email' => 'someone@example.com',
+        ]);
+
+        $response->assertStatus(503);
+        $this->assertStringContainsString(
+            'not available',
+            (string) $response->json('message'),
+        );
+    }
 }

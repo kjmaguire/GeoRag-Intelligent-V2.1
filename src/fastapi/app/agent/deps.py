@@ -107,6 +107,12 @@ class AgentDeps:
     # for None and degrade gracefully.
     user_id: str | None = None
     user_roles: tuple[str, ...] = ()
+    # L1555/L1546 — W3C trace id for this request, forwarded from
+    # Laravel since 2026-08-21 and minted locally otherwise. Carried
+    # here so the rows the graph writes (usage.usage_events) can be
+    # joined back to the Laravel log line for the same request. None
+    # on paths that build deps outside an HTTP request (eval runner).
+    trace_id: str | None = None
 
     @contextlib.asynccontextmanager
     async def acquire_scoped(self):

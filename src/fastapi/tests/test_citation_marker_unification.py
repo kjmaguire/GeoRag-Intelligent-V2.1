@@ -12,8 +12,6 @@ previously caused false "no citations placed" refusals in the assembler).
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 # All marker prefixes in use.
@@ -51,18 +49,6 @@ def test_assembler_detects_colon_markers_in_answer_text() -> None:
 
     dash_answer = "The deposit grades 5% U3O8 [DATA-1] near surface [NI43-2]."
     assert len(_CITATION_MARKER_RE.findall(dash_answer)) == 2
-
-
-def test_layer3_numerical_marker_regex_accepts_both() -> None:
-    from app.agent.hallucination import layer3_numerical as l3
-
-    rx = re.compile(r"\[(?:DATA|NI43|PUB|PGEO)[:\-]\d+\]")
-    # Sanity: the module's own marker handling must be colon/dash tolerant.
-    src = (l3.__file__,)
-    assert src  # module importable
-    for prefix in _PREFIXES:
-        for marker in _both_forms(prefix):
-            assert rx.search(marker)
 
 
 @pytest.mark.parametrize("prefix", _PREFIXES)

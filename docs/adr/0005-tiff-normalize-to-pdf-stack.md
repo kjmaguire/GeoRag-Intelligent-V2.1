@@ -1,9 +1,9 @@
 # ADR 0005: Normalize TIFF scans to PDF and route through the §04p PDF stack
 
 - **Date**: 2026-05-23
-- **Status**: Accepted (implementation in flight under the same date's autonomous run)
+- **Status**: Accepted — deprecation completed 2026-08-20 (step 3 below)
 - **Deciders**: Kyle Maguire (SME)
-- **Supersedes**: the standalone TIFF OCR path at `src/fastapi/app/services/ingest/tiff_ocr_ingester.py` (Phase E.1, doc-phase 182) — retained for one deprecation cycle, then removed.
+- **Supersedes**: the standalone TIFF OCR path at `src/fastapi/app/services/ingest/tiff_ocr_ingester.py` (Phase E.1, doc-phase 182) — **deleted 2026-08-20**.
 - **Related**: [[adr-0002-04p-stack-replaces-ragflow]], the 5/22 PDF overhaul (commit `3463195`), [[bronze-minio-unification]] (commit `91fa9a2`), `src/fastapi/app/hatchet_workflows/ingest_pdf.py`, `src/dagster/georag_dagster/parsers/pdf_report.py`
 
 ## Context
@@ -149,14 +149,63 @@ shape:
 ### Open questions to revisit
 - Should the `tiff/` bucket prefix be `documents/tiff/` to distinguish
   from `geophysics/tiff/` (raster TIFFs)? **Decision: `tiff/` for v1.**
-  Geophysics raster TIFFs already land at `geophysics/` (handled by the
-  silver_geophysics asset, not the document OCR path).
+  ~~Geophysics raster TIFFs already land at `geophysics/` (handled by the
+  silver_geophysics asset, not the document OCR path).~~
+  **Superseded 2026-08-21.** That separation no longer exists:
+  `geophysics` is a RETIRED category accepting only `.json`, and its
+  Dagster asset does not run (`UploadController::RETIRED_CATEGORIES`).
+  A measurement raster therefore has exactly one way into the system —
+  uploaded under `reports`, where `UploadController.php:235` rewrites the
+  prefix to `tiff/` and dispatches `tiff_normalize`. The assumption that
+  made the unconditional wrap safe was retired without the wrap being
+  revisited. See "Data rasters are not scans" below.
 - Should the original TIFF be moved to a cold-storage tier after
   successful derive? **Deferred.** Current SeaweedFS deployment doesn't
   have tiered storage wired (cf. [[adr-0001-seaweedfs-replaces-minio]]).
 - Should we also normalize PNG / JPG document scans? **Yes, eventually,
   via the same workflow** — the wrapper is format-agnostic. Out of scope
   for this ADR; tracked as a follow-up.
+
+### Data rasters are not scans (added 2026-08-21)
+
+`tiff_normalize` now branches before wrapping. A raster that carries a
+CRS **and** whose bands are wider than 8-bit is measurement data — a DEM,
+an airborne magnetics grid, a multispectral scene — and gets its
+`silver.raster_layers` row and nothing else. No PDF wrap, no `ingest_pdf`
+dispatch, no Document Intelligence call.
+
+The signal was already being computed: `persist_raster_metadata` reads
+the CRS and per-band dtype to build the row it writes, returns them on a
+`RasterCaptureResult`, and the return value was discarded. The only new
+code is the branch.
+
+The rule is deliberately conservative in one direction. It takes BOTH a
+CRS and a non-scanner bit depth to skip OCR, because a false skip loses a
+real map while a false OCR only wastes one call:
+
+| raster | CRS | dtype | OCR |
+|---|---|---|---|
+| scanned map sheet | none | uint8 | yes — this ADR's case |
+| georeferenced scanned sheet | yes | uint8 | yes |
+| 8-bit RGB orthophoto | yes | uint8 | yes (known false negative) |
+| airborne magnetics | yes | float32 | **no** |
+| DEM | yes | int16 | **no** |
+| multispectral scene | yes | uint16 | **no** |
+
+The orthophoto row is a deliberate miss, not an oversight: telling an
+aerial photo from a photographed map sheet needs to look at the pixels,
+not the header.
+
+A skipped raster is recorded but **not text-retrievable** — it will not
+surface in chat. That is a straight improvement on injecting OCR noise
+that competes in every future recall set with a citation attached, but it
+is not the same as being searchable; making structured geological data
+retrievable is tracked separately.
+
+The run lands as `partial`, not `completed`, carrying a
+`raster_not_ocred` warning that explains why. A green "Completed" on a
+document the geologist then cannot find in chat is the worse of the two
+lies.
 
 ## Deprecation path for `tiff_ocr_ingester.py`
 
@@ -173,6 +222,30 @@ shape:
    + `src/fastapi/app/hatchet_workflows/tiff_ocr_cluster.py`. Update the
    schema-search section of `georag-architecture.html` §04d to reflect
    the single OCR path.
+
+### Closed 2026-08-20
+
+`tiff_ocr_ingester.py` is deleted. `tiff_ocr_cluster.py` had already gone.
+The module had no callers left — `ingest_zip_archive` routes `.tif`/`.tiff`
+to `tiff_normalize`, and nothing else imported it — so this was a removal
+of dead code rather than a cutover, and steps 1-2 above had effectively
+already happened.
+
+Beyond being dead, it carried two live hazards that motivated finishing
+the deprecation rather than leaving it parked:
+
+- It shelled out to `tesseract` directly (`subprocess.run`), so any TIFF
+  reaching it bypassed the Azure Document Intelligence engine selection
+  **and** the 4-tier OCR quality router in `ocr_quality.py` — the pages
+  would have landed unreviewed, labelled `parser_used='tesseract-tiff'`.
+- It set `Image.MAX_IMAGE_PIXELS = None` at import time, disabling
+  Pillow's decompression-bomb guard for the **whole worker process**, not
+  just its own decode. `tiff_to_pdf.py` bounds its work explicitly
+  instead (`MAX_FRAMES`, `MAX_TIFF_BYTES`).
+
+Existing `silver.reports` rows keep `parser_used='tesseract-tiff'`: that
+is still truthful provenance for how those rows were produced, and no
+constraint enumerates the column.
 
 ## References
 

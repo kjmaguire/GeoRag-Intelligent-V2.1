@@ -113,7 +113,7 @@ def test_workspace_consistency_response_model_minimum_fields() -> None:
 # ===========================================================================
 PG_DSN = os.environ.get(
     "PG_DSN",
-    "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",
+    "postgresql://georag:georag_dev_password@localhost:5432/georag",
 )
 FASTAPI_URL = os.environ.get("FASTAPI_URL", "http://localhost:8000")
 SERVICE_KEY = os.environ.get("FASTAPI_SERVICE_KEY", "georag-service-key-dev")

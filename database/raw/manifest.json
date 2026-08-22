@@ -1,0 +1,53 @@
+{
+  "_doc": "Ordered manifest of database/raw files that db:apply-raw applies. This is deliberately an explicit list, not a directory glob: ci.yml globs the directory and swallows every error with `|| true`, which is fine against a throwaway Postgres and unacceptable against a real one. A file earns its place here by being idempotent and re-run-safe, and by declaring the relations it operates on so a database that lacks them is reported rather than half-applied. Everything still outside this list has never run on Azure; `db:check-raw-parity` is what says so out loud.",
+  "_version": "1.0.0",
+  "files": [
+    {
+      "path": "phase0/95-rls-policies.sql",
+      "note": "Phase 0 RLS enable + tenant_isolation policies on the workspace/audit/workflow/outbox/usage tables.",
+      "requires": [
+        "audit.audit_ledger",
+        "workflow.workflow_runs"
+      ]
+    },
+    {
+      "path": "phase0/96-rls-tenant-isolation-block1.sql",
+      "note": "workspace_id column + backfill + NOT NULL + FK CASCADE + strict RLS on the five highest-traffic silver tables.",
+      "requires": [
+        "silver.projects",
+        "silver.collars",
+        "silver.reports",
+        "silver.well_log_curves",
+        "silver.hypothesis_evidence_links",
+        "silver.spatial_features"
+      ]
+    },
+    {
+      "path": "phase0/97-rls-tenant-isolation-block2.sql",
+      "note": "Sweeps the rest of the silver schema (tiers B/C/D).",
+      "requires": [
+        "silver.projects",
+        "silver.lithology_logs",
+        "silver.answer_citation_spans"
+      ]
+    },
+    {
+      "path": "phase0/98-rls-tenant-isolation-block3.sql",
+      "note": "audit / ops / workflow / targeting, including per-partition ENABLE+FORCE which RLS does not inherit.",
+      "requires": [
+        "audit.audit_ledger",
+        "workflow.workflow_runs",
+        "targeting.target_scores",
+        "ops.support_tickets"
+      ]
+    },
+    {
+      "path": "phase0/99-rls-block3-policy-tighten.sql",
+      "note": "Refines the audit/workflow parent policies Block 3 left too strict for operator reads.",
+      "requires": [
+        "audit.audit_ledger",
+        "workflow.workflow_runs"
+      ]
+    }
+  ]
+}

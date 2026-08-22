@@ -113,12 +113,45 @@ class StreamQueryFromFastApiTest extends TestCase
         });
     }
 
-    public function test_handle_captures_routing_event_for_audit(): void
+    public function test_handle_captures_the_answering_model_from_the_completed_frame(): void
     {
-        // R10 regression — the routing frame must fire a broadcast AND be
-        // captured on the instance as $routingPayload. We can't assert on
-        // the audit-row side without DB (that's a feature test), but we
-        // can at least prove the broadcast fires with the expected shape.
+        // This replaces a test that fed the job a hand-written `routing`
+        // frame and asserted it was rebroadcast. It passed for months while
+        // the feature was entirely dead: FastAPI never emitted a routing
+        // frame — the producer was lost when app/agent/orchestrator.py
+        // became a package — so query_audit_log.llm_model kept whatever
+        // dispatch-time default QueryController::store() stamped on it. A
+        // test that supplies the input the real producer does not is not
+        // testing the pipeline, only the parser.
+        //
+        // The model now rides the terminal `completed` frame, which the job
+        // must receive to do anything at all, so a broken producer shows up
+        // as a broken answer rather than as a quietly wrong audit column.
+        Event::fake([QueryStreamEvent::class]);
+
+        $sseBody = implode("\n", [
+            'event: completed',
+            'data: {"text":"ok","citations":[],"confidence":0.9,'
+                .'"llm_model":"Cohere-command-a-plus-05-2026"}',
+            '',
+            '',
+        ]);
+
+        $this->makeJob($sseBody)->handle();
+
+        Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e) {
+            return ($e->eventType ?? null) === 'completed'
+                && ($e->payload['llm_model'] ?? null) === 'Cohere-command-a-plus-05-2026';
+        });
+    }
+
+    public function test_handle_no_longer_treats_routing_as_a_special_frame(): void
+    {
+        // Belt-and-braces on the removal: if someone reintroduces a
+        // `routing` branch without a producer, this says so. An unknown
+        // event type is still broadcast verbatim — that is the generic
+        // path, and it is the correct behaviour for a frame the job has no
+        // special handling for.
         Event::fake([QueryStreamEvent::class]);
 
         $sseBody = implode("\n", [
@@ -133,11 +166,18 @@ class StreamQueryFromFastApiTest extends TestCase
 
         $this->makeJob($sseBody)->handle();
 
-        Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e) {
-            return ($e->eventType ?? null) === 'routing'
-                && ($e->payload['tier'] ?? null) === 'fast'
-                && ($e->payload['model'] ?? null) === 'claude-haiku-4-5';
-        });
+        $source = file_get_contents(app_path('Jobs/StreamQueryFromFastApi.php'));
+        $this->assertStringNotContainsString(
+            "\$eventType === 'routing'",
+            $source,
+            'A `routing` branch is back in StreamQueryFromFastApi. Nothing in '
+            .'FastAPI emits that frame; check for a producer before relying on it.',
+        );
+        $this->assertStringNotContainsString(
+            'routingPayload',
+            $source,
+            'routingPayload is back. It was always null in production.',
+        );
     }
 
     public function test_job_is_queued_on_the_llm_queue(): void

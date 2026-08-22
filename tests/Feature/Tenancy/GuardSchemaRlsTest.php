@@ -20,7 +20,7 @@ use Tests\TestCase;
  *   silver.alias_gaps             (plan §2c)
  *
  * For each table, this test:
- *   1. Binds the georag.workspace_id GUC to workspace A and inserts a row
+ *   1. Binds the app.workspace_id GUC to workspace A and inserts a row
  *   2. Binds the GUC to workspace B and re-selects from the same table
  *   3. Asserts B sees ZERO rows belonging to A (RLS isolation working)
  *   4. Asserts B can ONLY see its own rows after inserting under B
@@ -28,8 +28,8 @@ use Tests\TestCase;
  * The canonical RLS pattern on every guard-arm table is:
  *
  *     CREATE POLICY <table>_workspace_isolation ON silver.<table>
- *         USING (workspace_id::text = current_setting('georag.workspace_id', true))
- *         WITH CHECK (workspace_id::text = current_setting('georag.workspace_id', true))
+ *         USING (workspace_id::text = current_setting('app.workspace_id', true))
+ *         WITH CHECK (workspace_id::text = current_setting('app.workspace_id', true))
  *
  * The test runs as the migrations role (which has BYPASSRLS off by default)
  * so the policy is enforced. If a future migration accidentally drops FORCE
@@ -282,13 +282,21 @@ final class GuardSchemaRlsTest extends TestCase
     }
 
     /**
-     * Bind the canonical georag.workspace_id session GUC.
+     * Bind the canonical `app.workspace_id` GUC.
+     *
+     * It used to bind `georag.workspace_id` — the LEGACY name, retired by
+     * the 2026-05-28 sweeps — while every policy on these tables reads
+     * `app.workspace_id`. The canonical GUC was therefore never set, and
+     * because these policies are fail-open on a NULL setting, this test
+     * reported a cross-workspace leak on four tables that were in fact
+     * configured correctly. Being absent from phpunit.pgsql.xml, it only
+     * ever ran under SQLite, where it skipped before reaching any of it.
      * `set_config(..., true)` makes it transaction-local.
      */
     private function bindWorkspace(string $workspaceId): void
     {
         DB::statement(
-            "SELECT set_config('georag.workspace_id', ?, true)",
+            "SELECT set_config('app.workspace_id', ?, true)",
             [$workspaceId],
         );
     }

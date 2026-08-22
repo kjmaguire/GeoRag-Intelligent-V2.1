@@ -83,7 +83,40 @@ class ReconstructionResult:
 
     @property
     def text(self) -> str:
-        return " ".join(word.text for word in self.words).strip()
+        """Reconstructed page text, with line boundaries preserved.
+
+        This used to join every word with a single space. _reading_order_key
+        already computes a line bucket, and used it only for sorting — so a
+        1:5,000 plan sheet that escalated to tiling came back as 900 words in
+        one 6,000-character line.
+
+        That is the exact bug fixed for the tesseract path on 2026-08-14 and
+        documented in pdf_report.py: pdf_report's structural regexes
+        (SECTION_HEADING_RE and friends) are ^...$ MULTILINE, so with no
+        newlines no heading ever matched, parse_quality sat at 0 and every
+        chunk was labelled "Document". _snap_window_end also finds no line
+        break within its budget and hard-cuts the page mid-sentence.
+
+        Tiling is the escalation path for oversized rasters — the maps, plan
+        sheets and drill-log plates — so it was live on precisely the pages
+        whose legend text is what makes them findable.
+        """
+        lines: list[str] = []
+        current: list[str] = []
+        current_bucket: int | None = None
+
+        for word in self.words:
+            bucket = _reading_order_key(word)[0]
+            if current_bucket is not None and bucket != current_bucket:
+                lines.append(" ".join(current))
+                current = []
+            current.append(word.text)
+            current_bucket = bucket
+
+        if current:
+            lines.append(" ".join(current))
+
+        return "\n".join(line for line in lines if line.strip()).strip()
 
 
 @contextmanager

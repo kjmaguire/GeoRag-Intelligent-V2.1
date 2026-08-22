@@ -1,7 +1,7 @@
 # =============================================================================
 # Compose overlay: Activate PostgreSQL WAL archiving for PITR
 # =============================================================================
-# Authority: ops/runbooks/backup-restore.md, docker/postgresql/wal-upload.sh
+# Authority: ops/runbooks/_archived/backup-restore.md, docker/postgresql/wal-upload.sh
 #
 # Apply alongside the canonical compose:
 #
@@ -27,7 +27,7 @@
 #     WAL_ARCHIVE_DIR (default /pg_wal_archive) and S3_ENDPOINT_URL.
 #   * Configure Ofelia to run wal-upload.sh every 5 minutes — that's the
 #     existing Ofelia config that already references this script (per
-#     ops/runbooks/backup-restore.md §"PostgreSQL WAL upload").
+#     ops/runbooks/_archived/backup-restore.md §"PostgreSQL WAL upload").
 #
 # Activation effect:
 #   archive_mode requires a postmaster restart, so on fresh-init volumes

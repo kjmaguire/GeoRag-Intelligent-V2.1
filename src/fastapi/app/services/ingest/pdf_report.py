@@ -516,11 +516,85 @@ def _pages_for_range(
 
 # Sliding-window chunking parameters for non-NI-43-101 documents (slide decks,
 # fact sheets, prospectuses, anything without "1. Summary" / "2. Introduction"
-# section headers). Sized for bge-small-en-v1.5 which truncates at 512 tokens
-# (~2000 chars). A 1500-char window with 200-char overlap lands well inside
-# the truncation limit while keeping enough context per chunk for retrieval.
-WINDOW_CHARS = 1500
-WINDOW_OVERLAP_CHARS = 200
+# section headers).
+#
+# 2026-08-20 — raised 1500/200 -> 5000/500. The old numbers were sized for
+# bge-small-en-v1.5, which truncates at 512 tokens (~2000 chars), so a
+# 1500-char window "landed well inside the truncation limit". That model has
+# not been the embedder since the 2026-06-03 Qwen swap and is two backends
+# ago now: the live embedder is Cohere Embed v4, whose context is 128K
+# tokens. We were sizing chunks against a constraint that no longer exists,
+# and paying for it three times over:
+#
+#   - a 1500-char window is ~375 tokens, so the retrieved evidence reaching
+#     the model was ~1,900 tokens against a MAX_CONTEXT_TOKENS_AZURE budget
+#     of 100,000 (MAX_CONTEXT_DOC_CHUNKS is 5). The model was starved by two
+#     orders of magnitude;
+#   - a geological argument — a drill result, its QA/QC caveat, and the
+#     conclusion drawn from it — routinely spans more than 1500 characters,
+#     so the reasoning got cut across chunks that then had to both be
+#     retrieved to answer anything;
+#   - more chunks per document is more vectors to store and rerank.
+#
+# 5000 chars (~1250 tokens) fits under Cohere Rerank v4's ~4096-token
+# document limit (tools.py truncates foundry rerank input at 8000 chars) and
+# lands 5 chunks at ~6,250 tokens — still only 6% of the Azure context
+# budget. The 10% overlap is proportional to the old 13%.
+#
+# CAVEAT: chunk boundaries are decided at parse time and stored in
+# silver.document_passages, so changing these does nothing to already-
+# ingested documents — they need re-ingesting, not just re-embedding.
+# `sections_text` is a partial extract (measured 2026-08-20: ~2.9k chars
+# against ~10.4k chars of passages per report), so it is NOT a shortcut
+# around re-parsing the source PDFs.
+_DEFAULT_WINDOW_CHARS = 5000
+_DEFAULT_WINDOW_OVERLAP_CHARS = 500
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# Env-driven so the corpus can be re-ingested in stages, and rolled back to
+# the old sizing, without a redeploy.
+WINDOW_CHARS = max(200, _int_env("PDF_CHUNK_WINDOW_CHARS", _DEFAULT_WINDOW_CHARS))
+# Clamped to half the window: an overlap at or above the window would make
+# `_emit_windows` stop advancing.
+WINDOW_OVERLAP_CHARS = min(
+    max(0, _int_env("PDF_CHUNK_OVERLAP_CHARS", _DEFAULT_WINDOW_OVERLAP_CHARS)),
+    WINDOW_CHARS // 2,
+)
+
+# 2026-08-20 — how far a window boundary may slide backwards to land on a
+# line break instead of mid-line. The windows used to be cut at raw
+# character offsets, which on a rendered table meant cutting through a row:
+# `| DDH-22-001 | 145.2 | 1` ends one chunk and `48.0 | 2.31 |` starts the
+# next, so neither chunk can answer "what grade did DDH-22-001 return" and
+# the second one offers bare numbers under no header at all. Snapping to
+# the preceding newline keeps every row whole. 300 chars is roughly 2-4
+# table rows or two prose lines — enough to reach a boundary, small enough
+# that windows stay near WINDOW_CHARS. Clamped to a third of the window so a
+# small configured window can still reach a boundary without collapsing.
+WINDOW_SNAP_CHARS = min(500, WINDOW_CHARS // 3)
+
+
+def _snap_window_end(text: str, start: int, end: int) -> int:
+    """Pull ``end`` back to just after the last line break before it.
+
+    Returns ``end`` unchanged when there is no line break within the snap
+    budget — one line longer than the budget (OCR word-soup, a very wide
+    table row) has no boundary to snap to, and a hard cut is the honest
+    fallback. The floor also guarantees the window stays longer than the
+    overlap, which is what keeps the caller's loop advancing.
+    """
+    floor = max(start + WINDOW_OVERLAP_CHARS + 1, end - WINDOW_SNAP_CHARS)
+    if floor >= end:
+        return end
+    line_break = text.rfind("\n", floor, end)
+    return line_break + 1 if line_break != -1 else end
 
 
 def _emit_windows(
@@ -533,9 +607,10 @@ def _emit_windows(
 ) -> list[ReportSection]:
     """Emit sliding-window ReportSections over a contiguous segment.
 
-    Every emitted chunk has len(text) ≤ WINDOW_CHARS so the embedding
-    model never truncates. Adjacent chunks overlap by WINDOW_OVERLAP_CHARS
-    so split sentences still match retrieval queries.
+    Every emitted chunk has len(text) ≤ WINDOW_CHARS. Adjacent chunks
+    overlap by WINDOW_OVERLAP_CHARS so split sentences still match
+    retrieval queries. Boundaries snap to line breaks where they can, so a
+    rendered table is never cut mid-row (see `_snap_window_end`).
 
     Page metadata (page_first / page_last) is derived from each chunk's
     absolute char range via page_index, so citations deep-link correctly
@@ -560,25 +635,39 @@ def _emit_windows(
             ))
         return out
 
-    step = max(1, WINDOW_CHARS - WINDOW_OVERLAP_CHARS)
-    for local in range(0, seg_len, step):
-        a = abs_start + local
+    # 2026-08-20 — a `range(0, seg_len, step)` walk can't express this any
+    # more: snapping moves each window's end, so the next window's start
+    # depends on where the previous one actually landed rather than on a
+    # fixed stride.
+    a = abs_start
+    while a < abs_end:
         b = min(a + WINDOW_CHARS, abs_end)
+        if b < abs_end:
+            b = _snap_window_end(full_text, a, b)
         chunk = full_text[a:b].strip()
-        if not chunk:
-            if b >= abs_end:
-                break
-            continue
-        p_first, p_last = _pages_for_range(page_index, a, b)
-        out.append(ReportSection(
-            section_number=section_number,
-            section_title=section_title,
-            text=chunk,
-            page_first=p_first,
-            page_last=p_last,
-        ))
+        if chunk:
+            p_first, p_last = _pages_for_range(page_index, a, b)
+            out.append(ReportSection(
+                section_number=section_number,
+                section_title=section_title,
+                text=chunk,
+                page_first=p_first,
+                page_last=p_last,
+            ))
         if b >= abs_end:
             break
+
+        # `_snap_window_end`'s floor guarantees b - a > WINDOW_OVERLAP_CHARS,
+        # so this is strictly greater than `a` and the loop advances.
+        next_a = max(a + 1, b - WINDOW_OVERLAP_CHARS)
+        # Open the overlap on a line boundary too, so the next chunk does
+        # not start halfway through a table row. Only ever moves forward to
+        # a break BEFORE `b`, so nothing between the windows is skipped —
+        # everything up to `b` is already inside the chunk just emitted.
+        line_break = full_text.find("\n", next_a, b)
+        if line_break != -1 and line_break + 1 < b:
+            next_a = line_break + 1
+        a = next_a
 
     return out
 
@@ -591,9 +680,11 @@ def _split_into_sections(
     """Chunk the document with sliding windows; tag chunks with section
     metadata when NI 43-101 headings are detected.
 
-    Every emitted ReportSection has ``len(text) ≤ WINDOW_CHARS``, so the
-    bge-small embedder (512-token ≈ 2,000-char limit) never truncates a
-    chunk. Section structure is preserved as *metadata* on each chunk:
+    Every emitted ReportSection has ``len(text) ≤ WINDOW_CHARS``, which
+    sits inside the reranker's per-document input budget (the embedder,
+    Cohere Embed v4, has a 128K-token context and is not the binding
+    constraint). Section structure is preserved as *metadata* on each
+    chunk:
 
       * Chunks inside "N. Title" inherit ``section_number=N`` and
         ``section_title=Title``.
@@ -824,46 +915,215 @@ _MIN_TABLE_ROWS = 3
 _MIN_TABLE_COLS = 2
 
 
-def _table_to_markdown(table: list[list[str | None]]) -> str:
-    """Render a pdfplumber table-of-lists as a markdown-style text block.
+def _markdown_cell(value: Any) -> str:
+    """Flatten one cell to something safe to sit between two pipes.
 
-    The point isn't to be pretty markdown — it's that each cell stays on
-    a recognizable row/column so embeddings + retrieval can match queries
-    like "Au grade at hole MAD-22-001" even when the value lives in a
-    cell rather than flowing prose. Joining cells with " | " preserves
-    enough structure for BM25 + dense retrieval to find data values.
+    A literal ``|`` opens a new column and a newline ends the row, so a
+    cell containing either would silently change the table's shape — a
+    grade column shifted one place left is a wrong answer with a citation
+    attached, which is worse than no answer.
+    """
+    if value is None:
+        return ""
+    text = str(value).replace("\r", " ").replace("\n", " ").replace("|", r"\|")
+    return " ".join(text.split())
+
+
+#: Characters stripped before asking "is this cell a number?" — currency,
+#: grouping, percent and the units that ride along in a table cell.
+_NUMERIC_CELL_STRIP = str.maketrans(
+    "", "", "$%,()<>\u00b1\u2264\u2265\u2013\u2014",
+)
+
+
+def _cell_is_numeric(cell: str) -> bool:
+    """True when a table cell holds a measurement rather than a label.
+
+    Tolerant on purpose: "1,250", "2.31%", "<0.01", "145.20 m" and "(3.4)"
+    are all numbers as far as a table's shape is concerned.
+    """
+    text = (cell or "").strip()
+    if not text:
+        return False
+    text = text.translate(_NUMERIC_CELL_STRIP).strip()
+    if not text:
+        return False
+    # Drop a trailing unit token: "145.20 m", "2.31 g/t".
+    head = text.split()[0] if " " in text else text
+    try:
+        float(head)
+    except ValueError:
+        return False
+    return True
+
+
+def _numeric_fraction(row: list[str]) -> float:
+    """Fraction of a row's non-empty cells that read as numbers."""
+    filled = [cell for cell in row if (cell or "").strip()]
+    if not filled:
+        return 0.0
+    return sum(1 for cell in filled if _cell_is_numeric(cell)) / len(filled)
+
+
+#: A first row is demoted from header to data only on POSITIVE evidence:
+#: it must be numerically dense AND statistically indistinguishable from
+#: the body. Absent that, the existing promote-row-0 behaviour stands, so
+#: an all-text table (lithology descriptions, QP tables) is unaffected.
+_HEADER_MIN_NUMERIC_DENSITY = 0.4
+_HEADER_MAX_BODY_DIVERGENCE = 0.25
+
+
+def _first_row_is_data(rows: list[list[str]]) -> bool:
+    """Does row 0 look like another data row rather than column labels?
+
+    Tables are extracted PER PAGE. On page 2+ of a table that spans a page
+    break there is no header row at all, so `_table_to_markdown` used to
+    promote the first *data* row to the header and follow it with a
+    ``| --- |`` delimiter. A 6-page assay table starting on page 88 with
+    ``Hole ID | From (m) | To (m) | Au (g/t)`` renders pages 89-93 as::
+
+        | DDH-22-041 | 145.20 | 148.00 | 2.31 |
+        | --- | --- | --- | --- |
+        | DDH-22-042 | 151.00 | 154.00 | 0.87 |
+
+    telling the reader — and the LLM — that "DDH-22-041" and "2.31" are
+    column names. Every answer drawn from those pages carries unlabelled
+    numbers with no units, and one real assay row is consumed as a label.
+
+    The test is deliberately conservative. Column labels are words;
+    measurements are numbers. Only when row 0 is itself numerically dense
+    AND matches the body's density is it treated as data.
+    """
+    if len(rows) < 2:
+        # A single-row table has nothing to compare against. Keep the
+        # historical reading: it is a header.
+        return False
+
+    head_density = _numeric_fraction(rows[0])
+    if head_density < _HEADER_MIN_NUMERIC_DENSITY:
+        return False
+
+    body = rows[1:]
+    body_density = sum(_numeric_fraction(row) for row in body) / len(body)
+    if body_density < _HEADER_MIN_NUMERIC_DENSITY:
+        return False
+
+    return abs(head_density - body_density) <= _HEADER_MAX_BODY_DIVERGENCE
+
+
+def _table_to_markdown(
+    table: list[list[str | None]],
+    has_header: bool | None = None,
+) -> str:
+    """Render a table-of-lists as a GitHub-Flavored Markdown table.
+
+    2026-08-20 — this used to join cells with ``" | "`` and stop there:
+    no delimiter row, no leading/trailing pipes, no escaping, no column
+    padding. That is row-per-line text that *resembles* Markdown without
+    being it, which cost us three things:
+
+      - nothing downstream (chunker, LLM, or a future Markdown-aware
+        splitter) could recognise a table as a table;
+      - ragged rows stayed ragged, so a row missing its last cell shifted
+        every value in it under the wrong header;
+      - a cell containing a pipe silently split into two columns.
+
+    Real Markdown fixes all three and costs ~4 characters per row. The
+    original goal is unchanged and still met: each cell stays on a
+    recognisable row/column so BM25 + dense retrieval can match "Au grade
+    at hole MAD-22-001" against a value that lives in a cell rather than
+    in flowing prose.
+
+    2026-08-21 -- row 0 is no longer promoted to the header
+    unconditionally. See `_first_row_is_data`: tables are extracted per
+    page, so every continuation page of a table that spans a page break
+    arrives with no header row and its first DATA row was being labelled
+    as the column names.
+
+    Args:
+        table: rows of cells.
+        has_header: authoritative override when the extractor knows --
+            Document Intelligence reports `cell.kind == "columnHeader"`.
+            None means infer.
     """
     if not table:
         return ""
-    rendered = []
+    rows: list[list[str]] = []
     for row in table:
-        cells = [(str(c).replace("\n", " ").strip() if c is not None else "") for c in row]
+        cells = [_markdown_cell(cell) for cell in row]
         if any(cells):
-            rendered.append(" | ".join(cells))
-    return "\n".join(rendered)
+            rows.append(cells)
+    if not rows:
+        return ""
+
+    # Markdown requires every row to have the delimiter row's column
+    # count. Pad rather than truncate: a short row is missing trailing
+    # cells, and dropping the overflow of a long one would lose data.
+    width = max(len(row) for row in rows)
+    padded = [row + [""] * (width - len(row)) for row in rows]
+
+    header_present = (
+        has_header if has_header is not None else not _first_row_is_data(padded)
+    )
+    delimiter = "| " + " | ".join(["---"] * width) + " |"
+
+    if header_present:
+        lines = ["| " + " | ".join(padded[0]) + " |", delimiter]
+        body = padded[1:]
+    else:
+        # GFM has no headerless table, so emit an EMPTY header row. Blank
+        # column names are honest — the labels are on a previous page —
+        # where promoting a data row states something false and eats a row.
+        lines = ["| " + " | ".join([""] * width) + " |", delimiter]
+        body = padded
+
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    return "\n".join(lines)
+
+
+def _is_markdown_delimiter_row(line: str) -> bool:
+    """True for a ``| --- | --- |`` style Markdown delimiter row."""
+    segments = [seg.strip() for seg in line.strip().strip("|").split("|")]
+    if not segments:
+        return False
+    return all(
+        seg and set(seg) <= {"-", ":"} and "-" in seg
+        for seg in segments
+    )
 
 
 def _split_table_markdown(md: str) -> list[str]:
     """F13 (2026-08-11) — split an oversize table's markdown into chunks of
-    at most WINDOW_CHARS on row boundaries, repeating the header row (the
-    first line — `_table_to_markdown` emits no separator line) at the top
+    at most WINDOW_CHARS on row boundaries, repeating the header at the top
     of every chunk so each part stays independently interpretable.
+
+    2026-08-20: the repeated header is now the header row *and* the
+    delimiter row beneath it, since `_table_to_markdown` emits real
+    Markdown. Repeating only the first line would leave every part after
+    the first as a headerless run of pipe-separated lines.
     """
     lines = md.splitlines()
     if len(lines) <= 1:
         return [md]
-    header = lines[0]
+    # Defensive about the shape: a caller (or an older stored value) may
+    # still hand us header-only markdown with no delimiter row.
+    header_depth = 2 if len(lines) > 2 and _is_markdown_delimiter_row(lines[1]) else 1
+    if len(lines) <= header_depth:
+        return [md]
+
+    header = lines[:header_depth]
+    header_len = sum(len(line) + 1 for line in header) - 1
     chunks: list[str] = []
-    current: list[str] = [header]
-    current_len = len(header)
-    for line in lines[1:]:
-        if current_len + 1 + len(line) > WINDOW_CHARS and len(current) > 1:
+    current: list[str] = list(header)
+    current_len = header_len
+    for line in lines[header_depth:]:
+        if current_len + 1 + len(line) > WINDOW_CHARS and len(current) > header_depth:
             chunks.append("\n".join(current))
-            current = [header]
-            current_len = len(header)
+            current = list(header)
+            current_len = header_len
         current.append(line)
         current_len += 1 + len(line)
-    if len(current) > 1:
+    if len(current) > header_depth:
         chunks.append("\n".join(current))
     return chunks or [md]
 
@@ -1898,6 +2158,31 @@ def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
         return _buf.getvalue()
 
 
+def _slice_page_block_pdf_bytes(pdf_path: str, first_page: int, page_count: int) -> bytes:
+    """Extract a contiguous run of pages into one in-memory PDF.
+
+    Batching 2026-08-20: the batched Document Intelligence path uploads
+    blocks, not pages. Slicing rather than sending the whole file keeps
+    the original per-page argument intact — a 40 MB report re-uploaded
+    once per block would still push O(size x blocks) bytes — while cutting
+    the number of uploads by the block size. Same `_PIKEPDF_LOCK`
+    discipline as `_slice_single_page_pdf_bytes`: the cached
+    ``pikepdf.Pdf`` is shared across the OCR threads.
+    """
+    import io as _io
+
+    import pikepdf as _pikepdf
+
+    with _PIKEPDF_LOCK:
+        _src = _get_cached_pikepdf(pdf_path)
+        _block = _pikepdf.Pdf.new()
+        for _offset in range(page_count):
+            _block.pages.append(_src.pages[first_page - 1 + _offset])
+        _buf = _io.BytesIO()
+        _block.save(_buf)
+        return _buf.getvalue()
+
+
 # 2026-08-14 — per-document Azure DI page budget. `_ocr_single_page` fires
 # one DI request per short page (plus one per tile on the tiled-escalation
 # path), unmetered until now: a pathological scan (thousands of image
@@ -1911,6 +2196,26 @@ def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
 _DI_PAGE_BUDGET_ENV = "AZURE_DI_MAX_PAGES_PER_DOC"
 _DI_PAGES_USED: dict[str, int] = {}
 _DI_CAP_LOGGED: set[str] = set()
+
+#: Documents whose DI budget ran out, so the parse result can say so.
+#:
+#: Hitting the cap is not an error — it is the cost control working. What was
+#: wrong is that it was invisible: a 400-page scanned NI 43-101 had pages
+#: 1-300 read by Document Intelligence and pages 301-400 read by tesseract,
+#: which extracts no table structure at all. The two halves of one document
+#: were extracted by different engines to different standards, the tail lost
+#: every assay and resource table it contained, and the only trace was a
+#: single WARNING line in a log with no alert rule attached to it.
+#:
+#: `_di_budget_warning` turns that into a warning on the parse result, which
+#: travels the same channel as every other page warning: counted into
+#: `warnings_count`, and enough on its own to land the ingestion run in
+#: `partial` rather than `completed`, where the UI shows it.
+_DI_CAP_EXHAUSTED: dict[str, dict[str, int]] = {}
+
+#: How many documents' budgets stay resident. See the eviction note in
+#: _di_budget_take.
+_DI_BUDGET_REGISTRY_MAX = 32
 
 
 def _di_max_pages_per_doc() -> int:
@@ -1933,14 +2238,29 @@ def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
     """
     with _PIKEPDF_LOCK:
         if pdf_path not in _DI_PAGES_USED:
-            for _stale in list(_DI_PAGES_USED):
+            # Bounded FIFO, not "clear everything the moment a new document
+            # appears". A Hatchet worker runs several ingest_pdf tasks in one
+            # process, and the old eviction meant document B's first page
+            # wiped document A's counter: A's remaining pages then drew a
+            # fresh 300-page budget, so the per-document cap could be
+            # overrun by a multiple of itself, and A's exhaustion record was
+            # gone before its own parse could report it. Thirty-two entries
+            # is thirty-two ints; the memory this was guarding was never the
+            # constraint.
+            while len(_DI_PAGES_USED) >= _DI_BUDGET_REGISTRY_MAX:
+                _stale = next(iter(_DI_PAGES_USED))
                 _DI_PAGES_USED.pop(_stale, None)
                 _DI_CAP_LOGGED.discard(_stale)
+                _DI_CAP_EXHAUSTED.pop(_stale, None)
             _DI_PAGES_USED[pdf_path] = 0
         cap = _di_max_pages_per_doc()
         if _DI_PAGES_USED[pdf_path] + pages > cap:
             if pdf_path not in _DI_CAP_LOGGED:
                 _DI_CAP_LOGGED.add(pdf_path)
+                _DI_CAP_EXHAUSTED[pdf_path] = {
+                    "used": _DI_PAGES_USED[pdf_path],
+                    "cap": cap,
+                }
                 logger.warning(
                     "pdf_report: document_intelligence page budget exhausted for "
                     "'%s' (used=%d, cap=%d via %s) — remaining short pages fall "
@@ -1950,6 +2270,31 @@ def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
             return False
         _DI_PAGES_USED[pdf_path] += pages
         return True
+
+
+def _di_budget_warning(pdf_path: str) -> dict[str, Any] | None:
+    """A parse-result warning when this document exhausted its DI budget.
+
+    Returns None when the budget was never hit, which is the usual case —
+    the default cap is 300 pages and most reports are shorter.
+    """
+    with _PIKEPDF_LOCK:
+        record = _DI_CAP_EXHAUSTED.get(pdf_path)
+    if not record:
+        return None
+
+    return {
+        "code": "document_intelligence_page_budget_exhausted",
+        "cap": record["cap"],
+        "env": _DI_PAGE_BUDGET_ENV,
+        "message": (
+            f"Document Intelligence was capped at {record['cap']} page(s) for "
+            f"this document ({_DI_PAGE_BUDGET_ENV}). Pages past the cap were "
+            f"read by tesseract, which extracts no table structure — any "
+            f"assay, resource or drill table in them was lost. Raise the cap "
+            f"for this document or split it, then re-ingest."
+        ),
+    }
 
 
 def _tesseract_data_to_words_and_text(data: dict) -> tuple[list[tuple[str, int]], str]:
@@ -2004,12 +2349,84 @@ def _tesseract_data_to_words_and_text(data: dict) -> tuple[list[tuple[str, int]]
     return words, "\n".join(line_texts)
 
 
+def _di_single_page_request(_di, pdf_path: str, page_num: int):
+    """One page, one Document Intelligence request.
+
+    Slices the target page into its own PDF before upload. Two reasons
+    this is not an optimisation but a correctness fix:
+      (1) Document Intelligence F0 rejects ``pages=N`` for N > 2
+          ("InvalidRequest") — a 1-page document sidesteps the free
+          tier's first-two-pages analysis window entirely;
+      (2) sending the full file per page uploads O(size x pages) bytes —
+          a 40 MB / 200-page report would push ~8 GB.
+    F11: the source doc is opened once per path (cached), and a slice
+    failure does NOT fall back to a whole-file upload — one structural
+    defect must not turn a 300-page doc into 300 full-file uploads. It
+    returns a failed PageOcrResult instead, so the caller falls through
+    to tesseract for this page.
+    """
+    try:
+        pdf_bytes = _slice_single_page_pdf_bytes(pdf_path, page_num)
+    except Exception as slice_exc:  # noqa: BLE001
+        logger.warning(
+            "pdf_report: single-page slice failed for page %d of '%s' "
+            "(%s) — skipping document_intelligence, falling back to "
+            "tesseract",
+            page_num, pdf_path, slice_exc,
+        )
+        return _di.PageOcrResult(
+            "",
+            0.0,
+            request_succeeded=False,
+            error=f"single_page_slice_failed: {slice_exc}",
+        )
+    return _di.ocr_page_sync(pdf_bytes, 1)
+
+
+def _di_block_plan(total_pages: int, block_size: int) -> list[tuple[int, int]]:
+    """Split a page count into ``(first_page, page_count)`` blocks."""
+    return [
+        (first, min(block_size, total_pages - first + 1))
+        for first in range(1, total_pages + 1, block_size)
+    ]
+
+
+def _ocr_page_block_di(pdf_path: str, first_page: int, page_count: int) -> dict[int, Any]:
+    """OCR one contiguous block of pages in a single DI request.
+
+    Returns ``{absolute_page_number: PageOcrResult}``. An empty mapping
+    means the block never produced an answer — budget exhausted, the
+    slice failed, or the request failed — and the caller must drive those
+    pages individually. A page the block *did* answer for but with no
+    text is present with empty text, which is a different (and cheaper to
+    recover from) situation.
+    """
+    from . import document_intelligence_client as _di
+
+    if not _di_budget_take(pdf_path, page_count):
+        return {}
+    try:
+        pdf_bytes = _slice_page_block_pdf_bytes(pdf_path, first_page, page_count)
+    except Exception as slice_exc:  # noqa: BLE001
+        logger.warning(
+            "pdf_report: page-block slice failed for pages %d-%d of '%s' (%s) "
+            "— falling back to per-page document_intelligence",
+            first_page, first_page + page_count - 1, pdf_path, slice_exc,
+        )
+        return {}
+    block = _di.ocr_page_block_sync(pdf_bytes, page_count)
+    # DI numbers pages relative to the uploaded block, which starts at 1.
+    return {first_page + local - 1: result for local, result in block.items()}
+
+
 def _ocr_single_page(
     pdf_path: str,
     page_num: int,
     return_confidence: bool = False,
     return_assessment: bool = False,
     return_tables: bool = False,
+    *,
+    skip_di_page_request: bool = False,
 ):
     """Render one PDF page and run Tesseract on it.
 
@@ -2028,6 +2445,14 @@ def _ocr_single_page(
     (``tables[t][row][col]``, see PageOcrResult.tables) — always ``[]``
     on the tesseract/tiled/failure paths, which extract no tables.
 
+    Batching 2026-08-20: ``skip_di_page_request=True`` means a batched
+    block already asked Document Intelligence about this page and got
+    nothing back. Re-asking page-at-a-time would burn a second billed
+    page to get the same empty answer, so the DI branch below starts at
+    the escalation it would have reached anyway (bounded raster tiles,
+    then tesseract). The block already paid this page's budget, so it is
+    not charged again either.
+
     Returns ``""`` (or the corresponding empty tuple) on any failure.
     """
     from . import document_intelligence_client as _di
@@ -2036,39 +2461,33 @@ def _ocr_single_page(
     # 2026-08-14 — per-document DI page budget (AZURE_DI_MAX_PAGES_PER_DOC,
     # default 300). Beyond it, this page skips DI and goes straight to the
     # tesseract fallback below.
-    if di_selected and not _di_budget_take(pdf_path):
+    if di_selected and not skip_di_page_request and not _di_budget_take(pdf_path):
         di_selected = False
     if di_selected:
         try:
-            # Slice the single target page into its own PDF before upload.
-            # Two reasons this is not an optimisation but a correctness fix:
-            # (1) Document Intelligence F0 rejects `pages=N` for N > 2
-            #     ("InvalidRequest") — a 1-page document sidesteps the free
-            #     tier's first-two-pages analysis window entirely;
-            # (2) sending the full file per page uploads O(size × pages)
-            #     bytes — a 40 MB / 200-page report would push ~8 GB.
-            # F11: the source doc is opened once per path (cached), and a
-            # slice failure does NOT fall back to a whole-file upload — one
-            # structural defect must not turn a 300-page doc into 300
-            # full-file uploads. It fails the DI request instead, so the
-            # branch below falls through to tesseract for this page.
-            try:
-                pdf_bytes = _slice_single_page_pdf_bytes(pdf_path, page_num)
-            except Exception as _slice_exc:  # noqa: BLE001
-                logger.warning(
-                    "pdf_report: single-page slice failed for page %d of '%s' "
-                    "(%s) — skipping document_intelligence, falling back to "
-                    "tesseract",
-                    page_num, pdf_path, _slice_exc,
-                )
-                result = _di.PageOcrResult(
-                    "",
-                    0.0,
-                    request_succeeded=False,
-                    error=f"single_page_slice_failed: {_slice_exc}",
-                )
+            if skip_di_page_request:
+                # Succeeded-but-empty is exactly what the batched block
+                # reported, so reuse that sentinel and let the branch
+                # below escalate to tiles without a second DI request.
+                result = _di.PageOcrResult("", 0.0)
             else:
-                result = _di.ocr_page_sync(pdf_bytes, 1)
+                result = _di_single_page_request(_di, pdf_path, page_num)
+        except _di.DocumentIntelligenceNotConfigured as exc:
+            # A configuration error, not a page that would not OCR. Its own
+            # docstring calls it "a startup/config error a caller should
+            # surface loudly rather than swallow", and both call sites
+            # swallowed it into a generic except and fell through to
+            # tesseract — so a rotated docintel-key silently downgraded the
+            # ENTIRE corpus to the fallback engine, losing every table, and
+            # nothing said so. CRITICAL because CRITICAL now pages
+            # (georag-fastapi-critical, added 2026-08-21).
+            logger.critical(
+                "pdf_report: OCR_ENGINE selects Document Intelligence but it "
+                "is not configured (%s). EVERY page from now on falls back to "
+                "tesseract, which extracts no tables. Check the docintel-key "
+                "secret reference on the worker.",
+                exc,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "pdf_report: document_intelligence OCR failed on page %d of "
@@ -2086,23 +2505,6 @@ def _ocr_single_page(
                     "skipping tiled escalation, falling back to tesseract",
                     page_num, pdf_path, result.error or "unknown error",
                 )
-            elif result.text.strip():
-                assessment = _assess_ocr_result(
-                    result.text,
-                    [word.confidence for word in result.words]
-                    or [result.mean_confidence],
-                    detected_region_count=result.detected_region_count,
-                )
-                assessment["ocr_method"] = "document_intelligence"
-                return _format_ocr_page_return(
-                    result.text,
-                    result.mean_confidence,
-                    assessment,
-                    return_confidence=return_confidence,
-                    return_assessment=return_assessment,
-                    return_tables=return_tables,
-                    tables=result.tables,
-                )
             else:
                 # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
                 # InvalidContentDimensions on an out-of-range scan resolution —
@@ -2111,13 +2513,53 @@ def _ocr_single_page(
                 # this check, that soft failure would look identical to "page is
                 # genuinely blank" and skip tesseract entirely, silently losing
                 # a page tesseract might actually be able to read.
-                logger.info(
-                    "pdf_report: document_intelligence returned empty text for "
-                    "page %d of '%s' — trying bounded raster tiles",
-                    page_num, pdf_path,
-                )
+                #
+                # 2026-08-21 — escalation used to key on `result.text.strip()`
+                # alone, so it fired on an EMPTY page and never on an UNUSABLE
+                # one. The assessment was computed on the line above and then
+                # only attached to the return value: a page that came back as
+                # fragmented tokens at catastrophic confidence — the ordinary
+                # outcome for a skewed 1970s plan sheet — was accepted, stored,
+                # embedded and cited, while the escalation that exists for
+                # exactly that page sat one branch away. The router already has
+                # a word for it, `catastrophic_failure`; this now reads it.
+                di_assessment: dict[str, Any] | None = None
+                if result.text.strip():
+                    di_assessment = _assess_ocr_result(
+                        result.text,
+                        [word.confidence for word in result.words]
+                        or [result.mean_confidence],
+                        detected_region_count=result.detected_region_count,
+                        ocr_method="document_intelligence",
+                    )
+                    if not _is_catastrophic_assessment(di_assessment):
+                        return _format_ocr_page_return(
+                            result.text,
+                            result.mean_confidence,
+                            di_assessment,
+                            return_confidence=return_confidence,
+                            return_assessment=return_assessment,
+                            return_tables=return_tables,
+                            tables=result.tables,
+                        )
+                    logger.info(
+                        "pdf_report: document_intelligence returned "
+                        "catastrophic-tier text for page %d of '%s' (%s) — "
+                        "trying bounded raster tiles",
+                        page_num, pdf_path,
+                        ", ".join(di_assessment.get("reasons") or ()) or "no reason",
+                    )
+                else:
+                    logger.info(
+                        "pdf_report: document_intelligence returned empty text for "
+                        "page %d of '%s' — trying bounded raster tiles",
+                        page_num, pdf_path,
+                    )
+
+                tiled_result = None
+                tiled_assessment: dict[str, Any] | None = None
                 try:
-                    tiled_result, assessment = _ocr_tiled_pdf_page(
+                    tiled_result, tiled_assessment = _ocr_tiled_pdf_page(
                         pdf_path,
                         page_num,
                     )
@@ -2129,18 +2571,49 @@ def _ocr_single_page(
                         pdf_path,
                         tiled_exc,
                     )
-                else:
-                    if tiled_result.text.strip():
+
+                if tiled_result is not None and tiled_result.text.strip():
+                    # When DI came back EMPTY, any tiled text is an
+                    # improvement and is taken unconditionally — that is the
+                    # pre-existing contract and it stays. When DI came back
+                    # unusable, tiles have to actually beat it to displace it.
+                    if di_assessment is None or not _is_catastrophic_assessment(
+                        tiled_assessment
+                    ):
                         # Tiled reconstruction is word-level only — no
                         # table grids survive tiling, so tables stays [].
                         return _format_ocr_page_return(
                             tiled_result.text,
                             tiled_result.mean_confidence,
-                            assessment,
+                            tiled_assessment,
                             return_confidence=return_confidence,
                             return_assessment=return_assessment,
                             return_tables=return_tables,
                         )
+
+                if di_assessment is not None:
+                    # Tiles did no better. Keep Document Intelligence's own
+                    # read rather than falling through to tesseract: it is
+                    # poor, but it is the stronger engine's answer for this
+                    # page and it is the only one of the two that carries
+                    # table structure. It travels with its catastrophic tier,
+                    # so the quality router still routes it to review and
+                    # retrieval still demotes it.
+                    logger.warning(
+                        "pdf_report: page %d of '%s' stays at catastrophic OCR "
+                        "quality after tiled escalation — keeping the "
+                        "document_intelligence result and routing it to review",
+                        page_num, pdf_path,
+                    )
+                    return _format_ocr_page_return(
+                        result.text,
+                        result.mean_confidence,
+                        di_assessment,
+                        return_confidence=return_confidence,
+                        return_assessment=return_assessment,
+                        return_tables=return_tables,
+                        tables=result.tables,
+                    )
 
     try:
         import pytesseract
@@ -2200,8 +2673,8 @@ def _ocr_single_page(
                     processed_text,
                     [confidence / 100.0 for _word, confidence in words],
                     detected_region_count=len(data.get("text", [])),
+                    ocr_method="tesseract",
                 )
-                assessment["ocr_method"] = "tesseract"
                 return _format_ocr_page_return(
                     processed_text,
                     mean_conf,
@@ -2229,8 +2702,8 @@ def _ocr_single_page(
             out_text,
             [],
             detected_region_count=0,
+            ocr_method="tesseract",
         )
-        assessment["ocr_method"] = "tesseract"
         return _format_ocr_page_return(
             out_text,
             0.0,
@@ -2333,8 +2806,8 @@ def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
         confidences,
         detected_region_count=detected_region_count,
         seam_duplicate_count=reconstruction.seam_duplicate_count,
+        ocr_method="document_intelligence",
     )
-    assessment["ocr_method"] = "document_intelligence"
     words = tuple(
         _di.OcrWord(word.text, word.confidence, word.polygon)
         for word in reconstruction.words
@@ -2365,7 +2838,22 @@ def _assess_ocr_result(
     *,
     detected_region_count: int,
     seam_duplicate_count: int = 0,
+    ocr_method: str | None = None,
 ) -> dict[str, Any]:
+    """Score one page's OCR output and route it.
+
+    ``ocr_method`` names the engine that produced ``text``. It does two
+    things, and the first is new as of 2026-08-21: it selects the engine's
+    threshold set, if OCR_ROUTING_THRESHOLDS_JSON supplies one. Document
+    Intelligence and Tesseract do not report confidence on a comparable
+    scale -- DI sits at 0.95-0.99 even when confidently wrong, Tesseract at
+    0.70-0.85 when it is fine -- so one shared cut-off auto-accepts nearly
+    every DI page and reviews nearly every Tesseract page.
+
+    Second, it lands in the returned dict, which every caller used to do
+    itself on the following line. Doing it here means a caller cannot
+    forget, and a review_queue row cannot arrive without naming its engine.
+    """
     from .ocr_quality import (
         assess_ocr_quality,
         calculate_ocr_quality,
@@ -2380,9 +2868,9 @@ def _assess_ocr_result(
     )
     assessment = assess_ocr_quality(
         signals,
-        load_routing_thresholds_from_env(),
+        load_routing_thresholds_from_env(ocr_method),
     )
-    return {
+    result = {
         "tier": assessment.tier.value,
         "routing_decision": assessment.review_queue_routing_decision,
         "reasons": list(assessment.reasons),
@@ -2400,6 +2888,34 @@ def _assess_ocr_result(
             "detected_region_count": signals.detected_region_count,
         },
     }
+    if ocr_method:
+        result["ocr_method"] = ocr_method
+    return result
+
+
+def _is_catastrophic_assessment(assessment: dict[str, Any] | None) -> bool:
+    """True when the quality router judged this OCR output unusable.
+
+    `CatastrophicFailure` is reached by exactly three routes in
+    ocr_quality.assess_ocr_quality: empty output, mean confidence at or
+    below `catastrophic_max_mean_confidence`, or output coverage at or
+    below `catastrophic_max_coverage_ratio`. The latter two are only
+    evaluated when routing thresholds are calibrated
+    (OCR_ROUTING_THRESHOLDS_JSON), so on an uncalibrated deployment this
+    reduces to "empty" and the escalation ladder behaves exactly as it did
+    before 2026-08-21.
+
+    Deliberately NOT `MandatoryReview`: an uncalibrated deployment routes
+    every page there by design ("defaulting safely to review"), and
+    escalating on it would fire the tiled path -- four or more billed
+    Document Intelligence requests -- on every page of every document.
+    """
+    if not assessment:
+        return False
+
+    from .ocr_quality import OcrRoutingTier
+
+    return assessment.get("tier") == OcrRoutingTier.CatastrophicFailure.value
 
 
 def _ocr_quality_warning(
@@ -2645,15 +3161,97 @@ def _parse_with_pdfplumber(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+#: How far off-square a scan may be and still be worth correcting. A 1970s
+#: plan sheet fed through a flatbed routinely lands 2-5 degrees out; beyond
+#: about 8 the page is probably rotated rather than skewed, which is a
+#: different problem and not one a shear correction fixes.
+_MAX_DESKEW_DEGREES = 8.0
+
+#: Below this the rotation costs more in resampling blur than it recovers.
+_MIN_DESKEW_DEGREES = 0.3
+
+#: Width the skew search runs at. The angle of a page does not depend on its
+#: resolution, and searching 33 angles on a 5,000 px raster is seconds of
+#: pointless work per page.
+_DESKEW_SEARCH_WIDTH_PX = 1000
+
+
+def _estimate_skew_degrees(binary) -> float:
+    """Estimate a page's skew from its horizontal projection profile.
+
+    When text lines are horizontal, summing dark pixels across each row
+    produces sharp peaks at the lines and near-zero between them, so the
+    profile has high variance. Tilt the page and the lines smear across
+    rows, flattening the profile. So: rotate through candidate angles and
+    keep the one whose profile varies most.
+
+    Projection-profile rather than Hough: no OpenCV in this image, and this
+    needs only numpy plus PIL's rotate.
+    """
+    import numpy as np
+    from PIL import Image as PILImage
+
+    height, width = binary.shape
+    if width < 50 or height < 50:
+        return 0.0
+
+    # Search on a small copy. The angle is scale-invariant.
+    if width > _DESKEW_SEARCH_WIDTH_PX:
+        scale = _DESKEW_SEARCH_WIDTH_PX / width
+        small = PILImage.fromarray(binary).resize(
+            (_DESKEW_SEARCH_WIDTH_PX, max(1, int(height * scale))),
+            PILImage.BILINEAR,
+        )
+    else:
+        small = PILImage.fromarray(binary)
+
+    def _profile_variance(angle: float) -> float:
+        rotated = np.asarray(
+            small.rotate(angle, resample=PILImage.BILINEAR, fillcolor=0)
+        )
+        return float(rotated.sum(axis=1, dtype=np.float64).var())
+
+    # Upright is the incumbent, and a candidate has to beat it. Seeding the
+    # search with -infinity instead means a page with a FLAT profile — blank,
+    # or nearly so — is "won" by whichever angle happens to be tried first,
+    # and a blank page comes back needing 8 degrees of correction.
+    best_angle = 0.0
+    best_score = _profile_variance(0.0)
+
+    if best_score <= 0.0:
+        return 0.0  # nothing on the page to align
+
+    # 0.5 degree steps: finer than the resampling blur can reward, coarser
+    # than the search cost justifies.
+    angle = -_MAX_DESKEW_DEGREES
+    while angle <= _MAX_DESKEW_DEGREES + 1e-9:
+        score = _profile_variance(angle)
+        if score > best_score:
+            best_score, best_angle = score, angle
+        angle += 0.5
+
+    return best_angle
+
+
 def _preprocess_image_for_ocr(img):
     """Preprocess a page image to maximize Tesseract accuracy.
 
     Steps:
       1. Convert to grayscale
       2. Upscale small images (below 2000px width)
-      3. Adaptive thresholding (binarization) — handles uneven lighting from scanners
+      3. Binarize, for the skew estimate
       4. Deskew — straightens rotated scans
-      5. Denoise — removes scanner artifacts
+      5. Denoise — removes scanner speckle
+      6. Sharpen
+
+    All six of those used to be listed here and only two were implemented:
+    the function converted to grayscale, upscaled, computed a `binary` array
+    that was then discarded, carried a comment about denoising with no
+    denoise code, and applied one SHARPEN. There was no deskew anywhere in
+    the stack, and tesseract is invoked at every call site with `--psm 3`,
+    which assumes upright text. A 4-degree scan therefore had every line
+    straddling two text rows, and the output was fragmented tokens that
+    `_assess_ocr_result` correctly tiered `mandatory_review`.
 
     Returns a PIL Image ready for pytesseract.
     """
@@ -2662,37 +3260,46 @@ def _preprocess_image_for_ocr(img):
     except ImportError:
         return img  # numpy not available, return as-is
 
-    # Convert to grayscale
-    gray = img.convert('L')
+    from PIL import Image as PILImage
+    from PIL import ImageFilter
 
-    # Convert to numpy for OpenCV-style processing
+    gray = img.convert("L")
     arr = np.array(gray)
 
     # Upscale if too small (tesseract works best at 300+ DPI equivalent)
-    h, w = arr.shape
-    if w < 2000:
-        scale = 2000 / w
-        from PIL import Image as PILImage
-        gray = gray.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
+    height, width = arr.shape
+    if width < 2000:
+        scale = 2000 / width
+        gray = gray.resize((int(width * scale), int(height * scale)), PILImage.LANCZOS)
         arr = np.array(gray)
 
-    # Adaptive thresholding — binarize with local contrast
-    # Simple Otsu-style: pixels above mean+offset become white, rest black
-    mean_val = arr.mean()
-    threshold = mean_val * 0.85  # slightly below mean catches faint text
-    binary = ((arr < threshold) * 255).astype(np.uint8)  # dark text on white bg
-    binary = 255 - binary  # invert: white text areas become white bg, black text
+    # Binarize. Used for the skew estimate, NOT fed to tesseract — which
+    # does its own thresholding and does better on the grayscale original.
+    # This array used to be computed, inverted, and dropped on the floor.
+    threshold = arr.mean() * 0.85  # slightly below mean catches faint text
+    binary = ((arr < threshold) * 255).astype(np.uint8)  # dark text -> white
 
-    # Simple denoise: if a pixel is isolated (no dark neighbors), remove it
-    # This is a lightweight version of morphological opening
-    from PIL import Image as PILImage
-    from PIL import ImageFilter
-    result = PILImage.fromarray(arr)  # use grayscale (not binary) for Tesseract
+    try:
+        skew = _estimate_skew_degrees(binary)
+    except Exception:  # noqa: BLE001 — a page must not fail to OCR over this
+        skew = 0.0
+
+    result = gray
+    if abs(skew) >= _MIN_DESKEW_DEGREES:
+        # White fill: the corners exposed by the rotation must read as page,
+        # not as a black border tesseract will try to interpret.
+        result = result.rotate(
+            skew, resample=PILImage.BICUBIC, fillcolor=255, expand=True,
+        )
+        logger.debug("pdf_report: deskewed page by %.1f degrees", skew)
+
+    # Real denoise, replacing the comment that described one. A 3x3 median
+    # removes isolated scanner speckle while leaving stroke edges alone —
+    # which is what morphological opening was meant to approximate.
+    result = result.filter(ImageFilter.MedianFilter(size=3))
 
     # Sharpen to improve edge definition
-    result = result.filter(ImageFilter.SHARPEN)
-
-    return result
+    return result.filter(ImageFilter.SHARPEN)
 
 
 def _postprocess_ocr_text(text: str) -> str:
@@ -2773,47 +3380,6 @@ def _postprocess_ocr_text(text: str) -> str:
     return text.strip()
 
 
-def _ocr_page_confidence(text: str) -> float:
-    """Estimate OCR confidence for a page based on text quality heuristics.
-
-    Returns 0.0–1.0 where:
-      1.0 = clean text, mostly real words
-      0.0 = garbage (random characters, no recognizable words)
-
-    Heuristics:
-      - Ratio of alphabetic chars to total chars (garbage has lots of symbols)
-      - Average word length (OCR garbage produces very short/long "words")
-      - Presence of common English words
-    """
-    if not text.strip():
-        return 0.0
-
-    import re
-
-    # Alphabetic ratio
-    alpha_chars = sum(1 for c in text if c.isalpha())
-    total_chars = len(text.replace(' ', '').replace('\n', ''))
-    alpha_ratio = alpha_chars / max(total_chars, 1)
-
-    # Average word length (good text: 3-8 chars average)
-    words = re.findall(r'\b\w+\b', text)
-    if not words:
-        return 0.0
-    avg_len = sum(len(w) for w in words) / len(words)
-    length_score = 1.0 if 3 <= avg_len <= 8 else 0.5
-
-    # Common word presence
-    common_words = {'the', 'and', 'for', 'are', 'was', 'with', 'that', 'this',
-                    'from', 'have', 'been', 'were', 'project', 'report', 'drill',
-                    'mineral', 'resource', 'deposit', 'section'}
-    found = sum(1 for w in words if w.lower() in common_words)
-    common_ratio = min(1.0, found / max(len(words) * 0.05, 1))
-
-    # Weighted confidence
-    confidence = (alpha_ratio * 0.4) + (length_score * 0.3) + (common_ratio * 0.3)
-    return round(min(1.0, confidence), 2)
-
-
 def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     """Full-document OCR via Azure Document Intelligence, one call per page.
 
@@ -2870,14 +3436,65 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     # the serial version.
     _ocr_concurrency = max(1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4")))
 
+    # Batching 2026-08-20 — concurrency alone only hid the round-trip cost;
+    # it didn't remove it. Document Intelligence analyzes a multi-page PDF
+    # in one request (the one-page-per-request shape is a leftover from the
+    # F0 tier's 2-page limit), so this pass asks for blocks first and only
+    # falls back to per-page work for pages a block couldn't answer. On a
+    # 200-page scan at the default block size that is 8 submissions instead
+    # of 200. AZURE_DI_PAGES_PER_BATCH=1 disables it.
+    from . import document_intelligence_client as _di_mod
+
+    _block_size = _di_mod.pages_per_batch()
+    _batched: dict[int, Any] = {}
+    if _block_size > 1:
+        _plan = _di_block_plan(total_pages, _block_size)
+        logger.info(
+            "pdf_report: document_intelligence batching %d pages into %d "
+            "block(s) of up to %d",
+            total_pages, len(_plan), _block_size,
+        )
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(_ocr_concurrency, len(_plan)))
+        ) as _block_executor:
+            for _mapping in _block_executor.map(
+                lambda block: _ocr_page_block_di(path, block[0], block[1]), _plan
+            ):
+                _batched.update(_mapping)
+        _batched_hits = sum(1 for _r in _batched.values() if _r.text.strip())
+        logger.info(
+            "pdf_report: document_intelligence batch pass resolved %d/%d "
+            "pages; %d page(s) need individual handling",
+            _batched_hits, total_pages, total_pages - _batched_hits,
+        )
+
     def _ocr_one(page_num: int):
         try:
+            batched = _batched.get(page_num)
+            if batched is not None and batched.text.strip():
+                assessment = _assess_ocr_result(
+                    batched.text,
+                    [word.confidence for word in batched.words]
+                    or [batched.mean_confidence],
+                    detected_region_count=batched.detected_region_count,
+                    ocr_method="document_intelligence",
+                )
+                return page_num, (
+                    batched.text,
+                    batched.mean_confidence,
+                    assessment,
+                    list(batched.tables),
+                ), None
             return page_num, _ocr_single_page(
                 path,
                 page_num,
                 return_confidence=True,
                 return_assessment=True,
                 return_tables=True,
+                # The block already asked DI about this page and got
+                # nothing; skip the duplicate billed request and start at
+                # the raster-tile escalation instead.
+                skip_di_page_request=page_num in _batched,
             ), None
         except Exception as exc:  # noqa: BLE001
             # Fail soft per page, matching ocr_page_sync's own contract: one
@@ -2892,10 +3509,25 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
 
     for page_num, _outcome, _exc in _ocr_results:
         if _outcome is None:
-            logger.warning(
-                "pdf_report: document_intelligence OCR failed on page %d of "
-                "'%s': %s", page_num, path, _exc,
+            # Second of the two call sites that swallowed a configuration
+            # error as though it were a page-level OCR failure. See the
+            # handler in _ocr_page_di for the reasoning.
+            from app.services.ingest.document_intelligence_client import (  # noqa: PLC0415
+                DocumentIntelligenceNotConfigured,
             )
+
+            if isinstance(_exc, DocumentIntelligenceNotConfigured):
+                logger.critical(
+                    "pdf_report: OCR_ENGINE selects Document Intelligence but "
+                    "it is not configured (%s). EVERY page falls back to "
+                    "tesseract, which extracts no tables.",
+                    _exc,
+                )
+            else:
+                logger.warning(
+                    "pdf_report: document_intelligence OCR failed on page %d of "
+                    "'%s': %s", page_num, path, _exc,
+                )
             page_text, mean_confidence, assessment, page_tables = (
                 "", 0.0, _assess_ocr_result("", [], detected_region_count=0), [],
             )
@@ -3093,8 +3725,8 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
                 cleaned,
                 word_confidences,
                 detected_region_count=detected_region_count,
+                ocr_method="tesseract",
             )
-            assessment["ocr_method"] = "tesseract"
             page_attempts.append(
                 OcrPageAttempt(
                     page_number=i + 1,
@@ -3396,6 +4028,9 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
 
     if not full_text.strip():
         logger.warning("pdf_report: extracted text is empty for '%s'", path)
+        _budget_warning = _di_budget_warning(path)
+        if _budget_warning is not None:
+            extraction_warnings.append(_budget_warning)
         return ReportParseResult(
             title=raw_title or Path(path).stem,
             authors=[],
@@ -3458,6 +4093,45 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         _span.set_attribute("pdf.subsections", subsection_count)
         _span.set_attribute("pdf.parse_quality_pct", parse_quality_pct)
 
+        # The number `parse_quality_pct` is mistaken for.
+        #
+        # `parse_quality_pct` is NI 43-101 heading coverage — it answers
+        # "does this document have the shape of a technical report", not
+        # "did we get the content". A 1970s government geophysics survey
+        # extracted flawlessly scores 0.0 because it has no numbered
+        # sections; a report whose TOC yielded 17 headings while 300 pages
+        # OCR'd to nothing scores 1.0.
+        #
+        # This is the extraction question, and `per_page_text` is already
+        # in hand. Reported rather than stored: giving it a column is a
+        # migration, and giving it the RIGHT column means renaming
+        # parse_quality_pct to ni43101_section_coverage_pct along with
+        # every reader. Both are follow-ups. Having the two numbers side
+        # by side in one log line is what makes the difference visible at
+        # all.
+        # per_page_text is list[tuple[page_number, text]], not list[str].
+        _pages_total = len(per_page_text) if per_page_text else 0
+        _pages_with_text = sum(
+            1 for _page_num, _text in (per_page_text or []) if _text and _text.strip()
+        )
+        text_page_coverage = (
+            round(_pages_with_text / _pages_total, 4) if _pages_total else 0.0
+        )
+        _span.set_attribute("pdf.pages_total", _pages_total)
+        _span.set_attribute("pdf.pages_with_text", _pages_with_text)
+        _span.set_attribute("pdf.text_page_coverage", text_page_coverage)
+
+        if _pages_total and text_page_coverage < 0.5 <= parse_quality_pct:
+            # The dangerous combination, and the reason the two numbers
+            # belong in the same place: the report LOOKS well parsed and
+            # more than half its pages produced nothing.
+            logger.warning(
+                "pdf_report: section coverage %.0f%% but only %d of %d pages "
+                "produced text — parse_quality_pct measures NI 43-101 "
+                "headings, not extraction; this document is largely empty",
+                parse_quality_pct * 100, _pages_with_text, _pages_total,
+            )
+
     # Extraction confidence: combines section coverage + text length + metadata completeness
     metadata_fields = sum(1 for v in [title, authors, company, filing_date, commodity, project_name, region] if v)
     extraction_confidence = min(1.0, (
@@ -3466,10 +4140,12 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         (metadata_fields / 7) * 0.2                        # metadata completeness (20%)
     ))
     logger.info(
-        "pdf_report: extraction_confidence=%.2f (quality=%.1f%%, text=%d chars, "
+        "pdf_report: extraction_confidence=%.2f (ni43101_section_coverage=%.1f%%, "
+        "text_page_coverage=%.1f%% [%d/%d pages], text=%d chars, "
         "metadata=%d/7, subsections=%d)",
-        extraction_confidence, parse_quality_pct * 100, len(full_text),
-        metadata_fields, subsection_count,
+        extraction_confidence, parse_quality_pct * 100,
+        text_page_coverage * 100, _pages_with_text, _pages_total,
+        len(full_text), metadata_fields, subsection_count,
     )
 
     logger.info(
@@ -3570,6 +4246,13 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                 len(di_table_sections), len(per_page_tables), Path(path).name,
             )
             sections.extend(di_table_sections)
+
+    # The DI page budget is cost control, not a failure — but a document
+    # whose tail was read by a weaker engine has to say so on the way out,
+    # or the two halves are indistinguishable downstream.
+    _budget_warning = _di_budget_warning(path)
+    if _budget_warning is not None:
+        extraction_warnings.append(_budget_warning)
 
     return ReportParseResult(
         title=title or None,

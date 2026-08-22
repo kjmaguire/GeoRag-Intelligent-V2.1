@@ -585,6 +585,22 @@ class ReportController extends Controller
      * the report header. record_type filtered to the two document-scoped
      * values (document_chunk + table_extraction) per ADR-0010 §6a.
      *
+     * NO LIVE WRITER (measured 2026-08-21).
+     *
+     * `silver.data_quality_flags` is written only by
+     * src/dagster/georag_dagster/dq_writer.py. Dagster went dormant on
+     * 2026-07-28 and has no container app in the Azure resource group, so
+     * this table is empty in production and everything below returns zero.
+     *
+     * This is the third read-against-an-unwritten-table in this codebase:
+     * SourcesController (2026-08-17) and this controller's own passage
+     * lookup (2026-08-18) both joined bronze.provenance for rows the live
+     * ingest path never writes. Both were found as UI regressions rather
+     * than caught in review.
+     *
+     * src/fastapi/tests/test_data_quality_flags_have_no_live_writer.py
+     * fails once a writer appears, and names this comment.
+     *
      * @return array{counts: array<string, int>, open_total: int, flags: array<int, array<string, mixed>>}
      */
     private function dataQualityFlagSummary(string $reportId, string $workspaceId): array

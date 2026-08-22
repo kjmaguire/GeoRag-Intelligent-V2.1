@@ -1,4 +1,35 @@
-"""CSV drillhole-collar ingester for the ``ingest_zip_archive`` workflow.
+"""CSV drillhole-collar ingester -- NO PRODUCTION CALLERS as of 2026-08-21.
+
+.. warning::
+
+   ``ingest_csv_collar_file`` is not called from anywhere in ``app/``. A
+   repo-wide grep finds only this module's own definition, its ``__all__``
+   entry, and a comment in ingest_zip_archive.py explaining the removal.
+   The only exercise it gets is tests/test_csv_collar_ingester.py.
+
+   The ``.csv`` branch of ``ingest_zip_archive._ingest_one`` used to call it
+   unconditionally. That branch now routes .csv/.tsv/.xlsx to
+   ``ingest_tabular`` instead, because this ingester handles COLLARS ONLY
+   and requires hole_id/easting/northing: zip a hole's full dataset --
+   collars.csv, survey.csv, lithology.csv, assays.csv -- and only
+   collars.csv landed. The other three returned
+   ``skipped_reason="missing_required_columns"``, which increments
+   ``counts["skipped"]`` rather than ``counts["errors"]``, so the archive
+   was still marked completed and reported four files succeeded.
+   ``ingest_tabular`` classifies the header and routes to silver.collars,
+   silver.surveys, silver.lithology_logs or silver.samples as appropriate,
+   via the ``georag_geoparsers`` parsers -- a different code path from this
+   module, so nothing here is reached on that route either.
+
+   KEPT rather than deleted pending a decision: Laravel's
+   ``UploadController`` still 422s ``category=collar``/``category=assay``
+   uploads, and if that direct-upload path is restored this module is the
+   obvious thing to wire it to. If that is not the plan, delete this file
+   and its two test modules rather than leaving 745 lines that look live.
+
+Original docstring follows.
+
+CSV drillhole-collar ingester for the ``ingest_zip_archive`` workflow.
 
 Restores a CSV ingestion path after the Dagster retirement
 (2026-07-28 — see MEMORY.md "Kestra retirement" / dagster-drop era)

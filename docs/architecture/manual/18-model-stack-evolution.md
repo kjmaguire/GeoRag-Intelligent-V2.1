@@ -192,10 +192,18 @@ adds two columns to `audit.query_audit_log`:
 - `context_precision_score REAL` — fraction of retrieved passages that
   were relevant.
 
-Populated by the new **`score_answer_quality` Hatchet workflow**
-([score_answer_quality.py](../../../src/fastapi/app/hatchet_workflows/score_answer_quality.py)).
-NULL = not yet scored. This is RAGAS-style continuous quality
-measurement on real production traffic.
+**Not populated by anything.** These were written by the
+`score_answer_quality` Hatchet workflow, which was deleted in 09d1d35
+(2026-07-27). Both columns are NULL on every row and will stay NULL.
+The migration comment still says "NULL = not yet scored", which reads
+as scoring being in progress rather than removed — treat a NULL here
+as "never measured". A `WHERE faithfulness_score < x` filter returns
+zero rows, which looks like "no low-faithfulness answers" and is the
+opposite of the truth.
+
+There is no RAGAS-style continuous quality measurement on production
+traffic. Restoring one means restoring a judge that writes these
+columns; until then they should be read as dead.
 
 ## 7. Project lifecycle states (CC-03 Item 8 — LANDED)
 

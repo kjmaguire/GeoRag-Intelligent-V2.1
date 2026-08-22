@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import UTC, datetime
 
 import aioboto3
@@ -46,6 +45,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.backup_seaweedfs")
@@ -80,20 +80,30 @@ class BackupSeaweedFsOutput(BaseModel):
     completed_at: datetime
 
 
+# No cron. This copies every object from the bronze bucket into the backups
+# bucket — in the SAME storage account — so it never protected against losing
+# the account, only against deleting an object. On Azure that job is now done
+# properly and for free by the storage service itself: georagblobcc carries
+# 30-day blob soft delete, 30-day container soft delete and versioning, with a
+# lifecycle rule expiring non-current versions at 90 days (enabled 2026-08-21).
+#
+# Running this nightly on top of that would roughly double the cost of the
+# document corpus to buy protection we already have. It stays here, manually
+# triggerable, because a deliberate full-corpus snapshot before a risky
+# migration is still a reasonable thing to want.
+#
+# What is NOT covered by either, and is still open: loss of the storage
+# account itself. That needs object replication to a second account, or
+# ZRS/GRS — georagblobcc is Standard_LRS today.
 backup_seaweedfs = hatchet.workflow(
     name="backup_seaweedfs",
-    on_crons=["0 3 * * *"],
     input_validator=BackupSeaweedFsInput,
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 def _snapshot_prefix(prefix: str, run_id: str, when: datetime) -> str:

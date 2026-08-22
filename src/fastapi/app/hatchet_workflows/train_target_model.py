@@ -25,7 +25,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -36,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 
@@ -77,13 +77,9 @@ class TrainTargetModelOutput(BaseModel):
     failure_reason: str | None = None
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 train_target_model = hatchet.workflow(
@@ -261,8 +257,10 @@ async def execute(
         )
 
         version_id = uuid4()
+        # Dedicated asyncpg.connect(), no wrapping transaction.
         await bind_workspace_scope(
-            conn, workspace_id=workspace_id, site="hatchet.train_target_model"
+            conn, workspace_id=workspace_id,
+            site="hatchet.train_target_model", is_local=False,
         )
         await conn.execute(
             """

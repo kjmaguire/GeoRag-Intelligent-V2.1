@@ -79,7 +79,12 @@ class NrcanGeoPullOutput(BaseModel):
 
 nrcan_geo_pull = hatchet.workflow(
     name="nrcan_geo_pull",
-    on_crons=["0 7 1 * *"],
+    # Moved 2026-08-21: 16:30 UTC on the 1st — 07:00 was inside the shutdown window.
+    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
+    # scales hatchet-worker-cc to zero and both DST candidate hours of
+    # each sweep count as closed. See
+    # tests/test_crons_avoid_the_shutdown_window.py.
+    on_crons=["30 16 1 * *"],
     input_validator=NrcanGeoPullInput,
 )
 

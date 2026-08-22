@@ -10,6 +10,7 @@ use App\Jobs\GenerateExportJob;
 use App\Models\Export;
 use App\Models\Project;
 use App\Services\StorageService;
+use App\Support\PaginationLimit;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -51,7 +52,7 @@ class ExportController extends Controller
 
             $exports = Export::where('project_id', $project->project_id)
                 ->orderByDesc('created_at')
-                ->paginate($request->integer('per_page', 20));
+                ->paginate(PaginationLimit::clamp($request, 20));
 
             return response()->json($exports);
         } catch (ModelNotFoundException) {

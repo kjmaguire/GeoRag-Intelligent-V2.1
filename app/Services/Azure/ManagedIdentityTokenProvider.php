@@ -37,6 +37,20 @@ class ManagedIdentityTokenProvider
     private const CACHE_KEY = 'azure:msi_token:storage';
 
     /**
+     * Companion key holding the absolute expiry (unix seconds) of whatever
+     * token CACHE_KEY currently holds.
+     *
+     * Callers that cache something built AROUND the token — the Azure blob
+     * disk does, because microsoft/azure-storage-blob takes the bearer as a
+     * constructor string and offers no way to refresh it — need to know
+     * when their copy goes stale. Without this they cannot tell, and the
+     * careful early-refresh below is wasted on them: they ask once, hold
+     * the answer forever, and start getting 401s at a time nothing here
+     * can observe.
+     */
+    private const EXPIRY_CACHE_KEY = 'azure:msi_token:storage:expires_at';
+
+    /**
      * Returns a valid bearer token, fetching a fresh one if the cached
      * token is missing or within 5 minutes of its actual expiry (tokens
      * are typically valid ~24h; refreshing early avoids a request failing
@@ -44,9 +58,26 @@ class ManagedIdentityTokenProvider
      */
     public function getToken(): string
     {
+        return $this->getTokenWithExpiry()[0];
+    }
+
+    /**
+     * The bearer token and the unix timestamp after which it must not be
+     * used.
+     *
+     * The expiry is the cache TTL boundary, not the raw `expires_on` from
+     * Azure: it already has the 5-minute safety margin subtracted, so a
+     * caller holding a derived object can treat it as "rebuild at or after
+     * this instant" without redoing that arithmetic.
+     *
+     * @return array{0: string, 1: int}
+     */
+    public function getTokenWithExpiry(): array
+    {
         $cached = Cache::get(self::CACHE_KEY);
-        if (is_string($cached) && $cached !== '') {
-            return $cached;
+        $cachedExpiry = Cache::get(self::EXPIRY_CACHE_KEY);
+        if (is_string($cached) && $cached !== '' && is_int($cachedExpiry)) {
+            return [$cached, $cachedExpiry];
         }
 
         $endpoint = (string) env('IDENTITY_ENDPOINT');
@@ -79,8 +110,12 @@ class ManagedIdentityTokenProvider
         }
 
         $ttl = max(60, $expiresOn - time() - 300);
+        $expiresAt = time() + $ttl;
         Cache::put(self::CACHE_KEY, $token, $ttl);
+        // Same TTL, so the two keys expire together and a caller can never
+        // read a token without its expiry or vice versa.
+        Cache::put(self::EXPIRY_CACHE_KEY, $expiresAt, $ttl);
 
-        return $token;
+        return [$token, $expiresAt];
     }
 }

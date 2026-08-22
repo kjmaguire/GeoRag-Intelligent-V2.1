@@ -159,6 +159,25 @@ def _classify_warning(warning: str) -> GuardErrorCode | None:
 # ---------------------------------------------------------------------------
 
 
+def _drop_sentinel_citations(citations: list[Any] | None) -> list[Any]:
+    """Citations that stand for real evidence.
+
+    `no-tool-call` and its siblings are placeholders the assembler adds so
+    the response type's min_length=1 is satisfied when nothing was
+    retrieved. Counting them as citations is what made the empty-citations
+    branch below dead code.
+    """
+    if not citations:
+        return []
+
+    from app.agent.response_assembler import EMPTY_SOURCE_SENTINELS  # noqa: PLC0415
+
+    return [
+        c for c in citations
+        if getattr(c, "source_chunk_id", None) not in EMPTY_SOURCE_SENTINELS
+    ]
+
+
 def classify_guards(
     *,
     validation_warnings: list[str] | None = None,
@@ -167,6 +186,7 @@ def classify_guards(
     response_citations: list[Any] | None = None,
     citation_lifecycle_state: str | None = None,
     conflicting_evidence_present: bool = False,
+    text_has_markers: bool | None = None,
 ) -> list[GuardErrorCode]:
     """Classify the agentic-retrieval state into typed guard codes.
 
@@ -224,16 +244,32 @@ def classify_guards(
             seen[GuardErrorCode.NO_EVIDENCE_FOUND] = None
 
     # 3. Citation-completeness. Only fires when the caller EXPLICITLY
-    # passes a signal — either an empty `response_citations` list, OR
-    # `citation_lifecycle_state == "rejected"`. `None` means the caller
-    # didn't pass that field; no inference.
+    # passes a signal; `None` means the caller didn't pass that field.
+    #
+    # Three ways this fails, and the first two used to be unreachable:
+    #
+    #   * No citations at all. assemble_response always appends a
+    #     `no-tool-call` placeholder to satisfy GeoRAGResponse's
+    #     min_length=1, so `len(response_citations) == 0` was never true in
+    #     production. Sentinel-only counts as none.
+    #   * Citations exist but the answer carries no markers — nothing is
+    #     mapped to anything. The assembler used to hide this by stapling
+    #     every marker onto the last sentence.
+    #   * The Module 6 citation lifecycle rejected them.
     cite_signal_provided = (
-        response_citations is not None or citation_lifecycle_state is not None
+        response_citations is not None
+        or citation_lifecycle_state is not None
+        or text_has_markers is not None
     )
     if cite_signal_provided:
-        no_citations = response_citations is not None and len(response_citations) == 0
+        real_citations = _drop_sentinel_citations(response_citations)
+        no_citations = response_citations is not None and len(real_citations) == 0
+        unanchored = text_has_markers is False and bool(real_citations)
         rejected = citation_lifecycle_state == "rejected"
-        if (no_citations or rejected) and GuardErrorCode.CITATION_INCOMPLETE not in seen:
+        if (
+            (no_citations or unanchored or rejected)
+            and GuardErrorCode.CITATION_INCOMPLETE not in seen
+        ):
             seen[GuardErrorCode.CITATION_INCOMPLETE] = None
 
     # 4. Conflicting-sources signal from the assemble step.

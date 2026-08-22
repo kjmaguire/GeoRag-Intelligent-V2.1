@@ -137,7 +137,7 @@ to L40S 48 GB or A100 80 GB.
 ### Production (32c / 128 GB / L40S, RAID-1 NVMe)
 
 - **6-8 sustained concurrent users** at p95 < 5s (assuming shared_buffers
-  tuning per `ops/runbooks/datastore-tuning.md`).
+  tuning per `ops/runbooks/_archived/datastore-tuning.md`).
 - **15-20 concurrent users** burst.
 
 The per-tenant capacity is similar to dev because the LLM is the bottleneck.

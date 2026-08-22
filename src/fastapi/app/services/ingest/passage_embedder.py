@@ -54,6 +54,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import PointStruct, SparseVector
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.services.qdrant_conn import qdrant_client_kwargs
 
 log = logging.getLogger("georag.ingest.passage_embedder")
@@ -70,7 +71,29 @@ _QDRANT_COLLECTION = "georag_chunks"
 # silent schema/serialization corruption like the 2026-06-01 outage
 # where every canonical writer 400ed on the missing sparse "text" slot
 # and the system silently degraded to minimal payloads).
-_REQUIRED_PAYLOAD_KEYS = ("text", "report_id", "workspace_id")
+# Unconditional: without these the point is unusable no matter what it is.
+_REQUIRED_PAYLOAD_KEYS = ("text", "workspace_id")
+
+# `report_id` is required only for a passage that HAS a parent document.
+#
+# It used to be unconditional, and the orphan pass exists specifically to
+# embed passages where document_id IS NULL — public_geo_synthesis,
+# kg_narrative and structured_summary chunks, which are syntheses rather than
+# extracts and have no report to point at. So the first orphan row raised
+# `payload_contract_violated` and aborted the entire per-workspace call; the
+# error was appended to an errors list nothing alerts on, and those passages
+# stayed unembedded on every ten-minute tick, forever. They are invisible to
+# the orphan_sweep recovery layer too, whose SELECT INNER JOINs
+# silver.reports.
+#
+# The check still catches the failure it was built for — a writer dropping a
+# report_id it HAD — because a row with a document_id must still carry one.
+_REQUIRED_WHEN_PARENTED = ("report_id",)
+
+# A citation needs something to name the source. A parented passage gets it
+# from the report; an orphan has to bring its own, or it reaches the reader
+# as "Report " with nothing after it.
+_ORPHAN_TITLE_KEYS = ("document_title", "section_title", "project_name")
 
 
 @dataclass
@@ -98,12 +121,9 @@ def _passage_to_point_id(passage_id: str) -> str:
     return str(passage_id)
 
 
-def _dsn() -> str:
-    return (
-        f"postgres://{os.environ['POSTGRES_USER']}:{os.environ['POSTGRES_PASSWORD']}"
-        f"@{os.environ.get('POSTGRES_DIRECT_HOST', 'postgresql')}:5432/"
-        f"{os.environ.get('POSTGRES_DB', 'georag')}"
-    )
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 def load_embedding_model():
@@ -269,8 +289,19 @@ async def embed_pending_passages(
             # means the quality agent has queued a replacement (the row
             # gets re-embedded once it flips to 'reocr_complete');
             # 'rejected' is forward-compat. 'low_confidence' passages ARE
-            # embedded — retrieval down-weights them via the ocr_status
-            # payload field below instead of losing them entirely.
+            # embedded, because on a corpus of 1960s scans the flagged page
+            # is sometimes the only page that mentions the thing at all.
+            #
+            # This comment claimed retrieval down-weighted them "via the
+            # ocr_status payload field below". It was written aspirationally
+            # and stayed wrong for months: the field WAS written to the
+            # payload, and nothing read it — DocumentChunk had no ocr_status
+            # attribute, so a page the router had tiered unreadable competed
+            # on equal footing and reached the model unmarked. True as of
+            # 2026-08-21: agent/tools.py reads ocr_status onto the chunk,
+            # sorts flagged pages below clean ones, and DocumentChunk.
+            # annotated_text prefixes them with an explicit warning before
+            # they enter the context window.
             "   AND (dp.ocr_status IS NULL "
             "        OR dp.ocr_status NOT IN ('rejected', 'pending_reocr')) "
         )
@@ -491,7 +522,27 @@ async def embed_pending_passages(
                 # programmer error (the writer dropped a key it shouldn't have);
                 # the right move is to abort the whole run loudly rather than
                 # quietly ship points the retrieval layer can't use.
-                _missing_keys = [k for k in _REQUIRED_PAYLOAD_KEYS if k not in payload or payload[k] in (None, "")]
+                def _absent(key: str) -> bool:
+                    return key not in payload or payload[key] in (None, "")
+
+                _required = list(_REQUIRED_PAYLOAD_KEYS)
+                if not _absent("report_id"):
+                    # Has a parent — hold it to the parented contract.
+                    _required.extend(_REQUIRED_WHEN_PARENTED)
+                elif all(_absent(k) for k in _ORPHAN_TITLE_KEYS):
+                    # A genuine orphan, but with nothing to name it by. Let
+                    # it through and say so rather than aborting the run:
+                    # an unnamed synthesis chunk is still better retrieval
+                    # than a passage that is never embedded at all, and the
+                    # citation falls back to the section label.
+                    log.warning(
+                        "embed_pending: orphan passage %s has no document_id "
+                        "and no title/section/project to cite it by — its "
+                        "citation will be unnamed.",
+                        row["passage_id"],
+                    )
+
+                _missing_keys = [k for k in _required if _absent(k)]
                 if _missing_keys:
                     raise RuntimeError(
                         f"embed_pending.payload_contract_violated: passage "

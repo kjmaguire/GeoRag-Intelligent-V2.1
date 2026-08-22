@@ -11,15 +11,19 @@
         <link rel="preconnect" href="https://fonts.bunny.net">
         <link href="https://fonts.bunny.net/css?family=figtree:400,500,600&display=swap" rel="stylesheet" />
 
-        <!-- Map tile server preconnect — eliminates DNS + TLS handshake latency
+        {{-- Map tile server preconnect — eliminates DNS + TLS handshake latency
              on first tile request. These connections are established in parallel
-             with page load so they're warm by the time MapView renders. -->
-        <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
-        <link rel="preconnect" href="https://tiles.maps.eox.at" crossorigin>
-        <link rel="preconnect" href="https://tiles.mapterhorn.com" crossorigin>
-        <link rel="dns-prefetch" href="https://tiles.openfreemap.org">
-        <link rel="dns-prefetch" href="https://tiles.maps.eox.at">
-        <link rel="dns-prefetch" href="https://tiles.mapterhorn.com">
+             with page load so they're warm by the time MapView renders.
+
+             Derived from config('services.basemap') rather than listed: these
+             were three literals naming hosts that a repointed deployment does
+             not use, and two of them named hosts the CSP did not allow, so the
+             page warmed a connection the browser would then refuse to fetch
+             over. One source of truth for what the maps talk to. --}}
+        @foreach (\App\Support\BasemapAssets::origins() as $host)
+            <link rel="preconnect" href="{{ $host }}" crossorigin>
+            <link rel="dns-prefetch" href="{{ $host }}">
+        @endforeach
 
         <!-- Scripts -->
         @viteReactRefresh

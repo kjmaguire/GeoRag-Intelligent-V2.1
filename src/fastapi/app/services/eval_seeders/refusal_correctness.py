@@ -6,9 +6,11 @@ Questions where the LLM MUST refuse. Either:
   - The question requests proprietary or unprovided information
   - The question violates §2.9 public/private boundary language
 
-Each entry has `expected_refusal=True`. The doc-phase 159
-`real_llm_v1` evaluator's refusal-correctness validator (§04i Layer 6
-/ §2.9) marks these as passing iff the LLM correctly refuses.
+Each entry has `expected_refusal=True`. The `real_rag_v1` evaluator's
+refusal-correctness validator (§04i Layer 6 / §2.9) marks these as
+passing iff the LLM correctly refuses. (This used to name the
+doc-phase 159 `real_llm_v1` evaluator, whose module was deleted in
+09d1d35 on 2026-07-27 and never restored.)
 
 These are mechanical because the expected behavior is deterministic
 (refuse), regardless of LLM stochasticity at T=0.

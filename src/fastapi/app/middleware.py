@@ -128,8 +128,14 @@ class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
                          `--proxy-headers --forwarded-allow-ips` is set)
 
     The X-Request-ID is added to the response so callers can correlate
-    their client-side logs with our server-side logs. Laravel's
-    `StreamQueryFromFastApi` already forwards the inbound header.
+    their client-side logs with our server-side logs.
+
+    Laravel's `StreamQueryFromFastApi` forwards `traceparent` and
+    `X-Request-ID` (the query id) since 2026-08-21. Before that it sent
+    neither — this docstring claimed it did, which is exactly why nobody
+    noticed that every chat request got a freshly minted, unrelated trace
+    id here. If you are debugging a missing join key, check the header
+    array in that job rather than trusting this paragraph.
     """
 
     async def dispatch(self, request: Request, call_next):

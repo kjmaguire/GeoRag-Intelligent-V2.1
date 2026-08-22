@@ -392,17 +392,46 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                 className="grid grid-cols-2 sm:grid-cols-4 gap-px px-8 py-5"
                 style={{ background: 'var(--line-1)' }}
             >
-                <Stat label="ACCEPTED" value={String(totals.accepted)} tone="accent" />
+                {/* These four count silver.review_queue rows. That table has
+                    one writer (ingest_pdf) and no consumer: nothing moves a
+                    row's lifecycle off 'pending', and no triage surface
+                    exists. The labels used to say "needs review" and
+                    "Tier-2 pipeline", which named a review a user cannot
+                    perform and a pipeline that does not run — so the honest
+                    reading of a rising number was unavailable to anyone
+                    looking at it. Say what the number is and what to do. */}
+                <Stat
+                    label="ACCEPTED"
+                    value={String(totals.accepted)}
+                    tone="accent"
+                    title="Pages whose OCR confidence cleared the auto-accept threshold. These are indexed and retrievable by chat."
+                />
                 <Stat
                     label="FLAGGED"
                     value={String(totals.flagged)}
-                    sub={totals.flagged > 0 ? 'needs review' : 'clean'}
+                    sub={totals.flagged > 0 ? 'held back' : 'clean'}
+                    title={
+                        'Pages held back from indexing because OCR confidence '
+                        + 'was too low to trust. There is no triage queue yet — '
+                        + 'a cleaner scan of the same document is the way to '
+                        + 'recover them.'
+                    }
                 />
-                <Stat label="REJECTED" value={String(totals.rejected)} />
+                <Stat
+                    label="REJECTED"
+                    value={String(totals.rejected)}
+                    title="Pages the ingest pipeline refused outright — unreadable, or no extractable text at all."
+                />
                 <Stat
                     label="AWAITING OCR"
                     value={String(totals.awaiting_ocr)}
-                    sub="Tier-2 pipeline"
+                    sub={totals.awaiting_ocr > 0 ? 'no triage queue yet' : 'none'}
+                    title={
+                        'Pages routed to review rather than indexed. Nothing '
+                        + 'currently drains this queue, so the count only '
+                        + 'grows — it measures how much of the corpus chat '
+                        + 'cannot see, not work in progress.'
+                    }
                 />
             </section>
 

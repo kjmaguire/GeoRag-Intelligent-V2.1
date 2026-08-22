@@ -30,7 +30,6 @@ import argparse
 import asyncio
 import hashlib
 import logging
-import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ from dataclasses import dataclass
 import asyncpg
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 
 log = logging.getLogger("georag.ingest.derive")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -323,13 +323,8 @@ async def _emit_for_collar(
 
 
 async def derive_project(project_id: str) -> dict:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
     conn = await asyncpg.connect(
-        f"postgres://{user}:{password}@{host}:{port}/{db}",
+        build_dsn(),
         statement_cache_size=0,
     )
     try:
@@ -340,8 +335,16 @@ async def derive_project(project_id: str) -> dict:
         if not workspace_id:
             raise RuntimeError(f"project_id {project_id} not found")
 
-        await bind_workspace_scope(conn, workspace_id=workspace_id, site="ingest.derive_intervals")
-        await bind_workspace_scope(conn, workspace_id=workspace_id, site="ingest.derive_intervals")
+        # is_local=False, and called ONCE. It was called twice,
+        # transaction-scoped, on a dedicated asyncpg.connect() with no
+        # transaction -- while the very next line binds app.project_id
+        # SESSION-scoped on the same connection. Session scope was already
+        # understood to be right here; workspace_id never got the same
+        # treatment, so it evaporated.
+        await bind_workspace_scope(
+            conn, workspace_id=workspace_id, site="ingest.derive_intervals",
+            is_local=False,
+        )
         await conn.execute("SELECT set_config('app.project_id', $1, false)", project_id)
 
         collars = await conn.fetch(

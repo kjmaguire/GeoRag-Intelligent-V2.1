@@ -103,7 +103,7 @@ class DrillholeDetailController extends Controller
             );
 
             $lithologyQuality = $this->lithologyQualityCounters($collarId);
-            $dqFlags = $this->dataQualityFlagSummary($collarId);
+            $dqFlags = $this->dataQualityFlagSummary($collarId, $project->project_id);
 
             return Inertia::render('Foundry/DrillholeDetail', [
                 'project' => [
@@ -144,9 +144,44 @@ class DrillholeDetailController extends Controller
      * RLS guarantees we don't surface flags from another workspace
      * even if the controller is reused with a different slug.
      *
-     * @return array{counts: array<string, int>, open_total: int, flags: array<int, array<string, mixed>>}
+     * NO LIVE WRITER (measured 2026-08-21).
+     *
+     * `silver.data_quality_flags` is written only by
+     * src/dagster/georag_dagster/dq_writer.py. Dagster went dormant on
+     * 2026-07-28 and has no container app in the Azure resource group, so
+     * this table is empty in production and everything below renders
+     * against nothing.
+     *
+     * The FastAPI-side helper (src/fastapi/app/services/
+     * silver_dq_flag_writer.py) is complete and has zero callers; what is
+     * missing is the five rule families, not the writer.
+     *
+     * This matters more than an empty panel. DataQualityFlagsBadge returned
+     * null on open_total === 0 -- "no flags, no UI noise" -- so the absence
+     * of a badge read as "this hole is clean" when it meant "no rule has
+     * ever run". For a geologist deciding whether to trust an interval those
+     * are opposite statements.
+     *
+     * `evaluated` is what closes that gap (2026-08-22): the badge renders a
+     * muted "not checked" chip instead of nothing when it is false.
+     *
+     * WHAT `evaluated` ACTUALLY MEASURES, and why it is project-scoped.
+     * There is no ledger of rule runs, only of findings, so "has a rule run
+     * against this collar" is not answerable. "Has any rule ever produced a
+     * finding anywhere in this project" is, and it is the right granularity:
+     * rules run project-wide, so a project with findings has been evaluated
+     * and a hole with none inside it really is clean.
+     *
+     * The residual imprecision goes the safe way. A project where rules ran
+     * and found nothing at all reads as unevaluated -- the UI under-claims
+     * rather than telling a geologist a hole is clean when nothing checked.
+     *
+     * src/fastapi/tests/test_data_quality_flags_have_no_live_writer.py
+     * fails once a writer appears, and names this comment.
+     *
+     * @return array{counts: array<string, int>, open_total: int, evaluated: bool, flags: array<int, array<string, mixed>>}
      */
-    private function dataQualityFlagSummary(string $collarId): array
+    private function dataQualityFlagSummary(string $collarId, string $projectId): array
     {
         // Counts by severity for the badge dots.
         $countRows = DB::table('silver.data_quality_flags')
@@ -195,9 +230,16 @@ class DrillholeDetailController extends Controller
             ])
             ->all();
 
+        // Resolved flags count too: a flag that a human reviewed and closed
+        // is still proof a rule ran here.
+        $evaluated = DB::table('silver.data_quality_flags')
+            ->where('project_id', $projectId)
+            ->exists();
+
         return [
             'counts' => $counts,
             'open_total' => array_sum($counts),
+            'evaluated' => $evaluated,
             'flags' => $flags,
         ];
     }

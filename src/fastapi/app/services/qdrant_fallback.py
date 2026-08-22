@@ -29,11 +29,31 @@ Anything else propagates — those are bugs, not service availability.
 
 pg_trgm query
 -------------
-Uses ``similarity(passage_text, $1) > 0.1`` ranked DESC and capped to the
-caller's ``limit``. Filters by workspace_id (the RLS policy on
+Uses ``strict_word_similarity($1, text) > 0.3`` ranked DESC and capped to
+the caller's ``limit``. Filters by workspace_id (the RLS policy on
 silver.document_passages applies, but we also do an explicit filter so
 the EXPLAIN shows index usage). Returns ``ScoredPoint``-shaped dicts so
 the orchestrator's downstream code doesn't need to branch on shape.
+
+Status: NOT WIRED, and there is a prerequisite before it can be
+------------------------------------------------------------------
+``safe_hybrid_query`` has no call sites. ``search_documents`` calls
+``hybrid_query`` directly and, on a Qdrant failure, returns an empty
+result whose ``data_source`` carries "(error)" or "(timeout)" -- which
+``response_assembler._collect_degraded_sources`` turns into a
+``degraded_sources`` label, so an outage is at least VISIBLE today. What
+the user does not get is results.
+
+Before this module is wired in, silver.document_passages needs a GIN
+trigram index on ``text``. No migration creates one (four other tables
+have trigram indexes; this one does not), so the query below is a
+sequential scan computing a trigram score per row over the largest table
+in the system -- run at the moment Qdrant is already unavailable. Wiring
+it without the index trades a degraded search for a degraded database.
+
+If nobody intends to add the index, delete this module rather than keep a
+safety net that cannot deploy. That call needs an owner: deleting it also
+removes tests, which CLAUDE.md puts behind approval.
 
 Metrics
 -------
@@ -148,28 +168,65 @@ async def _pg_trgm_search(
     docker/postgresql/init scripts).
     """
     ws = str(workspace_id)
+    # Two corrections, a day apart, both of which independently guaranteed
+    # this fallback returned nothing.
+    #
+    # 2026-08-21 — column names. The query named `passage_text` and
+    #   `document_revision_id`; silver.document_passages has neither
+    #   (verified against a freshly-migrated schema AND live production,
+    #   28 columns). They are `text` and `document_id`. Every call raised
+    #   UndefinedColumnError into the blanket handler below and returned
+    #   []. The payload KEYS keep their original names, so callers reading
+    #   `passage_text` off the payload are unaffected.
+    #
+    # 2026-08-22 — the scoring function. `similarity()` is a symmetric
+    #   Jaccard over both trigram sets, so a 40-character query against a
+    #   5,000-character passage scores about 0.008 on a perfect substring
+    #   match — an order of magnitude under the 0.1 gate that was there.
+    #   Nothing could ever have cleared it.
+    #
+    #   `strict_word_similarity(needle, haystack)` scores the needle
+    #   against the best word-aligned extent of the haystack instead of
+    #   against its whole length, which is the comparison this always
+    #   meant. The ARGUMENT ORDER is the fix, not just the name: passing
+    #   the passage first would search the query for an extent matching
+    #   the passage and reproduce the same failure.
+    #
+    #   0.3 rather than pg_trgm's 0.5 default: this runs only when
+    #   semantic search is already gone, so a loose lexical hit ranked
+    #   below a good one beats an empty page.
     sql = """
         SELECT
             passage_id::text AS id,
-            similarity(passage_text, $1) AS score,
+            strict_word_similarity($1, text) AS score,
             jsonb_build_object(
               'workspace_id', workspace_id::text,
-              'document_revision_id', document_revision_id::text,
-              'passage_text', passage_text,
+              'document_id', document_id::text,
+              'passage_text', text,
               'page_number', page_number,
               'ordinal', ordinal
             ) AS payload
           FROM silver.document_passages
          WHERE workspace_id = $2::uuid
-           AND similarity(passage_text, $1) > 0.1
+           AND strict_word_similarity($1, text) > 0.3
          ORDER BY score DESC
          LIMIT $3
     """
     try:
         async with pg_pool.acquire() as conn:
-            # Mandatory GUC for the RLS policy on document_passages.
-            await bind_workspace_scope(conn, workspace_id=ws, site="qdrant_fallback")
-            rows = await conn.fetch(sql, query_text, ws, limit)
+            # The transaction is NOT decorative. bind_workspace_scope
+            # defaults to is_local=True (SET LOCAL), which PostgreSQL
+            # DISCARDS outside a transaction block — so on a bare
+            # pool.acquire() this "mandatory GUC" was never set at all.
+            # document_passages' RLS policy is fail-closed
+            # (NULLIF(current_setting(...), '')::uuid → NULL → no match),
+            # so an unbound GUC means zero rows, not a leak — but zero rows
+            # is exactly what a working fallback must not return.
+            async with conn.transaction():
+                await bind_workspace_scope(
+                    conn, workspace_id=ws, site="qdrant_fallback",
+                )
+                rows = await conn.fetch(sql, query_text, ws, limit)
         return [
             {
                 "id": r["id"],
@@ -185,18 +242,46 @@ async def _pg_trgm_search(
         return []
 
 
+#: Lazily-constructed counter for _fire_fallback_metric. Declared BEFORE
+#: the function that assigns it, because the previous ordering is what
+#: made the bug below invisible: the sentinel sat at the bottom of the
+#: file, thirty lines after the code whose correctness depended on it.
+_QDRANT_FALLBACK_TOTAL: Any = None
+
+
 def _fire_fallback_metric(collection: str) -> None:
-    """Best-effort prometheus_client counter increment."""
+    """Best-effort prometheus_client counter increment.
+
+    FIXED 2026-08-21 (found by mypy: `"None" has no attribute "labels"`).
+    This guarded the lazy singleton with a NameError check::
+
+        try:
+            _QDRANT_FALLBACK_TOTAL          # noqa: B018
+        except NameError:
+            _QDRANT_FALLBACK_TOTAL = Counter(...)
+
+    while the module also did ``_QDRANT_FALLBACK_TOTAL = None`` at import
+    time. The name therefore ALWAYS existed, NameError was never raised,
+    the Counter was never built, and ``.labels`` was called on None --
+    an AttributeError, which the enclosing ``except ImportError`` does not
+    catch, so it reached the caller.
+
+    Latent rather than live: this function has no callers today, the same
+    as ``safe_hybrid_query`` below it. It would have become live on the
+    first Qdrant outage after someone wired the fallback up, turning a
+    degraded-but-working query path into a crash.
+
+    The guard now checks the VALUE, which is what the sentinel encodes.
+    """
+    global _QDRANT_FALLBACK_TOTAL
     try:
         from prometheus_client import Counter  # noqa: PLC0415
 
-        # Module-level lazy singleton; the registration is idempotent
-        # because prometheus_client deduplicates by name.
-        global _QDRANT_FALLBACK_TOTAL
-        try:
-            _QDRANT_FALLBACK_TOTAL  # type: ignore[name-defined]  # noqa: B018
-        except NameError:
-            _QDRANT_FALLBACK_TOTAL = Counter(  # type: ignore[assignment]
+        if _QDRANT_FALLBACK_TOTAL is None:
+            # Registration is idempotent by name in prometheus_client, but
+            # constructing it twice would still raise Duplicated
+            # timeseries, hence the singleton.
+            _QDRANT_FALLBACK_TOTAL = Counter(
                 "georag_qdrant_fallback_total",
                 "Number of times Qdrant was unavailable and the pg_trgm "
                 "fallback served a query.",
@@ -204,7 +289,6 @@ def _fire_fallback_metric(collection: str) -> None:
             )
         _QDRANT_FALLBACK_TOTAL.labels(collection=collection).inc()
     except ImportError:
+        # prometheus_client is optional. Anything else is a real fault and
+        # must not be swallowed by a metrics helper.
         pass
-
-
-_QDRANT_FALLBACK_TOTAL = None  # type: ignore[assignment]

@@ -589,7 +589,14 @@ def test_tiled_document_intelligence_reconstructs_oversized_page(
 
     result, assessment = parser_module._ocr_tiled_pdf_page("/tmp/fake.pdf", 1)
 
-    assert result.text == "Top Seam Bottom"
+    # Changed 2026-08-21. This used to be " ".join(...) over the tiles,
+    # which collapsed a tiled page into ONE line -- exactly the bug fixed
+    # for the tesseract tiling path on 2026-05-22 and then reintroduced on
+    # the Document Intelligence path. The window chunker is line-oriented,
+    # so a single-line page cannot be split on a line boundary and a table
+    # row loses its row structure. Tiles are stacked vertically; a newline
+    # is what separates them.
+    assert result.text == "Top\nSeam\nBottom"
     assert len(result.words) == 3
     assert next(word for word in result.words if word.text == "Seam").confidence == 0.95
     assert assessment["signals"]["seam_duplicate_ratio"] == 0.25

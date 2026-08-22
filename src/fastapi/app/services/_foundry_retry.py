@@ -30,6 +30,7 @@ def with_foundry_retry(
     label: str,
     max_retries: int = 4,
     max_backoff_s: float = 30.0,
+    deadline: float | None = None,
 ) -> httpx.Response:
     """Call ``do_post()`` and retry on 429/5xx with backoff.
 
@@ -38,6 +39,18 @@ def with_foundry_retry(
     ``max_backoff_s``). Raises the underlying ``httpx.HTTPStatusError`` via
     ``raise_for_status()`` once ``max_retries`` is exhausted or the response
     isn't retryable at all (4xx other than 429).
+
+    ``deadline`` (2026-08-20) is a ``time.monotonic()`` timestamp past which
+    no further attempt is *started*. It exists because this helper was
+    written for ingestion — a full-corpus re-embed can happily spend 70s
+    recovering from a 429 — and was then reused on the interactive query
+    path, where the caller wraps it in an ``asyncio.wait_for``. Retrying
+    past that wrapper's budget is worse than not retrying: ``wait_for``
+    cancels the *future*, but this runs in a thread-pool executor, so the
+    thread keeps sleeping and retrying against a result nobody will read —
+    burning a pool thread and Foundry quota for nothing. Callers on a clock
+    pass a deadline; ingestion callers leave it None and keep the old
+    unbounded-patience behavior.
     """
     attempt = 0
     while True:
@@ -52,6 +65,18 @@ def with_foundry_retry(
         except ValueError:
             delay = 2.0 * (2**attempt)
         delay = min(delay, max_backoff_s)
+
+        if deadline is not None and time.monotonic() + delay >= deadline:
+            # No time left to sleep AND make the call. Surface the last
+            # response as the error it is, so the caller degrades on
+            # purpose rather than being cancelled out from under.
+            logger.warning(
+                "%s: status=%d attempt=%d/%d — %.1fs backoff would exceed the "
+                "caller's deadline, giving up",
+                label, resp.status_code, attempt + 1, max_retries, delay,
+            )
+            resp.raise_for_status()
+            return resp
 
         logger.warning(
             "%s: status=%d attempt=%d/%d backing off %.1fs",

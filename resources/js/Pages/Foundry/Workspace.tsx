@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 // 2026-08-17 — restored after the 2026-07-27 reader-core trim (see plan
 // addendum). One change from the original: the toolbar's "Views" link to
@@ -8,12 +8,13 @@ import { Head, Link, router } from '@inertiajs/react';
 // this restoration's scope. Everything else below is unmodified.
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Segmented, EmptyState } from '@/Components/Foundry/primitives';
-import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStripColumn, type StratUnit, type LithologyInterval } from '@/Components/Foundry/Charts';
+import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStripColumn, type StratUnit, type LithologyInterval, type StereonetPole } from '@/Components/Foundry/Charts';
 import { WorkspaceMap, type MapProjectInfo, type MapProjectSummary, type MapCollar, type BasemapId } from '@/Components/Foundry/WorkspaceMap';
 import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/CompareHolesModal';
 import { SectionView } from '@/Components/Foundry/SectionView';
 import { Borehole3DView } from '@/Components/Foundry/Borehole3DView';
 import { useFullscreenToggle } from '@/Hooks/useFullscreenToggle';
+import { structurePoles, structureStrikes } from '@/lib/structureProjection';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 
 // Heavy Plotly-backed 3D sub-views — lazy-loaded so the workspace shell
@@ -240,6 +241,31 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
             router.reload();
         }
     });
+
+    // STRUCTURE-panel inputs.
+    //
+    // The panel used to render `<StereonetMini measurements={[]} />` under a
+    // header reading "STEREONET · {n} measurements", with a line of
+    // developer prose underneath saying the arrays were "not yet emitted by
+    // WorkspaceController". They were emitted — as `structures_3d` and
+    // `structures_visual_3d`, under names the panel did not look for — so a
+    // geologist with 47 structural readings saw the count, an empty net,
+    // and a note addressed to someone else.
+    //
+    // Both sources are used, not one: silver.structure holds logged
+    // planar attitudes, gold.structure_measurements_visual holds the
+    // derived stereonet-ready set, and a project can have either.
+    // The conversion itself lives in lib/structureProjection with its
+    // tests — a pole that is 90° out still looks like structural data.
+    const poles = useMemo<StereonetPole[]>(
+        () => structurePoles(structures_3d, structures_visual_3d),
+        [structures_3d, structures_visual_3d],
+    );
+
+    const strikes = useMemo<number[]>(
+        () => structureStrikes(structures_3d, structures_visual_3d),
+        [structures_3d, structures_visual_3d],
+    );
 
     const [mode, setMode] = useState<Mode>(initialMode);
     const [view3d, setView3d] = useState<View3D>('lithology');
@@ -851,28 +877,34 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                 {renderModePanel('structure', (
                                     structures_count > 0 || structures_visual_count > 0 ? (
                                         <div className="grid grid-cols-2 gap-4">
-                                            <Card eyebrow={`STEREONET · ${structures_count} measurements`} title="Schmidt equal-area">
-                                                {/* TODO: backend doesn't return structure measurement arrays yet —
-                                                    when silver.structures or gold.structure_measurements_visual gets
-                                                    rows, controller needs to emit `structures_measurements` prop and
-                                                    we pass it here instead of []. */}
-                                                <StereonetMini measurements={[]} size={260} />
+                                            <Card eyebrow={`STEREONET · ${poles.length} poles`} title="Schmidt equal-area">
+                                                <StereonetMini poles={poles} size={260} />
                                                 <div className="text-[10px] font-mono mt-2" style={{ color: 'var(--fg-3)' }}>
-                                                    Backend payload TODO: structure measurement arrays not yet emitted by WorkspaceController.
+                                                    {poles.length > 0
+                                                        ? 'Poles to planes, lower hemisphere. North up.'
+                                                        : `${structures_count + structures_visual_count} structure row(s) recorded, none carrying both a dip and a dip direction — nothing to project.`}
                                                 </div>
                                             </Card>
-                                            <Card eyebrow={`ROSE DIAGRAM · ${structures_count} strikes`} title="Strike frequency">
-                                                <RoseMini strikes={[]} size={260} />
+                                            <Card eyebrow={`ROSE DIAGRAM · ${strikes.length} strikes`} title="Strike frequency">
+                                                <RoseMini strikes={strikes} size={260} />
                                                 <div className="text-[10px] font-mono mt-2" style={{ color: 'var(--fg-3)' }}>
-                                                    Same — strike array not yet wired through.
+                                                    {strikes.length > 0
+                                                        ? '10° bins, radius proportional to count.'
+                                                        : 'No dip directions recorded, so no strikes to bin.'}
                                                 </div>
                                             </Card>
                                         </div>
                                     ) : (
                                         <Card eyebrow="STRUCTURE" title="No structure measurements yet">
+                                            {/* Was: "0 rows in silver.structures +
+                                                gold.structure_measurements_visual" — two table
+                                                names, one of them wrong (the table is
+                                                silver.structure, singular), addressed to nobody
+                                                who reads this screen. A geologist needs to know
+                                                what to upload. */}
                                             <EmptyState
-                                                title="0 rows in silver.structures + gold.structure_measurements_visual."
-                                                detail="The Cameco binary .log corpus contains AZIMUTH + SANG (survey angle) curves on every hole, but explicit structure measurements (joints, foliations, faults) require manual logging or downstream extraction. Coming-soon: derive proxy orientation from the deviation surveys."
+                                                title="Nothing to plot on a stereonet yet."
+                                                detail="Downhole surveys give this project hole orientation, but a stereonet needs logged planar readings — joint, foliation, fault or bedding measurements with a dip and a dip direction. Upload a structure table, or a shapefile of structural readings, and this panel fills in."
                                             />
                                         </Card>
                                     )
@@ -1075,6 +1107,7 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                     style={{ borderColor: 'var(--line-1)' }}
                                 >
                                     <input
+                                        aria-label="Ask a question about this project"
                                         value={copilotPrompt}
                                         onChange={(e) => setCopilotPrompt(e.target.value)}
                                         placeholder="Ask a question…"
@@ -1204,6 +1237,7 @@ function LogsHolePicker({ projectSlug, activeHoleId, holes }: { projectSlug: str
                 ← prev
             </button>
             <select
+                aria-label="Jump to hole"
                 value={activeHoleId ?? ''}
                 onChange={(e) => jumpTo(e.target.value)}
                 className="text-[11px] font-mono px-2 py-1 rounded border"

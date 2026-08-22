@@ -26,7 +26,6 @@ the ingest pipeline.
 from __future__ import annotations
 
 import logging
-import os
 import time as _t
 from dataclasses import dataclass
 
@@ -34,7 +33,8 @@ import asyncpg
 from qdrant_client import AsyncQdrantClient
 
 from app.audit import emit_audit
-from app.db import bind_workspace_scope
+from app.db import scoped_connection
+from app.db.dsn import build_dsn
 from app.metrics import (
     QDRANT_PAYLOAD_AUDIT_RUNS,
     QDRANT_PAYLOAD_AUDIT_VIOLATIONS,
@@ -58,13 +58,9 @@ class SmokeResult:
     reason: str  # "ok" | "no_passages" | "no_hits" | "empty_text" | "transient"
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 def _query_from_text(text: str) -> str:
@@ -93,13 +89,18 @@ async def run_retrieval_smoke(workspace_id: str) -> SmokeResult:
     sample_text: str = ""
     sample_doc_id: str | None = None
     try:
-        async with pool.acquire() as conn:
-            # Set RLS GUC then pick one freshly-embedded passage with
-            # enough text to derive a query from. ORDER BY updated_at
-            # DESC biases toward what THIS run just wrote.
-            await bind_workspace_scope(
-                conn, workspace_id=workspace_id, site="hatchet.embed_pending_passages_smoke"
-            )
+        # scoped_connection acquires, opens a transaction AND binds the
+        # GUC. The previous form did the bind on a bare pool.acquire(),
+        # where SET LOCAL is discarded, so the "RLS GUC" the comment below
+        # refers to was never actually set.
+        #
+        # Pick one freshly-embedded passage with enough text to derive a
+        # query from. ORDER BY updated_at DESC biases toward what THIS run
+        # just wrote.
+        async with scoped_connection(
+            pool, workspace_id=workspace_id,
+            site="hatchet.embed_pending_passages_smoke",
+        ) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT passage_id::text  AS passage_id,

@@ -175,6 +175,22 @@ async def test_optional_returns_typed_context_when_present() -> None:
 # ---------------------------------------------------------------------------
 
 
+# 2026-08-21 — these used to assert that omitting workspace_id ALWAYS raises,
+# which was true because the field was `Field(...)`. That could not survive
+# contact with Hatchet crons: a declarative `on_crons` trigger sends no input
+# at all, so `{}` is the only payload a cron can produce and a required field
+# made every cron tick a guaranteed ValidationError. Three sweeps had never
+# run once as a result.
+#
+# The requirement moved to a model validator keyed on project_id, so the
+# assertion moves with it. The invariant REC#1 actually protects is
+# unchanged and still enforced at construction time: a dispatcher naming a
+# specific project cannot omit workspace_id and land on the default tenant.
+# The one payload that may omit it is the project_id="*" fan-out, which
+# resolves the workspace per project from the passage rows and therefore
+# never defaults to anything.
+
+
 def test_embed_pending_passages_input_requires_workspace_id() -> None:
     from pydantic import ValidationError
 
@@ -182,14 +198,19 @@ def test_embed_pending_passages_input_requires_workspace_id() -> None:
         EmbedPendingPassagesInput,
     )
 
-    # No default — constructing without workspace_id must raise.
+    # Naming a specific project without a workspace must raise.
     with pytest.raises(ValidationError):
-        EmbedPendingPassagesInput()
+        EmbedPendingPassagesInput(project_id="d2222222-3333-4444-5555-666666666666")
     # Explicit value succeeds.
     obj = EmbedPendingPassagesInput(
         workspace_id="d1111111-2222-3333-4444-555555555555"
     )
     assert obj.workspace_id == "d1111111-2222-3333-4444-555555555555"
+    # The fan-out — and only the fan-out — may omit it. This is the cron's
+    # payload; if it ever raises again, every cron tick is dead on arrival.
+    fanout = EmbedPendingPassagesInput()
+    assert fanout.project_id == "*"
+    assert fanout.workspace_id == ""
 
 
 def test_enrich_passage_context_input_requires_workspace_id() -> None:
@@ -200,11 +221,34 @@ def test_enrich_passage_context_input_requires_workspace_id() -> None:
     )
 
     with pytest.raises(ValidationError):
-        EnrichPassageContextInput()
+        EnrichPassageContextInput(project_id="e2222222-3333-4444-5555-666666666666")
     obj = EnrichPassageContextInput(
         workspace_id="e1111111-2222-3333-4444-555555555555"
     )
     assert obj.workspace_id == "e1111111-2222-3333-4444-555555555555"
+    fanout = EnrichPassageContextInput()
+    assert fanout.project_id == "*"
+    assert fanout.workspace_id == ""
+
+
+def test_verbalize_page_images_input_requires_workspace_id() -> None:
+    """Same contract, and previously not covered at all — a single-project
+    call with no workspace was accepted and then silently skipped."""
+    from pydantic import ValidationError
+
+    from app.hatchet_workflows.verbalize_page_images import (
+        VerbalizePageImagesInput,
+    )
+
+    with pytest.raises(ValidationError):
+        VerbalizePageImagesInput(project_id="f2222222-3333-4444-5555-666666666666")
+    obj = VerbalizePageImagesInput(
+        workspace_id="f1111111-2222-3333-4444-555555555555"
+    )
+    assert obj.workspace_id == "f1111111-2222-3333-4444-555555555555"
+    fanout = VerbalizePageImagesInput()
+    assert fanout.project_id == "*"
+    assert fanout.workspace_id == ""
 
 
 # ---------------------------------------------------------------------------

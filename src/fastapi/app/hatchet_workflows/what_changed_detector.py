@@ -25,7 +25,6 @@ What's live:
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime
 from uuid import UUID
 
@@ -35,6 +34,7 @@ from pydantic import BaseModel
 
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.what_changed_detector")
@@ -76,13 +76,9 @@ what_changed_detector = hatchet.workflow(
 )
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 async def _count_audits(
@@ -129,92 +125,103 @@ async def execute(input: WhatChangedInput, ctx: Context) -> WhatChangedOutput:
     )
     try:
         async with pool.acquire() as conn:
-            # Block-3 RLS: scope to the workspace we're detecting for.
-            await bind_workspace_scope(
-                conn, workspace_id=workspace_str, site="hatchet.what_changed_detector"
-            )
-            ingest = await _count_audits(
-                conn, workspace_str, ["ingest_pdf.", "ingest.", "ocr."],
-                input.window_start, input.window_end,
-            )
-            new_public = await _count_audits(
-                conn, workspace_str, ["public_geo.pull.complete"],
-                input.window_start, input.window_end,
-            )
-            updated_public = await _count_audits(
-                conn, workspace_str, ["public_geo.pull.updated"],
-                input.window_start, input.window_end,
-            )
+            # The transaction is load-bearing. bind_workspace_scope
+            # binds with SET LOCAL, which PostgreSQL DISCARDS outside a
+            # transaction block -- so on this bare pool.acquire() the
+            # GUC was never set and every count below ran unscoped.
+            #
+            # A transaction, NOT is_local=False: this connection comes
+            # from the shared pool, and a session-scoped GUC on a pooled
+            # connection outlives the caller and leaks into whoever
+            # checks it out next. That is the exact hazard scoped_pool
+            # exists to prevent.
+            async with conn.transaction():
+                # Block-3 RLS: scope to the workspace we're detecting for.
+                await bind_workspace_scope(
+                    conn, workspace_id=workspace_str, site="hatchet.what_changed_detector"
+                )
+                ingest = await _count_audits(
+                    conn, workspace_str, ["ingest_pdf.", "ingest.", "ocr."],
+                    input.window_start, input.window_end,
+                )
+                new_public = await _count_audits(
+                    conn, workspace_str, ["public_geo.pull.complete"],
+                    input.window_start, input.window_end,
+                )
+                updated_public = await _count_audits(
+                    conn, workspace_str, ["public_geo.pull.updated"],
+                    input.window_start, input.window_end,
+                )
 
-            # Bonus delta signals from silver/ops tables in window.
-            decisions = (
-                await conn.fetchval(
-                    """
-                    SELECT count(*) FROM silver.decision_records
-                     WHERE workspace_id = $1::uuid
-                       AND decided_at >= $2 AND decided_at < $3
-                    """,
-                    workspace_str, input.window_start, input.window_end,
+                # Bonus delta signals from silver/ops tables in window.
+                decisions = (
+                    await conn.fetchval(
+                        """
+                        SELECT count(*) FROM silver.decision_records
+                         WHERE workspace_id = $1::uuid
+                           AND decided_at >= $2 AND decided_at < $3
+                        """,
+                        workspace_str, input.window_start, input.window_end,
+                    )
+                    or 0
                 )
-                or 0
-            )
-            hypotheses = (
-                await conn.fetchval(
-                    """
-                    SELECT count(*) FROM silver.hypotheses
-                     WHERE workspace_id = $1::uuid
-                       AND created_at >= $2 AND created_at < $3
-                    """,
-                    workspace_str, input.window_start, input.window_end,
+                hypotheses = (
+                    await conn.fetchval(
+                        """
+                        SELECT count(*) FROM silver.hypotheses
+                         WHERE workspace_id = $1::uuid
+                           AND created_at >= $2 AND created_at < $3
+                        """,
+                        workspace_str, input.window_start, input.window_end,
+                    )
+                    or 0
                 )
-                or 0
-            )
-            support_tickets = (
-                await conn.fetchval(
-                    """
-                    SELECT count(*) FROM ops.support_tickets
-                     WHERE workspace_id = $1::uuid
-                       AND reported_at >= $2 AND reported_at < $3
-                    """,
-                    workspace_str, input.window_start, input.window_end,
+                support_tickets = (
+                    await conn.fetchval(
+                        """
+                        SELECT count(*) FROM ops.support_tickets
+                         WHERE workspace_id = $1::uuid
+                           AND reported_at >= $2 AND reported_at < $3
+                        """,
+                        workspace_str, input.window_start, input.window_end,
+                    )
+                    or 0
                 )
-                or 0
-            )
-            total_audits = (
-                await conn.fetchval(
-                    """
-                    SELECT count(*) FROM audit.audit_ledger
-                     WHERE workspace_id = $1::uuid
-                       AND created_at >= $2 AND created_at < $3
-                    """,
-                    workspace_str, input.window_start, input.window_end,
+                total_audits = (
+                    await conn.fetchval(
+                        """
+                        SELECT count(*) FROM audit.audit_ledger
+                         WHERE workspace_id = $1::uuid
+                           AND created_at >= $2 AND created_at < $3
+                        """,
+                        workspace_str, input.window_start, input.window_end,
+                    )
+                    or 0
                 )
-                or 0
-            )
 
-            # Emit the rollup audit anchor.
-            await emit_audit(
-                conn,
-                action_type="workspace.what_changed.detected",
-                workspace_id=workspace_str,
-                actor_kind="workflow",
-                target_schema="audit",
-                target_table="audit_ledger",
-                target_id=str(input.detect_request_id),
-                payload={
-                    "evaluator": "what_changed_v1",
-                    "doc_phase": 147,
-                    "window_start": input.window_start.isoformat(),
-                    "window_end": input.window_end.isoformat(),
-                    "new_ingestion_count": ingest,
-                    "new_public_record_count": new_public,
-                    "updated_public_record_count": updated_public,
-                    "new_decision_count": decisions,
-                    "new_hypothesis_count": hypotheses,
-                    "new_support_ticket_count": support_tickets,
-                    "total_audit_anchors_in_window": total_audits,
-                },
-            )
+                # Emit the rollup audit anchor.
+                await emit_audit(
+                    conn,
+                    action_type="workspace.what_changed.detected",
+                    workspace_id=workspace_str,
+                    actor_kind="workflow",
+                    target_schema="audit",
+                    target_table="audit_ledger",
+                    target_id=str(input.detect_request_id),
+                    payload={
+                        "evaluator": "what_changed_v1",
+                        "doc_phase": 147,
+                        "window_start": input.window_start.isoformat(),
+                        "window_end": input.window_end.isoformat(),
+                        "new_ingestion_count": ingest,
+                        "new_public_record_count": new_public,
+                        "updated_public_record_count": updated_public,
+                        "new_decision_count": decisions,
+                        "new_hypothesis_count": hypotheses,
+                        "new_support_ticket_count": support_tickets,
+                        "total_audit_anchors_in_window": total_audits,
+                    },
+                )
 
         log.info(
             "what_changed_detector.task_completed workspace=%s "

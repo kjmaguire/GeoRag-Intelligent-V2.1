@@ -108,12 +108,24 @@ return new class extends Migration
         // Carry any text the mirror already collected across to the canonical
         // column, so a reader of error_message sees the full history rather
         // than a cliff at this migration.
+        //
+        // 2026-08-20 — the COMMENT below used to sit outside this guard, so
+        // on any database built from the canonical definition (error_message,
+        // no error_text — i.e. anything that never had the mirror) it threw
+        // SQLSTATE 42703 and took the whole migration down. CD runs
+        // `artisan migrate` BEFORE the image deploys, so that ships no code
+        // at all. Both statements are about the legacy column; both belong
+        // behind the same check.
         if ($this->columnExists('audit', 'audit_ledger_verification_runs', 'error_text')) {
             DB::statement(
                 'UPDATE audit.audit_ledger_verification_runs
                     SET error_message = error_text
                   WHERE error_message IS NULL
                     AND error_text IS NOT NULL',
+            );
+            DB::statement(
+                "COMMENT ON COLUMN audit.audit_ledger_verification_runs.error_text IS
+                 'Superseded by error_message (2026_08_20_030000). Retained so historical rows are not lost; new writes go to error_message.'",
             );
         }
 
@@ -129,11 +141,6 @@ return new class extends Migration
                CHECK (status IN (%s))',
             self::STATUS_VALUES,
         ));
-
-        DB::statement(
-            "COMMENT ON COLUMN audit.audit_ledger_verification_runs.error_text IS
-             'Superseded by error_message (2026_08_20_030000). Retained so historical rows are not lost; new writes go to error_message.'",
-        );
 
         $this->installVerificationFunctions();
     }

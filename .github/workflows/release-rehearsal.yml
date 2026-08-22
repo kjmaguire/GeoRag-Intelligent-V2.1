@@ -1,47 +1,57 @@
 name: GeoRAG Release Rehearsal
 
-# ─── Trigger ──────────────────────────────────────────────────────────────────
-# Bucket 3 gate (Chunk 10.1): live-stack tests that require Ollama + the full
-# Docker Compose stack.  Runs on:
-#   - Manual dispatch (workflow_dispatch) — use for staged QA before a release.
-#   - Tag push matching v*.*.* — gates release tags.
-#   - Triggered by cd.yml after a successful staging deploy (workflow_run).
+# ─── THIS WORKFLOW HAS NEVER RUN ─────────────────────────────────────────────
+# Corrected 2026-08-21. `gh run list --workflow=release-rehearsal.yml`
+# returns ZERO runs, and the header used to explain that away with three
+# claims that were false or stale:
 #
-# Does NOT run on every PR or push to main — that job belongs to ci.yml (Bucket 1).
-# This workflow records pass/fail results but does NOT block PR merge.
-# It gates RELEASE (tag creation), not PR.
+#   1. "Triggered by cd.yml after a successful staging deploy
+#      (workflow_run)" — FALSE. The `on:` block below has only
+#      workflow_dispatch and `push: tags: v*.*.*`, and cd.yml contains no
+#      dispatch of this workflow. Nothing has ever triggered it.
+#   2. The Ollama/DeepSeek feasibility note — STALE. Ollama was retired;
+#      the stack is vLLM + Azure AI Foundry. The 18 GB VRAM argument that
+#      justified continue-on-error no longer describes anything.
+#   3. "configure a staging host" / secrets.STAGING_URL — will never
+#      happen. This is a single-environment deployment; there is no
+#      staging and none is planned.
 #
-# ─── Ollama feasibility note ──────────────────────────────────────────────────
-# GitHub-hosted runners (ubuntu-latest, 7 GB RAM) cannot carry the DeepSeek
-# distill models (15+ GB download, 18 GB VRAM at runtime).  Until a self-hosted
-# runner or a staging FastAPI URL is wired, the LLM-dependent test steps are
-# marked continue-on-error: true so they record a failure without blocking the
-# release pipeline.
+# The repo has exactly one tag (`pre-storage-abstraction-20260725`), which
+# does not match `v*.*.*`. So the only live trigger is manual dispatch.
 #
-# ─── continue-on-error gate (Chunk 10.2) ─────────────────────────────────────
-# The golden and hallucination test steps below use continue-on-error: true
-# when running against the local stack (no STAGING_URL secret).  When a real
-# staging URL is configured (secrets.STAGING_URL is non-empty and a GPU runner
-# is available), flip the steps to continue-on-error: false.
+# ─── What that costs ─────────────────────────────────────────────────────────
+# ci.yml:831 deselects `integration`, `golden`, `hallucination`, `live` and
+# `chaos` from the PR suite and routes them here. `chaos` has its own weekly
+# workflow; the rest execute in NO workflow at all. That is 377 tests,
+# ~12% of the Python suite — and the largest slice is `integration`, not the
+# 8 golden/hallucination quality tests. Seven of those modules are
+# live-Postgres sweeps over exactly the ingestion-completion and
+# data-integrity paths this codebase has repeatedly broken in production:
+#   test_ingest_progress_state_machine, test_orphan_sweep, test_mv_refresh,
+#   test_nightly_ingestion_integrity, test_reliability_metrics,
+#   test_stale_run_detector, test_embed_pending_completion_sweep
 #
-# To enable strict mode:
-#   1. Provision a self-hosted GPU runner with label [self-hosted, gpu] OR
-#      configure a staging host with Ollama + the FastAPI stack running.
-#   2. Add secrets.STAGING_URL to the GitHub repo (Settings → Secrets).
-#   3. Add secrets.STAGING_SSH_HOST and related secrets (see cd.yml).
-#   4. Change the two continue-on-error: true lines below to false.
-#   5. Update the TODO comments to record the date of the change.
+# The golden/hallucination half IS partly covered elsewhere:
+# eval-gate.yml runs nightly against real Postgres + real Qdrant with a
+# stubbed LLM, so import rot, schema drift and evaluator crashes are gated.
+# What nothing gates is answer QUALITY, because those calls are stubbed.
 #
-# See ops/runbooks/secret-management.md for the full provisioning procedure.
+# ─── The fix, in priority order ──────────────────────────────────────────────
+#   1. Move the Postgres-backed `integration` modules into a blocking ci.yml
+#      job. The postgis service definition four other ci.yml jobs already
+#      use can be copied verbatim; setting POSTGRES_USER and running
+#      `pytest -m integration` lights up all seven modules on every PR.
+#      This needs no secrets, no staging, and no GPU.
+#   2. For golden/hallucination, point them at real Foundry credentials
+#      retrieved through the existing CD OIDC identity — not at a staging
+#      URL that will never exist.
 #
-# 2026-08-15 CI-promotion audit: checked, NOT promoted — `gh run list
-# --workflow=release-rehearsal.yml` returns zero runs (dispatch/tag-push/
-# post-deploy triggered only, none of which have fired since this workflow
-# landed). No secrets.STAGING_URL exists yet (confirmed via `gh secret list`
-# — only the CD OIDC identity's AZURE_CLIENT_ID/TENANT_ID/SUBSCRIPTION_ID
-# are present). Nothing to evaluate; re-check once it has actually run.
-# Also note it doesn't gate PR merge by design (see header above), so this
-# item is orthogonal to branch protection either way.
+# Until (1) lands, treat this workflow as documentation of an intent, not
+# as a gate. It gates nothing today.
+#
+# ─── continue-on-error on the golden/hallucination steps ─────────────────────
+# Still `true` below, and still wrong — but flipping it on a workflow that
+# never runs would change nothing. Flip it as part of fix (2).
 
 on:
   workflow_dispatch:
@@ -216,7 +226,7 @@ jobs:
         working-directory: src/fastapi
         # TODO: set continue-on-error: false once secrets.STAGING_URL is
         # configured and a self-hosted GPU runner is registered.
-        # See ops/runbooks/secret-management.md "Items not yet closed".
+        # See ops/runbooks/_archived/secret-management.md "Items not yet closed".
         continue-on-error: true
         env:
           FASTAPI_URL: ${{ secrets.STAGING_URL || 'http://localhost:8000' }}
@@ -234,7 +244,7 @@ jobs:
         working-directory: src/fastapi
         # TODO: set continue-on-error: false once secrets.STAGING_URL is
         # configured and a self-hosted GPU runner is registered.
-        # See ops/runbooks/secret-management.md "Items not yet closed".
+        # See ops/runbooks/_archived/secret-management.md "Items not yet closed".
         continue-on-error: true
         env:
           FASTAPI_URL: ${{ secrets.STAGING_URL || 'http://localhost:8000' }}

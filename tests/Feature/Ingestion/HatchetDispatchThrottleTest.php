@@ -92,6 +92,71 @@ class HatchetDispatchThrottleTest extends TestCase
         );
     }
 
+    /**
+     * The safety cap was a flat 30 seconds against a sentinel that expires
+     * after one, and the wait is a usleep inside an Octane worker. Octane
+     * serves from a fixed worker pool, so a bulk import in a single
+     * workspace could park every worker here and the application would
+     * answer nothing at all — including requests unrelated to uploads.
+     */
+    public function test_the_safety_cap_is_derived_from_the_window(): void
+    {
+        // ceil(250/1000) = 1s of sentinel, plus two poll intervals of slack.
+        $this->assertSame(1_200, HatchetDispatchThrottle::maxWaitMsFor(250));
+        $this->assertSame(1_200, HatchetDispatchThrottle::maxWaitMsFor(1_000));
+        $this->assertSame(2_200, HatchetDispatchThrottle::maxWaitMsFor(2_000));
+    }
+
+    public function test_an_absurd_window_still_hits_the_absolute_ceiling(): void
+    {
+        $this->assertSame(
+            HatchetDispatchThrottle::MAX_WAIT_MS,
+            HatchetDispatchThrottle::maxWaitMsFor(600_000),
+        );
+    }
+
+    public function test_a_wedged_sentinel_releases_the_worker_in_about_a_second(): void
+    {
+        // A sentinel that will not expire during the test: the wedged-cache
+        // case the fail-open branch exists for. Before the cap was derived,
+        // this call held the worker for the full 30 seconds.
+        Cache::store('array')->flush();
+        Cache::store('array')->put('hatchet:dispatch-throttle:ws-wedged', '1', 600);
+
+        $throttle = $this->throttle_without_flush();
+
+        $start = microtime(true);
+        $throttle->wait('ws-wedged', 250);
+        $elapsedMs = (microtime(true) - $start) * 1000;
+
+        $this->assertGreaterThanOrEqual(
+            1_000,
+            $elapsedMs,
+            'It should still wait out the window before failing open.',
+        );
+        $this->assertLessThan(
+            3_000,
+            $elapsedMs,
+            'It must not hold the worker anywhere near the 30s absolute ceiling.',
+        );
+    }
+
+    /** Same stub as throttle(), without the flush that would clear the sentinel. */
+    private function throttle_without_flush(): HatchetDispatchThrottle
+    {
+        $factoryStub = new class(Cache::store('array')) implements CacheFactory
+        {
+            public function __construct(private readonly Repository $repo) {}
+
+            public function store($name = null)
+            {
+                return $this->repo;
+            }
+        };
+
+        return new HatchetDispatchThrottle($factoryStub);
+    }
+
     public function test_zero_throttle_is_a_noop(): void
     {
         $throttle = $this->throttle();

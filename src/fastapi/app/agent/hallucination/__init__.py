@@ -1,114 +1,111 @@
-"""Hallucination prevention layers for the GeoRAG Pydantic AI agent.
+"""Hallucination prevention layers for the GeoRAG agent.
 
 Architecture reference: Section 04i — Hallucination Prevention (v1.49).
 
+WHAT ACTUALLY RUNS
+------------------
+Read this before changing anything in this package.
+
+    orchestrator_validators.py   The canonical implementation and the only
+                                 post-assembly validation path. Holds
+                                 ``verify_numbers`` (numeric grounding),
+                                 ``verify_entities`` (entity resolution),
+                                 ``verify_constraints`` (geological limits),
+                                 ``verify_completeness`` (per-claim citation
+                                 coverage), ``guard_tolerances`` and
+                                 ``run_post_assembly_validation``, which
+                                 agentic_retrieval/nodes.py calls.
+
+    layer2_typed_output.py       ``validate_and_repair`` — post-assembly
+                                 typed-output repair, called from
+                                 agentic_retrieval/nodes.py.
+
+    layer5_provenance.py         ``enrich_provenance`` — citation provenance
+                                 enrichment, called from
+                                 agentic_retrieval/nodes.py. Enrichment, not
+                                 a gate.
+
+    layer6_constraints.py        ``_find_violations`` — imported by
+                                 orchestrator_validators.verify_constraints.
+                                 NOTE: the module's public entry point,
+                                 ``check_geological_constraints``, is reached
+                                 only by the re-export below and by tests;
+                                 the live path goes through
+                                 ``_find_violations``.
+
+    citation_markers.py          Shared marker regexes. Widely used.
+
+    qualitative_detector.py      Keyword-driven entity disambiguation.
+
 §04i v1.49 framing — 4 explicit guards
 --------------------------------------
-The §04i clause was consolidated from a 6-layer to a 4-guard framing in
-the v1.10 doc edit. The file names below RETAIN the original layer
-numbering for git-history continuity and import stability; the modules
-themselves haven't moved. The conceptual mapping from current files to
-the four guards is:
+The §04i clause was consolidated from a 6-layer to a 4-guard framing in the
+v1.10 doc edit. The surviving file names retain the original layer numbering
+for git-history continuity. The mapping from current files to the four guards
+is:
 
-    Numeric grounding       layer3_numerical (every emitted integer / float
-                            traces back to a tool-call result; ModelRetry on
-                            ungrounded numbers).
+    Numeric grounding       orchestrator_validators.verify_numbers — every
+                            emitted integer / float traces back to a
+                            tool-call result.
 
-    Entity grounding        layer4_entity (drill-hole IDs + quoted names
-                            verified against silver.collars + Neo4j KG)
-                            + qualitative_detector (keyword-driven entity
-                            disambiguation).
+    Entity grounding        orchestrator_validators.verify_entities —
+                            drill-hole IDs and quoted names verified against
+                            silver.collars + the Neo4j KG, plus
+                            qualitative_detector for disambiguation.
 
-    Citation completeness   layer1_retrieval (drops low-relevance chunks
-                            before they reach the LLM)
-                            + Pydantic typed-output validation (Layer 2 —
-                            non-empty citations + source_chunk_id, enforced
-                            by Pydantic AI before our validators)
-                            + layer_completeness (positive coverage —
-                            every claim has a citation).
+    Citation completeness   layer2_typed_output (every marker has a matching
+                            Citation, no empty source_chunk_id) plus
+                            orchestrator_validators.verify_completeness
+                            (positive coverage — every declarative sentence
+                            carries a marker).
 
-    Refusal path            layer6_constraints (geological hard limits;
-                            ModelRetry on implausible values)
-                            + orchestrator_validators (uncertainty-trigger
-                            enforcement; escalates to refuse-with-explanation
-                            when guards fail N times in succession).
+    Refusal path            orchestrator_validators.verify_constraints over
+                            layer6_constraints._find_violations (geological
+                            hard limits), feeding the should_retry /
+                            confidence-floor decision in
+                            agentic_retrieval/nodes.py.
 
-    layer5_provenance       Chunk provenance similarity check. Acts as a
-                            sub-component of Numeric / Entity grounding
-                            rather than an independent guard. Active once
-                            Qdrant documents stabilise (Milestone 2+).
+    layer5_provenance       Chunk provenance enrichment. A sub-component of
+                            numeric / entity grounding rather than an
+                            independent guard.
 
 When §04i is referenced in code review or docs, prefer the 4-guard
 vocabulary; treat the layerN_*.py file names as implementation detail.
 
-Layers implemented here
------------------------
-Layer 1  layer1_retrieval.py   Retrieval quality gate — drops low-relevance
-                               chunks from tool results before they reach the
-                               LLM.  Applied inside tool functions, not as an
-                               output validator.
+Deleted 2026-08-21 — a parallel implementation that never ran
+-------------------------------------------------------------
+``layer1_retrieval.py``, ``layer3_numerical.py``, ``layer4_entity.py`` and
+``layer_completeness.py`` (1,287 lines) were removed, along with
+``app/services/refusal_builder.py`` (523 lines) which only they could reach.
 
-Layer 3  layer3_numerical.py   Numerical claim verification — parses every
-                               integer and float from the agent's response text
-                               and traces each back to a tool call result.
-                               Raises ModelRetry if any number is ungrounded.
+They were built for Pydantic AI's ``@agent.output_validator`` decorator
+pattern, against a ``geo_agent.py`` that does not exist and never did. The
+orchestrator went a different way, so these modules sat beside
+orchestrator_validators.py looking like safety controls in force while only
+orchestrator_validators ever executed — with a full, green test suite
+confirming behaviour nothing depended on. ``evaluate_guards``, the six-layer
+guard evaluator CLAUDE.md hard rule 5 names, was among them and had no
+production caller.
 
-Layer 4  layer4_entity.py      Entity resolution — extracts drill-hole IDs and
-                               quoted names from the response text and verifies
-                               them against PostGIS silver.collars and the Neo4j
-                               knowledge graph.  Raises ModelRetry for unknown
-                               entities.
+The only logic unique to them was the completeness guard and the per-query-
+class guard-tolerance model; both were ported into orchestrator_validators
+(``verify_completeness`` and ``guard_tolerances``). The completeness guard
+now runs on the live path for the first time, advisory-only — see the
+tolerance note in ``run_post_assembly_validation`` for why it does not yet
+trigger retries, and why the numeric/entity tolerance knobs remain
+deliberately unapplied.
 
-Layer 6  layer6_constraints.py Geological constraint rules — applies SME-defined
-                               hard limits (max depth, grade, recovery, etc.) to
-                               any numerical value that appears near a geological
-                               keyword.  Raises ModelRetry for implausible values.
-
-Layers 2 and 5 — drift corrected (Phase 12 Step 1)
----------------------------------------------------
-Earlier revisions of this docstring claimed Layers 2 + 5 were
-"handled elsewhere" / "not implemented." The Phase 11 §04i audit
-(``docs/phase11_section_04i_audit.md``) caught the drift — both
-files exist with real implementations:
-
-Layer 2  layer2_typed_output.py (128 lines) — post-assembly validator
-         that runs AFTER ``response_assembler`` builds the
-         ``GeoRAGResponse``. Beyond Pydantic AI's schema validation:
-         (1) every ``[DATA-N]`` / ``[NI43-N]`` marker in LLM text has a
-             matching ``Citation`` object,
-         (2) no ``Citation`` has an empty ``source_chunk_id``,
-         (3) ``text`` is not empty / pure-refusal-without-grounding,
-         (4) ``confidence`` ∈ [0.0, 1.0].
-
-Layer 5  layer5_provenance.py (157 lines) — enrichment, not a gate.
-         For each ``Citation``, walks the chain::
-
-             Citation.source_chunk_id
-               → silver table (collars / lithology_logs / reports / samples)
-                 → bronze.source_files (file_path, sha256, bucket)
-
-         The Qdrant-similarity variant of Layer 5 still awaits
-         populated Qdrant documents (Milestone 2+); the provenance
-         enrichment path is live today.
-
-Import pattern
---------------
-geo_agent.py imports the three validator functions and registers them via the
-``@geo_agent.output_validator`` decorator:
-
-    from app.agent.hallucination import (
-        verify_numerical_claims,
-        resolve_entity_references,
-        check_geological_constraints,
-    )
+``geo_agent.py`` DOES NOT EXIST
+-------------------------------
+Several modules in this package used to say the validators were "registered
+in geo_agent.py with ``@geo_agent.output_validator``". There is no
+geo_agent.py anywhere under src/fastapi and there is no output_validator
+registration. If you find another docstring saying otherwise, it is
+describing an architecture that was never built.
 """
 
-from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-from app.agent.hallucination.layer4_entity import resolve_entity_references
 from app.agent.hallucination.layer6_constraints import check_geological_constraints
 
 __all__ = [
-    "verify_numerical_claims",
-    "resolve_entity_references",
     "check_geological_constraints",
 ]

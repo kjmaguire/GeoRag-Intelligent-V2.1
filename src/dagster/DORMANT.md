@@ -5,6 +5,31 @@ It is kept on disk because the CSV / XLSX / LAS / SEGY / raster parsers and
 their tests represent real work worth recovering when structured ingestion is
 rebuilt — but **none of it executes today.**
 
+## ⚠️ The parsers here are a STALE FORK. Do not revive them as-is.
+
+`georag_dagster/parsers/` (21 modules) is a fork of the live
+`src/georag_geoparsers` package, and the live copy has moved on. Measured
+2026-08-22, `diff | grep -c '^[<>]'`:
+
+| module | live | here | differing lines |
+| --- | ---: | ---: | ---: |
+| `spatial_parser.py` | 1,099 | 1,027 | 110 |
+| `csv_collar.py` | 533 | 524 | 17 |
+| `xlsx_parser.py` | 519 | 519 | 10 |
+
+The drift is one-directional: fixes landed in the live package and were never
+copied back. Following the revival recipe below without addressing this
+reinstates the OLDER behaviour for CRS detection, delimiter and decimal-comma
+handling, and multi-sheet XLSX classification — for exactly the formats the
+live pipeline has spent the year fixing. Nothing would fail; the parsers would
+simply be worse, quietly, on files that used to work.
+
+**If this tree is revived, delete `georag_dagster/parsers/` first and import
+`georag_geoparsers` instead.** The fork is the only substantial content here
+and it is the part that has gone stale — which is also the argument for
+deleting the tree outright and letting git history hold it. That call is
+open; this note exists so it is not made by accident.
+
 ## What was removed
 
 `dagster-daemon` and `dagster-webserver` were deleted from `docker-compose.yml`

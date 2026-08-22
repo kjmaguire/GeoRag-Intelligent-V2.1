@@ -983,7 +983,7 @@ A prompt bump to `_SYSTEM_PROMPT_VERSION=9` changes `spv=8→9` → different SH
 
 **PV-02 status: RESOLVED** — v6 prefix live, `spv` slot present, comment at composition site.
 
-`ops/runbooks/retrieval-cache.md` updated below to reflect the v5→v6 bump and added `spv` component.
+`ops/runbooks/_archived/retrieval-cache.md` updated below to reflect the v5→v6 bump and added `spv` component.
 
 ---
 

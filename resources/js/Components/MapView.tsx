@@ -22,7 +22,7 @@ import {
 import { buildSilverTileUrl } from '../lib/tileUrl';
 import { createTileFailureWatchdog } from '../lib/tileFailureWatchdog';
 import { escapeHtml } from '../lib/escapeHtml';
-import { useBasemapStyleUrl } from '@/lib/basemap';
+import { useBasemapStyleUrl, useImageryTileUrl, useTerrainDemUrl } from '@/lib/basemap';
 import { useEvidenceMapPin } from '@/Hooks/useEvidenceMapPin';
 import { useSilverTileInvalidation } from '@/Hooks/useTileInvalidation';
 import type { PageProps } from '../types';
@@ -243,21 +243,36 @@ function useMapStyles(): Record<string, { label: string; url: string }> {
 //   3. maxzoom: 14 on DEM (data doesn't meaningfully improve beyond that)
 //   4. Globe projection only at z < 5 (mercator at project scale)
 //   5. Sources loaded lazily — only when satellite/terrain mode is activated
-// V1.5-12 — CDN URLs are now overridable via Vite env vars so on-prem
-// deployments can point at self-hosted DEM + satellite tiles without
-// re-building the SPA. Defaults preserve the dev experience (free public
-// tiles); production should set these to a self-hosted Martin or nginx.
+// V1.5-12 — the DEM + imagery URLs come from the shared @/lib/basemap
+// registry, which reads them from config/services.php via an Inertia prop
+// and still honours the VITE_* variables when a build baked them in.
+//
+// The comment this replaces said the Vite variables let an on-prem
+// deployment point at self-hosted tiles "without re-building the SPA".
+// `import.meta.env` is substituted by Vite at BUILD time, so they did the
+// opposite: a rebuild was the only way to change them, which an operator
+// handed a container image cannot do.
+//
+// The reason it mattered more than convenience: both hosts were hard-coded
+// here, preconnected in resources/views/app.blade.php, and missing from the
+// CSP's connect-src — so terrain and satellite mode were blocked in
+// production. connect-src is now derived from the same config.
+//
 // See ops/runbooks/dem-self-host.md for the self-hosting procedure
 // (terrain-RGB encoding via rio-rgbify, Martin raster_sources config,
 // nginx fallback).
-const DEFAULT_DEM_URL = 'https://tiles.mapterhorn.com/tilejson.json';
-const DEFAULT_SATELLITE_TILE_URL =
-    'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg';
-
-const DEM_TILES_URL: string =
-    (import.meta.env.VITE_DEM_TILES_URL as string | undefined) ?? DEFAULT_DEM_URL;
-const SATELLITE_TILES_URL: string =
-    (import.meta.env.VITE_SATELLITE_TILES_URL as string | undefined) ?? DEFAULT_SATELLITE_TILE_URL;
+const demSourceConfig = (url: string) => ({
+    type: 'raster-dem' as const,
+    url,
+    tileSize: 512,
+    maxzoom: 14,
+});
+const satelliteSourceConfig = (tiles: string) => ({
+    type: 'raster' as const,
+    tiles: [tiles],
+    tileSize: 256,
+    maxzoom: 18,
+});
 
 // ── CC-01 Item 2 — uncertainty-rings paint spec ──────────────────────────
 // Exported so registry-style tests can pin the filter + paint shape without
@@ -318,18 +333,6 @@ export const UNCERTAINTY_RINGS_MVT_SOURCE_ID = 'mvt-collars-source';
 export const UNCERTAINTY_RINGS_MVT_SOURCE_LAYER = 'collars';
 export const UNCERTAINTY_RINGS_GEOJSON_LAYER_ID = 'uncertainty-rings';
 
-const DEM_SOURCE_CONFIG = {
-    type: 'raster-dem' as const,
-    url: DEM_TILES_URL,
-    tileSize: 512,
-    maxzoom: 14,
-};
-const SATELLITE_SOURCE_CONFIG = {
-    type: 'raster' as const,
-    tiles: [SATELLITE_TILES_URL],
-    tileSize: 256,
-    maxzoom: 18,
-};
 
 // ── Tile request cancellation on rapid panning ───────────────────────────
 // When the user pans quickly (common in Rockies exploration), MapLibre
@@ -493,6 +496,10 @@ export default function MapView({
     const [mapStyle, setMapStyle] = useState('default');
     // Config-driven basemap URL registry (per CLAUDE.md hard rule #8).
     const mapStyles = useMapStyles();
+    // Terrain + imagery come from the same registry, so a deployment that
+    // repoints them also gets them into the CSP's connect-src.
+    const demTilesUrl = useTerrainDemUrl();
+    const imageryTilesUrl = useImageryTileUrl();
     const [error, setError]     = useState<string | null>(null);
     const [mapReady, setMapReady] = useState(false);
     // V1.5-11 — initialise from localStorage when present, falling through
@@ -736,12 +743,12 @@ export default function MapView({
             // Lazily create DEM + satellite sources on first terrain/satellite switch
             const ensureDemSource = () => {
                 if (!map.getSource('demSource')) {
-                    map.addSource('demSource', DEM_SOURCE_CONFIG);
+                    map.addSource('demSource', demSourceConfig(demTilesUrl));
                 }
             };
             const ensureSatelliteSource = () => {
                 if (!map.getSource('satelliteSource')) {
-                    map.addSource('satelliteSource', SATELLITE_SOURCE_CONFIG);
+                    map.addSource('satelliteSource', satelliteSourceConfig(imageryTilesUrl));
                 }
             };
             const ensureHillshadeLayer = () => {
@@ -815,7 +822,7 @@ export default function MapView({
             const msg = err instanceof Error ? err.message : String(err);
             console.debug('Style switch deferred:', msg);
         }
-    }, [mapStyle, mapReady]);
+    }, [mapStyle, mapReady, demTilesUrl, imageryTilesUrl]);
 
     // ── Dynamic terrain exaggeration on zoom — reduces GPU load at high zoom ──
     useEffect(() => {

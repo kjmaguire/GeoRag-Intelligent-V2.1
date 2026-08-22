@@ -32,7 +32,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.db import bind_workspace_scope
+from app.db import scoped_connection
 
 log = logging.getLogger("georag.claim_ledger")
 
@@ -75,10 +75,9 @@ async def record_claim(
 ) -> str:
     """Insert a single claim. Returns claim_id."""
     workspace_id_str = str(workspace_id)
-    async with pool.acquire() as conn:
-        await bind_workspace_scope(
-            conn, workspace_id=workspace_id_str, site="claim_ledger"
-        )
+    async with scoped_connection(
+        pool, workspace_id=workspace_id_str, site="claim_ledger",
+    ) as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO silver.claim_ledger
@@ -118,10 +117,9 @@ async def record_claims_bulk(
         )
         for c in claims
     ]
-    async with pool.acquire() as conn:
-        await bind_workspace_scope(
-            conn, workspace_id=workspace_id_str, site="claim_ledger"
-        )
+    async with scoped_connection(
+        pool, workspace_id=workspace_id_str, site="claim_ledger",
+    ) as conn:
         await conn.executemany(
             """
             INSERT INTO silver.claim_ledger
@@ -146,10 +144,9 @@ async def update_verification(
 ) -> bool:
     """Flip a pending claim to verified/failed/skipped/insufficient."""
     workspace_id_str = str(workspace_id)
-    async with pool.acquire() as conn:
-        await bind_workspace_scope(
-            conn, workspace_id=workspace_id_str, site="claim_ledger"
-        )
+    async with scoped_connection(
+        pool, workspace_id=workspace_id_str, site="claim_ledger",
+    ) as conn:
         result = await conn.execute(
             """
             UPDATE silver.claim_ledger
@@ -175,10 +172,9 @@ async def list_claims_for_run(
 ) -> list[dict[str, Any]]:
     """Read all claims for one answer_run (Trust Inspector consumer)."""
     workspace_id_str = str(workspace_id)
-    async with pool.acquire() as conn:
-        await bind_workspace_scope(
-            conn, workspace_id=workspace_id_str, site="claim_ledger"
-        )
+    async with scoped_connection(
+        pool, workspace_id=workspace_id_str, site="claim_ledger",
+    ) as conn:
         rows = await conn.fetch(
             """
             SELECT claim_id::text, claim_text, claim_type,
@@ -202,10 +198,9 @@ async def summary_for_run(
 ) -> dict[str, Any]:
     """Aggregate stats for the Trust Inspector summary block."""
     workspace_id_str = str(workspace_id)
-    async with pool.acquire() as conn:
-        await bind_workspace_scope(
-            conn, workspace_id=workspace_id_str, site="claim_ledger"
-        )
+    async with scoped_connection(
+        pool, workspace_id=workspace_id_str, site="claim_ledger",
+    ) as conn:
         row = await conn.fetchrow(
             """
             SELECT count(*)::int AS total,

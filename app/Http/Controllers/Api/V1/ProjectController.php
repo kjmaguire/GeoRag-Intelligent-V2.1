@@ -11,6 +11,8 @@ use App\Http\Requests\UpdateProjectRequest;
 use App\Http\Resources\ProjectResource;
 use App\Models\Project;
 use App\Support\AuthorizationAuditLogger;
+use App\Support\PaginationLimit;
+use App\Support\SafeErrorMessage;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,7 +37,7 @@ class ProjectController extends Controller
         $projects = Project::withCount('collars')
             ->whereIn('project_id', $projectIds)
             ->orderBy('created_at', 'desc')
-            ->paginate($request->integer('per_page', 25));
+            ->paginate(PaginationLimit::clamp($request, 25));
 
         return ProjectResource::collection($projects);
     }
@@ -47,10 +49,18 @@ class ProjectController extends Controller
      */
     public function store(StoreProjectRequest $request): JsonResponse
     {
+        $workspaceId = $this->resolveWorkspaceId($request);
+
+        if ($workspaceId === null) {
+            return response()->json([
+                'message' => 'No workspace to create this project in. '
+                    .'Ask an administrator to add you to a project first.',
+            ], 422);
+        }
+
         try {
             $project = new Project($request->validated());
-            $project->workspace_id = $request->user()->workspace_id
-                ?? 'a0000000-0000-0000-0000-000000000001';
+            $project->workspace_id = $workspaceId;
             $project->save();
             // Automatically add the creator as owner.
             $request->user()->projects()->attach($project->project_id, ['role' => 'owner']);
@@ -69,9 +79,68 @@ class ProjectController extends Controller
 
             return response()->json([
                 'message' => 'Failed to create project.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
+    }
+
+    /**
+     * Which tenant this project belongs in.
+     *
+     * Derived from the creator's existing project memberships, the same way
+     * CitationController and PublicApiController derive tenancy. This used
+     * to read `$request->user()->workspace_id` with a hardcoded fallback to
+     * `a0000000-0000-0000-0000-000000000001` — and `users` has no
+     * `workspace_id` column, so the fallback was not a fallback: EVERY
+     * project created through this endpoint landed in that one workspace,
+     * which is also where every migration and backfill puts real production
+     * data. Combined with open registration, a stranger's first API call put
+     * them inside the live tenant.
+     *
+     * An admin bootstrapping a fresh deployment has no memberships either,
+     * so they may name the workspace explicitly; without one they get the
+     * configured default. Everyone else must already belong somewhere.
+     */
+    private function resolveWorkspaceId(Request $request): ?string
+    {
+        $user = $request->user();
+
+        if ($user === null) {
+            return null;
+        }
+
+        $owned = $user->projects()
+            ->pluck('silver.projects.workspace_id')
+            ->filter()
+            ->map(fn ($id): string => (string) $id)
+            ->unique()
+            ->values();
+
+        $requested = $request->string('workspace_id')->trim()->value();
+
+        if ($requested !== '') {
+            // Naming a workspace you do not belong to is only an admin's
+            // privilege; for everyone else it must be one of their own.
+            if ($user->is_admin || $owned->contains($requested)) {
+                return $requested;
+            }
+
+            return null;
+        }
+
+        if ($owned->count() === 1) {
+            return $owned->first();
+        }
+
+        if ($owned->count() > 1) {
+            // Ambiguous on purpose: pick one and half the user's projects end
+            // up in the wrong tenant. Make them say which.
+            return null;
+        }
+
+        return $user->is_admin
+            ? (string) config('georag.default_workspace_id')
+            : null;
     }
 
     /**
@@ -111,7 +180,7 @@ class ProjectController extends Controller
 
             return response()->json([
                 'message' => 'Failed to retrieve project.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }
@@ -155,7 +224,7 @@ class ProjectController extends Controller
 
             return response()->json([
                 'message' => 'Failed to update project.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }
@@ -274,7 +343,7 @@ class ProjectController extends Controller
 
             return response()->json([
                 'message' => 'Failed to delete project.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }
@@ -329,7 +398,7 @@ class ProjectController extends Controller
                 'workspace_id' => $workspaceId,
                 'verb' => $verb,
                 'project_id' => $projectId,
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ]);
         }
     }

@@ -1,5 +1,9 @@
 """Anaphora resolution for the agentic retrieval orchestrator.
 
+NOT WIRED (measured 2026-08-22). Nothing under app/ imports this
+module, despite the name — the agentic retrieval orchestrator does
+not call it.
+
 Track A.2 Phase 2.B — pure function, no I/O, no async, no DB.
 
 Purpose

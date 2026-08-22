@@ -1,14 +1,33 @@
-"""Tests for hallucination prevention layers 1, 3, 4, and 6.
+"""Tests for the hallucination-prevention guards that actually run.
 
-Layer coverage
---------------
-Layer 1  filter_by_quality()          — retrieval quality gate
-Layer 3  verify_numerical_claims()    — numerical claim verification
-Layer 4  resolve_entity_references()  — entity resolution
-Layer 6  check_geological_constraints() — geological constraint rules
+Coverage
+--------
+orchestrator_validators.verify_numbers()       — numerical grounding (Layer 3)
+orchestrator_validators.verify_entities()      — entity resolution (Layer 4)
+orchestrator_validators.verify_completeness()  — per-claim citation coverage
+orchestrator_validators.guard_tolerances()     — per-query-class tolerance model
+layer6_constraints.check_geological_constraints() / _find_violations()
+anomaly_detector                               — proactive-insights boundary
 
-All external I/O (asyncpg, Neo4j) is mocked.  The LLM layer is replaced by
-pydantic_ai.models.test.TestModel for the golden-query integration test.
+History (2026-08-21): this file was 1,432 lines and most of it exercised
+entry points with no production caller — filter_by_quality (layer1_retrieval),
+verify_numerical_claims (layer3_numerical), resolve_entity_references
+(layer4_entity), and evaluate_guards / build_refusal_payload
+(layer_completeness). Those four modules were a second, Pydantic-AI-shaped
+implementation of validation the orchestrator does through
+orchestrator_validators; the orchestrator never adopted the output_validator
+pattern they were built for. They were deleted and their 29 tests went with
+them. The completeness guard and the guard-tolerance model were the only
+logic unique to them; both were ported into orchestrator_validators and are
+covered by TestCompletenessGuard below.
+
+Caveat: check_geological_constraints (TestLayer6GeologicalConstraints) is
+itself reachable only through the re-export in hallucination/__init__.py —
+the live constraint path is orchestrator_validators.verify_constraints, which
+calls layer6_constraints._find_violations directly. The module is live; that
+particular entry point is not. Left in place pending a separate decision.
+
+All external I/O (asyncpg, Neo4j) is mocked.
 
 Run with:
     pytest tests/test_hallucination_layers.py -v
@@ -17,7 +36,6 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -75,416 +93,6 @@ def _make_valid_response(text: str = "There are 10 drill holes in this project [
         confidence=confidence,
         sources_used=["collar-uuid-test-001"],
     )
-
-
-# ---------------------------------------------------------------------------
-# Layer 1: filter_by_quality
-# ---------------------------------------------------------------------------
-
-
-class TestLayer1RetrievalQuality:
-    """Tests for app.agent.hallucination.layer1_retrieval.filter_by_quality."""
-
-    def test_passes_items_above_threshold(self) -> None:
-        """Items with relevance_score >= threshold are kept."""
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-        from app.agent.tools import DocumentChunk
-
-        chunk_high = DocumentChunk(
-            chunk_id="c1", text="uranium assay", source_document_id="doc1",
-            document_title="NI 43-101", section_number=None, section_title=None,
-            section=None, page=1, document_type="NI43", report_id="rep-001",
-            relevance_score=0.75,
-        )
-        chunk_low = DocumentChunk(
-            chunk_id="c2", text="background text", source_document_id="doc1",
-            document_title="NI 43-101", section_number=None, section_title=None,
-            section=None, page=2, document_type="NI43", report_id="rep-001",
-            relevance_score=0.45,
-        )
-
-        result = filter_by_quality([chunk_high, chunk_low], threshold=0.6)
-
-        assert len(result) == 1
-        assert result[0].chunk_id == "c1"
-
-    def test_returns_empty_when_all_below_threshold(self) -> None:
-        """Returns empty list when ALL items are below threshold."""
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-        from app.agent.tools import DocumentChunk
-
-        chunks = [
-            DocumentChunk(
-                chunk_id=f"c{i}", text="text", source_document_id="doc1",
-                document_title="Report", section_number=None, section_title=None,
-                section=None, page=i, document_type="NI43", report_id="rep-001",
-                relevance_score=0.3,
-            )
-            for i in range(3)
-        ]
-
-        result = filter_by_quality(chunks, threshold=0.6)
-
-        assert result == []
-
-    def test_empty_input_returns_empty(self) -> None:
-        """Empty input list is handled gracefully."""
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-
-        result = filter_by_quality([], threshold=0.6)
-        assert result == []
-
-    def test_at_threshold_boundary_is_accepted(self) -> None:
-        """Items exactly at the threshold are accepted (>= not >)."""
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-        from app.agent.tools import DocumentChunk
-
-        chunk = DocumentChunk(
-            chunk_id="c1", text="text", source_document_id="d1",
-            document_title="T", section_number=None, section_title=None,
-            section=None, page=1, document_type="NI43", report_id="rep-001",
-            relevance_score=0.6,
-        )
-
-        result = filter_by_quality([chunk], threshold=0.6)
-        assert len(result) == 1
-
-    def test_all_items_above_threshold_returned_in_order(self) -> None:
-        """All items above threshold are returned, preserving order."""
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-        from app.agent.tools import DocumentChunk
-
-        chunks = [
-            DocumentChunk(
-                chunk_id=f"c{i}", text="text", source_document_id="d",
-                document_title="T", section_number=None, section_title=None,
-                section=None, page=i, document_type="NI43", report_id="rep-001",
-                relevance_score=0.7 + i * 0.05,
-            )
-            for i in range(4)
-        ]
-
-        result = filter_by_quality(chunks, threshold=0.6)
-        assert [c.chunk_id for c in result] == ["c0", "c1", "c2", "c3"]
-
-
-# ---------------------------------------------------------------------------
-# Layer 3: verify_numerical_claims
-# ---------------------------------------------------------------------------
-
-
-class TestLayer3NumericalVerification:
-    """Tests for app.agent.hallucination.layer3_numerical.verify_numerical_claims."""
-
-    @pytest.mark.asyncio
-    async def test_passes_when_number_in_tool_result(self) -> None:
-        """Validator passes when all numbers in text are present in tool results."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        # Build a mock message with a tool-return part that contains count=10.
-        tool_result_json = json.dumps({"count": 10, "collars": [], "data_source": "PostGIS silver.collars"})
-
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
-
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
-
-        output = _make_valid_response("There are 10 drill holes in this project [DATA-1].")
-
-        result = await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-
-        # Should return unchanged output — no retry.
-        assert result.text == output.text
-
-    @pytest.mark.asyncio
-    async def test_raises_retry_when_number_not_in_tool_result(self) -> None:
-        """Validator raises ModelRetry when a number in text is absent from tool results.
-
-        This is the exact bug we observed: tool returned 10, LLM said 2459.
-        """
-        from pydantic_ai import ModelRetry
-
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        # Tool result says count=10.
-        tool_result_json = json.dumps({"count": 10, "collars": [], "data_source": "PostGIS"})
-
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
-
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
-
-        # LLM hallucinated 2459 when tool returned 10.
-        output = _make_valid_response("There are 2459 drill holes in this project [DATA-1].")
-
-        with pytest.raises(ModelRetry) as exc_info:
-            await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-
-        assert "2459" in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_skips_citation_index_numbers(self) -> None:
-        """Numbers inside citation markers like [DATA-1] are not verified."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        # Tool result has count=10.
-        tool_result_json = json.dumps({"count": 10, "data_source": "PostGIS"})
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
-
-        # Citation [DATA-1] contains "1" which is a skip value anyway, and
-        # [DATA-99] contains "99" which is NOT in the tool result — but it
-        # should be ignored because it's inside a citation marker.
-        output = _make_valid_response("Found 10 drill holes [DATA-99].")
-        # Change the citation_id to use 99 to ensure the marker isn't verified.
-        output = GeoRAGResponse(
-            text="Found 10 drill holes [DATA-99].",
-            citations=[
-                Citation(
-                    citation_id="[DATA-99]",
-                    citation_type="DATA",
-                    source_chunk_id="collar-uuid-test-001",
-                    document_title="PostGIS",
-                    relevance_score=0.95,
-                )
-            ],
-            confidence=0.85,
-            sources_used=["collar-uuid-test-001"],
-        )
-
-        # Should not raise — 99 is inside [DATA-99] citation marker and stripped.
-        result = await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_disabled_when_setting_off(self) -> None:
-        """Validator is a no-op when NUMERICAL_VERIFICATION_ENABLED=False."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        ctx = _MockRunContext(deps=_make_deps(), messages=[])
-        # Hallucinated number with no tool results to back it up.
-        output = _make_valid_response("There are 9999 drill holes.")
-
-        with patch("app.agent.hallucination.layer3_numerical.settings") as mock_settings:
-            mock_settings.NUMERICAL_VERIFICATION_ENABLED = False
-            result = await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-
-        # No retry raised — disabled.
-        assert result.text == output.text
-
-    @pytest.mark.asyncio
-    async def test_passes_with_no_numbers_in_text(self) -> None:
-        """Validator passes cleanly when there are no numbers to verify."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        ctx = _MockRunContext(deps=_make_deps(), messages=[])
-        output = _make_valid_response("No drill holes were found in this project [DATA-1].")
-
-        result = await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-        assert result.text == output.text
-
-    @pytest.mark.asyncio
-    async def test_grounded_by_float_in_tool_result(self) -> None:
-        """A float in the response is verified against a matching float in tool data."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        tool_result_json = json.dumps({"total_depth": 350.5, "hole_id": "ATDD-001"})
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
-
-        output = _make_valid_response("The hole has a total depth of 350.5 metres [DATA-1].")
-
-        result = await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_number_grounded_within_tolerance(self) -> None:
-        """A number is accepted if it is within 0.01 of a tool result value."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
-
-        # Tool returns 350.0, text says 350.0 — exact match.
-        tool_result_json = json.dumps({"total_depth": 350.0})
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
-
-        output = _make_valid_response("Total depth is 350.0 m [DATA-1].")
-        result = await verify_numerical_claims(ctx, output)  # type: ignore[arg-type]
-        assert result is not None
-
-
-# ---------------------------------------------------------------------------
-# Layer 4: resolve_entity_references
-# ---------------------------------------------------------------------------
-
-
-class TestLayer4EntityResolution:
-    """Tests for app.agent.hallucination.layer4_entity.resolve_entity_references."""
-
-    @pytest.mark.asyncio
-    async def test_passes_when_hole_id_exists(self) -> None:
-        """Validator passes when drill-hole ID is found in silver.collars."""
-        from app.agent.hallucination.layer4_entity import resolve_entity_references
-
-        mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(return_value=[{"hole_id": "ATDD-001"}])
-        mock_pool = MagicMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        # Neo4j: empty result (no quoted names to resolve).
-        mock_result = AsyncMock()
-        mock_result.data = AsyncMock(return_value=[])
-        mock_session = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_neo4j = MagicMock()
-        mock_neo4j.session = MagicMock(return_value=mock_session)
-
-        deps = _make_deps(pg_pool=mock_pool, neo4j_driver=mock_neo4j)
-        ctx = _MockRunContext(deps=deps)
-
-        output = _make_valid_response("Drill hole ATDD-001 has a depth of 350 m [DATA-1].")
-
-        result = await resolve_entity_references(ctx, output)  # type: ignore[arg-type]
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_raises_retry_for_missing_hole_id(self) -> None:
-        """Validator raises ModelRetry when hole ID not found in silver.collars."""
-        from pydantic_ai import ModelRetry
-
-        from app.agent.hallucination.layer4_entity import resolve_entity_references
-
-        # Database returns nothing — the hole ID does not exist.
-        mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(return_value=[])
-        mock_pool = MagicMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        # Neo4j: no quoted names.
-        mock_result = AsyncMock()
-        mock_result.data = AsyncMock(return_value=[])
-        mock_session = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_neo4j = MagicMock()
-        mock_neo4j.session = MagicMock(return_value=mock_session)
-
-        deps = _make_deps(pg_pool=mock_pool, neo4j_driver=mock_neo4j)
-        ctx = _MockRunContext(deps=deps)
-
-        # Hallucinated hole ID that doesn't exist.
-        output = _make_valid_response("Drill hole FAKE-99-99 has a depth of 350 m [DATA-1].")
-
-        with pytest.raises(ModelRetry) as exc_info:
-            await resolve_entity_references(ctx, output)  # type: ignore[arg-type]
-
-        assert "FAKE-99-99" in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_passes_when_no_hole_ids_in_text(self) -> None:
-        """Validator passes cleanly when no hole IDs are present in the text."""
-        from app.agent.hallucination.layer4_entity import resolve_entity_references
-
-        # PostgreSQL and Neo4j should not be called — no entities to resolve.
-        mock_pool = MagicMock()
-        mock_neo4j = MagicMock()
-        mock_result = AsyncMock()
-        mock_result.data = AsyncMock(return_value=[])
-        mock_session = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_neo4j.session = MagicMock(return_value=mock_session)
-
-        mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(return_value=[])
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        deps = _make_deps(pg_pool=mock_pool, neo4j_driver=mock_neo4j)
-        ctx = _MockRunContext(deps=deps)
-
-        output = _make_valid_response("There are 10 drill holes in this project [DATA-1].")
-
-        result = await resolve_entity_references(ctx, output)  # type: ignore[arg-type]
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_fails_open_on_postgres_timeout(self) -> None:
-        """Validator returns without raising when PostGIS times out (fail open)."""
-        from app.agent.hallucination.layer4_entity import resolve_entity_references
-
-        async def _slow_fetch(*_a: object, **_k: object) -> list:
-            await asyncio.sleep(999)
-            return []
-
-        mock_conn = AsyncMock()
-        mock_conn.fetch = _slow_fetch
-        mock_pool = MagicMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        mock_result = AsyncMock()
-        mock_result.data = AsyncMock(return_value=[])
-        mock_session = AsyncMock()
-        mock_session.run = AsyncMock(return_value=mock_result)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_neo4j = MagicMock()
-        mock_neo4j.session = MagicMock(return_value=mock_session)
-
-        deps = _make_deps(pg_pool=mock_pool, neo4j_driver=mock_neo4j)
-        ctx = _MockRunContext(deps=deps)
-
-        output = _make_valid_response("Drill hole ATDD-001 has a depth of 350 m [DATA-1].")
-
-        with patch("app.agent.hallucination.layer4_entity.settings") as mock_settings:
-            mock_settings.ENTITY_RESOLUTION_ENABLED = True
-            mock_settings.TIMEOUT_POSTGIS_S = 0.01
-            mock_settings.TIMEOUT_NEO4J_S = 3.0
-            # Should not raise — fail open on timeout.
-            result = await resolve_entity_references(ctx, output)  # type: ignore[arg-type]
-
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_disabled_when_setting_off(self) -> None:
-        """Validator is a no-op when ENTITY_RESOLUTION_ENABLED=False."""
-        from app.agent.hallucination.layer4_entity import resolve_entity_references
-
-        deps = _make_deps()
-        ctx = _MockRunContext(deps=deps)
-        output = _make_valid_response("Drill hole FAKE-99-99 mentioned [DATA-1].")
-
-        with patch("app.agent.hallucination.layer4_entity.settings") as mock_settings:
-            mock_settings.ENTITY_RESOLUTION_ENABLED = False
-            result = await resolve_entity_references(ctx, output)  # type: ignore[arg-type]
-
-        assert result.text == output.text
 
 
 # ---------------------------------------------------------------------------
@@ -643,160 +251,85 @@ class TestLayer6GeologicalConstraints:
         assert "azimuth" in str(exc_info.value).lower()
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers for Layer 3
-# ---------------------------------------------------------------------------
+class TestLayer6MultiNumberSentences:
+    """Regression: Layer 6 used to fire on ordinary drill-geometry answers.
 
+    Every test above uses a sentence with ONE number and ONE keyword, which is
+    exactly the shape the old symmetric +/-200-character window handles
+    correctly. Real answers name a hole and give three measurements in one
+    breath, and on those the old checker produced up to five violations on a
+    factually perfect sentence: the digits inside "PLS-22-08" were read as
+    -22 and -8, and every keyword in the sentence was in scope of every
+    number, so 045 was tested against the dip range and 510 against the
+    azimuth range. A Layer 6 warning is graded `high`, which sets
+    should_retry, floors confidence to 0.2 and prepends a fabrication banner
+    to the answer — so correct answers shipped looking suspect, and users
+    learned to ignore the banner.
 
-class TestLayer3Helpers:
-    """Unit tests for the internal helper functions in layer3_numerical."""
-
-    def test_extract_numbers_from_text_basic(self) -> None:
-        """Extracts integers and floats from plain text."""
-        from app.agent.hallucination.layer3_numerical import _extract_numbers_from_text
-
-        result = _extract_numbers_from_text("There are 10 holes with depth 350.5 m.")
-        assert 10.0 in result
-        assert 350.5 in result
-
-    def test_extract_numbers_ignores_citation_markers(self) -> None:
-        """Numbers inside [DATA-X] citation markers are not extracted."""
-        from app.agent.hallucination.layer3_numerical import _extract_numbers_from_text
-
-        result = _extract_numbers_from_text("Result [DATA-99] shows 10 holes.")
-        # 99 should not appear because it's in the citation marker.
-        assert 99.0 not in result
-        assert 10.0 in result
-
-    def test_extract_numbers_skips_zero_and_one(self) -> None:
-        """Values 0 and 1 are skipped as too common to verify."""
-        from app.agent.hallucination.layer3_numerical import _extract_numbers_from_text
-
-        result = _extract_numbers_from_text("0 results found. 1 project active.")
-        assert 0.0 not in result
-        assert 1.0 not in result
-
-    def test_flatten_dataclass(self) -> None:
-        """_flatten_tool_result_to_numbers extracts values from a dataclass."""
-        from app.agent.hallucination.layer3_numerical import _flatten_tool_result_to_numbers
-        from app.agent.tools import SpatialQueryResult
-
-        result_obj = SpatialQueryResult(
-            collars=[],
-            count=10,
-            data_source="PostGIS silver.collars",
-        )
-        numbers = _flatten_tool_result_to_numbers(result_obj)
-        assert 10.0 in numbers
-
-    def test_flatten_nested_dict(self) -> None:
-        """_flatten_tool_result_to_numbers recurses into nested dicts."""
-        from app.agent.hallucination.layer3_numerical import _flatten_tool_result_to_numbers
-
-        data = {"outer": {"count": 42, "depth": 350.5}}
-        numbers = _flatten_tool_result_to_numbers(data)
-        assert 42.0 in numbers
-        assert 350.5 in numbers
-
-
-# ---------------------------------------------------------------------------
-# Golden query test: "How many drill holes are in this project?"
-# ---------------------------------------------------------------------------
-
-
-class TestGoldenQueryDrillHoleCount:
-    """Golden-path test verifying Layer 3 catches the reported hallucination.
-
-    Simulates the exact failure: tool returns 10 collars, LLM says 2459.
-    Uses pydantic_ai TestModel to exercise the full output_validator chain
-    without hitting a real LLM.
-
-    The test uses TestModel's custom_output_args to inject a hallucinated
-    response (claiming 2459 drill holes), then verifies that the output
-    validator chain raises ModelRetry before the response is returned.
+    These assert on _find_violations directly: the point is which numbers
+    attach to which constraint, not the ModelRetry wrapper around it.
     """
 
-    @pytest.mark.asyncio
-    async def test_layer3_catches_hallucinated_count_via_validator_directly(self) -> None:
-        """Direct validator call: tool says 10, text says 2459 — ModelRetry raised."""
-        from pydantic_ai import ModelRetry
+    CLEAN = [
+        # The exact sentence from the audit — five violations before the fix.
+        "PLS-22-08 was collared at an azimuth of 045 degrees and a dip of -60 "
+        "degrees, reaching a total depth of 510 m [DATA-1].",
+        # Three violations before the fix.
+        "The hole was drilled with a dip of -55 degrees and returned "
+        "1.85 g/t Au over 12.5 m",
+        # Two violations before the fix, from the hole ID alone.
+        "Hole PLS-22-08 reached a total depth of 510 m [DATA-1].",
+        # Numeric-only hole ID, masked because the text talks about holes.
+        "Hole 36-1085 was logged with core recovery of 94% and RQD of 71.",
+        # Coordinates near a depth: the negative-keyword guard still applies.
+        "Collar 0070-4850 sits at easting 512345 and northing 4850123, "
+        "total depth 320 m.",
+        # Positive dip convention is a reporting choice, not an error.
+        "The hole was collared at a dip of 60 degrees (positive convention) "
+        "[DATA-1].",
+    ]
 
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
+    VIOLATIONS = [
+        ("The hole reached a total depth of 12000 m [DATA-1].", "depth_max_m"),
+        ("Average grade of 9500 g/t Au was reported [DATA-1].", "grade_gold_max_ppm"),
+        ("Core recovery was 140% across the interval [DATA-1].", "recovery_max_pct"),
+        ("The hole was drilled at an azimuth of 450 degrees [DATA-1].", "azimuth_range"),
+        ("U3O8 grade of 92% was intersected [DATA-1].", "grade_uranium_max_pct"),
+        ("The hole has a dip of -140 degrees [DATA-1].", "dip_range"),
+    ]
 
-        # Simulate the tool returning count=10.
-        tool_result_json = json.dumps({
-            "count": 10,
-            "collars": [],
-            "data_source": "PostGIS silver.collars",
-        })
+    @pytest.mark.parametrize("text", CLEAN)
+    def test_correct_answers_produce_no_violations(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
 
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
+        found = _find_violations(text)
+        assert found == [], [(v.value, v.constraint.name) for v in found]
 
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
+    @pytest.mark.parametrize(("text", "constraint_name"), VIOLATIONS)
+    def test_genuine_breaches_still_fire(self, text: str, constraint_name: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
 
-        # The hallucinated response.
-        hallucinated = GeoRAGResponse(
-            text="There are 2459 drill holes in this project [DATA-1].",
-            citations=[
-                Citation(
-                    citation_id="[DATA-1]",
-                    citation_type="DATA",
-                    source_chunk_id="collar-uuid-001",
-                    document_title="PostGIS silver.collars",
-                    relevance_score=1.0,
-                )
-            ],
-            confidence=0.9,
-            sources_used=["collar-uuid-001"],
-        )
+        found = _find_violations(text)
+        assert len(found) == 1, [(v.value, v.constraint.name) for v in found]
+        assert found[0].constraint.name == constraint_name
 
-        with pytest.raises(ModelRetry) as exc_info:
-            await verify_numerical_claims(ctx, hallucinated)  # type: ignore[arg-type]
+    def test_hole_id_digits_are_masked(self) -> None:
+        """The digits in a hole name are a name, not two signed numbers."""
+        from app.agent.hallucination.layer6_constraints import _find_violations
 
-        retry_message = str(exc_info.value)
-        assert "2459" in retry_message
-        assert "tool" in retry_message.lower()
+        # 5000 is the depth ceiling; -22 and -8 are below the 0 floor and
+        # would each have produced a depth_max_m violation.
+        assert _find_violations("PLS-22-08 total depth 4900 m [DATA-1].") == []
 
-    @pytest.mark.asyncio
-    async def test_layer3_accepts_correct_count(self) -> None:
-        """Validator passes when the text matches the tool result count."""
-        from app.agent.hallucination.layer3_numerical import verify_numerical_claims
+    def test_nearest_keyword_wins(self) -> None:
+        """A number attaches to one constraint, not every keyword nearby."""
+        from app.agent.hallucination.layer6_constraints import _governing_constraint
 
-        tool_result_json = json.dumps({
-            "count": 10,
-            "collars": [],
-            "data_source": "PostGIS silver.collars",
-        })
-        mock_part = MagicMock()
-        mock_part.part_kind = "tool-return"
-        mock_part.content = tool_result_json
-        mock_message = MagicMock()
-        mock_message.parts = [mock_part]
-
-        ctx = _MockRunContext(deps=_make_deps(), messages=[mock_message])
-
-        correct = GeoRAGResponse(
-            text="There are 10 drill holes in this project [DATA-1].",
-            citations=[
-                Citation(
-                    citation_id="[DATA-1]",
-                    citation_type="DATA",
-                    source_chunk_id="collar-uuid-001",
-                    document_title="PostGIS silver.collars",
-                    relevance_score=1.0,
-                )
-            ],
-            confidence=0.9,
-            sources_used=["collar-uuid-001"],
-        )
-
-        result = await verify_numerical_claims(ctx, correct)  # type: ignore[arg-type]
-        assert result.text == correct.text
-        assert "10" in result.text
+        text = "an azimuth of 045 degrees and a dip of -60 degrees"
+        start = text.index("045")
+        governing = _governing_constraint(text, start, start + 3)
+        assert governing is not None
+        assert governing[0].name == "azimuth_range"
 
 
 # ---------------------------------------------------------------------------
@@ -995,235 +528,186 @@ class TestLayer4OrchestratorExpanded:
             )
         assert warnings == []
 
+    @pytest.mark.asyncio
+    async def test_fails_open_when_postgis_times_out(self) -> None:
+        """A PostGIS timeout must not raise and must not fabricate warnings.
+
+        Ported 2026-08-21 from the deleted layer4_entity test suite, which
+        pinned this behaviour on a module that never ran. verify_entities
+        wraps the hole-ID lookup in asyncio.wait_for(TIMEOUT_POSTGIS_S) inside
+        a bare `except Exception`, so the guard degrades to "checked nothing"
+        rather than taking the whole answer down with it. The failure mode
+        this guards against is the inverse — a timeout surfacing as an
+        unresolved-entity warning, which reads as fabrication and would
+        trigger a pointless LLM retry on every slow query.
+        """
+        from app.agent.hallucination.orchestrator_validators import verify_entities
+
+        async def _slow_fetch(*_a: object, **_k: object) -> list:
+            await asyncio.sleep(999)
+            return []
+
+        mock_conn = AsyncMock()
+        mock_conn.fetch = _slow_fetch
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.agent.hallucination.orchestrator_validators.settings") as ms:
+            ms.ENTITY_RESOLUTION_ENABLED = True
+            ms.TIMEOUT_POSTGIS_S = 0.01
+            ms.TIMEOUT_NEO4J_S = 3.0
+            warnings = await verify_entities(
+                "Drill hole PLS-20-01 was completed. [DATA:1]",
+                "proj-uuid",
+                mock_pool,
+                None,
+                tool_results=[],
+            )
+
+        # Fail open: no exception, and the timed-out lookup does not report the
+        # hole as fabricated.
+        assert not any("PLS-20-01" in w for w in warnings)
+
+
 
 class TestCompletenessGuard:
-    """Guard 3 — per-claim citation completeness (layer_completeness.py)."""
+    """Per-claim citation completeness (orchestrator_validators.verify_completeness).
+
+    Ported 2026-08-21 from the deleted layer_completeness.py. The guard returns
+    a list of warning strings now instead of a GuardResult; empty list means
+    every declarative sentence is cited.
+    """
 
     def test_all_sentences_cited(self) -> None:
         """Answer where every declarative sentence has a marker passes."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
         text = (
             "The deposit contains significant uranium mineralisation [NI43:1]. "
             "The average grade is 2.5% U3O8 [DATA:2]. "
             "Drill hole PLS-20-01 intersected 10 m at 3% [NI43:1]."
         )
-        result = verify_completeness(text)
-        assert result.passed
-        assert result.uncited_sentences == []
+        assert verify_completeness(text) == []
 
     def test_bare_assertion_fails(self) -> None:
         """A sentence with no citation and no marker in the next sentence fails."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
         text = (
             "The deposit is very large. "
             "No supporting citation here either. "
             "Some data [DATA:1]."
         )
-        result = verify_completeness(text)
-        assert not result.passed
-        assert len(result.uncited_sentences) >= 1
+        assert len(verify_completeness(text)) >= 1
 
     def test_next_sentence_citation_covers_prior(self) -> None:
         """If the next sentence opens with a marker, the prior sentence is covered."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
         text = (
             "The mineralisation extends over 200 metres depth. "
             "[NI43:1] confirms this interval."
         )
-        result = verify_completeness(text)
-        assert result.passed
+        assert verify_completeness(text) == []
 
     def test_question_exempt(self) -> None:
         """Question sentences are exempt from the completeness guard."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
         text = (
             "What is the depth of the deposit? "
             "The database shows 350 m depth [DATA:1]."
         )
-        result = verify_completeness(text)
-        assert result.passed
+        assert verify_completeness(text) == []
 
     def test_refusal_phrase_exempt(self) -> None:
         """Refusal phrases are exempt from the completeness guard."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
-        text = "I don't have data on that in this project."
-        result = verify_completeness(text)
-        assert result.passed
+        assert verify_completeness("I don't have data on that in this project.") == []
 
     def test_empty_text_passes(self) -> None:
         """Empty text has no sentences to fail."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
-        result = verify_completeness("")
-        assert result.passed
+        assert verify_completeness("") == []
 
     def test_single_cited_sentence_passes(self) -> None:
         """A single declarative sentence with a citation marker passes."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
-        result = verify_completeness("There are 10 drill holes [DATA:1].")
-        assert result.passed
+        assert verify_completeness("There are 10 drill holes [DATA:1].") == []
 
     def test_mixed_cited_uncited(self) -> None:
         """Mix of cited and uncited sentences — uncited ones are collected."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
         text = (
             "The project is located in Saskatchewan [DATA:1]. "
             "This area has vast uranium potential with no citation. "
             "The resource estimate is 25 Mlb U3O8 [NI43:2]."
         )
-        result = verify_completeness(text)
+        warnings = verify_completeness(text)
         # The uncited sentence should be flagged.
-        assert not result.passed
-        assert any("vast uranium potential" in s for s in result.uncited_sentences)
+        assert any("vast uranium potential" in w for w in warnings)
 
     def test_imperative_starter_exempt(self) -> None:
         """Imperative starters like 'See Table 3' are exempt."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
         text = (
             "The grade is 3% U3O8 [DATA:1]. "
             "See table 3 for further breakdown."
         )
-        result = verify_completeness(text)
-        assert result.passed
+        assert verify_completeness(text) == []
 
-    def test_guard_name_is_set(self) -> None:
-        """GuardResult.guard_name is 'completeness'."""
-        from app.agent.hallucination.layer_completeness import verify_completeness
+    def test_warning_prefix_keeps_the_guard_advisory(self) -> None:
+        """The "Completeness: " prefix is the contract that keeps this guard out
+        of every severity bucket in run_post_assembly_validation.
 
-        result = verify_completeness("Text without citation.")
-        assert result.guard_name == "completeness"
-
-
-class TestGuardBundle:
-    """Guard 4 — evaluate_guards + format_guard_failure."""
-
-    @pytest.mark.asyncio
-    async def test_all_passing_returns_all_passed(self) -> None:
-        """When all three content guards pass, all_passed=True."""
-        from app.agent.hallucination.layer_completeness import evaluate_guards
-
-        # Text with citations on every declarative sentence, no ungrounded numbers.
-        text = "The project has 10 drill holes [DATA:1]."
-        tool_results = [("query_spatial_collars", {"count": 10})]
-
-        with patch("app.agent.hallucination.orchestrator_validators.settings") as ms:
-            ms.NUMERICAL_VERIFICATION_ENABLED = True
-            ms.ENTITY_RESOLUTION_ENABLED = True
-            ms.TIMEOUT_POSTGIS_S = 5.0
-            ms.TIMEOUT_NEO4J_S = 3.0
-            bundle = await evaluate_guards(
-                answer_text=text,
-                tool_results=tool_results,
-                project_id="proj-uuid",
-                pg_pool=None,
-                neo4j_driver=None,
-            )
-
-        assert bundle.all_passed
-        assert bundle.failed_guards == []
-
-    @pytest.mark.asyncio
-    async def test_completeness_failure_propagates(self) -> None:
-        """Completeness guard failure sets all_passed=False.
-
-        Doc-phase 186 added `GUARD_TOLERANCE_COMPLETENESS_UNCITED` (default 2)
-        which lets up to N uncited sentences through. This test pins
-        tolerance to 0 so it exercises the guard mechanism itself rather
-        than the tolerance threshold.
+        Those buckets key off "Layer 3" / "Layer 4:" / "Layer 6:". If this
+        prefix ever changed to one of those, the guard would silently start
+        forcing LLM retries on a false-positive rate that has never been
+        measured against a real corpus — see the tolerance note in
+        run_post_assembly_validation.
         """
-        from app.agent.hallucination.layer_completeness import evaluate_guards
-        from app.config import settings as app_settings
+        from app.agent.hallucination.orchestrator_validators import verify_completeness
 
-        text = (
-            "The deposit is large. "    # no citation
-            "This is another uncited claim about grades and depths."  # no citation
-        )
-        tool_results = []
-
-        with patch("app.agent.hallucination.orchestrator_validators.settings") as ms, \
-                patch.object(app_settings, "GUARD_TOLERANCE_COMPLETENESS_UNCITED", 0):
-            ms.NUMERICAL_VERIFICATION_ENABLED = False  # skip numeric
-            ms.ENTITY_RESOLUTION_ENABLED = False       # skip entity
-            ms.TIMEOUT_POSTGIS_S = 5.0
-            ms.TIMEOUT_NEO4J_S = 3.0
-            bundle = await evaluate_guards(
-                answer_text=text,
-                tool_results=tool_results,
-                project_id="proj-uuid",
-                pg_pool=None,
-                neo4j_driver=None,
-            )
-
-        assert not bundle.all_passed
-        assert any(g.guard_name == "completeness" for g in bundle.failed_guards)
-
-    def test_format_guard_failure_numeric(self) -> None:
-        """format_guard_failure produces readable string for numeric failure."""
-        from app.agent.hallucination.layer_completeness import (
-            GuardResult,
-            format_guard_failure,
+        warnings = verify_completeness("Text without citation.")
+        assert warnings
+        assert all(w.startswith("Completeness: ") for w in warnings)
+        assert not any(
+            w.startswith(("Layer 3", "Layer 4:", "Layer 6:")) for w in warnings
         )
 
-        result = GuardResult(
-            guard_name="numeric",
-            passed=False,
-            failed_tokens=["5000", "9999"],
-        )
-        reason = format_guard_failure([result])
-        assert "numeric_guard" in reason
-        assert "5000" in reason
+    def test_tolerance_table_is_per_class(self) -> None:
+        """guard_tolerances applies the per-class overrides additively (max)."""
+        from app.agent.hallucination.orchestrator_validators import guard_tolerances
 
-    def test_format_guard_failure_completeness(self) -> None:
-        """format_guard_failure produces readable string for completeness failure."""
-        from app.agent.hallucination.layer_completeness import (
-            GuardResult,
-            format_guard_failure,
-        )
+        base = guard_tolerances(None)
+        assert set(base) == {"numeric", "entity", "completeness"}
 
-        result = GuardResult(
-            guard_name="completeness",
-            passed=False,
-            uncited_sentences=["The deposit is large.", "Grades are high."],
-        )
-        reason = format_guard_failure([result])
-        assert "completeness_guard" in reason
-        assert "2" in reason
+        # exploratory loosens completeness (coverage is sparse by design);
+        # computational loosens numeric (values are derived).
+        assert guard_tolerances("exploratory")["completeness"] >= base["completeness"]
+        assert guard_tolerances("computational")["numeric"] >= base["numeric"]
 
-    def test_build_refusal_payload_structure(self) -> None:
-        """build_refusal_payload returns the correct B4 stub shape."""
-        from app.agent.hallucination.layer_completeness import (
-            GuardBundle,
-            GuardResult,
-            build_refusal_payload,
-        )
+        # An unknown class falls back to the globals rather than raising.
+        assert guard_tolerances("not-a-real-class") == base
 
-        numeric = GuardResult(guard_name="numeric", passed=False, failed_tokens=["99"])
-        comp = GuardResult(guard_name="completeness", passed=False, uncited_sentences=["Bare claim."])
-        entity = GuardResult(guard_name="entity", passed=True)
-        bundle = GuardBundle(
-            all_passed=False,
-            numeric=numeric,
-            entity=entity,
-            completeness=comp,
-            failed_guards=[numeric, comp],
-        )
-        payload = build_refusal_payload(bundle)
-        assert payload["type"] == "refusal"
-        # Chunk 4a: reason_code is now specific (not the legacy "guard_failure" stub).
-        # numeric takes priority over completeness in the mapping.
-        assert payload["reason_code"] == "guard_numeric_fail"
-        assert "numeric" in payload["failed_guards"]
-        assert "completeness" in payload["failed_guards"]
-        assert "entity" not in payload["failed_guards"]
-        assert "message" in payload
+    def test_tolerance_never_reduces_below_the_global_floor(self) -> None:
+        """factual pins every guard to 0, but the table is max-combined, so a
+        configured global tolerance still wins. Anything else would let a
+        per-class row silently tighten a knob an operator deliberately set."""
+        from app.agent.hallucination.orchestrator_validators import guard_tolerances
+
+        base = guard_tolerances(None)
+        factual = guard_tolerances("factual")
+        for guard in ("numeric", "entity", "completeness"):
+            assert factual[guard] >= base[guard]
+
+
 
 
 # ---------------------------------------------------------------------------

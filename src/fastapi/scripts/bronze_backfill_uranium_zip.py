@@ -177,9 +177,16 @@ async def _ingest_collar_xlsx(
             _as_num(r, az_col),
             _as_num(r, dip_col),
             _as_num(r, depth_col),
+            # strict=False keeps today's behaviour: a spreadsheet row
+            # shorter than the header silently drops its trailing columns
+            # from this payload. Ragged rows are normal in real
+            # spreadsheets, so strict=True would fail the whole backfill on
+            # the first one -- but the silent drop is a genuine data-loss
+            # path and deserves a decision rather than a default.
             json.dumps(dict(zip(
                 [str(h) for h in header],
                 [_jsonable(c) for c in r],
+                strict=False,
             ))),
         )
         inserted += 1

@@ -90,8 +90,25 @@ class IntegrationTest extends TestCase
 
     // ── Auth flow ──────────────────────────────────────────────────────
 
+    public function test_registration_is_closed_by_default(): void
+    {
+        // The endpoint is reachable on the public ingress and hands back a
+        // Sanctum token with no invite, verification or approval. There is
+        // no registration UI, so nothing legitimate calls it — closed
+        // unless an operator opens it deliberately.
+        $this->postJson('/api/v1/auth/register', [
+            'name' => 'Stranger',
+            'email' => 'stranger@example.com',
+            'password' => 'SecureP@ss123',
+        ])->assertForbidden();
+
+        $this->assertDatabaseMissing('users', ['email' => 'stranger@example.com']);
+    }
+
     public function test_register_login_logout_cycle(): void
     {
+        config(['auth.registration_open' => true]);
+
         // Register
         $reg = $this->postJson('/api/v1/auth/register', [
             'name' => 'Test Geologist',
@@ -142,6 +159,8 @@ class IntegrationTest extends TestCase
 
     public function test_duplicate_email_registration_returns_422(): void
     {
+        config(['auth.registration_open' => true]);
+
         $this->postJson('/api/v1/auth/register', [
             'name' => 'Duplicate',
             'email' => $this->user->email,

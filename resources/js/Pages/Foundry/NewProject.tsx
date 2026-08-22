@@ -83,6 +83,8 @@ interface QueuedFile {
     category: Category | null; // null = unsupported
     status: 'queued' | 'uploading' | 'done' | 'error';
     error?: string;
+    /** Advisory note shown beside the row. Not a failure — the file still uploads. */
+    hint?: string;
     parentZip?: string; // set when this file was extracted from an uploaded archive
 }
 
@@ -171,8 +173,21 @@ export default function FoundryNewProject() {
                 skippedNames.push(f.name);
                 continue;
             }
-            // Large ZIPs can't be extracted in-browser (memory limit).
-            // Queue as a normal file but flag it so the UI shows a tip to use Select Folder.
+            // A ZIP is queued rather than extracted in-browser (memory limit
+            // on large archives), so the server has to route it.
+            //
+            // `archive`, not `spatial`. This used to hardcode 'spatial' for
+            // every ZIP, which sent it to ingest_spatial — a workflow whose
+            // extractor returns only members with a vector or QGIS suffix.
+            // A field-season ZIP of 180 PDFs and 40 LAS files therefore
+            // yielded zero members, logged one `archive_has_no_vector_data`
+            // warning, wrote nothing, and reported the run COMPLETED. All
+            // 220 files were gone with no error anywhere the user could see.
+            //
+            // ingest_zip_archive handles a mixed archive: it fans each member
+            // out to the right ingester, including vector data (added
+            // 2026-08-21). The per-file `<select>` below still lets a user
+            // choose `spatial` for a ZIP they know is a shapefile bundle.
             if (ext === 'zip') {
                 arr.push({
                     id: newId(),
@@ -180,9 +195,12 @@ export default function FoundryNewProject() {
                     name: f.name,
                     size: f.size,
                     ext,
-                    category: 'spatial', // ZIP is valid; spatial is the right bucket
-                    status: 'error',
-                    error: 'Extract this ZIP on your computer first, then use "📁 Select Folder" to load all files at once.',
+                    category: 'archive',
+                    // 'queued', not 'error': this file IS uploaded and IS
+                    // processed. Extracting first still gives better
+                    // per-file progress, which is what the hint is for.
+                    status: 'queued',
+                    hint: 'Uploaded as an archive. For per-file progress, extract it first and use “Select Folder”.',
                 });
                 continue;
             }
@@ -327,8 +345,11 @@ export default function FoundryNewProject() {
             if (!projectId) throw new Error('Project created but no project_id returned.');
 
             // 2. Upload each queued file. Skip unsupported + oversize; flag them.
+            // status !== 'error' matters: the queue can hold a row the UI has
+            // already told the user is unusable, and this filter used to
+            // ignore that and upload it anyway.
             const uploadable = queue.filter(
-                (q) => q.category !== null && q.size <= MAX_FILE_BYTES,
+                (q) => q.category !== null && q.size <= MAX_FILE_BYTES && q.status !== 'error',
             );
             setSubmitProgress({ done: 0, total: uploadable.length });
 
@@ -597,6 +618,7 @@ export default function FoundryNewProject() {
                                                                 {q.parentZip && <> · <span title={`Extracted from ${q.parentZip}`} style={{ color: 'var(--fg-2)' }}>from {q.parentZip}</span></>}
                                                                 {q.status !== 'queued' && <> · <span style={{ color: q.status === 'done' ? 'var(--accent)' : q.status === 'error' ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-2)' }}>{q.status}</span></>}
                                                                 {q.error && <> · <span title={q.error} style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>{q.error.slice(0, 40)}</span></>}
+                                                                {!q.error && q.hint && <> · <span title={q.hint} style={{ color: 'var(--muted-foreground, oklch(0.55 0 0))' }}>{q.hint.slice(0, 40)}</span></>}
                                                             </div>
                                                         </div>
                                                         {unsupported ? (
@@ -605,6 +627,7 @@ export default function FoundryNewProject() {
                                                             </span>
                                                         ) : (
                                                             <select
+                                                                aria-label={`Ingestion category for ${q.file.name}`}
                                                                 value={q.category as string}
                                                                 onChange={(e) => setCategory(q.id, e.target.value as Category)}
                                                                 disabled={q.status === 'uploading' || q.status === 'done'}

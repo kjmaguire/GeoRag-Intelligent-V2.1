@@ -28,7 +28,6 @@ caller is responsible for not triaging closed tickets.
 from __future__ import annotations
 
 import logging
-import os
 from typing import NamedTuple
 from uuid import UUID
 
@@ -37,6 +36,7 @@ import asyncpg
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.db import BareConnectionError, lookup_and_rescope, scoped_connection
+from app.db.dsn import build_dsn
 
 log = logging.getLogger("georag.support_cockpit.ticket_triage")
 
@@ -60,13 +60,9 @@ class TriageOutcome(NamedTuple):
     triage_method: str  # 'synthetic_stub' | 'llm' | ...
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 def _synthetic_classifier(description: str) -> tuple[str, str]:

@@ -29,7 +29,7 @@ FASTAPI_URL = os.environ.get("FASTAPI_URL", "http://localhost:8000")
 SERVICE_KEY = os.environ.get("FASTAPI_SERVICE_KEY", "")
 PG_DSN = os.environ.get(
     "PG_DSN",
-    "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",
+    "postgresql://georag:georag_dev_password@localhost:5432/georag",
 )
 TEST_WORKSPACE_ID = UUID("a0000000-0000-0000-0000-000000000001")
 

@@ -97,5 +97,5 @@ MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker cp \
 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker exec \
     -e WS_ID="${WS_ID}" \
     -e AG="${TEST_AGENT}" \
-    -e REDIS_PASSWORD='N2Wz3FdVExUkEs8AysiAmh4usppA8FZ' \
+    -e REDIS_PASSWORD="${REDIS_PASSWORD:?REDIS_PASSWORD must be set (source .env); it used to be hardcoded here, in a public repo}" \
     georag-fastapi python3 -u //tmp/_phase0_wrapper_smoke.py

@@ -833,10 +833,10 @@ None. All 7 vendor methods mapped cleanly to boto3 equivalents. The iterator mod
 
 | File | Purpose |
 |---|---|
-| `ops/runbooks/ingestion-pipeline.md` | Asset graph overview, trigger procedures, replay from Bronze, debug guide, commit gate, asset-check map |
-| `ops/runbooks/evidence-model.md` | §04j three-table story, example rows per evidence_type, lineage trace walkthrough, FK cascade semantics, rollback procedure, sentinel values |
-| `ops/runbooks/data-version.md` | §05d monotonicity contract, where it bumps, downstream consumers, monotonic trigger, debug checklists, post-restore procedure |
-| `ops/runbooks/validation-corpora.md` | Corpus state by format, how to add test files, expected-output JSON shape, baseline location, Phase C runner spec |
+| `ops/runbooks/_archived/ingestion-pipeline.md` | Asset graph overview, trigger procedures, replay from Bronze, debug guide, commit gate, asset-check map |
+| `ops/runbooks/_archived/evidence-model.md` | §04j three-table story, example rows per evidence_type, lineage trace walkthrough, FK cascade semantics, rollback procedure, sentinel values |
+| `ops/runbooks/_archived/data-version.md` | §05d monotonicity contract, where it bumps, downstream consumers, monotonic trigger, debug checklists, post-restore procedure |
+| `ops/runbooks/_archived/validation-corpora.md` | Corpus state by format, how to add test files, expected-output JSON shape, baseline location, Phase C runner spec |
 | `docs/parsers/TEMPLATE.md` | Parser addition template: IR shape, failure handling, quality metrics, corpus requirements, asset-check requirements, commit-gate wiring, merge checklist |
 
 ### Module 3 final status

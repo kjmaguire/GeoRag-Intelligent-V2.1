@@ -34,9 +34,25 @@ from app.agent.plan_executor import _dispatch_factual_lookup
 from app.models.decomposition import FactualLookupInput, SubQueryFactualLookup
 
 
+class _TxnCM:
+    """Async context manager stand-in for asyncpg's ``conn.transaction()``."""
+
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
 def _make_ctx(fetchrow_return: dict) -> ToolContext:
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
+    # verify_numerical_claim acquires through AgentDeps.acquire_scoped()
+    # (2026-08-22), which does `async with conn.transaction():`. A bare
+    # AsyncMock's .transaction() returns a coroutine rather than an async
+    # context manager, and the tool's blanket handler swallows the
+    # resulting TypeError into db_value=None.
+    mock_conn.transaction = MagicMock(return_value=_TxnCM())
     mock_pool = MagicMock()
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)

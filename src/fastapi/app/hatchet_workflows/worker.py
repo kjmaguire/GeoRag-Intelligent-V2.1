@@ -28,6 +28,7 @@ import os
 import sys
 
 from app.hatchet_workflows import hatchet
+from app.hatchet_workflows.answer_quality_watch import answer_quality_watch  # OBS-12
 from app.hatchet_workflows.audit_ledger_verify import audit_ledger_verify
 from app.hatchet_workflows.backup_postgres import backup_postgres  # §11.1
 from app.hatchet_workflows.backup_qdrant import backup_qdrant  # §11.1
@@ -50,6 +51,7 @@ from app.hatchet_workflows.ingest_well_logs import ingest_well_logs  # LAS downh
 from app.hatchet_workflows.ingest_zip_archive import ingest_zip_archive  # ZIP archive extraction + fan-out
 from app.hatchet_workflows.mv_refresh_silver import mv_refresh_silver
 from app.hatchet_workflows.nightly_ingestion_integrity import nightly_ingestion_integrity  # reliability spec Phase 5
+from app.hatchet_workflows.nl_summaries import nl_summaries  # ADR-0012
 from app.hatchet_workflows.outbox_dispatcher import outbox_dispatcher
 from app.hatchet_workflows.pg_partman_maintenance import pg_partman_maintenance
 from app.hatchet_workflows.phase0_agents import (
@@ -83,6 +85,7 @@ from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc
 # (silver_pg_ca_bc_minfile / silver_pg_ca_*_bedrock_geology etc.).
 # See docs/smdi_ingestion_2026_05_25.md.
 from app.hatchet_workflows.workspace_export import workspace_export  # §11.3
+from app.logging_config import configure_json_logging
 
 # Pool → workflow list. Phase 1 Step 4 added `ingest_pdf` to the ingestion
 # pool. Phase 2 Step 3 added phase2_smoke (placeholder); Step 4 added
@@ -178,6 +181,20 @@ POOLS = {
         # Generates Qwen3 context headers (contextualized_content) so
         # passage_embedder uses enriched text for better recall.
         enrich_passage_context_wf,
+        # ADR-0012 — synthesize a retrievable passage per structured row
+        # (assay group, lithology interval, drillhole) so a question about
+        # sample IDs, exact intervals or QA/QC flags has something to match
+        # on. Registered but NOT scheduled: the first run over an existing
+        # corpus writes one passage per row and every one of them is then
+        # embedded, which is a spend an operator should agree to rather
+        # than a cron start. Trigger it with a workspace_id, or with
+        # dry_run to size it first.
+        nl_summaries,
+        # OBS-12 — compares yesterday's refusal / guard-fire /
+        # zero-evidence / confidence signals against the trailing
+        # week and logs ANSWER_QUALITY_REGRESSION when they move.
+        # Reads silver.answer_runs; no LLM spend, no Azure change.
+        answer_quality_watch,
         # Doc-phase 98 / Master-plan §10.10 — support_replay re-
         # executes failed workflows in dry-run mode for diagnosis.
         # Skeleton.
@@ -240,36 +257,57 @@ POOLS = {
 POOLS["all"] = POOLS["ingestion"] + POOLS["ai"]
 
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
-# Silence chatty third-party libraries that emit hundreds of thousands of
-# DEBUG records per PDF page. When LOG_LEVEL=debug for georag code, these
-# would otherwise flood Hatchet's log queue (`log queue is full, dropping
-# log message`), starve the asyncio event loop, and trigger Hatchet step
-# cancellations ("event loop blocked" / blocked_for=560s+), so uploaded
-# PDFs are received and parsed but never reach silver.reports.
-for _noisy in (
-    "pdfminer", "pdfminer.pdfinterp", "pdfminer.psparser",
-    "pdfminer.cmapdb", "pdfminer.pdfdocument", "pdfminer.pdfpage",
-    "pdfplumber", "pdf2image",
-    "PIL", "PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin",
-    "unstructured", "unstructured.partition",
-    "matplotlib", "matplotlib.font_manager",
-    "urllib3.connectionpool", "botocore", "boto3", "s3transfer",
-    # Azure Blob replaced S3 as the storage backend but this list did not
-    # follow. azure.core's http_logging_policy logs a URL plus a full
-    # request/response header block at INFO for EVERY blob call: ~9.6k
-    # lines a day on this worker, about a third of its total output, all
-    # of it burying the errors it sits between. Real failures still
-    # surface - they are raised, and our own handlers log them.
-    "azure", "azure.core", "azure.core.pipeline.policies",
-    "azure.core.pipeline.policies.http_logging_policy", "azure.identity",
-    "azure.storage", "azure.storage.blob",
-    "grpc", "grpc._cython", "grpc._cython.cygrpc",
-):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
+def configure_worker_logging() -> None:
+    """Install the JSON formatter and silence the chatty third-party loggers.
+
+    Called from :func:`main`, deliberately NOT at module import.
+
+    `configure_json_logging` goes through `logging.config.dictConfig`,
+    which REPLACES the root handler list. This module is imported at
+    module scope by tests (tests/test_pg_partman_maintenance.py imports
+    POOLS), so configuring on import would tear pytest's capture and
+    caplog handlers off the root logger for the rest of the session.
+    `logging.basicConfig` — what this used to be — was safe there only
+    because it is a documented no-op when root already has handlers.
+
+    Why JSON at all: this worker is where all ingestion happens and where
+    almost every observed failure happens, and it was the one tier that
+    never called `configure_json_logging()`. Measured 2026-08-21 over the
+    trailing 24h in workspace-georag4ad7: hatchet-worker-cc emitted 23,993
+    console lines, of which 0 were JSON and 0 carried a trace_id, while
+    fastapi-cc emitted 53,438 of which 53,380 were JSON. `Log_s` being a
+    bare string is why no Log Analytics query can filter the worker's
+    output by level, workspace, run or trace.
+    """
+    configure_json_logging(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+    # Silence chatty third-party libraries that emit hundreds of thousands of
+    # DEBUG records per PDF page. When LOG_LEVEL=debug for georag code, these
+    # would otherwise flood Hatchet's log queue (`log queue is full, dropping
+    # log message`), starve the asyncio event loop, and trigger Hatchet step
+    # cancellations ("event loop blocked" / blocked_for=560s+), so uploaded
+    # PDFs are received and parsed but never reach silver.reports.
+    for _noisy in (
+        "pdfminer", "pdfminer.pdfinterp", "pdfminer.psparser",
+        "pdfminer.cmapdb", "pdfminer.pdfdocument", "pdfminer.pdfpage",
+        "pdfplumber", "pdf2image",
+        "PIL", "PIL.Image", "PIL.PngImagePlugin", "PIL.TiffImagePlugin",
+        "unstructured", "unstructured.partition",
+        "matplotlib", "matplotlib.font_manager",
+        "urllib3.connectionpool", "botocore", "boto3", "s3transfer",
+        # Azure Blob replaced S3 as the storage backend but this list did not
+        # follow. azure.core's http_logging_policy logs a URL plus a full
+        # request/response header block at INFO for EVERY blob call: ~9.6k
+        # lines a day on this worker, about a third of its total output, all
+        # of it burying the errors it sits between. Real failures still
+        # surface - they are raised, and our own handlers log them.
+        "azure", "azure.core", "azure.core.pipeline.policies",
+        "azure.core.pipeline.policies.http_logging_policy", "azure.identity",
+        "azure.storage", "azure.storage.blob",
+        "grpc", "grpc._cython", "grpc._cython.cygrpc",
+    ):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
 log = logging.getLogger("georag.hatchet_worker")
 
 
@@ -283,6 +321,7 @@ def _resolve_pool() -> tuple[str, list]:
 
 
 def main() -> int:
+    configure_worker_logging()
     parser = argparse.ArgumentParser(prog="app.hatchet_workflows.worker")
     parser.add_argument(
         "--list",

@@ -440,12 +440,12 @@ Modules under `app/agent/*.py` that are NOT `@georag_agent` decorators but parti
 
 | Module | Role |
 |---|---|
-| `real_rag_evaluator.py` | End-to-end RAG eval against `eval.golden_questions` — runs the full agentic_retrieval graph + scores answers against expected citations. |
-| `real_llm_evaluator.py` | LLM-only eval (no retrieval) — measures Qwen vs Claude on closed-book questions. |
+| `real_rag_evaluator.py` | End-to-end RAG eval against `eval.golden_questions` — runs the full agentic_retrieval graph. **Checks citation COUNT and Qdrant resolvability; it does not compare against expected citation identities** (`validate_citation_presence` only compares `len(citations)` against `len(expected_citations)`). |
+| ~~`real_llm_evaluator.py`~~ | **Removed** (09d1d35, 2026-07-27). The `evaluator_kind='real_llm_v1'` branch that imported it was removed 2026-08-21 and now raises a ValueError naming the removal. |
 | `workspace_evaluator.py` | Per-workspace eval — applies workspace-specific prompt + model pins from `workspace.prompt_versions` + `workspace.agent_timeouts`. |
-| `ndcg_harness.py` | nDCG@k retrieval-quality scoring. |
+| ~~`ndcg_harness.py`~~ | **Removed** (09d1d35, 2026-07-27). The only retrieval-quality script is `scripts/bench_retrieval_ndcg.py`, which reports a SELF-NORMALISED DCG (ideal ranking taken from the retrieved slice, not a judged pool) — it measures ordering within the results and cannot detect a retrieval miss. Read `summary.metric_caveats` in its report before quoting any number from it. |
 | `benchmark_compare.py` | Diff two run summaries; produces `Admin/EvalCompare` payload. |
-| `promotion_gate.py` | Model-promotion gate: blocks if regression vs baseline on any tier. |
+| ~~`promotion_gate.py`~~ | **Removed** (09d1d35, 2026-07-27). No automated model-promotion gate exists. |
 | `thresholds.py` | Per-metric promotion thresholds (configurable). |
 | `validators.py` | Output-schema validators for golden-question expectations. |
 | `seeds.py` | RNG seed management for reproducibility. |

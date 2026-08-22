@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # V1.5-03 — kid-based JWT key rotation. The PRIMARY key + kid match what
     # Laravel currently mints. During a rotation window, set PREVIOUS to the
     # outgoing key + its kid; FastAPI accepts both until Laravel cuts over.
-    # See ops/runbooks/secret-rotation.md § FASTAPI_SERVICE_KEY for the
+    # See ops/runbooks/_archived/secret-rotation.md § FASTAPI_SERVICE_KEY for the
     # operator playbook.
     FASTAPI_SERVICE_KEY_KID: str = "primary"
     FASTAPI_SERVICE_KEY_PREVIOUS: str = ""
@@ -90,11 +90,45 @@ class Settings(BaseSettings):
     # disable the SDK entirely (sentry_sdk.init is gated on this in main.py).
     # Sample rates are 1.0 in dev for full visibility; drop to ~0.1 in prod.
     SENTRY_DSN: str = ""
-    SENTRY_TRACES_SAMPLE_RATE: float = 1.0
-    SENTRY_PROFILES_SAMPLE_RATE: float = 1.0
+    #: 0.1, not 1.0. Tracing and profiling every request costs uvicorn
+    #: hot-path overhead continuously; 10% is enough to characterise
+    #: latency and is the rate to raise deliberately when someone is
+    #: actually reading the data.
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    SENTRY_PROFILES_SAMPLE_RATE: float = 0.1
     SENTRY_ENABLE_LOGS: bool = True
     SENTRY_RELEASE: str = ""
-    SENTRY_ENVIRONMENT: str = "development"
+    #: "production", not "development".
+    #:
+    #: SENTRY_ENVIRONMENT is not set on any container app, so the default
+    #: is what every deployment gets. Defaulting to "development" meant
+    #: production events would arrive tagged as dev — unfilterable from
+    #: dev noise, and invisible to any alert rule scoped to production.
+    #:
+    #: A wrong default is worse here than a missing one: it looks
+    #: configured. Anything that is genuinely a dev environment sets this
+    #: explicitly, and a dev event mislabelled as production is a much
+    #: cheaper mistake than the reverse.
+    SENTRY_ENVIRONMENT: str = "production"
+
+    # Which deployment this process is. Until 2026-08-21 nothing told the
+    # application, so it could not tell a laptop from the production
+    # cluster — and every security control defaults to OFF for the laptop's
+    # convenience. .env.production.example prescribed
+    # PROMPT_INJECTION_DELIMITING_ENABLED=true and RATE_LIMIT_ENABLED=true;
+    # neither was ever set on fastapi-cc or hatchet-worker-cc, so both ran
+    # with prompt-injection fencing and rate limiting disabled for as long
+    # as anyone can check, and nothing anywhere said so.
+    #
+    # Set to "production" on the live container apps. See
+    # main.py::_assert_production_posture, which turns each violation into a
+    # CRITICAL log line — and CRITICAL on fastapi-cc now pages
+    # (georag-fastapi-critical, added 2026-08-21).
+    GEORAG_ENV: str = "development"
+
+    @property
+    def is_production(self) -> bool:
+        return self.GEORAG_ENV.strip().lower() in {"production", "prod"}
 
     # FastAPI review #1 — cap request body size. Starlette default is
     # unbounded; a 10 GB POST OOMs the worker before Pydantic ever runs.
@@ -132,7 +166,29 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
     # Local pgbouncer needs no TLS; Azure Database for PostgreSQL Flexible
     # Server requires it. asyncpg accepts this as a DSN query param directly.
+    #
+    # NOTE the delta this buys is smaller than it looks. georag-pg-cc has
+    # `require_secure_transport = on`, so the server refuses unencrypted
+    # connections and asyncpg's default `prefer` already negotiates TLS with
+    # no possible plaintext fallback. And libpq/asyncpg `require` does NOT
+    # verify the server certificate — only `verify-ca` / `verify-full` do.
+    # So `require` here is documentation, not enforcement. Raise it to
+    # `verify-full` (with a CA bundle) if certificate identity ever needs to
+    # be guaranteed.
     POSTGRES_SSLMODE: str = "prefer"
+
+    # Direct-to-Postgres, bypassing PgBouncer. Added to Settings 2026-08-21:
+    # these two are set on every live container app and were read by ~60
+    # modules straight out of os.environ, so the config object that is
+    # supposed to describe the service's inputs did not list two of its most
+    # load-bearing ones. `app/db/dsn.py` is the only reader now.
+    #
+    # Background work must use these rather than the pooler: PgBouncer runs
+    # in TRANSACTION pooling mode, where session-scoped state (SET without
+    # LOCAL, advisory locks, prepared statements, LISTEN) does not survive
+    # between statements.
+    POSTGRES_DIRECT_HOST: str = "postgresql"
+    POSTGRES_DIRECT_PORT: int = 5432
 
     # -------------------------------------------------------------------------
     # Neo4j — REMOVED 2026-07-28 (B1). NEO4J_HOST/PORT/USER/PASSWORD were only
@@ -242,12 +298,6 @@ class Settings(BaseSettings):
     VLLM_MODEL: str = "Qwen/Qwen3-14B-AWQ"
     VLLM_QUANTIZATION: str = "awq_marlin"
     VLLM_MAX_MODEL_LEN: int = 8192
-    VLLM_GPU_MEMORY_UTILIZATION: float = 0.92
-    # Per-request output ceiling. Mirrors LLM_MAX_OUTPUT_TOKENS for the
-    # OpenAI-compat path; keep aligned so the budget is consistent across
-    # backends.
-    VLLM_MAX_TOKENS: int = 4096
-    VLLM_TEMPERATURE: float = 0.1
 
     # Azure AI Foundry — used when LLM_BACKEND=azure (the default primary
     # backend post Phase-C cutover). Deployed model is Cohere Command A+
@@ -295,16 +345,10 @@ class Settings(BaseSettings):
     # don't let you choose a custom deployment name; it defaults to the
     # catalog model ID itself (e.g. "Cohere-command-a-plus-05-2026").
     AZURE_FOUNDRY_DEPLOYMENT: str = ""
-    # Unused on the confirmed /openai/v1 path (no api-version query param
-    # needed) — kept for operators who fall back to the classic
-    # /openai/deployments/{name} or /models/chat/completions surfaces,
-    # which DO require it.
-    AZURE_FOUNDRY_API_VERSION: str = "2024-05-01-preview"
     # Cohere Command A+: 128K input / 64K output tokens (Foundry catalog
     # spec). MUST be retuned if the deployed model differs.
     AZURE_FOUNDRY_MAX_MODEL_LEN: int = 128_000
     AZURE_FOUNDRY_MAX_TOKENS: int = 4096
-    AZURE_FOUNDRY_TEMPERATURE: float = 0.1
     # Preview-model risk: Command A+ is a Preview SKU (05-2026). Azure
     # previews carry no SLA and can change wire shape without notice.
     # Re-verify this contract with a live test call after any Azure/Cohere
@@ -410,17 +454,9 @@ class Settings(BaseSettings):
     # prompt-caching stays hot.
     SYSTEM_PROMPT_ROUTING_ENABLED: bool = True
 
-    # Freshness ranking (Eval 01 L6 follow-up, 2026-05-20). When > 0, the
-    # fusion layer demotes public_geo candidates whose ingested_at is older
-    # than the workspace's current data_version timestamp. 0.0 = no-op
-    # (safe default for transitional deploys); 0.2 = mild demote;
-    # 1.0 = effectively drop stale public_geo. Operator-tunable.
-    FRESHNESS_RANKING_WEIGHT: float = 0.0
 
     # Model identifiers used by the live classifier and pricing telemetry.
     MODEL_TIER_FAST: str = "claude-haiku-4-5"
-    MODEL_TIER_STANDARD: str = "claude-sonnet-4-6"
-    MODEL_TIER_DEEP: str = "claude-opus-4-8"
     # R11 — hard-fail when the orchestrator is asked to run on Anthropic but
     # the pooled AsyncAnthropic client wasn't attached at startup. Set to
     # False only during bootstrapping (tests, mid-migration deploys) when
@@ -428,11 +464,6 @@ class Settings(BaseSettings):
     # loud failure here rather than silent per-call construction churn.
     REQUIRE_POOLED_ANTHROPIC_CLIENT: bool = True
 
-    # Failover target when an Anthropic request hits 429/529/timeout.
-    #   "downshift" — try the next-lower Anthropic tier (DEEP→STANDARD→FAST).
-    #   "local_llm" — switch backends to the local vLLM endpoint.
-    #   None        — no failover; surface the error.
-    LLM_BACKEND_FALLBACK: str | None = "downshift"
 
     # Max-marginal-relevance (B4) — de-dupes near-identical document chunks
     # that the cross-encoder reranker keeps when the same resource paragraph
@@ -444,14 +475,6 @@ class Settings(BaseSettings):
     MMR_ENABLED: bool = True
     MMR_LAMBDA: float = 0.7
 
-    # Document-scope version (B5). Bump to invalidate all cached RAG responses
-    # when the document-retrieval scope policy changes — e.g., switching
-    # Qdrant from cross-project to per-project filtering in tools.search_documents.
-    # The version is folded into the response cache key so a policy flip
-    # cleanly invalidates stale cross-project answers instead of waiting for
-    # the 5-minute TTL. Also bumped when the reranker or embedding model
-    # changes and you want to force a cold-start.
-    DOCUMENT_SCOPE_VERSION: int = 1
 
     # P0 #1 — Qdrant project_id scoping for search_documents.
     # `search_documents` targets the `georag_reports` collection. Historically
@@ -471,10 +494,21 @@ class Settings(BaseSettings):
     #                         return zero results until the indexer stamps
     #                         project_id on every point.
     #
-    # Flip the default to `project_or_public` after running the index_reports
-    # asset with the project_id payload patch and bumping
-    # DOCUMENT_SCOPE_VERSION to invalidate the RAG response cache.
-    QDRANT_DOCUMENT_PROJECT_SCOPE: str = "cross_project"
+    # Flipped to `project_or_public` on 2026-08-21. The condition the comment
+    # above set has been met for a long time — passage_embedder stamps
+    # project_id on every point it writes — but the default was never
+    # changed, and the live container never overrode it. So document
+    # retrieval filtered on workspace_id ALONE: a workspace holding reports
+    # for two properties would let one property's Section 14 chunks compete
+    # for a question asked in the other, and the reranker scores query
+    # against passage with no notion of project. The answer then came back
+    # citing the other project's report while the prompt framed it as "in
+    # this project". That is a wrong-answer generator that gets worse as a
+    # workspace accumulates projects.
+    #
+    # `project_or_public` rather than `strict` because legacy public NI
+    # 43-101 rows predate the payload field and would vanish under strict.
+    QDRANT_DOCUMENT_PROJECT_SCOPE: str = "project_or_public"
 
     # ADR-0010 — silver.document_passages is the canonical chunked-content
     # corpus. When True, `search_documents` reads from the new
@@ -547,10 +581,25 @@ class Settings(BaseSettings):
     # body text (NI 43-101 chunks, public-geoscience snippets) is wrapped in
     # explicit data-fence delimiters in the LLM context, with a guard preamble
     # instructing the model to treat fenced content as reference data only and
-    # never as instructions. Default OFF: it slightly changes the prompt shape,
-    # so flip it after a golden-eval pass confirms no answer-quality regression
-    # (the delimiting itself is safe; the gate is about prompt-format drift).
-    PROMPT_INJECTION_DELIMITING_ENABLED: bool = False
+    # never as instructions.
+    #
+    # Defaulted OFF from 2026-06-27 to 2026-08-21 "pending a golden-eval pass
+    # confirming no answer-quality regression". That gate could never be
+    # satisfied: no CI job runs a real model against a real corpus (the nightly
+    # eval stubs the LLM), so the pass being waited on does not exist. Meanwhile
+    # the corpus is, by design, third-party technical reports and public
+    # geoscience records — text this system does not author and cannot vet.
+    #
+    # Now True. This is NOT a change to production: fastapi-cc already carries
+    # PROMPT_INJECTION_DELIMITING_ENABLED=true (set and verified 2026-08-21), so
+    # the live prompt shape is already the fenced one and the drift this default
+    # was guarding against has already been taken. What the flip fixes is every
+    # OTHER deployment — a fresh environment, a laptop, a worker that renders
+    # context — which silently ran unfenced because the safe posture had to be
+    # opted into. Explicitly setting it False anywhere still wins, and on a
+    # GEORAG_ENV=production process that now logs CRITICAL (main.py::
+    # _assert_production_posture) rather than passing quietly.
+    PROMPT_INJECTION_DELIMITING_ENABLED: bool = True
 
     # -------------------------------------------------------------------------
     # Phase 1 / Step 1.2 — OIUR answer schema rollout
@@ -792,6 +841,44 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_timeout_ordering(self) -> Settings:
+        """An inner budget must fit inside the deadline that wraps it.
+
+        TIMEOUT_GATHER_S is the overall query deadline. TIMEOUT_RERANKER_S
+        and TIMEOUT_QDRANT_S are awaited inside it. For a long time the
+        in-code defaults had TIMEOUT_GATHER_S at 8.0 and
+        TIMEOUT_RERANKER_S at 20.0 — an outer deadline two and a half times
+        SMALLER than one of the things it waits for — and the config's own
+        comment noted the invariant held because "every deployed .env sets
+        it to 180". A relationship that only holds by coincidence of
+        environment is not a relationship; it is an outage waiting for the
+        first deployment that forgets.
+
+        Checked rather than derived: the two inner budgets have their own
+        reasoning behind their values (see the comments above each), so
+        computing one from the other would lose that. What must never
+        happen is the ordering inverting silently.
+        """
+        inner = {
+            "TIMEOUT_RERANKER_S": self.TIMEOUT_RERANKER_S,
+            "TIMEOUT_QDRANT_S": self.TIMEOUT_QDRANT_S,
+        }
+        offenders = {
+            name: value for name, value in inner.items()
+            if value >= self.TIMEOUT_GATHER_S
+        }
+        if offenders:
+            detail = ", ".join(f"{n}={v}" for n, v in sorted(offenders.items()))
+            raise ValueError(
+                f"TIMEOUT_GATHER_S={self.TIMEOUT_GATHER_S} is the overall query "
+                f"deadline, but it is not larger than {detail}. The outer "
+                f"deadline fires first and every query dies with a `timeout` "
+                f"frame. Raise TIMEOUT_GATHER_S or lower the inner budget."
+            )
+
+        return self
+
     @property
     def effective_llm_url(self) -> str:
         """Return the LLM endpoint URL for OpenAI-compatible backends.
@@ -855,12 +942,29 @@ class Settings(BaseSettings):
     # Previously folded into TIMEOUT_QDRANT_S, which meant the bge-reranker
     # could blow the 2s budget and the wait_for would drop the entire
     # search_documents branch (incl. the Qdrant results that arrived fine
-    # at ~70 ms). Sizing: bge-reranker-base on 10 threads needs ~450 ms
-    # per pair at the model's 512-token max — i.e. ~4.5 s for 10 pairs
-    # in the worst case (tokenisation included). 8 s gives headroom for
-    # long-bodied chunks without letting a wedged reranker block the
-    # whole request. Future lever: ONNX INT8 quantisation (~2-3x speedup).
-    TIMEOUT_RERANKER_S: float = 8.0
+    # at ~70 ms). Original sizing: bge-reranker-base on 10 threads needs
+    # ~450 ms per pair at the model's 512-token max — i.e. ~4.5 s for 10
+    # pairs in the worst case (tokenisation included), so 8 s.
+    #
+    # 2026-08-20 — raised 8.0 -> 20.0. That 8 s was sized for a LOCAL
+    # bge-reranker; the live backend is Cohere Rerank v4 over HTTP to
+    # Foundry, whose own per-call timeout also defaulted to 8.0 s. An 8 s
+    # HTTP timeout under an 8 s wait_for leaves exactly zero room, so the
+    # retry path in _foundry_retry was unreachable: any 429 (Foundry TPM
+    # quota is shared across every deployment on the resource) meant the
+    # wait_for fired, the branch silently fell back to raw Qdrant cosine
+    # ordering, and the executor thread kept retrying in the background
+    # against a result nobody would read.
+    #
+    # 20 s is the arithmetic of one real retry, not a round number:
+    # call (<=9.5 s, half the derived budget) + 2 s backoff + call
+    # (<=9.5 s) = 21 s of theoretical worst case against a 19 s derived
+    # budget, and reranker.py enforces the deadline rather than trusting
+    # it. The overall request deadline is TIMEOUT_GATHER_S, which every
+    # deployed .env sets to 180, so there is ample room. See
+    # reranker._caller_budget_s — that function reads THIS setting, so the
+    # two budgets cannot drift apart again.
+    TIMEOUT_RERANKER_S: float = 20.0
 
     # Latency-fix follow-up — bge-reranker-base internally truncates to
     # max_length=512 tokens, but the tokeniser still walks the FULL body
@@ -871,7 +975,29 @@ class Settings(BaseSettings):
     RERANKER_INPUT_CHAR_BUDGET: int = 2000
 
     TIMEOUT_REDIS_S: float = 0.5
-    TIMEOUT_GATHER_S: float = 8.0  # hard deadline for parallel fan-out
+
+    # The overall query deadline. Everything above is awaited INSIDE it, so
+    # it has to be the largest of them — and the in-code default was 8.0,
+    # which is smaller than TIMEOUT_RERANKER_S (20.0). The comment above
+    # even says "which every deployed .env sets to 180, so there is ample
+    # room": the invariant held only because every environment happened to
+    # override it.
+    #
+    # Bring the stack up anywhere that override is missing — a fresh
+    # `docker compose` without the env file, a test container, a new Azure
+    # environment, an on-prem install from the Helm chart — and the outer
+    # 8-second deadline fires before the reranker's own 20-second budget
+    # every single time. Every non-trivial query dies, the SSE stream emits
+    # a `timeout` frame, and nothing tells the user that one unset variable
+    # is the reason. TIMEOUT_GATHER_S is also the httpx read timeout for the
+    # Foundry chat call, so even with no reranker an 8-second ceiling cuts a
+    # Command A+ synthesis off mid-stream.
+    #
+    # 180.0 is what production actually runs (verified on fastapi-cc), so
+    # the default now IS the deployed value rather than 22.5x below it.
+    # _validate_timeout_ordering below fails startup if a future edit makes
+    # an inner budget exceed this again.
+    TIMEOUT_GATHER_S: float = 180.0  # hard deadline for parallel fan-out
 
     # -------------------------------------------------------------------------
     # Embedding and reranker model selection
@@ -951,33 +1077,24 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_N: int = 40
 
     # Number of chunks to keep after reranking (fine retrieval, Layer 1 gate).
-    # P1 #17 — bumped from 5 to 12 to give MMR a real candidate pool.
-    # MMR is run downstream in the orchestrator with k=MAX_CONTEXT_DOC_CHUNKS;
-    # at the old RERANKER_TOP_K=5 + MAX_CONTEXT_DOC_CHUNKS=5 the MMR step
-    # was choosing 5-from-5, i.e. just sorting. With 12 candidates picked
-    # by the reranker, MMR can actually drop near-duplicate amendments.
-    RERANKER_TOP_K: int = 12
-
-    # ── Plan §2a — retrieval-K decoupled from context-K ────────────────
-    # These constants represent the plan §2a targets for a future
-    # retrieval rework where each store contributes a wider candidate
-    # pool that's then pooled + reranked + diversified. They are NOT
-    # yet wired into the live agentic_retrieval pipeline (which still
-    # consumes RETRIEVAL_TOP_N + RERANKER_TOP_K above). Downstream
-    # wiring is tracked as the §2a M-effort follow-up (see
-    # `docs/architecture/six_subgraphs_spec.md` §6 gap list).
     #
-    # The values follow plan §2a Table A verbatim. Override via .env
-    # for benchmarking without touching code.
-    QDRANT_DENSE_TOP_K: int = 40
-    QDRANT_SPARSE_TOP_K: int = 40
-    POSTGIS_TOP_K: int = 50
-    NEO4J_TOP_K: int = 30
-    RERANK_CANDIDATES: int = 120     # pooled across all sources
-    RERANK_TOP_K_PLAN_2A: int = 20   # reranker output (renamed to avoid
-                                     # collision with the live RERANKER_TOP_K)
-    FINAL_CONTEXT_GROUPS_MIN: int = 8
-    FINAL_CONTEXT_GROUPS_MAX: int = 12
+    # CORRECTED 2026-08-22. This comment used to read: "P1 #17 — bumped
+    # from 5 to 12 to give MMR a real candidate pool. MMR is run
+    # downstream in the orchestrator with k=MAX_CONTEXT_DOC_CHUNKS."
+    #
+    # MMR DOES NOT RUN. `_mmr_select_chunks` is called from exactly one
+    # place, `context_builder._build_context`, and that function has no
+    # production caller — the live renderer is
+    # `agentic_retrieval.nodes._render_tool_results_context`. So does
+    # MAX_CONTEXT_DOC_CHUNKS, which is read only inside the same dead
+    # function.
+    #
+    # That mattered because the old comment told a tuner the wrong thing
+    # to do. Raising this value does NOT widen a de-duplication pool; it
+    # pushes more low-relevance chunks into the fixed character budget of
+    # the live renderer, evicting the structured collar/assay blocks that
+    # render later in dispatch order. Retrieval quality goes DOWN.
+    RERANKER_TOP_K: int = 12
 
     # ── Plan §2b — dynamic temperature by query type ───────────────────
     # Read by the orchestrator's _call_openai_compatible_llm when the
@@ -1081,9 +1198,31 @@ class Settings(BaseSettings):
     # RETRIEVAL_QUALITY_THRESHOLD below, which the sweep in
     # scripts/sweep_retrieval_threshold.py operates on.
 
-    # Layer 1: minimum relevance score for retrieved chunks (Qdrant cosine similarity
-    # after cross-encoder reranking).  Chunks below this threshold are dropped before
-    # being returned to the agent; if ALL chunks are dropped the tool returns empty.
+    # Layer 1: minimum relevance score for retrieved chunks. CALIBRATED
+    # [0,1] ONLY -- a cosine similarity or a reranker relevance probability.
+    #
+    # 2026-08-21: this used to say "Qdrant cosine similarity after
+    # cross-encoder reranking", and the one live call site applied it to
+    # neither. search_documents ran it over `float(point.score)` from
+    # hybrid_query -- a Qdrant RRF FUSION score, derived from a point's rank
+    # in each prefetch branch -- on the branch taken when no reranker is
+    # configured. Every chunk fell under 0.5 and the agent reported
+    # "insufficient information" for every document query. The sweep below
+    # could not have seen it: sweep_retrieval_threshold.py requires a
+    # reranker to be loaded, and the reranked branch returns before reaching
+    # the gate, which is exactly why the sweep found the knob "inert" -- and
+    # why raising an inert knob was not free.
+    #
+    # The live Layer 1 bar on the document path is now the backend-aware
+    # reranker threshold (RERANKER_SCORE_THRESHOLD /
+    # RERANKER_SCORE_THRESHOLD_FOUNDRY above), which is applied where the
+    # scores are genuinely calibrated. This value is retained for callers
+    # holding real cosine scores and for the sweep harness. Before wiring a
+    # new call site, read the scale contract at the point where this gate
+    # was removed: app/agent/tools.py, in the no-reranker branch of
+    # search_documents (the RRF-vs-cosine explanation there is the live
+    # version; it used to live in layer1_retrieval.py, which was deleted
+    # on 2026-08-21 as unreachable).
     #
     # R8 (Phase 2): swept 0.25 → 0.70 against the retrieval golden set via
     # scripts/sweep_retrieval_threshold.py. Findings:
@@ -1127,15 +1266,6 @@ class Settings(BaseSettings):
     # Layer 6: apply SME-defined geological constraint rules to numerical claims.
     GEOLOGICAL_CONSTRAINTS_ENABLED: bool = True
 
-    # Maximum number of output validation retries before the agent gives up.
-    # Pydantic AI's output_retries on the agent is a separate knob for schema
-    # validation; this constant governs our domain validators.
-    #
-    # When LLM_BACKEND=anthropic and adaptive thinking is active, the model
-    # self-corrects during generation for most numerical/entity issues, so a
-    # single retry is typically enough. Ollama/vLLM benefit from 2. Leave the
-    # default at 2 and let operators drop to 1 for the Anthropic deployment.
-    MAX_VALIDATION_RETRIES: int = 2
 
     # Doc-phase 186 — §04i guard tolerance thresholds (Phase E.3.1).
     #
@@ -1236,7 +1366,6 @@ class Settings(BaseSettings):
     # reasoning_content overhead + system prompt + safety margin. Retune
     # alongside AZURE_FOUNDRY_MAX_MODEL_LEN if the deployed model differs.
     MAX_CONTEXT_TOKENS_AZURE: int = 100_000
-
 
     @property
     def effective_max_context_tokens(self) -> int:

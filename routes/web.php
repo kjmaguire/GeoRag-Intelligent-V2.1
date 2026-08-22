@@ -22,10 +22,14 @@ use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
-// Module 10 Chunk 10.4 — Prometheus exposition. Unauthenticated by design;
-// gated to private-IP callers in MetricsController::isAllowedScraper().
-// Bypasses the auth + CSRF + Inertia middleware groups via withoutMiddleware.
+// Module 10 Chunk 10.4 — Prometheus exposition. No session (a scraper has
+// none), but it does need the `service.key` shared secret: the previous gate
+// compared $request->ip() against RFC-1918 ranges, and ip() reads the
+// client-supplied X-Forwarded-For chain, so the whole metric set was readable
+// by anyone willing to send one header. Bypasses the auth + CSRF + Inertia
+// middleware groups via withoutMiddleware.
 Route::get('/metrics', MetricsController::class)
+    ->middleware('service.key')
     ->withoutMiddleware([
         EnsureFrontendRequestsAreStateful::class,
         VerifyCsrfToken::class,

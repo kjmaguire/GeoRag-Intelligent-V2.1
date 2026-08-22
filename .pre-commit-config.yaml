@@ -49,12 +49,16 @@ repos:
         entry: scripts/check_prompt_version_bump.sh
         language: script
         pass_filenames: false
-        files: ^(src/fastapi/app/agent/(orchestrator\.py|prompts/.*)|src/fastapi/app/prompts/.*)$
+        # orchestrator/ is a DIRECTORY (the package that replaced
+        # orchestrator.py). Matching the old module name meant edits to
+        # the live inline prompts in orchestrator/__init__.py triggered
+        # no check at all — see scripts/check_prompt_version_bump.sh.
+        files: ^(src/fastapi/app/agent/(orchestrator/.*|prompts/.*)|src/fastapi/app/prompts/.*)$
         stages: [pre-commit]
         description: >
           Fails the commit if any prompt-path file is staged AND
-          _SYSTEM_PROMPT_VERSION in orchestrator.py is NOT also staged with a
-          changed value. Prevents silent prompt drift that bypasses Anthropic
+          _SYSTEM_PROMPT_VERSION in orchestrator/__init__.py is NOT also
+          staged with a changed value. Prevents silent prompt drift that bypasses Anthropic
           cache invalidation and RETRIEVAL_STRATEGY_VERSION bookkeeping.
 
       - id: fastapi-pydantic-freshness

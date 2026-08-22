@@ -1,0 +1,42 @@
+{
+  "model": "Qwen/Qwen3-14B-AWQ",
+  "max_tokens": 256,
+  "results": [
+    {
+      "concurrency": 1,
+      "ok_count": 20,
+      "error_count": 0,
+      "wall_clock_s": 148.98,
+      "ttft_s_p50": 0.045,
+      "ttft_s_p95": 0.084,
+      "e2e_s_p50": 6.99,
+      "e2e_s_p95": 8.545,
+      "per_req_gen_tok_per_s_p50": 36.95,
+      "aggregate_gen_tok_per_s": 34.37
+    },
+    {
+      "concurrency": 5,
+      "ok_count": 20,
+      "error_count": 0,
+      "wall_clock_s": 30.6,
+      "ttft_s_p50": 0.081,
+      "ttft_s_p95": 0.121,
+      "e2e_s_p50": 7.397,
+      "e2e_s_p95": 8.696,
+      "per_req_gen_tok_per_s_p50": 35.12,
+      "aggregate_gen_tok_per_s": 167.3
+    },
+    {
+      "concurrency": 10,
+      "ok_count": 20,
+      "error_count": 0,
+      "wall_clock_s": 18.32,
+      "ttft_s_p50": 0.093,
+      "ttft_s_p95": 0.106,
+      "e2e_s_p50": 9.056,
+      "e2e_s_p95": 9.408,
+      "per_req_gen_tok_per_s_p50": 28.52,
+      "aggregate_gen_tok_per_s": 279.45
+    }
+  ]
+}

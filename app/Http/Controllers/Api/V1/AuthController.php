@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password as PasswordBroker;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rules\Password;
@@ -36,6 +37,28 @@ class AuthController extends Controller
             'email' => ['required', 'string', 'email', 'max:255'],
         ]);
 
+        // Production runs MAIL_MAILER=log, so sendResetLink() writes the
+        // reset URL to the log stream and returns success. The user was told
+        // "a link has been sent", waited, and received nothing — and because
+        // the message deliberately does not reveal account existence, neither
+        // they nor support could tell "no such account" from "mail was never
+        // configured". Account recovery in production meant editing the
+        // database by hand.
+        //
+        // Saying so is not an existence leak: whether mail works is a
+        // property of the deployment, not of the address typed in.
+        if (! $this->mailIsDeliverable()) {
+            Log::critical('Password reset requested but no mailer is configured.', [
+                'event' => 'mail.not_configured',
+                'mailer' => config('mail.default'),
+            ]);
+
+            return response()->json([
+                'message' => 'Password reset by email is not available on this deployment. '
+                    .'Ask an administrator to reset your password.',
+            ], 503);
+        }
+
         PasswordBroker::sendResetLink([
             'email' => $validated['email'],
         ]);
@@ -43,6 +66,23 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'If an account exists for that email, a password reset link has been sent.',
         ]);
+    }
+
+    /**
+     * Whether a reset email would actually leave the building.
+     *
+     * `log` and `null` accept a message and drop it — `log` is what
+     * production is set to. `array` is deliberately NOT on this list: it
+     * keeps the message in memory where a test can assert on it, which is a
+     * delivery a test can observe.
+     */
+    private function mailIsDeliverable(): bool
+    {
+        return ! in_array(
+            (string) config('mail.default'),
+            ['log', 'null'],
+            true,
+        );
     }
 
     /**
@@ -84,6 +124,18 @@ class AuthController extends Controller
      */
     public function register(Request $request): JsonResponse
     {
+        // Closed by default. Anyone could create an account here and the
+        // account was not inert: project creation used to fall back to a
+        // hardcoded workspace, which put a stranger inside the production
+        // tenant with read access to its audit ledger and usage rollups.
+        // There is no registration UI, so nothing legitimate calls this
+        // outside tests and local bootstrapping.
+        if (! config('auth.registration_open', false)) {
+            return response()->json([
+                'message' => 'Registration is closed. Ask an administrator for an account.',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],

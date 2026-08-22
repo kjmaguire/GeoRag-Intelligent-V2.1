@@ -9,10 +9,15 @@ into the upload UI. This workflow:
   3. Routes each extracted file by extension:
        .las / .LAS  →  las_ingester.ingest_las_file
        .log         →  cameco_log_ingester (parse header + upsert collar)
-       .csv         →  csv_collar_ingester.ingest_csv_collar_file
+       .csv / .tsv  →  re-uploads to bronze tabular/ prefix + triggers
+                       ingest_tabular, which classifies the header
        .tif / .tiff →  re-uploads to bronze tiff/ prefix + triggers tiff_normalize
-       .xlsx / .xls →  xlsx_ingester.ingest_xlsx_file
+       .xlsx / .xls →  ingest_tabular (every sheet classified separately)
        .pdf         →  re-uploads to bronze reports/ prefix + triggers ingest_pdf
+       .shp + kin   →  re-zipped with its sidecars, uploaded to bronze
+                       spatial/ prefix + triggers ingest_spatial
+       .geojson / .gpkg / .gml / .gpx / .dxf / .fgb / .qgs / .qgz
+                    →  uploaded to bronze spatial/ prefix + ingest_spatial
   4. Logs progress every 10 files.
   5. Returns a summary dict with per-extension counts and error tally.
 
@@ -39,9 +44,39 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
+from app.hatchet_workflows.ingest_spatial import (
+    QGIS_PROJECT_EXTENSIONS,
+    VECTOR_EXTENSIONS,
+    IngestSpatialInput,
+    ingest_spatial,
+)
+from app.hatchet_workflows.ingest_tabular import IngestTabularInput, ingest_tabular
 from app.hatchet_workflows.tiff_normalize import TiffNormalizeInput, tiff_normalize
+
+#: Vector + QGIS members this workflow hands off to ingest_spatial, without
+#: the leading dot (ingest_spatial stores them Path.suffix-style).
+#:
+#: Before this existed, every .shp/.shx/.dbf/.prj in an archive fell through
+#: to the `unknown` bucket and was logged at DEBUG only — and `unknown` never
+#: contributes to the terminal status, so a ZIP of nothing but shapefiles was
+#: marked `completed` with zero features written. The import wizard produced
+#: exactly that ZIP, because it names a shapefile bundle `<stem>.zip` and
+#: `.zip` resolves to the `archive` category.
+_SPATIAL_EXTS = frozenset(
+    e.lstrip(".") for e in (VECTOR_EXTENSIONS | QGIS_PROJECT_EXTENSIONS)
+)
+
+#: Shapefile companions. pyogrio reads these THROUGH the .shp, so opening one
+#: directly is wrong — but they are not "unknown" either: the .shp branch
+#: below re-zips them alongside their .shp. Counting them separately keeps
+#: `unknown` meaning "we genuinely do not handle this".
+_SHAPEFILE_SIDECAR_EXTS = frozenset({
+    "shx", "dbf", "prj", "cpg", "qpj", "sbn", "sbx", "qix", "idx",
+    "ain", "aih", "atx", "fbn", "fbx", "mxs", "shp_xml",
+})
 
 # Ingester imports are deferred to _ingest_one() to avoid pulling optional
 # heavy deps (lasio, openpyxl) at module load time — the ingestion worker
@@ -88,13 +123,9 @@ class IngestZipArchiveInput(BaseModel):
 
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -169,34 +200,47 @@ async def run_zip_ingest(
             _MAX_ENTRIES = 50_000
             _MAX_TOTAL_UNCOMPRESSED = 5 * 1024 ** 3  # 5 GiB
             extract_root = extract_dir.resolve()
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                infos = zf.infolist()
-                if len(infos) > _MAX_ENTRIES:
-                    raise ValueError(
-                        f"ingest_zip_archive: {len(infos)} entries exceeds "
-                        f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
-                    )
-                total_uncompressed = sum(i.file_size for i in infos)
-                if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
-                    raise ValueError(
-                        f"ingest_zip_archive: uncompressed size "
-                        f"{total_uncompressed} B exceeds {_MAX_TOTAL_UNCOMPRESSED} B "
-                        "(zip-bomb guard); refusing."
-                    )
-                for info in infos:
-                    if info.is_dir():
-                        continue
-                    dest = (extract_dir / info.filename).resolve()
-                    if dest != extract_root and not str(dest).startswith(
-                        str(extract_root) + os.sep
-                    ):
+
+            # Hard rule 2. Extraction is CPU-bound zlib plus disk I/O with no
+            # await point anywhere in it — on a 5 GiB archive that is minutes
+            # of blocking on the worker's event loop, during which Hatchet's
+            # heartbeat cannot fire. The engine then marks the worker dead
+            # and cancels every OTHER in-flight task on it: a concurrent PDF
+            # parse, an embed sweep. The download two lines up was already
+            # wrapped for exactly this reason; the extraction next to it was
+            # not. Same failure the subprocess pool in ingest_pdf.py exists
+            # to avoid, reintroduced in the sibling workflow.
+            def _extract_all() -> None:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    infos = zf.infolist()
+                    if len(infos) > _MAX_ENTRIES:
                         raise ValueError(
-                            f"ingest_zip_archive: unsafe path {info.filename!r} "
-                            "escapes extract dir (zip-slip guard); refusing."
+                            f"ingest_zip_archive: {len(infos)} entries exceeds "
+                            f"{_MAX_ENTRIES} (zip-bomb guard); refusing."
                         )
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as src, open(dest, "wb") as out:
-                        shutil.copyfileobj(src, out)
+                    total_uncompressed = sum(i.file_size for i in infos)
+                    if total_uncompressed > _MAX_TOTAL_UNCOMPRESSED:
+                        raise ValueError(
+                            f"ingest_zip_archive: uncompressed size "
+                            f"{total_uncompressed} B exceeds "
+                            f"{_MAX_TOTAL_UNCOMPRESSED} B (zip-bomb guard); refusing."
+                        )
+                    for info in infos:
+                        if info.is_dir():
+                            continue
+                        dest = (extract_dir / info.filename).resolve()
+                        if dest != extract_root and not str(dest).startswith(
+                            str(extract_root) + os.sep
+                        ):
+                            raise ValueError(
+                                f"ingest_zip_archive: unsafe path {info.filename!r} "
+                                "escapes extract dir (zip-slip guard); refusing."
+                            )
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src, open(dest, "wb") as out:
+                            shutil.copyfileobj(src, out)
+
+            await asyncio.to_thread(_extract_all)
 
             all_files = [p for p in extract_dir.rglob("*") if p.is_file()]
             total = len(all_files)
@@ -239,6 +283,7 @@ async def run_zip_ingest(
                 # ── 4. Fan-out by extension ───────────────────────────────────
                 counts: dict[str, int] = {
                     "las": 0, "log": 0, "csv": 0, "tif": 0, "xlsx": 0, "pdf": 0,
+                    "spatial": 0, "sidecar": 0,
                     "skipped": 0, "errors": 0, "unknown": 0,
                 }
                 errors: list[dict[str, str]] = []
@@ -246,6 +291,16 @@ async def run_zip_ingest(
                 for idx, file_path in enumerate(all_files, start=1):
                     ext = file_path.suffix.lower().lstrip(".")
                     try:
+                        # Snapshot the buckets _ingest_one may bump, so
+                        # "did this file actually land" is answered by what
+                        # changed rather than by whether an exception was
+                        # raised. Several ingesters report failure by
+                        # RETURNING skipped=True — lasio on an unreadable
+                        # LAS, an empty workbook — and never raise at all.
+                        before_skipped = counts["skipped"]
+                        before_unknown = counts["unknown"]
+                        before_sidecar = counts["sidecar"]
+
                         await _ingest_one(
                             file_path=file_path,
                             ext=ext,
@@ -254,13 +309,30 @@ async def run_zip_ingest(
                             input=input,
                             counts=counts,
                         )
-                        # Per-file success bump on the parent. Skip for
-                        # extensions we treat as "skipped" rather than
-                        # "succeeded" — _ingest_one bumps counts["skipped"]
-                        # internally for those (zero-handler branches).
-                        if archive_run_id and ext not in ("skipped",):
+
+                        # This used to read `if ext not in ("skipped",)`.
+                        # `ext` is a file extension — 'las', 'docx', '' — and
+                        # can never equal the literal string "skipped", so
+                        # the condition was always true and every file
+                        # counted as a success. A 600-file ZIP of .docx notes
+                        # and shapefile bundles, none of which had a handler,
+                        # reported "600 files, 600 succeeded, 0 failed,
+                        # completed" having ingested nothing at all.
+                        handled = (
+                            counts["skipped"] == before_skipped
+                            and counts["unknown"] == before_unknown
+                        )
+                        # A shapefile sidecar is neither a success nor a
+                        # failure: the .shp branch already carried it.
+                        was_sidecar = counts["sidecar"] != before_sidecar
+
+                        if archive_run_id and handled and not was_sidecar:
                             await _archive_progress.increment_counts(
                                 archive_run_id=archive_run_id, succeeded=1,
+                            )
+                        elif archive_run_id and not handled:
+                            await _archive_progress.increment_counts(
+                                archive_run_id=archive_run_id, skipped=1,
                             )
                     except Exception as exc:
                         counts["errors"] += 1
@@ -421,42 +493,53 @@ async def _ingest_one(
                 )
             counts["log"] += 1
 
-    elif ext == "csv":
-        # Plain CSV collar/assay files → silver.collars. Restored 2026-08
-        # after the Dagster retirement (2026-07-28) left CSV uploads with
-        # no live ingestion path (Laravel's UploadController hard-rejects
-        # category=collar/assay with a 422) — this ZIP-archive path was
-        # the one live end-to-end route left, so it gets a .csv branch
-        # instead of reviving Dagster. See csv_collar_ingester.py for the
-        # expected column shape.
-        from app.services.ingest.csv_collar_ingester import ingest_csv_collar_file  # noqa: PLC0415
-
-        async with conn.transaction():
-            result = await ingest_csv_collar_file(
-                conn,
-                str(file_path),
+    # No ".txt": inside an archive that is almost always a readme, and
+    # routing one into ingest_tabular spawns a workflow whose only output is
+    # a `nothing_classified` warning. Drill data arriving as .txt comes in
+    # under an explicit upload category, where the user has said what it is.
+    elif ext in ("csv", "tsv", "xlsx", "xls", "xlsm"):
+        # Tabular data — re-upload to bronze and hand off to ingest_tabular,
+        # the same pattern .pdf, .tif and the vector branch use.
+        #
+        # This branch used to call ingest_csv_collar_file unconditionally for
+        # .csv, and that ingester requires hole_id/easting/northing. Zip a
+        # hole's full dataset — collars.csv, survey.csv, lithology.csv,
+        # assays.csv — and only collars.csv landed. The other three returned
+        # skipped_reason="missing_required_columns", which increments
+        # counts["skipped"] rather than counts["errors"], so the archive was
+        # still marked completed and the summary reported four files
+        # succeeded. The user got collars with no surveys, no lithology and
+        # no assays, and nothing told them.
+        #
+        # ingest_tabular classifies the header and routes to the right silver
+        # table, and for a workbook it classifies EVERY sheet rather than
+        # assuming the first one is the data. Deliberately no sheet_type
+        # hint: inside an archive there is no user-chosen category to pass,
+        # and an explicit hint makes ingest_tabular skip classification
+        # entirely.
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        safe_name = _safe_filename(file_path.name)
+        tabular_key = f"tabular/{input.project_id}/{ts}_{safe_name}"
+        file_bytes = await asyncio.to_thread(file_path.read_bytes)
+        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, tabular_key, file_bytes)
+        await ingest_tabular.aio_run_no_wait(
+            IngestTabularInput(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
+                minio_key=tabular_key,
             )
-        if result.skipped:
-            counts["skipped"] += 1
-            log.debug(
-                "ingest_zip_archive: CSV skipped %s — %s", file_path.name, result.skipped_reason,
-            )
-        else:
-            counts["csv"] += 1
-            if result.skipped_rows:
-                log.info(
-                    "ingest_zip_archive: CSV %s landed %d/%d rows (%d skipped)",
-                    file_path.name, result.valid_rows, result.total_rows, result.skipped_rows,
-                )
+        )
+        # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch below
+        # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
+        await asyncio.sleep(0.25)
+        counts["csv" if ext in ("csv", "tsv") else "xlsx"] += 1
 
     elif ext in ("tif", "tiff"):
         # TIFF scans → upload to bronze tiff/ prefix + trigger tiff_normalize
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         tiff_key = f"tiff/{input.project_id}/{ts}_{safe_name}"
-        file_bytes = file_path.read_bytes()
+        file_bytes = await asyncio.to_thread(file_path.read_bytes)
         await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, tiff_key, file_bytes)
         await tiff_normalize.aio_run_no_wait(
             TiffNormalizeInput(
@@ -474,28 +557,12 @@ async def _ingest_one(
         await asyncio.sleep(0.25)
         counts["tif"] += 1
 
-    elif ext in ("xlsx", "xls"):
-        # XLSX spreadsheets → silver.document_passages
-        from app.services.ingest.xlsx_ingester import ingest_xlsx_file  # noqa: PLC0415
-
-        async with conn.transaction():
-            result = await ingest_xlsx_file(
-                conn,
-                str(file_path),
-                workspace_id=input.workspace_id,
-                project_id=input.project_id,
-            )
-        if result.skipped:
-            counts["skipped"] += 1
-        else:
-            counts["xlsx"] += 1
-
     elif ext == "pdf":
         # PDF reports → upload to bronze reports/ prefix + trigger ingest_pdf
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
         pdf_key = f"reports/{input.project_id}/{ts}_{safe_name}"
-        file_bytes = file_path.read_bytes()
+        file_bytes = await asyncio.to_thread(file_path.read_bytes)
         await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, pdf_key, file_bytes)
         await ingest_pdf.aio_run_no_wait(
             IngestPdfInput(
@@ -510,6 +577,49 @@ async def _ingest_one(
         # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
         await asyncio.sleep(0.25)
         counts["pdf"] += 1
+
+    elif ext in _SPATIAL_EXTS:
+        # Vector / QGIS data — re-upload to the bronze spatial/ prefix and hand
+        # off to ingest_spatial, the same pattern the .pdf and .tif branches
+        # use. A shapefile is never one file, so a .shp is re-zipped with its
+        # same-stem companions first; ingest_spatial's archive path unpacks
+        # that and pyogrio reads the .prj it needs to know the CRS.
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        if ext == "shp":
+            members = sorted(
+                sib for sib in file_path.parent.iterdir()
+                if sib.is_file() and sib.stem == file_path.stem
+            )
+            bundle_path = file_path.parent / f"__bundle_{file_path.stem}.zip"
+            def _write_bundle() -> None:
+                with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for m in members:
+                        zf.write(m, arcname=m.name)
+            await asyncio.to_thread(_write_bundle)
+            payload_bytes = await asyncio.to_thread(bundle_path.read_bytes)
+            bundle_path.unlink(missing_ok=True)
+            safe_name = _safe_filename(f"{file_path.stem}.zip")
+        else:
+            payload_bytes = await asyncio.to_thread(file_path.read_bytes)
+            safe_name = _safe_filename(file_path.name)
+
+        spatial_key = f"spatial/{input.project_id}/{ts}_{safe_name}"
+        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, spatial_key, payload_bytes)
+        await ingest_spatial.aio_run_no_wait(
+            IngestSpatialInput(
+                workspace_id=input.workspace_id,
+                project_id=input.project_id,
+                minio_key=spatial_key,
+            )
+        )
+        # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch above
+        # (Cameco 529-file GROUP_ROUND_ROBIN saturation).
+        await asyncio.sleep(0.25)
+        counts["spatial"] += 1
+
+    elif ext in _SHAPEFILE_SIDECAR_EXTS:
+        # Absorbed by the .shp branch above. Counted, not "unknown".
+        counts["sidecar"] += 1
 
     else:
         counts["unknown"] += 1

@@ -297,10 +297,10 @@ counted above.)
 | ID | Severity | File | Finding |
 |---|---|---|---|
 | H-A6-01 | High | `ops/runbooks/` | **5 release-critical runbooks missing**: `secret-rotation.md`, `migration-rollback.md`, `deploy-rollback.md`, `on-call.md`, `authz-audit-triage.md`. Without these, the platform cannot be operated by an on-call engineer who isn't Kyle. |
-| M-A6-02 | Medium | `ops/runbooks/service-outage.md` | Generic "service is down" runbook — needs per-service annexes (Postgres / Neo4j / Qdrant / Redis / SeaweedFS / Reverb / Horizon / Martin / FastAPI) since each has different recovery semantics. |
+| M-A6-02 | Medium | `ops/runbooks/_archived/service-outage.md` | Generic "service is down" runbook — needs per-service annexes (Postgres / Neo4j / Qdrant / Redis / SeaweedFS / Reverb / Horizon / Martin / FastAPI) since each has different recovery semantics. |
 | M-A6-03 | Medium | `ops/runbooks/` | No `refusal-rate-spike.md`. When the refusal-rate dashboard exists (H-A2-01) it needs a triage script. |
 | M-A6-04 | Medium | `ops/runbooks/` | No `llm-model-swap.md` runbook. Memory references `docs/model_migration.md` but that is doc. The on-call playbook must include "rotate Ollama → vLLM if dev → prod" steps. |
-| L-A6-05 | Low | `ops/runbooks/container-hardening.md` | Module 1 C1 (volume-wipe) and Module 9 9.7 (volume migration) carry-forwards belong in a `volume-migration.md` annex. |
+| L-A6-05 | Low | `ops/runbooks/_archived/container-hardening.md` | Module 1 C1 (volume-wipe) and Module 9 9.7 (volume migration) carry-forwards belong in a `volume-migration.md` annex. |
 
 ---
 

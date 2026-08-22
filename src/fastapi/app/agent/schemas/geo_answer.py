@@ -16,7 +16,11 @@ Refusal-path contract: an answer with an empty ``observations`` section
 MUST be routed to the existing Refusal path guard, not returned as a
 ``GeoAnswer``. The schema enforces this at validation time — constructing
 a ``GeoAnswer`` with empty observations raises ``ValueError``. Callers must
-short-circuit to ``build_refusal_payload()`` before building the model.
+short-circuit to the refusal path before building the model — see
+``_build_terminal_refusal_payload`` in agentic_retrieval/nodes.py. (This
+line named ``build_refusal_payload()`` until 2026-08-21; that function
+lived in layer_completeness.py, which had no production caller and was
+deleted.)
 
 Partial-evidence contract: when the retrieved corpus supports some sections
 but not others (e.g. a factual lookup with no decision context), the unused

@@ -13,7 +13,11 @@ Created by [2026_05_13_140000](../../../database/migrations/2026_05_13_140000_cr
 
 ## Writers
 
-- Hatchet `eval_real_rag_nightly` workflow → `eval_runs` + `eval_metrics_per_query`.
+- ~~Hatchet `eval_real_rag_nightly` workflow → `eval_runs` +
+  `eval_metrics_per_query`.~~ **Removed 09d1d35 (2026-07-27). These two
+  tables have had NO writer since; they are empty and stay empty.**
+  `scripts/run_golden_benchmark.py` writes JSON to `bench_results/`,
+  not to these tables.
 - Dagster `reranker_labels` + `reranker_labels_helpers` → `eval.reranker_training_pairs`.
 
 ## Reader

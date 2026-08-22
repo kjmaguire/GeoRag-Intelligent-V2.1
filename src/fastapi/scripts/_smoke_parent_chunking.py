@@ -19,11 +19,11 @@ import asyncio
 import uuid
 
 import asyncpg
+from app.agent.parent_expansion import expand_parents_sync
 
+from app.agent.evidence import DocumentEvidence, EvidencePacket
 from app.config import settings
 from app.services.ingest.pdf_ingester import _chunk_pages, _insert_passages
-from app.agent.parent_expansion import expand_parents_sync
-from app.agent.evidence import DocumentEvidence, EvidencePacket
 
 
 async def main() -> int:

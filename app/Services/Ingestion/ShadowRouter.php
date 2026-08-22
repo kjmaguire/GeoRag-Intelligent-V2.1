@@ -245,12 +245,12 @@ class ShadowRouter
         string $correlationToken,
         ?int $actorId,
     ): string {
-        $url = rtrim(
-            $this->config->get('services.fastapi.url') ?: env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
-            '/',
-        ).'/internal/v1/shadow/ingest_pdf/trigger';
+        // See DebounceWorkspaceMvRefresh: `services.fastapi.url` is not a
+        // key. `internal_url` is.
+        $url = rtrim((string) $this->config->get('services.fastapi.internal_url'), '/')
+            .'/internal/v1/shadow/ingest_pdf/trigger';
 
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             throw new RuntimeException('FASTAPI_SERVICE_KEY not configured');
         }

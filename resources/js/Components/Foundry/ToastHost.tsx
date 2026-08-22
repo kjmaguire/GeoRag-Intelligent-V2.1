@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { Link } from '@inertiajs/react';
 
 /**
@@ -87,8 +87,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         [dismiss],
     );
 
+    // Memoised: `{ pushToast }` built inline is a new object on every
+    // render, and this component re-renders on every toast push and every
+    // auto-dismiss. That re-rendered every consumer of the context — which
+    // is the whole Foundry shell — for a notification in the corner.
+    const contextValue = useMemo(() => ({ pushToast }), [pushToast]);
+
     return (
-        <ToastContext.Provider value={{ pushToast }}>
+        <ToastContext.Provider value={contextValue}>
             {children}
             {/* Viewport — fixed bottom-right, above content but below the
                 command palette (z-200) so ⌘K stays on top. */}

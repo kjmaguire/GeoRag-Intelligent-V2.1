@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Middleware;
 
+use App\Support\BasemapAssets;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -51,6 +52,20 @@ final class SecurityHeadersMiddleware
         'X-Content-Type-Options' => 'nosniff',
         'Referrer-Policy' => 'strict-origin-when-cross-origin',
         'Permissions-Policy' => 'geolocation=(), microphone=(), camera=(), payment=()',
+    ];
+
+    /**
+     * connect-src origins that are not derivable from configuration.
+     *
+     * `demotiles.maplibre.org` is MapLibre's own built-in fallback style,
+     * used when a configured style fails to load. `s3.amazonaws.com` is the
+     * presigned-download host for exports.
+     *
+     * @var list<string>
+     */
+    private const STATIC_CONNECT_ORIGINS = [
+        'https://demotiles.maplibre.org',
+        'https://s3.amazonaws.com',
     ];
 
     public function handle(Request $request, Closure $next): Response
@@ -104,11 +119,24 @@ final class SecurityHeadersMiddleware
             // Raster tiles (MapLibre) + plot images can come from any HTTPS
             // source; data: URIs are used for inline SVGs.
             "img-src 'self' data: blob: https:",
-            // Reverb WebSocket + SSE + tile proxy + FastAPI + MapLibre style
-            // / tile JSON fetches from public basemap hosts (OpenFreeMap +
-            // demotiles fallback + Carto dark_matter). Add new tile providers
-            // here as we onboard.
-            "connect-src 'self' wss: ws: https://tiles.openfreemap.org https://demotiles.maplibre.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://s3.amazonaws.com https://server.arcgisonline.com",
+            // Reverb WebSocket + SSE + tile proxy + FastAPI + the MapLibre
+            // style / tile-JSON fetches.
+            //
+            // The basemap origins are DERIVED from config('services.basemap')
+            // rather than listed. They used to be four literals with a
+            // comment saying "add new tile providers here as we onboard",
+            // which made repointing a basemap a two-file change where only
+            // one of the two was discoverable: an operator who set
+            // BASEMAP_STYLE_POSITRON to their own tile server got a style
+            // fetch blocked by a CSP they had no reason to look at. The
+            // whole point of that indirection is the air-gapped deployment
+            // (CLAUDE.md hard rule #8), and a hard-coded allowlist defeats
+            // it just as thoroughly as a hard-coded URL.
+            'connect-src '.implode(' ', array_merge(
+                ["'self'", 'wss:', 'ws:'],
+                self::STATIC_CONNECT_ORIGINS,
+                BasemapAssets::cspSources(),
+            )),
             // fonts.bunny.net serves the actual .woff2 binaries.
             "font-src 'self' data: https://fonts.bunny.net",
             // MapLibre uses worker scripts from blob: URLs.

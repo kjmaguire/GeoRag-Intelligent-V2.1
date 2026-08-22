@@ -90,7 +90,7 @@ cp -v "$WIN_REPO/CLAUDE.md"                                      "$WSL_REPO/CLAU
 cp -v "$WIN_REPO/docs/RUNBOOK.md"                                "$WSL_REPO/docs/RUNBOOK.md"
 cp -v "$WIN_REPO/docs/model_migration.md"                        "$WSL_REPO/docs/model_migration.md"
 cp -v "$WIN_REPO/ops/baselines/capacity-planning.md"             "$WSL_REPO/ops/baselines/capacity-planning.md"
-cp -v "$WIN_REPO/ops/runbooks/cold-start.md"                     "$WSL_REPO/ops/runbooks/cold-start.md"
+cp -v "$WIN_REPO/ops/runbooks/_archived/cold-start.md"                     "$WSL_REPO/ops/runbooks/_archived/cold-start.md"
 # Deprecation tree (mirrors the Windows-side _deprecated layout). Stop re-syncing
 # the live paths — the originals were moved to _deprecated/ on 2026-05-10 and the
 # live paths no longer exist on the Windows side.

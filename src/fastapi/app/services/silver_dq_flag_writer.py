@@ -1,5 +1,20 @@
 """Plan §6a — silver.data_quality_flags writer helper.
 
+NOT WIRED (measured 2026-08-21), and the table it targets has NO LIVE
+WRITER. Nothing under app/ calls this module.
+The five rule families it was written for (assay validation, collar
+validation, interval overlap, unit consistency, CRS consistency) live in
+the Dagster asset graph, which went dormant on 2026-07-28 and is not
+deployed to Azure — so `silver.data_quality_flags` has no writer on any
+live path, and a UI or report that joins it finds nothing.
+
+Kept rather than deleted because the helper itself is complete and
+correct, and the rules are a real roadmap item rather than abandoned
+work. What this banner prevents is the specific misreading that cost two
+UI regressions elsewhere in this codebase: a complete, well-documented
+module reads as live implementation, so a page gets built against a table
+nobody fills.
+
 The data_quality_flags design doc spec'd a single helper that all 5
 rule families (assay validation, collar validation, interval overlap,
 unit consistency, CRS consistency) use to upsert flag rows. This is

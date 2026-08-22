@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Stat, EmptyState, ProgressBar } from '@/Components/Foundry/primitives';
 import { formatTime } from '@/lib/time';
+import { listenPrivate } from '@/lib/echoChannel';
 
 /**
  * IngestionRuns — per-project pipeline progress.
@@ -32,6 +33,29 @@ interface InFlightRow {
     has_real_progress: boolean;
     failed: boolean;
     error_text: string | null;
+    /**
+     * Terminal state from silver.ingest_progress. 'partial' means the run
+     * reached the end and still needs attention — it wrote nothing, or it
+     * wrote something and also raised warnings.
+     */
+    status: string;
+    /** Rows the run actually wrote. null when the workflow does not report it. */
+    rows_written: number | null;
+    /** Diagnostics the workflow collected, e.g. no_matching_collar. */
+    warnings: IngestWarning[];
+}
+
+interface IngestWarning {
+    code?: string;
+    detail?: string;
+    [key: string]: unknown;
+}
+
+/** One line of human-readable text for a warning, whatever shape it has. */
+function warningText(w: IngestWarning): string {
+    if (typeof w.detail === 'string' && w.detail) return w.detail;
+    if (typeof w.code === 'string' && w.code) return w.code;
+    return JSON.stringify(w);
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -44,6 +68,17 @@ const STEP_LABELS: Record<string, string> = {
     completed: 'Completed',
     failed: 'Failed',
 };
+
+/**
+ * A run that finished but produced nothing is not a success, and saying
+ * "Completed" over it is how a lost upload stays lost. The label leads with
+ * the outcome the user can act on.
+ */
+function outcomeLabel(row: InFlightRow): string | null {
+    if (row.status !== 'partial') return null;
+    if (row.rows_written === 0) return 'Finished — no data written';
+    return 'Finished with warnings';
+}
 
 function prettyStage(row: InFlightRow): string {
     const label = STEP_LABELS[row.stage] ?? row.stage;
@@ -92,6 +127,15 @@ const POLL_INTERVAL_MS = 5000;
 // so idle projects don't lose responsiveness, just poll less.
 const POLL_BACKOFF_MS = 30000;
 
+// How many consecutive failed polls before the page admits it is stale.
+//
+// Two, not one. A single dropped request between two good ones is ordinary
+// -- a laptop waking, a redeploy rolling a pod -- and a banner that appears
+// and vanishes teaches people to ignore it. Two in a row at the current
+// interval means 10s of failure with something in flight, or a minute when
+// idle, which is long enough to be real.
+const STALE_AFTER_FAILURES = 2;
+
 function formatBytes(bytes: number | null): string {
     if (bytes === null) return '—';
     if (bytes < 1024) return `${bytes} B`;
@@ -115,12 +159,22 @@ interface IngestionProgressEvent {
     timestamp: string;
 }
 
-const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'timed_out'] as const;
+// Mirrors _progress.TERMINAL_STATUSES on the FastAPI side. 'partial' was
+// missing, so the one terminal outcome that carries a warning worth
+// reading was also the one that did not trigger the immediate re-fetch —
+// it sat in the in-flight list until the next poll tick.
+const TERMINAL_STATUSES = ['completed', 'partial', 'failed', 'cancelled', 'timed_out'] as const;
 
 export default function FoundryIngestionRuns({ project, runs: initial }: IngestionRunsProps) {
     const [runs, setRuns] = useState<RunsSnapshot>(initial);
     const [polling, setPolling] = useState(true);
     const [lastFetched, setLastFetched] = useState<string | null>(null);
+    // Consecutive failed polls. The catch below used to swallow every
+    // error, so a session expiry or a backend outage left this page
+    // rendering its last good snapshot indefinitely while looking
+    // healthy -- on the one screen whose entire purpose is telling you
+    // whether something is still moving.
+    const [failedPolls, setFailedPolls] = useState(0);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Tab visibility — its own always-mounted effect. This listener used to
@@ -150,13 +204,32 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                     credentials: 'same-origin',
                     headers: { Accept: 'application/json' },
                 });
+
+                // 401 (unauthenticated) and 419 (expired CSRF token)
+                // cannot recover by waiting -- every later request gets
+                // the same answer. SESSION_LIFETIME is 120 minutes, so
+                // any page left open through lunch lands here. Retrying
+                // forever is how the frozen-but-healthy-looking page
+                // happened.
+                if (res.status === 401 || res.status === 419) {
+                    window.location.href = '/login';
+                    return;
+                }
+
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const body = await res.json();
                 if (cancelled) return;
                 setRuns(body.runs);
                 setLastFetched(body.fetched_at ?? new Date().toISOString());
+                // Clear on success so the banner cannot outlive the
+                // problem it describes.
+                setFailedPolls(0);
             } catch {
-                // Swallow — next tick will retry.
+                // Counted, not swallowed. The banner needs two failures
+                // before it appears: one dropped request between two
+                // good ones is ordinary on a laptop, and a warning that
+                // flickers is a warning people learn to ignore.
+                if (!cancelled) setFailedPolls((n) => n + 1);
             } finally {
                 if (!cancelled) {
                     timerRef.current = setTimeout(
@@ -189,9 +262,11 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
         if (typeof window === 'undefined' || !window.Echo) return;
 
         const channelName = `project.${project.project_id}.ingestion`;
-        const ch = window.Echo.private(channelName);
 
-        ch.listen('.ingestion.progress', async (raw: unknown) => {
+        // Ref-counted — the shell's ingest-toast bridge subscribes to this
+        // same channel from the persistent layout, and the bare
+        // Echo.leave() that used to be here unbound it on the way out.
+        const unsubscribe = listenPrivate(channelName, '.ingestion.progress', async (raw) => {
             const evt = raw as IngestionProgressEvent;
             if (evt.project_id !== project.project_id) return;
 
@@ -216,7 +291,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
         });
 
         return () => {
-            window.Echo?.leave(channelName);
+            unsubscribe();
         };
     }, [project.project_id, project.slug]);
 
@@ -235,6 +310,24 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                             {runs.totals.in_flight} in flight · {runs.totals.completed} completed
                             {lastFetched && (
                                 <span style={{ color: 'var(--fg-3)' }}> · refreshed {formatTime(lastFetched)}</span>
+                            )}
+                            {failedPolls >= STALE_AFTER_FAILURES && (
+                                <span style={{ color: 'var(--warn, #d97706)' }}>
+                                    {' · '}
+                                    live updates paused
+                                    {lastFetched
+                                        ? ` — last updated ${formatTime(lastFetched)}`
+                                        : ''}
+                                    {' '}
+                                    <button
+                                        type="button"
+                                        onClick={() => setFailedPolls(0)}
+                                        className="underline"
+                                        style={{ color: 'inherit' }}
+                                    >
+                                        Retry
+                                    </button>
+                                </span>
                             )}
                         </span>
                     }
@@ -323,17 +416,32 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                         {f.error_text}
                                                     </div>
                                                 )}
+                                                {(f.warnings ?? []).map((w, i) => (
+                                                    <div
+                                                        key={i}
+                                                        className="text-[10px] mt-0.5 truncate"
+                                                        style={{ color: 'var(--warn)' }}
+                                                        title={warningText(w)}
+                                                    >
+                                                        {warningText(w)}
+                                                    </div>
+                                                ))}
                                             </div>
-                                            <div className="text-[11px]" style={{ color: f.failed ? 'var(--warn)' : 'var(--fg-1)' }}>
-                                                <Pill tone={f.failed ? 'warn' : 'accent'} dot>
-                                                    {prettyStage(f)}
+                                            <div className="text-[11px]" style={{ color: (f.failed || f.status === 'partial') ? 'var(--warn)' : 'var(--fg-1)' }}>
+                                                <Pill tone={(f.failed || f.status === 'partial') ? 'warn' : 'accent'} dot>
+                                                    {outcomeLabel(f) ?? prettyStage(f)}
                                                 </Pill>
+                                                {f.status === 'partial' && f.rows_written !== null && f.rows_written > 0 && (
+                                                    <span className="ml-2 font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                        {f.rows_written.toLocaleString()} rows
+                                                    </span>
+                                                )}
                                             </div>
                                             <div className="flex items-center gap-3 min-w-0">
                                                 <div className="flex-1 min-w-0">
                                                     <ProgressBar
                                                         value={f.progress_pct}
-                                                        tone={f.failed ? 'warn' : (f.progress_pct >= 100 ? 'accent' : 'accent')}
+                                                        tone={(f.failed || f.status === 'partial') ? 'warn' : 'accent'}
                                                         height={6}
                                                     />
                                                 </div>

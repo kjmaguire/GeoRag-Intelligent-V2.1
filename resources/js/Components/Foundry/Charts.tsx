@@ -262,13 +262,33 @@ export function PerJurisdictionVolume({ rows }: PerJurisdictionVolumeProps) {
    StereonetMini — schematic equal-area stereonet (poles only)
    ============================================================ */
 
+/** A line in space: trend clockwise from north, plunge down from horizontal. */
+export interface StereonetPole {
+    trend_deg: number;
+    plunge_deg: number;
+}
+
 interface StereonetMiniProps {
-    measurements?: Array<{ dip_direction: number; dip: number }>;
+    /**
+     * POLES, not plane attitudes.
+     *
+     * The prop used to be `measurements: {dip_direction, dip}` while the
+     * projection below did `sin((90 - dip)/2)` — the equal-area formula for
+     * a LINE at that plunge. Feeding it a plane's dip would have put a
+     * horizontal bed on the primitive circle, which is where the pole to a
+     * VERTICAL plane belongs: every point ninety degrees out of position.
+     *
+     * It never rendered a wrong plot only because its one caller passed
+     * `[]`. Naming it `poles` is what stops the next caller from finding
+     * out the hard way. Convert with the same rule `Stereonet.poleOfPlane`
+     * uses: trend = (dip_direction + 180) mod 360, plunge = 90 - dip.
+     */
+    poles?: StereonetPole[];
     size?: number;
 }
 
-export function StereonetMini({ measurements, size = 200 }: StereonetMiniProps) {
-    const data = measurements ?? [];
+export function StereonetMini({ poles, size = 200 }: StereonetMiniProps) {
+    const data = poles ?? [];
     const r = size / 2 - 6;
     const cx = size / 2;
     const cy = size / 2;
@@ -278,13 +298,15 @@ export function StereonetMini({ measurements, size = 200 }: StereonetMiniProps) 
             <circle cx={cx} cy={cy} r={r / 2} fill="none" stroke="var(--line-1)" strokeWidth="0.5" strokeDasharray="2 2" />
             <line x1={cx - r} x2={cx + r} y1={cy} y2={cy} stroke="var(--line-1)" strokeWidth="0.5" />
             <line x1={cx} x2={cx} y1={cy - r} y2={cy + r} stroke="var(--line-1)" strokeWidth="0.5" />
-            {data.map((m, i) => {
-                // Equal-area projection: r' = R * sqrt(2) * sin((90-dip)/2) ... simplified
-                const dipRad = (m.dip * Math.PI) / 180;
-                const dirRad = (m.dip_direction * Math.PI) / 180;
-                const rho = r * Math.sin((Math.PI / 2 - dipRad) / 2) * Math.SQRT2;
-                const x = cx + rho * Math.sin(dirRad);
-                const y = cy - rho * Math.cos(dirRad);
+            {data.map((p, i) => {
+                // Equal-area (Schmidt), lower hemisphere:
+                //     r / R = √2 · sin((90° − plunge) / 2)
+                // North up, east right; SVG y grows downward, hence −cos.
+                const plungeRad = (p.plunge_deg * Math.PI) / 180;
+                const trendRad = (p.trend_deg * Math.PI) / 180;
+                const rho = r * Math.sin((Math.PI / 2 - plungeRad) / 2) * Math.SQRT2;
+                const x = cx + rho * Math.sin(trendRad);
+                const y = cy - rho * Math.cos(trendRad);
                 return <circle key={i} cx={x} cy={y} r={2.2} fill="var(--accent)" opacity={0.85} />;
             })}
             <text x={cx} y={cy - r - 2} fill="var(--fg-3)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">N</text>

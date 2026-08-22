@@ -54,6 +54,14 @@ class QueryAuditLog extends Model
         'llm_model',
         'ip_address',
         'dispatched_at',
+        // DEPRECATED 2026-07-27. Both are kept fillable and cast so the
+        // values written between 2026-05-30 and 2026-07-27 still read
+        // back correctly, but NOTHING WRITES THEM ANY MORE:
+        // score_answer_quality.py was removed in 09d1d35. A filter like
+        // `where('faithfulness_score', '<', 0.5)` returns zero rows and
+        // reads as "no low-faithfulness answers" when it means "nothing
+        // has been scored since July". Live answer quality lives in
+        // silver.answer_runs (see the answer_quality_watch workflow).
         'faithfulness_score',
         'context_precision_score',
     ];
@@ -82,6 +90,8 @@ class QueryAuditLog extends Model
         // merge in the job would clobber instead of extend.
         'metadata' => 'array',
         'dispatched_at' => 'datetime',
+        // See the note on $fillable: deprecated, no writer since
+        // 2026-07-27, NULL on every row created since.
         'faithfulness_score' => 'float',
         'context_precision_score' => 'float',
     ];

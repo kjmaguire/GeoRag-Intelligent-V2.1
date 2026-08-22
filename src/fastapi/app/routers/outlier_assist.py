@@ -41,14 +41,21 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services.auth import verify_service_key
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/outlier-assist", tags=["internal", "review-queue"])
+# Mounted under /internal by main.py, where the comment says every route
+# requires X-Service-Key. This router had no auth dependency of any kind.
+router = APIRouter(
+    prefix="/outlier-assist",
+    tags=["internal", "review-queue"],
+    dependencies=[Depends(verify_service_key)],
+)
 
 # ---------------------------------------------------------------------------
 # Request / response models

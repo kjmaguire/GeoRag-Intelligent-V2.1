@@ -55,7 +55,12 @@ def test_short_document_with_no_headings_emits_one_document_chunk() -> None:
 def test_long_document_with_no_headings_is_sliding_window_chunked() -> None:
     """No NI 43-101 headings → windowed end-to-end. Used to dump everything
     into one passage that bge-small would truncate."""
-    pages = [("A" * 1200 + " gold ") for _ in range(5)]  # 5 pages × ~1.2 KB
+    # Sized relative to WINDOW_CHARS, not to a fixed byte count: the window
+    # is configurable (PDF_CHUNK_WINDOW_CHARS) and was raised 1500 -> 5000
+    # on 2026-08-20. A fixture pinned at "~6 KB" silently stops testing
+    # windowing the moment the window grows past it.
+    page_chars = (WINDOW_CHARS * 4) // 5
+    pages = [("A" * page_chars + " gold ") for _ in range(5)]
     full_text = _join_pages(pages)
     per_page_text = _make_per_page_text(pages)
 
@@ -63,7 +68,8 @@ def test_long_document_with_no_headings_is_sliding_window_chunked() -> None:
 
     _assert_all_chunks_within_window(sections)
     assert len(sections) >= 4, (
-        f"expected multiple windows over a ~6 KB doc, got {len(sections)}"
+        f"expected multiple windows over a {len(full_text)}-char doc "
+        f"(window={WINDOW_CHARS}), got {len(sections)}"
     )
     for s in sections:
         assert s.section_title == "Document"
@@ -105,7 +111,9 @@ def test_long_preamble_before_first_heading_is_chunked() -> None:
 def test_section_metadata_is_attached_to_every_window() -> None:
     """Every chunk inside 'N. Title' must carry section_number=N and the
     parent title — even when the section is long enough to be split."""
-    long_section_body = "Geology body text. " * 200  # ~3.8 KB
+    # ~2.5 windows' worth, so it must split however WINDOW_CHARS is set.
+    _phrase = "Geology body text. "
+    long_section_body = _phrase * ((WINDOW_CHARS * 5) // (2 * len(_phrase)))
     full_text = (
         "Preamble line.\n"
         "1. Summary\n"
@@ -126,7 +134,8 @@ def test_section_metadata_is_attached_to_every_window() -> None:
     assert all(s.section_title == "Summary" for s in section1_chunks)
 
     assert len(section2_chunks) >= 2, (
-        f"3.8 KB Section 2 should produce multiple windows, got {len(section2_chunks)}"
+        f"a {len(long_section_body)}-char Section 2 should produce multiple "
+        f"windows (window={WINDOW_CHARS}), got {len(section2_chunks)}"
     )
     assert all(s.section_title == "Geology" for s in section2_chunks)
 

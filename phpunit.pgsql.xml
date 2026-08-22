@@ -124,6 +124,28 @@
                  Azure is and what a hand-provisioned dev cluster is not. -->
             <file>tests/Feature/Tenancy/AuditVerificationSchemaContractTest.php</file>
             <file>tests/Feature/Database/RepairShadowDailySchemaTest.php</file>
+            <!-- 2026-08-21 tenancy review: three more Postgres-gated files
+                 that were never added. Two of them guard with an INLINE
+                 `getDriverName() !== 'pgsql'` check rather than the
+                 RequiresPostgres trait, so the audit grep documented above
+                 could not see them — the detector, not just the list, was
+                 the thing that had drifted. GuardSchemaRlsTest is the
+                 pen-test for the five guard-arm tables (silver.query_traces,
+                 data_quality_flags, document_versions, entity_aliases,
+                 alias_gaps), none of which appear in the pgTAP file's nine,
+                 so it was the only thing standing between a dropped FORCE
+                 ROW LEVEL SECURITY and production — and it ran only in the
+                 SQLite suite, where it always skipped.
+                 PgsqlSuiteManifestTest now fails the build if this list
+                 falls behind again. -->
+            <file>tests/Feature/Tenancy/GuardSchemaRlsTest.php</file>
+            <file>tests/Feature/Tenancy/BrokenChrZeroRlsPoliciesRoleTest.php</file>
+            <!-- 2026-08-21: fail-closed RLS probe for the twelve tables
+                 flipped by 2026_08_21_030000. Same georag_app SET ROLE
+                 mechanism as BrokenChrZeroRlsPoliciesRoleTest above — it
+                 must run here, because under the SQLite suite it skips. -->
+            <file>tests/Feature/Tenancy/FailClosedRlsPolicyTest.php</file>
+            <file>tests/Feature/Foundry/WorkspaceLithologyQueryCountTest.php</file>
             <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
                  but were never added here — grep -rl "RequiresPostgres\|
                  skipIfSqlite" tests/Feature turned up 7 files this config
@@ -218,10 +240,19 @@
         <env name="DB_PORT" value="5432" force="true"/>
         <env name="DB_DATABASE" value="georag_test" force="true"/>
         <env name="DB_USERNAME" value="georag" force="true"/>
-        <!-- Doc-phase 157 — sync to the live POSTGRES_PASSWORD on the
-             postgresql service. Was stale `georag_dev_password` from an
-             early dev cut. Read via `docker exec georag-postgresql env`. -->
-        <env name="DB_PASSWORD" value="OMljaORhiA7RGQN3ilfemNWpezF9waU" force="true"/>
+        <!-- 2026-08-21 — placeholder, deliberately. Doc-phase 157 replaced
+             this with the value read out of the running container via
+             `docker exec georag-postgresql env`, to keep it "in sync". That
+             put a live, in-use database password into a PUBLIC repository,
+             in 25 tracked files. GitHub secret scanning did not catch it:
+             push protection is on, but non-provider patterns are disabled,
+             and a generic database password matches no provider pattern.
+
+             No `force`, so DB_PASSWORD from the developer's own environment
+             wins. Set it there (or in .env) if the local container uses
+             something other than the .env.example default; do not paste a
+             real credential back into this file. -->
+        <env name="DB_PASSWORD" value="georag_dev_password"/>
 
         <!--
           2026-07-28 (#32) — several raw-SQL migrations (silver tenant
@@ -237,7 +268,7 @@
           this second connection was missing credentials. Reuses the
           same DB_PASSWORD value above (same Postgres role/password).
         -->
-        <env name="MIGRATE_DB_PASSWORD" value="OMljaORhiA7RGQN3ilfemNWpezF9waU" force="true"/>
+        <env name="MIGRATE_DB_PASSWORD" value="georag_dev_password"/>
 
         <!--
           Expand search_path so RefreshDatabase's migrate:fresh can find

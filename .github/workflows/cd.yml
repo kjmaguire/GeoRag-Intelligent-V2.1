@@ -270,8 +270,11 @@ jobs:
     # that follows them. Trimmed from 80 accordingly, but kept generous:
     # the migrate-job poll alone budgets 300s, and az containerapp update /
     # revision-health polling across 5 targets can legitimately run long on
-    # a slow ACR/ACA control-plane day (see the 2026-08-11 note this
-    # replaces, which was sized for the pre-split single job).
+    # a slow ACR/ACA control-plane day (the migrate poll now derives its
+    # deadline from the job's own replicaTimeout — 660s at replicaTimeout
+    # 600 — rather than the hardcoded 300s this comment used to cite).
+    # (See the 2026-08-11 note this
+    # replaced, which was sized for the pre-split single job.)
     timeout-minutes: 40
     environment:
       name: production
@@ -293,6 +296,53 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Scan the images that are actually about to ship ────────────────
+      # docker-build.yml already runs a blocking Trivy CRITICAL scan and
+      # Cosign-signs the result — but it scans GHCR images built by a
+      # separate buildx run, and this workflow builds and deploys its own
+      # ACR images. Nothing in that chain gates this one: cd.yml triggers
+      # on `workflow_run: workflows: ["GeoRAG CI"]`, and docker-build.yml
+      # is a different workflow, so a CRITICAL CVE could turn docker-build
+      # red while CI stayed green and this job shipped the same Dockerfile
+      # to production regardless.
+      #
+      # These two steps scan the exact ACR tags the rollout below pulls,
+      # before the migrate step touches the database — the earliest point
+      # at which failing costs nothing to undo.
+      #
+      # Trivy pulls the image itself, so it needs registry credentials.
+      # The build jobs ran `az acr login` in their own runners; this job
+      # never did, because `az containerapp update --image` only passes a
+      # reference and never touches the registry.
+      - name: ACR login (for the scans below)
+        run: az acr login --name "$ACR_NAME"
+
+      # Settings deliberately identical to docker-build.yml's scan (same
+      # action version, severity, ignore-unfixed) so the two cannot drift
+      # into disagreeing about what "clean" means — the whole problem here
+      # was two scan paths with different scopes.
+      #
+      # ignore-unfixed: a CRITICAL with no available patch is not
+      # actionable at deploy time and would only teach people to bypass
+      # this gate.
+      - name: Trivy scan — fastapi image (blocking on CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ env.ACR_LOGIN_SERVER }}/georag/fastapi:${{ env.SHORT_SHA }}"
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
+
+      - name: Trivy scan — laravel image (blocking on CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ env.ACR_LOGIN_SERVER }}/georag/laravel:${{ env.SHORT_SHA }}"
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL
 
       # Capture the currently-active image digest for every app/job this
       # deploy touches, before changing anything, so a failed health check
@@ -319,17 +369,41 @@ jobs:
             --image "${ACR_LOGIN_SERVER}/georag/laravel:${SHORT_SHA}"
           EXEC_ID=$(az containerapp job start -g "$AZURE_RG" -n laravel-migrate-job \
             --query "name" -o tsv)
-          for i in $(seq 1 30); do
+          # The rollback step runs in a separate shell and needs to know
+          # whether this execution is still moving before it touches images.
+          mkdir -p /tmp/rollback
+          echo "$EXEC_ID" > /tmp/rollback/migrate-exec-id
+
+          # Read the deadline off the job instead of hardcoding one. The poll
+          # used to run 30 x 10s = 300s while the job itself is configured with
+          # replicaTimeout 600 — two timeouts set independently, with the OUTER
+          # one shorter. A migration that takes six minutes (an index build on
+          # silver.document_passages, a partition conversion) made this step
+          # exit 1 while the job was still running: the rollback then reverted
+          # every app image, the migration completed 90 seconds later, and
+          # production ended up running OLD code against a NEWLY migrated
+          # schema — precisely the half-deployed state the rollback exists to
+          # prevent.
+          #
+          # +60s of grace so the poll outlives the job it is watching, and a
+          # genuine timeout is reported by the job rather than guessed at here.
+          REPLICA_TIMEOUT=$(az containerapp job show -g "$AZURE_RG" -n laravel-migrate-job \
+            --query "properties.configuration.replicaTimeout" -o tsv 2>/dev/null || echo 600)
+          DEADLINE=$(( REPLICA_TIMEOUT + 60 ))
+          ATTEMPTS=$(( DEADLINE / 10 ))
+          echo "polling for up to ${DEADLINE}s (job replicaTimeout=${REPLICA_TIMEOUT}s)"
+
+          for i in $(seq 1 "$ATTEMPTS"); do
             STATUS=$(az containerapp job execution show -g "$AZURE_RG" -n laravel-migrate-job \
               --job-execution-name "$EXEC_ID" --query "properties.status" -o tsv 2>/dev/null || echo "")
-            echo "migrate job: $STATUS ($i/30)"
+            echo "migrate job: $STATUS ($i/$ATTEMPTS)"
             case "$STATUS" in
               Succeeded) exit 0 ;;
               Failed|Stopped) echo "::error::migration job ended in $STATUS"; exit 1 ;;
             esac
             sleep 10
           done
-          echo "::error::migration job did not finish within 300s"
+          echo "::error::migration job did not finish within ${DEADLINE}s (job replicaTimeout=${REPLICA_TIMEOUT}s)"
           exit 1
 
       # LARAVEL_INTERNAL_URL is re-asserted on every deploy rather than left
@@ -405,6 +479,42 @@ jobs:
           echo "::error::laravel-octane-cc /up never returned 200"
           exit 1
 
+      # ── Does the product actually work? ───────────────────────────
+      # Everything above this point verifies that containers STARTED. None
+      # of it verifies that the system does its job. On 2026-08-18
+      # LARAVEL_INTERNAL_URL was unset in production, so every FastAPI ->
+      # Laravel callback resolved to the Herd-local default
+      # http://laravel.test and died on DNS — ingestion progress,
+      # workspace-data-updated, the admin surfaces and the user inbox were
+      # all silently dead. Every container was Healthy and /up returned 200
+      # the whole time. This gate exists for that class.
+      #
+      # It runs INSIDE fastapi-cc because fastapi-cc's ingress is internal
+      # (`external: false`) — a GitHub runner cannot reach it at all, so
+      # curling it from here is not an option. One exec call, invoking a
+      # script baked into the image: the exec command is capped near 2048
+      # characters and repeated calls are rate-limited (429, retry-after
+      # 600s), both measured 2026-08-21. See the script's docstring.
+      #
+      # Placed BEFORE the rollback step so a failure trips the existing
+      # `if: failure() || cancelled()` rollback with no new machinery.
+      - name: Post-deploy smoke (FastAPI, Laravel bridge, Postgres, Qdrant)
+        run: |
+          set -o pipefail
+          OUT=$(az containerapp exec -g "$AZURE_RG" -n fastapi-cc \
+            --command "python3 /app/scripts/ops/post_deploy_smoke.py" \
+            < /dev/null 2>&1 | tr -d '\r') || true
+          echo "$OUT"
+
+          # `az containerapp exec` exits 0 for a successful CONNECTION no
+          # matter what the command did, so the exit code proves nothing.
+          # The script's contract is a SMOKE_OK sentinel on success.
+          if ! echo "$OUT" | grep -q "SMOKE_OK"; then
+            echo "::error::post-deploy smoke FAILED — the deployment is up but not working. Rolling back."
+            exit 1
+          fi
+          echo "post-deploy smoke passed"
+
       - name: Rollback on failure or cancellation
         # cancelled() matters here (2026-08-14 audit): this workflow's
         # concurrency group has cancel-in-progress: true, so a newer push
@@ -417,14 +527,66 @@ jobs:
         timeout-minutes: 10
         run: |
           echo "::warning::deploy failed or was cancelled mid-flight — rolling back to the pre-deploy image on each app"
+
+          # ── Never roll back underneath a live migration ────────────────
+          # The migrate poll gives up at replicaTimeout+60s, but giving up
+          # watching is not the same as the job stopping. If the execution
+          # is still Running, reverting the app images now puts OLD code in
+          # front of a schema that is still being migrated forward — the
+          # precise half-deployed state this step exists to prevent, and
+          # the deterministic outcome rather than a worst case.
+          #
+          # Refusing is the right call, not stopping the job: killing a
+          # migration mid-batch leaves an arbitrary prefix applied with no
+          # record of where it stopped. Apps are still on their OLD images
+          # at this point anyway (migrations run BEFORE any rollout), so
+          # doing nothing is the safe state — it is the intervention that
+          # would break it.
+          if [ -f /tmp/rollback/migrate-exec-id ]; then
+            EXEC_ID=$(cat /tmp/rollback/migrate-exec-id)
+            MSTATUS=$(az containerapp job execution show -g "$AZURE_RG" \
+              -n laravel-migrate-job --job-execution-name "$EXEC_ID" \
+              --query "properties.status" -o tsv 2>/dev/null || echo "")
+            if [ "$MSTATUS" = "Running" ]; then
+              echo "::error::migration execution $EXEC_ID is STILL RUNNING — refusing to roll back images underneath it"
+              echo "The apps are still on their pre-deploy images (migrations run first),"
+              echo "so the environment is currently consistent. Wait for the execution to"
+              echo "reach a terminal state, then decide by hand:"
+              echo "  az containerapp job execution show -g $AZURE_RG -n laravel-migrate-job --job-execution-name $EXEC_ID"
+              exit 1
+            fi
+          fi
+
+          # ── Roll back, loudly ─────────────────────────────────────────
+          # Every az call here used to end in `|| true` with no aggregate
+          # check, so a throttled or control-plane-faulted rollback exited
+          # 0 and the step reported success. `|| true` is kept per-call so
+          # one failed app does not abandon the other four — but each
+          # failure is now recorded and re-raised at the end.
+          rc=0
           for target in fastapi-cc hatchet-worker-cc laravel-octane-cc laravel-horizon-cc laravel-reverb-cc; do
             if [ -f "/tmp/rollback/${target}.image" ]; then
               PREV=$(cat "/tmp/rollback/${target}.image")
               echo "Rolling back $target -> $PREV"
-              az containerapp update -g "$AZURE_RG" -n "$target" --image "$PREV" || true
+              if ! az containerapp update -g "$AZURE_RG" -n "$target" --image "$PREV"; then
+                echo "::error::rollback FAILED for $target — it may still be running the bad image"
+                rc=1
+              fi
+            else
+              echo "::error::no pre-deploy snapshot for $target — cannot roll it back"
+              rc=1
             fi
           done
           if [ -f /tmp/rollback/laravel-migrate-job.image ]; then
             PREV=$(cat /tmp/rollback/laravel-migrate-job.image)
-            az containerapp job update -g "$AZURE_RG" -n laravel-migrate-job --image "$PREV" || true
+            if ! az containerapp job update -g "$AZURE_RG" -n laravel-migrate-job --image "$PREV"; then
+              echo "::error::rollback FAILED for laravel-migrate-job"
+              rc=1
+            fi
           fi
+
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::rollback did not fully succeed — production may be in a mixed state. Check each app's active image before retrying the deploy."
+            exit 1
+          fi
+          echo "rollback complete — all five apps and the migrate job reverted"

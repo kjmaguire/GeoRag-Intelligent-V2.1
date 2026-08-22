@@ -68,7 +68,7 @@ jobs:
   # and are arm64-clean. The compose stack also includes vLLM (prod LLM
   # tier), which is x86_64-only — arm64 hosts could run dev (Ollama) but
   # never the prod LLM tier directly. See
-  # ops/runbooks/llm-model-swap.md for the (now moot) arm64 caveat.
+  # ops/runbooks/_archived/llm-model-swap.md for the (now moot) arm64 caveat.
   #
   # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
   docker-build:

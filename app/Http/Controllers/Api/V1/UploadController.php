@@ -10,6 +10,8 @@ use App\Services\FastApiJwtMinter;
 use App\Services\Ingestion\HatchetDispatchThrottle;
 use App\Services\Ingestion\ShadowRouter;
 use App\Services\StorageService;
+use App\Support\UploadContentGuard;
+use App\Support\Uploads;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -72,12 +74,45 @@ class UploadController extends Controller
         // silver.spatial_features. `.zip` is here because a shapefile is
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone
         // .shp cannot be read without its siblings.
-        'spatial' => ['geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'fgb', 'zip', 'qgs', 'qgz'],
+        // 'gdb' and 'dgn' added 2026-08-21. Both were already in
+        // ingest_spatial.VECTOR_EXTENSIONS and both are read by the parser;
+        // the architecture doc lists File Geodatabase as In-V1. They were
+        // simply missing from the accepted list, so an ArcGIS shop's
+        // standard delivery format 422'd at the door.
+        'spatial' => [
+            'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
+            'fgb', 'gdb', 'zip', 'qgs', 'qgz',
+        ],
         // LAS downhole curves -> ingest_well_logs -> silver.well_log_curves.
         // One row per CURVE with depth/value arrays, not a row per sample:
         // a 3,000 m hole logged every 15 cm is 20,000 samples per curve.
         'well_logs' => ['las'],
     ];
+
+    /**
+     * Every bronze path prefix an upload can land under.
+     *
+     * This is CATEGORIES' keys plus the two prefixes that are not category
+     * names:
+     *
+     *   tiff     — ADR-0005 routes TIFFs to their own prefix while keeping
+     *              the `reports` category for UX (see storeFile()).
+     *   tabular  — written by ingest_zip_archive when it re-uploads a CSV
+     *              or workbook found inside an archive so ingest_tabular can
+     *              classify it. No user ever picks this category; the files
+     *              still need to show up on the Ingestion Runs page.
+     *
+     * Exposed because IngestionRunsController scans bronze directly as a
+     * fallback for uploads whose progress row has not appeared yet, and a
+     * hand-maintained second copy of this list is exactly how CSV, XLSX,
+     * shapefile, GeoPackage and LAS uploads became invisible on that page.
+     *
+     * @return list<string>
+     */
+    public static function bronzePrefixes(): array
+    {
+        return [...array_keys(self::CATEGORIES), 'tiff', 'tabular'];
+    }
 
     /**
      * Categories retired with the Dagster services on 2026-07-28 (B2).
@@ -155,7 +190,12 @@ class UploadController extends Controller
         }
 
         $validated = $request->validate([
-            'file' => ['required', 'file', 'max:6291456'], // 6 GB
+            // Derived from the same ceiling Swoole's package_max_length uses.
+            // This rule used to read `max:6291456` — 6 GiB, in kilobytes,
+            // annotated "6 GB" — which the transport would never allow
+            // through: Swoole refused the connection at 2 GiB, so an
+            // oversized upload got a dropped socket instead of this 422.
+            'file' => ['required', 'file', 'max:'.Uploads::maxKilobytes()],
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(self::CATEGORIES))],
             'vendor_profile_id' => ['nullable', 'integer', 'exists:vendor_profiles,id'],
         ]);
@@ -171,6 +211,46 @@ class UploadController extends Controller
             return response()->json([
                 'message' => "Invalid file extension '.{$ext}' for category '{$category}'. Allowed: ".implode(', ', $allowedExts),
             ], 422);
+        }
+
+        // ── Content checks ───────────────────────────────────────────────
+        // Until 2026-08-22 the extension above was the ONLY input to both
+        // acceptance and routing, and it is client-supplied. A zip bomb
+        // renamed `report.pdf` was stored under reports/ and dispatched to
+        // ingest_pdf, which spent worker memory failing on it.
+        //
+        // finfo reads magic bytes only, so this is cheap even on a
+        // multi-GB upload — and it is deliberately lenient: it rejects a
+        // clear contradiction (ZIP magic under a .pdf name) and stays
+        // silent on everything ambiguous. Most geological formats have no
+        // usable signature; see UploadContentGuard for why that asymmetry
+        // is the right way round.
+        try {
+            $sniffed = $file->getMimeType();
+        } catch (Throwable) {
+            $sniffed = null;
+        }
+        if (UploadContentGuard::mimeMismatch($ext, $sniffed)) {
+            return response()->json([
+                'error' => 'content_type_mismatch',
+                'message' => "This file is named '.{$ext}' but its contents are "
+                    ."'{$sniffed}'. Rename it to match, or upload it under the "
+                    .'category that accepts that format.',
+            ], 422);
+        }
+
+        // A ZIP is opened before it is stored. Both extractors bound entry
+        // count and expanded size, but they run AFTER the object is written
+        // and a workflow dispatched — so without this an archive bomb still
+        // costs storage, an ingest_progress row and a failed run.
+        if ($ext === 'zip') {
+            $archiveProblem = UploadContentGuard::rejectArchive($file->getRealPath());
+            if ($archiveProblem !== null) {
+                return response()->json([
+                    'error' => 'unusable_archive',
+                    'message' => $archiveProblem,
+                ], 422);
+            }
         }
 
         // ── Filename sanitization ────────────────────────────────────────
@@ -422,12 +502,10 @@ class UploadController extends Controller
             $workspaceId = $row->workspace_id;
 
             $fastApiBase = rtrim(
-                config('services.fastapi.internal_url')
-                    ?? config('services.fastapi.internal_url'),
+                config('services.fastapi.internal_url'),
                 '/',
             );
-            $serviceKey = config('services.fastapi.service_key')
-                ?? config('services.fastapi.service_key');
+            $serviceKey = config('services.fastapi.service_key');
             if (! $serviceKey) {
                 Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — ingest not dispatched');
                 $responseData['ingest'] = [
@@ -552,12 +630,10 @@ class UploadController extends Controller
             $workspaceId = $row->workspace_id;
 
             $fastApiBase = rtrim(
-                config('services.fastapi.internal_url')
-                    ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                config('services.fastapi.internal_url'),
                 '/',
             );
-            $serviceKey = config('services.fastapi.service_key')
-                ?? env('FASTAPI_SERVICE_KEY');
+            $serviceKey = config('services.fastapi.service_key');
             if (! $serviceKey) {
                 Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — zip ingest not dispatched');
                 $responseData['ingest'] = [
@@ -703,12 +779,10 @@ class UploadController extends Controller
             $workspaceId = $row->workspace_id;
 
             $fastApiBase = rtrim(
-                config('services.fastapi.internal_url')
-                    ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+                config('services.fastapi.internal_url'),
                 '/',
             );
-            $serviceKey = config('services.fastapi.service_key')
-                ?? env('FASTAPI_SERVICE_KEY');
+            $serviceKey = config('services.fastapi.service_key');
             if (! $serviceKey) {
                 Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — geology ingest not dispatched');
                 $responseData['ingest'] = [

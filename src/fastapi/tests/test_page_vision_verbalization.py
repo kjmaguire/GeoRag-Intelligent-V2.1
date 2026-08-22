@@ -98,9 +98,33 @@ class TestPrompt:
         assert "assay results, grades or tonnages" in prompt
 
     def test_asks_for_the_entities_that_make_a_figure_findable(self) -> None:
-        prompt = vision.PROMPT.lower()
+        """At HIGH detail, where the model is sent enough pixels to read them.
+
+        This used to assert the same tokens against the default prompt,
+        which ships at detail="low" -- a single downsampled tile. Asking a
+        model to name drill holes and formations it cannot see does not
+        get a refusal, it gets plausible invented ones, and they become
+        silver.document_passages.text.
+        """
+        prompt = vision.build_prompt("high").lower()
         for token in ("cross-section", "drill-hole", "formation", "caption"):
             assert token in prompt
+
+    def test_the_low_detail_prompt_asks_for_none_of_them(self) -> None:
+        """The default, and what the live worker sends."""
+        prompt = vision.build_prompt("low").lower()
+
+        assert "cross-section" in prompt, (
+            "figure KIND survives downsampling and is what makes the "
+            "description useful at all"
+        )
+        for token in ("quoted exactly", "named entities"):
+            assert token not in prompt, token
+
+    def test_the_default_prompt_is_the_low_detail_one(self) -> None:
+        """`PROMPT` is the alias other modules and docstrings reference;
+        it must track the detail the requests actually use."""
+        assert vision.build_prompt("low") == vision.PROMPT
 
     def test_forbids_inference_beyond_the_page(self) -> None:
         assert "do not infer" in vision.PROMPT.lower()
@@ -241,3 +265,94 @@ class TestFailSoft:
         _enable(monkeypatch)
         monkeypatch.setattr("httpx.post", lambda *a, **kw: _FakeResponse({}, status=500))
         assert vision.verbalize_page(b"\x89PNG").ok is False
+
+class TestThePromptMatchesTheResolution:
+    """The prompt asked for exact quotes from an image sent at low detail.
+
+    `verbalize_page` sends the page with `detail` defaulting to "low" — a
+    single downsampled tile — while the prompt asked for the figure's
+    "title and caption, quoted exactly" and for drill-hole IDs, grid and
+    scale.
+
+    A model asked to quote exactly from an image it cannot read does not
+    refuse. It writes plausible text: correctly-formatted hole IDs that
+    appear on no sheet. That text becomes
+    `silver.document_passages.text`, is patched into the Qdrant payload,
+    and reaches the reranker and the answer path.
+
+    The prompt is now derived from the detail level so the two cannot
+    contradict each other again.
+    """
+
+    def test_low_detail_does_not_ask_for_exact_quotes(self) -> None:
+        from app.services.ingest.page_vision_client import build_prompt
+
+        prompt = build_prompt("low")
+
+        assert "quoted exactly" not in prompt
+        assert "drill-hole \nIDs" not in prompt
+
+    def test_low_detail_asks_the_model_to_admit_illegibility(self) -> None:
+        """The replacement instruction has to be positive, not merely an
+        omission. Left to itself a model still guesses at a label."""
+        from app.services.ingest.page_vision_client import build_prompt
+
+        prompt = build_prompt("low")
+
+        assert "not clearly readable" in prompt
+        assert "invents a plausible label" in prompt
+
+    def test_high_detail_asks_for_them_again(self) -> None:
+        """At high detail the model is actually sent the pixels, so the
+        instruction is answerable and the extra tokens buy something."""
+        from app.services.ingest.page_vision_client import build_prompt
+
+        prompt = build_prompt("high")
+
+        assert "quoted exactly" in prompt
+        assert "Named entities" in prompt
+
+    def test_the_never_invent_rule_applies_at_both_levels(self) -> None:
+        from app.services.ingest.page_vision_client import build_prompt
+
+        for level in ("low", "high"):
+            assert "invents a plausible label" in build_prompt(level), level
+
+    def test_an_unknown_detail_value_gets_the_cautious_prompt(self) -> None:
+        """A typo in IMAGE_VERBALIZATION_DETAIL must not silently select
+        the instruction set the resolution cannot support."""
+        from app.services.ingest.page_vision_client import build_prompt
+
+        assert "quoted exactly" not in build_prompt("hgih")
+        assert "quoted exactly" not in build_prompt("")
+
+    def test_the_default_detail_is_low(self, monkeypatch) -> None:
+        from app.services.ingest.page_vision_client import image_detail
+
+        monkeypatch.delenv("IMAGE_VERBALIZATION_DETAIL", raising=False)
+        assert image_detail() == "low"
+
+    def test_the_env_var_selects_the_prompt_too(self, monkeypatch) -> None:
+        """The point of the derivation: raising the detail raises what is
+        asked for, in one edit rather than two."""
+        from app.services.ingest.page_vision_client import (
+            build_prompt,
+            image_detail,
+        )
+
+        monkeypatch.setenv("IMAGE_VERBALIZATION_DETAIL", "HIGH")
+        assert image_detail() == "high"
+        assert "quoted exactly" in build_prompt()
+
+    def test_the_request_builds_both_from_one_resolved_value(self) -> None:
+        """Reading the environment twice would let the prompt and the
+        image describe different resolutions within one request."""
+        import inspect
+
+        from app.services.ingest import page_vision_client
+
+        source = inspect.getsource(page_vision_client.verbalize_page)
+
+        assert "_detail = image_detail()" in source
+        assert "build_prompt(_detail)" in source
+        assert '"detail": _detail,' in source

@@ -60,7 +60,10 @@ class OrphanDocument:
 # guard stops the sweep from re-minting a fresh recovery ingest_progress row
 # for the same stuck document on EVERY 10-minute tick while an earlier
 # recovery row is still non-terminal.
-SELECT_ORPHANS_SQL = """
+# f-string: the only interpolation is _progress.TERMINAL_STATUS_SQL, a
+# module constant. Hand-copying that set is how 'partial' ended up
+# terminal to one function and non-terminal to seven others.
+SELECT_ORPHANS_SQL = f"""
     WITH orphans AS (
         SELECT
             dp.document_id::text                       AS document_id,
@@ -107,7 +110,7 @@ SELECT_ORPHANS_SQL = """
         WHERE ip2.workspace_id = o.workspace_id::uuid
           AND ip2.minio_key    = o.parent_minio_key
           AND ip2.triggered_by = 'embed_pending_sweep'
-          AND ip2.status NOT IN ('completed','failed','cancelled','timed_out')
+          AND ip2.status NOT IN ({ingest_progress.TERMINAL_STATUS_SQL})
     )
 """
 
@@ -175,6 +178,27 @@ async def create_recovery_run(orphan: OrphanDocument) -> str | None:
         log.info(
             "orphan_sweep: skipping recovery-run creation (missing scope) doc=%s",
             orphan.document_id,
+        )
+        return None
+
+    # The NOT EXISTS guard in SELECT_ORPHANS_SQL only holds while a prior
+    # recovery row is non-terminal. Once stale_run_detector times that row
+    # out (120 min at the embedding stage) this document is eligible again,
+    # so without a cap a passage that can never embed produces a new row
+    # every ten minutes for as long as it exists — and a Reverb `timed_out`
+    # broadcast with each one, which the Ingestion Runs UI renders as a
+    # failed ingestion nobody started.
+    #
+    # `parent_attempt_number` has been selected and carried on the
+    # dataclass since this module was written; it was simply never read.
+    max_attempts = ingest_progress.recovery_max_attempts()
+    if orphan.parent_attempt_number >= max_attempts:
+        log.warning(
+            "orphan_sweep: recovery exhausted doc=%s attempts=%d/%d "
+            "orphan_passages=%d — not creating another run; this document "
+            "needs manual triage",
+            orphan.document_id, orphan.parent_attempt_number, max_attempts,
+            orphan.orphan_count,
         )
         return None
 

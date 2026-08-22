@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { router } from '@inertiajs/react';
-import { useBasemapStyleUrl } from '@/lib/basemap';
+import { useBasemapGlyphsUrl, useBasemapStyleUrl, useSatelliteTiles } from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
 
 // CC-01 Item 2 — closed vocabulary for the georef_method column. Mirrors the
@@ -44,7 +44,8 @@ export interface MapProjectSummary {
 /**
  * Workspace MapLibre canvas.
  *
- * - dark_matter basemap from useBasemapStyleUrl
+ * - Every basemap, the glyph endpoint and the satellite tile template
+ *   come from the shared @/lib/basemap registry
  * - GeoJSON collar layer with brighter halo on ore-bearing holes
  * - Heatmap layer weighted by ore_thickness_m (toggle-driven)
  * - Click → in-map detail panel with "View in LOGS" jump
@@ -59,30 +60,6 @@ type GeoJsonGeometry = any;
 export type BasemapId = 'dark_matter' | 'positron' | 'bright' | 'satellite';
 export type MapTool = 'pan' | 'draw' | 'measure' | 'select';
 
-// Static style URLs for the basemaps that aren't in the central
-// useBasemapStyleUrl registry. Satellite uses Esri World Imagery (free,
-// no key) wrapped in a minimal MapLibre style we build inline.
-const BASEMAP_URLS: Record<BasemapId, string | object> = {
-    dark_matter: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-    positron: 'https://tiles.openfreemap.org/styles/positron',
-    bright: 'https://tiles.openfreemap.org/styles/bright',
-    satellite: {
-        version: 8,
-        sources: {
-            'esri-imagery': {
-                type: 'raster',
-                tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-                tileSize: 256,
-                maxzoom: 19,
-                attribution: 'Tiles © Esri',
-            },
-        },
-        layers: [
-            { id: 'esri-imagery', type: 'raster', source: 'esri-imagery' },
-        ],
-        glyphs: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/glyphs/{fontstack}/{range}.pbf',
-    },
-};
 
 export function WorkspaceMap({
     collars,
@@ -130,9 +107,50 @@ export function WorkspaceMap({
     const containerRef = useRef<HTMLDivElement>(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mapRef = useRef<any>(null);
-    // Registry-driven default (dark_matter) plus per-basemap overrides.
-    const registryStyle = useBasemapStyleUrl('dark_matter');
-    const styleSpec = basemap === 'dark_matter' ? registryStyle : BASEMAP_URLS[basemap];
+    // Every network dependency of the map comes from the shared registry.
+    //
+    // This component used to keep its own copy of the positron / bright /
+    // dark_matter URLs, route only dark_matter through the registry, and
+    // hard-code the glyph endpoint and the Esri tile template on top of
+    // that. The registry's whole purpose is that an on-prem deployment can
+    // repoint these from the environment (CLAUDE.md hard rule #8), and a
+    // second copy here meant three of the five assets ignored whatever was
+    // configured.
+    const positronStyle = useBasemapStyleUrl('positron');
+    const brightStyle = useBasemapStyleUrl('bright');
+    const darkMatterStyle = useBasemapStyleUrl('dark_matter');
+    const glyphsUrl = useBasemapGlyphsUrl();
+    const satellite = useSatelliteTiles();
+
+    // Memoised: the satellite arm returns a fresh object literal, and this
+    // value is in the map-construction effect's dependency array.
+    const styleSpec = useMemo<string | object>(() => {
+        switch (basemap) {
+            case 'positron':
+                return positronStyle;
+            case 'bright':
+                return brightStyle;
+            case 'satellite':
+                // A raster tile source has no style.json, so wrap it in the
+                // minimal style MapLibre needs.
+                return {
+                    version: 8,
+                    sources: {
+                        'esri-imagery': {
+                            type: 'raster',
+                            tiles: [satellite.tiles],
+                            tileSize: 256,
+                            maxzoom: 19,
+                            attribution: satellite.attribution,
+                        },
+                    },
+                    layers: [{ id: 'esri-imagery', type: 'raster', source: 'esri-imagery' }],
+                    glyphs: glyphsUrl,
+                };
+            default:
+                return darkMatterStyle;
+        }
+    }, [basemap, positronStyle, brightStyle, darkMatterStyle, glyphsUrl, satellite.tiles, satellite.attribution]);
     const [hoverHole, setHoverHole] = useState<{ hole: MapCollar; x: number; y: number } | null>(null);
     // Drag-box state for the Select tool (screen-space pixel rect).
     const [selectRect, setSelectRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -839,7 +857,7 @@ export function WorkspaceMap({
             mapRef.current = null;
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [collars.length, projectSlug, basemap, registryStyle]);
+    }, [collars.length, projectSlug, basemap, styleSpec]);
 
     // React to layer toggle changes by updating MapLibre layer visibility +
     // filters on the existing map instance (don't tear down on every click).
@@ -1412,6 +1430,7 @@ export function WorkspaceMap({
             >
                 <span className="uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>Map</span>
                 <select
+                    aria-label="Basemap"
                     value={basemap}
                     onChange={(e) => onBasemapChange(e.target.value as BasemapId)}
                     className="text-[10px] font-mono px-1.5 py-0.5 rounded border"

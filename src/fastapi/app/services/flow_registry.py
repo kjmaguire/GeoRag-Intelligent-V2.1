@@ -25,6 +25,8 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel
 
+from app.db.dsn import build_dsn
+
 log = logging.getLogger("georag.flow_registry")
 
 
@@ -68,13 +70,9 @@ _cache: dict[str, FlowEntry] = {}
 _cache_loaded_at: float = 0.0
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 async def _fetch_rows() -> list[dict]:
