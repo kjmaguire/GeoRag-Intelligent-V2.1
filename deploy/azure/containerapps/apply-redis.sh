@@ -52,10 +52,32 @@ awk '
   { print }
 ' "$SOURCE" > "$STRIPPED"
 
-if grep -q "REPLACE_AT_DEPLOY_TIME" "$STRIPPED"; then
+# Comments are not payload.
+#
+# This guard used to grep the whole stripped file for the placeholder, and
+# redis.yaml's own header comment is a paragraph explaining what the
+# placeholder is and why sending it would break every Redis client. So the
+# check matched that comment on every single run and the script aborted
+# before doing anything -- in dry run and under --apply alike. It had never
+# got past this point.
+payload="$(grep -v '^[[:space:]]*#' "$STRIPPED")"
+
+if printf '%s
+' "$payload" | grep -q "REPLACE_AT_DEPLOY_TIME"; then
   echo "ABORT: the placeholder survived the strip -- refusing to send it." >&2
   exit 1
 fi
+
+# The invariant that actually matters, checked directly rather than through
+# a magic string: no secrets MAPPING in what we send. A `secretRef:` further
+# down the template is a REFERENCE to the live secret and must survive --
+# stripping that would be a different bug with the same symptom.
+if printf '%s
+' "$payload" | grep -qE '^[[:space:]]*secrets:[[:space:]]*$'; then
+  echo "ABORT: the secrets mapping is still present -- refusing to send it." >&2
+  exit 1
+fi
+
 if ! grep -q "maxmemory" "$STRIPPED"; then
   echo "ABORT: the strip removed too much (no redis-server args left)." >&2
   exit 1

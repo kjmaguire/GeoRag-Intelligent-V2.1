@@ -5,6 +5,16 @@
 #   bash deploy/azure/alerts/create-alerts.sh            # show
 #   bash deploy/azure/alerts/create-alerts.sh --apply    # create/update
 #
+# ON WINDOWS, run it as:
+#
+#   MSYS_NO_PATHCONV=1 bash deploy/azure/alerts/create-alerts.sh --apply
+#
+# Git Bash rewrites any argument that looks like a Unix absolute path, and
+# every --scopes / --resource / --action here is an Azure resource ID
+# starting with /subscriptions/. Without that variable they arrive as
+# C:/Program Files/Git/subscriptions/... and Azure rejects the first
+# command with LinkedInvalidPropertyId. Native bash needs nothing.
+#
 # ---------------------------------------------------------------------
 # WHAT IS ALREADY THERE, SO THIS DOES NOT DUPLICATE IT
 # ---------------------------------------------------------------------
@@ -324,17 +334,35 @@ run az monitor scheduled-query create \
   --action-groups "$ACTION_GROUP"
 
 # --- 6. Postgres logs (not an alert -- there is nothing to alert on) ---
-# `az monitor diagnostic-settings list` returns [] for georag-pg-cc, so
-# when georag-pg-cc-high-cpu fires at 03:00 there is no slow query, no
-# query store, no autovacuum and no connection-error evidence to look at
-# -- only the CPU percentage that fired the alert. Platform METRICS are
-# present and working; it is the LOGS category that was never enabled.
-run az monitor diagnostic-settings create \
-  --name pg-to-law \
-  --resource "$PG_ID" \
-  --workspace "$WS_ID" \
-  --logs '[{"category":"PostgreSQLLogs","enabled":true},{"category":"PostgreSQLFlexSessions","enabled":true},{"category":"PostgreSQLFlexQueryStoreRuntime","enabled":true}]' \
-  --metrics '[{"category":"AllMetrics","enabled":true}]'
+# When georag-pg-cc-high-cpu fires at 03:00 there should be a slow query,
+# a query store, autovacuum and connection-error evidence to look at, not
+# just the CPU percentage that fired the alert.
+#
+# 2026-08-22: this step used to `create` a setting named pg-to-law, on the
+# stated basis that `diagnostic-settings list` returned [] for this server.
+# That is no longer true -- `georag-pg-audit` exists and already routes
+# PostgreSQLLogs + PostgreSQLFlexSessions to the same workspace. Azure
+# refuses a second setting sending the same category to the same sink
+# ("Data sinks can't be reused"), so this create failed every time it ran.
+#
+# A resource gets one setting per sink, so the correct action is to widen
+# the existing one, not add another. That is deliberately NOT automatic:
+# enabling AllMetrics adds Log Analytics ingestion volume on a project
+# that runs a cost-burn watcher, which is a spending decision.
+existing_setting="$(
+  az monitor diagnostic-settings list --resource "$PG_ID"     --query "[?workspaceId=='${WS_ID}'].name | [0]" -o tsv 2>/dev/null
+)"
+
+if [ -n "$existing_setting" ] && [ "$existing_setting" != "None" ]; then
+  echo >&2
+  echo "# NOTE: '${existing_setting}' already ships PG logs to this workspace," >&2
+  echo "# so pg-to-law cannot be created alongside it. Currently enabled:" >&2
+  az monitor diagnostic-settings show --name "$existing_setting" --resource "$PG_ID"     --query "{logs: logs[?enabled].category, metrics: metrics[?enabled].category}"     -o yaml >&2 2>/dev/null
+  echo "# Widen that one instead of adding another. AllMetrics costs Log" >&2
+  echo "# Analytics ingestion, so decide that before running the update." >&2
+else
+  run az monitor diagnostic-settings create     --name pg-to-law     --resource "$PG_ID"     --workspace "$WS_ID"     --logs '[{"category":"PostgreSQLLogs","enabled":true},{"category":"PostgreSQLFlexSessions","enabled":true},{"category":"PostgreSQLFlexQueryStoreRuntime","enabled":true}]'     --metrics '[{"category":"AllMetrics","enabled":true}]'
+fi
 
 # Pair rule 6 with a slow-query threshold, or PostgreSQLLogs will collect
 # startup and checkpoint chatter and no queries:
