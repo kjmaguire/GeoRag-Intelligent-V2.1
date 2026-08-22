@@ -4,6 +4,11 @@
 #   bash deploy/azure/containerapps/apply-redis.sh            # show
 #   bash deploy/azure/containerapps/apply-redis.sh --apply    # do it
 #
+# Runs from Git Bash, WSL or native bash as-is. Unlike its sibling
+# create-alerts.sh it needs no MSYS_NO_PATHCONV, and it is unharmed if you
+# have set one -- see the cygpath conversion further down for why that
+# matters.
+#
 # ---------------------------------------------------------------------
 # WHY THIS SCRIPT EXISTS INSTEAD OF A ONE-LINE az COMMAND
 # ---------------------------------------------------------------------
@@ -102,7 +107,26 @@ fi
 
 echo >&2
 echo "# applying..." >&2
-if ! az containerapp update -g "$RG" -n "$APP" --yaml "$STRIPPED" --output none; then
+# Hand az a path az can actually open.
+#
+# `az` on Windows is a native binary, and $STRIPPED is an MSYS path like
+# /tmp/redis-apply-ncKHLv.yaml. Git Bash normally rewrites that into a
+# Windows path on the way through -- but MSYS_NO_PATHCONV=1 disables the
+# rewrite, and its sibling create-alerts.sh REQUIRES that variable, because
+# every argument there is a /subscriptions/... resource ID that the same
+# rewrite would corrupt. Two scripts in one directory with opposite needs
+# is a trap; anyone who sets the variable once, or exports it, gets
+# "does not exist" here.
+#
+# Converting explicitly makes this script correct either way: with the
+# variable, without it, and on Linux, where there is no cygpath and the
+# POSIX path was already right.
+YAML_ARG="$STRIPPED"
+if command -v cygpath >/dev/null 2>&1; then
+  YAML_ARG="$(cygpath -w "$STRIPPED")"
+fi
+
+if ! az containerapp update -g "$RG" -n "$APP" --yaml "$YAML_ARG" --output none; then
   echo "FAILED: az containerapp update returned non-zero." >&2
   exit 1
 fi
