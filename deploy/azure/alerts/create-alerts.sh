@@ -58,6 +58,9 @@ APPLY=0
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 JOBS_DIR="${REPO_ROOT}/deploy/azure/containerapps"
 
+# Path + line-ending handling for a Windows az called from Git Bash or WSL.
+. "${REPO_ROOT}/deploy/azure/_host_compat.sh"
+
 run() {
   if [ "$APPLY" -eq 1 ]; then
     "$@"
@@ -350,7 +353,7 @@ run az monitor scheduled-query create \
 # enabling AllMetrics adds Log Analytics ingestion volume on a project
 # that runs a cost-burn watcher, which is a spending decision.
 existing_setting="$(
-  az monitor diagnostic-settings list --resource "$PG_ID"     --query "[?workspaceId=='${WS_ID}'].name | [0]" -o tsv 2>/dev/null
+  az monitor diagnostic-settings list --resource "$PG_ID"     --query "[?workspaceId=='${WS_ID}'].name | [0]" -o tsv 2>/dev/null | strip_cr
 )"
 
 if [ -n "$existing_setting" ] && [ "$existing_setting" != "None" ]; then

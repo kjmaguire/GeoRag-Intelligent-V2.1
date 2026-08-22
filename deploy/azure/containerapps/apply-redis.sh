@@ -36,6 +36,9 @@ APP=redis-cc
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="${HERE}/redis.yaml"
 
+# Path + line-ending handling for a Windows az called from Git Bash or WSL.
+. "${HERE}/../_host_compat.sh"
+
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
@@ -121,10 +124,7 @@ echo "# applying..." >&2
 # Converting explicitly makes this script correct either way: with the
 # variable, without it, and on Linux, where there is no cygpath and the
 # POSIX path was already right.
-YAML_ARG="$STRIPPED"
-if command -v cygpath >/dev/null 2>&1; then
-  YAML_ARG="$(cygpath -w "$STRIPPED")"
-fi
+YAML_ARG="$(to_host_path "$STRIPPED")"
 
 if ! az containerapp update -g "$RG" -n "$APP" --yaml "$YAML_ARG" --output none; then
   echo "FAILED: az containerapp update returned non-zero." >&2
@@ -134,14 +134,14 @@ fi
 # --- verify, rather than assume --------------------------------------
 FAILURES=0
 
-secret_names=$(az containerapp secret list -g "$RG" -n "$APP" --query "[].name" -o tsv 2>/dev/null)
+secret_names=$(az containerapp secret list -g "$RG" -n "$APP" --query "[].name" -o tsv 2>/dev/null | strip_cr)
 if ! printf '%s' "$secret_names" | grep -qx "redis-password"; then
   echo "FAILED: the redis-password secret is gone after the update." >&2
   FAILURES=$((FAILURES + 1))
 fi
 
 live_args=$(az containerapp show -g "$RG" -n "$APP" \
-  --query "properties.template.containers[0].args[0]" -o tsv 2>/dev/null)
+  --query "properties.template.containers[0].args[0]" -o tsv 2>/dev/null | strip_cr)
 for expected in "--maxmemory 384mb" "--maxmemory-policy volatile-lru" "--appendonly no"; do
   if ! printf '%s' "$live_args" | grep -qF -- "$expected"; then
     echo "FAILED: live args do not contain '${expected}'." >&2
