@@ -113,6 +113,18 @@ class GlobalTimeoutMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 
 
+# Liveness/readiness paths. A SUCCESSFUL request to one of these is
+# logged at DEBUG rather than INFO, so it does not reach the log store at
+# the default level; a failing one is still logged at INFO, because a
+# probe that started failing is the single most useful line in the file.
+#
+# Measured 2026-08-22: probe requests were 9,758 of fastapi-cc's 98,187
+# console lines over two days -- ten percent of the tier's volume spent
+# recording that nothing was wrong. (The 21 Aug audit put this at a third
+# of the tier; a third is not what the workspace shows.)
+_PROBE_PATHS = frozenset({"/health", "/ready", "/healthz", "/readyz", "/up"})
+
+
 class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
     """Per-request JSON log line + X-Request-ID round-trip.
 
@@ -165,7 +177,13 @@ class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
         finally:
             duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
             client_host = request.client.host if request.client else None
-            logger.info(
+            level = (
+                logging.DEBUG
+                if request.url.path in _PROBE_PATHS and status < 400
+                else logging.INFO
+            )
+            logger.log(
+                level,
                 "request",
                 extra={
                     "request_id": request_id,

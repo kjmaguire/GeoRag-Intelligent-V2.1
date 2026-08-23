@@ -34,11 +34,13 @@ StructuredAccessLogMiddleware = _mod.StructuredAccessLogMiddleware
 # despite the package shadowing the module.
 _is_valid_traceparent = _mod._is_valid_traceparent
 _mint_traceparent = _mod._mint_traceparent
+_PROBE_PATHS = _mod._PROBE_PATHS
 
 __all__ = [
     "BodySizeLimitMiddleware",
     "GlobalTimeoutMiddleware",
     "StructuredAccessLogMiddleware",
+    "_PROBE_PATHS",
     "_is_valid_traceparent",
     "_mint_traceparent",
 ]
