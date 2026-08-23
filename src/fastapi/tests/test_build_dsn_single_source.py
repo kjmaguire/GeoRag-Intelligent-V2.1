@@ -201,3 +201,58 @@ class TestNoBuildersGrewBack:
         ]
 
         assert offenders == []
+
+
+class TestRedactDsn:
+    """`redact_dsn` is the only safe way to put a DSN in a log line.
+
+    Added after CodeQL flagged run_golden_benchmark.py, which redacted by
+    string-replacing os.environ["POSTGRES_PASSWORD"] out of the DSN. That
+    is a no-op whenever the DSN came from a DATABASE_URL override, and a
+    no-op redaction is worse than none because it reads as handled.
+    """
+
+    def test_the_password_is_replaced_wherever_the_dsn_came_from(self) -> None:
+        from app.db.dsn import redact_dsn
+
+        out = redact_dsn(
+            "postgresql://georag:s3cret@pg-cc.postgres.database.azure.com"
+            ":5432/georag?sslmode=require"
+        )
+
+        assert "s3cret" not in out
+        # Everything else survives -- a redacted line still has to be
+        # useful enough that nobody reaches for the unredacted one.
+        assert out == (
+            "postgresql://georag:*****@pg-cc.postgres.database.azure.com"
+            ":5432/georag?sslmode=require"
+        )
+
+    def test_a_dsn_with_no_password_is_unchanged(self) -> None:
+        from app.db.dsn import redact_dsn
+
+        dsn = "postgresql://georag@localhost:5432/georag"
+
+        assert redact_dsn(dsn) == dsn
+
+    def test_the_libpq_keyword_form_is_not_passed_through(self) -> None:
+        from app.db.dsn import redact_dsn
+
+        # build_dsn never emits this form, but this helper is the one
+        # people will reach for. Returning it unchanged would leak.
+        assert redact_dsn("host=pg password=s3cret dbname=georag") == "*****"
+
+    def test_the_real_dsn_this_deployment_builds_carries_no_password(self) -> None:
+        import os
+        from unittest import mock
+
+        from app.db.dsn import build_dsn, redact_dsn
+
+        env = {
+            "POSTGRES_USER": "georag",
+            "POSTGRES_PASSWORD": "s3cret",
+            "POSTGRES_HOST": "pg-cc.postgres.database.azure.com",
+            "POSTGRES_DB": "georag",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            assert "s3cret" not in redact_dsn(build_dsn())

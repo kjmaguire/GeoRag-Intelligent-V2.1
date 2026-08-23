@@ -17,9 +17,11 @@ test. Both steps' *actual* work is otherwise plain, S3-free functions:
   - preflight's page-count/validity check is a few lines of pikepdf +
     hashlib -- replicated inline below.
   - parse's real work is entirely inside the pure function
-    ingest_pdf._run_parser_subprocess(body_bytes, sha256, ...), called
-    directly on the fixture's bytes (no subprocess pool needed for one
-    small PDF).
+    ingest_pdf._run_parser_subprocess(body_path, sha256, ...), called
+    directly on a copy of the fixture (no subprocess pool needed for one
+    small PDF). It takes the PATH of an already-downloaded body, not the
+    bytes -- passing bytes pickled the whole file through the pool's pipe
+    only for the child to write it straight back out to /tmp anyway.
 
 persist() is NOT reimplemented -- that function is ~500 lines of real
 business logic (silver.reports/document_passages INSERTs, OCR-review
@@ -46,6 +48,7 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -149,7 +152,17 @@ async def main() -> int:
     )
 
     log.info("ingest: running parse_pdf_report (native-text fixture -- no OCR expected)")
-    parsed_dict = _run_parser_subprocess(body_bytes, sha256)
+    # The parser takes a path, and the real caller hands it a temp file it
+    # owns. Copy the fixture rather than passing FIXTURE_PDF itself: the
+    # contract is "caller owns the file", and a smoke test that can delete
+    # its own committed fixture is one bad day away from a confusing diff.
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(body_bytes)
+        body_path = tmp.name
+    try:
+        parsed_dict = _run_parser_subprocess(body_path, sha256)
+    finally:
+        Path(body_path).unlink(missing_ok=True)
     parse_out = ParseOut(**parsed_dict)
     log.info(
         "ingest: parsed sections=%d parser=%s is_scanned=%s",

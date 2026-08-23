@@ -152,3 +152,49 @@ def build_dsn(
             dsn = f"{dsn}?sslmode={sslmode}"
 
     return dsn
+
+
+def redact_dsn(dsn: str) -> str:
+    """A DSN safe to log: same string, password replaced by ``*****``.
+
+    Added 2026-08-22 after CodeQL flagged run_golden_benchmark.py for
+    clear-text logging. That call site redacted by hand::
+
+        _dsn().replace(os.environ.get("POSTGRES_PASSWORD", "_") or "_", "*****")
+
+    which is only a redaction when POSTGRES_PASSWORD is both set and is the
+    password actually in the DSN. `build_dsn` also honours a full
+    ``DATABASE_URL``/``POSTGRES_DSN`` override, and in that case the string
+    replacement matches nothing and the benchmark logs a live credential at
+    INFO into a log store several people can read. A no-op redaction is
+    worse than none, because it reads as handled.
+
+    Redact structurally instead: split the URL and drop the password
+    component, so it works no matter where the DSN came from. Keeps the
+    username, which is what makes the line useful for debugging.
+
+    Anything that does not parse as a URL is returned as ``*****`` rather
+    than passed through — an unparseable DSN is exactly the case where a
+    stray credential would survive a regex.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return "*****"
+
+    if not parts.scheme or parts.password is None:
+        # Either not a URL at all (libpq keyword/value form, e.g.
+        # "host=... password=..."), or a URL carrying no password. The
+        # keyword/value form is not something build_dsn emits, but this
+        # helper is the one people will reach for, so do not hand back a
+        # string that might contain "password=hunter2".
+        return dsn if parts.scheme and "password" not in dsn.lower() else "*****"
+
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    netloc = f"{parts.username or ''}:*****@{host}"
+
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))

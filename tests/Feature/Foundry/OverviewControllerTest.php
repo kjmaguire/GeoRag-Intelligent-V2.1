@@ -224,6 +224,15 @@ final class OverviewControllerTest extends TestCase
                     'ocr_method' => $method === 'unknown' ? null : $method,
                     'ocr_status' => $remainingFlags-- > 0 ? 'low_confidence' : 'accepted',
                     'modality' => $modality,
+                    // CHECK document_passages_image_requires_source: an
+                    // image passage with no page and no object key is a
+                    // row retrieval can surface and the UI cannot render,
+                    // so the table refuses it. Text passages leave both
+                    // null, which is what the constraint permits.
+                    'page_number' => $modality === 'image' ? $ordinal + 1 : null,
+                    'image_object_key' => $modality === 'image'
+                        ? "page-images/{$reportId}/{$ordinal}.webp"
+                        : null,
                 ]);
                 $ordinal++;
             }

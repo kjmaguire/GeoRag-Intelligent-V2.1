@@ -46,6 +46,15 @@ concurrency:
 env:
   PHP_VERSION: "8.5"
 
+# Least-privilege default for every job in this file. CodeQL's
+# actions/missing-workflow-permissions flags a workflow with no explicit
+# block because it then inherits the repository default, which can be
+# read-write for the whole repo. Jobs that genuinely need more (SARIF
+# upload, OIDC, package push) keep their own `permissions:` block, which
+# overrides this one rather than adding to it.
+permissions:
+  contents: read
+
 jobs:
   tenant-isolation:
     name: Tenant Isolation Auditor

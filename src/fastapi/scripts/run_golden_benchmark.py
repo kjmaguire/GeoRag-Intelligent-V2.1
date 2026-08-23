@@ -82,6 +82,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import asyncpg  # noqa: E402
 
+from app.db.dsn import redact_dsn  # noqa: E402
 from app.services.eval.real_rag_evaluator import (  # noqa: E402
     evaluate_question_real_rag,
 )
@@ -296,7 +297,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
       4. Return the report dict.
     """
     log.info("bench.start dsn=%s sha=%s label=%s",
-             _dsn().replace(os.environ.get("POSTGRES_PASSWORD", "_") or "_", "*****"),
+             redact_dsn(_dsn()),
              _git_sha(),
              args.label)
 

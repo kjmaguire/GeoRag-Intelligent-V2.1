@@ -6,7 +6,9 @@ namespace Tests\Feature\Api\V1;
 
 use App\Models\Project;
 use App\Models\User;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -32,6 +34,13 @@ class DrillUploadControllerTest extends TestCase
     private Project $project;
 
     private string $workspaceId;
+
+    /**
+     * Per-test HTTP stubs, matched before setUp()'s default response.
+     *
+     * @var array<string, PromiseInterface>
+     */
+    private array $httpOverrides = [];
 
     protected function setUp(): void
     {
@@ -67,9 +76,22 @@ class DrillUploadControllerTest extends TestCase
         $this->user->projects()->attach($this->project->project_id, ['role' => 'owner']);
 
         Storage::fake('s3');
-        Http::fake([
-            '*' => Http::response(['errors' => null], 200),
-        ]);
+
+        // Http::fake() MERGES into the stub list and the FIRST matching
+        // stub answers. A '*' catch-all registered here is therefore
+        // unreachable-past: a test that later faked a 500 for
+        // ingest_tabular got this 200 instead and asserted against a
+        // success it never asked for. Route through $httpOverrides so a
+        // per-test stub is consulted BEFORE the default, not after it.
+        Http::fake(function (ClientRequest $request) {
+            foreach ($this->httpOverrides as $pattern => $response) {
+                if (Str::is($pattern, $request->url())) {
+                    return $response;
+                }
+            }
+
+            return Http::response(['errors' => null], 200);
+        });
     }
 
     private function url(): string
@@ -188,10 +210,9 @@ class DrillUploadControllerTest extends TestCase
     {
         // The file IS stored, so a 201 reads as unqualified success while
         // the only signal is `dispatch.dispatched` three levels deep.
-        Http::fake([
+        $this->httpOverrides = [
             '*ingest_tabular*' => Http::response(['detail' => 'nope'], 500),
-            '*' => Http::response(['errors' => null], 200),
-        ]);
+        ];
 
         $this->actingAs($this->user)
             ->postJson($this->url(), ['file' => $this->csv('surveys.csv')])

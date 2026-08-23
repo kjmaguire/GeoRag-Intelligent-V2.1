@@ -233,13 +233,26 @@
           bypassing PgBouncer (which only knows about the `georag` DB and
           uses transaction pooling incompatible with migrate:fresh).
           Credentials match the committed dev defaults in .env.example.
+
+          Only DB_CONNECTION is forced, and it has to be: that is the one
+          value phpunit.xml pins (to sqlite) and the whole reason this file
+          exists. The rest are DEFAULTS, not overrides — a bare <env> only
+          applies when the variable is absent from the environment.
+
+          They were forced once, on 2026-08-23, and it broke the Tenant
+          Isolation Auditor the same day. `postgresql` is a docker-compose
+          service name; in CI Postgres is a GitHub service on localhost, so
+          forcing the host made this config resolve a name that exists on
+          exactly one machine and the whole tenancy suite errored with
+          "could not translate host name". Forcing DB_CONNECTION fixes a
+          config-vs-environment conflict; forcing the address creates one.
         -->
         <env name="DB_CONNECTION" value="pgsql" force="true"/>
         <env name="DB_URL" value="" force="true"/>
-        <env name="DB_HOST" value="postgresql" force="true"/>
-        <env name="DB_PORT" value="5432" force="true"/>
-        <env name="DB_DATABASE" value="georag_test" force="true"/>
-        <env name="DB_USERNAME" value="georag" force="true"/>
+        <env name="DB_HOST" value="postgresql"/>
+        <env name="DB_PORT" value="5432"/>
+        <env name="DB_DATABASE" value="georag_test"/>
+        <env name="DB_USERNAME" value="georag"/>
         <!-- 2026-08-21 — placeholder, deliberately. Doc-phase 157 replaced
              this with the value read out of the running container via
              `docker exec georag-postgresql env`, to keep it "in sync". That
