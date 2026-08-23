@@ -83,6 +83,14 @@ SUPPORTED_EXTENSIONS = (
 #: and must NOT be opened directly.
 _ARCHIVE_MEMBER_EXTENSIONS = VECTOR_EXTENSIONS | QGIS_PROJECT_EXTENSIONS
 
+#: The files a ".shp" needs beside it. Never opened directly -- pyogrio reads
+#: them through the ".shp" -- but WHICH of them arrived decides what the
+#: delivery is worth, and they are not equal: GDAL rebuilds a missing ".shx"
+#: from the ".shp" itself (SHAPE_RESTORE_SHX, set once at spatial_parser
+#: import), the ".dbf" carries the attributes, the ".cpg" only names an
+#: encoding -- and the ".prj" is the one nothing can reconstruct.
+_SHAPEFILE_SIDECAR_EXTENSIONS = frozenset({".shx", ".dbf", ".prj", ".cpg"})
+
 #: Same ceiling as the QGIS extractor. A zip bomb must not fill the worker.
 #:
 #: Checked against the sum of the central directory BEFORE anything is
@@ -118,6 +126,41 @@ class IngestSpatialInput(BaseModel):
     #: Overrides the parser's per-feature heuristic. The geologist knows what
     #: they uploaded ("these are all faults") better than a name-sniffing rule.
     feature_type: str | None = Field(default=None)
+    #: EPSG of the file's own coordinates, supplied by the uploader for a
+    #: delivery that declares none -- a ".shp" that arrived without its
+    #: ".prj" being the case this exists for.
+    #:
+    #: A FALLBACK, never an override of a stated fact: a CRS the file itself
+    #: declares always wins. Silently replacing a declared CRS with a
+    #: half-remembered one is the same corruption in the other direction.
+    #:
+    #: An integer, never a CRS string. Same name, type and range as
+    #: IngestTabularInput.source_epsg, as StoreQueryRequest's validation rule
+    #: and as the CHECK on silver.spatial_features.crs_epsg_native -- one
+    #: concept, one spelling, because three definitions of "a valid CRS" in
+    #: one codebase is how they come to disagree.
+    #:
+    #: Defaulted, and it has to stay defaulted: ingest_zip_archive's spatial
+    #: fan-out and stale_run_detector's recovery both construct this model
+    #: with three fields, and a required field would break them at
+    #: validation time.
+    source_epsg: int | None = Field(default=None)
+
+    @field_validator("source_epsg")
+    @classmethod
+    def _epsg_in_range(cls, v: int | None) -> int | None:
+        """Reject at the boundary what the database would reject at persist.
+
+        crs_epsg_native is CHECK-constrained to 1024..32767. Letting a bad
+        code through to the INSERT fails the whole file rather than one row
+        -- the shape of the feature_type bug of 2026-08-20 -- and by then
+        the uploader is long gone.
+        """
+        if v is None:
+            return v
+        if not (1024 <= v <= 32767):
+            raise ValueError("EPSG codes must be in the range 1024-32767.")
+        return v
 
     @field_validator("workspace_id", "project_id")
     @classmethod
@@ -194,6 +237,17 @@ class _ArchiveExtraction:
 
     members: list[Path]
     warnings: list[dict[str, Any]] = field(default_factory=list)
+    #: For every ".shp" member, the shapefile sidecars that came with it,
+    #: as lower-cased suffixes, keyed by ``str(member_path)``.
+    #:
+    #: ``members`` deliberately does not change to carry this -- a sidecar is
+    #: not a thing to open, and returning one would parse the same layer
+    #: twice or, for the ".prj", fail outright. But once GDAL can read a
+    #: lone ".shp" the question stops being "can this be opened" and becomes
+    #: "what came with it", and only the extractor is in a position to
+    #: answer: by the time the parser has run, SHAPE_RESTORE_SHX may have
+    #: written a ".shx" that was never delivered.
+    companions: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _extract_archive(archive: Path, dest: Path) -> _ArchiveExtraction:
@@ -305,12 +359,34 @@ def _extract_archive(archive: Path, dest: Path) -> _ArchiveExtraction:
     # A .gdb's own contents must not also be returned as members.
     members = [p for p in dest.rglob("*") if _is_member(p)]
     gdb_roots = [p for p in members if p.is_dir()]
+    kept = sorted(
+        p for p in members
+        if not any(gdb in p.parents for gdb in gdb_roots)
+    )
+
+    # Stem match is case-INSENSITIVE on purpose. GDAL on Linux is not, so a
+    # delivery holding `drobeck_shumagin_veins.shp` beside
+    # `Drobeck_Shumagin_Veins.prj` -- a real one does -- reads as having no
+    # CRS at all. That is a resolution problem for whoever opens the file;
+    # what this inventory must not do is report the .prj as absent when it
+    # is sitting right there, because a missing CRS is now a refusal.
+    companions: dict[str, list[str]] = {}
+    for member in kept:
+        if not member.is_file() or member.suffix.lower() != ".shp":
+            continue
+        stem = member.stem.lower()
+        companions[str(member)] = sorted(
+            sibling.suffix.lower()
+            for sibling in member.parent.iterdir()
+            if sibling.is_file()
+            and sibling.stem.lower() == stem
+            and sibling.suffix.lower() in _SHAPEFILE_SIDECAR_EXTENSIONS
+        )
+
     return _ArchiveExtraction(
-        members=sorted(
-            p for p in members
-            if not any(gdb in p.parents for gdb in gdb_roots)
-        ),
+        members=kept,
         warnings=warnings,
+        companions=companions,
     )
 
 
@@ -324,6 +400,119 @@ def _crs_epsg(source_crs: str | None) -> int | None:
             return int(text.split(":", 1)[1])
         except (ValueError, IndexError):
             return None
+    return None
+
+
+def _renderable(parser_warnings: Any) -> list[dict[str, Any]]:
+    """Give every parser warning the key the UI actually reads.
+
+    The parsers speak ``{code, message, context}``. IngestionRuns.tsx reads
+    ``detail`` and falls back to ``code``, so a warning carrying only
+    ``message`` renders as the bare word "dbf_missing" -- the one warning
+    whose whole point is to tell a geologist that the attribute table did
+    not arrive, delivered as a token they have to look up.
+
+    Done here rather than in each parser because every warning this
+    workflow forwards has the same shape and the same problem, and because
+    the parsers are shared with callers that never reach this page.
+    """
+    out: list[dict[str, Any]] = []
+    for warning in parser_warnings or []:
+        if not isinstance(warning, dict):
+            out.append(warning)
+            continue
+        if warning.get("detail") or not warning.get("message"):
+            out.append(warning)
+            continue
+        out.append({**warning, "detail": warning["message"]})
+    return out
+
+
+def _override_was_applied(result: Any, requested_epsg: int | None) -> bool:
+    """Did the uploader's EPSG actually decide this result's CRS?
+
+    Not "was one supplied". A CRS the file declares wins over one a person
+    typed, so an EPSG handed to a shapefile that did carry its .prj is
+    inert, and those rows must still say 'declared' -- claiming 'manual'
+    for a CRS the human did not in fact choose is a fabricated provenance,
+    which is the same class of lie as an invented confidence score.
+
+    Two signals, in order. An explicit flag from the parser is
+    authoritative, because the parser is the only thing that knows which
+    arm of its CRS decision ran. Absent one, the observable fact is that
+    the code that came back is the code that went in -- which can only
+    happen if the parser applied it, or if the file happened to declare
+    the very same CRS, in which case 'manual' and 'declared' describe
+    identical coordinates and the distinction costs nothing.
+    """
+    if requested_epsg is None:
+        return False
+    flagged = getattr(result, "crs_override_applied", None)
+    if flagged is not None:
+        return bool(flagged)
+    return _crs_epsg(getattr(result, "source_crs", None)) == requested_epsg
+
+
+def _crs_refusal(
+    parsed: list[tuple[str | None, Any]],
+    *,
+    filename: str,
+    sidecars_by_layer: dict[str, list[str]] | None = None,
+) -> str | None:
+    """The reason to write nothing, or None to go ahead.
+
+    A parse result carrying ``crs_missing`` -- or, equivalently, no
+    ``source_crs`` at all -- has been past both the file's own declaration
+    and any ``source_epsg`` the uploader supplied, and past the parser's
+    allowlist of formats that legitimately carry no CRS (DXF, DGN, GeoJSON's
+    RFC 7946 default: all of those return an explicit code). What is left is
+    a file whose numbers have no frame of reference.
+
+    Both signals are read, and neither is redundant. ``crs_missing`` is the
+    parser's own verdict and says WHY; the falsy ``source_crs`` is the state
+    the row would be written in, and it also covers a duck-typed result --
+    every parse result in this workflow's tests is one -- that predates the
+    flag.
+
+    Storing them anyway is what this change set exists to stop, and it is
+    measured, not hypothetical: a 4-point shapefile in EPSG:26904 stripped
+    of its .prj came back through this pipeline as POINT (400797.89
+    6117305.85) -- longitude four hundred thousand degrees -- written as
+    SRID 4326 with crs_confidence 0.0, and the run reported success.
+
+    Which layer, and which file is missing, both go in the message: it is
+    rendered on the Ingestion Runs page and it is the only thing the
+    uploader gets.
+    """
+    sidecars_by_layer = sidecars_by_layer or {}
+
+    for layer_name, result in parsed:
+        if not getattr(result, "crs_missing", False) and getattr(
+            result, "source_crs", None,
+        ):
+            continue
+
+        named = layer_name or getattr(result, "source_file", None) or filename
+        present = sidecars_by_layer.get(layer_name or "", None)
+        if present is not None and ".prj" not in present:
+            missing = f"The delivery contains {named}.shp but no {named}.prj. "
+        else:
+            missing = ""
+
+        # Kept short on purpose: the broadcast that carries this to the
+        # page is capped at 500 characters by the Laravel endpoint, and a
+        # 422 there is a dropped notification. The instruction must survive
+        # a long delivery name, so it goes last but the budget is spent
+        # sparingly before it.
+        return (
+            f"'{filename}' cannot be ingested: layer '{named}' declares no "
+            f"coordinate reference system. {missing}"
+            "Nothing was written -- read as WGS84 these coordinates land "
+            "hundreds of thousands of degrees off the planet. Re-upload with "
+            "the .prj included, or supply the EPSG code of the data "
+            "(source_epsg, an integer between 1024 and 32767)."
+        )
+
     return None
 
 
@@ -476,25 +665,39 @@ async def run_ingest_spatial(
     features_written = 0
     empty_skipped = 0
     source_format = suffix.lstrip(".")
+    #: Where the run got to, for the failure path. mark_failed_by_run
+    #: COALESCEs a None onto whatever mark_stage_started last wrote, but the
+    #: broadcast needs the name in hand, and "failed at persist" is a
+    #: different conversation from "failed at parse".
+    current_stage = "preflight"
+    #: Which shapefile sidecars each archive member arrived with. Empty on
+    #: every non-archive path, which is why _crs_refusal treats "no entry"
+    #: and "an entry without a .prj" as different things.
+    sidecars_by_layer: dict[str, list[str]] = {}
 
-    # A lone ".shp" cannot be read: pyogrio opens it and then goes looking for
-    # the ".shx" index and ".dbf" table beside it, which a single-object upload
-    # never has. GDAL's own message for this ("Unable to open <name>.shx ... Set
-    # SHAPE_RESTORE_SHX") tells a user nothing they can act on, and until this
-    # check it was the only thing they got. Refuse before the download with the
-    # instruction that actually resolves it.
-    if suffix == ".shp":
-        detail = (
-            f"'{filename}' was uploaded on its own. A shapefile is not one "
-            "file - it needs its .shx, .dbf and .prj siblings, which cannot be "
-            "uploaded separately. Zip the .shp together with them and upload "
-            "the .zip."
-        )
-        if run_id:
-            await _progress.mark_failed_by_run(
-                run_id=run_id, stage="preflight", error=detail,
-            )
-        raise ValueError(detail)
+    # A lone ".shp" used to be refused right here, before the download. The
+    # reason was real: pyogrio opened it, went looking for the ".shx" index
+    # beside it, and failed with "Unable to open <name>.shx ... Set
+    # SHAPE_RESTORE_SHX" -- a message about a GDAL config option, handed to
+    # a geologist.
+    #
+    # That option is now set once at spatial_parser import, and it was
+    # MEASURED to settle the case completely: a bare ".shp" with no sidecars
+    # at all opens and yields every feature, because GDAL regenerates the
+    # index from the ".shp" itself. Refusing the file now refuses data this
+    # pipeline can read -- and refusing it HERE never helped the case that
+    # actually occurs, since both upload wizards zip a bare ".shp" before
+    # sending it and ingest_zip_archive re-zips one itself, so the real
+    # shape of this problem is a lone ".shp" INSIDE an archive, which this
+    # branch never saw.
+    #
+    # What no config option can recover is the ".prj". Absent it GDAL
+    # reports crs=None and nothing can reconstruct it. So the refusal moved
+    # rather than disappeared: from "this file is unreadable", which is no
+    # longer true, to "this file has no coordinate reference system", which
+    # is the actual corruption. That check sits at the persist gate below,
+    # covers every path including the in-archive one, and is answered by
+    # supplying source_epsg.
 
     try:
         if run_id:
@@ -508,6 +711,7 @@ async def run_ingest_spatial(
                 store.get_file, Bucket.BRONZE, input.minio_key, str(local),
             )
 
+            current_stage = "parse"
             if run_id:
                 await _progress.mark_stage_started(run_id=run_id, stage="parse")
 
@@ -542,6 +746,7 @@ async def run_ingest_spatial(
                                 lyr.resolved_path,
                                 feature_type=input.feature_type,
                                 layer=lyr.sublayer,
+                                source_epsg=input.source_epsg,
                             ),
                         ))
                     except Exception as exc:  # noqa: BLE001 — one layer must not sink the project
@@ -562,6 +767,14 @@ async def run_ingest_spatial(
                 # Anything the extractor declined to write is the run's
                 # business, not just the log's.
                 warnings.extend(extraction.warnings)
+                # Keyed by the name each member is written under
+                # (member.stem is the layer_override a few lines down), so
+                # the CRS gate can name the file that is missing rather
+                # than the concept that is missing.
+                sidecars_by_layer = {
+                    Path(member_path).stem: present
+                    for member_path, present in extraction.companions.items()
+                }
                 if not members:
                     warnings.append({
                         "code": "archive_has_no_vector_data",
@@ -572,7 +785,23 @@ async def run_ingest_spatial(
                         ),
                     })
                 parsed = []
-                for member in members:
+                for index, member in enumerate(members):
+                    # The only heartbeat between 'parse' and 'persist'.
+                    # A multi-layer delivery spends minutes in this loop --
+                    # longer now that GDAL may be rebuilding a .shx for a
+                    # member that arrived without one -- and the stale sweep
+                    # times a run out after fifteen silent minutes, which
+                    # relabels a healthy run as dead and hands the geologist
+                    # a failure for a file that is still ingesting.
+                    if run_id:
+                        await _progress.mark_stage_progress(
+                            run_id=run_id,
+                            stage_pct=index / len(members),
+                            stage_detail=(
+                                f"parsing {member.name} "
+                                f"({index + 1}/{len(members)})"
+                            ),
+                        )
                     try:
                         if member.suffix.lower() in QGIS_PROJECT_EXTENSIONS:
                             # A project inside a zip: catalogue it, and read
@@ -598,6 +827,7 @@ async def run_ingest_spatial(
                                             lyr.resolved_path,
                                             feature_type=input.feature_type,
                                             layer=lyr.sublayer,
+                                            source_epsg=input.source_epsg,
                                         ),
                                     ))
                             continue
@@ -606,7 +836,9 @@ async def run_ingest_spatial(
                             member.stem,
                             await asyncio.to_thread(
                                 parse_spatial_file,
-                                str(member), feature_type=input.feature_type,
+                                str(member),
+                                feature_type=input.feature_type,
+                                source_epsg=input.source_epsg,
                             ),
                         ))
                     except Exception as exc:  # noqa: BLE001 — one bad member must not sink the archive
@@ -618,7 +850,9 @@ async def run_ingest_spatial(
             else:
                 parsed = [(None, await asyncio.to_thread(
                     parse_spatial_file,
-                    str(local), feature_type=input.feature_type,
+                    str(local),
+                    feature_type=input.feature_type,
+                    source_epsg=input.source_epsg,
                 ))]
 
             # One hash per delivery, computed after every parse and before
@@ -627,6 +861,7 @@ async def run_ingest_spatial(
             # would re-read a 2 GiB archive once per layer.
             source_sha256 = await asyncio.to_thread(_sha256_file, local)
 
+            current_stage = "persist"
             if run_id:
                 await _progress.mark_stage_started(run_id=run_id, stage="persist")
 
@@ -678,6 +913,25 @@ async def run_ingest_spatial(
                 # the curve names in ingest_well_logs.
                 replaced = 0
                 async with conn.transaction():
+                    # The CRS gate. Inside the transaction on purpose: the
+                    # delete-then-reinsert below is what makes a re-upload
+                    # idempotent, and a refusal must not become the thing
+                    # that destroys the previous, good ingest of the same
+                    # file.
+                    #
+                    # 'failed', not 'partial'. Laravel's DATA_LANDED_STATUSES
+                    # is exactly ['completed','partial'], so a partial with
+                    # zero rows still bumps data_version and fires the MV
+                    # refresh -- the status alone cannot keep bad rows off
+                    # the map. The only thing that can is not writing them.
+                    refusal = _crs_refusal(
+                        parsed,
+                        filename=filename,
+                        sidecars_by_layer=sidecars_by_layer,
+                    )
+                    if refusal:
+                        raise ValueError(refusal)
+
                     replaced = int(await conn.fetchval(
                         "WITH gone AS ("
                         "  DELETE FROM silver.spatial_features"
@@ -702,8 +956,16 @@ async def run_ingest_spatial(
 
                     for layer_name, result in parsed:
                         empty_skipped += result.empty_geom_skipped
-                        warnings.extend(result.warnings or [])
-                        crs_conf, georef = _crs_quality(result)
+                        # _renderable, not the raw list: a parser warning
+                        # carries `message`, and the Ingestion Runs page
+                        # reads `detail`. This is what carries 'dbf_missing'
+                        # -- the attribute table did not arrive with the
+                        # geometry -- to a geologist as a sentence rather
+                        # than as a token they have to look up.
+                        warnings.extend(_renderable(result.warnings))
+                        crs_conf, georef = _crs_quality(
+                            result, requested_epsg=input.source_epsg,
+                        )
                         n = await _write_features(
                             conn,
                             workspace_id=input.workspace_id,
@@ -757,13 +1019,34 @@ async def run_ingest_spatial(
 
     except Exception as exc:
         if run_id:
-            # kwarg is `error`, not `error_text` � passing the wrong name
+            # kwarg is `error`, not `error_text` -- passing the wrong name
             # raised TypeError *inside* the handler, so the real failure
             # was replaced by the TypeError and the progress row never
             # reached a terminal state.
-            await _progress.mark_failed_by_run(
-                run_id=run_id, error=str(exc)[:1000],
+            transitioned = await _progress.mark_failed_by_run(
+                run_id=run_id, stage=current_stage, error=str(exc)[:1000],
             )
+            if transitioned:
+                # No ingest workflow broadcast on its failure path before
+                # this one. The row went to 'failed' in Postgres and the
+                # page showing it was never told, so a refused upload sat
+                # on screen as "running" until somebody reloaded -- and a
+                # refusal nobody sees is not much better than the silent
+                # corruption it replaced.
+                #
+                # 'failed' is accepted by the Laravel validator and is
+                # correctly OUTSIDE DATA_LANDED_STATUSES, so this notifies
+                # without bumping data_version or refreshing the
+                # materialised views. That is exactly right for a run that
+                # deliberately wrote nothing.
+                await _progress.broadcast_terminal(
+                    workspace_id=input.workspace_id,
+                    project_id=input.project_id,
+                    run_id=run_id,
+                    stage=current_stage,
+                    status="failed",
+                    message=str(exc)[:500],
+                )
         log.exception("ingest_spatial failed for %s", input.minio_key)
         raise
 
@@ -782,7 +1065,9 @@ async def run_ingest_spatial(
     return out
 
 
-def _crs_quality(result: Any) -> tuple[float | None, str]:
+def _crs_quality(
+    result: Any, *, requested_epsg: int | None = None,
+) -> tuple[float | None, str]:
     """Map the parser's CRS finding onto the CC-01 georef columns.
 
     ``georef_method`` is CHECK-constrained to
@@ -794,7 +1079,31 @@ def _crs_quality(result: Any) -> tuple[float | None, str]:
     QField captures come from a GNSS receiver in someone's hand, which is a
     genuine survey fix — the parser detects those separately and they get
     the fixed 0.9 confidence the pipeline has always assigned them.
+
+    ``requested_epsg`` is the code the uploader supplied, and it is a
+    parameter rather than something read back off the result for one
+    reason: this function must never invent 'manual'. 'manual' means a
+    person asserted the CRS, so a heuristic producing it out of the
+    parser's own findings would be fabricating a human claim. Taking the
+    request as an argument is what keeps that branch unreachable unless a
+    human really made one.
     """
+    if _override_was_applied(result, requested_epsg):
+        # A person supplied the CRS for a file that stated none. 'manual'
+        # is the constraint's own word for exactly that.
+        #
+        # The confidence is the parser's MEASURED score of the geometry
+        # against the CRS that was claimed -- not a flat 1.0. The claim is
+        # checkable (do these coordinates fall inside that CRS's extent?)
+        # and checking beats trusting: someone picking the wrong UTM zone
+        # out of a dropdown is making the same mistake this gate exists to
+        # catch, by hand.
+        confidence = getattr(result, "crs_confidence", None)
+        return (
+            (float(confidence) if confidence is not None else None),
+            "manual",
+        )
+
     if getattr(result, "is_qfield", False):
         return 0.9, "survey"
 

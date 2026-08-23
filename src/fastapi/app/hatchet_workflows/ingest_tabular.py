@@ -10,6 +10,17 @@ independently. A single workbook routinely holds Collars, Survey, Lithology
 and Assays as separate tabs, and treating only the first one as data is how
 the multi-sheet silent-loss bug of 2026-05-23 happened.
 
+``.dbf`` — a STANDALONE dBASE table, i.e. one with no same-stem ``.shp``
+beside it. A ``.dbf`` that does have that sibling is a shapefile's
+attribute sidecar and belongs to ``ingest_spatial``; the two cases are
+indistinguishable after the file is opened (GDAL resolves the stem and
+hands back the shapefile, geometry included), so the discrimination is a
+sibling stat taken BEFORE the open — see ``_assert_standalone_dbf``.
+A dBASE table matches no geology schema at all, so its rows land in
+``silver.attribute_tables`` as JSONB rather than being guessed into a
+collar or a sample. They arrive from GIS deliveries as legend tables,
+survey point registers and comment logs: real data with no typed home.
+
 Why this workflow exists
 ------------------------
 The `collars` / `surveys` / `lithology` / `samples` / `excel` upload
@@ -44,7 +55,10 @@ know it is wrong.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
+import json
 import logging
+import math
 import tempfile
 import time as _t
 from pathlib import Path
@@ -63,7 +77,12 @@ log = logging.getLogger("georag.hatchet.ingest_tabular")
 
 CSV_EXTENSIONS = frozenset({".csv", ".txt", ".tsv"})
 EXCEL_EXTENSIONS = frozenset({".xlsx", ".xls", ".xlsm"})
-SUPPORTED_EXTENSIONS = CSV_EXTENSIONS | EXCEL_EXTENSIONS
+#: Standalone dBASE tables. Listed here rather than left out because the
+#: extension gate below is a hard raise that fires BEFORE start_run — an
+#: unlisted extension means no progress row and nothing but the on_failure
+#: hook to close the run.
+DBF_EXTENSIONS = frozenset({".dbf"})
+SUPPORTED_EXTENSIONS = CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBF_EXTENSIONS
 
 #: UTM zone 13N — the Athabasca Basin, where this platform's corpus is
 #: centred. A default, not a detection: see the module docstring.
@@ -181,6 +200,175 @@ INSERT INTO silver.samples (
     gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7, NOW(), NOW()
 )
 """
+
+
+#: A dBASE table has no geology schema to map onto, so its rows land
+#: whole, as JSONB, keyed by where they came from.
+#:
+#: Idempotent by (project_id, source_file_sha256, source_layer,
+#: row_index). That key is what lets a re-upload be a no-op instead of
+#: forcing the replace-or-append choice the interval tables had to make:
+#: the same bytes produce the same hash, so the same row updates in place
+#: and a corrected export of the same table cannot double itself. A
+#: genuinely different file has a different hash and lands beside the old
+#: one rather than silently overwriting it.
+_ATTRIBUTE_TABLE_SQL = """
+INSERT INTO silver.attribute_tables (
+    attribute_row_id, workspace_id, project_id,
+    source_file, source_file_sha256, source_layer, row_index,
+    attributes, created_at, updated_at
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid,
+    $3, $4, $5, $6,
+    $7::jsonb, NOW(), NOW()
+)
+ON CONFLICT (project_id, source_file_sha256, source_layer, row_index)
+DO UPDATE SET
+    source_file = EXCLUDED.source_file,
+    attributes  = EXCLUDED.attributes,
+    updated_at  = NOW()
+"""
+
+
+def _sha256_file(path: str) -> str:
+    """Streaming SHA-256 of the source file.
+
+    Streamed rather than ``read_bytes()`` for the same reason
+    ingest_spatial streams: the worker has a fixed memory budget and the
+    upload cap does not.
+    """
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _assert_standalone_dbf(path: str) -> None:
+    """Refuse a ``.dbf`` that is really a shapefile's attribute sidecar.
+
+    Measured 2026-08-23: hand GDAL ``x.dbf`` while ``x.shp`` sits in the
+    same directory and it returns the SHAPEFILE -- geometry and all --
+    not the table. The two cases therefore cannot be told apart from the
+    result, which is why this check runs before the open rather than
+    after it.
+
+    This workflow downloads exactly one object into a fresh
+    TemporaryDirectory, so the sibling cannot normally be present. That
+    is the invariant the branch depends on, stated out loud: a future
+    caller that unpacks a whole delivery into one directory and points
+    this workflow at a member fails here, loudly, instead of quietly
+    landing geometry in an attribute table.
+
+    Case-insensitive on purpose. GDAL on Linux resolves the stem
+    case-sensitively, but ``veins.dbf`` beside ``Veins.shp`` is still one
+    shapefile to the geologist who made it, and treating it as a table
+    would split a dataset in half.
+    """
+    target = Path(path)
+    wanted = target.stem.lower() + ".shp"
+    for sibling in target.parent.iterdir():
+        if sibling.name.lower() == wanted:
+            raise ValueError(
+                f"{target.name} is the attribute sidecar of {sibling.name}, "
+                f"not a standalone table. Upload the shapefile (or its zip) "
+                f"so ingest_spatial reads the geometry and attributes "
+                f"together."
+            )
+
+
+def _jsonable(value: Any) -> Any:
+    """One dBASE cell -> something ``json.dumps`` will accept.
+
+    pyogrio's raw reader yields numpy scalars; ``.item()`` unwraps each to
+    the nearest Python builtin. NaN becomes NULL rather than the string
+    ``'nan'``, because a dBASE numeric with nothing in it is missing
+    data, not the text "nan" -- and a JSONB document carrying "nan" is
+    indistinguishable from one where somebody typed it.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if hasattr(value, "dtype") and callable(getattr(value, "item", None)):
+        # numpy scalar. datetime64 unwraps to date/datetime (NaT -> None),
+        # which the isoformat branch below then handles.
+        value = value.item()
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return None if math.isnan(value) else value
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        return value.isoformat()
+    return str(value)
+
+
+def _read_dbf_table(path: str) -> list[dict[str, Any]]:
+    """Read a standalone dBASE table into plain, JSON-safe row dicts.
+
+    pyogrio, not a new dependency: GDAL's ESRI Shapefile driver opens a
+    bare ``.dbf`` as an attribute-only layer (measured 2026-08-23 -- 10
+    rows, 9 columns, no geometry column). dbfread and simpledbf would
+    each add a package that check_pyproject_covers_imports and
+    check_fastapi_lock_export both gate on, to do what GDAL already does.
+
+    The raw reader rather than ``read_arrow``: pyarrow is absent from
+    every image and lockfile in this repo, so the arrow path raises
+    RuntimeError. ``read_geometry=False`` because there is none.
+
+    Encoding is left to GDAL. All five dBASE files in the RedStar
+    delivery are LDID 0x57 with no ``.cpg`` and decode correctly on that
+    basis, and pyogrio's ``encoding=`` kwarg measurably has no effect on
+    this driver -- passing one would be decoration. A ``.cpg`` that lies
+    raises UnicodeDecodeError, which fails the run loudly; that is the
+    right outcome for a file whose declared encoding is wrong, and far
+    better than the mojibake a guess would land.
+    """
+    from pyogrio.raw import read  # noqa: PLC0415
+
+    meta, _fids, _geometry, field_data = read(path, read_geometry=False)
+    fields = [str(name) for name in meta["fields"]]
+    if not fields or not field_data:
+        # A dBASE table always declares at least one field, so this is
+        # "the driver gave us nothing", not "the table is empty".
+        return []
+
+    return [
+        {
+            name: _jsonable(column[index])
+            for name, column in zip(fields, field_data, strict=True)
+        }
+        for index in range(len(field_data[0]))
+    ]
+
+
+async def _write_attribute_rows(
+    conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
+    source_file: str, source_file_sha256: str, source_layer: str,
+    rows: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Land a standalone dBASE table in silver.attribute_tables.
+
+    ``skipped`` and ``orphaned`` are reported as zero rather than omitted
+    so the per-type accumulator in the workflow body sums the same keys
+    for every branch.
+    """
+    params = [
+        (
+            workspace_id, project_id, source_file, source_file_sha256,
+            source_layer, index, json.dumps(attributes, default=str),
+        )
+        for index, attributes in enumerate(rows)
+    ]
+
+    written = 0
+    for start in range(0, len(params), _INSERT_BATCH):
+        chunk = params[start:start + _INSERT_BATCH]
+        await conn.executemany(_ATTRIBUTE_TABLE_SQL, chunk)
+        written += len(chunk)
+    return {"written": written, "skipped": 0, "orphaned": 0}
 
 
 def _num(value: Any) -> float | None:
@@ -552,7 +740,36 @@ async def run_ingest_tabular(
 
             # ── Work out what tables this file holds ────────────────────
             work: list[tuple[str, str | None]] = []   # (sheet_type, sheet_name)
-            if suffix in EXCEL_EXTENSIONS:
+            #: Standalone-.dbf branch state. Empty for every other format.
+            attribute_rows: list[dict[str, Any]] = []
+            attribute_layer = ""
+            attribute_sha256 = ""
+
+            if suffix in DBF_EXTENSIONS:
+                # None of the sheet machinery below applies: a dBASE table
+                # has one layer, no geometry and no drill schema. The
+                # sibling check runs before the read for the reason given
+                # in _assert_standalone_dbf.
+                _assert_standalone_dbf(local)
+                attribute_layer = Path(local).stem
+                attribute_sha256 = await asyncio.to_thread(_sha256_file, local)
+                attribute_rows = await asyncio.to_thread(_read_dbf_table, local)
+                sheets.append({
+                    "sheet": filename,
+                    "type": "attribute_table",
+                    "rows": len(attribute_rows),
+                })
+                if not attribute_rows:
+                    warnings.append({
+                        "code": "dbf_no_rows",
+                        "message": "the dBASE table declared no rows",
+                        "detail": (
+                            f"{filename} opened cleanly but holds no rows, so "
+                            f"nothing was landed. The file is stored in bronze "
+                            f"and can be re-ingested if this is unexpected."
+                        ),
+                    })
+            elif suffix in EXCEL_EXTENSIONS:
                 from georag_geoparsers.xlsx_parser import enumerate_sheets  # noqa: PLC0415
 
                 for meta in enumerate_sheets(local):
@@ -588,7 +805,10 @@ async def run_ingest_tabular(
                 else:
                     unclassified.append(filename)
 
-            if not work:
+            # A .dbf classifies to exactly one thing and never enters
+            # `work`, so the drill-sheet advice below would be both wrong
+            # and unactionable for it.
+            if not work and suffix not in DBF_EXTENSIONS:
                 warnings.append({
                     "code": "nothing_classified",
                     "detail": (
@@ -649,6 +869,17 @@ async def run_ingest_tabular(
                     )
                     for k, v in stats.items():
                         prior[k] = prior.get(k, 0) + v
+
+                if attribute_rows:
+                    written["attribute_table"] = await _write_attribute_rows(
+                        conn,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                        source_file=filename,
+                        source_file_sha256=attribute_sha256,
+                        source_layer=attribute_layer,
+                        rows=attribute_rows,
+                    )
 
                 # ── Whatever did not classify ───────────────────────────
                 # A sheet that matches no drill type is not necessarily
@@ -793,6 +1024,7 @@ async def on_failure(input: IngestTabularInput, ctx: Context) -> dict[str, Any]:
 
 __all__ = [
     "CSV_EXTENSIONS",
+    "DBF_EXTENSIONS",
     "DEFAULT_SOURCE_EPSG",
     "EXCEL_EXTENSIONS",
     "SUPPORTED_EXTENSIONS",

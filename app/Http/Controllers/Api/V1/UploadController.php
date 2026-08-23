@@ -70,6 +70,26 @@ class UploadController extends Controller
         // Workbooks → ingest_tabular, which classifies EVERY sheet rather
         // than assuming the first one is the data.
         'excel' => ['xlsx', 'xls', 'xlsm'],
+        // Standalone dBASE tables → ingest_tabular. Added 2026-08-23; before
+        // it, '.dbf' was in no live category and a shapefile's attribute
+        // table delivered without its .shp could not be uploaded at all.
+        //
+        // Its own key rather than a slot in `excel` or in the four drill
+        // categories, for reasons that are all about the sheet_type hint:
+        // nothing in a .dbf's extension says which drill table it holds, so
+        // listing it under collars/surveys/lithology/samples would make the
+        // picker's categoryForExtension() choose one arbitrarily and pin a
+        // wrong hint on every auto-routed file — the same mistake the
+        // sheet_type comment in dispatchGeologyIngest() calls out for
+        // workbooks. `excel` would carry the right (absent) hint but the
+        // wrong label; a dBASE table is not a workbook, and the label is
+        // what the geologist reads at the drop zone.
+        //
+        // A .dbf that sits BESIDE a same-stem .shp is a shapefile sidecar,
+        // not an entry here: groupShapefiles() zips it into the bundle
+        // before upload. The two cases are discriminated by that sibling,
+        // never by the extension alone.
+        'tables' => ['dbf'],
         // Vector data + QGIS projects → ingest_spatial →
         // silver.spatial_features. `.zip` is here because a shapefile is
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone
@@ -79,9 +99,19 @@ class UploadController extends Controller
         // the architecture doc lists File Geodatabase as In-V1. They were
         // simply missing from the accepted list, so an ArcGIS shop's
         // standard delivery format 422'd at the door.
+        //
+        // 'tab' and 'mif' added 2026-08-23 — MapInfo, which GDAL reads via
+        // the "MapInfo File" driver present in the deployed image. Only the
+        // two ENTRY POINTS are listed. MapInfo's sidecars (.dat/.map/.id/
+        // .ind for TAB, .mid for MIF) are deliberately absent: a .mid opens
+        // directly as a dataset, so accepting it as its own upload would
+        // ingest a MIF/MID pair twice, and '.dat' is already claimed by the
+        // retired `xyz` category below — adding it here would start routing
+        // stray XYZ grids to the spatial parser. Sidecars reach the parser
+        // inside the bundle `zip`, exactly as a shapefile's do.
         'spatial' => [
             'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
-            'fgb', 'gdb', 'zip', 'qgs', 'qgz',
+            'fgb', 'gdb', 'zip', 'qgs', 'qgz', 'tab', 'mif',
         ],
         // LAS downhole curves -> ingest_well_logs -> silver.well_log_curves.
         // One row per CURVE with depth/value arrays, not a row per sample:
@@ -158,8 +188,11 @@ class UploadController extends Controller
      * POST /api/v1/projects/{project}/upload
      *
      * Form data:
-     *   file      — the file (required, max 100 MB)
-     *   category  — one of the CATEGORIES keys (required)
+     *   file        — the file (required, max 100 MB)
+     *   category    — one of the CATEGORIES keys (required)
+     *   source_epsg — optional EPSG integer (1024-32767) asserting the CRS of
+     *                 a file that declares none. Forwarded to ingest_spatial
+     *                 and ingest_tabular; ignored by every other workflow.
      */
     public function store(Request $request, string $projectId): JsonResponse
     {
@@ -198,11 +231,29 @@ class UploadController extends Controller
             'file' => ['required', 'file', 'max:'.Uploads::maxKilobytes()],
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(self::CATEGORIES))],
             'vendor_profile_id' => ['nullable', 'integer', 'exists:vendor_profiles,id'],
+            // Operator-supplied CRS for a file that declares none — a
+            // shapefile shipped without its .prj, a .dbf of eastings and
+            // northings. It is an EPSG *integer*, never a 'EPSG:26904'
+            // string: the same rule as StoreQueryRequest's
+            // context_envelope.crs_epsg, matching the DB CHECK
+            // (crs_epsg_native BETWEEN 1024 AND 32767) on the column it
+            // eventually lands in. The parser applies it ONLY when the file
+            // declares no CRS of its own — a declared CRS always wins.
+            'source_epsg' => ['nullable', 'integer', 'min:1024', 'max:32767'],
+        ], [
+            // store() validates inline rather than through a FormRequest, so
+            // there is no messages() to hang these on. Without them an
+            // out-of-range code answers Laravel's default "The source epsg
+            // field must be at least 1024." instead of the wording the rest
+            // of the platform already uses (StoreQueryRequest::messages()).
+            'source_epsg.min' => 'EPSG codes must be in the range 1024-32767.',
+            'source_epsg.max' => 'EPSG codes must be in the range 1024-32767.',
         ]);
 
         $file = $request->file('file');
         $category = $validated['category'];
         $vendorProfileId = $validated['vendor_profile_id'] ?? null;
+        $sourceEpsg = $validated['source_epsg'] ?? null;
 
         // Validate file extension against category
         $ext = strtolower($file->getClientOriginalExtension());
@@ -370,6 +421,7 @@ class UploadController extends Controller
                 'original_filename' => $originalName,
                 'size' => $file->getSize(),
                 'vendor_profile_id' => $vendorProfileId,
+                'source_epsg' => $sourceEpsg,
             ]);
 
             $responseData = [
@@ -381,6 +433,12 @@ class UploadController extends Controller
 
             if ($vendorProfileId !== null) {
                 $responseData['vendor_profile_id'] = $vendorProfileId;
+            }
+
+            // Echoed back so the caller can see the override was understood.
+            // Absent when none was supplied, same as vendor_profile_id.
+            if ($sourceEpsg !== null) {
+                $responseData['source_epsg'] = $sourceEpsg;
             }
 
             // Phase 1 Step 5 — for PDF reports, optionally dual-write to the
@@ -413,6 +471,7 @@ class UploadController extends Controller
                     projectId: $projectId,
                     minioKey: $minioKey,
                     responseData: $responseData,
+                    sourceEpsg: $sourceEpsg,
                 );
             }
 
@@ -726,6 +785,10 @@ class UploadController extends Controller
         'lithology' => 'ingest_tabular',
         'samples' => 'ingest_tabular',
         'excel' => 'ingest_tabular',
+        // Without this line the `tables` category above would answer 201,
+        // write the object, and dispatch nothing — the retired-category bug
+        // this docblock describes, reproduced by a one-line omission.
+        'tables' => 'ingest_tabular',
         'spatial' => 'ingest_spatial',
         'well_logs' => 'ingest_well_logs',
     ];
@@ -739,6 +802,19 @@ class UploadController extends Controller
      * and surfaced by the caller as a non-201, because a silent
      * `dispatched: false` read as success is the exact bug these categories
      * were retired over.
+     *
+     * (No `@param array<string, mixed> $responseData` here on purpose:
+     * phpstan-baseline.neon carries the missingType.iterableValue entry for
+     * this parameter, and typing it turns that entry into a non-ignorable
+     * `ignore.unmatched` error. Removing the baseline line and the docblock
+     * belong in the same commit; that file is outside this change.)
+     *
+     * @param int|null $sourceEpsg Operator-supplied CRS for a file that
+     *                             declares none. Forwarded to ingest_spatial
+     *                             and ingest_tabular, which both accept
+     *                             `source_epsg` on their input model, and
+     *                             withheld from ingest_well_logs, which does
+     *                             not.
      */
     private function dispatchGeologyIngest(
         $user,
@@ -746,6 +822,7 @@ class UploadController extends Controller
         string $projectId,
         string $minioKey,
         array &$responseData,
+        ?int $sourceEpsg = null,
     ): void {
         try {
             $workflow = self::GEOLOGY_WORKFLOWS[$category] ?? null;
@@ -808,17 +885,46 @@ class UploadController extends Controller
             ];
 
             // The category IS the sheet-type hint for a single-table CSV.
-            // `excel` is deliberately excluded: a workbook holds several
-            // tables, and pinning one type would make ingest_tabular treat
-            // every sheet as that type instead of classifying each on its own.
-            if ($workflow === 'ingest_tabular' && $category !== 'excel') {
-                $payload['sheet_type'] = match ($category) {
+            //
+            // Two categories deliberately produce no hint. A workbook holds
+            // several tables, so pinning one type would make ingest_tabular
+            // treat every sheet as that type instead of classifying each on
+            // its own; and a `.dbf`'s extension says nothing about which
+            // drill table it holds. Both are better served by the header-row
+            // classifier.
+            //
+            // The key is omitted rather than sent as null: ingest_tabular
+            // reads a missing sheet_type as "classify this", so a null adds
+            // nothing and invites a later reader to treat it as a decision.
+            // This used to be written as `$category !== 'excel'`, which sent
+            // an explicit null the moment a second hint-less category
+            // existed — deriving the omission from the match's own result
+            // removes that trap instead of adding a name to it.
+            $sheetType = $workflow === 'ingest_tabular'
+                ? match ($category) {
                     'collars' => 'collar',
                     'surveys' => 'survey',
                     'lithology' => 'lithology',
                     'samples' => 'sample',
                     default => null,
-                };
+                }
+            : null;
+            if ($sheetType !== null) {
+                $payload['sheet_type'] = $sheetType;
+            }
+
+            // The CRS override, when the operator supplied one. Sent only to
+            // the two workflows whose input model declares `source_epsg`;
+            // ingest_well_logs has no such field and no coordinates to place.
+            //
+            // Until this existed, ingest_tabular had NEVER been sent a
+            // source_epsg from anywhere, so every drill CSV the platform has
+            // ingested silently assumed its DEFAULT_SOURCE_EPSG of 32613
+            // (UTM 13N) — correct in Saskatchewan, a continent out in Alaska.
+            if ($sourceEpsg !== null
+                && in_array($workflow, ['ingest_tabular', 'ingest_spatial'], true)
+            ) {
+                $payload['source_epsg'] = $sourceEpsg;
             }
 
             $this->dispatchThrottle->wait($workspaceId);

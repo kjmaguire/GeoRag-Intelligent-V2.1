@@ -2,8 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
-import { acceptedExtensions, categoryForExtension, type Category } from '@/lib/uploadCategories';
-import { groupShapefiles } from '@/lib/shapefileBundle';
+import {
+    acceptedExtensions,
+    categoryForExtension,
+    parseEpsg,
+    supportsCrsOverride,
+    type Category,
+} from '@/lib/uploadCategories';
+import { BUNDLE_MEMBER_EXTS, groupShapefiles } from '@/lib/shapefileBundle';
 
 /**
  * Foundry / DataImportWizard
@@ -51,6 +57,27 @@ interface QueuedFile {
      * category with the file instead of re-deriving it from a name we chose.
      */
     category?: Category;
+    /**
+     * CRS the user asserts for this file, as typed. Integer EPSG only.
+     *
+     * Rides the same struct as `category` above, for the same reason: an
+     * override re-derived at submit time is an override that silently applies
+     * to the wrong row the moment the queue is reordered or filtered.
+     *
+     * It is a HINT, not a command. A file that declares its own coordinate
+     * system keeps it; this fills the gap left by a missing `.prj`, or by a
+     * drill table of bare eastings and northings that the tabular ingest has
+     * until now silently assumed was UTM 13N. The server re-measures the
+     * geometry against the claimed CRS rather than taking the human's word
+     * for it.
+     */
+    sourceEpsgText?: string;
+    /**
+     * Verdict from the bundler — an incomplete shapefile or MapInfo set.
+     * Advisory: the file still uploads. Never an error, and never rendered
+     * as one.
+     */
+    bundleNote?: string;
 }
 
 interface UploadOutcome {
@@ -65,6 +92,21 @@ interface UploadOutcome {
 // files at intake - the API accepted them, but nothing got that far. Derive it
 // from the same source as everything else.
 const ACCEPTED_EXTENSIONS = acceptedExtensions();
+
+/**
+ * What the OS file dialog is allowed to show.
+ *
+ * The category map alone is NOT enough, and that gap is the root of the
+ * SRID-4326 corruption rather than a cosmetic annoyance. No sidecar has an
+ * upload category — `.shx`, `.dbf`, `.prj`, `.cpg`, and MapInfo's
+ * `.dat`/`.map`/`.id` are bundle members by definition — so an `accept=`
+ * built from `acceptedExtensions()` greyed every one of them out. The picker
+ * therefore handed groupShapefiles a lone `.shp`, groupShapefiles zipped a
+ * bundle with no `.prj`, and the parser filed a UTM shapefile as SRID 4326
+ * at longitude 400,797. Drag-and-drop never had the problem; the picker did,
+ * on every shapefile anyone chose through it.
+ */
+const PICKER_EXTENSIONS = [...new Set([...ACCEPTED_EXTENSIONS, ...BUNDLE_MEMBER_EXTS])].sort();
 
 let nextQueueId = 0;
 function newQueueId(): string {
@@ -82,6 +124,9 @@ export default function FoundryDataImportWizard() {
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
     const [files, setFiles] = useState<QueuedFile[]>([]);
     const [rejectedNote, setRejectedNote] = useState<string | null>(null);
+    /** Incomplete-set verdicts from the bundler, and orphaned members kept
+     *  with the reason they could not be attached to anything. */
+    const [bundleNotes, setBundleNotes] = useState<string[]>([]);
     const [dragging, setDragging] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [outcomes, setOutcomes] = useState<UploadOutcome[]>([]);
@@ -145,13 +190,24 @@ export default function FoundryDataImportWizard() {
         // very large .dbf, say) from swallowing the whole selection: the .shp
         // is queued and fails server-side with a message, which beats a drop
         // zone that silently does nothing.
-        const { bundles, passthrough, orphanSidecars } = await groupShapefiles(arr).catch(
-            () => ({ bundles: [], passthrough: arr, orphanSidecars: [] }),
+        const { bundles, passthrough, unusable } = await groupShapefiles(arr).catch(
+            () => ({ bundles: [], passthrough: arr, unusable: [] }),
         );
+        const notes: string[] = [];
         for (const b of bundles) {
-            accepted.push({ id: newQueueId(), file: b.file, category: 'spatial' });
+            accepted.push({
+                id: newQueueId(),
+                file: b.file,
+                category: 'spatial',
+                bundleNote: b.verdict ?? undefined,
+            });
+            if (b.verdict) notes.push(`${b.stem}: ${b.verdict}`);
         }
-        for (const f of orphanSidecars) rejected.push(f.name);
+        // An orphaned sidecar is NOT lumped in with "unsupported file type".
+        // It is a supported format whose master was not selected, and saying
+        // which master is missing is the difference between a user fixing the
+        // selection and a user concluding the drop zone is broken.
+        for (const u of unusable) notes.push(`${u.file.name}: ${u.reason}`);
 
         for (const f of passthrough) {
             if (ACCEPTED_EXTENSIONS.includes(fileExtension(f.name))) {
@@ -170,6 +226,7 @@ export default function FoundryDataImportWizard() {
                       .join(', ')}${rejected.length > 3 ? ', …' : ''}) — accepted types: ${ACCEPTED_EXTENSIONS.join(', ')}.`
                 : null,
         );
+        setBundleNotes(notes);
         // Keep successful outcomes (their pills + the no-re-upload guard in
         // handleSubmit depend on them); clear stale failures so the new
         // attempt starts clean.
@@ -182,6 +239,24 @@ export default function FoundryDataImportWizard() {
         setOutcomes((prev) => prev.filter((o) => o.id !== id && o.ok));
         setFinished(false);
     }
+
+    function setSourceEpsg(id: string, text: string) {
+        setFiles((prev) => prev.map((qf) => (qf.id === id ? { ...qf, sourceEpsgText: text } : qf)));
+    }
+
+    /** The category this row will actually be POSTed under. */
+    function effectiveCategory(qf: QueuedFile): Category | null {
+        return qf.category ?? categoryForExtension(fileExtension(qf.file.name));
+    }
+
+    // An EPSG the API would refuse blocks the submit rather than being
+    // dropped on the way out. A control whose value is silently discarded is
+    // the failure this whole change set exists to stop.
+    const epsgErrorCount = files.filter(
+        (qf) =>
+            supportsCrsOverride(effectiveCategory(qf)) &&
+            parseEpsg(qf.sourceEpsgText ?? '').error !== undefined,
+    ).length;
 
     function onDrop(e: React.DragEvent<HTMLDivElement>) {
         e.preventDefault();
@@ -218,6 +293,14 @@ export default function FoundryDataImportWizard() {
         const fd = new FormData();
         fd.append('file', qf.file);
         fd.append('category', category);
+        // `source_epsg`, an integer, and only when the user typed a legal one
+        // for a category whose trigger carries it. Same name and same type as
+        // the field the tabular ingest has always taken, so the two paths
+        // that share this screen cannot end up with two names for one idea.
+        const epsg = parseEpsg(qf.sourceEpsgText ?? '');
+        if (supportsCrsOverride(category) && epsg.epsg !== undefined) {
+            fd.append('source_epsg', String(epsg.epsg));
+        }
         try {
             const res = await fetch(`/api/v1/projects/${projectId}/upload`, {
                 method: 'POST',
@@ -399,12 +482,20 @@ export default function FoundryDataImportWizard() {
                                 after the team shipped three workflows
                                 specifically to accept them. Drag-and-drop
                                 worked; the picker did not, and the label said
-                                the same wrong thing. */}
+                                the same wrong thing.
+
+                                It stayed half wrong afterwards: bundle members
+                                have no category, so .shx/.dbf/.prj/.cpg and
+                                the MapInfo sidecars were STILL greyed out and
+                                the picker still handed the bundler a lone
+                                .shp — a bundle with no .prj, which is exactly
+                                the input that filed a UTM shapefile at SRID
+                                4326. PICKER_EXTENSIONS adds them back. */}
                             <input
                                 ref={fileInputRef}
                                 type="file"
                                 multiple
-                                accept={ACCEPTED_EXTENSIONS.map((e) => `.${e}`).join(',')}
+                                accept={PICKER_EXTENSIONS.map((e) => `.${e}`).join(',')}
                                 className="hidden"
                                 onChange={(e) => {
                                     addFiles(e.target.files);
@@ -442,6 +533,35 @@ export default function FoundryDataImportWizard() {
                             </div>
                         )}
 
+                        {/* Incomplete-set verdicts. Deliberately NOT folded
+                            into the "unsupported file" line above: these are
+                            supported formats that arrived without the members
+                            GDAL needs, and the fix is to re-drop the folder,
+                            not to give up on the format. Nothing here was
+                            discarded — the bundles still upload. */}
+                        {bundleNotes.length > 0 && (
+                            <div
+                                className="mt-3 text-xs px-3 py-2 rounded border space-y-1"
+                                style={{
+                                    color: 'var(--fg-1)',
+                                    borderColor: 'var(--warn)',
+                                    background: 'color-mix(in oklch, var(--warn) 8%, transparent)',
+                                }}
+                            >
+                                <div
+                                    className="text-[10px] font-mono uppercase tracking-[0.12em]"
+                                    style={{ color: 'var(--warn)' }}
+                                >
+                                    Incomplete file sets · {bundleNotes.length}
+                                </div>
+                                {bundleNotes.map((n, i) => (
+                                    <div key={`${i}-${n}`} style={{ color: 'var(--fg-2)' }}>
+                                        {n}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
                         {files.length > 0 && (
                             <div className="mt-4">
                                 <div
@@ -450,42 +570,108 @@ export default function FoundryDataImportWizard() {
                                 >
                                     Selected · {files.length}
                                 </div>
+                                {files.some((qf) => supportsCrsOverride(effectiveCategory(qf))) && (
+                                    <div
+                                        className="text-[11px] mb-2"
+                                        style={{ color: 'var(--fg-3)' }}
+                                    >
+                                        EPSG is optional and is only used when the file declares
+                                        no coordinate system of its own — a shapefile shipped
+                                        without its .prj, or a table of bare eastings and
+                                        northings. A declared CRS always wins, and the geometry is
+                                        checked against whatever code you give rather than trusted.
+                                    </div>
+                                )}
                                 <ul className="text-xs space-y-1">
                                     {files.map((qf) => {
                                         const outcome = outcomes.find((o) => o.id === qf.id);
+                                        const canOverrideCrs = supportsCrsOverride(
+                                            effectiveCategory(qf),
+                                        );
+                                        const epsg = parseEpsg(qf.sourceEpsgText ?? '');
                                         return (
-                                            <li
-                                                key={qf.id}
-                                                className="flex items-center gap-3"
-                                                style={{ color: 'var(--fg-1)' }}
-                                            >
-                                                <span className="font-mono">{qf.file.name}</span>
-                                                <span
-                                                    className="font-mono"
-                                                    style={{ color: 'var(--fg-3)' }}
-                                                >
-                                                    {(qf.file.size / 1024).toFixed(1)} KB
-                                                </span>
-                                                {outcome && (
-                                                    <Pill
-                                                        tone={outcome.ok ? 'accent' : 'warn'}
-                                                        dot
-                                                    >
-                                                        {outcome.ok
-                                                            ? 'queued'
-                                                            : outcome.message}
-                                                    </Pill>
-                                                )}
-                                                {!submitting && (!outcome || !outcome.ok) && (
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => removeFile(qf.id)}
-                                                        aria-label={`Remove ${qf.file.name}`}
-                                                        className="text-[10px] font-mono uppercase tracking-wider"
+                                            <li key={qf.id} style={{ color: 'var(--fg-1)' }}>
+                                                <div className="flex items-center gap-3">
+                                                    <span className="font-mono">{qf.file.name}</span>
+                                                    <span
+                                                        className="font-mono"
                                                         style={{ color: 'var(--fg-3)' }}
                                                     >
-                                                        remove
-                                                    </button>
+                                                        {(qf.file.size / 1024).toFixed(1)} KB
+                                                    </span>
+                                                    {canOverrideCrs && (
+                                                        <label className="flex items-center gap-1.5">
+                                                            <span
+                                                                className="text-[10px] font-mono uppercase tracking-wider"
+                                                                style={{ color: 'var(--fg-3)' }}
+                                                            >
+                                                                EPSG
+                                                            </span>
+                                                            <input
+                                                                type="text"
+                                                                inputMode="numeric"
+                                                                value={qf.sourceEpsgText ?? ''}
+                                                                onChange={(e) =>
+                                                                    setSourceEpsg(qf.id, e.target.value)
+                                                                }
+                                                                disabled={submitting || outcome?.ok}
+                                                                placeholder="26904"
+                                                                aria-label={`Source EPSG for ${qf.file.name}`}
+                                                                className="w-20 text-[11px] font-mono px-1.5 py-0.5 rounded border"
+                                                                style={{
+                                                                    background: 'var(--bg-2)',
+                                                                    borderColor: epsg.error
+                                                                        ? 'var(--danger, oklch(0.65 0.2 30))'
+                                                                        : 'var(--line-2)',
+                                                                    color: 'var(--fg-0)',
+                                                                }}
+                                                            />
+                                                        </label>
+                                                    )}
+                                                    {outcome && (
+                                                        <Pill
+                                                            tone={outcome.ok ? 'accent' : 'warn'}
+                                                            dot
+                                                        >
+                                                            {outcome.ok
+                                                                ? 'queued'
+                                                                : outcome.message}
+                                                        </Pill>
+                                                    )}
+                                                    {!submitting && (!outcome || !outcome.ok) && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeFile(qf.id)}
+                                                            aria-label={`Remove ${qf.file.name}`}
+                                                            className="text-[10px] font-mono uppercase tracking-wider"
+                                                            style={{ color: 'var(--fg-3)' }}
+                                                        >
+                                                            remove
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                {/* The bundler's verdict is a note, not a
+                                                    failure: the file still uploads. Rendered
+                                                    in its own line rather than crammed into
+                                                    the outcome pill, which is reserved for
+                                                    what the server actually said. */}
+                                                {qf.bundleNote && (
+                                                    <div
+                                                        className="text-[11px] mt-0.5"
+                                                        style={{ color: 'var(--warn)' }}
+                                                    >
+                                                        {qf.bundleNote}
+                                                    </div>
+                                                )}
+                                                {epsg.error && (
+                                                    <div
+                                                        className="text-[11px] mt-0.5"
+                                                        style={{
+                                                            color: 'var(--danger, oklch(0.65 0.2 30))',
+                                                        }}
+                                                    >
+                                                        {epsg.error}
+                                                    </div>
                                                 )}
                                             </li>
                                         );
@@ -522,10 +708,24 @@ export default function FoundryDataImportWizard() {
                         </div>
                     )}
 
-                    <footer className="flex justify-end gap-2">
+                    <footer className="flex justify-end items-center gap-3">
+                        {epsgErrorCount > 0 && (
+                            <span
+                                className="text-xs"
+                                style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}
+                            >
+                                Fix {epsgErrorCount} EPSG code{epsgErrorCount === 1 ? '' : 's'}{' '}
+                                before uploading.
+                            </span>
+                        )}
                         <button
                             type="button"
-                            disabled={!selectedProject || files.length === 0 || submitting}
+                            disabled={
+                                !selectedProject ||
+                                files.length === 0 ||
+                                submitting ||
+                                epsgErrorCount > 0
+                            }
                             onClick={handleSubmit}
                             className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-30"
                             style={{

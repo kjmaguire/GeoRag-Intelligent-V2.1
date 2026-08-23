@@ -10,6 +10,8 @@ import {
     UNSUPPORTED_EXTS,
     categoryForExtension,
     extensionOf,
+    parseEpsg,
+    supportsCrsOverride,
     type Category,
 } from '@/lib/uploadCategories';
 import { groupShapefiles } from '@/lib/shapefileBundle';
@@ -85,6 +87,18 @@ interface QueuedFile {
     error?: string;
     /** Advisory note shown beside the row. Not a failure — the file still uploads. */
     hint?: string;
+    /**
+     * CRS the user asserts for this file, as typed. Integer EPSG only.
+     *
+     * Carried per file, on the same struct as `category`, because an override
+     * re-derived at submit time attaches itself to whichever row happens to
+     * be in that position by then.
+     *
+     * A HINT, not a command: a file that declares its own coordinate system
+     * keeps it, and the server measures the geometry against the claimed code
+     * rather than trusting it.
+     */
+    sourceEpsgText?: string;
     parentZip?: string; // set when this file was extracted from an uploaded archive
 }
 
@@ -127,6 +141,10 @@ export default function FoundryNewProject() {
     const [submitError, setSubmitError] = useState<string | null>(null);
     const [submitProgress, setSubmitProgress] = useState<{ done: number; total: number } | null>(null);
     const [skipped, setSkipped] = useState<{ names: string[] } | null>(null);
+    /** Incomplete-set verdicts and orphaned bundle members, each with the
+     *  reason. Separate from `skipped`, which means "we do not accept this
+     *  format at all" — a very different thing to tell a geologist. */
+    const [bundleNotes, setBundleNotes] = useState<string[]>([]);
 
     const addFiles = useCallback(async (files: FileList | File[]) => {
         const arr: QueuedFile[] = [];
@@ -140,9 +158,10 @@ export default function FoundryNewProject() {
         // Falling back to the raw list keeps a zip failure (out of memory on a
         // very large .dbf, say) from swallowing the whole selection.
         const all = Array.from(files);
-        const { bundles, passthrough, orphanSidecars } = await groupShapefiles(all).catch(
-            () => ({ bundles: [], passthrough: all, orphanSidecars: [] }),
+        const { bundles, passthrough, unusable } = await groupShapefiles(all).catch(
+            () => ({ bundles: [], passthrough: all, unusable: [] }),
         );
+        const notes: string[] = [];
         for (const b of bundles) {
             arr.push({
                 id: newId(),
@@ -152,17 +171,24 @@ export default function FoundryNewProject() {
                 ext: 'zip',
                 category: 'spatial',
                 status: 'queued',
-                // Not an error - the upload proceeds. GDAL can often still
-                // read a shapefile missing its index, and a missing .prj only
-                // costs the declared CRS, so say what is absent and let it go.
-                error: b.missing.length
-                    ? `Bundled ${b.members.length} files; no .${b.missing.join(', .')} found`
-                    : undefined,
+                // `hint`, NOT `error`. This used to be written to `error`,
+                // which renders danger-red, truncates at 40 characters and is
+                // overwritten by the first upload failure — three wrong
+                // behaviours for a note about a file that uploads fine. GDAL
+                // rebuilds a missing index by itself, and the consequences of
+                // a missing .prj or .dbf are spelled out in `verdict`.
+                hint:
+                    b.verdict ??
+                    (b.missing.length > 0
+                        ? `Bundled ${b.members.length} files; no .${b.missing.join(', .')} found`
+                        : undefined),
             });
+            if (b.verdict) notes.push(`${b.stem}: ${b.verdict}`);
         }
-        // A sidecar with no .shp beside it is genuinely unusable - report it
-        // as skipped rather than leaving the user to wonder where it went.
-        for (const f of orphanSidecars) skippedNames.push(f.name);
+        // A member whose master was not selected is kept and explained, not
+        // filed under "unrecognised format". A standalone .dbf never lands
+        // here — it is an attribute table and comes back in `passthrough`.
+        for (const u of unusable) notes.push(`${u.file.name}: ${u.reason}`);
 
         for (const f of passthrough) {
             const ext = extensionOf(f.name);
@@ -218,11 +244,16 @@ export default function FoundryNewProject() {
         if (skippedNames.length > 0) {
             setSkipped({ names: skippedNames });
         }
+        if (notes.length > 0) {
+            setBundleNotes((prev) => [...prev, ...notes]);
+        }
     }, []);
 
     const removeFile = (id: string) => setQueue((q) => q.filter((x) => x.id !== id));
     const setCategory = (id: string, cat: Category) =>
         setQueue((q) => q.map((x) => (x.id === id ? { ...x, category: cat } : x)));
+    const setSourceEpsg = (id: string, text: string) =>
+        setQueue((q) => q.map((x) => (x.id === id ? { ...x, sourceEpsgText: text } : x)));
 
     // Recursively walk a dropped directory entry, returning every File inside.
     // Browser drag-drop exposes folders as 0-byte File objects in
@@ -294,7 +325,15 @@ export default function FoundryNewProject() {
         const unsupported = queue.filter((q) => q.category === null);
         const oversize = queue.filter((q) => q.category !== null && q.size > MAX_FILE_BYTES);
         const bytes = ok.reduce((s, q) => s + q.size, 0);
-        return { ok, unsupported, oversize, bytes };
+        // An EPSG the API would refuse blocks the create button rather than
+        // being dropped on the way out. Silently discarding a value the user
+        // typed is the failure mode this whole change set is about.
+        const badEpsg = queue.filter(
+            (q) =>
+                supportsCrsOverride(q.category) &&
+                parseEpsg(q.sourceEpsgText ?? '').error !== undefined,
+        );
+        return { ok, unsupported, oversize, bytes, badEpsg };
     }, [queue]);
 
     function next() {
@@ -359,6 +398,14 @@ export default function FoundryNewProject() {
                 const fd = new FormData();
                 fd.append('file', qf.file);
                 fd.append('category', qf.category as string);
+                // `source_epsg`, an integer, and only for a category whose
+                // trigger carries it. Same field name and same type as the
+                // one the tabular ingest already takes: one concept, one
+                // spelling, across the two paths this screen feeds.
+                const epsg = parseEpsg(qf.sourceEpsgText ?? '');
+                if (supportsCrsOverride(qf.category) && epsg.epsg !== undefined) {
+                    fd.append('source_epsg', String(epsg.epsg));
+                }
                 try {
                     const upRes = await fetch(`/api/v1/projects/${projectId}/upload`, {
                         method: 'POST',
@@ -501,7 +548,13 @@ export default function FoundryNewProject() {
                                         {dragging ? 'Release to add files' : 'Drag files here, or click to browse'}
                                     </div>
                                     <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
-                                        CSV · PDF · LAS · GeoJSON / SHP · KMZ · XLSX · SEG-Y · XYZ
+                                        {/* KMZ, SEG-Y and XYZ were listed here and none of
+                                            them is accepted; the label promised uploads that
+                                            came back 422. Shapefile and MapInfo sidecars are
+                                            named because dropping the whole set is what gets
+                                            the .prj — and therefore the coordinate system —
+                                            to the server. */}
+                                        CSV · PDF · TIFF · LAS · XLSX · GeoJSON · SHP + .shx/.dbf/.prj · MapInfo TAB/MIF · DBF · GPKG · ZIP
                                     </div>
                                     <input
                                         ref={fileInputRef}
@@ -582,6 +635,39 @@ export default function FoundryNewProject() {
                                     </div>
                                 )}
 
+                                {/* Incomplete-set verdicts. NOT the same thing as the
+                                    skipped notice above: these are formats we accept
+                                    that arrived without the members GDAL needs, and
+                                    nothing here was thrown away — the bundles are in
+                                    the queue below. Real deliveries are messy; a
+                                    bundler that answered "no master, therefore drop"
+                                    silently lost seven .DAT files, three .MAP files,
+                                    an .ID and an .IND out of one folder. */}
+                                {bundleNotes.length > 0 && (
+                                    <div
+                                        className="flex items-start gap-2 rounded border px-3 py-2 text-[11px]"
+                                        style={{ borderColor: 'var(--warn, oklch(0.78 0.18 75))', background: 'var(--bg-1)' }}
+                                    >
+                                        <div className="flex-1 min-w-0 space-y-0.5">
+                                            <div className="font-mono uppercase tracking-wider text-[10px]" style={{ color: 'var(--warn, oklch(0.78 0.18 75))' }}>
+                                                Incomplete file sets · {bundleNotes.length}
+                                            </div>
+                                            {bundleNotes.map((n, i) => (
+                                                <div key={`${i}-${n}`} style={{ color: 'var(--fg-2)' }}>{n}</div>
+                                            ))}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setBundleNotes([])}
+                                            className="text-[11px] px-2 py-0.5"
+                                            style={{ color: 'var(--fg-3)' }}
+                                            aria-label="Dismiss incomplete-file-set notice"
+                                        >
+                                            ✕
+                                        </button>
+                                    </div>
+                                )}
+
                                 {/* Queued files */}
                                 {queue.length > 0 && (
                                     <div className="rounded border overflow-hidden" style={{ borderColor: 'var(--line-1)' }}>
@@ -609,8 +695,10 @@ export default function FoundryNewProject() {
                                             {queue.map((q) => {
                                                 const oversize = q.size > MAX_FILE_BYTES;
                                                 const unsupported = q.category === null;
+                                                const canOverrideCrs = supportsCrsOverride(q.category);
+                                                const epsg = parseEpsg(q.sourceEpsgText ?? '');
                                                 return (
-                                                    <li key={q.id} className="grid grid-cols-[1fr_140px_70px_auto] items-center gap-2 px-3 py-1.5" style={{ background: 'var(--bg-1)' }}>
+                                                    <li key={q.id} className="grid grid-cols-[1fr_140px_84px_70px_auto] items-center gap-2 px-3 py-1.5" style={{ background: 'var(--bg-1)' }}>
                                                         <div className="min-w-0">
                                                             <div className="text-xs truncate" style={{ color: 'var(--fg-0)' }}>{q.name}</div>
                                                             <div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--fg-3)' }}>
@@ -618,8 +706,13 @@ export default function FoundryNewProject() {
                                                                 {q.parentZip && <> · <span title={`Extracted from ${q.parentZip}`} style={{ color: 'var(--fg-2)' }}>from {q.parentZip}</span></>}
                                                                 {q.status !== 'queued' && <> · <span style={{ color: q.status === 'done' ? 'var(--accent)' : q.status === 'error' ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-2)' }}>{q.status}</span></>}
                                                                 {q.error && <> · <span title={q.error} style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>{q.error.slice(0, 40)}</span></>}
-                                                                {!q.error && q.hint && <> · <span title={q.hint} style={{ color: 'var(--muted-foreground, oklch(0.55 0 0))' }}>{q.hint.slice(0, 40)}</span></>}
+                                                                {!q.error && q.hint && <> · <span title={q.hint} style={{ color: 'var(--muted-foreground, oklch(0.55 0 0))' }}>{q.hint.slice(0, 40)}{q.hint.length > 40 ? '…' : ''}</span></>}
                                                             </div>
+                                                            {epsg.error && (
+                                                                <div className="text-[10px]" style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                                                    {epsg.error}
+                                                                </div>
+                                                            )}
                                                         </div>
                                                         {unsupported ? (
                                                             <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border text-center" style={{ color: 'var(--warn, oklch(0.78 0.18 75))', borderColor: 'var(--warn, oklch(0.78 0.18 75))' }}>
@@ -650,6 +743,32 @@ export default function FoundryNewProject() {
                                                                         ))
                                                                 }
                                                             </select>
+                                                        )}
+                                                        {/* Per-file CRS override. Only where the
+                                                            trigger carries it — an input whose value
+                                                            is dropped in transit is worse than none.
+                                                            Optional: a file that declares its own
+                                                            coordinate system keeps it. */}
+                                                        {canOverrideCrs ? (
+                                                            <input
+                                                                type="text"
+                                                                inputMode="numeric"
+                                                                value={q.sourceEpsgText ?? ''}
+                                                                onChange={(e) => setSourceEpsg(q.id, e.target.value)}
+                                                                disabled={q.status === 'uploading' || q.status === 'done'}
+                                                                placeholder="EPSG"
+                                                                title="Coordinate system to assume when the file declares none — a shapefile with no .prj, or a table of bare eastings and northings. EPSG number only, e.g. 26904. A CRS the file declares always wins."
+                                                                aria-label={`Source EPSG for ${q.name}`}
+                                                                className="text-[11px] font-mono px-2 py-1 rounded border w-full"
+                                                                style={{
+                                                                    ...inputStyle,
+                                                                    borderColor: epsg.error
+                                                                        ? 'var(--danger, oklch(0.65 0.2 30))'
+                                                                        : 'var(--line-2)',
+                                                                }}
+                                                            />
+                                                        ) : (
+                                                            <span />
                                                         )}
                                                         <span className="text-[10px] font-mono uppercase tracking-wider text-center" style={{ color: oversize ? 'var(--danger, oklch(0.65 0.2 30))' : 'var(--fg-3)' }}>
                                                             {oversize ? '>6GB' : ''}
@@ -696,6 +815,12 @@ export default function FoundryNewProject() {
                                                 {' · '}{queueSummary.oversize.length} over 6 GB will be skipped
                                             </span>
                                         )}
+                                        {queueSummary.badEpsg.length > 0 && (
+                                            <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                                {' · '}{queueSummary.badEpsg.length} invalid EPSG code
+                                                {queueSummary.badEpsg.length === 1 ? '' : 's'} — fix in Corpus before creating
+                                            </span>
+                                        )}
                                     </span>
                                 </div>
                                 {submitProgress && (
@@ -729,7 +854,7 @@ export default function FoundryNewProject() {
                             <button
                                 type="button"
                                 onClick={submit}
-                                disabled={submitting || !form.name}
+                                disabled={submitting || !form.name || queueSummary.badEpsg.length > 0}
                                 className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-40"
                                 style={{ color: 'var(--bg-0)', background: 'var(--accent)', borderColor: 'var(--accent-dim)' }}
                             >
