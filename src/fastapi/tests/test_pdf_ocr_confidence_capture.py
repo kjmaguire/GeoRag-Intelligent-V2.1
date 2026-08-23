@@ -282,9 +282,18 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
         return_confidence=False,
         return_assessment=False,
         return_tables=False,
+        *,
+        skip_di_page_request=False,
     ):
         assert return_confidence is True
         assert return_assessment is True
+        # The mixed-document path batches Document Intelligence requests
+        # since 2026-08-23 and tells this function when a page was already
+        # covered by a batch that found nothing. No DI is configured in
+        # this test, so no batch ran and there is nothing to skip -- a True
+        # here would mean the batch pass fired without a configured
+        # backend and silently suppressed the per-page request.
+        assert skip_di_page_request is False
         assessment = {
             "tier": "mandatory_review",
             "routing_decision": "review_required",

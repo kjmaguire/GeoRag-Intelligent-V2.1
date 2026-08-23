@@ -52,6 +52,7 @@ import os
 import re
 import statistics
 import threading
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1946,8 +1947,67 @@ def _parse_with_fitz(
             1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4"))
         )
 
+        # Batching for the MIXED path (2026-08-23). The fully-scanned path
+        # has batched since 2026-08-20; this one -- a text-native report
+        # with an appendix of plates, or scattered scanned inserts -- kept
+        # issuing one Document Intelligence request per page, and it is the
+        # commoner shape in this corpus. A report with 40 image pages was
+        # 40 submissions plus polling.
+        #
+        # Batching a SPARSE set needs the selection slicer rather than the
+        # contiguous one: grouping scattered pages into runs either yields
+        # runs of length one, or sweeps in pages that already had text and
+        # are billed anyway.
+        #
+        # AZURE_DI_PAGES_PER_BATCH=1 restores per-page exactly. The guard on
+        # is_configured() is not just an optimisation: without DI every page
+        # here goes to tesseract, and the slice/budget work would be spent
+        # producing empty mappings.
+        from . import document_intelligence_client as _di_batch_mod
+
+        _short_batched: dict[int, Any] = {}
+        _short_block_size = _di_batch_mod.pages_per_batch()
+        if _short_block_size > 1 and len(short_page_nums) > 1 and _di_batch_mod.is_configured():
+            _short_plan = [
+                short_page_nums[i:i + _short_block_size]
+                for i in range(0, len(short_page_nums), _short_block_size)
+            ]
+            logger.info(
+                "pdf_report: document_intelligence batching %d short page(s) "
+                "into %d request(s) of up to %d",
+                len(short_page_nums), len(_short_plan), _short_block_size,
+            )
+            with ThreadPoolExecutor(
+                max_workers=max(1, min(_OCR_PAGE_CONCURRENCY, len(_short_plan)))
+            ) as _short_executor:
+                for _mapping in _short_executor.map(
+                    lambda pages: _ocr_page_selection_di(path, pages), _short_plan
+                ):
+                    _short_batched.update(_mapping)
+            _short_hits = sum(1 for _r in _short_batched.values() if _r.text.strip())
+            logger.info(
+                "pdf_report: batch pass resolved %d/%d short page(s); %d need "
+                "individual handling",
+                _short_hits, len(short_page_nums), len(short_page_nums) - _short_hits,
+            )
+
         def _ocr_one_page(n: int):
             try:
+                _batched = _short_batched.get(n)
+                if _batched is not None and _batched.text.strip():
+                    _assessment = _assess_ocr_result(
+                        _batched.text,
+                        [word.confidence for word in _batched.words]
+                        or [_batched.mean_confidence],
+                        detected_region_count=_batched.detected_region_count,
+                        ocr_method="document_intelligence",
+                    )
+                    return n, (
+                        _batched.text,
+                        _batched.mean_confidence,
+                        _assessment,
+                        list(_batched.tables),
+                    ), None
                 # Phase 3 — capture mean_conf from tesseract per-word data.
                 # return_tables — DI prebuilt-layout table grids (always []
                 # on the tesseract path).
@@ -1957,6 +2017,10 @@ def _parse_with_fitz(
                     return_confidence=True,
                     return_assessment=True,
                     return_tables=True,
+                    # The batch already asked DI about this page and got
+                    # nothing back; skip the duplicate billed request and
+                    # start at the raster-tile escalation instead.
+                    skip_di_page_request=n in _short_batched,
                 ), None
             except Exception as _ocr_exc:  # noqa: BLE001
                 return n, None, _ocr_exc
@@ -2188,6 +2252,37 @@ def _slice_page_block_pdf_bytes(pdf_path: str, first_page: int, page_count: int)
         _block = _pikepdf.Pdf.new()
         for _offset in range(page_count):
             _block.pages.append(_src.pages[first_page - 1 + _offset])
+        _buf = _io.BytesIO()
+        _block.save(_buf)
+        return _buf.getvalue()
+
+
+
+def _slice_page_selection_pdf_bytes(
+    pdf_path: str, page_numbers: Sequence[int]
+) -> bytes:
+    """Extract an arbitrary, non-contiguous set of pages into one PDF.
+
+    The contiguous slicer above serves the fully-scanned path, where every
+    page needs OCR and blocks fall out naturally. The MIXED path -- a
+    text-native report with an appendix of plates, or scattered scanned
+    inserts -- has a sparse page set, and that is the common shape in this
+    corpus.
+
+    Slicing by selection rather than by range is what makes batching
+    possible there at all: forming contiguous runs out of a sparse set
+    either gives runs of length one (no saving) or sweeps in pages that
+    already had text, which are billed per page and did not need OCR.
+    """
+    import io as _io
+
+    import pikepdf as _pikepdf
+
+    with _PIKEPDF_LOCK:
+        _src = _get_cached_pikepdf(pdf_path)
+        _block = _pikepdf.Pdf.new()
+        for _page_num in page_numbers:
+            _block.pages.append(_src.pages[_page_num - 1])
         _buf = _io.BytesIO()
         _block.save(_buf)
         return _buf.getvalue()
@@ -2427,6 +2522,45 @@ def _ocr_page_block_di(pdf_path: str, first_page: int, page_count: int) -> dict[
     block = _di.ocr_page_block_sync(pdf_bytes, page_count)
     # DI numbers pages relative to the uploaded block, which starts at 1.
     return {first_page + local - 1: result for local, result in block.items()}
+
+
+def _ocr_page_selection_di(
+    pdf_path: str, page_numbers: Sequence[int]
+) -> dict[int, Any]:
+    """OCR an arbitrary set of pages in a single DI request.
+
+    Returns ``{absolute_page_number: PageOcrResult}`` for the pages the
+    request answered. An empty mapping means the caller must drive those
+    pages individually -- budget exhausted, slice failed, or the request
+    failed -- which is the same contract as `_ocr_page_block_di`.
+
+    The page-number remap is by POSITION, not by arithmetic: DI numbers
+    the pages of the uploaded document 1..N, and the uploaded document is
+    `page_numbers` in the order given. `first_page + local - 1` would be
+    wrong here for every page after a gap.
+    """
+    from . import document_intelligence_client as _di
+
+    ordered = sorted(set(page_numbers))
+    if not ordered:
+        return {}
+    if not _di_budget_take(pdf_path, len(ordered)):
+        return {}
+    try:
+        pdf_bytes = _slice_page_selection_pdf_bytes(pdf_path, ordered)
+    except Exception as slice_exc:  # noqa: BLE001
+        logger.warning(
+            "pdf_report: page-selection slice failed for %d page(s) of '%s' "
+            "(%s) — falling back to per-page document_intelligence",
+            len(ordered), pdf_path, slice_exc,
+        )
+        return {}
+    block = _di.ocr_page_block_sync(pdf_bytes, len(ordered))
+    return {
+        ordered[local - 1]: result
+        for local, result in block.items()
+        if 1 <= local <= len(ordered)
+    }
 
 
 def _ocr_single_page(
