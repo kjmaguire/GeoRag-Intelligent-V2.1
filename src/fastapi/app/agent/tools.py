@@ -56,7 +56,6 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from app.agent.deps import AgentDeps
-from app.agent.hallucination.layer1_retrieval import filter_by_quality
 from app.agent.log_safe import query_hash
 from app.config import settings
 from app.services.reranker import RERANKER_BACKEND
@@ -331,6 +330,15 @@ class DocumentChunk:
     # Phase 6 OCR Quality Agent will set thresholds.
     ocr_confidence: float | None = None
     ocr_method: str | None = None
+    #: Verdict the ingest-side quality router reached for this page:
+    #: 'ok' | 'low_confidence' | 'rejected' | 'pending_reocr'. Written to the
+    #: Qdrant payload by passage_embedder._build_payload since Phase 3 and
+    #: read by nothing until 2026-08-21 — passage_embedder's own comment
+    #: claims "retrieval down-weights them via the ocr_status payload field",
+    #: which was not true: DocumentChunk had no such field, so a page the
+    #: router had flagged unreadable competed on equal terms and reached the
+    #: model with nothing marking it. See annotated_text below.
+    ocr_status: str | None = None
     # Multimodal (2026-08-18). modality='image' means this chunk's text is a
     # vision model's DESCRIPTION of a rendered page, not text extracted from
     # the document. That distinction is load-bearing for hallucination
@@ -348,19 +356,50 @@ class DocumentChunk:
         return self.modality == "image"
 
     @property
-    def annotated_text(self) -> str:
-        """Text as it should reach the LLM, with figure provenance inline.
+    def is_low_confidence_ocr(self) -> bool:
+        """The ingest-side quality router flagged this page as unreadable."""
+        return (self.ocr_status or "").lower() == "low_confidence"
 
-        A generated description that looks like an extract invites the model
-        to quote it as though the document said it. The prefix makes the
-        difference explicit in the context window itself.
+    @property
+    def annotated_text(self) -> str:
+        """Text as it should reach the LLM, with provenance inline.
+
+        Two things get a prefix, for the same reason: content that is not a
+        faithful extract must not be presented to the model as one.
+
+        A generated image description invites the model to quote it as though
+        the document said it.
+
+        A page the OCR quality router tiered as unreadable invites something
+        worse. A 1960s scanned assay sheet at 0.42 mean confidence still
+        contains recognisable hole IDs, so it scores well on BM25; the
+        reranker has no notion of quality; and the answer comes back quoting
+        misread digits with a real page citation on it. Nothing in the
+        answer, the citation or the UI said the source had been flagged.
         """
+        text = self.text
+        page = self.page or self.page_number
+
+        if self.is_low_confidence_ocr:
+            where = f" (page {page})" if page else ""
+            confidence = (
+                f", mean OCR confidence {self.ocr_confidence:.2f}"
+                if self.ocr_confidence is not None
+                else ""
+            )
+            text = (
+                f"[OCR quality flagged on this page{where}{confidence} — characters, "
+                f"and especially digits, may be misread. Do not quote numbers from "
+                f"this passage without corroboration]\n{text}"
+            )
+
         if not self.is_page_image:
-            return self.text
+            return text
+
         where = f" (page {self.page_number})" if self.page_number else ""
         return (
             f"[Description of a figure or map image{where}, generated from the "
-            f"page image — not quoted text from the document]\n{self.text}"
+            f"page image — not quoted text from the document]\n{text}"
         )
 
 
@@ -371,6 +410,15 @@ class DocumentSearchResult:
     chunks: list[DocumentChunk]
     count: int
     data_source: str  # "Qdrant" — supports provenance Layer 5
+    #: True when the reranker timed out or raised and the results are in
+    #: raw RRF fusion order instead. Everything downstream that reads
+    #: relevance_score — the citation relevance, the answer confidence,
+    #: the context packer's ordering — is looking at a fusion score an
+    #: order of magnitude below what a Cohere score would be, so it needs
+    #: to know. The data_source string used to say "(reranked)" on this
+    #: path regardless, which made a reranker outage invisible in every
+    #: trace, log field and API response.
+    rerank_degraded: bool = False
 
 
 @dataclass
@@ -1622,12 +1670,20 @@ def _build_document_scope_filter(project_id: str):
             ]
         )
 
-    logger.warning(
+    # Fail CLOSED. A typo in this setting used to widen retrieval to every
+    # project in the workspace, silently, and the only trace was one warning
+    # line — the failure mode is a confidently wrong answer citing another
+    # project's report, which nobody reads logs to discover. Scoping to the
+    # caller's own project is the conservative reading of an unreadable
+    # policy: worst case the user sees "no data in this project", which is
+    # a question they will ask about.
+    logger.error(
         "search_documents: unknown QDRANT_DOCUMENT_PROJECT_SCOPE=%r — "
-        "falling back to cross_project",
+        "scoping to project_id only. Valid values: cross_project, "
+        "project_or_public, strict.",
         mode,
     )
-    return None
+    return Filter(must=[project_match])
 
 
 @_metered("search_documents")
@@ -1636,7 +1692,6 @@ async def search_documents(
     query_text: str,
     project_id: str,
     limit: int = 10,
-    score_threshold: float | None = None,
     sparse_boost_factor: float = 1.0,
 ) -> DocumentSearchResult:
     """Search the Qdrant vector store for document chunks relevant to the query.
@@ -1653,11 +1708,14 @@ async def search_documents(
     Stage 1 — Coarse vector search:
       The query_text is embedded with the configured dense embedder
       (settings.EMBEDDING_MODEL_NAME — live default Qwen/Qwen3-Embedding-0.6B,
-      1024-dim, swapped from bge-small 2026-06-03) and used to retrieve up to
-      RETRIEVAL_TOP_N (20) candidates from Qdrant with a permissive cosine
-      threshold (RETRIEVAL_QUALITY_THRESHOLD = 0.3). NOTE (audit 2026-06-27,
-      T1 open): the query-side instruction prefix below is still the bge-era
-      string — a known query/corpus asymmetry pending an eval-gated fix.
+      1024-dim, swapped from bge-small 2026-06-03) and, together with a
+      SPLADE++ sparse encoding, retrieves up to RETRIEVAL_TOP_N (40)
+      candidates via hybrid_query. Both branches are fused server-side with
+      RRF, so what comes back is scored by RANK, not by similarity, and no
+      cosine threshold is applied at this stage — the FusionQuery path does
+      not support one. NOTE (audit 2026-06-27, T1 open): the query-side
+      instruction prefix below is still the bge-era string — a known
+      query/corpus asymmetry pending an eval-gated fix.
 
     Stage 2 — Cross-encoder reranking (when reranker is available):
       Each (query, chunk.text) pair is scored by the configured reranker
@@ -1672,8 +1730,14 @@ async def search_documents(
       The reranker score replaces the raw Qdrant cosine in the returned
       relevance_score field.
 
-    When no reranker is available the tool falls back to Layer 1 quality gate
-    filtering via filter_by_quality using RETRIEVAL_QUALITY_THRESHOLD.
+    When no reranker is available the tool returns the RRF ordering
+    truncated to RERANKER_TOP_K and sets ``rerank_degraded=True``. It does
+    NOT apply RETRIEVAL_QUALITY_THRESHOLD: that is a calibrated [0,1] gate
+    and these are rank-derived fusion scores. Until 2026-08-21 it did, which
+    meant that the moment the reranker was unavailable — an unset
+    AZURE_FOUNDRY_API_KEY is enough — every document query in the system
+    returned zero chunks and the agent answered "insufficient information"
+    about a corpus that plainly contained the answer.
 
     The tool targets the ``georag_reports`` Qdrant collection which is
     populated by the Dagster ``index_reports`` asset.  Whether a project_id
@@ -1694,8 +1758,6 @@ async def search_documents(
             ``cross_project`` — as a Qdrant payload filter.
         limit: Ignored when reranker is active (RERANKER_TOP_K governs
             final count).  Caps initial Qdrant fetch when reranker is absent.
-        score_threshold: Minimum Qdrant cosine score for the coarse pass.
-            Defaults to RETRIEVAL_QUALITY_THRESHOLD.
 
     Returns:
         DocumentSearchResult with chunk list, count, and data source label.
@@ -1825,9 +1887,18 @@ async def search_documents(
         from app.services.qdrant_service import hybrid_query  # noqa: PLC0415
         scope_filter = _build_document_scope_filter(project_id)
 
-        # score_threshold is not natively supported in the FusionQuery path;
-        # Qdrant RRF scores are relative (not cosine) so threshold filtering
-        # is done post-retrieval by the reranker (Layer 1).
+        # There is deliberately no score threshold here, and this function
+        # deliberately accepts no parameter for one. Qdrant's FusionQuery
+        # path takes none, and an RRF score is rank-derived rather than a
+        # similarity -- 1/(k+rank), an order of magnitude smaller than the
+        # cosine numbers a caller would reach for. The only score on a real
+        # [0,1] scale appears after the reranker (Layer 1), which is where
+        # plan_executor applies its min_relevance gate.
+        #
+        # A `score_threshold` parameter was accepted here until 2026-08-22.
+        # Nothing ever read it. Removed rather than re-documented, because
+        # a parameter documented as ignored still invites callers to pass
+        # one -- plan_executor did, for months.
         points = await hybrid_query(
             client=ctx.deps.qdrant_client,
             collection=_doc_collection,
@@ -1877,6 +1948,7 @@ async def search_documents(
                         float(_ocr_conf_raw) if _ocr_conf_raw is not None else None
                     ),
                     ocr_method=payload.get("ocr_method"),
+                    ocr_status=payload.get("ocr_status"),
                     # Written by passage_embedder._build_payload. Defaults
                     # keep pre-multimodal points (every point written before
                     # 2026-08-18) reading as plain text.
@@ -1905,6 +1977,12 @@ async def search_documents(
         return DocumentSearchResult(chunks=[], count=0, data_source=f"Qdrant {_doc_collection}")
 
     # Stage 2: cross-encoder reranking (Layer 1 precision gate).
+    #
+    # False on the no-reranker-configured path too: that deployment never
+    # promised a precision stage, so its results are not DEGRADED, they are
+    # what it always returns. Degraded means "we have a reranker and it did
+    # not run".
+    rerank_degraded = False
     if ctx.deps.reranker is not None:
         logger.info(
             "search_documents: reranking %d candidates for project=%s query_hash=%s",
@@ -1930,6 +2008,15 @@ async def search_documents(
             # wait_for so a wedged reranker doesn't blow the outer
             # search_documents branch budget — the orchestrator's per-branch
             # wait_for catches the longer cases (latency-fix follow-up).
+            #
+            # 2026-08-20 — this wait_for is a BACKSTOP, not the primary
+            # bound. Cancelling it does not stop the executor thread, so
+            # the reranker enforces the same budget internally (see
+            # reranker._caller_budget_s, which reads TIMEOUT_RERANKER_S)
+            # and returns rather than being cancelled out from under. If
+            # this branch fires, the backend blew through its own deadline
+            # — that is a real anomaly now, not the routine outcome of a
+            # single 429 that it used to be.
             scores: list[float] = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
@@ -1946,6 +2033,7 @@ async def search_documents(
                 project_id,
             )
             scores = []
+            rerank_degraded = True
         except Exception:
             logger.exception(
                 "search_documents: reranker.predict failed for project=%s — "
@@ -1953,6 +2041,7 @@ async def search_documents(
                 project_id,
             )
             scores = []
+            rerank_degraded = True
 
         if scores:
             # Cross-encoder/qwen3_causal backends output raw logits
@@ -1994,7 +2083,20 @@ async def search_documents(
                 for chunk, score in zip(chunks, raw_scores, strict=False)
                 if score >= min_score
             ]
-            paired.sort(key=lambda p: p[1], reverse=True)
+
+            # A page the OCR quality router flagged as unreadable loses ties.
+            # It is not excluded: on a corpus of 1960s scans, the flagged
+            # page is sometimes the only page that mentions the thing at all,
+            # and returning nothing helps no one. But it should never
+            # outrank a clean page — which it did, because it still contains
+            # recognisable hole IDs and the reranker has no notion of
+            # quality. Sorting demotes it while annotated_text tells the
+            # model what it is looking at.
+            def _rank_key(pair: tuple[DocumentChunk, float]) -> tuple[int, float]:
+                chunk, score = pair
+                return (0 if chunk.is_low_confidence_ocr else 1, score)
+
+            paired.sort(key=_rank_key, reverse=True)
 
             for chunk, score in paired:
                 chunk.relevance_score = 1.0 / (1.0 + math.exp(-score)) if needs_sigmoid else score
@@ -2022,29 +2124,85 @@ async def search_documents(
                 project_id,
             )
 
+        if rerank_degraded:
+            # Without the reranker, initial_limit was RETRIEVAL_TOP_N (40)
+            # rather than the ~12 the precision stage would have returned,
+            # so passing everything through let 40 low-relevance chunks
+            # crowd the context budget and push the structured collar and
+            # assay blocks out of it entirely. RRF rank is a worse ordering
+            # than a cross-encoder, but it is an ordering; take the same
+            # number of chunks the ranked path would have.
+            chunks = chunks[: settings.RERANKER_TOP_K]
+            logger.warning(
+                "search_documents: returning %d chunks in RRF order for "
+                "project=%s — the reranking stage did not run",
+                len(chunks), project_id,
+            )
+            try:
+                from app.metrics import RERANK_DEGRADED_TOTAL  # noqa: PLC0415
+                RERANK_DEGRADED_TOTAL.inc()
+            except Exception:  # noqa: BLE001
+                pass
+
         return DocumentSearchResult(
             chunks=chunks,
             count=len(chunks),
-            data_source=f"qdrant:{_doc_collection} (reranked)",
+            rerank_degraded=rerank_degraded,
+            data_source=(
+                f"qdrant:{_doc_collection} (rerank unavailable)"
+                if rerank_degraded
+                else f"qdrant:{_doc_collection} (reranked)"
+            ),
         )
 
-    # No reranker: fall back to Layer 1 quality gate on raw Qdrant cosine scores.
-    pre_filter_count = len(chunks)
-    chunks = filter_by_quality(chunks, settings.RETRIEVAL_QUALITY_THRESHOLD)
-    if pre_filter_count > 0 and len(chunks) == 0:
-        logger.warning(
-            "search_documents: all %d chunks dropped by Layer 1 quality gate "
-            "(threshold=%.2f) for project=%s query_hash=%s",
-            pre_filter_count,
-            settings.RETRIEVAL_QUALITY_THRESHOLD,
-            project_id,
-            query_hash(query_text),
-        )
+    # No reranker at all — get_reranker_or_none() returned None. That is not
+    # an exotic state: RERANKER_BACKEND=foundry with an unset or unresolved
+    # AZURE_FOUNDRY_API_KEY lands here, as does any local model load failure.
+    #
+    # This used to call filter_by_quality(chunks, RETRIEVAL_QUALITY_THRESHOLD).
+    # `chunk.relevance_score` on this path is `float(point.score)` straight
+    # from hybrid_query — a Qdrant RRF FUSION score, derived from the point's
+    # rank in each prefetch branch. RETRIEVAL_QUALITY_THRESHOLD is 0.5 and is
+    # documented in config.py as "Qdrant cosine similarity after
+    # cross-encoder reranking". Gating rank-derived scores with a calibrated
+    # 0.5 dropped essentially everything, and the log line said so in a way
+    # that read as correct behaviour: "agent will report 'insufficient
+    # information'".
+    #
+    # The sweep that justified 0.5 could not have caught it, and its own
+    # docstring says why: scripts/sweep_retrieval_threshold.py "requires the
+    # Qdrant collection + embedding/reranker models to be loaded". With a
+    # reranker loaded the branch above returns before ever reaching this
+    # code, so the sweep measured a knob it could not reach and reported it
+    # "effectively inert between 0.25 and 0.60". config.py then read inert as
+    # free and raised it 0.30 -> 0.50 for "headroom against future noisier
+    # corpora". Raising an inert knob is exactly what armed this path.
+    #
+    # This is the same situation as `rerank_degraded` above — RRF ordering,
+    # no precision stage — so it gets the same treatment, including the flag,
+    # so response_assembler can tell the reader the answer was assembled
+    # without reranking.
+    pre_truncate_count = len(chunks)
+    chunks = chunks[: settings.RERANKER_TOP_K]
+    logger.warning(
+        "search_documents: no reranker configured — returning %d of %d chunks "
+        "in RRF order for project=%s query_hash=%s",
+        len(chunks),
+        pre_truncate_count,
+        project_id,
+        query_hash(query_text),
+    )
+    try:
+        from app.metrics import RERANK_DEGRADED_TOTAL  # noqa: PLC0415
+        RERANK_DEGRADED_TOTAL.inc()
+    except Exception:  # noqa: BLE001
+        pass
 
     return DocumentSearchResult(
         chunks=chunks,
         count=len(chunks),
-        data_source=f"Qdrant {_doc_collection}",
+        rerank_degraded=True,
+        data_source=f"qdrant:{_doc_collection} (rerank unavailable)",
     )
 
 
@@ -2494,8 +2652,32 @@ async def verify_numerical_claim(
         tolerance,
     )
 
+    if not workspace_id:
+        # Not a refusal — single-tenant deployments have no workspace by
+        # design, and `acquire_scoped()` is lenient for that reason.
+        # Refusing would turn their verified claims into unverified ones,
+        # push Layer 3 past NUMERIC_RETRY_THRESHOLD and retry correct
+        # answers.
+        #
+        # But it IS worth saying out loud. This tool returns VALUES —
+        # plan_executor uses it as a general-purpose retrieval oracle, not
+        # only to check the model's arithmetic — so a fence that has
+        # narrowed from workspace+project to project-only is returning a
+        # value from a wider set than the caller believes.
+        logger.warning(
+            "verify_numerical_claim: no workspace_id on deps — tenancy "
+            "narrowed to project_id alone for %s.%s row=%s. Expected only "
+            "on a single-tenant deployment.",
+            table, column, row_id,
+        )
+
     async def _run_verify() -> float | None:
-        async with ctx.deps.pg_pool.acquire() as conn:
+        # acquire_scoped(), not a bare acquire. It is the canonical
+        # GUC-setting path on AgentDeps, so when
+        # MULTI_TENANT_ENFORCEMENT_ENABLED is on, RLS applies the fence
+        # the conditional predicate above could not build. On a
+        # single-tenant deploy it behaves exactly as the bare acquire did.
+        async with ctx.deps.acquire_scoped() as conn:
             row = await conn.fetchrow(sql, *bind_args)
             if row is None:
                 return None

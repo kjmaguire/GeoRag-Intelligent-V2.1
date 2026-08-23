@@ -139,27 +139,28 @@ COPY georag_geoparsers /georag_geoparsers
 # The heavy "install all deps" layer only re-runs when pyproject.toml changes.
 COPY fastapi/pyproject.toml ./
 COPY fastapi/uv.lock* ./
+# The LOCKED dependency set, exported from uv.lock. This is what actually
+# gets installed below — see the long note at the main install step for
+# why the image no longer resolves pyproject.toml's ranges itself.
+COPY fastapi/requirements.lock.txt ./
 
-# Install the local path dependency FIRST, explicitly. The main install
-# below uses uv's PIP interface (`uv pip install -r pyproject.toml`), which
-# does NOT apply [tool.uv.sources] (that table is only honored by uv's
-# project interface — uv sync/lock; see astral-sh/uv#8846, #15634). Without
-# this step the bare `georag-object-storage` name in project.dependencies
-# would be resolved against PyPI, where it doesn't exist, and the build
-# would fail. Pre-installing it satisfies the requirement so both the uv
-# path and the pip fallback below skip it.
-RUN uv pip install --system --no-cache /georag_object_storage \
-    || pip install --no-cache-dir /georag_object_storage
+# Install the local path dependencies FIRST, explicitly. They are path
+# entries under [tool.uv.sources], so their bare names in
+# project.dependencies would otherwise be resolved against PyPI, where
+# neither exists. They are excluded from requirements.lock.txt for the
+# same reason (uv exports them as `../georag_object_storage`, a path that
+# does not exist in this build context), so these two steps are the only
+# thing that puts them in the image —
+# scripts/check_fastapi_lock_export.py asserts that stays true.
+#
+# No `|| pip install` fallback: see the main install step.
+RUN uv pip install --system --no-cache /georag_object_storage
 
-# Same pre-install reasoning: `uv pip install -r pyproject.toml` ignores
-# [tool.uv.sources], so a bare `georag-geoparsers` in project.dependencies
-# would be resolved against PyPI (where it does not exist) and fail the build.
-RUN uv pip install --system --no-cache /georag_geoparsers \
-    || pip install --no-cache-dir /georag_geoparsers
+RUN uv pip install --system --no-cache /georag_geoparsers
 
 # Install all project dependencies into the system Python (no virtualenv —
-# simpler single-env model inside containers). Falls back to plain pip if
-# uv cannot parse pyproject.toml (e.g. missing uv.lock on first run).
+# simpler single-env model inside containers), from the exported lock.
+# There is no fallback: see the note at the install step itself.
 #
 # Doc-phase 122: the install now also pulls the `langgraph` optional
 # extra by name. The §7 / §8 / §9 / §12 graphs all need LangGraph in
@@ -206,11 +207,18 @@ RUN uv pip install --system --no-cache /georag_geoparsers \
 # via transformers' AutoModelForMaskedLM, and per CLAUDE.md "SPLADE++ sparse
 # retrieval has no Foundry equivalent and stays self-hosted either way".
 #
-# Installing the +cpu wheel first leaves `torch>=2.13,<3.0` already satisfied,
-# so the `-r pyproject.toml` resolve below skips it (uv, like pip, does not
-# upgrade a satisfied requirement without --upgrade) and never reaches for the
-# CUDA metadata. Verified in a clean python:3.13-slim container: after both
-# steps torch reports 2.13.0+cpu with zero nvidia/triton/cuda- packages.
+# Installing the +cpu wheel first leaves torch already satisfied for anything
+# downstream that depends on it. Belt and braces since 2026-08-22: torch is
+# also EXCLUDED from requirements.lock.txt outright
+# (scripts/check_fastapi_lock_export.py, EXCLUDED), because the lock resolves
+# torch from PyPI where the default wheel is the CUDA build — so leaving a
+# `torch==` line in that file would give a future resolver permission to
+# reinstall ~3.4 GB of CUDA onto a tier with no GPU. That checker also asserts
+# ARG TORCH_VERSION below still matches the version in uv.lock, which is the
+# only remaining link between the two now that the export omits it.
+#
+# Verified in a clean python:3.13-slim container: after both steps torch
+# reports 2.13.0+cpu with zero nvidia/triton/cuda- packages.
 #
 # TORCH_VERSION must be kept in step with pyproject's `torch>=2.13,<3.0` pin.
 # If the reranker LoRA fine-tune (src/fastapi/scripts/train_reranker_lora.py,
@@ -226,12 +234,32 @@ RUN uv pip install --system --no-cache \
         --index-url https://download.pytorch.org/whl/cpu \
         "torch==${TORCH_VERSION}"
 
-RUN uv pip install --system --no-cache -r pyproject.toml \
-    || ( python3 -c "\
-import tomllib, pathlib; \
-deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']; \
-pathlib.Path('/tmp/reqs.txt').write_text('\n'.join(deps) + '\n')" \
-    && pip install --no-cache-dir -r /tmp/reqs.txt )
+# ---------------------------------------------------------------------------
+# THE LOCKED INSTALL
+#
+# This used to be `uv pip install --system -r pyproject.toml`, with a
+# python3/tomllib fallback that re-derived the same ranges for plain pip.
+# Both re-RESOLVED pyproject.toml's version ranges at build time. uv.lock
+# was copied into the image one layer above and never read.
+#
+# CI installs with `uv sync --extra dev`, which is uv's PROJECT interface
+# and does honour the lock. So CI proved one set of versions worked and
+# this image shipped a different set, resolved minutes later, and nothing
+# ever compared the two. Any release published inside a range between the
+# two resolutions reached production untested.
+#
+# requirements.lock.txt is exported from uv.lock and committed;
+# scripts/check_fastapi_lock_export.py regenerates and diffs it in CI, so
+# it cannot drift silently. Regenerate it after any dependency change:
+#     python scripts/check_fastapi_lock_export.py --write
+#
+# NO `|| pip install` FALLBACK, HERE OR ABOVE. The point of installing
+# from a lock is that the build gets exactly these versions. A fallback
+# that quietly re-resolves on failure reintroduces the whole bug at the
+# worst possible moment — when something is already wrong — and turns a
+# loud, fixable build failure into a silent version change. If this step
+# fails, the build should stop.
+# ---------------------------------------------------------------------------
 
 # Dev tools — pytest + pytest-asyncio. Image carries them so test runs
 # work after a fresh `docker compose up -d --force-recreate fastapi`
@@ -239,17 +267,32 @@ pathlib.Path('/tmp/reqs.txt').write_text('\n'.join(deps) + '\n')" \
 # Production deploys can strip these by adding a separate runtime stage
 # that omits the dev install; for now they're <5 MB so not worth the
 # extra Dockerfile complexity.
+#
+# Deliberately installed BEFORE the locked set, not after. These are the
+# only unpinned installs left in the image, and pytest drags in shared
+# transitive packages (pluggy, packaging, iniconfig). Running them first
+# means the locked install below gets the last word on every shared
+# version; running them after would let a dev tool quietly upgrade a
+# runtime dependency out from under the lock.
 RUN pip install --no-cache-dir "pytest>=8.0" "pytest-asyncio>=0.25"
 
-# FastAPI review #9 — slowapi for the optional rate limiter. Dormant
-# unless RATE_LIMIT_ENABLED=true; baked in so flipping the flag at
-# runtime doesn't require a rebuild.
-RUN pip install --no-cache-dir slowapi>=0.1.9
+# ...and now the locked set, which is authoritative over everything above.
+RUN uv pip install --system --no-cache -r requirements.lock.txt
+
+# slowapi (FastAPI review #9, the optional rate limiter, dormant unless
+# RATE_LIMIT_ENABLED=true) used to be installed here as a separate
+# unpinned `pip install slowapi>=0.1.9`. It is a declared project
+# dependency, so it is now in requirements.lock.txt at a pinned version
+# like everything else and the extra step was doing nothing.
 
 # Copy application source and register the package itself (entry points etc.).
 # --no-deps avoids re-installing already-present transitive deps.
 COPY fastapi/ .
-RUN uv pip install --system --no-cache --no-deps . 2>/dev/null || true
+# `|| true` removed 2026-08-22: this registers the application's own entry
+# points, and swallowing its failure produced an image that looked built
+# but had no console scripts. --no-deps keeps it from touching the locked
+# set installed above.
+RUN uv pip install --system --no-cache --no-deps .
 
 # ---------------------------------------------------------------------------
 # Bake the SPLADE++ sparse-encoder weights into the image (2026-08-04).
@@ -319,10 +362,13 @@ LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Py
 # Pango / Cairo / GLib are already in the runtime list for WeasyPrint
 # so Tesseract gets those for free.
 #
-# Doc-phase 122-fix — OpenCV system libs for paddleocr (which transitively
-# loads cv2):
-#   libgl1            → libGL.so.1 (OpenGL ABI cv2 links against)
-#   libglib2.0-0      → GLib runtime (cv2 + paddleocr fontconfig hooks)
+# libgl1 removed 2026-08-20. It was here for paddleocr's transitive cv2
+# (Doc-phase 122-fix); paddlepaddle/paddleocr were dropped 2026-07-29 and
+# cv2 is not installed at all any more. Verified against the running image:
+# `apt-cache rdepends --installed libgl1` lists no dependents, so this was
+# pulling the OpenGL ABI into a container that never opens a GL context.
+# libglib2.0-0 stays — the same comment blamed it on paddleocr, but it is
+# genuinely required by the Pango/HarfBuzz/gdk-pixbuf stack below.
 #
 # Doc-phase 122 / §7.9 — WeasyPrint runtime libraries:
 #   libpango-1.0-0       → Pango text layout engine (core WeasyPrint dep)
@@ -334,9 +380,17 @@ LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Py
 #   shared-mime-info     → file-type detection for image embedding
 #   fonts-liberation     → Liberation Sans/Serif/Mono (matches Arial/Times metrics)
 #   fonts-dejavu-core    → DejaVu fallbacks for non-ASCII glyph coverage
+#
+# postgresql-client-17   → pg_dump, for the backup_postgres workflow. It was
+#   absent, so that workflow died on "FileNotFoundError: [Errno 2] No such
+#   file or directory: pg_dump" on every scheduled run — nightly, silently,
+#   for as long as the logs go back. libpq5 alone gives the client LIBRARY
+#   that psycopg and asyncpg link against; it does not give the binaries.
+#   Pinned to 17 to stay in step with the server major.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    postgresql-client-17 \
     gdal-bin \
     libgdal36 \
     libgeos-c1t64 \
@@ -349,7 +403,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libtiff6 \
     libicu76 \
     libgomp1 \
-    libgl1 \
     libglib2.0-0 \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \

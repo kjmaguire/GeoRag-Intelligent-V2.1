@@ -1,5 +1,7 @@
 <?php
 
+use App\Services\Azure\RefreshExpiredAzureDisks;
+use App\Support\Uploads;
 use Laravel\Octane\Contracts\OperationTerminated;
 use Laravel\Octane\Events\RequestHandled;
 use Laravel\Octane\Events\RequestReceived;
@@ -44,16 +46,39 @@ return [
     | Swoole Server Options
     |--------------------------------------------------------------------------
     |
-    | These options are merged over Octane's Swoole defaults. Default
-    | package_max_length is 10MB, which rejects geological uploads (LAS,
-    | NI 43-101 PDFs, GeoTIFFs) before they reach Laravel. Bumped to 100MB;
-    | tune via OCTANE_MAX_REQUEST_SIZE / OCTANE_SOCKET_BUFFER_SIZE in .env.
+    | These options are merged over Octane's Swoole defaults. Swoole's own
+    | package_max_length default is 10 MB, which rejects geological uploads
+    | (LAS, NI 43-101 PDFs, GeoTIFFs) before they reach Laravel.
+    |
+    | The size comes from App\Support\Uploads, which is also what the
+    | `max:` rule on every upload endpoint is derived from — the transport
+    | ceiling and the validation ceiling have to agree or one of them is
+    | decoration. They did not agree: this read 2 GiB, UploadController
+    | allowed 6 GiB (unreachable — Swoole refuses first), and the comment
+    | that used to sit here said "Bumped to 100MB". Three numbers and a
+    | fourth in prose, none of them the same.
+    |
+    | 2 GiB was also the entire memory allocation of laravel-octane-cc, per
+    | worker, with four workers. See the Uploads docblock for the sizing.
+    |
+    | GEORAG_MAX_UPLOAD_BYTES moves all of them together. The older
+    | OCTANE_MAX_REQUEST_SIZE / OCTANE_SOCKET_BUFFER_SIZE still win when
+    | set, so an operator who tuned them keeps their override — but they
+    | only move the transport, so setting them without also setting
+    | GEORAG_MAX_UPLOAD_BYTES gets you a transport that accepts more than
+    | validation will.
     */
 
     'swoole' => [
         'options' => [
-            'package_max_length' => (int) env('OCTANE_MAX_REQUEST_SIZE', 2 * 1024 * 1024 * 1024),
-            'socket_buffer_size' => (int) env('OCTANE_SOCKET_BUFFER_SIZE', 2 * 1024 * 1024 * 1024),
+            'package_max_length' => (int) env(
+                'OCTANE_MAX_REQUEST_SIZE',
+                Uploads::maxBytes(),
+            ),
+            'socket_buffer_size' => (int) env(
+                'OCTANE_SOCKET_BUFFER_SIZE',
+                Uploads::maxBytes(),
+            ),
         ],
     ],
 
@@ -90,7 +115,14 @@ return [
         RequestReceived::class => [
             ...Octane::prepareApplicationForNextOperation(),
             ...Octane::prepareApplicationForNextRequest(),
-            //
+            // Drop Azure blob disks whose managed-identity bearer token has
+            // expired. The SDK takes the token as a constructor string with
+            // no way to refresh it, and the FilesystemManager caches the
+            // built disk for the worker's whole life — so without this the
+            // worker serves 401s on every blob operation from token expiry
+            // until it recycles. A single integer comparison on the common
+            // path. See App\Services\Azure\AzureBlobDiskLifetime.
+            RefreshExpiredAzureDisks::class,
         ],
 
         RequestHandled::class => [
@@ -230,12 +262,38 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Maximum Execution Time
+    | Maximum Execution Time  --  INERT UNDER SWOOLE. READ THIS BEFORE TRUSTING IT.
     |--------------------------------------------------------------------------
     |
-    | The following setting configures the maximum execution time for requests
-    | being handled by Octane. You may set this value to 0 to indicate that
-    | there isn't a specific time limit on Octane request execution time.
+    | This key is read ONLY by Octane's FrankenPHP and RoadRunner start
+    | commands:
+    |
+    |   vendor/laravel/octane/src/Commands/StartFrankenPhpCommand.php:237
+    |   vendor/laravel/octane/src/Commands/StartRoadRunnerCommand.php:169
+    |
+    | OCTANE_SERVER is `swoole` in every environment, and StartSwooleCommand
+    | sets no equivalent option, so NOTHING reads this value. It has never
+    | limited anything. Left in place (rather than deleted) because Octane
+    | ships it and a future server switch would need it -- but renamed in
+    | spirit by this comment so it stops reading as an active limit.
+    |
+    | There is no Swoole-side replacement on the version we run. Verified
+    | against the live image (Swoole 6.2.1): `max_request_execution_time`,
+    | `max_execution_time` and `request_slowlog_timeout` are ALL rejected
+    | with `Warning: unsupported option [...]` by Swoole\Server\Helper::
+    | checkOptions() -- they existed in Swoole 4.5-5.x and are gone in 6.x.
+    | Setting one would move the fiction to a different key, not fix it.
+    |
+    | So a blocked request is bounded only by:
+    |   1. the inner budgets -- HatchetDispatchThrottle::MAX_WAIT_MS (30s,
+    |      itself derived from the throttle window) and
+    |      services.fastapi.stream_timeout (FASTAPI_STREAM_TIMEOUT, 270s);
+    |   2. the Container Apps ingress timeout, which is a platform default
+    |      and is not configured on laravel-octane-cc.
+    |
+    | On a 4-worker, maxReplicas=1 deployment those inner budgets ARE the
+    | availability ceiling. Bounding a new blocking call means giving that
+    | call its own timeout -- not setting a number here.
     |
     */
 

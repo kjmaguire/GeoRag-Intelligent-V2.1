@@ -65,6 +65,39 @@ _PRICE_TABLE: dict[str, Pricing] = {
 
 _FALLBACK = Pricing(3.00, 0.30, 3.75, 15.00)
 
+#: Models already warned about, so a hot path logs once rather than
+#: once per call. Process-local by design — a restart re-warns, which
+#: is what you want after a deploy changes the model.
+_UNPRICED_SEEN: set[str] = set()
+
+
+def has_pricing(model: str) -> bool:
+    """True when `model` has a published rate in :data:`_PRICE_TABLE`.
+
+    `estimate_cost_usd` deliberately falls back to STANDARD-tier
+    pricing for anything it does not recognise, which is the right
+    call for a dashboard — an approximate $/hour beats a blank panel.
+    It is the wrong call for anything that PERSISTS a number or acts
+    on one.
+
+    That distinction is not hypothetical here. Production runs
+    `Cohere-command-a-plus-05-2026` on Azure AI Foundry (verified on
+    the live fastapi-cc, 2026-08-21) and there is no entry for it
+    below, so every production call would be costed at Sonnet rates.
+    `cost_burn_watcher` suspends a workspace at 2x its hourly
+    ceiling; feeding it a fabricated number could take a customer
+    offline over spend that never happened.
+
+    Callers that write to `usage.usage_events` or
+    `silver.answer_runs` check this first and record 0 when it is
+    False. 0 is not a claim that the call was free — it is the
+    absence of a claim, and the watcher's
+    `HAVING SUM(projected_cost_usd) > 0` skips it. The token counts
+    are still recorded, so the spend is reconstructible the moment a
+    rate is added here.
+    """
+    return model in _PRICE_TABLE
+
 
 def estimate_cost_usd(
     model: str,
@@ -87,12 +120,18 @@ def estimate_cost_usd(
     """
     pricing = _PRICE_TABLE.get(model)
     if pricing is None:
-        # Log once per unseen model — dedup via logging.lru_cache isn't
-        # worth the complexity here; Prometheus itself dedups labels.
-        logger.info(
-            "estimate_cost_usd: no pricing for model=%s; using STANDARD-tier fallback",
-            model,
-        )
+        # WARNING, and once per distinct model per process. This was
+        # INFO, which is why nobody noticed that the model serving
+        # 100% of production traffic has no published rate here and
+        # every cost figure for it is Sonnet-priced fiction.
+        if model not in _UNPRICED_SEEN:
+            _UNPRICED_SEEN.add(model)
+            logger.warning(
+                "estimate_cost_usd: no pricing for model=%s — falling back to "
+                "STANDARD-tier rates. Every cost figure for this model is an "
+                "estimate against the wrong price sheet. Add it to _PRICE_TABLE.",
+                model,
+            )
         pricing = _FALLBACK
 
     uncached_cost = (input_tokens / 1_000_000) * pricing.input_per_million

@@ -48,6 +48,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.cost_burn_watcher")
@@ -57,6 +58,18 @@ log = logging.getLogger("georag.hatchet.cost_burn_watcher")
 # the monthly ceiling. 30 * 24 = 720. Tighter than the 730.5 calendar
 # average so workspaces with a hard monthly ceiling don't overrun.
 _HOURS_PER_BUDGETED_MONTH = 720
+
+
+#: Log marker that carries a cost-burn alert out of the database.
+#:
+#: The detector's ledger row and admin broadcast both require someone to
+#: be watching a screen. This string is what a Log Analytics scheduled
+#: query rule matches to send email through `georag-alerts-ag` (rule 5d
+#: in deploy/azure/alerts/create-alerts.sh).
+#:
+#: Distinctive on purpose — upper case, underscored, long enough that it
+#: cannot appear in ordinary prose or in a stack trace.
+COST_BURN_ALERT_MARKER = "COST_BURN_THRESHOLD_EXCEEDED"
 
 
 class CostBurnWatcherInput(BaseModel):
@@ -87,13 +100,9 @@ cost_burn_watcher = hatchet.workflow(
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 def _env_threshold(default: float) -> float:
@@ -225,6 +234,28 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
                 },
             )
             alerts_emitted += 1
+
+            # The ledger row above reaches nobody on its own: it surfaces
+            # on an admin screen a human has to already be looking at.
+            # This line is the egress. Log Analytics matches the marker
+            # and `georag-alerts-ag` turns it into email — the same shape
+            # answer_quality_watch uses, and the only outbound path the
+            # platform actually has. (services/dispatchers/pagerduty.py
+            # looks like a second one; it has never been wired.)
+            #
+            # No workspace name, no query text: a workspace id, two
+            # dollar figures and a window. Enough to act on, nothing that
+            # should not sit in a 30-day log store.
+            log.error(
+                "%s workspace=%s spent_usd=%.4f threshold_usd=%.4f "
+                "window_minutes=%d events=%d",
+                COST_BURN_ALERT_MARKER,
+                ws_id,
+                round(spent, 4),
+                round(threshold, 4),
+                input.window_minutes,
+                int(r["event_count"]),
+            )
 
             # Hard-stop §35.1: when hourly spend is 2× the threshold —
             # i.e. the workspace has been burning past the cap for at

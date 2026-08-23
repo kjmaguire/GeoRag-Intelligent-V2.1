@@ -1,84 +1,6 @@
 parameters:
 	ignoreErrors:
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$created_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$ip_address\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$llm_model\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sources_used\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
 			message: '#^Method App\\Console\\Commands\\GoldenSetReport\:\:formatReport\(\) has parameter \$samples with no type specified\.$#'
 			identifier: missingType.parameter
 			count: 1
@@ -103,22 +25,28 @@ parameters:
 			path: app/Console/Commands/GoldenSetReport.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\|Illuminate\\Database\\Eloquent\\Collection\<int, App\\Models\\QueryAuditLog\>\:\:\$query_text\.$#'
-			identifier: property.notFound
+			message: '#^Called ''env'' outside of the config directory which returns null when the config is cached, use ''config''\.$#'
+			identifier: larastan.noEnvCallsOutsideOfConfig
 			count: 1
-			path: app/Console/Commands/RestoreAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\|Illuminate\\Database\\Eloquent\\Collection\<int, App\\Models\\QueryAuditLog\>\:\:\$response_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/RestoreAuditPii.php
+			path: app/Console/Commands/Ingestion/ReingestProject.php
 
 		-
 			message: '#^Dead catch \- Illuminate\\Contracts\\Encryption\\DecryptException is never thrown in the try block\.$#'
 			identifier: catch.neverThrown
 			count: 1
 			path: app/Console/Commands/RestoreAuditPii.php
+
+		-
+			message: '#^Method App\\Events\\Admin\\IngestionReviewDispositionChanged\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/Admin/IngestionReviewDispositionChanged.php
+
+		-
+			message: '#^Method App\\Events\\Admin\\ReportBuildProgress\:\:broadcastWith\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Events/Admin/ReportBuildProgress.php
 
 		-
 			message: '#^Method App\\Events\\QueryStreamEvent\:\:__construct\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
@@ -133,32 +61,14 @@ parameters:
 			path: app/Events/QueryStreamEvent.php
 
 		-
-			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$pivot\.$#'
+			message: '#^Called ''env'' outside of the config directory which returns null when the config is cached, use ''config''\.$#'
+			identifier: larastan.noEnvCallsOutsideOfConfig
+			count: 3
+			path: app/Http/Controllers/Admin/IntegrationsController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\Project\:\:\$pivot\.$#'
 			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Api/V1/AuthController.php
-
-		-
-			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$project_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Api/V1/AuthController.php
-
-		-
-			message: '#^Access to an undefined property Illuminate\\Database\\Eloquent\\Model\:\:\$project_name\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Api/V1/AuthController.php
-
-		-
-			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:map\(\) contains unresolvable type\.$#'
-			identifier: argument.unresolvableType
-			count: 1
-			path: app/Http/Controllers/Api/V1/AuthController.php
-
-		-
-			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,Illuminate\\Database\\Eloquent\\Model\>\:\:map\(\) contains unresolvable type\.$#'
-			identifier: method.unresolvableReturnType
 			count: 1
 			path: app/Http/Controllers/Api/V1/AuthController.php
 
@@ -241,6 +151,24 @@ parameters:
 			path: app/Http/Controllers/Api/V1/ChatConversationController.php
 
 		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\DrillUploadController\:\:dispatch\(\) has parameter \$selection with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/DrillUploadController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\DrillUploadController\:\:dispatch\(\) has parameter \$user with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Http/Controllers/Api/V1/DrillUploadController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\DrillUploadController\:\:dispatchPdf\(\) has parameter \$user with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Http/Controllers/Api/V1/DrillUploadController.php
+
+		-
 			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\EntityReferencesController\:\:decodeSignals\(\) return type has no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1
@@ -259,28 +187,136 @@ parameters:
 			path: app/Http/Controllers/Api/V1/PublicGeoscience/EntityReferencesController.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\PublicGeoscienceMapController\:\:clusterFeatures\(\) has parameter \$bbox with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/PublicGeoscienceMapController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\PublicGeoscienceMapController\:\:countInView\(\) has parameter \$bbox with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/PublicGeoscienceMapController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\PublicGeoscience\\PublicGeoscienceMapController\:\:pointFeatures\(\) has parameter \$bbox with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Api/V1/PublicGeoscience/PublicGeoscienceMapController.php
+
+		-
+			message: '#^Call to an undefined method Illuminate\\Foundation\\Bus\\PendingDispatch\:\:withTraceparent\(\)\.$#'
+			identifier: method.notFound
 			count: 1
 			path: app/Http/Controllers/Api/V1/QueryController.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
-			identifier: property.notFound
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\UploadController\:\:dispatchGeologyIngest\(\) has parameter \$responseData with no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
 			count: 1
-			path: app/Http/Controllers/Api/V1/QueryController.php
+			path: app/Http/Controllers/Api/V1/UploadController.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\UploadController\:\:dispatchGeologyIngest\(\) has parameter \$user with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Http/Controllers/Api/V1/UploadController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\UploadController\:\:dispatchShadowIfPdf\(\) has parameter \$user with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Http/Controllers/Api/V1/UploadController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Api\\V1\\UploadController\:\:dispatchZipExtraction\(\) has parameter \$user with no type specified\.$#'
+			identifier: missingType.parameter
+			count: 1
+			path: app/Http/Controllers/Api/V1/UploadController.php
+
+		-
+			message: '#^Property App\\Http\\Controllers\\Api\\V1\\UploadController\:\:\$shadowRouter is never read, only written\.$#'
+			identifier: property.onlyWritten
+			count: 1
+			path: app/Http/Controllers/Api/V1/UploadController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Foundry\\DrillholeDetailController\:\:safeQuery\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Foundry/DrillholeDetailController.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between non\-empty\-string and '''' will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: app/Http/Controllers/Foundry/IngestionRunsController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\Project\:\:\$status\.$#'
 			identifier: property.notFound
 			count: 1
-			path: app/Http/Controllers/Api/V1/QueryController.php
+			path: app/Http/Controllers/Foundry/OverviewController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$id\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Foundry/OverviewController.php
+
+		-
+			message: '#^Access to an undefined property App\\Models\\Project\:\:\$status\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Controllers/Foundry/ProjectsIndexController.php
+
+		-
+			message: '#^Parameter \#1 \$callback of method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\Project\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: argument.unresolvableType
+			count: 1
+			path: app/Http/Controllers/Foundry/ProjectsIndexController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Database\\Eloquent\\Collection\<int,App\\Models\\Project\>\:\:map\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Foundry/ProjectsIndexController.php
+
+		-
+			message: '#^Return type of call to method Illuminate\\Support\\Collection\<int,array\<string, mixed\>\>\:\:values\(\) contains unresolvable type\.$#'
+			identifier: method.unresolvableReturnType
+			count: 1
+			path: app/Http/Controllers/Foundry/ProjectsIndexController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Foundry\\ReportController\:\:reportRows\(\) should return Illuminate\\Support\\Collection\<int, array\<string, mixed\>\> but returns Illuminate\\Support\\Collection\<int, array\{report_id\: string, title\: string, company\: string, filing_date\: string, commodity\: string, version\: int, is_scanned\: bool, parse_quality_pct\: float\|null, \.\.\.\}\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Http/Controllers/Foundry/ReportController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Foundry\\SourcesController\:\:loadRecentRuns\(\) should return Illuminate\\Support\\Collection\<int, array\<string, mixed\>\> but returns Illuminate\\Support\\Collection\<int, array\{id\: string, source_path\: string, started_at\: string, completed_at\: string, status\: string, files_seen\: int, files_indexed\: int, files_skipped\: int, \.\.\.\}\>\.$#'
+			identifier: return.type
+			count: 2
+			path: app/Http/Controllers/Foundry/SourcesController.php
+
+		-
+			message: '#^Method App\\Http\\Controllers\\Foundry\\WorkspaceController\:\:referenceStratColumn\(\) return type has no value type specified in iterable type array\.$#'
+			identifier: missingType.iterableValue
+			count: 1
+			path: app/Http/Controllers/Foundry/WorkspaceController.php
 
 		-
 			message: '#^Negated boolean expression is always false\.$#'
 			identifier: booleanNot.alwaysFalse
 			count: 1
 			path: app/Http/Controllers/Internal/MetricsController.php
+
+		-
+			message: '#^Called ''env'' outside of the config directory which returns null when the config is cached, use ''config''\.$#'
+			identifier: larastan.noEnvCallsOutsideOfConfig
+			count: 5
+			path: app/Http/Controllers/OAuthIngestController.php
 
 		-
 			message: '#^Method App\\Http\\Requests\\StoreCollarRequest\:\:rules\(\) return type has no value type specified in iterable type array\.$#'
@@ -361,6 +397,12 @@ parameters:
 			path: app/Http/Resources/CollarResource.php
 
 		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$crs_confidence\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
 			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$dip\.$#'
 			identifier: property.notFound
 			count: 1
@@ -386,6 +428,12 @@ parameters:
 
 		-
 			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$geochemistry\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$georef_method\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Http/Resources/CollarResource.php
@@ -422,6 +470,12 @@ parameters:
 
 		-
 			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$samples\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/CollarResource.php
+
+		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\CollarResource\:\:\$spatial_uncertainty_m\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Http/Resources/CollarResource.php
@@ -517,6 +571,12 @@ parameters:
 			path: app/Http/Resources/ProjectResource.php
 
 		-
+			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$slug\.$#'
+			identifier: property.notFound
+			count: 1
+			path: app/Http/Resources/ProjectResource.php
+
+		-
 			message: '#^Access to an undefined property App\\Http\\Resources\\ProjectResource\:\:\$updated_at\.$#'
 			identifier: property.notFound
 			count: 1
@@ -529,49 +589,19 @@ parameters:
 			path: app/Http/Resources/ProjectResource.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$llm_model\.$#'
-			identifier: property.notFound
+			message: '#^Unable to resolve the template type TKey in call to function collect$#'
+			identifier: argument.templateType
 			count: 2
-			path: app/Jobs/StreamQueryFromFastApi.php
+			path: app/Jobs/DebounceWorkspaceMvRefresh.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
-			identifier: property.notFound
-			count: 5
-			path: app/Jobs/StreamQueryFromFastApi.php
+			message: '#^Unable to resolve the template type TValue in call to function collect$#'
+			identifier: argument.templateType
+			count: 2
+			path: app/Jobs/DebounceWorkspaceMvRefresh.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
-			identifier: property.notFound
-			count: 4
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sources_used\.$#'
-			identifier: property.notFound
-			count: 3
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
+			message: '#^Access to an undefined property App\\Models\\ChatMessage\:\:\$metadata\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Jobs/StreamQueryFromFastApi.php
@@ -579,12 +609,6 @@ parameters:
 		-
 			message: '#^Method App\\Jobs\\StreamQueryFromFastApi\:\:formatFailureMarker\(\) has parameter \$payload with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Method App\\Jobs\\StreamQueryFromFastApi\:\:readLine\(\) is unused\.$#'
-			identifier: method.unused
 			count: 1
 			path: app/Jobs/StreamQueryFromFastApi.php
 
@@ -601,19 +625,13 @@ parameters:
 			path: app/Jobs/StreamQueryFromFastApi.php
 
 		-
-			message: '#^Property App\\Jobs\\StreamQueryFromFastApi\:\:\$routingPayload type has no value type specified in iterable type array\.$#'
-			identifier: missingType.iterableValue
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
 			message: '#^Using nullsafe property access "\?\-\>user_id" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
 			identifier: nullsafe.neverNull
 			count: 1
 			path: app/Jobs/StreamQueryFromFastApi.php
 
 		-
-			message: '#^Variable \$http_response_header on left side of \?\? is never defined\.$#'
+			message: '#^Variable \$http_response_header on left side of \?\? always exists and is not nullable\.$#'
 			identifier: nullCoalesce.variable
 			count: 1
 			path: app/Jobs/StreamQueryFromFastApi.php
@@ -757,12 +775,6 @@ parameters:
 			path: app/Models/Survey.php
 
 		-
-			message: '#^Method App\\Models\\User\:\:projects\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\BelongsToMany does not specify its types\: TRelatedModel, TDeclaringModel, TPivotModel, TAccessor \(2\-4 required\)$#'
-			identifier: missingType.generics
-			count: 1
-			path: app/Models/User.php
-
-		-
 			message: '#^Method App\\Models\\VendorProfile\:\:columnMappings\(\) return type with generic class Illuminate\\Database\\Eloquent\\Relations\\HasMany does not specify its types\: TRelatedModel, TDeclaringModel$#'
 			identifier: missingType.generics
 			count: 1
@@ -783,8 +795,20 @@ parameters:
 		-
 			message: '#^Using nullsafe property access "\?\-\>id" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
 			identifier: nullsafe.neverNull
-			count: 2
+			count: 1
 			path: app/Providers/AppServiceProvider.php
+
+		-
+			message: '#^Called ''env'' outside of the config directory which returns null when the config is cached, use ''config''\.$#'
+			identifier: larastan.noEnvCallsOutsideOfConfig
+			count: 2
+			path: app/Services/Azure/ManagedIdentityTokenProvider.php
+
+		-
+			message: '#^Called ''env'' outside of the config directory which returns null when the config is cached, use ''config''\.$#'
+			identifier: larastan.noEnvCallsOutsideOfConfig
+			count: 1
+			path: app/Services/Dagster/DagsterGraphQLClient.php
 
 		-
 			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
@@ -847,6 +871,12 @@ parameters:
 			path: app/Services/Exports/CsvCollarExporter.php
 
 		-
+			message: '#^Method App\\Services\\Exports\\DxfExporter\:\:fetchPendingCollars\(\) should return Illuminate\\Support\\Collection\<int, object\> but returns Illuminate\\Support\\Collection\<int, object\{hole_id\: mixed, easting\: mixed, northing\: mixed, elevation\: mixed\}&stdClass\>\.$#'
+			identifier: return.type
+			count: 1
+			path: app/Services/Exports/DxfExporter.php
+
+		-
 			message: '#^Method App\\Services\\Exports\\GeoPackageExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1
@@ -901,6 +931,30 @@ parameters:
 			path: app/Services/Exports/ShapefileExporter.php
 
 		-
+			message: '#^Method Redis\:\:set\(\) invoked with 5 parameters, 2\-3 required\.$#'
+			identifier: arguments.count
+			count: 1
+			path: app/Services/Ingestion/WorkspaceDataVersionBumper.php
+
+		-
+			message: '#^Parameter \#3 \$options of method Redis\:\:set\(\) expects array\|int, string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Services/Ingestion/WorkspaceDataVersionBumper.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between mixed and null will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: app/Services/Ingestion/WorkspaceDataVersionBumper.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 5
+			path: database/seeders/CgiVocabSeeder.php
+
+		-
 			message: '#^Method Database\\Seeders\\DemoHoleAnalysisSeeder\:\:orientationBand\(\) has parameter \$rng with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1
@@ -939,6 +993,18 @@ parameters:
 		-
 			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
 			identifier: nullsafe.neverNull
+			count: 2
+			path: database/seeders/GapImportCsvSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 4
+			path: database/seeders/GoldenQuestionsSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
 			count: 1
 			path: database/seeders/PublicGeoscience/CanadaJurisdictionsSeeder.php
 
@@ -953,3 +1019,15 @@ parameters:
 			identifier: nullsafe.neverNull
 			count: 1
 			path: database/seeders/PublicGeoscience/StatusAliasesSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: database/seeders/PublicGeoscience/UnitedStatesJurisdictionsSeeder.php
+
+		-
+			message: '#^Using nullsafe method call on non\-nullable type Illuminate\\Console\\Command\. Use \-\> instead\.$#'
+			identifier: nullsafe.neverNull
+			count: 1
+			path: database/seeders/VendorProfiles/MxDepositSeeder.php

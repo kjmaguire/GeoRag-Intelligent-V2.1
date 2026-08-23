@@ -43,6 +43,9 @@ import uuid
 
 import asyncpg
 
+from app import ingest_status as _ingest_status
+from app.db.dsn import build_dsn
+
 log = logging.getLogger("georag.hatchet.progress")
 
 # Ordered list — index in this list = step_index written to the DB.
@@ -55,7 +58,13 @@ STEPS: tuple[str, ...] = (
 )
 TOTAL_STEPS = len(STEPS)
 
-TERMINAL_STATUSES: tuple[str, ...] = ("completed", "failed", "cancelled", "timed_out")
+#: Re-exported from ``app.ingest_status`` so every existing
+#: ``_progress.TERMINAL_STATUSES`` reference keeps working. The definition
+#: moved to a leaf module because ``app.services.laravel_bridge`` needs to
+#: know which statuses are terminal, and importing this package constructs a
+#: Hatchet client as a side effect.
+TERMINAL_STATUSES = _ingest_status.TERMINAL_STATUSES
+TERMINAL_STATUS_SQL = _ingest_status.TERMINAL_STATUS_SQL
 ALLOWED_TRIGGERS: tuple[str, ...] = (
     "upload",
     "embed_pending_sweep",
@@ -65,13 +74,34 @@ ALLOWED_TRIGGERS: tuple[str, ...] = (
 )
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+def recovery_max_attempts() -> int:
+    """How deep a parent_run_id recovery chain may go before we stop.
+
+    3 means: the original upload plus two automated retries, then leave
+    the row in its terminal state for a human.
+
+    Lives here rather than in either caller because BOTH sweeps create
+    recovery runs and both must agree. stale_run_detector had this cap
+    from the start; orphan_sweep did not, and minted a new recovery row
+    every ten minutes for any permanently unembeddable document — about
+    twelve dead rows a day, each firing a Reverb `timed_out` broadcast
+    that the Ingestion Runs UI showed as a fresh failed ingestion the
+    user never started.
+
+    Two readers of one environment variable, each with its own default,
+    is how the two sweeps would silently drift apart.
+    """
+    raw = os.environ.get("STALE_RUN_RECOVERY_MAX_ATTEMPTS", "3")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 3
+    return value if value > 0 else 3
+
+
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +162,111 @@ def _record_terminal_metrics(
         pass
 
 
+def terminal_status(
+    *, rows_written: int | None, warnings: list[dict] | None,
+) -> str:
+    """Which terminal status a finished run earned: 'completed' or 'partial'.
+
+    'partial' means the run reached the end and something is still wrong:
+    it wrote nothing, or it wrote something and also had complaints.
+    ``rows_written`` is None for callers that do not report it, and None is
+    deliberately not 0 — "did not say" is not "said zero".
+
+    Shared rather than inlined because callers need to know which of the two
+    the run was BEFORE they can name it in a broadcast, and re-deriving the
+    rule at each call site is how the two answers drift apart.
+    """
+    return "partial" if (warnings or rows_written == 0) else "completed"
+
+
+def terminal_message(
+    *,
+    rows_written: int | None,
+    warnings: list[dict] | None,
+    noun: str = "row",
+) -> str:
+    """One line a person can act on, for the completion toast.
+
+    The warnings this surfaces are the ones `mark_completed_by_run`'s
+    docstring cites as its whole reason for existing — "upload the collar
+    file first, or pass hole_id explicitly" — text that used to live only
+    inside the Hatchet run object, which no product surface reads. Putting
+    the first one in the broadcast message is what finally carries it to
+    somewhere a geologist looks.
+
+    Capped at 500 characters because that is the Laravel endpoint's
+    validation limit on `message`; a longer string is a 422, which is a
+    dropped notification.
+    """
+    warnings = warnings or []
+    if rows_written is None:
+        head = "Finished"
+    elif rows_written == 0:
+        head = f"No {noun}s written"
+    else:
+        head = f"{rows_written:,} {noun}{'' if rows_written == 1 else 's'} written"
+
+    if not warnings:
+        return head[:500]
+
+    first = str(warnings[0].get("detail") or warnings[0].get("code") or "").strip()
+    more = f" (+{len(warnings) - 1} more)" if len(warnings) > 1 else ""
+    return f"{head} — {first}{more}"[:500]
+
+
+async def broadcast_terminal(
+    *,
+    workspace_id: str,
+    project_id: str,
+    run_id: str,
+    stage: str,
+    status: str,
+    message: str | None = None,
+) -> None:
+    """Tell Laravel a run reached a terminal state, so the UI can react.
+
+    This is the ONLY thing that moves an ingest from "finished in the
+    database" to "visible in the product". The Laravel endpoint fans the
+    event out over Reverb *and*, for a terminal status that wrote data,
+    bumps silver.projects.data_version and queues the debounced
+    materialised-view refresh. Skip it and the run completes into silence:
+    no toast, no partial reload on Overview / Reports / Sources / the
+    drillhole page, stale MVT tiles on the map, and stale MVs behind the
+    KPI cards until the nightly refresh.
+
+    ingest_pdf broadcasts from its own embed_verify sweep because a PDF is
+    not really queryable until its passages carry embeddings. The tabular,
+    spatial and well-log workflows have no such second phase — their rows
+    ARE the deliverable the moment persist commits — and for want of these
+    six lines they never notified anything at all. A geologist uploading a
+    collar CSV watched the Ingestion Runs page tick over to "Completed"
+    and then found the map unchanged.
+
+    Best-effort by construction: ``post_ingestion_progress`` swallows its
+    own transport errors, and the import is local to keep laravel_bridge
+    out of this module's import cycle.
+    """
+    try:
+        from app.services.laravel_bridge import (  # noqa: PLC0415
+            post_ingestion_progress,
+        )
+
+        await post_ingestion_progress(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            run_id=run_id,
+            stage=stage,
+            status=status,
+            message=message,
+        )
+    except Exception as exc:  # noqa: BLE001 — notification must not fail a run
+        log.warning(
+            "progress.broadcast_terminal failed run=%s status=%s: %s",
+            run_id, status, exc,
+            extra={"run_id": run_id, "status": status},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Per-run API (the new Phase 1 surface)
 # ---------------------------------------------------------------------------
@@ -144,24 +279,36 @@ async def start_run(
     parent_run_id: str | None = None,
     recovery_reason: str | None = None,
     workflow_run_id: str | None = None,
+    run_id: str | None = None,
 ) -> str | None:
-    """Insert a fresh ingest_progress row and return the new run_id.
+    """Insert an ingest_progress row and return its run_id.
 
-    Idempotency: this always INSERTs. Recovery dispatches (sweep,
-    nightly_integrity, manual_retry) create new rows linked to the
-    original via parent_run_id — they never mutate a previously-terminal
-    row. ``attempt_number`` is derived server-side from prior attempts on
-    the same (workspace_id, minio_key) so the UI's "attempt 3 of N" badge
-    stays accurate.
+    Pass ``run_id`` when the caller already minted one (Laravel stamps a
+    UUID on every upload and forwards it to the workflow). The row is then
+    created *under that id*, so the caller's id and the row's id are the
+    same value and every later stage/completion UPDATE finds its row. This
+    is an upsert — calling it twice with the same run_id is a no-op, so a
+    trigger endpoint and a workflow preflight may both call it safely.
+
+    Omit ``run_id`` and a fresh one is generated, which is what the
+    recovery paths want: sweep / nightly_integrity / manual_retry create
+    new rows linked to the original via parent_run_id rather than mutating
+    a previously-terminal row. ``attempt_number`` is derived server-side
+    from prior attempts on the same (workspace_id, minio_key) so the UI's
+    "attempt 3 of N" badge stays accurate.
 
     Returns None on DB failure (best-effort).
     """
     if triggered_by not in ALLOWED_TRIGGERS:
-        log.warning("progress.start_run: unknown triggered_by=%r (forcing 'upload')", triggered_by)
+        log.warning(
+            "progress.start_run: unknown triggered_by=%r (forcing 'upload')",
+            triggered_by,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
         triggered_by = "upload"
 
     filename = _filename_from_key(minio_key)
-    new_run_id = str(uuid.uuid4())
+    new_run_id = run_id or str(uuid.uuid4())
 
     sql = """
         INSERT INTO silver.ingest_progress (
@@ -185,6 +332,7 @@ async def start_run(
                 WHERE workspace_id = $2::uuid AND minio_key = $5
             ), 1),
             now(), now()
+        ON CONFLICT (run_id) DO NOTHING
         RETURNING run_id::text
     """
     try:
@@ -203,9 +351,14 @@ async def start_run(
                 parent_run_id,
                 recovery_reason,
             )
+        # ON CONFLICT DO NOTHING returns no row when the run already
+        # exists; that is a success, not a failure — the id is still ours.
         return row["run_id"] if row else new_run_id
     except Exception as e:
-        log.warning("progress.start_run failed (key=%s): %s", minio_key, e)
+        log.warning(
+            "progress.start_run failed (key=%s): %s", minio_key, e,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
         return None
 
 
@@ -224,10 +377,13 @@ async def mark_stage_started(
     Also flips status from 'queued' → 'started' on the first stage transition.
     """
     if stage not in STEPS and stage != "queued":
-        log.warning("progress.mark_stage_started: unknown stage %r", stage)
+        log.warning(
+            "progress.mark_stage_started: unknown stage %r", stage,
+            extra={"run_id": run_id, "stage": stage},
+        )
         return
 
-    sql = """
+    sql = f"""
         UPDATE silver.ingest_progress
         SET current_stage         = $2,
             current_step          = $2,
@@ -244,14 +400,18 @@ async def mark_stage_started(
             status                = CASE WHEN status = 'queued' THEN 'started' ELSE status END,
             updated_at            = now()
         WHERE run_id = $1::uuid
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
     """
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(sql, run_id, stage, _step_index(stage), worker_id)
     except Exception as e:
-        log.warning("progress.mark_stage_started failed (run=%s stage=%s): %s", run_id, stage, e)
+        log.warning(
+            "progress.mark_stage_started failed (run=%s stage=%s): %s",
+            run_id, stage, e,
+            extra={"run_id": run_id, "stage": stage},
+        )
 
 
 async def mark_stage_progress(
@@ -283,7 +443,10 @@ async def mark_stage_progress(
                 sql, run_id, max(0.0, min(1.0, float(stage_pct))), stage_detail,
             )
     except Exception as e:
-        log.warning("progress.mark_stage_progress failed (run=%s): %s", run_id, e)
+        log.warning(
+            "progress.mark_stage_progress failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
 
 
 async def mark_heartbeat(*, run_id: str) -> None:
@@ -303,7 +466,10 @@ async def mark_heartbeat(*, run_id: str) -> None:
         async with pool.acquire() as conn:
             await conn.execute(sql, run_id)
     except Exception as e:
-        log.warning("progress.mark_heartbeat failed (run=%s): %s", run_id, e)
+        log.warning(
+            "progress.mark_heartbeat failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
 
 
 import asyncio  # noqa: E402
@@ -371,66 +537,127 @@ async def mark_report_id(
     project-wide predicate timed out rows whose own document had already
     finished. Best-effort like every other helper here.
     """
-    sql = """
+    sql = f"""
         UPDATE silver.ingest_progress
         SET report_id  = $3::uuid,
             updated_at = now()
         WHERE workspace_id = $1::uuid AND minio_key = $2
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
     """
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(sql, workspace_id, minio_key, report_id)
     except Exception as e:
-        log.warning("progress.mark_report_id failed (key=%s): %s", minio_key, e)
+        log.warning(
+            "progress.mark_report_id failed (key=%s): %s", minio_key, e,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
 
 
 async def mark_completed_by_run(
     *,
     run_id: str,
     report_id: str | None = None,
-) -> bool:
-    """Terminal write — sets status=completed via conditional update.
+    rows_written: int | None = None,
+    warnings: list[dict] | None = None,
+) -> bool | None:
+    """Terminal write — sets status=completed, or 'partial' when warranted.
 
-    Returns True if the row actually transitioned (i.e. wasn't already
-    terminal). Callers that gate side effects (mv_refresh, data_version
-    bump, workspace.data_updated broadcast) should branch on the return
-    value to avoid double-firing on retried hooks.
+    Pass ``rows_written`` and ``warnings`` and this decides which of the two
+    the run really was. A run that finished cleanly but produced nothing, or
+    finished with diagnostics attached, is not a completion in any sense the
+    user cares about — and it used to render as an unqualified green
+    "Completed" while the actionable warning text ("upload the collar file
+    first, or pass hole_id explicitly") lived only inside the Hatchet run
+    object, which the product UI never reads.
+
+    Omit both and the behaviour is exactly as before, which is what the PDF
+    path wants: it has its own richer accounting.
+
+    Returns a TRI-STATE:
+
+      True   the row transitioned — fire the side effects.
+      False  the row was already terminal — a retried hook, skip them.
+      None   THE WRITE FAILED — the row is still non-terminal.
+
+    None used to be False, which made a failed write look exactly like a
+    harmless duplicate hook. Callers that gate side effects (mv_refresh,
+    data_version bump, the workspace.data_updated / post_ingestion_progress
+    broadcast) all branch on this, so a failed terminal write silently
+    suppressed the very broadcast that tells the UI an ingest finished —
+    leaving a run that never completes on the user's screen with no error
+    anywhere except one WARNING line.
+
+    Existing `if transitioned:` / `if not transitioned:` sites keep their
+    exact behaviour, because None is falsy: nothing double-fires. What
+    changes is that the failure is now distinguishable for callers that
+    care, and is logged at ERROR.
     """
-    sql = """
+    import json as _json  # noqa: PLC0415
+
+    warnings = warnings or []
+    status = terminal_status(rows_written=rows_written, warnings=warnings)
+
+    sql = f"""
         UPDATE silver.ingest_progress
-        SET status        = 'completed',
+        SET status        = $4,
             current_step  = 'completed',
             current_stage = 'completed',
             step_index    = total_steps,
             completed_at  = now(),
             updated_at    = now(),
             report_id     = COALESCE($2::uuid, report_id),
+            rows_written  = COALESCE($3, rows_written),
+            warnings      = $5::jsonb,
             error_text    = NULL,
             failed_at     = NULL
         WHERE run_id = $1::uuid
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
         RETURNING run_id, triggered_by,
                   EXTRACT(EPOCH FROM (now() - started_at))::float AS duration_seconds
     """
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(sql, run_id, report_id)
+            row = await conn.fetchrow(
+                sql, run_id, report_id, rows_written, status, _json.dumps(warnings),
+            )
         transitioned = row is not None
         if not transitioned:
-            log.info("progress.mark_completed: no-op (already terminal) run=%s", run_id)
+            log.info(
+                "progress.mark_completed: no-op (already terminal) run=%s",
+                run_id, extra={"run_id": run_id},
+            )
             return False
+        if status == "partial":
+            log.warning(
+                "progress.mark_completed: run=%s finished PARTIAL "
+                "(rows_written=%s, %d warning(s)): %s",
+                run_id, rows_written, len(warnings),
+                "; ".join(str(w.get("detail") or w.get("code") or w) for w in warnings[:3]),
+                extra={"run_id": run_id, "outcome": "partial"},
+            )
         _record_terminal_metrics(
-            status="completed",
+            status=status,
             triggered_by=row["triggered_by"] or "upload",
             duration_seconds=float(row["duration_seconds"] or 0.0),
         )
         return True
     except Exception as e:
-        log.warning("progress.mark_completed failed (run=%s): %s", run_id, e)
-        return False
+        # ERROR, not WARNING, and None, not False. Returning False here made
+        # a failed terminal write indistinguishable from "already terminal",
+        # so every caller that gates a side effect on the return value —
+        # including post_ingestion_progress, the broadcast that tells the UI
+        # an ingest finished — silently skipped it. The run then sits
+        # non-terminal on the user's Ingestion Runs page forever, with this
+        # one log line as the only trace.
+        log.error(
+            "progress.mark_completed FAILED — run %s is still NON-TERMINAL "
+            "and its completion was not broadcast: %s", run_id, e,
+            extra={"run_id": run_id, "alert": True},
+        )
+        return None
 
 
 async def mark_failed_by_run(
@@ -445,7 +672,7 @@ async def mark_failed_by_run(
     persist" instead of just "failed". Returns True iff the row actually
     transitioned.
     """
-    sql = """
+    sql = f"""
         UPDATE silver.ingest_progress
         SET status        = 'failed',
             current_step  = 'failed',
@@ -454,7 +681,7 @@ async def mark_failed_by_run(
             updated_at    = now(),
             error_text    = $3
         WHERE run_id = $1::uuid
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
         RETURNING run_id, triggered_by,
                   EXTRACT(EPOCH FROM (now() - started_at))::float AS duration_seconds
     """
@@ -464,7 +691,10 @@ async def mark_failed_by_run(
             row = await conn.fetchrow(sql, run_id, stage, (error or "")[:2000])
         transitioned = row is not None
         if not transitioned:
-            log.info("progress.mark_failed: no-op (already terminal) run=%s", run_id)
+            log.info(
+                "progress.mark_failed: no-op (already terminal) run=%s",
+                run_id, extra={"run_id": run_id},
+            )
             return False
         _record_terminal_metrics(
             status="failed",
@@ -473,7 +703,10 @@ async def mark_failed_by_run(
         )
         return True
     except Exception as e:
-        log.warning("progress.mark_failed failed (run=%s): %s", run_id, e)
+        log.warning(
+            "progress.mark_failed failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
         return False
 
 
@@ -483,7 +716,7 @@ async def mark_timed_out(*, run_id: str, reason: str = "stale_heartbeat") -> boo
     Called by the 15-min stale_run_detector cron when a row has been in
     'started' state without a recent heartbeat.
     """
-    sql = """
+    sql = f"""
         UPDATE silver.ingest_progress
         SET status        = 'timed_out',
             current_step  = 'failed',
@@ -491,7 +724,7 @@ async def mark_timed_out(*, run_id: str, reason: str = "stale_heartbeat") -> boo
             updated_at    = now(),
             error_text    = $2
         WHERE run_id = $1::uuid
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
         RETURNING run_id, triggered_by,
                   EXTRACT(EPOCH FROM (now() - started_at))::float AS duration_seconds
     """
@@ -518,14 +751,17 @@ async def mark_timed_out(*, run_id: str, reason: str = "stale_heartbeat") -> boo
             pass
         return True
     except Exception as e:
-        log.warning("progress.mark_timed_out failed (run=%s): %s", run_id, e)
+        log.warning(
+            "progress.mark_timed_out failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
         return False
 
 
 async def mark_cancelled(*, run_id: str, reason: str = "user_cancelled") -> bool:
     """Terminal write — sets status=cancelled. Used by the on_failure_task hook
     when Hatchet cancels a workflow (concurrency expiry, explicit cancel)."""
-    sql = """
+    sql = f"""
         UPDATE silver.ingest_progress
         SET status        = 'cancelled',
             current_step  = 'failed',
@@ -533,7 +769,7 @@ async def mark_cancelled(*, run_id: str, reason: str = "user_cancelled") -> bool
             updated_at    = now(),
             error_text    = $2
         WHERE run_id = $1::uuid
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
         RETURNING run_id
     """
     try:
@@ -542,7 +778,10 @@ async def mark_cancelled(*, run_id: str, reason: str = "user_cancelled") -> bool
             row = await conn.fetchrow(sql, run_id, reason[:2000])
         return row is not None
     except Exception as e:
-        log.warning("progress.mark_cancelled failed (run=%s): %s", run_id, e)
+        log.warning(
+            "progress.mark_cancelled failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
         return False
 
 
@@ -557,11 +796,11 @@ async def lookup_active_run_id(
     (workspace_id, minio_key) can resolve to the per-run id without
     threading it through every workflow output.
     """
-    sql = """
+    sql = f"""
         SELECT run_id::text AS run_id
         FROM silver.ingest_progress
         WHERE workspace_id = $1::uuid AND minio_key = $2
-          AND status NOT IN ('completed','failed','cancelled','timed_out')
+          AND status NOT IN ({TERMINAL_STATUS_SQL})
         ORDER BY attempt_number DESC, started_at DESC
         LIMIT 1
     """
@@ -571,7 +810,10 @@ async def lookup_active_run_id(
             row = await conn.fetchrow(sql, workspace_id, minio_key)
         return row["run_id"] if row else None
     except Exception as e:
-        log.warning("progress.lookup_active_run_id failed (key=%s): %s", minio_key, e)
+        log.warning(
+            "progress.lookup_active_run_id failed (key=%s): %s", minio_key, e,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
+        )
         return None
 
 
@@ -597,7 +839,17 @@ async def get_run(*, run_id: str) -> dict | None:
             attempt_number,
             triggered_by,
             parent_run_id::text AS parent_run_id,
-            recovery_reason
+            recovery_reason,
+            -- The three columns the TERMINAL write sets. They were absent
+            -- from this SELECT, so nothing could read back what
+            -- mark_completed_by_run had just written: report_id (which the
+            -- completion links the run to), rows_written, and warnings —
+            -- the field whose whole purpose is to carry actionable text
+            -- ("upload the collar file first") out to the Ingestion Runs
+            -- page. Additive; every existing caller keys by name.
+            report_id::text AS report_id,
+            rows_written,
+            warnings
         FROM silver.ingest_progress
         WHERE run_id = $1::uuid
     """
@@ -607,7 +859,10 @@ async def get_run(*, run_id: str) -> dict | None:
             row = await conn.fetchrow(sql, run_id)
         return dict(row) if row else None
     except Exception as e:
-        log.warning("progress.get_run failed (run=%s): %s", run_id, e)
+        log.warning(
+            "progress.get_run failed (run=%s): %s", run_id, e,
+            extra={"run_id": run_id},
+        )
         return None
 
 
@@ -657,6 +912,7 @@ async def mark_completed(
         log.warning(
             "progress.mark_completed (legacy): no active run for (ws=%s, key=%s) — skipping",
             workspace_id, minio_key,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
         )
         return
     await mark_completed_by_run(run_id=run_id, report_id=report_id)
@@ -678,6 +934,109 @@ async def mark_failed(
         log.warning(
             "progress.mark_failed (legacy): no active run for (ws=%s, key=%s) — skipping",
             workspace_id, minio_key,
+            extra={"workspace_id": workspace_id, "minio_key": minio_key},
         )
         return
     await mark_failed_by_run(run_id=run_id, stage=stage, error=error)
+
+
+async def close_run_after_workflow_failure(
+    *,
+    workflow_name: str,
+    workspace_id: str | None,
+    project_id: str | None,
+    minio_key: str | None,
+    run_id: str | None,
+    ctx: object | None,
+) -> dict:
+    """Drive an ingest_progress row terminal from a workflow's failure hook.
+
+    Hatchet's ``on_failure_task`` is the ONLY thing that fires when the
+    engine cancels a workflow before its body runs — concurrency-queue
+    expiry, a manual cancel, a worker SIGTERM. In that case ``start_run``
+    has created a row and no task ever reaches the code that would close
+    it, so the row sits at 'queued' until the 15-minute stale sweep finds
+    it. That is the exact Cameco failure mode (529 runs silently CANCELLED)
+    the hooks on ingest_pdf / ingest_zip_archive / tiff_normalize were added
+    for.
+
+    Shared rather than copied because it already exists three times with
+    small divergences; the three geology workflows call this instead of
+    growing a fourth, fifth and sixth variant. (The three older hooks
+    predate it and still carry their own copies.)
+
+    Safe to call when the body already closed the row: ``mark_failed_by_run``
+    is a conditional update that no-ops on a terminal row and returns False.
+    """
+    resolved = run_id
+    if resolved is None and workspace_id and minio_key:
+        resolved = await lookup_active_run_id(
+            workspace_id=workspace_id, minio_key=minio_key,
+        )
+    if resolved is None:
+        log.warning(
+            "%s.on_failure: no active run for (ws=%s, key=%s) — the body never "
+            "reached start_run, so a cancellation fired before dispatch",
+            workflow_name, workspace_id, minio_key,
+            extra={
+                "workflow": workflow_name,
+                "workspace_id": workspace_id,
+                "minio_key": minio_key,
+            },
+        )
+        return {"updated": False, "reason": "no_active_run"}
+
+    row = await get_run(run_id=resolved)
+    current_stage = (row or {}).get("current_stage") or "unknown"
+
+    # Hatchet's own per-task error map, populated specifically for use
+    # inside an on_failure hook. Without it every failure — a real bug, a
+    # worker restart, a cancellation — records the same uninformative
+    # string, and root-causing a recurring failure from the Ingestion Runs
+    # UI alone becomes impossible.
+    try:
+        task_errors = getattr(ctx, "task_run_errors", None) or {}
+    except Exception as exc:  # noqa: BLE001 — diagnostics must not block the hook
+        log.warning(
+            "%s.on_failure: could not read task_run_errors: %s", workflow_name, exc,
+            extra={"workflow": workflow_name, "run_id": resolved},
+        )
+        task_errors = {}
+    if task_errors:
+        error_detail = "; ".join(f"{name}: {msg}" for name, msg in task_errors.items())
+    else:
+        error_detail = (
+            "no task_run_errors available (worker crash/cancellation with no "
+            "captured exception)"
+        )
+
+    transitioned = await mark_failed_by_run(
+        run_id=resolved, stage=current_stage, error=error_detail,
+    )
+
+    if transitioned and project_id and workspace_id:
+        try:
+            from app.services.laravel_bridge import (  # noqa: PLC0415
+                post_ingestion_progress,
+            )
+
+            await post_ingestion_progress(
+                workspace_id=workspace_id,
+                project_id=project_id,
+                run_id=resolved,
+                stage=current_stage,
+                status="failed",
+                message="Workflow exhausted retries or was cancelled.",
+            )
+        except Exception as exc:
+            log.warning(
+                "%s.on_failure: broadcast failed run=%s: %s",
+                workflow_name, resolved, exc,
+                extra={"workflow": workflow_name, "run_id": resolved},
+            )
+
+    return {
+        "updated": transitioned,
+        "run_id": resolved,
+        "current_stage": current_stage,
+    }

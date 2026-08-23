@@ -1,215 +1,37 @@
-"""Unit tests for Module 6 Phase B Chunk 4a — refusal payload + evidence inspector.
+"""Unit tests for Module 6 Phase B Chunk 4a — evidence inspector + reason codes.
 
 Tests
 -----
-  Refusal builder:
-    1. build_guard_refusal_payload — numeric guard failure
-    2. build_guard_refusal_payload — entity guard failure
-    3. build_guard_refusal_payload — completeness guard failure
-    4. build_guard_refusal_payload — multiple guard failures (reason_code priority)
-    5. build_guard_refusal_payload — pg_pool=None (DB fallback path)
-    6. build_llm_unavailable_payload — shape + reason_code
-    7. build_budget_exhausted_payload — shape + reason_code
-    8. build_insufficient_evidence_payload — synchronous path + shape
-    9. RefusalReasonCode — all six values present in model
-   10. fallback stub in layer_completeness.build_refusal_payload — shape stable
+  Refusal reason codes:
+    1. RefusalReasonCode — all six values present in model
 
   Evidence inspector (unit, no DB):
-   11. EvidencePassagePayload — Pydantic round-trip
-   12. EvidenceStructuredPayload — Pydantic round-trip
-   13. EvidenceGraphEdgePayload — Pydantic round-trip (no Neo4j)
-   14. EvidenceMapFeaturePayload — bbox parsing
-   15. _assemble_map_feature — tile_function / bbox / properties extraction
-   16. 404 on cross-tenant workspace mismatch (mocked DB returns None)
-   17. 500 on DB fetch exception
-   18. reason_code stability — enum values unchanged (Module 7 contract)
+    2. EvidencePassagePayload — Pydantic round-trip
+    3. EvidenceStructuredPayload — Pydantic round-trip
+    4. EvidenceGraphEdgePayload — Pydantic round-trip (no Neo4j)
+    5. EvidenceMapFeaturePayload — bbox parsing
+    6. _assemble_map_feature — tile_function / bbox / properties extraction
+    7. 404 on cross-tenant workspace mismatch (mocked DB returns None)
+    8. 500 on DB fetch exception
+
+History (2026-08-21): this file also covered app/services/refusal_builder.py
+and layer_completeness.build_refusal_payload — ten tests over two modules
+that had no production caller between them. refusal_builder was reachable
+only from these tests, and the GuardBundle it consumed was constructed only
+by layer_completeness.evaluate_guards, which nothing called either. Both
+modules were deleted and their tests removed with them. The reason-code
+Literal in app/models/answer_run.py survives and is still pinned below,
+because it is the Module 7 branching contract.
 
 All tests are pure unit tests — no live DB, no Docker required.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# Stubs for GuardResult / GuardBundle
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _GuardResult:
-    guard_name: str
-    passed: bool
-    failed_tokens: list[str] = field(default_factory=list)
-    failed_entities: list[str] = field(default_factory=list)
-    uncited_sentences: list[str] = field(default_factory=list)
-    derivation_log: list[str] = field(default_factory=list)
-
-
-@dataclass
-class _GuardBundle:
-    all_passed: bool
-    numeric: _GuardResult
-    entity: _GuardResult
-    completeness: _GuardResult
-    failed_guards: list[_GuardResult] = field(default_factory=list)
-
-
-def _make_numeric_fail() -> _GuardBundle:
-    n = _GuardResult("numeric", False, failed_tokens=["12.5", "99.9"])
-    e = _GuardResult("entity", True)
-    c = _GuardResult("completeness", True)
-    return _GuardBundle(False, n, e, c, failed_guards=[n])
-
-
-def _make_entity_fail() -> _GuardBundle:
-    n = _GuardResult("numeric", True)
-    e = _GuardResult("entity", False, failed_entities=["XYZ-99-NONEXIST"])
-    c = _GuardResult("completeness", True)
-    return _GuardBundle(False, n, e, c, failed_guards=[e])
-
-
-def _make_completeness_fail() -> _GuardBundle:
-    n = _GuardResult("numeric", True)
-    e = _GuardResult("entity", True)
-    c = _GuardResult("completeness", False, uncited_sentences=["Gold grades were high."])
-    return _GuardBundle(False, n, e, c, failed_guards=[c])
-
-
-def _make_multi_fail() -> _GuardBundle:
-    n = _GuardResult("numeric", False, failed_tokens=["42"])
-    e = _GuardResult("entity", False, failed_entities=["FAKE-HOLE"])
-    c = _GuardResult("completeness", True)
-    return _GuardBundle(False, n, e, c, failed_guards=[n, e])
-
-
-# ---------------------------------------------------------------------------
-# Refusal builder tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_guard_refusal_numeric_reason_code():
-    """build_guard_refusal_payload returns guard_numeric_fail for numeric guard failure."""
-    from app.services.refusal_builder import build_guard_refusal_payload
-
-    bundle = _make_numeric_fail()
-    payload = await build_guard_refusal_payload(guard_bundle=bundle, pg_pool=None)
-
-    assert payload["type"] == "refusal"
-    assert payload["reason_code"] == "guard_numeric_fail"
-    assert "searched" in payload
-    assert "missing" in payload
-    assert "message" in payload
-    assert "12.5" in payload["missing"]["what_was_needed"] or "numeric" in payload["missing"]["what_was_needed"].lower()
-
-
-@pytest.mark.asyncio
-async def test_guard_refusal_entity_reason_code():
-    """build_guard_refusal_payload returns guard_entity_fail for entity guard failure."""
-    from app.services.refusal_builder import build_guard_refusal_payload
-
-    bundle = _make_entity_fail()
-    payload = await build_guard_refusal_payload(
-        guard_bundle=bundle, pg_pool=None, query_context="What is the depth of XYZ-99-NONEXIST?"
-    )
-
-    assert payload["reason_code"] == "guard_entity_fail"
-    assert "XYZ-99-NONEXIST" in payload["missing"]["what_was_needed"]
-
-
-@pytest.mark.asyncio
-async def test_guard_refusal_completeness_reason_code():
-    """build_guard_refusal_payload returns guard_completeness_fail for completeness failure."""
-    from app.services.refusal_builder import build_guard_refusal_payload
-
-    bundle = _make_completeness_fail()
-    payload = await build_guard_refusal_payload(guard_bundle=bundle, pg_pool=None)
-
-    assert payload["reason_code"] == "guard_completeness_fail"
-    assert "Gold grades were high." in payload["missing"]["what_was_needed"]
-
-
-@pytest.mark.asyncio
-async def test_guard_refusal_multi_fail_priority():
-    """Multiple guard failures — numeric takes priority over entity in reason_code."""
-    from app.services.refusal_builder import build_guard_refusal_payload
-
-    bundle = _make_multi_fail()
-    payload = await build_guard_refusal_payload(guard_bundle=bundle, pg_pool=None)
-
-    # numeric > entity in priority
-    assert payload["reason_code"] == "guard_numeric_fail"
-    # Both guard names should appear in failed_guards list
-    assert "numeric" in payload["failed_guards"]
-    assert "entity" in payload["failed_guards"]
-
-
-@pytest.mark.asyncio
-async def test_guard_refusal_no_pool_fallback_searched():
-    """build_guard_refusal_payload returns a valid searched block even without pg_pool."""
-    from app.services.refusal_builder import build_guard_refusal_payload
-
-    bundle = _make_completeness_fail()
-    payload = await build_guard_refusal_payload(guard_bundle=bundle, pg_pool=None)
-
-    searched = payload["searched"]
-    assert isinstance(searched["stores_queried"], list)
-    assert len(searched["stores_queried"]) > 0
-    assert isinstance(searched["candidates_considered"], int)
-    assert isinstance(searched["query_class"], str)
-    missing = payload["missing"]
-    assert isinstance(missing["nearest_candidates"], list)
-
-
-@pytest.mark.asyncio
-async def test_llm_unavailable_payload_shape():
-    """build_llm_unavailable_payload returns correct reason_code and shape."""
-    from app.services.refusal_builder import build_llm_unavailable_payload
-
-    payload = await build_llm_unavailable_payload(
-        backend_chain=["ollama:failed:timeout", "anthropic:failed:connection_error"]
-    )
-
-    assert payload["type"] == "refusal"
-    assert payload["reason_code"] == "llm_unavailable"
-    assert "ollama" in payload["message"] or "unavailable" in payload["message"]
-    assert "searched" in payload
-    assert payload["searched"]["candidates_considered"] == 0
-    assert payload["missing"]["nearest_candidates"] == []
-
-
-@pytest.mark.asyncio
-async def test_budget_exhausted_payload_shape():
-    """build_budget_exhausted_payload returns correct reason_code and shape."""
-    from app.services.refusal_builder import build_budget_exhausted_payload
-
-    payload = await build_budget_exhausted_payload()
-
-    assert payload["type"] == "refusal"
-    assert payload["reason_code"] == "budget_exhausted"
-    assert "timed out" in payload["message"].lower() or "budget" in payload["message"].lower()
-
-
-def test_insufficient_evidence_payload_sync():
-    """build_insufficient_evidence_payload is synchronous and returns full B4 shape."""
-    from app.services.refusal_builder import build_insufficient_evidence_payload
-
-    payload = build_insufficient_evidence_payload(
-        query_context="What is the gold grade at drill hole ABC-01?",
-        stores_queried=["qdrant", "postgis"],
-        candidates_considered=12,
-    )
-
-    assert payload["type"] == "refusal"
-    assert payload["reason_code"] == "insufficient_evidence"
-    assert payload["searched"]["candidates_considered"] == 12
-    assert payload["searched"]["stores_queried"] == ["qdrant", "postgis"]
-    assert "ABC-01" in payload["missing"]["what_was_needed"]
 
 
 def test_refusal_reason_code_enum_values():
@@ -229,21 +51,6 @@ def test_refusal_reason_code_enum_values():
         "budget_exhausted",
     }
     assert set(args) == expected, f"RefusalReasonCode values changed: {args}"
-
-
-def test_layer_completeness_fallback_stub_shape():
-    """Fallback stub in layer_completeness.build_refusal_payload has stable B4 shape."""
-    from app.agent.hallucination.layer_completeness import build_refusal_payload
-
-    bundle = _make_numeric_fail()
-    payload = build_refusal_payload(bundle)
-
-    assert payload["type"] == "refusal"
-    assert payload["reason_code"] == "guard_numeric_fail"
-    assert "searched" in payload
-    assert "missing" in payload
-    assert "failed_guards" in payload
-    assert isinstance(payload["failed_guards"], list)
 
 
 # ---------------------------------------------------------------------------

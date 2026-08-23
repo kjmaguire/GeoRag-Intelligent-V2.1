@@ -54,6 +54,22 @@ async def verify_service_key(x_service_key: str = Header(...)) -> None:
     from app.config import settings
 
     expected = settings.FASTAPI_SERVICE_KEY
+    if not expected:
+        # An empty expected key would make compare_digest("", "") true and
+        # authenticate everyone. The setting is required and validated at
+        # >=32 bytes, so reaching this means the configuration is broken,
+        # not that the caller is wrong — 500, not 401. Four routers grew
+        # their own copy of this check with exactly this guard; the shared
+        # dependency they were cloned from did not have it.
+        logger.critical(
+            "FASTAPI_SERVICE_KEY is empty — refusing to authenticate any "
+            "service-key request."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Service key not configured",
+        )
+
     if not hmac.compare_digest(x_service_key.encode(), expected.encode()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

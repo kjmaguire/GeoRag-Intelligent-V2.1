@@ -4,6 +4,7 @@ import ProjectSelector from '../Components/ProjectSelector';
 import CommandPalette from '../Components/Foundry/CommandPalette';
 import { ToastProvider, useToast } from '../Components/Foundry/ToastHost';
 import type { PageProps } from '@/types';
+import { listenPrivate } from '@/lib/echoChannel';
 
 /**
  * FoundryShell — the app's persistent chrome.
@@ -153,11 +154,33 @@ function UserMenu() {
  * Suppressed while ON the runs page (it already renders live state) by not
  * subscribing at all there. Renders nothing.
  *
- * Cleanup deliberately uses stopListening rather than Echo.leave():
- * IngestionRuns.tsx and useWorkspaceDataUpdated share this channel and
- * leave() would tear down their listeners with ours.
+ * Cleanup goes through the ref-counted `listenPrivate` helper rather than
+ * Echo.leave(): IngestionRuns.tsx, useWorkspaceDataUpdated and the map's
+ * tile-invalidation hook all share this channel, and leave() unbinds the
+ * shared channel object for every one of them at once. This bridge lives
+ * in the persistent layout, so it was the standing casualty — one
+ * in-project navigation killed the toast for the rest of the session.
  */
-const TERMINAL_INGEST_STATUSES = ['completed', 'failed', 'cancelled', 'timed_out'];
+// Mirrors _progress.TERMINAL_STATUSES on the FastAPI side. 'partial' is a
+// run that reached the end, wrote rows, and also had something to say —
+// the single most important ingest outcome to surface, because the thing
+// it has to say is usually actionable ("upload the collar file, then
+// re-run this one") and it was the one outcome that reached no toast.
+const TERMINAL_INGEST_STATUSES = ['completed', 'partial', 'failed', 'cancelled', 'timed_out'];
+
+/** Toast title + tone for a terminal ingest status. */
+function ingestOutcome(status: string): { title: string; tone: 'accent' | 'warn' } {
+    switch (status) {
+        case 'completed':
+            return { title: 'File finished ingesting', tone: 'accent' };
+        case 'partial':
+            return { title: 'File ingested with warnings', tone: 'warn' };
+        case 'timed_out':
+            return { title: 'Ingestion timed out', tone: 'warn' };
+        default:
+            return { title: `Ingestion ${status.replace('_', ' ')}`, tone: 'warn' };
+    }
+}
 
 interface IngestProgressEvent {
     project_id?: string;
@@ -181,7 +204,6 @@ function IngestToastBridge({ projectSlug }: { projectSlug: string | null }) {
         if (typeof window === 'undefined' || !window.Echo) return;
 
         const channelName = `project.${projectId}.ingestion`;
-        const ch = window.Echo.private(channelName);
 
         const handler = (raw: unknown): void => {
             const evt = raw as IngestProgressEvent;
@@ -191,24 +213,18 @@ function IngestToastBridge({ projectSlug }: { projectSlug: string | null }) {
             const key = `${evt.pipeline_run_id ?? ''}:${status}`;
             if (seenRef.current.has(key)) return;
             seenRef.current.add(key);
-            const ok = status === 'completed';
+            const { title, tone } = ingestOutcome(status);
             pushToast({
-                title: ok ? 'File finished ingesting' : `Ingestion ${status.replace('_', ' ')}`,
+                title,
                 detail: evt.message ?? undefined,
-                tone: ok ? 'accent' : 'warn',
+                tone,
                 href: projectSlug ? `/projects/${projectSlug}/ingestion-runs` : undefined,
                 linkLabel: 'View runs',
             });
         };
 
-        ch.listen('.ingestion.progress', handler);
-        return () => {
-            try {
-                ch.stopListening('.ingestion.progress', handler);
-            } catch {
-                // Channel may already be gone if a sibling called Echo.leave().
-            }
-        };
+        const unsubscribe = listenPrivate(channelName, '.ingestion.progress', handler);
+        return unsubscribe;
     }, [projectId, onRunsPage, projectSlug, pushToast]);
 
     return null;

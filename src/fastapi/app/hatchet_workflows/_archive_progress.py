@@ -34,10 +34,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import uuid
 
 import asyncpg
+
+from app.db.dsn import build_dsn
 
 log = logging.getLogger("georag.hatchet.archive_progress")
 
@@ -46,13 +47,9 @@ TERMINAL_STATUSES: tuple[str, ...] = ("completed", "failed", "partial", "cancell
 ALLOWED_TRIGGERS: tuple[str, ...] = ("upload", "manual_retry", "cron_recovery")
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 # Module-level asyncpg pool — mirrors _progress.py. Hatchet worker is

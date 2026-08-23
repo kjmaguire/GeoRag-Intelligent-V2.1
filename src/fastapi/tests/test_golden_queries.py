@@ -36,6 +36,7 @@ Marks
 
 from __future__ import annotations
 
+import re
 import time
 
 import httpx
@@ -146,6 +147,10 @@ GOLDEN_QUERIES: list[dict] = [
         "query": "Show me only Diamond drill holes",
         "project_id": TEST_PROJECT_ID,
         "expected_answer_contains": ["10", "diamond"],
+        # Whole-word matched (see _contains_phrase). As a substring, "RC"
+        # is inside "source" — a correct answer citing the source table
+        # failed this case, and would have gone permanently red the day
+        # the suite became blocking.
         "must_not_contain": ["RC", "RAB", "rotary"],
         "expected_citation_count_min": 1,
         "expected_citation_type": "DATA",
@@ -396,7 +401,13 @@ GOLDEN_QUERIES: list[dict] = [
         "query": "How many drill holes are currently in progress?",
         "project_id": TEST_PROJECT_ID,
         "expected_answer_contains": ["1"],
-        "must_not_contain": ["0", "none", "no holes"],
+        # "0" was here. It is inside "20", "2022" and "0.5", and the
+        # correct answer is 1 of 20 holes — so this case could not pass.
+        # Whole-word matching is not enough on its own either: the "0" of
+        # "0.5" is preceded by a space and followed by a non-word "."
+        # so it satisfies the boundary. A bare digit cannot express "did
+        # not answer zero"; these phrases can.
+        "must_not_contain": ["zero", "none", "no holes", "0 holes"],
         "expected_citation_count_min": 1,
         "expected_citation_type": "DATA",
         "min_confidence": 0.7,
@@ -547,6 +558,34 @@ GOLDEN_QUERIES: list[dict] = [
 # ---------------------------------------------------------------------------
 
 
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Whole-word, case-insensitive containment.
+
+    A plain substring test made two golden cases unsatisfiable: "RC" is
+    inside "source", so a correct answer citing its provenance failed
+    gq-005, and "0" is inside almost every number, so gq-020's correct
+    answer of 1-of-20-holes failed on "20". Neither had been noticed
+    because both cases are excluded from CI.
+
+    The boundary is applied PER EDGE and only where the phrase actually
+    ends in a word character. A blanket `\b` would make any phrase ending
+    in punctuation unmatchable -- `\b%\b` can never match, because the
+    boundary needs a word character adjacent to a non-word one and `%`
+    sits between spaces. For a PROHIBITION that failure is silent and
+    inverted: the check stops firing and the case goes green.
+    """
+    if not phrase:
+        return False
+
+    pattern = re.escape(phrase)
+    if phrase[0].isalnum() or phrase[0] == "_":
+        pattern = r"(?<!\w)" + pattern
+    if phrase[-1].isalnum() or phrase[-1] == "_":
+        pattern = pattern + r"(?!\w)"
+
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", GOLDEN_QUERIES, ids=lambda c: c["id"])
 @pytest.mark.integration
@@ -608,9 +647,9 @@ async def test_golden_query(case: dict) -> None:
             f"Response text: {response_text!r}"
         )
 
-    # --- Check 4: Prohibited substrings (case-insensitive) ---
+    # --- Check 4: Prohibited phrases (case-insensitive, whole-word) ---
     for phrase in case.get("must_not_contain", []):
-        assert phrase.lower() not in response_text.lower(), (
+        assert not _contains_phrase(response_text, phrase), (
             f"[{case['id']}] Prohibited phrase {phrase!r} found in response.\n"
             f"Response text: {response_text!r}"
         )
@@ -723,3 +762,131 @@ def test_golden_query_class_coverage() -> None:
         + "\n".join(f"  {cls}: {n} case(s)" for cls, n in sorted(under_covered.items()))
         + "\nAdd more golden fixtures to reach the minimum per class."
     )
+
+
+# ---------------------------------------------------------------------------
+# The prohibition matcher itself — runs in the default suite
+# ---------------------------------------------------------------------------
+#
+# Deliberately unmarked. Everything above is @integration + @golden and is
+# deselected in CI, which is how two unsatisfiable cases sat here unnoticed:
+# gq-005 banned "RC" (inside "source") and gq-020 banned "0" (inside "20").
+# Both would have gone permanently red the day the suite became blocking, and
+# a gate that is red for a reason unrelated to quality is a gate people mute.
+#
+# The matcher can be tested without a live stack, so it is.
+
+
+class TestProhibitionMatching:
+    def test_a_banned_word_inside_a_longer_word_is_not_a_match(self) -> None:
+        """The gq-005 case. "rc" is inside "source"."""
+        assert not _contains_phrase(
+            "According to the source table, all ten holes are Diamond.", "RC"
+        )
+
+    def test_the_banned_word_standing_alone_is_a_match(self) -> None:
+        assert _contains_phrase("Three RC holes were drilled in 1998.", "RC")
+
+    def test_matching_is_case_insensitive(self) -> None:
+        assert _contains_phrase("three rc holes", "RC")
+        assert _contains_phrase("Three RC holes", "rc")
+
+    def test_a_digit_inside_a_number_is_not_a_match(self) -> None:
+        """The gq-020 case. "0" is inside "20" and "2022"."""
+        assert not _contains_phrase(
+            "1 of 20 holes is in progress as of 2022.", "0"
+        )
+
+    def test_punctuation_boundaries_still_match(self) -> None:
+        for text in ("no holes.", "(no holes)", "no holes, and none pending"):
+            assert _contains_phrase(text, "no holes"), text
+
+    def test_a_phrase_with_no_word_characters_can_still_fire(self) -> None:
+        """The trap a blanket `\b` would have set.
+
+        `\b%\b` never matches: the boundary needs a word character next to
+        a non-word one, and `%` sits between spaces. Applied blindly, a
+        prohibition on "%" would silently stop firing — a false NEGATIVE on
+        a ban, which reads as the case passing.
+        """
+        assert _contains_phrase("grade of 5 % U3O8", "%")
+        assert _contains_phrase("a >> b", ">>")
+
+    def test_an_empty_phrase_matches_nothing(self) -> None:
+        """`"" in text` is True for every text. As a prohibition that
+        would fail every case with an empty entry in the list."""
+        assert not _contains_phrase("anything at all", "")
+
+    def test_regex_metacharacters_are_literal(self) -> None:
+        """A banned phrase is data, not a pattern. "0.5" must not match
+        "005" via the dot."""
+        assert not _contains_phrase("hole 005 was abandoned", "0.5")
+        assert _contains_phrase("grade of 0.5 percent", "0.5")
+
+    def test_hyphenated_identifiers_match_as_written(self) -> None:
+        assert _contains_phrase("hole PLS-22-10 is in progress", "PLS-22-10")
+        assert not _contains_phrase("hole PLS-22-100 is in progress", "PLS-22-10")
+
+
+class TestTheTwoRepairedCases:
+    """Pin the entries themselves, not just the matcher.
+
+    Both were changed as part of the same fix; a later edit that restores
+    the bare "0" would make gq-020 unsatisfiable again without touching
+    any code this file's other tests cover.
+    """
+
+    @staticmethod
+    def _case(case_id: str) -> dict:
+        for case in GOLDEN_QUERIES:
+            if case["id"].startswith(case_id):
+                return case
+        raise AssertionError(f"{case_id} is gone from GOLDEN_QUERIES")
+
+    def test_gq_005_is_satisfiable_by_a_correct_answer(self) -> None:
+        correct = (
+            "There are 10 Diamond drill holes in this project, according to "
+            "the source table [DATA-1]."
+        )
+
+        case = self._case("gq-005")
+        for phrase in case["must_not_contain"]:
+            assert not _contains_phrase(correct, phrase), phrase
+
+    def test_gq_020_is_satisfiable_by_a_correct_answer(self) -> None:
+        correct = (
+            "1 of the 20 drill holes is currently in progress: PLS-22-10, "
+            "collared in 2022 [DATA-1]."
+        )
+
+        case = self._case("gq-020")
+        for phrase in case["must_not_contain"]:
+            assert not _contains_phrase(correct, phrase), phrase
+
+    def test_gq_020_still_rejects_the_wrong_answer(self) -> None:
+        """Satisfiable must not mean toothless."""
+        case = self._case("gq-020")
+
+        for wrong in (
+            "No holes are currently in progress.",
+            "There are zero holes in progress.",
+            "None of the holes are in progress.",
+            "0 holes are in progress.",
+        ):
+            assert any(
+                _contains_phrase(wrong, phrase)
+                for phrase in case["must_not_contain"]
+            ), wrong
+
+    def test_gq_005_still_rejects_the_wrong_answer(self) -> None:
+        case = self._case("gq-005")
+
+        for wrong in (
+            "The project has 6 RC holes and 4 Diamond holes.",
+            "Includes RAB drilling from the 1980s.",
+            "Three rotary holes were completed.",
+        ):
+            assert any(
+                _contains_phrase(wrong, phrase)
+                for phrase in case["must_not_contain"]
+            ), wrong

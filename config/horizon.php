@@ -199,7 +199,7 @@ return [
         'supervisor-1' => [
             // env-overridable so staging/prod can route Horizon to the
             // dedicated `queue` Redis connection (see config/database.php
-            // and ops/runbooks/redis-3-instance-rollout.md). Defaults to
+            // and ops/runbooks/_archived/redis-3-instance-rollout.md). Defaults to
             // `redis` so dev behaviour is unchanged.
             'connection' => env('HORIZON_REDIS_CONNECTION', 'redis'),
             'queue' => ['default'],

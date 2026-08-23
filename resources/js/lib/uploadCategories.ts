@@ -39,7 +39,10 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   excel: ['xlsx', 'xls', 'xlsm'],
   // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
   // travel together and a lone .shp cannot be read without them.
-  spatial: ['geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'fgb', 'zip', 'qgs', 'qgz'],
+  spatial: [
+    'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
+    'fgb', 'gdb', 'zip', 'qgs', 'qgz',
+  ],
   well_logs: ['las'],
   seismic: ['sgy', 'segy'],
   xyz: ['xyz', 'dat', 'txt'],

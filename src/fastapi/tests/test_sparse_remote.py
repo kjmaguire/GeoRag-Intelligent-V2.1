@@ -72,3 +72,104 @@ def test_encode_sparse_uses_local_when_url_empty(monkeypatch):
 
     with pytest.raises(RuntimeError, match="LOCAL_PATH_TAKEN"):
         se.encode_sparse("granite uranium")
+
+
+class TestTheEmptyVectorWarningLeaksNothing:
+    """OBS-16 — `encode_sparse` logged 80 characters of the input.
+
+    Its two callers pass the user's expanded query (agent/tools.py) and
+    document passage text (ingest/passage_embedder.py). Both are customer
+    exploration data, and stdout here lands in ContainerAppConsoleLogs_CL
+    with 30-day retention. `log_safe` exists to close exactly this leak;
+    the embedding tree was never swept.
+
+    The branch has not fired in the retained window, so this was latent
+    rather than active — but it fires on symbol-heavy or non-Latin input,
+    which is what an unusual property name or a coordinate string looks
+    like.
+    """
+
+    def test_the_warning_does_not_carry_the_text(self) -> None:
+        import inspect
+
+        from app.services import sparse_encoder
+
+        source = inspect.getsource(sparse_encoder)
+
+        assert "text=%r" not in source, (
+            "the raw-text warning is back; this is the leak log_safe exists "
+            "to prevent"
+        )
+        assert "text[:80]" not in source
+
+    def test_it_logs_a_correlatable_hash_instead(self) -> None:
+        import inspect
+
+        from app.services import sparse_encoder
+
+        source = inspect.getsource(sparse_encoder)
+
+        assert "query_hash(text)" in source, (
+            "without a hash the log line cannot be tied back to the "
+            "encrypted audit row, which is the whole point of replacing "
+            "the excerpt rather than deleting it"
+        )
+
+
+class TestTextShape:
+    """The diagnostic that replaces the excerpt.
+
+    An empty SPLADE vector is a property of the input's character classes,
+    not its meaning, so the shape summary keeps everything a debugger
+    needs and none of what a reader must not see.
+    """
+
+    def test_it_reveals_no_content(self) -> None:
+        from app.agent.log_safe import text_shape
+
+        secret = "Fox Lake North, 578400E 6412300N, 4.2% U3O8"
+        shape = text_shape(secret)
+
+        for token in ("Fox", "Lake", "578400", "U3O8", "4.2"):
+            assert token not in shape, token
+
+    def test_it_distinguishes_the_inputs_that_produce_empty_vectors(
+        self,
+    ) -> None:
+        from app.agent.log_safe import text_shape
+
+        latin = text_shape("uranium grade at the north zone")
+        symbols = text_shape("<<< >>> ||| ### @@@ %%%")
+        cjk = text_shape("\u94c0\u77ff\u54c1\u4f4d")
+
+        assert latin != symbols != cjk
+        assert "nonascii=4" in cjk
+        assert "alpha=0" in symbols
+
+    def test_length_survives(self) -> None:
+        from app.agent.log_safe import text_shape
+
+        assert "len=11" in text_shape("hello world")
+
+    def test_empty_and_none_are_distinguishable(self) -> None:
+        from app.agent.log_safe import text_shape
+
+        assert text_shape("") != text_shape(None)
+        assert "len=0" in text_shape("")
+        assert "len=0" in text_shape(None)
+
+    def test_the_class_counts_add_up_to_the_length(self) -> None:
+        """A summary whose parts do not sum to the whole is a summary
+        someone will misread."""
+        import re
+
+        from app.agent.log_safe import text_shape
+
+        sample = "PLS-22-08: 4.2% U3O8 \u00e9chantillon \u94c0 \t"
+        shape = text_shape(sample)
+        counts = {
+            key: int(value)
+            for key, value in re.findall(r"(alpha|digit|space|nonascii|other)=(\d+)", shape)
+        }
+
+        assert sum(counts.values()) == len(sample)

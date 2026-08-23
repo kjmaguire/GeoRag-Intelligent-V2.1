@@ -80,10 +80,10 @@ on:
     - cron: "17 5 * * *"
   workflow_dispatch:
     inputs:
-      max_questions:
-        description: "Cap on golden questions to run (keep small — LLM/embeddings are stubbed, see workflow header)"
+      per_set:
+        description: "Golden questions to run FROM EACH question_set (keep small — LLM/embeddings are stubbed, see workflow header)"
         required: false
-        default: "10"
+        default: "2"
 
 permissions:
   contents: read
@@ -255,22 +255,50 @@ jobs:
       # itself is NOT gated (--strict is intentionally omitted — the LLM is
       # stubbed, see workflow header) and the harness is best-effort
       # per-question by design (run_golden_benchmark.py docstring).
+      #
+      # --per-set, NOT --max-questions. The cap used to be a head slice of a
+      # list ordered by (question_set, question_id), so `--max-questions 10`
+      # against the 34-question corpus ran 3 core_chat + 7 numeric_grounding
+      # and never once reached refusal_correctness or
+      # public_private_boundary — the two sets whose validators are
+      # non-vacuous, and the second of which thresholds.py declares a §2.9
+      # regulatory anchor with a zero-regression cap. The only scheduled
+      # eval in the system could not observe a regression in the one thing
+      # it is required to observe.
       - name: Run golden benchmark (harness self-check)
         working-directory: src/fastapi
         run: |
           uv run python scripts/run_golden_benchmark.py \
-            --max-questions "${{ github.event.inputs.max_questions || '10' }}" \
+            --per-set "${{ github.event.inputs.per_set || '2' }}" \
             --label ci-nightly-harness-selfcheck \
             --output bench_results/ci_nightly.json
 
-      # Informational only — see workflow header for why the verdict isn't
-      # trusted as a quality gate yet (stubbed LLM vs a real-LLM baseline).
+      # DISABLED 2026-08-21 — the comparison was worse than no comparison.
+      #
+      # bench_results_to_commit_baseline.json is dated 2026-05-28, carries
+      # git_sha "unknown", covers 20 questions at a 20% pass rate, and
+      # predates the Qwen3 embedding/reranker swap (2026-06-03), the Layer-1
+      # threshold recalibration, the Cohere/Foundry migration and the
+      # ADR-0010 collection cutover. The candidate side is generated against
+      # a STUBBED LLM and stubbed embeddings. compare_benchmarks only diffs
+      # question IDs present in both reports, and only 2 of the baseline's
+      # 20 IDs are reproducible from the committed corpus — so the delta it
+      # printed was computed over a 2-question overlap between two
+      # incomparable stacks. Being `continue-on-error`, it always reported
+      # green, and a green diff reads as evidence of stability.
+      #
+      # Re-enable only with a baseline regenerated against the current stack
+      # and committed with a real git_sha. `meta.model_stack` now records
+      # the fingerprint (llm/embedding/reranker deployment + collection), so
+      # a future baseline can be checked for comparability before it is
+      # trusted; compare_benchmarks refuses mismatched stacks.
       - name: Diff against committed baseline (informational)
+        if: ${{ hashFiles('bench_results_current_baseline.json') != '' }}
         working-directory: src/fastapi
         continue-on-error: true
         run: |
           uv run python scripts/compare_benchmarks.py \
-            ../../bench_results_to_commit_baseline.json \
+            ../../bench_results_current_baseline.json \
             bench_results/ci_nightly.json --json \
             | tee bench_results/ci_nightly_diff.json
 

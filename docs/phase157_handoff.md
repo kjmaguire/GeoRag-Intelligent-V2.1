@@ -68,9 +68,16 @@ runs `php artisan test`.
 
 ### Side-fix — `phpunit.pgsql.xml` DB password
 
-Was set to a stale `georag_dev_password`. Updated to the live
-`OMljaORhiA7RGQN3ilfemNWpezF9waU` (matches the `postgresql` service's
-`POSTGRES_PASSWORD`). Now the pgsql config can connect; the remaining
+Was set to a placeholder, so the pgsql config could not connect. This
+handoff originally recorded pasting in the value read out of the running
+container with `docker exec georag-postgresql env`, "to keep it in sync".
+
+**Reverted 2026-08-21.** That put a live, in-use database password into a
+PUBLIC repository, across 25 tracked files, where GitHub secret scanning
+did not catch it — push protection is enabled but non-provider patterns are
+not, and a generic database password matches no provider pattern. The file
+now carries the `.env.example` placeholder and no longer forces it, so
+`DB_PASSWORD` from your own environment wins. Now the pgsql config can connect; the remaining
 breakage is a separate pre-existing migration issue (RLS policy
 already-exists on rerun) in `2026_05_13_100000_create_targeting_schema.php` —
 out of scope for this tick.

@@ -1490,10 +1490,23 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
+              # maxmemory must stay at or under 80% of the container memory
+              # limit. Redis accounts only its own dataset; client output
+              # buffers, allocator fragmentation and the copy-on-write of
+              # every AOF/RDB fork sit on top of it. Left uncapped, as this
+              # was until 2026-08-22, the kernel OOM-kills the pod before
+              # Redis ever gets the chance to evict anything.
+              #
+              # volatile-lru, not allkeys-lru: this instance holds Laravel
+              # queue jobs (no TTL) alongside cache and sessions (TTL'd).
+              # allkeys-lru would evict queued jobs silently. See
+              # deploy/azure/containerapps/redis.yaml for the full argument.
               redis-server \
                 --requirepass "$REDIS_PASSWORD" \
                 --appendonly yes \
-                --dir /data
+                --dir /data \
+                --maxmemory 1536mb \
+                --maxmemory-policy volatile-lru
           env:
             - name: REDIS_PASSWORD
               valueFrom:

@@ -1,0 +1,17 @@
+{
+  "Name": "GeoRAG Nightly Scheduler",
+  "IsCustom": true,
+  "Description": "Scale Container Apps and start/stop the Postgres flexible server. Held by the shutdown-scheduler-cc and startup-scheduler-cc job identities, which previously held Contributor over the whole resource group to make two write calls.",
+  "Actions": [
+    "*/read",
+    "Microsoft.App/containerApps/write",
+    "Microsoft.DBforPostgreSQL/flexibleServers/start/action",
+    "Microsoft.DBforPostgreSQL/flexibleServers/stop/action"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/d314ab40-b5b7-4e3e-8308-86023fb7638a/resourceGroups/georag"
+  ]
+}

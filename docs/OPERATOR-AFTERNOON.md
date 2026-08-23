@@ -156,7 +156,7 @@ runbook handoff if multiple operators.
 ## Step 6 — Cold-start the prod stack (O-05)
 
 ```bash
-# On the production host, follow ops/runbooks/cold-start.md.
+# On the production host, follow ops/runbooks/_archived/cold-start.md.
 # Summary: 10 steps from empty volumes → migrated DB → seed → smoke.
 ```
 
@@ -210,7 +210,7 @@ auto-flip to ✅ on the next CI run that includes this commit.
 
 - **D2 Drillhole rename (V-05):** schedule maintenance window, run
   `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher` per
-  `ops/runbooks/drillhole-label-rename.md`.
+  `ops/runbooks/_archived/drillhole-label-rename.md`.
 - **Self-hosted runner for e2e (V-03):** separate provisioning task; not
   required for first deploy.
 - **arm64 build merge (V-01):** fires automatically on next merge to main.
@@ -230,5 +230,5 @@ Every step in this checklist is reversible until Step 8.
 - **GitHub Secrets:** `gh secret delete <NAME>` (or set to a new value).
 - **cd.yml flip:** `git revert` the commit.
 - **Alertmanager wiring:** rm the production yaml on the host.
-- **Cold-start:** `ops/runbooks/volume-migration.md` covers the wipe-and-redo.
-- **First deploy:** `ops/runbooks/deploy-rollback.md`.
+- **Cold-start:** `ops/runbooks/_archived/volume-migration.md` covers the wipe-and-redo.
+- **First deploy:** `ops/runbooks/_archived/deploy-rollback.md`.

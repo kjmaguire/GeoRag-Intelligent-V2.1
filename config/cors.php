@@ -17,9 +17,32 @@ return [
     // Module 9 Chunk 9.6 (A5-03) — explicit method allowlist instead of '*'.
     'allowed_methods' => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 
-    'allowed_origins' => explode(',', env('CORS_ALLOWED_ORIGINS',
-        'http://localhost:3000,http://localhost:5173,http://localhost:8888,http://127.0.0.1:8000,http://127.0.0.1:8888,http://georag.local,http://georag.local:8000',
-    )),
+    /*
+     * CORS_ALLOWED_ORIGINS is not set on the production container, so this
+     * fallback was what production actually served: five localhost origins
+     * and two georag.local ones, with supports_credentials => true. The real
+     * production FQDN is not among them, so the documented public API is
+     * unusable from any browser client — while any page served from one of
+     * those local ports can make credentialed cross-origin requests.
+     * SameSite=lax blunts the cookie half; Sanctum Bearer clients get no
+     * protection from SameSite at all.
+     *
+     * The dev list is now the DEVELOPMENT fallback only. In production an
+     * unset CORS_ALLOWED_ORIGINS means no cross-origin caller is trusted,
+     * which is the safe reading of "nobody said" — same-origin requests
+     * (the Inertia app itself) do not involve CORS and are unaffected.
+     */
+    'allowed_origins' => array_values(array_filter(array_map(
+        'trim',
+        explode(',', (string) env(
+            'CORS_ALLOWED_ORIGINS',
+            env('APP_ENV') === 'production'
+                ? ''
+                : 'http://localhost:3000,http://localhost:5173,http://localhost:8888,'
+                    .'http://127.0.0.1:8000,http://127.0.0.1:8888,'
+                    .'http://georag.local,http://georag.local:8000',
+        )),
+    ))),
 
     'allowed_origins_patterns' => [],
 

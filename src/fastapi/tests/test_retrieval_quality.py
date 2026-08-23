@@ -404,7 +404,7 @@ async def test_reranker_lift_averaged() -> None:
     assert mrr_reranked >= mrr_retrieved * 0.95, (
         f"reranker regressed MRR by {-delta_pct:.1f}% — "
         f"retrieved={mrr_retrieved:.3f} reranked={mrr_reranked:.3f}. "
-        "Bisect SPLADE / BGE / RRF k constants per ops/runbooks/retrieval-tuning.md."
+        "Bisect SPLADE / BGE / RRF k constants per ops/runbooks/_archived/retrieval-tuning.md."
     )
 
 

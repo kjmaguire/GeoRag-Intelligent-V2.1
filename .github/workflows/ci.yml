@@ -15,6 +15,15 @@ env:
   NODE_VERSION: "24"
   PYTHON_VERSION: "3.13"
 
+# Least-privilege default for every job in this file. CodeQL's
+# actions/missing-workflow-permissions flags a workflow with no explicit
+# block because it then inherits the repository default, which can be
+# read-write for the whole repo. Jobs that genuinely need more (SARIF
+# upload, OIDC, package push) keep their own `permissions:` block, which
+# overrides this one rather than adding to it.
+permissions:
+  contents: read
+
 jobs:
   # ==========================================================================
   # Production-privilege migration gate
@@ -45,10 +54,49 @@ jobs:
   # this way, so an initial red is likelier to be a gap in this job than a
   # real regression.
   # ==========================================================================
+  # PROMOTED TO BLOCKING 2026-08-21. This job was advisory and red on
+  # every run since it was added, which is the worst of both states: it
+  # generated noise, blocked nothing, and — because it was ALWAYS red — a
+  # genuinely new regression of the class it was built for would have been
+  # indistinguishable from the standing failure.
+  #
+  # It was red on TWO blockers, not one. The second was invisible until the
+  # first was fixed, because a chain that dies at migration N never reveals
+  # what migration N+40 would have done:
+  #
+  #   1. 2026_06_28_120000 `CREATE EVENT TRIGGER audit_partition_rls_enforce`
+  #      — event triggers require superuser, which neither Azure Flexible
+  #      Server nor this job's roles have. Now guarded WHEN
+  #      insufficient_privilege (and see that migration: the trigger does
+  #      not exist in production either, which is its own problem).
+  #   2. 2026_08_19_050000 `ALTER DEFAULT PRIVILEGES FOR ROLE georag` — a
+  #      hardcoded production role name. Here the migration role is
+  #      `georag_ci`, so it died with
+  #        SQLSTATE[42704] ERROR: role "georag" does not exist
+  #      Now CURRENT_USER, which is what grantPerObject() in the same file
+  #      already resolved via pg_has_role(current_user, ...).
+  #
+  # Verified before promoting, not assumed: the full chain was run locally
+  # against postgis/postgis:18-3.6 under this exact role split (no
+  # superusers, no membership between bootstrap and georag_ci,
+  # MIGRATE_DB_CONNECTION unset just as `cp .env.example .env` leaves it),
+  # reaching `migrate exit=0`. Both ownership shapes were tested — bootstrap
+  # owning 0 relations and bootstrap owning 5 — because of the fidelity note
+  # below. If this job goes red, it is reporting a real ownership or
+  # privilege regression; re-adding continue-on-error is not the fix.
+  #
+  # FIDELITY CAVEAT worth knowing: the phase0 apply below iterates
+  # `database/raw/phase0/*.sql`, and glob order is lexical, so `100-` runs
+  # before `20-`. Most files therefore fail on a schema an earlier-numbered
+  # file has not created yet, and a single pass leaves `bootstrap` owning
+  # ZERO relations — i.e. the ownership split this gate exists to reproduce
+  # is largely not set up. Applying the directory three times gets bootstrap
+  # to 5 tables (interpretation.* and backups.snapshot_runs). Sorting the
+  # files properly, or applying twice, would make the gate meaningfully
+  # stricter than it is today.
   migrations-production-privileges:
-    name: Migrations under production privileges (advisory — promote when green)
+    name: Migrations under production privileges
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 20
 
     services:
@@ -202,7 +250,7 @@ jobs:
           # to match; the pgtap / schema-and-qdrant-drift / e2e-smoke jobs
           # below have their own independent postgres service and are
           # unaffected.
-          POSTGRES_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
+          POSTGRES_PASSWORD: georag_dev_password
           POSTGRES_DB: georag_test
         ports: ["5432:5432"]
         options: >-
@@ -277,7 +325,7 @@ jobs:
           DB_PORT: 5432
           DB_DATABASE: georag_test
           DB_USERNAME: georag
-          DB_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
+          DB_PASSWORD: georag_dev_password
 
       - name: Run migrations
         run: php artisan migrate --force
@@ -287,7 +335,7 @@ jobs:
           DB_PORT: 5432
           DB_DATABASE: georag_test
           DB_USERNAME: georag
-          DB_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
+          DB_PASSWORD: georag_dev_password
 
       # 2026-08-17 CI-gap audit: this step's own env: block sets
       # DB_CONNECTION=pgsql, but `php artisan test` loads phpunit.xml by
@@ -310,7 +358,7 @@ jobs:
           DB_PORT: 5432
           DB_DATABASE: georag_test
           DB_USERNAME: georag
-          DB_PASSWORD: OMljaORhiA7RGQN3ilfemNWpezF9waU
+          DB_PASSWORD: georag_dev_password
 
       # phpunit.pgsql.xml hardcodes DB_HOST=postgresql to match the dev
       # docker-compose service name it's normally run against (see its
@@ -376,6 +424,33 @@ jobs:
       - name: Lint georag_geoparsers
         run: ruff check src/georag_geoparsers/
 
+      # ruff's S110/BLE001 would flag all 262 existing sites at once, and
+      # the only ways to land that are one unreviewable diff or `# noqa`
+      # everywhere -- which turns a real signal into decoration. This
+      # ratchets per file instead: existing debt is visible and attributed,
+      # new silent handlers fail.
+      - name: Handler discrimination (the ratchet must reject, not just pass)
+        run: bash scripts/tests/silent_exception_handlers_test.sh
+
+      - name: No new exception handlers that tell nobody
+        run: python scripts/check_silent_exception_handlers.py
+
+      # Report only — never fails the job. A 2026-08-22 audit found ~3,400
+      # lines across ten modules with no importer, on top of ~1,700 lines of
+      # hallucination layers and ~630 lines of prompt modules deleted the
+      # same week. Dead code is cheap on its own; what it costs is belief —
+      # services/dispatchers/pagerduty.py has a full passing test file, so
+      # CI reads as "PagerDuty alerting verified" while nothing dispatches
+      # to it.
+      #
+      # Deleting them has a blast radius (several have tests, and CLAUDE.md
+      # puts test removal behind approval). Measuring them does not, and a
+      # number that either shrinks or visibly does not is what turns this
+      # from a one-off audit finding into something someone acts on.
+      - name: Dead-module report (report only)
+        if: always()
+        run: python3 scripts/report_dead_modules.py >> "$GITHUB_STEP_SUMMARY" || true
+
       # Doc-phase 125 — incident-driven gate. Catches the doc-phase 122
       # failure mode (app/main.py imports `sentry_sdk` but pyproject's
       # `dependencies` had been edited to remove `sentry-sdk[fastapi]`).
@@ -388,6 +463,35 @@ jobs:
       - name: Pyproject covers app imports (Dagster)
         run: python3 scripts/check_pyproject_covers_imports.py src/dagster/pyproject.toml src/dagster/georag_dagster
 
+      # The gate above proves pyproject DECLARES what the app imports.
+      # This one proves the production image INSTALLS what CI tested.
+      # docker/fastapi.Dockerfile used to run `uv pip install -r
+      # pyproject.toml` — uv's pip interface, which re-resolves the
+      # version ranges at build time and never reads uv.lock. CI installs
+      # with `uv sync`, which does. Two independent resolutions, minutes
+      # apart, nothing comparing them: anything published inside a range
+      # between them shipped untested. The image now installs the
+      # committed export, and this step is what stops that export drifting
+      # away from the lock it came from.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+      - name: Locked dependency export matches uv.lock
+        run: python3 scripts/check_fastapi_lock_export.py
+
+      # A Settings field nothing reads is not dead code — it is a control
+      # that looks like it works. 21 of 143 were in that state: an
+      # operator raising AZURE_FOUNDRY_MAX_TOKENS to widen the output
+      # ceiling got no change, because the Foundry path reads
+      # LLM_MAX_OUTPUT_TOKENS. Four were set in docker-compose.yml.
+      #
+      # Deleting one is a TWO-part change and CI cannot see the second
+      # half: Settings sets extra="forbid", and a key left behind in a
+      # .env FILE raises at startup (an unmatched OS environment variable
+      # is merely ignored — measured, the two paths differ). The checker
+      # names the config files each dead field still appears in.
+      - name: Every Settings field has a reader
+        run: python3 scripts/check_settings_have_readers.py
+
       # Phase 0 #16 — orchestration-boundary gate. Fails the build if
       # LangGraph code starts doing work owned by Hatchet (durable
       # workflow + retry, or outbound webhooks via the outbox dispatcher —
@@ -396,6 +500,13 @@ jobs:
       # and scripts/ci/langgraph_boundary_check.sh.
       - name: LangGraph boundary check (§1 stack discipline)
         run: bash scripts/ci/langgraph_boundary_check.sh
+
+      # 2026-08-21 — sixty hand-rolled Postgres DSN builders had accumulated,
+      # one per Hatchet workflow, already drifted four ways (two of them
+      # hardcoded :5432 and ignored POSTGRES_DIRECT_PORT). They are now one
+      # import from app/db/dsn.py; this keeps them from growing back.
+      - name: DSN single-source check
+        run: bash scripts/ci/dsn_single_source_check.sh
 
   # ─── Qwen / Ollama config-drift guard ────────────────────────────────
   # Cheap stdlib-only check that the four cross-file Qwen settings stay
@@ -417,6 +528,75 @@ jobs:
       - name: Run drift guard
         run: python scripts/check_qwen_config_drift.py
 
+  # ─── Nightly scheduler jobs ─────────────────────────────────────────
+  # shutdown-scheduler-cc and startup-scheduler-cc carry their bash as an
+  # inline `args` string on the Azure job resource, so the deployed body
+  # is a copy of a copy and neither this CI nor cd.yml applies it. Two
+  # things are therefore worth gating even though the apply is manual:
+  # that the reviewed .sh and the YAML copy have not diverged, and that
+  # the cron's UTC hours still resolve to the guard's target local hour.
+  #
+  # The second one is not theoretical. When the maintenance window moved
+  # from US-Eastern to US-Pacific on 2026-08-21, changing the guard
+  # without the cron would have left both jobs permanently skipping --
+  # and a skip exits 0 and looks exactly like a correct off-hour skip, so
+  # nothing downstream would have noticed the shutdown had stopped
+  # running. The tests below also pin the behaviour that makes a failed
+  # sweep visible at all (see the scripts' headers).
+  scheduler-jobs:
+    name: Nightly scheduler jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sweep script behaviour
+        run: bash deploy/azure/containerapps/scripts/tests/run.sh
+      - name: Inline-args parity and cron/guard agreement
+        run: python scripts/check_scheduler_job_parity.py
+
+  # ─── Deployment manifest invariants ───────────────────────────────────
+  # Redis is deployed five different ways (Container Apps, Helm, and three
+  # kubernetes/manifests variants) and every one of them was wrong in a
+  # way that looked fine in isolation:
+  #
+  #   * the Azure lift copied `--appendonly yes` from docker-compose.yml
+  #     and did not copy `volumes: redis_data:/data`, so the queue
+  #     durability that flag exists to provide has never existed there --
+  #     while the nightly scheduler restarts the app twice a day. It also
+  #     dropped `--save ""`, silently leaving RDB snapshots running too.
+  #   * the live app had drifted to `--maxmemory 512mb` inside a 0.5Gi
+  #     container. Those are the same number of bytes, so Redis's own
+  #     guard was unreachable: the platform OOM-kills the container before
+  #     any eviction policy can run.
+  #   * all four k8s/Helm targets set no --maxmemory at all under a 2Gi
+  #     limit, which is the same failure with no guard configured.
+  #
+  # Neither rule is style. Both are "this config does not do what its own
+  # comment says it does", which review does not catch and a checker does.
+  deployment-manifests:
+    name: Deployment manifest invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Checker rejects the shapes that shipped
+        run: bash scripts/tests/redis_manifests_test.sh
+      - name: Redis persistence and memory-headroom invariants
+        run: python scripts/check_redis_manifests.py
+      # coverage.yml runs weekly, so its merger would otherwise only be
+      # exercised once a week -- and a wrong merge prints a plausible
+      # percentage rather than failing.
+      - name: Clover merge is a union, not a last-write-wins
+        run: bash scripts/tests/merge_clover_test.sh
+
   # ─── Schema/Qdrant drift smoke gate ───────────────────────────────────
   # 2026-08-04 incident: two schema-drift bugs shipped straight through
   # this CI to a live deployment because neither Postgres nor Qdrant ever
@@ -433,6 +613,49 @@ jobs:
   # gate at all. This job is deliberately narrow (not a substitute for
   # release-rehearsal.yml's full integration pass): it just proves the two
   # concrete things that broke.
+  raw-migration-parity:
+    name: Raw SQL / migration parity gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    # GeoRAG has two DDL layers. database/migrations/ is run by CD and is in
+    # sync with Azure; database/raw/ is applied by hand locally and by the
+    # migrations-production-privileges job below against a throwaway Postgres.
+    # cd.yml has no equivalent step, so on Azure the raw layer has never run --
+    # 22 objects exist only there, and live code queries several of them.
+    #
+    # Nothing compared the two layers, which is why that went unnoticed for
+    # months. This job compares them. The existing gap is baselined in
+    # scripts/raw-parity-baseline.txt so the gate could land immediately;
+    # anything NEW fails, and so does a baselined entry that has been closed
+    # but left in the file. The list can only shrink.
+    #
+    # No database needed -- it reads both trees off disk.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+
+      - name: Compare database/raw against the migration chain
+        run: php scripts/check-raw-migration-parity.php
+
+      # Separate concern, same job because both are cheap disk reads with no
+      # services. On 2026-08-21 a live dev-cluster Postgres password was found
+      # in 25 tracked files of this PUBLIC repo, put there deliberately to
+      # keep the test config "in sync" with a running container — and running
+      # this check for the first time immediately turned up two more, an S3
+      # secret key and a Redis password, that the audit had missed.
+      #
+      # GitHub secret scanning did not catch any of them: push protection is
+      # enabled but `secret_scanning_non_provider_patterns` is disabled, so a
+      # generic password matches no pattern and nothing looks at it.
+      - name: Check for committed credentials
+        run: php scripts/check-no-committed-secrets.php
+
   schema-and-qdrant-drift:
     name: Schema/Qdrant drift smoke gate
     runs-on: ubuntu-latest
@@ -554,14 +777,15 @@ jobs:
           QDRANT_PORT: "6333"
           EMBEDDING_DIMENSION: "1024"
 
-  # ─── E2E money-path smoke (ADVISORY — promote when green) ─────────────
+  # ─── E2E money-path smoke (BLOCKING since 2026-08-21) ─────────────────
   # 2026-08-15 testing audit: the money path (upload -> parse -> OCR/native
   # -> chunk -> embed -> index -> query -> cited answer) has never executed
   # in CI. `python-test`'s Bucket 1 explicitly excludes integration/golden/
   # live tests; `release-rehearsal.yml`'s Bucket 3 covers it in principle
   # but only runs on tag push/dispatch and its LLM-dependent steps are
-  # continue-on-error; `e2e.yml` is permanently gated off (no self-hosted
-  # runner provisioned). This job closes that PR-time gap with a minimal,
+  # continue-on-error; `e2e.yml` no longer runs on PRs at all (2026-08-21 —
+  # it used to report a green 'E2E — Playwright' check without executing a
+  # single spec). This job closes that PR-time gap with a minimal,
   # narrowly-scoped smoke test — NOT a substitute for the golden/
   # hallucination suites (see eval-gate.yml).
   #
@@ -583,28 +807,28 @@ jobs:
   #     inside persist() fails open (logs a warning) and the embed step
   #     runs explicitly afterwards as a plain function call instead.
   #
-  # ADVISORY (continue-on-error: true) because this is a brand-new,
-  # multi-service integration test assembled from source-level research
-  # (no live GitHub Actions run to confirm green) — matching the phpstan/
-  # mypy precedent below. PROMOTION CRITERIA: drop continue-on-error once
-  # this job has passed on >= 2 consecutive main runs with no flakiness
-  # (watch especially for reranker-model-download flakiness and the
-  # marker-phrase retrieval-threshold rig described in stub_backend.py).
+  # PROMOTED 2026-08-21. The criterion this job carried was "drop
+  # continue-on-error once it has passed on >= 2 consecutive main runs
+  # with no flakiness". It has: the last three CI runs are green here,
+  # two of them consecutive main pushes.
   #
-  # 2026-08-15 CI-promotion audit: checked, NOT promoted. Every real run
-  # since this job landed has failed on the same real bug, not flakiness —
-  # runs 31873785695, 31876922565, 31880497530 all die identically in the
-  # "Run ingest leg" step:
-  #   asyncpg.exceptions.NotNullViolationError: null value in column "slug"
-  #   of relation "projects" violates not-null constraint
-  # (scripts/ci/e2e_smoke_ingest.py:75, _ensure_project() — the INSERT INTO
-  # silver.projects omits the slug column). Fix that INSERT, confirm two
-  # consecutive green main runs, then drop continue-on-error.
+  # The slug NOT NULL violation recorded in the old note
+  # (asyncpg.exceptions.NotNullViolationError on silver.projects.slug,
+  # runs 31873785695 / 31876922565 / 31880497530) was fixed —
+  # scripts/ci/e2e_smoke_ingest.py:74-97 now derives the slug exactly the
+  # way Project::booted() does. The note outlived the bug by weeks and was
+  # the only thing still keeping the product's core loop advisory, which
+  # is the failure mode worth remembering: a stale comment is a gate.
+  #
+  # If this job goes red, read it as a real break in the money path before
+  # assuming flakiness. The two known flake sources are the reranker model
+  # download from HuggingFace and the marker-phrase retrieval threshold in
+  # stub_backend.py; both are documented there. Re-adding
+  # continue-on-error is not the fix for either.
   e2e-smoke:
-    name: E2E money-path smoke (advisory — promote when green)
+    name: E2E money-path smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
 
     services:
       postgres:
@@ -850,9 +1074,149 @@ jobs:
         working-directory: src/georag_object_storage
         run: uv run pytest tests/ -v --tb=short
 
+      # ci.yml gained a ruff target for src/georag_geoparsers/ and no pytest
+      # target, so the package's tests — covering the CSV / XLSX / shapefile
+      # / QGIS parsers that landed days ago in #142/#143/#145 — were linted
+      # and never run. Those are the parsers whose behaviour lost 13 of 15
+      # files in the RedStar import.
+      #
+      # 2026-08-21: the package had exactly ONE test file. Eight more were
+      # ported here from src/dagster/tests/, whose own CI steps were removed
+      # on 2026-08-11 — so the parsers' reputation for being well tested
+      # rested on 57 test files that had not run in ten days, against a
+      # FROZEN COPY of the code. The ported suite runs against the copy the
+      # Hatchet workflows import. 132 tests, 8 of which skip without the
+      # geospatial stack (geopandas / shapely / ezdxf), which this job has.
+      - name: Install georag_geoparsers dependencies
+        working-directory: src/georag_geoparsers
+        run: uv sync --extra dev
+
+      - name: Run georag_geoparsers tests
+        working-directory: src/georag_geoparsers
+        run: uv run pytest tests/ -v --tb=short
+
+  # ─── Integration tests against a real Postgres ────────────────────────
+  # 2026-08-21. `integration` is deselected from python-test's Bucket 1 and
+  # routed to release-rehearsal.yml — a workflow with ZERO runs, whose only
+  # live trigger is manual dispatch (the repo's single tag does not match
+  # `v*.*.*`). So 413 tests, 12% of the Python suite, executed nowhere at
+  # all, including every live-Postgres sweep over ingestion completion and
+  # data integrity.
+  #
+  # SCOPED, DELIBERATELY. This runs the file list in
+  # src/fastapi/tests/integration_ci_manifest.txt, not `-m integration`
+  # wholesale. Measured against this exact service + migrate on 2026-08-21,
+  # the full marker gives 192 passed / 125 failed / 91 errors — the
+  # failures being tests that need a real LLM, Qdrant, Neo4j, or the
+  # database/raw SQL layer that `artisan migrate` does not apply. The
+  # manifest is the subset verified green (142 passed / 4 skipped / 0
+  # failed), which is why this job can be BLOCKING on day one instead of
+  # becoming another advisory job nobody reads. See the manifest header for
+  # the burn-down.
+  integration-postgres:
+    name: Integration (live Postgres)
+    runs-on: ubuntu-latest
+    needs: python-lint
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      # POSTGRES_USER is set here ON PURPOSE. python-test deliberately
+      # leaves it UNSET so these modules module-skip there (that job has no
+      # Postgres service). This job is the place they are meant to run.
+      POSTGRES_USER: georag
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: georag_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      # The DIRECT pair is not redundant. app/db/dsn.py builds the direct
+      # DSN from POSTGRES_DIRECT_HOST/PORT (PgBouncer cannot carry the
+      # session-scoped work these sweeps do), and leaving them unset points
+      # every asyncpg.connect at the container default and fails with a
+      # bare ConnectionRefusedError.
+      POSTGRES_DIRECT_HOST: localhost
+      POSTGRES_DIRECT_PORT: "5432"
+      POSTGRES_SSLMODE: disable
+      FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
+      # Same module-level ClientConfig() singleton as python-test — needs a
+      # JWT-*shaped* token at import even though nothing dials Hatchet.
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      # The Python tests read a schema Laravel owns, so the migration chain
+      # is the fixture. Nothing here writes application code paths through
+      # Laravel — it exists purely to create silver/gold/audit/workflow.
+      - name: Migrate the schema
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+          php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: test_password
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      - name: Run the manifest
+        working-directory: src/fastapi
+        run: |
+          FILES=$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' \
+            tests/integration_ci_manifest.txt | tr '\n' ' ')
+          if [ -z "$FILES" ]; then
+            echo "::error::integration_ci_manifest.txt selected no files"
+            exit 1
+          fi
+          echo "manifest files: $(echo $FILES | wc -w)"
+          # -p no:randomly: several of these modules share a bootstrapped
+          # workspace/project that the state-machine module provisions, so
+          # order is load-bearing.
+          uv run pytest -v --tb=short -m integration -p no:randomly $FILES
+
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:
-    name: Frontend (ESLint + Vite Build)
+    # Renamed 2026-08-21. The title said ESLint; the steps are tsc, vitest
+    # and vite build. There is no eslint config, no eslint dependency and no
+    # lint script in package.json, so a reviewer trusting the check name
+    # assumed lint coverage over 27+ React source files that have none.
+    # Adding ESLint is worth doing and is a separate change with its own
+    # findings to burn down — what could not stay is the name claiming it.
+    name: Frontend (types + tests + build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -870,6 +1234,42 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit
+
+      # Instrumentation, not a gate. `noImplicitAny` is false in
+      # tsconfig.json, which cancels most of `strict: true`: untyped
+      # parameters across the whole TS/TSX tree are implicitly `any`, and
+      # a typo in a callback over an API response compiles clean and
+      # fails at runtime as a blank panel.
+      #
+      # Nobody has flipped it because nobody knows what it costs, and the
+      # step above is blocking, so finding out the hard way stops the
+      # branch. This measures it on every run instead: a number that
+      # either shrinks or does not, and a list of where to start.
+      #
+      # `|| true` on purpose -- this step must never fail the job. The
+      # gate is the step above it.
+      - name: noImplicitAny burn-down (report only)
+        if: always()
+        run: |
+          npx tsc --noEmit --noImplicitAny > /tmp/implicit-any.txt 2>&1 || true
+          COUNT=$(grep -c "error TS7[0-9]*" /tmp/implicit-any.txt || echo 0)
+          {
+            echo "### noImplicitAny burn-down"
+            echo
+            echo "\`tsconfig.json\` sets \`noImplicitAny: false\`, which cancels most of \`strict: true\`."
+            echo
+            echo "**Implicit-any errors if flipped today: \`$COUNT\`**"
+            echo
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Worst files:"
+              echo
+              echo '```'
+              grep -o "^[^(]*" /tmp/implicit-any.txt | sort | uniq -c | sort -rn | head -15
+              echo '```'
+            else
+              echo "Zero. Flip \`noImplicitAny\` to \`true\` and delete this step."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Vitest
         run: npm run test --if-present
@@ -891,21 +1291,67 @@ jobs:
   #      ignores) with a TODO to burn them down.
   # Until then, red here is signal, not a gate.
   #
-  # 2026-08-15 CI-promotion audit: checked, NOT promoted — neither job has
-  # ever gone green. Last 3 real runs (31873785695, 31876922565, 31880497530)
-  # on main all fail both jobs with real, non-flaky findings:
-  #   phpstan: "[ERROR] Found 118 errors" — none captured in
-  #     phpstan-baseline.neon (regenerate it with `composer run stan:baseline`
-  #     to separate pre-existing debt from new regressions, then promote).
-  #   mypy: "Found 824 errors in 198 files" — no baseline/per-module ignores
-  #     exist yet for [tool.mypy] strict in src/fastapi/pyproject.toml.
-  # Same run set as the e2e-smoke note above — consistent failure, not
-  # flakiness, so this stays advisory rather than being promoted on a hope.
+  # 2026-08-22: phpstan PROMOTED, mypy still advisory. See each job.
   phpstan:
-    name: phpstan (advisory — promote when green)
+    name: phpstan (larastan level 6)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
+    # BLOCKING as of 2026-08-22. Promoted under criterion 2 above: the
+    # baseline was regenerated so `phpstan analyse` now reports "No
+    # errors" locally, which means from here on a red phpstan is a NEW
+    # error someone just introduced, not the 288 pre-existing ones.
+    #
+    # What the regeneration actually did, measured before and after:
+    #   * the old baseline held 159 entries and the run still reported 135
+    #     errors on top of them;
+    #   * 12 of those 135 were `ignore.unmatched` / `ignore.count` — stale
+    #     baseline entries whose code had since been fixed, i.e. the
+    #     baseline was itself generating a chunk of the noise;
+    #   * the new baseline holds 288 errors across 236 entries.
+    #
+    # THE BURN-DOWN, by rule, largest first. These are debt, not absolution:
+    #   43  property.notFound         — models lack @property annotations,
+    #                                   so Eloquent attributes are unchecked
+    #   12  larastan.noEnvCallsOutsideOfConfig — env() outside config/
+    #                                   returns null once `config:cache` is
+    #                                   run. Nothing runs it today (not in
+    #                                   docker/laravel.Dockerfile, not in the
+    #                                   live container command), so these are
+    #                                   a landmine rather than a live break —
+    #                                   and the day someone adds that
+    #                                   standard optimisation, those call
+    #                                   sites start reading null.
+    #                                   2026-08-22: was 26. The 14 that read
+    #                                   FASTAPI_SERVICE_KEY / FASTAPI_INTERNAL_URL
+    #                                   are gone — a config key for both
+    #                                   already existed and was used at a
+    #                                   dozen OTHER sites, so half the
+    #                                   FastAPI callers would have kept
+    #                                   authenticating while the other half
+    #                                   read null. Several had already been
+    #                                   half-converted into
+    #                                   `config('x') ?? config('x')`.
+    #                                   What is left needs real config
+    #                                   entries, not a swap.
+    #   13  nullsafe.neverNull        — DO NOT "FIX" THESE. All 13 are
+    #                                   `$this->command?->` in seeders.
+    #                                   Illuminate\Database\Seeder declares
+    #                                   `protected $command;` untyped and
+    #                                   uninitialised, and the framework
+    #                                   guards it with isset() in its own
+    #                                   code. larastan believes the
+    #                                   optimistic `@var \Illuminate\Console\
+    #                                   Command` docblock. Replacing ?-> with
+    #                                   -> turns a defensive null-check into
+    #                                   a fatal on any seeder not invoked
+    #                                   through artisan.
+    #    9  missingType.iterableValue —  broadcastWith() array shapes
+    #    6  class.notFound            — MicrosoftAzure\Storage\Blob\
+    #                                   BlobRestProxy; the package is not
+    #                                   installed. Same root cause as the 5
+    #                                   AzureBlobDiskTest errors.
+    #    5  missingType.parameter, 4 return.type, 4 argument.templateType,
+    #    and a 25-error tail across 9 more rules.
 
     steps:
       - uses: actions/checkout@v7
@@ -926,10 +1372,45 @@ jobs:
         run: composer run stan
 
   mypy:
-    name: mypy (advisory — promote when green)
+    name: mypy (blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
+    # 2026-08-21: the config this runs was dropped from `strict = true` to
+    # a reachable baseline. Measured over the same tree on the same day:
+    #
+    #              strict = true        current config
+    #   errors            850                    286
+    #   modules           197                     91
+    #
+    # Two thirds of the strict output was strictness noise — missing
+    # generic parameters, un-annotated defs, and libraries that ship no
+    # stubs. What survives is mostly real, and it found a live-shaped bug
+    # immediately (`"None" has no attribute "labels"` in qdrant_fallback,
+    # a metrics helper that could only ever raise). The full reasoning and
+    # the ratchet plan are in [tool.mypy] in src/fastapi/pyproject.toml.
+    #
+    # A CORRECTION TO WHAT THIS COMMENT USED TO SAY. It claimed a local run
+    # "produces a SHORTER module list" because "most of the 824 collapse
+    # into import errors". That is not what happens: a local strict run
+    # gives 850/197 against CI's 824/198 — indistinguishable. The old
+    # reasoning was wrong.
+    #
+    # PROMOTED TO BLOCKING 2026-08-21. `mypy app --platform linux` over
+    # src/fastapi reports "Success: no issues found in 352 source files"
+    # with the reachable baseline plus the two-tier burn-down list in
+    # [[tool.mypy.overrides]]. 235 of 353 modules are checked; the other
+    # 118 are named, dated and explained there.
+    #
+    # The residual risk is one module outside all 118 erroring here but not
+    # locally, because `ignore_missing_imports = true` makes a package this
+    # checkout lacks into Any. Tier 2 of the override list is that margin.
+    # If it is not wide enough, the step below prints the exact list to
+    # paste — a mechanical fix, and a far better failure than the one this
+    # replaces, where a genuine type regression merged silently inside a
+    # wall of 824 advisory errors nobody read.
+    #
+    # Do not re-add continue-on-error to make a red run go away. Either fix
+    # the module or add it to Tier 2 with a dated reason.
 
     steps:
       - uses: actions/checkout@v7
@@ -943,11 +1424,38 @@ jobs:
         working-directory: src/fastapi
         run: uv sync --extra dev
 
-      # [tool.mypy] in src/fastapi/pyproject.toml is strict = true; mypy
-      # ships in the dev extra (mypy>=1.15). Scoped to the app package.
-      - name: Run mypy (strict)
+      # [tool.mypy] in src/fastapi/pyproject.toml carries the settings;
+      # mypy ships in the dev extra (mypy>=1.15). Scoped to the app package.
+      - name: Run mypy
         working-directory: src/fastapi
         run: uv run mypy app
+
+      # The one output that turns this job from advisory into promotable.
+      # Everything else about promotion is written down; this is the datum
+      # that cannot be produced anywhere but here.
+      - name: Emit the per-module list a promotion would need
+        if: always()
+        working-directory: src/fastapi
+        run: |
+          echo '### Modules mypy reports errors in' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Empty on a green run. If this job failed, these are the modules to' >> "$GITHUB_STEP_SUMMARY"
+          echo 'fix — or, as a last resort, to add to Tier 2 of the burn-down list.' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Paste into [[tool.mypy.overrides]] with ignore_errors = true,' >> "$GITHUB_STEP_SUMMARY"
+          echo 'then drop continue-on-error from this job.' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '```toml' >> "$GITHUB_STEP_SUMMARY"
+          echo '[[tool.mypy.overrides]]' >> "$GITHUB_STEP_SUMMARY"
+          echo 'ignore_errors = true' >> "$GITHUB_STEP_SUMMARY"
+          echo 'module = [' >> "$GITHUB_STEP_SUMMARY"
+          uv run mypy app --no-error-summary 2>/dev/null \
+            | cut -d: -f1 \
+            | sed 's#/#.#g; s#\.py$##' \
+            | sort -u \
+            | sed 's/^/    "/; s/$/",/' >> "$GITHUB_STEP_SUMMARY" || true
+          echo ']' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ─── pgTAP MVT function tests ────────────────────────────────────────
   pgtap:

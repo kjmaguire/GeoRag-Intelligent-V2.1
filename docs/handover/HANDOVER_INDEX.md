@@ -26,8 +26,8 @@ This index is the navigation layer. Sections 3–6 below give you everything you
 - **Day 1** — this file, then `SAD.md`, then `docs/RUNBOOK.md` and `docs/OPERATOR-AFTERNOON.md` for first-deploy context.
 - **Day 2** — `DFS.md` for the data plane, then `georag-architecture.html` Section 04 for schema detail.
 - **Day 3** — `API_DOCUMENTATION.md` plus the live OpenAPI from the running FastAPI container (`GET /openapi.json`).
-- **When deploying** — `CICD_PIPELINE.md`, then `ops/runbooks/cold-start.md` + `ops/runbooks/secret-management.md`.
-- **On call** — `ops/runbooks/on-call.md` + the scenario-specific runbook under `ops/runbooks/`.
+- **When deploying** — `CICD_PIPELINE.md`, then `ops/runbooks/_archived/cold-start.md` + `ops/runbooks/_archived/secret-management.md`.
+- **On call** — `ops/runbooks/_archived/on-call.md` + the scenario-specific runbook under `ops/runbooks/`.
 
 ---
 
@@ -239,7 +239,7 @@ Items flagged by code inspection or by drift between code and canonical spec. No
 - **Secrets**: SOPS + age. `SOPS_AGE_PRIVATE_KEY` per GitHub Environment. Plaintext template at `.env.production.example` (140 keys). Encrypted file `.env.production.enc` at repo root.
 - **SME / domain owner**: Kyle Maguire. Per `feedback_graham_not_reviewing` — Graham is NOT in the review loop.
 - **Cold-start procedure**: [`../OPERATOR-AFTERNOON.md`](../OPERATOR-AFTERNOON.md) + `bash scripts/operator/preflight.sh` (O-01..O-07 gates).
-- **On-call**: [`../../ops/runbooks/on-call.md`](../../ops/runbooks/on-call.md).
+- **On-call**: [`../../ops/runbooks/_archived/on-call.md`](../../ops/runbooks/_archived/on-call.md).
 - **License**: No `LICENSE` file published. All rights reserved. Source shared for review only; no permission for redistribution / commercial use without written agreement. Third-party deps restricted to MIT / BSD / Apache 2.0 / MPL-2.0.
 
 ---

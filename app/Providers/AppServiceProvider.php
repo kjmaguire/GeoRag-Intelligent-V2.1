@@ -6,6 +6,7 @@ namespace App\Providers;
 
 use App\Models\User;
 use App\Policies\DashboardPolicy;
+use App\Services\Azure\AzureBlobDiskLifetime;
 use App\Services\Azure\ManagedIdentityTokenProvider;
 use App\Support\Http\PooledHttpClient;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -17,6 +18,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\ServiceProvider;
@@ -74,7 +76,22 @@ class AppServiceProvider extends ServiceProvider
             // Flysystem's own UnableToGenerateTemporaryUrl — loud failure,
             // not a silently broken URL.
             if (($config['auth_mode'] ?? 'connection_string') === 'managed_identity') {
-                $token = $app->make(ManagedIdentityTokenProvider::class)->getToken();
+                // The token is COPIED into the client below and cannot be
+                // changed afterwards — the SDK takes a bearer string, with
+                // no setter and no callback. Laravel then caches this disk
+                // on the FilesystemManager singleton, which under Octane
+                // lives as long as the worker, so this closure runs once
+                // and the token it captured is used until the worker dies.
+                //
+                // Record when that token expires so the RequestReceived
+                // listener can drop the disk at that moment and force a
+                // rebuild. Without it the worker serves 401s on every blob
+                // operation from expiry until it happens to recycle —
+                // OCTANE_MAX_REQUESTS=500 on an app this quiet means days.
+                [$token, $expiresAt] = $app
+                    ->make(ManagedIdentityTokenProvider::class)
+                    ->getTokenWithExpiry();
+                AzureBlobDiskLifetime::remember($expiresAt);
                 $client = BlobRestProxy::createBlobServiceWithTokenCredential(
                     $token,
                     // DefaultEndpointsProtocol is required here even though it's
@@ -112,11 +129,18 @@ class AppServiceProvider extends ServiceProvider
                         function (string $path, \DateTimeInterface $expiration, array $options = []) use (
                             $sasHelper, $accountName, $container
                         ): string {
+                            // The SDK types $signedExpiry as DateTime|string,
+                            // not DateTimeInterface, and Laravel hands the
+                            // callback a DateTimeInterface -- in practice a
+                            // Carbon, which is a DateTimeImmutable and so is
+                            // NOT a DateTime. Passing it through happened to
+                            // work because the SDK only formats the value,
+                            // but it does not satisfy the signature.
                             $token = $sasHelper->generateBlobServiceSharedAccessSignatureToken(
                                 BlobResources::RESOURCE_TYPE_BLOB,
                                 "{$container}/{$path}",
                                 'r',
-                                $expiration,
+                                \DateTime::createFromInterface($expiration),
                             );
 
                             return "https://{$accountName}.blob.core.windows.net/{$container}/{$path}?{$token}";
@@ -207,12 +231,6 @@ class AppServiceProvider extends ServiceProvider
 
         // ── project_user pivot boot guard (A1-01) ───────────────────
         //
-        // The project_user pivot table is the single source of truth for
-        // tenant isolation. If it is absent, User::hasProjectAccess() now
-        // fails CLOSED (returns false), but a missing pivot is a misconfigured
-        // environment — we refuse to serve web traffic rather than silently
-        // deny every request.
-        //
         // Octane lifecycle: this boot() method runs ONCE when the Octane
         // worker process starts, not per request. That is exactly the right
         // place for a startup health check. The guard is deliberately skipped
@@ -220,17 +238,86 @@ class AppServiceProvider extends ServiceProvider
         // the table may not yet exist at that point — the migration that creates
         // it must be allowed to run. Unit tests are also excluded because they
         // run RefreshDatabase which drops and recreates tables between cases.
+        //
+        // `runningInConsole()` is false under Octane despite PHP_SAPI being
+        // 'cli': vendor/laravel/octane/bin/bootstrap.php sets
+        // $_ENV['APP_RUNNING_IN_CONSOLE'] = false before the app boots. So
+        // this DOES run in the web tier, and only there — `artisan horizon`
+        // and `artisan reverb:start` are console commands and skip it.
         if (! $this->app->runningInConsole()) {
-            try {
-                DB::table('project_user')->limit(1)->get();
-            } catch (\Throwable $e) {
-                throw new \RuntimeException(
-                    'project_user pivot table is missing or unreadable — refusing to boot. '
-                    .'Run `php artisan migrate` and ensure the database is reachable.',
-                    0,
-                    $e,
-                );
-            }
+            $this->guardProjectUserPivot();
+        }
+    }
+
+    /**
+     * Refuse to boot when the project_user pivot is missing, but NOT when the
+     * database is merely unreachable.
+     *
+     * The pivot is the single source of truth for tenant isolation. If it is
+     * absent, User::hasProjectAccess() fails CLOSED (returns false) — correct,
+     * but a silent deny-everything is a worse failure than a loud one, so a
+     * missing pivot still refuses web traffic.
+     *
+     * What this must NOT do is treat "cannot reach Postgres" as the same
+     * condition. It used to: the guard caught \Throwable and turned every
+     * failure into a fatal RuntimeException. On this deployment that is not
+     * hypothetical — georag-pg-cc is deliberately Stopped 00:00–10:00 UTC by
+     * the nightly cost schedule, so for ten hours a day any laravel-octane-cc
+     * replica that restarts (a scale event, a node move, a CD rollout) threw
+     * here, died, and crash-looped against a database that was down ON
+     * PURPOSE. A deploy landing inside the window would fail its health check
+     * for a reason entirely unrelated to the deploy.
+     *
+     * The two conditions want opposite responses:
+     *
+     *   - Pivot missing / unreadable → permanent, needs a human, and serving
+     *     traffic would silently deny every request. Refuse to boot.
+     *   - Database unreachable → transient, expected nightly, already
+     *     monitored elsewhere. Boot; requests will surface their own errors,
+     *     the health endpoint and static assets keep answering, and the very
+     *     next request succeeds when Postgres returns — with no restart
+     *     backoff and no failed revision.
+     *
+     * The discrimination is not new logic: User::isMissingProjectUserPivot()
+     * has drawn exactly this line (SQLSTATE 42P01 / MySQL 1146) since A1-01.
+     * The boot guard simply never used it. 42501 (insufficient_privilege) and
+     * 3F000 (invalid_schema_name) are folded in here as equally permanent
+     * misconfigurations — a GRANT gap presents as a readable-but-forbidden
+     * table, which is just as fatal and just as human-fixable.
+     */
+    public function guardProjectUserPivot(): void
+    {
+        try {
+            // Round-trip a trivial query first. This must be a real query,
+            // not getPdo(): behind PgBouncer or Hyperdrive the client
+            // connection is established before any server connection exists,
+            // so a successful connect() says nothing about the backend.
+            DB::selectOne('select 1');
+        } catch (\Throwable $e) {
+            Log::critical(
+                'AppServiceProvider: database unreachable at boot — starting anyway. '
+                .'The project_user pivot guard could not run, so tenancy has NOT been '
+                .'verified for this worker. Requests needing the database will fail '
+                .'until it returns.',
+                ['exception' => $e->getMessage()],
+            );
+
+            return;
+        }
+
+        // The server answered, so anything that fails below is a property of
+        // the schema or our grants on it — not of the network.
+        try {
+            DB::table('project_user')->limit(1)->get();
+        } catch (\Throwable $e) {
+            throw new \RuntimeException(
+                'project_user pivot table is missing or unreadable — refusing to boot. '
+                .'The database IS reachable, so this is a schema or privilege problem, '
+                .'not an outage. Run `php artisan migrate` and check that the app role '
+                .'has SELECT on project_user.',
+                0,
+                $e,
+            );
         }
     }
 }

@@ -163,7 +163,7 @@ async def test_restore_refuses_cross_workspace(tmp_path: Path) -> None:
 # ===========================================================================
 PG_DSN = os.environ.get(
     "PG_DSN",
-    "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",
+    "postgresql://georag:georag_dev_password@localhost:5432/georag",
 )
 
 

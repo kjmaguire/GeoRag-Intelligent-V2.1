@@ -244,7 +244,7 @@ final class FastApiJwtMinter
 }
 ```
 
-**Rotation:** add new secret under `previous` slot in FastAPI config, rotate active to new `kid` in Laravel config, wait for old tokens to expire (60s), remove `previous` slot. Procedure: `ops/runbooks/secret-rotation.md` § FASTAPI_SERVICE_KEY.
+**Rotation:** add new secret under `previous` slot in FastAPI config, rotate active to new `kid` in Laravel config, wait for old tokens to expire (60s), remove `previous` slot. Procedure: `ops/runbooks/_archived/secret-rotation.md` § FASTAPI_SERVICE_KEY.
 
 ## Backend selection & retry budget (§08)
 

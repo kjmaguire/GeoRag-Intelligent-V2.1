@@ -1,5 +1,18 @@
 """Build a compact text context block from tool results.
 
+NOT WIRED (measured 2026-08-22). ``_build_context`` has no
+production caller. The live renderer is
+``app.agent.agentic_retrieval.nodes._render_tool_results_context``.
+The only invocations of this module's entry point are
+tests/test_context_packing.py, tests/test_prompt_injection_fence.py
+and a re-export at orchestrator/__init__.py.
+
+Two settings are reachable ONLY from here and are therefore also
+inert in production: MAX_CONTEXT_DOC_CHUNKS, and MMR via
+``_mmr_select_chunks`` (whose sole caller is line ~127 below).
+config.py's RERANKER_TOP_K comment used to cite MMR as the reason
+that value was raised to 12; it has been corrected.
+
 Extracted from ``app.agent.orchestrator`` in Phase F.11. The
 orchestrator re-exports `_build_context` so existing callers keep
 working unchanged.
@@ -30,9 +43,10 @@ from app.agent.tools import (
 from app.config import settings
 
 # ---------------------------------------------------------------------------
-# Audit 2026-06-27 — prompt-injection data-fence (settings-gated, default OFF
-# via PROMPT_INJECTION_DELIMITING_ENABLED). Wraps attacker-influenceable
-# document body text so the LLM treats it as evidence, never as instructions.
+# Audit 2026-06-27 — prompt-injection data-fence (settings-gated, default ON
+# since 2026-08-21 via PROMPT_INJECTION_DELIMITING_ENABLED). Wraps
+# attacker-influenceable document body text so the LLM treats it as
+# evidence, never as instructions.
 # ---------------------------------------------------------------------------
 _UNTRUSTED_OPEN = "<<<UNTRUSTED_DOCUMENT_TEXT>>>"
 _UNTRUSTED_CLOSE = "<<<END_UNTRUSTED_DOCUMENT_TEXT>>>"

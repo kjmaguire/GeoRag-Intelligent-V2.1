@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-PG_DSN = "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@pgbouncer:6432/georag"
+PG_DSN = "postgresql://georag:georag_dev_password@pgbouncer:6432/georag"
 NEO4J_URI = "bolt://neo4j:7687"
 NEO4J_USER = "neo4j"
 NEO4J_PASS = "24kNKWLbX20bgHEXAuMSGjCp228LIfUE"

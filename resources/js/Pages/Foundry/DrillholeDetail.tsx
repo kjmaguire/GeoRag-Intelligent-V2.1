@@ -110,7 +110,16 @@ export default function DrillholeDetail({ project, collar, intervals, assays, st
     // relevant Inertia props if this project saw collars/assays move.
     useWorkspaceDataUpdated(project.project_id, (evt) => {
         const t = evt.affected_types;
-        if (t.includes('collars') || t.includes('assays')) {
+        // 'structures' and 'curves' matter as much as collars here: this
+        // page is where a shapefile of structural readings and a LAS file
+        // of downhole curves actually show up, and filtering them out left
+        // the strip log showing the state before the upload.
+        if (
+            t.includes('collars')
+            || t.includes('assays')
+            || t.includes('structures')
+            || t.includes('curves')
+        ) {
             router.reload({
                 only: ['collar', 'intervals', 'assays', 'structures', 'cross_sections', 'lithology_quality', 'data_quality_flags'],
             });

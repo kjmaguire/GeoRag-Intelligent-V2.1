@@ -110,4 +110,68 @@ final class SecurityHeadersTest extends TestCase
         $csp_prod = $mw->buildCsp('production');
         $this->assertStringContainsString('upgrade-insecure-requests', $csp_prod);
     }
+
+    public function test_csp_allows_every_configured_basemap_origin(): void
+    {
+        // The basemap URLs are configurable so an air-gapped deployment can
+        // point them at its own tile server (CLAUDE.md hard rule #8). That
+        // only works if the CSP follows: connect-src used to be four
+        // hard-coded hosts, so repointing a basemap produced a style fetch
+        // blocked by a policy the operator had no reason to look at.
+        config()->set('services.basemap.styles', [
+            'positron' => 'https://tiles.internal.example/styles/positron',
+            'bright' => 'https://tiles.internal.example/styles/bright',
+            'dark_matter' => 'https://tiles.internal.example/styles/dark',
+        ]);
+        config()->set('services.basemap.glyphs', 'https://fonts.internal.example/{fontstack}/{range}.pbf');
+        config()->set('services.basemap.satellite_tiles', 'https://imagery.internal.example/{z}/{y}/{x}');
+
+        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
+
+        $this->assertStringContainsString('https://tiles.internal.example', $csp);
+        $this->assertStringContainsString('https://fonts.internal.example', $csp);
+        $this->assertStringContainsString('https://imagery.internal.example', $csp);
+        $this->assertStringNotContainsString('openfreemap', $csp);
+        $this->assertStringNotContainsString('cartocdn', $csp);
+    }
+
+    public function test_csp_allows_sharded_tile_subdomains(): void
+    {
+        // Carto's dark_matter style.json serves its tiles from
+        // a./b./c.basemaps.cartocdn.com. An allowlist holding only the style
+        // host loads the style and then blocks every tile it references.
+        config()->set('services.basemap.styles', [
+            'dark_matter' => 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+        ]);
+
+        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
+
+        $this->assertStringContainsString('https://basemaps.cartocdn.com', $csp);
+        $this->assertStringContainsString('https://*.basemaps.cartocdn.com', $csp);
+    }
+
+    public function test_csp_keeps_the_origins_that_are_not_configurable(): void
+    {
+        // MapLibre's built-in fallback style and the presigned export host
+        // are not basemap config, so they cannot be derived.
+        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
+
+        $this->assertStringContainsString('https://demotiles.maplibre.org', $csp);
+        $this->assertStringContainsString('https://s3.amazonaws.com', $csp);
+    }
+
+    public function test_csp_tolerates_a_relative_basemap_url(): void
+    {
+        // A deployment serving tiles from its own origin needs no allowlist
+        // entry at all — 'self' covers it. Parsing must not emit a broken
+        // "://" token that invalidates the whole directive.
+        config()->set('services.basemap.styles', ['positron' => '/tiles/positron.json']);
+        config()->set('services.basemap.glyphs', null);
+        config()->set('services.basemap.satellite_tiles', '');
+
+        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
+
+        $this->assertStringNotContainsString(' ://', $csp);
+        $this->assertStringContainsString("connect-src 'self' wss: ws:", $csp);
+    }
 }

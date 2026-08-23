@@ -98,6 +98,11 @@ class TiffNormalizeOutput(BaseModel):
     truncated_at_cap: bool
     normalize_skipped: bool
     ingest_pdf_workflow_run_id: str | None = None
+    #: Set when the raster was recorded and deliberately NOT sent through
+    #: the OCR stack. Distinct from ``normalize_skipped``, which means the
+    #: derived PDF was already present from an earlier run. When this is
+    #: set, ``derived_minio_key`` is empty because no PDF was produced.
+    ocr_skipped_reason: str | None = None
 
 
 _SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -203,13 +208,87 @@ async def normalize(
     # sheet would otherwise arrive as a picture with no idea where it is.
     # Additive and non-fatal by construction — see raster_metadata's
     # docstring for why it lives outside this module.
-    await persist_raster_metadata(
+    capture = await persist_raster_metadata(
         source_bytes=source_bytes,
         source_key=input.minio_key,
         source_sha256=source_sha256,
         project_id=str(input.project_id),
         workspace_id=str(input.workspace_id),
     )
+
+    # 2c. Measurement raster — record it and stop.
+    #
+    # ADR-0005 wraps a TIFF to PDF because a scanned map sheet is a
+    # picture of a page with text on it. A DEM, an airborne magnetics
+    # grid or a multispectral scene is not: there is no text, so
+    # Document Intelligence bills for reading a continuous-tone
+    # surface and whatever character noise comes back is chunked,
+    # embedded and indexed as retrievable passages that compete in
+    # the recall set of every future query, with a citation attached.
+    #
+    # `persist_raster_metadata` has always read the exact signal
+    # needed to tell the two apart — the CRS and the per-band bit
+    # depth. The return value was simply discarded.
+    if capture.is_measurement_raster:
+        reason = (
+            f"Recorded as a raster layer ({capture.crs}). Not sent to OCR: "
+            "this is a continuous-tone measurement grid, not a scanned sheet, "
+            "so it carries no text to extract. Its coordinates, extent and "
+            "band statistics are queryable; its pixels are not searchable in chat."
+        )
+        log.info(
+            "tiff_normalize.ocr_skipped key=%s crs=%s reason=%s",
+            input.minio_key, capture.crs, capture.reason,
+        )
+
+        # Terminal write with the reason attached. This lands as
+        # 'partial', not 'completed', and that is the intent: the run
+        # did everything correctly, and the file the geologist
+        # uploaded is still not findable in chat. A green
+        # 'Completed' on a document you cannot then retrieve is the
+        # worse of the two lies.
+        run_id = await ingest_progress.lookup_active_run_id(
+            workspace_id=str(input.workspace_id),
+            minio_key=input.minio_key,
+        )
+        if run_id:
+            raster_warnings = [{"code": "raster_not_ocred", "detail": reason}]
+            rows_written = 1 if capture.written else 0
+            transitioned = await ingest_progress.mark_completed_by_run(
+                run_id=run_id,
+                rows_written=rows_written,
+                warnings=raster_warnings,
+            )
+            if transitioned:
+                # This branch ends the run here — no derived PDF is
+                # dispatched, so nothing downstream will ever report on the
+                # user's behalf. Say so, and say why: "we kept the image,
+                # we could not read text off it" is the whole outcome, and
+                # it reached no product surface at all before this.
+                await ingest_progress.broadcast_terminal(
+                    workspace_id=str(input.workspace_id),
+                    project_id=str(input.project_id),
+                    run_id=run_id,
+                    stage="parse",
+                    status=ingest_progress.terminal_status(
+                        rows_written=rows_written, warnings=raster_warnings,
+                    ),
+                    message=ingest_progress.terminal_message(
+                        rows_written=rows_written,
+                        warnings=raster_warnings,
+                        noun="image",
+                    ),
+                )
+
+        return TiffNormalizeOutput(
+            source_sha256=source_sha256,
+            derived_minio_key="",
+            page_count=0,
+            truncated_at_cap=False,
+            normalize_skipped=False,
+            ingest_pdf_workflow_run_id=None,
+            ocr_skipped_reason=reason,
+        )
 
     if not normalize_skipped:
         # 3. Wrap to PDF (lossless, in-memory).

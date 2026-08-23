@@ -21,6 +21,7 @@ first failing validator's layer goes on `QuestionResult.failure_layer`.
 
 from __future__ import annotations
 
+import re
 from typing import Any, NamedTuple
 
 from app.services.eval.workspace_evaluator import QuestionRecord
@@ -133,6 +134,126 @@ def validate_refusal_correctness(
                 f"but detected_refusal={detected}"
             )
         ),
+    )
+
+
+def _compliance_rules(raw: list[Any]) -> tuple[list[str], list[str]]:
+    """Normalise ``expected_language_compliance`` into (required, forbidden).
+
+    Accepted entry shapes, so SME-authored YAML can stay terse:
+
+        - "no public data within 25"                  -> required
+        - {must_contain: "..."}                       -> required
+        - {must_not_contain: "..."}                   -> forbidden
+        - {must_contain: [...], must_not_contain: [...]}
+
+    Anything unrecognised is ignored rather than raising: a malformed
+    fixture must not take down an eval run, and the ``checked`` counter
+    in the outcome detail reports how many rules were actually applied.
+    """
+    required: list[str] = []
+    forbidden: list[str] = []
+
+    def _add(target: list[str], value: Any) -> None:
+        if isinstance(value, str):
+            target.append(value)
+        elif isinstance(value, (list, tuple)):
+            target.extend(str(v) for v in value if isinstance(v, str))
+
+    for entry in raw or []:
+        if isinstance(entry, str):
+            required.append(entry)
+        elif isinstance(entry, dict):
+            _add(required, entry.get("must_contain"))
+            _add(forbidden, entry.get("must_not_contain"))
+
+    return required, forbidden
+
+
+def _contains_phrase(haystack_lower: str, phrase: str) -> bool:
+    """Word-boundary-aware containment.
+
+    Deliberately NOT a bare substring test. The equivalent check in
+    test_golden_queries.py is `phrase.lower() not in response_text.lower()`,
+    and it bans phrases as short as "RC" and "0" — "rc" occurs inside
+    "source", "search" and "record", and "0" occurs inside "10", "2022" and
+    "PLS-22-10". A forbidden-phrase check built that way fails correct
+    answers, which is the fastest way to make a regulatory gate untrusted.
+
+    Boundaries are only applied where the phrase actually starts/ends with a
+    word character, so a phrase like "25 km" or "%" still matches.
+    """
+    if not phrase:
+        return False
+    escaped = re.escape(phrase.lower())
+    prefix = r"\b" if phrase[:1].isalnum() or phrase[:1] == "_" else ""
+    suffix = r"\b" if phrase[-1:].isalnum() or phrase[-1:] == "_" else ""
+    return re.search(prefix + escaped + suffix, haystack_lower) is not None
+
+
+def validate_language_compliance(
+    *,
+    response_text: str,
+    question: QuestionRecord,
+) -> ValidatorOutcome:
+    """§04i Layer 6 / §2.9 — required and forbidden language.
+
+    Added 2026-08-21, because the §2.9 anchor had no negative assertion.
+    `thresholds.py` gives question_set 'public_private_boundary' a
+    zero-regression cap and calls it "a regulatory anchor", but the only
+    check applied to it was `validate_refusal_correctness`, which passes on
+    the PRESENCE of a refusal phrase anywhere in the answer. An answer that
+    opens "I cannot share private drilling data from other workspaces" and
+    then discloses the hole IDs anyway satisfies that check completely.
+
+    A regulatory boundary needs the negative form: this must NOT appear.
+    That is what `expected_language_compliance` was for. The column has been
+    seeded, persisted, selected and hydrated onto QuestionRecord since
+    doc-phase 159 and read by nothing, so every entry authored into it was
+    inert.
+
+    Vacuous when the question carries no rules — but says so in `detail`
+    rather than silently reporting a pass, so the bench's layer-coverage
+    block can report how many questions were actually checked.
+    """
+    required, forbidden = _compliance_rules(
+        getattr(question, "expected_language_compliance", None) or [],
+    )
+
+    if not required and not forbidden:
+        return ValidatorOutcome(
+            layer="6_language",
+            passed=True,
+            detail={"checked": False, "reason": "no expected_language_compliance"},
+            failure_message=None,
+        )
+
+    lower = (response_text or "").lower()
+    missing = [p for p in required if not _contains_phrase(lower, p)]
+    present = [p for p in forbidden if _contains_phrase(lower, p)]
+
+    problems: list[str] = []
+    if missing:
+        problems.append("missing required language: " + "; ".join(repr(p) for p in missing))
+    if present:
+        # Listed first in the message when both fire — disclosing withheld
+        # content is the serious half.
+        problems.insert(
+            0,
+            "DISCLOSED forbidden language: " + "; ".join(repr(p) for p in present),
+        )
+
+    return ValidatorOutcome(
+        layer="6_language",
+        passed=not problems,
+        detail={
+            "checked": True,
+            "required_count": len(required),
+            "forbidden_count": len(forbidden),
+            "missing_required": missing,
+            "present_forbidden": present,
+        },
+        failure_message=" | ".join(problems) if problems else None,
     )
 
 
@@ -389,14 +510,25 @@ def _extract_entity_names(expected_entities: list[Any]) -> list[str]:
     SME-style entries have a `name` (or `entity_name`) field with a
     string value to search for in the response text. Mechanical /
     structural entries (e.g. `{"required_section_ids": [...]}` for
-    report_section)
-    return no extractable names — Layer 4 vacuously passes on those.
+    report_section) return no extractable names — Layer 4 vacuously passes
+    on those.
+
+    `value` is in the key list because GapImportCsvSeeder writes its
+    keyword ground truth as `{"type": "keyword", "value": "<kw>"}` — and
+    this function did not read `value`, so every one of the 1,500 imported
+    gap questions produced zero extractable names and Layer 4 passed
+    vacuously on all of them. The ground truth was imported, stored, and
+    never once compared against an answer.
+
+    Order matters only for an entry carrying more than one of these keys,
+    which no writer currently produces; the more specific names come first
+    so a future entry with both `name` and `value` uses the name.
     """
     names: list[str] = []
     for entry in expected_entities or []:
         if not isinstance(entry, dict):
             continue
-        for key in ("name", "entity_name", "expected_value"):
+        for key in ("name", "entity_name", "expected_value", "value"):
             v = entry.get(key)
             if isinstance(v, str) and v.strip():
                 names.append(v.strip())
@@ -481,7 +613,6 @@ def validate_entity_resolution(
     )
 
 
-import re  # noqa: E402
 
 # Match decimals, percentages, negatives. Excludes years-as-numbers
 # by requiring a decimal point or unit-following pattern.
@@ -785,6 +916,7 @@ __all__ = [
     "validate_chunk_provenance",
     "validate_citation_presence",
     "validate_entity_resolution",
+    "validate_language_compliance",
     "validate_numeric_claims",
     "validate_refusal_correctness",
     "validate_retrieval_quality",

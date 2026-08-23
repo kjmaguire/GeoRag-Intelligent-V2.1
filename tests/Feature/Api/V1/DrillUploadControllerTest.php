@@ -6,7 +6,9 @@ namespace Tests\Feature\Api\V1;
 
 use App\Models\Project;
 use App\Models\User;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -32,6 +34,13 @@ class DrillUploadControllerTest extends TestCase
     private Project $project;
 
     private string $workspaceId;
+
+    /**
+     * Per-test HTTP stubs, matched before setUp()'s default response.
+     *
+     * @var array<string, PromiseInterface>
+     */
+    private array $httpOverrides = [];
 
     protected function setUp(): void
     {
@@ -67,9 +76,22 @@ class DrillUploadControllerTest extends TestCase
         $this->user->projects()->attach($this->project->project_id, ['role' => 'owner']);
 
         Storage::fake('s3');
-        Http::fake([
-            '*' => Http::response(['errors' => null], 200),
-        ]);
+
+        // Http::fake() MERGES into the stub list and the FIRST matching
+        // stub answers. A '*' catch-all registered here is therefore
+        // unreachable-past: a test that later faked a 500 for
+        // ingest_tabular got this 200 instead and asserted against a
+        // success it never asked for. Route through $httpOverrides so a
+        // per-test stub is consulted BEFORE the default, not after it.
+        Http::fake(function (ClientRequest $request) {
+            foreach ($this->httpOverrides as $pattern => $response) {
+                if (Str::is($pattern, $request->url())) {
+                    return $response;
+                }
+            }
+
+            return Http::response(['errors' => null], 200);
+        });
     }
 
     private function url(): string
@@ -119,40 +141,84 @@ class DrillUploadControllerTest extends TestCase
     }
 
     /**
-     * 2026-08-17 CI-gap audit: this file predates the 2026-07-28 Dagster
-     * retirement (trim B2) and, because CI never actually ran the
-     * Postgres-gated suite (see phpunit.pgsql.xml's own header /
-     * docs/RUNBOOK.md), that drift was never caught. `DrillUploadController
-     * ::store()` (line 77-83) now rejects every non-PDF extension with a
-     * 422 `retired_pipeline` BEFORE `DrillAssetSelector::select()` is ever
-     * called — so the 'dagster' route, and DrillAssetSelector's csv/xlsx
-     * keyword-routing branches, are unreachable from this controller.
-     * `DrillAssetSelector` and `DagsterGraphQLClient` have no other caller
-     * (confirmed via `grep -rln DagsterGraphQLClient app/` and
-     * `grep -rn DrillAssetSelector:: app/`), so the previous six
-     * Dagster-mock tests plus the "unrouted csv" test were exercising dead
-     * code the whole time. Replaced with one test asserting the actual,
-     * intended retirement behavior.
+     * 2026-08-17 CI-gap audit: this file predated the 2026-07-28 Dagster
+     * retirement and, because CI never ran the Postgres-gated suite, the
+     * drift went unnoticed. The controller then rejected every non-PDF
+     * extension with a 422 `retired_pipeline`, and this file was rewritten
+     * to assert that rejection.
+     *
+     * 2026-08-22: the rejection itself was the drift. `ingest_tabular`
+     * shipped on 2026-08-20 and UploadController restored CSV/XLSX the same
+     * day, so the drill-specific endpoint was the one surface still
+     * refusing drill data. These tests cover the restored route.
      */
-    public function test_non_pdf_extension_returns_422_retired_pipeline_without_persisting(): void
+    public function test_collar_csv_dispatches_to_ingest_tabular_with_its_sheet_type(): void
     {
-        foreach (['collars_2024.csv', 'lithology_log.csv', 'mixed.xlsx', 'legacy.xls'] as $name) {
-            $ext = pathinfo($name, PATHINFO_EXTENSION);
-            $file = $ext === 'csv'
-                ? $this->csv($name)
-                : UploadedFile::fake()->createWithContent($name, 'stub-'.$ext);
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertStatus(201)
+            ->assertJsonPath('route', 'hatchet_tabular')
+            ->assertJsonPath('sheet_type', 'collar')
+            ->assertJsonPath('dispatch.dispatched', true);
 
-            $this->actingAs($this->user)
-                ->postJson($this->url(), ['file' => $file])
-                ->assertStatus(422)
-                ->assertJsonPath('error', 'retired_pipeline');
-        }
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/shadow/ingest_tabular/trigger')
+                && ($request['sheet_type'] ?? null) === 'collar'
+                && ($request['workspace_id'] ?? null) === $this->workspaceId;
+        });
 
         $this->assertSame(
-            0,
+            1,
             DB::table('bronze.source_files')->where('workspace_id', $this->workspaceId)->count(),
-            'a retired-pipeline extension must be rejected before anything is stored',
+            'the upload must still be anchored in bronze.source_files',
         );
+    }
+
+    public function test_a_workbook_is_dispatched_without_a_sheet_type(): void
+    {
+        // A workbook holds several tables. Pinning one type would make
+        // ingest_tabular apply it to every sheet instead of classifying
+        // each — so the key is omitted rather than sent as null.
+        $xlsx = UploadedFile::fake()->createWithContent('mixed.xlsx', 'stub-xlsx');
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $xlsx])
+            ->assertStatus(201)
+            ->assertJsonPath('route', 'hatchet_tabular')
+            ->assertJsonPath('sheet_type', null);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/shadow/ingest_tabular/trigger')
+                && ! array_key_exists('sheet_type', $request->data());
+        });
+    }
+
+    public function test_a_csv_with_no_filename_hint_is_still_dispatched(): void
+    {
+        // The old behaviour was 'unrouted': stored, never processed, 201.
+        // ingest_tabular classifies from the header row, so there is no
+        // reason to drop the file on the floor.
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('data.csv')])
+            ->assertStatus(201)
+            ->assertJsonPath('route', 'hatchet_tabular')
+            ->assertJsonPath('sheet_type', null)
+            ->assertJsonPath('dispatch.dispatched', true);
+    }
+
+    public function test_a_failed_tabular_dispatch_is_a_502_not_a_quiet_201(): void
+    {
+        // The file IS stored, so a 201 reads as unqualified success while
+        // the only signal is `dispatch.dispatched` three levels deep.
+        $this->httpOverrides = [
+            '*ingest_tabular*' => Http::response(['detail' => 'nope'], 500),
+        ];
+
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('surveys.csv')])
+            ->assertStatus(502)
+            ->assertJsonPath('error', 'ingestion_dispatch_failed')
+            ->assertJsonPath('dispatch.dispatched', false);
     }
 
     public function test_duplicate_sha256_returns_existing_row_without_re_uploading(): void

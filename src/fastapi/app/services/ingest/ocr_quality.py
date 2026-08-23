@@ -38,10 +38,23 @@ class OcrQualitySignals:
 
 @dataclass(frozen=True, slots=True)
 class OcrRoutingThresholds:
-    """Corpus-calibrated routing thresholds.
+    """Routing thresholds, and a statement of where they came from.
 
-    No defaults are supplied deliberately. Auto-accept behavior must be
-    backed by measured corpus data or explicit SME-approved configuration.
+    No numeric defaults are supplied deliberately. Auto-accept behavior
+    must be backed by measured corpus data or explicit SME-approved
+    configuration.
+
+    ``calibrated_from`` is what makes that sentence checkable. Until
+    2026-08-21 the assessment recorded ``thresholds_calibrated=True``
+    whenever the env var PARSED -- so a set of round numbers with no
+    artefact behind it was indistinguishable from a measured one, and the
+    planned quality classifier would have trained on those labels as
+    evidence. It now records whether someone named an artefact.
+
+    Set it to a path or identifier that a reader can go and look at, e.g.
+    ``"ops/baselines/ocr-calibration-2026-09-01.json"``. Leave it unset and
+    the routing still works exactly as before; it simply stops claiming to
+    be calibrated.
     """
 
     catastrophic_max_mean_confidence: float
@@ -61,9 +74,24 @@ class OcrRoutingThresholds:
     spot_check_max_repeated_character_ratio: float
     spot_check_max_seam_duplicate_ratio: float
 
+    #: Free-text pointer to the measurement this set came from. Not a
+    #: threshold, so it is skipped by the range check below.
+    calibrated_from: str | None = None
+
+    @property
+    def is_calibrated(self) -> bool:
+        """True only when an artefact was named.
+
+        Whitespace does not count: `"calibrated_from": " "` is someone
+        satisfying the schema rather than the requirement.
+        """
+        return bool((self.calibrated_from or "").strip())
+
     def __post_init__(self) -> None:
         for field in fields(self):
             name = field.name
+            if name == "calibrated_from":
+                continue
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1]")
@@ -188,12 +216,14 @@ def assess_ocr_quality(
 ) -> OcrQualityAssessment:
     """Assign a routing band, defaulting safely to review if uncalibrated."""
 
+    calibrated = thresholds is not None and thresholds.is_calibrated
+
     if signals.empty_output:
         return OcrQualityAssessment(
             signals,
             OcrRoutingTier.CatastrophicFailure,
             ("empty_output",),
-            thresholds is not None,
+            calibrated,
         )
 
     if thresholds is None:
@@ -214,7 +244,7 @@ def assess_ocr_quality(
             signals,
             OcrRoutingTier.CatastrophicFailure,
             tuple(catastrophic_reasons),
-            True,
+            calibrated,
         )
 
     mandatory_reasons = _threshold_reasons(
@@ -232,7 +262,7 @@ def assess_ocr_quality(
             signals,
             OcrRoutingTier.MandatoryReview,
             mandatory_reasons,
-            True,
+            calibrated,
         )
 
     spot_check_reasons = _threshold_reasons(
@@ -250,19 +280,59 @@ def assess_ocr_quality(
             signals,
             OcrRoutingTier.SpotCheck,
             spot_check_reasons,
-            True,
+            calibrated,
         )
 
     return OcrQualityAssessment(
         signals,
         OcrRoutingTier.AutoAccept,
         (),
-        True,
+        calibrated,
     )
 
 
-def load_routing_thresholds_from_env() -> OcrRoutingThresholds | None:
-    """Load an explicitly calibrated threshold set, or return fail-closed None."""
+#: Key under which a per-engine threshold map may be supplied.
+BY_OCR_METHOD_KEY = "by_ocr_method"
+
+
+def load_routing_thresholds_from_env(
+    ocr_method: str | None = None,
+) -> OcrRoutingThresholds | None:
+    """Load the threshold set for one engine, or fail-closed None.
+
+    TWO ACCEPTED SHAPES
+
+    Flat -- one set for every engine. This is what is deployed today::
+
+        {"catastrophic_max_mean_confidence": 0.30, ...}
+
+    Per-engine -- a default plus overrides keyed by ``ocr_method``::
+
+        {
+          "calibrated_from": "ops/baselines/ocr-calibration-2026-09-01.json",
+          "catastrophic_max_mean_confidence": 0.30, ...,
+          "by_ocr_method": {
+            "tesseract":             {"spot_check_min_mean_confidence": 0.72, ...},
+            "document_intelligence": {"spot_check_min_mean_confidence": 0.97, ...}
+          }
+        }
+
+    An engine's block is merged OVER the top-level set, so an override
+    states only what differs. An engine with no block gets the top-level
+    set, which is also what an unknown or absent ``ocr_method`` gets.
+
+    WHY PER-ENGINE AT ALL
+        Document Intelligence and Tesseract do not report confidence on a
+        comparable scale. DI sits at 0.95-0.99 even when it is confidently
+        wrong; Tesseract sits at 0.70-0.85 when it is doing fine. A single
+        ``spot_check_min_mean_confidence`` of 0.90 therefore auto-accepts
+        almost every DI page and sends almost every Tesseract page to
+        review -- which inverts the intent and is a large part of why the
+        review queue fills with pages that are probably fine.
+
+        The shape is available; the numbers still have to be measured.
+        Nothing here invents them.
+    """
 
     raw = os.environ.get(ROUTING_THRESHOLDS_ENV, "").strip()
     if not raw:
@@ -273,6 +343,27 @@ def load_routing_thresholds_from_env() -> OcrRoutingThresholds | None:
         raise ValueError(f"{ROUTING_THRESHOLDS_ENV} must contain valid JSON") from exc
     if not isinstance(values, dict):
         raise ValueError(f"{ROUTING_THRESHOLDS_ENV} must contain a JSON object")
+
+    per_engine = values.pop(BY_OCR_METHOD_KEY, None)
+    if per_engine is not None and not isinstance(per_engine, dict):
+        raise ValueError(
+            f"{ROUTING_THRESHOLDS_ENV}.{BY_OCR_METHOD_KEY} must be a JSON object "
+            f"keyed by ocr_method"
+        )
+
+    if per_engine and ocr_method:
+        override = per_engine.get(ocr_method)
+        if override is not None:
+            if not isinstance(override, dict):
+                raise ValueError(
+                    f"{ROUTING_THRESHOLDS_ENV}.{BY_OCR_METHOD_KEY}.{ocr_method} "
+                    f"must be a JSON object"
+                )
+            # Merged, not replaced: an override says what DIFFERS for this
+            # engine. Requiring all sixteen fields per engine would mean
+            # three copies of the same numbers drifting apart.
+            values = {**values, **override}
+
     try:
         return OcrRoutingThresholds(**values)
     except TypeError as exc:
@@ -308,6 +399,61 @@ def _threshold_reasons(
     return tuple(reasons)
 
 
+#: Characters that may appear inside a legitimate numeric token alongside
+#: digits. `_WORD_RE` already splits on "." and whitespace, so "145.20"
+#: arrives as "145" and "20"; what survives whole are grid references,
+#: sample numbers and ranges.
+_NUMERIC_TOKEN_EXTRAS = frozenset("-_,'")
+
+
+def _is_numeric_token(word: str) -> bool:
+    """A token made only of digits and numeric separators.
+
+    Added 2026-08-21. `_is_gibberish_word` used to return True for ANY token
+    of length >= 4 containing no letters, and in this corpus that is not a
+    description of gibberish — it is a description of data:
+
+        612345      easting
+        5412345     northing
+        1250        elevation, or a sample number
+        2022        a year
+        22-041      a hole suffix
+
+    Measured against this module on a 20-row collar table shaped
+    ``DDH-22-041  612345  5412345  1250``: gibberish_word_ratio was **0.714**
+    before this change and 0.000 after. Three of every four tokens on a
+    clean, correctly-read page were being called garbage.
+
+    The expensive consequence is not the review queue — it is
+    ``pdf_report._native_text_screen_reason``, which runs on the DEFAULT
+    path with no calibrated thresholds required. It rejects a native text
+    layer when gibberish_word_ratio exceeds
+    ``NATIVE_TEXT_MAX_GIBBERISH_RATIO = 0.4``. At 0.714 a **born-digital**
+    assay or collar page failed that screen, so its perfect embedded text
+    was discarded and the page was routed to OCR — substituting a billed
+    Document Intelligence read of a rendered image for text that was already
+    correct. Verified end to end: the same page now returns
+    ``_native_text_screen_reason(...) is None``.
+
+    Where calibrated thresholds ARE set, the page additionally tiered to
+    MandatoryReview -> review_required -> ocr_status='low_confidence', into
+    a queue nothing triages. Either way the gate was biased hardest against
+    the highest-value pages in the corpus.
+
+    A digit run is still capped for length below: a 24-character number is
+    not a coordinate, it is a smeared line.
+    """
+    if not word:
+        return False
+    has_digit = False
+    for character in word:
+        if character.isdigit():
+            has_digit = True
+        elif character not in _NUMERIC_TOKEN_EXTRAS:
+            return False
+    return has_digit
+
+
 def _is_gibberish_word(word: str) -> bool:
     if not word:
         return True
@@ -316,13 +462,28 @@ def _is_gibberish_word(word: str) -> bool:
     alpha_count = sum(character.isalpha() for character in word)
     digit_count = sum(character.isdigit() for character in word)
     symbol_count = len(word) - alpha_count - digit_count
-    if len(word) >= 4 and alpha_count == 0:
+    if len(word) >= 4 and alpha_count == 0 and not _is_numeric_token(word):
+        # Letterless AND not a plain number: "|||#", "~~^^", "()()" —
+        # the shapes a failed OCR actually produces.
         return True
     if len(word) >= 5 and symbol_count / len(word) > 0.4:
         return True
     if len(word) >= 24 and not any(character in "-'" for character in word):
         return True
     return False
+
+
+def numeric_token_ratio(words: Sequence[str]) -> float:
+    """Fraction of tokens that are plain numbers.
+
+    Reported alongside gibberish_word_ratio rather than folded into it. A
+    page that is 70% numbers is a data table, which is a fact worth knowing
+    about a page — it is just not evidence that the OCR failed, which is
+    what the gibberish signal is asked to mean.
+    """
+    if not words:
+        return 0.0
+    return sum(1 for word in words if _is_numeric_token(word)) / len(words)
 
 
 __all__ = [
@@ -334,4 +495,5 @@ __all__ = [
     "assess_ocr_quality",
     "calculate_ocr_quality",
     "load_routing_thresholds_from_env",
+    "numeric_token_ratio",
 ]

@@ -391,6 +391,12 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.11",
     "mypy>=1.15",
+    # Parses the hand-written SQL in the unattended sweeps (the nightly
+    # bronze recovery runs at 02:00 and 04:00, the stale sweep every 15
+    # minutes) so a syntax error is a red PR rather than a silent no-op at
+    # two in the morning. Test-only: not in `prod`, so it is not in the
+    # deployed image. See tests/test_nightly_bronze_recovery.py.
+    "sqlglot>=25.0",
 ]
 
 [build-system]
@@ -449,6 +455,12 @@ markers = [
     # Module 10 Chunk 10.7 — chaos / resilience tests run on a weekly CI cron
     # rather than per-PR (they intentionally inject failures and are slow).
     "chaos: chaos / resilience tests — scheduled-only, NOT run on PRs",
+    # Registered 2026-08-21. Used by tests/test_qwen3_citation_compliance.py
+    # (a manual benchmark scaffold, skipped unless QWEN3_COMPLIANCE_MANUAL=1)
+    # but never declared, so it only ever produced a PytestUnknownMarkWarning
+    # — harmless until chaos.yml added --strict-markers, which turns an
+    # unregistered marker into a collection ERROR that aborts the whole run.
+    "qwen3_compliance: live Qwen3 citation-compliance trials — manual only",
 ]
 # Integration tests are slow (LLM calls) AND data-dependent (need the
 # Cameco Shirley Basin corpus seeded + a healthy vLLM). Default to
@@ -470,4 +482,231 @@ addopts = "-v -m 'not integration and not golden and not hallucination and not c
 
 [tool.mypy]
 python_version = "3.13"
-strict = true
+
+# ─── Why this is not `strict = true` any more (2026-08-21) ────────────
+#
+# It was, and it had never once gone green. The 2026-08-15 promotion audit
+# recorded 824 errors across 198 of 363 files, and the CI job has carried
+# `continue-on-error: true` ever since — so the checker produced a wall of
+# red nobody read, which means a genuinely new type regression was
+# indistinguishable from the existing noise and merged silently. That is
+# strictly worse than no checker: it costs CI minutes and buys nothing.
+#
+# MEASURED, not guessed. Both numbers are from `mypy app` over the same
+# tree on 2026-08-21:
+#
+#              strict = true          this config
+#   errors            850                    286
+#   modules           197                     91
+#
+#   by category   207 type-arg            84 attr-defined
+#                 146 import-untyped      50 no-any-return
+#                  93 no-untyped-def      47 arg-type
+#                  86 attr-defined        21 union-attr
+#                  50 no-any-return       18 assignment
+#                  42 unused-ignore        …
+#                  33 import-not-found
+#
+# Two thirds of the strict output was strictness noise — missing generic
+# parameters, un-annotated defs, and third-party libraries that ship no
+# stubs. None of it describes a defect. What remains is the list on the
+# right, which is mostly real: `attr-defined`, `arg-type`, `union-attr`
+# and `assignment` are the categories that catch bugs.
+#
+# It found one the day this was written. mypy reported
+#   app/services/qdrant_fallback.py:223: "None" has no attribute "labels"
+# and it was correct: `_fire_fallback_metric` guarded its lazy singleton
+# with `except NameError` while the module assigned the sentinel at import,
+# so the Counter was never built and the call raised AttributeError past
+# an `except ImportError`. Latent (the function has no callers) but it
+# would have gone live the moment anyone wired the Qdrant fallback up —
+# a crash in the code whose only job is to keep working when Qdrant is
+# down. Under strict that line sat between 207 type-arg entries.
+#
+# WHAT IS STILL OFF, AND WHY EACH ONE
+#   disallow_untyped_defs      93 errors, all "add a signature". Real work,
+#                              zero of it urgent, and turning it on blocks
+#                              the gate on cosmetics.
+#   disallow_any_generics      207 errors — the single largest category,
+#                              overwhelmingly bare `dict`/`list` in code
+#                              that is correct.
+#   disallow_untyped_decorators  fires on every FastAPI/Hatchet decorator
+#                              this codebase is built out of.
+#   warn_unused_ignores        42 errors, and they invert: an ignore that
+#                              is unused HERE is load-bearing in CI, where
+#                              the third-party stubs actually exist.
+#   ignore_missing_imports     on, for the 179 import errors from libraries
+#                              that ship no `py.typed`. Nobody here can fix
+#                              those, and they hide the ones we can.
+#
+# Ratchet these back on one at a time, each with its own green run.
+#
+# STILL ADVISORY IN CI, and the remaining step is written down at the
+# `mypy` job in .github/workflows/ci.yml. The short version: promoting
+# needs a per-module `ignore_errors` list for the 91, and the list has to
+# come from a CI run rather than this one, because a locally-missing
+# package makes a module Any-typed and therefore quiet.
+check_untyped_defs = true
+warn_return_any = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+disallow_any_generics = false
+disallow_untyped_decorators = false
+warn_unused_ignores = false
+
+# ─── Per-module overrides: the burn-down list ─────────────────────────
+#
+# These exist so the mypy job can BLOCK. Everything not listed here is
+# checked, which means a new module, and any module someone finishes
+# cleaning, is covered from the moment it stops appearing below.
+#
+# Delete entries, never add them. Adding one is how a gate stops meaning
+# anything; the CI job prints the current list to its step summary so a
+# genuine addition is always a deliberate, visible act.
+
+# TIER 1 — MEASURED. 90 modules mypy actually reports errors in,
+# from `mypy app --platform linux` on 2026-08-21 with georag_geoparsers on
+# MYPYPATH. The set was stable across the platform switch and across making
+# that package resolvable (which added 27 errors and zero new modules), so
+# it is close to what CI sees.
+[[tool.mypy.overrides]]
+ignore_errors = true
+module = [
+    "app.agent.agentic_retrieval.intent_classifier",
+    "app.agent.agentic_retrieval.nodes",
+    "app.agent.anomaly_detector",
+    "app.agent.context_builder",
+    "app.agent.decomposer",
+    "app.agent.evidence_converter",
+    "app.agent.geospatial_planner",
+    "app.agent.golden_query_harness",
+    "app.agent.llm_calls",
+    "app.agent.multi_turn_resolver",
+    "app.agent.orchestrator",
+    "app.agent.plan_executor",
+    "app.agent.project_geometry",
+    "app.agent.query_classification",
+    "app.agent.response_assembler",
+    "app.agent.schemas.geo_answer",
+    "app.agent.sentry_tags",
+    "app.agent.spatial_temporal_verify",
+    "app.agent.tools",
+    "app.agents.phase0.support_packet",
+    "app.agents.wrapper",
+    "app.audit.workspace_excerpt",
+    "app.embedding_service",
+    "app.hatchet_workflows._export_extras",
+    "app.hatchet_workflows._restore_pg_from_export",
+    "app.hatchet_workflows.backup_postgres",
+    "app.hatchet_workflows.backup_qdrant",
+    "app.hatchet_workflows.backup_redis",
+    "app.hatchet_workflows.backup_seaweedfs",
+    "app.hatchet_workflows.bc_minfile_pull",
+    "app.hatchet_workflows.ingest_pdf",
+    "app.hatchet_workflows.ingest_spatial",
+    "app.hatchet_workflows.ingest_tabular",
+    "app.hatchet_workflows.ingest_zip_archive",
+    "app.hatchet_workflows.nightly_ingestion_integrity",
+    "app.hatchet_workflows.outbox_dispatcher",
+    "app.hatchet_workflows.public_geoscience_pull",
+    "app.hatchet_workflows.tiff_normalize",
+    "app.hatchet_workflows.train_source_trust",
+    "app.hatchet_workflows.workspace_export",
+    "app.middleware",
+    "app.routers.assessment_summary",
+    "app.routers.audit_findings",
+    "app.routers.evidence",
+    "app.routers.interpretation",
+    "app.routers.shadow_trigger",
+    "app.services.answer_run_store",
+    "app.services.assessment_summarizer",
+    "app.services.bronze_store",
+    "app.services.claim_ledger",
+    "app.services.conversation_state_store",
+    "app.services.decision_intelligence.recorder",
+    "app.services.embedding",
+    "app.services.eval.benchmark_compare",
+    "app.services.eval.validators",
+    "app.services.eval.workspace_evaluator",
+    "app.services.eval_seeders.seed_runner",
+    "app.services.geological_reasoning.hypothesis_generator",
+    "app.services.graph_entity_resolver",
+    "app.services.identifier_boost",
+    "app.services.ingest.cluster_runner",
+    "app.services.ingest.context_enricher",
+    "app.services.ingest.csv_collar_ingester",
+    "app.services.ingest.document_intelligence_client",
+    "app.services.ingest.las_ingester",
+    "app.services.ingest.page_image",
+    "app.services.ingest.passage_embedder",
+    "app.services.ingest.pdf_ingester",
+    "app.services.ingest.pdf_report",
+    "app.services.mv_refresh",
+    "app.services.pdf_coordinates",
+    "app.services.pdf_render",
+    "app.services.publicgeo.assessment_survey_adapters",
+    "app.services.publicgeo.bc_drillhole_adapter",
+    "app.services.publicgeo.bc_minfile_adapter",
+    "app.services.publicgeo.bedrock_geology_adapters",
+    "app.services.publicgeo.nrcan_mines_adapter",
+    "app.services.publicgeo.sk_drillhole_adapter",
+    "app.services.publicgeo.sk_minoccur_adapter",
+    "app.services.report_builder.graph",
+    "app.services.report_builder.renderers.pdf_renderer",
+    "app.services.review_lineage_lookup",
+    "app.services.support_cockpit.escalation_routing",
+    "app.services.support_cockpit.root_cause_investigation",
+    "app.services.target_recommendation.graph",
+    "app.services.targeting.score_factors",
+    "app.services.tool_gateway.gateway",
+    "app.services.tool_gateway.impls",
+    "app.services.trace_writer",
+    "app.services.visualizations.additional_charts",
+]
+
+# TIER 2 — RISK MARGIN, NOT MEASUREMENT. 28 modules that are quiet
+# HERE only because `ignore_missing_imports = true` turns a package this
+# machine lacks into Any. CI installs those packages, so these can error
+# there. Included so promoting the gate does not turn main red on its
+# first run.
+#
+# The packages in question: langfuse, mplstereonet, pdf2image, pikepdf, pytesseract, sentence_transformers, torch, transformers, weasyprint, xgboost, opentelemetry.exporter.otlp.
+#
+# THIS IS THE BLOCK TO EMPTY FIRST. After one green CI run, compare
+# against the step-summary list the mypy job prints and delete every entry
+# that does not appear in it — those were never erroring, and each one is
+# a module currently going unchecked for no reason.
+[[tool.mypy.overrides]]
+ignore_errors = true
+module = [
+    "app.agent.public_geoscience_tool",
+    "app.agent.tool_result_helpers",
+    "app.agent.viz_builder",
+    "app.hatchet_workflows.embed_pending_passages",
+    "app.hatchet_workflows.embed_pending_passages_smoke",
+    "app.hatchet_workflows.stale_run_detector",
+    "app.hatchet_workflows.train_target_model",
+    "app.hatchet_workflows.worker",
+    "app.main",
+    "app.observability.otel",
+    "app.reranker_service",
+    "app.routers.admin_tier1_misc",
+    "app.routers.admin_tier234",
+    "app.routers.citation_feedback",
+    "app.routers.ml_training",
+    "app.routers.queries",
+    "app.routers.visualizations",
+    "app.routers.what_changed",
+    "app.services.eval",
+    "app.services.eval.real_rag_evaluator",
+    "app.services.pdf_preflight",
+    "app.services.report_builder.nodes",
+    "app.services.reranker",
+    "app.services.sparse_encoder",
+    "app.services.target_scoring_ml",
+    "app.services.target_scoring_ml.ab_comparison",
+    "app.services.target_scoring_ml.xgboost_inference",
+    "app.sparse_service",
+]

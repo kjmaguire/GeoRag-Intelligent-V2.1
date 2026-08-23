@@ -8,6 +8,7 @@ use App\Events\WorkspaceDataUpdated;
 use App\Http\Controllers\Controller;
 use App\Models\ChatConversation;
 use App\Models\ChatMessage;
+use App\Support\SafeErrorMessage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -189,7 +190,7 @@ class ChatConversationController extends Controller
             } catch (\Throwable $e) {
                 Log::warning('ChatConversation: investigations broadcast failed', [
                     'conversation_id' => $conversationId,
-                    'error' => $e->getMessage(),
+                    'error' => SafeErrorMessage::forResponse($e),
                 ]);
             }
         }

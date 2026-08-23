@@ -925,6 +925,16 @@ def parse_spatial_file(
         )
 
     # --- DXF-specific CRS handling ---
+    #
+    # Both arms below feed crs_score/crs_reason into the SpatialParseResult
+    # at the end of this function, so they are initialised here rather than
+    # inside each arm. They used to be set only in the else-arm, and the
+    # .dxf arm set crs_score alone -- so every DXF file reached the result
+    # constructor and raised UnboundLocalError on crs_reason. The parser
+    # could not read a DXF at all.
+    crs_score = 0.0
+    crs_reason: str | None = None
+
     if ext == ".dxf":
         # pyogrio may populate a synthetic CRS for DXF; clear it explicitly
         gdf = gdf.set_crs(None, allow_override=True)
@@ -934,7 +944,7 @@ def parse_spatial_file(
             "message": "DXF files have no CRS; caller must georeference.",
             "context": {"path": path},
         })
-        crs_score = 0.0
+        crs_reason = "DXF carries no CRS; the caller must georeference"
     else:
         # Capture source CRS before any transformation
         if gdf.crs is not None:
@@ -953,8 +963,6 @@ def parse_spatial_file(
             )
 
         # CRS confidence scoring (Section 04b step 3 heuristic)
-        crs_score = 0.0
-        crs_reason = None
         try:
             crs_score, crs_reason = _score_crs_confidence(gdf)
             if crs_score < 0.5:

@@ -905,7 +905,7 @@ WSL2 kernel `6.6.87.2-microsoft-standard-WSL2` supports io_uring. PostgreSQL 18.
 | SeaweedFS vendor-purity | **PARTIAL** — FastAPI/Laravel clean; Dagster MinIOResource uses minio-py SDK (surface to Kyle (d above)) |
 | SeaweedFS volume-max=32 | **CLEAN** — confirmed live, 10 slots free |
 | S3 round-trip integrity test | **CLOSED** — all 6 steps passed |
-| Redis topology runbook | **CLOSED** — ops/runbooks/redis-topology.md delivered |
+| Redis topology runbook | **CLOSED** — ops/runbooks/_archived/redis-topology.md delivered |
 
 ---
 

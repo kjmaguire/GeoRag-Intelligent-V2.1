@@ -79,7 +79,7 @@ the rest of the manual mentions.
 | `silver.archive_ingest_runs` | Live (2026-06-03) — ZIP-archive upload parent row; RLS-scoped; closes `ingest_zip_archive` silent-failure gap |
 | `silver.projects.lifecycle_state` | Live (2026-05-30) — **CC-03 Item 8 LANDED** (was deferred); active/hibernated/archived/past_due; billing still unbuilt; [Ch 18 §7](18-model-stack-evolution.md) |
 | `silver.document_passages.contextualized_content` | Live (2026-05-30) — Anthropic contextual-retrieval header; written by `enrich_passage_context` workflow |
-| `audit.query_audit_log` quality cols | Live (2026-05-30) — `faithfulness_score` + `context_precision_score` (Qwen3-as-judge) |
+| `audit.query_audit_log` quality cols | **Columns exist, no writer since 2026-07-27.** `faithfulness_score` + `context_precision_score` are REAL columns on a live Eloquent model, but their only producer (`score_answer_quality.py`) was Removed (09d1d35, 2026-07-27). Every row is NULL and will stay NULL. A `WHERE faithfulness_score < x` filter returns zero rows, which reads as 'no low-faithfulness answers' rather than 'nothing is scored'. |
 | `silver.answer_runs`, `silver.answer_citation_items`, `silver.answer_citation_spans`, `silver.message_feedback`, `silver.evidence_items`, `silver.document_passages` | Live |
 | `silver.hypotheses`, `silver.decision_records` (+ children) | Live |
 | `silver.report_pages`, `silver.report_figures`, `silver.report_tables` | Partial — created by `ingest_pdf.persist` but column set still drifts; see appendix A |
@@ -112,15 +112,15 @@ the rest of the manual mentions.
 | `score_targets` | Live |
 | `external_notification` | Live (Kestra-triggered) |
 | `public_geoscience_pull` | Partial — Kestra flow live, but bc_minfile/nrcan_geo paths superseded by Dagster (see note in [worker.py](../../../src/fastapi/app/hatchet_workflows/worker.py)) |
-| `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | Live (dev-only) |
+| `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | **Deleted** — `backup_neo4j` 2026-08-19 (Neo4j dropped in B1), the other four 2026-08-23. All wrote to a SeaweedFS substrate that does not exist on Azure, so every run had failed since the migration. Deliberate: Postgres carries 35-day PITR from Azure's automated backups, Qdrant is rebuildable by re-embedding from `silver.document_passages`, and Redis is cache plus Horizon queues. Blob storage is the one irreplaceable copy and is LRS-only. |
 | `cold_tier_archive_workflow` | Partial — bucket policies live, lifecycle automation tested only on small sets |
 | `workspace_export`, `restore_workspace` | Partial — golden path verified, larger-than-RAM workspaces unproven |
-| `evaluate_workspace`, `eval_real_rag_nightly` | Live (dev-only) |
+| `evaluate_workspace`, `eval_real_rag_nightly` | Removed (09d1d35, 2026-07-27). The scheduled RAG evaluation no longer exists; the only surviving entry point is the operator CLI `src/fastapi/scripts/run_golden_benchmark.py`, plus the `eval-gate.yml` nightly harness self-check (stubbed LLM — it proves the harness imports, not that answers are good). |
 | `continuous_learning_loop`, `field_outcome_learning` | Experimental |
 | `tiff_ocr_cluster` | Deprecated (replaced by `tiff_normalize` per ADR-0005) |
 | `repair_shadow_aggregate` | Live (added 2026-05-27 per ADR-0009 / [Ch 16 §2](16-algorithmic-spines.md)) — cron `15 2 * * *` UTC |
 | `enrich_passage_context` | Live (2026-05-30) — contextual-retrieval header generation; daily 04:30 UTC; [Ch 18 §5](18-model-stack-evolution.md) |
-| `score_answer_quality` | Live (2026-05-30) — LLM-as-judge faithfulness + context-precision; [Ch 18 §6](18-model-stack-evolution.md) |
+| `score_answer_quality` | Removed (09d1d35, 2026-07-27) — the LLM-as-judge faithfulness + context-precision scorer no longer exists. Nothing in production measures answer quality. |
 | `ingest_zip_archive` | Live (2026-06-03) — ZIP fan-out with parent-run observability; [Ch 18 §8](18-model-stack-evolution.md) |
 | `tiff_normalize` | Live (ADR-0005 — normalises TIFFs to PDF then routes through `ingest_pdf`) |
 | `train_source_trust` | Experimental (writes `silver.source_trust_scores`) |

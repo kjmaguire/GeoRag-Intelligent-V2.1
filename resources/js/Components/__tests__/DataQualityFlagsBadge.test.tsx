@@ -70,6 +70,60 @@ describe('DataQualityFlagsBadge — visibility', () => {
 
 
 // ---------------------------------------------------------------------------
+// "Checked and clean" vs "nobody looked"
+//
+// Both used to render as blank space, so the second read as the first.
+// ---------------------------------------------------------------------------
+
+
+function _empty(overrides: Partial<DataQualityFlagsBadgeData> = {}): DataQualityFlagsBadgeData {
+    return _data({
+        counts: { ERROR: 0, WARNING: 0, INFO: 0 },
+        open_total: 0,
+        flags: [],
+        ...overrides,
+    });
+}
+
+describe('DataQualityFlagsBadge — evaluated', () => {
+    it('says "not checked" when no rule has ever run', () => {
+        render(<DataQualityFlagsBadge data={_empty({ evaluated: false })} />);
+        expect(screen.getByText(/not checked/i)).toBeInTheDocument();
+    });
+
+    it('stays silent when rules ran and found nothing', () => {
+        const { container } = render(<DataQualityFlagsBadge data={_empty({ evaluated: true })} />);
+        expect(container.firstChild).toBeNull();
+    });
+
+    it('makes no claim when the flag is absent', () => {
+        // A caller that predates `evaluated` must not start asserting that
+        // every clean hole is unchecked.
+        const { container } = render(<DataQualityFlagsBadge data={_empty()} />);
+        expect(container.firstChild).toBeNull();
+    });
+
+    it('carries the label into the not-checked chip', () => {
+        render(<DataQualityFlagsBadge data={_empty({ evaluated: false })} label="QA/QC" />);
+        expect(screen.getByText(/QA\/QC · not checked/i)).toBeInTheDocument();
+    });
+
+    it('spells out the difference in the tooltip', () => {
+        render(<DataQualityFlagsBadge data={_empty({ evaluated: false })} />);
+        expect(screen.getByTitle(/not the same as a clean hole/i)).toBeInTheDocument();
+    });
+
+    it('real flags win over the not-checked chip', () => {
+        // evaluated=false with open flags is contradictory input; the flags
+        // are the stronger evidence and must still render.
+        render(<DataQualityFlagsBadge data={_data({ evaluated: false })} />);
+        expect(screen.queryByText(/not checked/i)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: /3 data-quality flags/i })).toBeInTheDocument();
+    });
+});
+
+
+// ---------------------------------------------------------------------------
 // Severity dot counts
 // ---------------------------------------------------------------------------
 

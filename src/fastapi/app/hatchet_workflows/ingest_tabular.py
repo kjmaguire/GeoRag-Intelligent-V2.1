@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import tempfile
 import time as _t
 from pathlib import Path
@@ -57,6 +56,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress, hatchet
 
 log = logging.getLogger("georag.hatchet.ingest_tabular")
@@ -87,13 +87,9 @@ _SAMPLE_TYPE_DEFAULT = "unknown"
 _INSERT_BATCH = 500
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 class IngestTabularInput(BaseModel):
@@ -394,6 +390,78 @@ def _csv_headers(path: str) -> list[str]:
     return []
 
 
+async def _land_unclassified_as_text(
+    conn: Any,
+    *,
+    path: str,
+    suffix: str,
+    unclassified: list[str],
+    workspace_id: str,
+    project_id: str,
+) -> dict | None:
+    """Make the sheets that matched no drill type searchable anyway.
+
+    Returns the warning to attach, or None when nothing landed. Never
+    raises: a text fallback failing must not turn a run that DID write
+    typed drill rows into a failure.
+    """
+    from app.services.ingest.xlsx_ingester import (  # noqa: PLC0415
+        ingest_delimited_as_text,
+        ingest_xlsx_file,
+    )
+
+    names = ", ".join(unclassified[:5])
+    more = "" if len(unclassified) <= 5 else f" (+{len(unclassified) - 5} more)"
+
+    try:
+        if suffix in EXCEL_EXTENSIONS:
+            result = await ingest_xlsx_file(
+                conn, path,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                only_sheets=frozenset(unclassified),
+            )
+        else:
+            result = await ingest_delimited_as_text(
+                conn, path,
+                workspace_id=workspace_id,
+                project_id=project_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — the typed rows already landed
+        log.warning(
+            "ingest_tabular: text fallback failed for %s (%s)", path, exc,
+        )
+        return {
+            "code": "unclassified_not_indexed",
+            "detail": (
+                f"{len(unclassified)} sheet(s) matched no drill type and "
+                f"could not be indexed as text either ({names}{more}): "
+                f"{str(exc)[:200]}"
+            ),
+        }
+
+    if result.skipped or not result.passages_inserted:
+        return {
+            "code": "unclassified_not_indexed",
+            "detail": (
+                f"{len(unclassified)} sheet(s) matched no drill type and "
+                f"produced no searchable text ({names}{more}): "
+                f"{result.skipped_reason or 'no passages'}."
+            ),
+        }
+
+    return {
+        "code": "unclassified_indexed_as_text",
+        "detail": (
+            f"{len(unclassified)} sheet(s) matched no collar / survey / "
+            f"lithology / sample layout ({names}{more}) and were indexed as "
+            f"{result.passages_inserted} searchable passage(s) instead. They "
+            f"are answerable in chat but will not appear in the drillhole, "
+            f"map or cross-section views."
+        ),
+    }
+
+
 def _parse_one(path: str, sheet_type: str, sheet_name: str | None) -> Any:
     """Run the parser matching *sheet_type*."""
     from georag_geoparsers import (  # noqa: PLC0415
@@ -448,12 +516,20 @@ async def run_ingest_tabular(
     epsg_assumed = input.source_epsg is None
     georef_method = "assumed" if epsg_assumed else "declared"
 
-    run_id = input.run_id or await _progress.start_run(
+    # Always create the row, under the run_id the caller minted. Laravel
+    # stamps a UUID on every upload, and this used to read
+    # `input.run_id or start_run(...)` — so the INSERT never fired, no row
+    # existed, and every stage/completion/failure UPDATE below silently
+    # matched zero rows. The upload was invisible in the Ingestion Runs UI,
+    # successes and failures alike. start_run() is an upsert now, so the
+    # trigger endpoint and this preflight may both call it.
+    run_id = await _progress.start_run(
         workspace_id=input.workspace_id,
         project_id=input.project_id,
         minio_key=input.minio_key,
         triggered_by="upload",
         workflow_run_id=getattr(ctx, "workflow_run_id", None),
+        run_id=input.run_id,
     )
 
     written: dict[str, dict[str, int]] = {}
@@ -573,11 +649,90 @@ async def run_ingest_tabular(
                     )
                     for k, v in stats.items():
                         prior[k] = prior.get(k, 0) + v
+
+                # ── Whatever did not classify ───────────────────────────
+                # A sheet that matches no drill type is not necessarily
+                # junk: a sample dispatch log, a QA/QC summary, a
+                # historical production table. The answer used to be one
+                # `nothing_classified` warning and nothing else, so the
+                # file was not in the system in ANY form — and for a
+                # workbook arriving inside a ZIP that is a regression on
+                # the old archive branch, which at least landed it as text.
+                #
+                # The advice in that warning ("pass sheet_type explicitly")
+                # is also unactionable for a zipped file: the archive
+                # branch deliberately passes no hint, because inside an
+                # archive there is no user-chosen category to pass.
+                #
+                # Scoped to the unclassified sheets only. Sending the whole
+                # workbook would duplicate every drill row as a second,
+                # text-shaped copy competing with the typed one.
+                if unclassified:
+                    text_landed = await _land_unclassified_as_text(
+                        conn,
+                        path=local,
+                        suffix=suffix,
+                        unclassified=unclassified,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                    )
+                    if text_landed:
+                        warnings.append(text_landed)
             finally:
                 await conn.close()
 
+        # Orphan accounting BEFORE the terminal write. This block used
+        # to sit after it, so `warnings` was already serialised into the
+        # progress row by the time the orphan entry was appended and the
+        # entry reached only the workflow output object. That object is not
+        # what the Ingestion Runs page reads — which is precisely the
+        # failure mark_completed_by_run's docstring cites as its reason for
+        # existing, quoting THIS warning's text as the example.
+        orphans = sum(v.get("orphaned", 0) for v in written.values())
+        if orphans:
+            warnings.append({
+                "code": "orphaned_intervals",
+                "detail": (
+                    f"{orphans} row(s) reference a hole_id with no collar in "
+                    "this project. Upload the collar file, then re-run this one."
+                ),
+            })
+
+        # Report what actually landed, not just that the workflow ran to
+        # the end. mark_completed_by_run downgrades to 'partial' when the
+        # row count is zero or warnings are attached, and persists the
+        # warnings so their text reaches the Ingestion Runs page instead of
+        # dying inside the Hatchet run object.
         if run_id:
-            await _progress.mark_completed_by_run(run_id=run_id)
+            # written is per-sheet-type; the run wrote what all the
+            # sheets wrote between them.
+            rows_written = sum(
+                stats.get("written", 0) for stats in written.values()
+            )
+            transitioned = await _progress.mark_completed_by_run(
+                run_id=run_id,
+                rows_written=rows_written,
+                warnings=warnings,
+            )
+            if transitioned:
+                # Terminal in the database is not terminal in the product.
+                # Nothing else notifies Laravel for the tabular path, so
+                # without this the collars land and every surface stays as
+                # it was: no toast, no partial reload on Overview or the
+                # drillhole page, no data_version bump, and a map still
+                # serving the tiles it built before the upload.
+                await _progress.broadcast_terminal(
+                    workspace_id=input.workspace_id,
+                    project_id=input.project_id,
+                    run_id=run_id,
+                    stage="persist",
+                    status=_progress.terminal_status(
+                        rows_written=rows_written, warnings=warnings,
+                    ),
+                    message=_progress.terminal_message(
+                        rows_written=rows_written, warnings=warnings,
+                    ),
+                )
 
     except Exception as exc:
         if run_id:
@@ -590,16 +745,6 @@ async def run_ingest_tabular(
             )
         log.exception("ingest_tabular failed for %s", input.minio_key)
         raise
-
-    orphans = sum(v.get("orphaned", 0) for v in written.values())
-    if orphans:
-        warnings.append({
-            "code": "orphaned_intervals",
-            "detail": (
-                f"{orphans} row(s) reference a hole_id with no collar in this "
-                "project. Upload the collar file, then re-run this one."
-            ),
-        })
 
     out = IngestTabularOut(
         run_id=run_id,
@@ -614,6 +759,36 @@ async def run_ingest_tabular(
     )
     log.info("ingest_tabular complete: %s", out.model_dump(exclude={"sheets"}))
     return out
+
+
+
+
+# ---------------------------------------------------------------------------
+# Failure hook (2026-08-21). Mirrors ingest_zip_archive.on_failure.
+# ---------------------------------------------------------------------------
+@ingest_tabular.on_failure_task(
+    name="on_failure",
+    execution_timeout="30s",
+    schedule_timeout="30m",
+    retries=2,
+)
+async def on_failure(input: IngestTabularInput, ctx: Context) -> dict[str, Any]:
+    """Close the ingest_progress row when the workflow dies.
+
+    Without this hook a Hatchet cancellation — concurrency-queue
+    expiry, a manual cancel, a worker SIGTERM — left the row created
+    by start_run sitting at 'queued' with nothing to close it, because
+    the body that would have closed it never ran. The 15-minute stale
+    sweep was the only backstop.
+    """
+    return await _progress.close_run_after_workflow_failure(
+        workflow_name="ingest_tabular",
+        workspace_id=str(input.workspace_id) if input.workspace_id else None,
+        project_id=str(input.project_id) if input.project_id else None,
+        minio_key=input.minio_key,
+        run_id=input.run_id,
+        ctx=ctx,
+    )
 
 
 __all__ = [

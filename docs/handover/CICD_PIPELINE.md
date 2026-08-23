@@ -130,7 +130,7 @@ Triggers:
 
 ### 3.4 `continue-on-error` debt
 
-3 steps in `cd.yml` carry `continue-on-error: true` + TODO markers gated on `SOPS_AGE_PRIVATE_KEY` + SSH secrets being provisioned: "Decrypt environment secrets", "Deploy via SSH", "Health check". Remove once secrets land (`ops/runbooks/secret-management.md`).
+3 steps in `cd.yml` carry `continue-on-error: true` + TODO markers gated on `SOPS_AGE_PRIVATE_KEY` + SSH secrets being provisioned: "Decrypt environment secrets", "Deploy via SSH", "Health check". Remove once secrets land (`ops/runbooks/_archived/secret-management.md`).
 
 ### 3.5 Production deploy primitive
 
@@ -185,7 +185,7 @@ Alpine + apt-get installs Postgres/Qdrant/Neo4j client tools + `mc` + `restic` +
 - **Tags**:
   - `:<short-sha>` — immutable, what `cd.yml` resolves and pulls.
   - `:main` — rolling latest on main.
-- **Multi-arch**: linux/amd64 + linux/arm64. vLLM is x86_64-only — arm64 hosts can run dev (Ollama) but not prod LLM tier; see `ops/runbooks/llm-model-swap.md`.
+- **Multi-arch**: linux/amd64 + linux/arm64. vLLM is x86_64-only — arm64 hosts can run dev (Ollama) but not prod LLM tier; see `ops/runbooks/_archived/llm-model-swap.md`.
 - **Trivy + SBOM** — CRITICAL severity blocks, HIGH reported but non-blocking; SPDX-JSON SBOM 90-day artifact retention.
 - **Compose-side tagging** — `georag/<service>:latest` refers to locally built dev images; CI registry tags drive prod deploys. Image-digest evidence: `ops/audit/2026-04-19-image-digests.json`.
 - **Cosign image signing absent** — flagged ([`HANDOVER_INDEX.md`](HANDOVER_INDEX.md) §5.5).
@@ -283,7 +283,7 @@ Beyond the standard test markers, two CI tests enforce ADR contracts:
 | O-02 | `{ENV}_SSH_HOST` / `_USER` / `_KEY` trio set per environment |
 | O-03 | `STAGING_URL` GitHub Secret set |
 | O-04 | `.env.production.enc` present and SOPS-encrypted |
-| O-05 | Cold-start runbook present (`ops/runbooks/cold-start.md`) |
+| O-05 | Cold-start runbook present (`ops/runbooks/_archived/cold-start.md`) |
 | O-06 | Perf-baseline doc has values (not PENDING) |
 | O-07 | Alertmanager prod template + actual prod config presence |
 

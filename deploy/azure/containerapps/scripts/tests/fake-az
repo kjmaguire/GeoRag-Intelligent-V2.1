@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Stand-in for the Azure CLI, used by run.sh. Every invocation is appended
+# to $FAKE_AZ_LOG so a test can assert what the sweep actually attempted —
+# the point of several cases is that a failure early in the sweep must not
+# stop the later actions from being tried.
+#
+# Behaviour is driven entirely by environment variables so a case reads as
+# one line of setup:
+#
+#   FAKE_AZ_LOGIN_RC      exit code for `az login --identity`      (0)
+#   FAKE_AZ_FAIL_APPS     apps whose `containerapp update` fails   ("")
+#   FAKE_AZ_PG_STOP_RC    exit code for `flexible-server stop`     (0)
+#   FAKE_AZ_PG_START_RC   exit code for `flexible-server start`    (0)
+#   FAKE_AZ_PG_STATE      what `flexible-server show` reports      (Ready)
+#   FAKE_AZ_NOT_RUNNING   apps that never reach RunningAtMaxScale  ("")
+#   FAKE_AZ_NOT_HEALTHY   apps that never report Healthy           ("")
+set -uo pipefail
+
+printf '%s\n' "$*" >> "${FAKE_AZ_LOG:?FAKE_AZ_LOG must be set}"
+
+arg_after() {
+  local want="$1" prev="" a
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$want" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+  return 1
+}
+
+in_list() {
+  local needle="$1" item
+  shift
+  for item in $*; do
+    [ "$item" = "$needle" ] && return 0
+  done
+  return 1
+}
+
+case "$1 ${2:-}" in
+  "login --identity")
+    exit "${FAKE_AZ_LOGIN_RC:-0}"
+    ;;
+
+  "containerapp update")
+    app=$(arg_after -n "$@")
+    if in_list "$app" "${FAKE_AZ_FAIL_APPS:-}"; then
+      echo "ERROR: (Conflict) fake update failure for ${app}" >&2
+      exit 3
+    fi
+    exit 0
+    ;;
+
+  "containerapp revision")
+    app=$(arg_after -n "$@")
+    if printf '%s' "$*" | grep -q runningState; then
+      if in_list "$app" "${FAKE_AZ_NOT_RUNNING:-}"; then
+        printf 'Scaling\n'
+      else
+        printf 'RunningAtMaxScale\n'
+      fi
+    else
+      if in_list "$app" "${FAKE_AZ_NOT_HEALTHY:-}"; then
+        printf 'Unhealthy\n'
+      else
+        printf 'Healthy\n'
+      fi
+    fi
+    exit 0
+    ;;
+
+  "postgres flexible-server")
+    case "${3:-}" in
+      stop)
+        rc="${FAKE_AZ_PG_STOP_RC:-0}"
+        [ "$rc" -ne 0 ] && echo "ERROR: (fake) stop failed" >&2
+        exit "$rc"
+        ;;
+      start)
+        rc="${FAKE_AZ_PG_START_RC:-0}"
+        # The shape of the real thing, so a reader of the test log sees
+        # the message the live job has emitted every day since 2026-08-03.
+        [ "$rc" -ne 0 ] && echo "ERROR: (ServerIsNotStopped) Start operation is only supported on servers that are in 'Stopped' state." >&2
+        exit "$rc"
+        ;;
+      show)
+        # `-` not `:-`: a case that wants "the state read failed" passes
+        # FAKE_AZ_PG_STATE= and must not silently get the default back.
+        state="${FAKE_AZ_PG_STATE-Ready}"
+        # Empty means "the state read itself failed" — the sweep must
+        # treat that as a failure, not as success.
+        [ -z "$state" ] && exit 4
+        printf '%s\n' "$state"
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
+echo "fake-az: unhandled invocation: $*" >&2
+exit 99

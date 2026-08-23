@@ -23,7 +23,6 @@ Per cluster (overall run):
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +30,7 @@ from typing import Any
 import asyncpg
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.services.ingest.cameco_log_ingester import (
     emit_log_provenance,
     parse_cameco_log_header,
@@ -72,9 +72,9 @@ async def _set_rls_gucs(
     project_id: str | None = None,
 ) -> None:
     """Apply the GUCs that the RLS policies check."""
-    await bind_workspace_scope(
-        conn, workspace_id=workspace_id, site="ingest.cluster_runner"
-    )
+    # Called once. It appeared twice, identically — a mechanical
+    # artefact, harmless but a reliable tell that this block was
+    # sed-edited rather than read.
     await bind_workspace_scope(
         conn, workspace_id=workspace_id, site="ingest.cluster_runner"
     )
@@ -109,6 +109,7 @@ async def ingest_cluster(
     project_slug: str = "cameco-shirley-basin",
     project_company: str = "CAMECO RESOURCES",
     project_region: str = "CARBON, WY",
+    project_commodity: str | None = None,
 ) -> ClusterIngestSummary:
     """Walk `cluster_dir` and ingest every Tier 1 file.
 
@@ -118,6 +119,14 @@ async def ingest_cluster(
         plss_section_key: e.g. "028N079W36" for coordinate fallback
         conn: optional pre-existing asyncpg connection; if None one is created
         progress_every: log line every N files processed
+        project_commodity: commodity for the stub project row AND for the
+            silver.reports row of every PDF in the cluster. Defaults to
+            None (SQL NULL), not "uranium" — this runner was written for the
+            Cameco Shirley Basin uranium cluster and used to hardcode that
+            literal, stamping "uranium" onto the project row of every
+            cluster it ingested regardless of what was actually in the
+            ground. LAS 2.0 carries no commodity field, so the caller is the
+            only truthful source. Pass it explicitly for a known cluster.
 
     Returns:
         ClusterIngestSummary populated with per-type counts.
@@ -131,13 +140,8 @@ async def ingest_cluster(
 
     own_conn = False
     if conn is None:
-        user = os.environ["POSTGRES_USER"]
-        password = os.environ["POSTGRES_PASSWORD"]
-        host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-        port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-        db = os.environ.get("POSTGRES_DB", "georag")
         conn = await asyncpg.connect(
-            f"postgres://{user}:{password}@{host}:{port}/{db}",
+            build_dsn(),
             statement_cache_size=0,
         )
         own_conn = True
@@ -159,13 +163,14 @@ async def ingest_cluster(
                      created_at, updated_at)
                 VALUES (gen_random_uuid(),
                         $1, $2, $3, $4,
-                        'uranium',
-                        'EPSG:32613', 32613, 'grid_north', 'active', $5::uuid,
+                        $5,
+                        'EPSG:32613', 32613, 'grid_north', 'active', $6::uuid,
                         NOW(), NOW())
                 ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
                 RETURNING project_id::text AS project_id
                 """,
-                project_name, project_slug, project_company, project_region, workspace_id,
+                project_name, project_slug, project_company, project_region,
+                project_commodity, workspace_id,
             )
             stub_project_id = stub_row["project_id"]
 
@@ -237,15 +242,34 @@ async def ingest_cluster(
         # slug via the stub-project upsert above, so use it directly
         # rather than the company-hint search (which falsely returns the
         # first Cameco project when multiple basins coexist).
-        await _set_rls_gucs(conn, workspace_id=workspace_id)
-        project_id = await conn.fetchval(
-            "SELECT project_id::text FROM silver.projects WHERE slug = $1",
-            project_slug,
-        )
-        if not project_id:
-            project_id = await _find_project_id(conn, company_hint=project_company)
-        if not project_id:
-            project_id = await _find_project_id(conn, company_hint="")
+        # The transaction is load-bearing, not tidiness. _set_rls_gucs
+        # binds app.workspace_id with SET LOCAL, which PostgreSQL DISCARDS
+        # outside a transaction block — so on this bare connection the GUC
+        # was never set, while the six sibling call sites in this file all
+        # wrap correctly.
+        #
+        # That matters here more than anywhere else in the file, because
+        # the lookup below has NO workspace_id predicate and leans entirely
+        # on RLS, and silver.projects' policy is FAIL-OPEN:
+        #   (NULLIF(current_setting('app.workspace_id', true), '') IS NULL)
+        #     OR (workspace_id = NULLIF(...)::uuid)
+        # An unset GUC satisfies the first branch, so the SELECT saw every
+        # workspace's projects. `projects_slug_unique` is a GLOBAL unique
+        # index, so a slug collision resolves to whichever workspace owns
+        # it — and this import then writes its LAS curves and collar
+        # coordinates into that project.
+        async with conn.transaction():
+            await _set_rls_gucs(conn, workspace_id=workspace_id)
+            project_id = await conn.fetchval(
+                "SELECT project_id::text FROM silver.projects WHERE slug = $1",
+                project_slug,
+            )
+            if not project_id:
+                project_id = await _find_project_id(
+                    conn, company_hint=project_company,
+                )
+            if not project_id:
+                project_id = await _find_project_id(conn, company_hint="")
         log.info("cluster_runner.project_id=%s", project_id)
 
         # ── Pass 2 — Cameco .log binary headers update collar coords ─
@@ -331,6 +355,12 @@ async def ingest_cluster(
                         conn, str(p),
                         workspace_id=workspace_id,
                         project_id=project_id,
+                        # Same value as the stub project row above: these
+                        # PDFs belong to that project, and the caller is
+                        # the only party who knows the cluster's commodity.
+                        # None until one is passed — pdf_ingester used to
+                        # hardcode 'uranium' here (fixed 2026-08-21).
+                        commodity=project_commodity,
                     )
                 if result.skipped:
                     if result.skipped_reason == "empty_or_scanned_pdf_no_native_text":

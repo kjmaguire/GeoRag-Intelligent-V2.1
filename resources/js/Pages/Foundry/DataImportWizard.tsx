@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill } from '@/Components/Foundry/primitives';
-import { acceptedExtensions, categoryForExtension } from '@/lib/uploadCategories';
+import { acceptedExtensions, categoryForExtension, type Category } from '@/lib/uploadCategories';
 import { groupShapefiles } from '@/lib/shapefileBundle';
 
 /**
@@ -40,6 +40,17 @@ interface ProjectPick {
 interface QueuedFile {
     id: string;
     file: File;
+    /**
+     * Category to upload under, when the extension alone would get it wrong.
+     *
+     * A shapefile bundle is the case that matters: groupShapefiles() names it
+     * `<stem>.zip`, and categoryForExtension('zip') answers `archive`, which
+     * routes the bundle to ingest_zip_archive — a workflow with no branch for
+     * .shp/.shx/.dbf/.prj, so it counted all four members as "unknown",
+     * wrote nothing, and reported the run completed. Carry the intended
+     * category with the file instead of re-deriving it from a name we chose.
+     */
+    category?: Category;
 }
 
 interface UploadOutcome {
@@ -138,7 +149,7 @@ export default function FoundryDataImportWizard() {
             () => ({ bundles: [], passthrough: arr, orphanSidecars: [] }),
         );
         for (const b of bundles) {
-            accepted.push({ id: newQueueId(), file: b.file });
+            accepted.push({ id: newQueueId(), file: b.file, category: 'spatial' });
         }
         for (const f of orphanSidecars) rejected.push(f.name);
 
@@ -194,7 +205,7 @@ export default function FoundryDataImportWizard() {
         // hardcoded PDF/TIFF/ZIP and refused drill and GIS files client-side
         // even after the API began accepting them.
         const ext = fileExtension(qf.file.name);
-        const category = categoryForExtension(ext);
+        const category = qf.category ?? categoryForExtension(ext);
         if (!category) {
             return {
                 id: qf.id,
@@ -328,6 +339,7 @@ export default function FoundryDataImportWizard() {
                         )}
                         {projects !== null && projects.length > 0 && (
                             <select
+                                aria-label="Target project"
                                 value={selectedProjectId ?? ''}
                                 onChange={(e) => setSelectedProjectId(e.target.value || null)}
                                 className="w-full text-sm px-3 py-2 rounded border"
@@ -370,7 +382,7 @@ export default function FoundryDataImportWizard() {
                             }}
                         >
                             <div className="text-sm font-medium mb-1" style={{ color: 'var(--fg-1)' }}>
-                                Drop PDF / TIFF / ZIP here
+                                Drop reports, drill data or GIS files here
                             </div>
                             <div
                                 className="text-[11px] font-mono uppercase tracking-wider mb-3"
@@ -378,11 +390,21 @@ export default function FoundryDataImportWizard() {
                             >
                                 or use the file picker
                             </div>
+                            {/* `accept` is derived from the same map as
+                                everything else on this screen. #144 rewired
+                                intake and uploadOne() onto the shared category
+                                map but left this attribute at the old three
+                                formats — so the OS dialog greyed out .csv,
+                                .xlsx, .las, .gpkg, .geojson and .qgz, four days
+                                after the team shipped three workflows
+                                specifically to accept them. Drag-and-drop
+                                worked; the picker did not, and the label said
+                                the same wrong thing. */}
                             <input
                                 ref={fileInputRef}
                                 type="file"
                                 multiple
-                                accept=".pdf,.tif,.tiff,.zip"
+                                accept={ACCEPTED_EXTENSIONS.map((e) => `.${e}`).join(',')}
                                 className="hidden"
                                 onChange={(e) => {
                                     addFiles(e.target.files);

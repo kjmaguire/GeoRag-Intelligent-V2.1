@@ -1,33 +1,65 @@
-# Module 10 Chunk 10.7 — nightly performance baseline.
+# Module 10 Chunk 10.7 — performance baseline.
 #
-# Runs `src/fastapi/scripts/load_test.py` against a staging FASTAPI_URL,
-# captures p50/p95/p99 per query class, and FAILS the build on >20%
-# regression vs the committed baseline at `ops/baselines/2026-04-22-api-latency.md`.
+# Runs `src/fastapi/scripts/load_test.py` against a FASTAPI_URL, captures
+# p50/p95/p99 per query class, and FAILS the build on >20% regression vs
+# the committed baseline at `ops/baselines/2026-04-22-api-latency.md`.
 #
-# The threshold is intentionally generous (20%) for V1 — too tight and
-# CPU contention on the runner causes false alarms; too loose and we
-# silently absorb regression. Tighten to 10% once a self-hosted runner
-# with predictable CPU is in place (Module 11).
+# The threshold is intentionally generous (20%) for V1 — too tight and CPU
+# contention on the runner causes false alarms; too loose and we silently
+# absorb regression.
 #
-# Triggers
-# --------
-# - Cron: every night 02:00 UTC.
-# - workflow_dispatch: on-demand for ad-hoc latency check.
+# ─── 2026-08-21: no longer runs on a schedule ───────────────────────────
 #
-# Prerequisites (operator setup, not gate-blocking until configured):
-# - secrets.STAGING_URL  — base URL of the staging FastAPI (e.g. https://staging.georag.example.com)
-# - secrets.STAGING_PROJECT_ID — UUID of a representative project in staging
-# - secrets.FASTAPI_SERVICE_KEY — same value the staging FastAPI runs with
+# It ran nightly for months and reported success every single night without
+# executing anything. The secrets check below found no STAGING_URL, set
+# `missing=true`, and every subsequent step carried
+# `if: steps.secrets.outputs.missing != 'true'`. The job then completed
+# successfully. The 8-12 second run durations are the proof: a 30-request
+# load test cannot finish in 8 seconds.
 #
-# When secrets are missing the workflow runs and reports "skipped" rather
-# than fabricating green CI.
+# The old header said "When secrets are missing the workflow runs and
+# reports 'skipped' rather than fabricating green CI." The intent was
+# right and the mechanism defeated it — GitHub has no "skipped" state for
+# a job whose steps all evaluate their `if:` to false. It renders a green
+# tick. The authors built the thing they were trying to avoid.
+#
+# Two facts make the staging premise unrecoverable, not merely unconfigured:
+#
+#   1. There is no staging environment and none is planned — this is a
+#      single-environment deployment. STAGING_URL will never be set.
+#
+#   2. The 02:00 UTC cron could never have worked even WITH secrets.
+#      georag-pg-cc is deliberately stopped 00:00-10:00 UTC nightly, so
+#      every scheduled run landed squarely inside the shutdown window and
+#      would have measured a stopped database — reporting a catastrophic
+#      "regression" every night rather than a latency baseline.
+#
+# Everything else here is real and works: load_test.py (8.2 KB),
+# .github/scripts/compare_perf_baseline.py (3.7 KB) and the committed
+# baseline doc all exist and are fully implemented. They have simply never
+# been handed an input.
+#
+# To bring it online (one operator decision, then one uncomment):
+#   1. Decide whether a nightly 30-request read-only load test against
+#      PRODUCTION is acceptable. It is small, but it is production traffic
+#      and production spend, so it is a maintainer's call, not a default.
+#   2. Set repo secrets FASTAPI_URL (the FastAPI Container App's public
+#      FQDN), FASTAPI_SERVICE_KEY, and PERF_PROJECT_ID.
+#   3. Uncomment the `schedule:` block below. It is set to 11:00 UTC —
+#      AFTER the 10:00 startup window, with an hour of slack for the
+#      startup job, which currently fails its PG start 7 nights out of 7.
+#   4. Refresh ops/baselines/2026-04-22-api-latency.md. It predates the
+#      Qwen3 embedding/reranker swap, so the first comparison against it
+#      is meaningless until re-measured.
 
 name: Perf — Baseline
 
 on:
-  schedule:
-    # Nightly 02:00 UTC.
-    - cron: '0 2 * * *'
+  # DO NOT re-enable this cron without doing step 1 above. A scheduled run
+  # with no target is what produced months of green nights.
+  #
+  # schedule:
+  #   - cron: '0 11 * * *'   # 11:00 UTC — after the 10:00 PG start, +1h slack
   workflow_dispatch: {}
 
 permissions:
@@ -45,55 +77,62 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Fail, do not skip. A perf gate that cannot reach its target has
+      # not passed — it has not run, and those are different outcomes that
+      # the previous version rendered identically.
       - name: Check required secrets
-        id: secrets
         run: |
-          if [ -z "${{ secrets.STAGING_URL }}" ] || [ -z "${{ secrets.FASTAPI_SERVICE_KEY }}" ]; then
-            echo "missing=true" >> $GITHUB_OUTPUT
-            echo "::warning::STAGING_URL or FASTAPI_SERVICE_KEY not set — skipping perf baseline."
+          missing=""
+          [ -z "${{ secrets.FASTAPI_URL }}" ] && missing="$missing FASTAPI_URL"
+          [ -z "${{ secrets.FASTAPI_SERVICE_KEY }}" ] && missing="$missing FASTAPI_SERVICE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::perf baseline has no target — unset secrets:$missing"
+            echo ""
+            echo "This job has no staging environment to point at and never will."
+            echo "See the header of .github/workflows/perf-baseline.yml for the"
+            echo "three-step wiring against production."
+            exit 1
           fi
 
       - name: Setup uv
-        if: steps.secrets.outputs.missing != 'true'
         uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install httpx + measurement deps
-        if: steps.secrets.outputs.missing != 'true'
         working-directory: src/fastapi
         run: uv sync --extra dev
 
-      - name: Run load_test.py against staging
-        if: steps.secrets.outputs.missing != 'true'
+      - name: Run load_test.py
         working-directory: src/fastapi
         env:
-          FASTAPI_URL: ${{ secrets.STAGING_URL }}
+          FASTAPI_URL: ${{ secrets.FASTAPI_URL }}
           FASTAPI_SERVICE_KEY: ${{ secrets.FASTAPI_SERVICE_KEY }}
-          STAGING_PROJECT_ID: ${{ secrets.STAGING_PROJECT_ID }}
+          PERF_PROJECT_ID: ${{ secrets.PERF_PROJECT_ID }}
         run: |
+          if [ -z "${PERF_PROJECT_ID}" ]; then
+            echo "::error::PERF_PROJECT_ID is unset — refusing to fall back to a"
+            echo "hardcoded project UUID. The old default (019d74a1-…) would"
+            echo "either 404 or silently measure the wrong corpus, and a p95"
+            echo "measured against the wrong project is worse than no p95."
+            exit 1
+          fi
           uv run python scripts/load_test.py \
               --concurrency 10 \
               --total 30 \
-              --project "${STAGING_PROJECT_ID:-019d74a1-fba8-7165-9ae6-a5bf93eef97d}" \
+              --project "${PERF_PROJECT_ID}" \
               --json > load-test-results.json
           cat load-test-results.json
 
       - name: Compare vs committed baseline
-        if: steps.secrets.outputs.missing != 'true'
         run: |
-          # Tiny inline regression check — fails the job when any class p95
-          # exceeds the committed baseline by more than REGRESSION_THRESHOLD_PCT.
-          # The baseline file is committed at ops/baselines/2026-04-22-api-latency.md.
-          # The check parses the JSON output of load_test.py and the YAML
-          # frontmatter of the baseline doc.
           python3 .github/scripts/compare_perf_baseline.py \
               --results src/fastapi/load-test-results.json \
               --baseline ops/baselines/2026-04-22-api-latency.md \
               --threshold "${REGRESSION_THRESHOLD_PCT}"
 
       - name: Upload load test artifact
-        if: always() && steps.secrets.outputs.missing != 'true'
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: perf-baseline-${{ github.run_number }}

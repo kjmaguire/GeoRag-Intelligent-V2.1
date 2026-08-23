@@ -47,6 +47,7 @@ from qdrant_client import AsyncQdrantClient
 from starlette.responses import Response  # for /metrics return-type resolution
 
 from app.config import settings
+from app.db.dsn import build_dsn, redact_dsn
 from app.logging_config import configure_json_logging
 from app.services.qdrant_conn import qdrant_client_kwargs
 
@@ -68,7 +69,21 @@ if settings.SENTRY_DSN:
         release=settings.SENTRY_RELEASE or None,
         traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
         profiles_sample_rate=settings.SENTRY_PROFILES_SAMPLE_RATE,
-        send_default_pii=True,
+        # False, and it must stay False. With PII on, the Starlette
+        # integration attaches the request body to every event — and the
+        # body on /internal/queries is the customer's exploration
+        # question, naming a property and often a drillhole. That is the
+        # exact content `app/agent/log_safe.py` exists to keep out of our
+        # own logs; shipping it to a third-party SaaS instead is not an
+        # improvement.
+        #
+        # The question stays recoverable for debugging without it: the
+        # audit row is keyed by `log_safe.query_hash`, so an event's
+        # correlation id leads to the encrypted row.
+        #
+        # Both LLM integrations below already pass include_prompts=False.
+        # The request body was the remaining copy of the same text.
+        send_default_pii=False,
         # Forward Python `logging` records into Sentry's Logs product.
         # Pairs with the Laravel side's sentry_logs Monolog channel.
         _experiments={"enable_logs": settings.SENTRY_ENABLE_LOGS},
@@ -231,17 +246,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # -------------------------------------------------------------------------
     # 1. asyncpg connection pool (PostGIS via PgBouncer)
     # -------------------------------------------------------------------------
-    pg_dsn = (
-        f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
-        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
-        f"?sslmode={settings.POSTGRES_SSLMODE}"
-    )
-    logger.info(
-        "Connecting asyncpg pool -> %s:%s/%s",
-        settings.POSTGRES_HOST,
-        settings.POSTGRES_PORT,
-        settings.POSTGRES_DB,
-    )
+    # Pooled (PgBouncer) DSN — the request path wants short transactions
+    # and high connection churn, which is what a transaction pooler is for.
+    # Background work uses build_dsn() (direct) instead; see app/db/dsn.py.
+    pg_dsn = build_dsn(direct=False, scheme="postgresql", include_sslmode=True)
+    # Log the DSN that was actually built, redacted -- not settings fields
+    # read a second time. The old form could report a different host from
+    # the one it had just connected to, which is precisely the failure
+    # mode you are reading this log line to diagnose.
+    # CodeQL flags this (py/clear-text-logging-sensitive-data, high)
+    # because a DSN built from POSTGRES_PASSWORD reaches a log call, and
+    # its taint tracking cannot see that redact_dsn strips the password
+    # component structurally (app/db/dsn.py, asserted in
+    # tests/test_build_dsn_single_source.py::TestRedactDsn, including the
+    # malformed-port case that used to raise instead of redacting).
+    #
+    # A `# codeql[...]` comment does NOT suppress this -- GitHub code
+    # scanning does not honour inline suppression comments, and one sat
+    # on this line raising the alert anyway. The alert is dismissed
+    # through the API instead, with this reasoning as the dismissal
+    # comment. Do not re-add a suppression marker; it only looks like a
+    # guard.
+    #
+    # The real guard is TestRedactDsn: if redact_dsn ever stops
+    # redacting, those tests fail before this line can leak anything.
+    #
+    # Not fixed by logging components instead of the built DSN -- see the
+    # paragraph above about reporting a host you did not connect to.
+    logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
         min_size=2,
@@ -647,9 +679,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # It is pinned by HuggingFace revision SHA (see reranker.py) so weight
     # drift is detected via the version string in answer_runs.reranker_version.
     #
-    # The reranker now runs on the FUSED candidate set (post cross-store RRF),
-    # not just on Qdrant-only results. Per-class top-k is defined in
-    # app.services.reranker.RERANKER_TOP_K_BY_CLASS.
+    # CORRECTED 2026-08-22. This used to claim: "The reranker now runs on
+    # the FUSED candidate set (post cross-store RRF), not just on
+    # Qdrant-only results. Per-class top-k is defined in
+    # app.services.reranker.RERANKER_TOP_K_BY_CLASS."
+    #
+    # Neither half is true. Reranking runs INSIDE `search_documents`, over
+    # Qdrant candidates only — nothing ever fuses Qdrant results with the
+    # PostGIS/assay tool results, so there is no cross-store RRF pool for
+    # it to run on. And `top_k_for_class` has zero callers anywhere in the
+    # tree, so RERANKER_TOP_K_BY_CLASS is inert; the single
+    # RERANKER_TOP_K value is what applies.
     #
     # Fallback policy (spec B6): if the reranker fails to load or predict,
     # log + continue with RRF order. Do not fail the query.
@@ -1069,6 +1109,65 @@ if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
         "GEOLOGICAL_CONSTRAINTS_ENABLED=False — Layer 6 (geological "
         "constraints) is DISABLED. Physically impossible values may reach users."
     )
+
+
+def _assert_production_posture() -> None:
+    """Say out loud when production is running with a control switched off.
+
+    The controls above default to True, so their warnings fire only when
+    someone deliberately turns one off. This block is for the opposite and
+    more dangerous shape: settings that default to FALSE for a developer's
+    convenience and were never turned on in production.
+
+    .env.production.example has prescribed PROMPT_INJECTION_DELIMITING_ENABLED
+    and RATE_LIMIT_ENABLED under the comment "Must be ON in production" for a
+    long time. Neither was ever set on fastapi-cc or hatchet-worker-cc, both
+    default to False, and both gate real code — the slowapi limiter install
+    and the fence that marks retrieved third-party text as untrusted. So a
+    PDF containing "ignore previous instructions" went into the prompt
+    unfenced, and nothing throttled anything, for as long as the deployment
+    has existed. Nothing said so, because nothing knew it was production.
+
+    A CRITICAL line rather than a refusal to start: these are hardening
+    controls, and taking the API down over one would trade a quiet risk for a
+    loud outage. It is not a whisper either — CRITICAL from fastapi-cc pages
+    via the georag-fastapi-critical alert.
+    """
+    if not settings.is_production:
+        return
+
+    required_on = (
+        (
+            "PROMPT_INJECTION_DELIMITING_ENABLED",
+            settings.PROMPT_INJECTION_DELIMITING_ENABLED,
+            "retrieved third-party text is concatenated into the prompt with "
+            "no fence marking it as untrusted data",
+        ),
+        (
+            "RATE_LIMIT_ENABLED",
+            settings.RATE_LIMIT_ENABLED,
+            "no request throttling of any kind is installed",
+        ),
+    )
+
+    for name, value, consequence in required_on:
+        if not value:
+            _safety_logger.critical(
+                "GEORAG_ENV=production but %s is off — %s. "
+                "Set it on the container app.",
+                name, consequence,
+            )
+
+    if settings.QDRANT_DOCUMENT_PROJECT_SCOPE == "cross_project":
+        _safety_logger.critical(
+            "GEORAG_ENV=production with QDRANT_DOCUMENT_PROJECT_SCOPE="
+            "cross_project — document retrieval filters on workspace only, "
+            "so a question asked in one project can be answered from another "
+            "project's reports."
+        )
+
+
+_assert_production_posture()
 
 # Register routers — all /internal/* routes require X-Service-Key auth
 # (enforced per-router via the verify_service_key dependency).

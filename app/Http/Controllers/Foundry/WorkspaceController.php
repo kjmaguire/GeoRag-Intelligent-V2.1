@@ -323,13 +323,50 @@ class WorkspaceController extends Controller
                     ->limit(200)
                     ->selectRaw('collar_id, hole_id, hole_id_canonical, total_depth, easting, northing, ST_X(geom_4326) AS lng, ST_Y(geom_4326) AS lat')
                     ->get();
-                foreach ($collarRows as $cr) {
-                    $bands = DB::table('gold.drillhole_intervals_visual')
-                        ->where('collar_id', $cr->collar_id)
+                // One windowed query for every hole's bands, instead of one
+                // query per hole.
+                //
+                // This was a `foreach ($collarRows as $cr)` issuing a
+                // separate SELECT per collar — up to 200 sequential round
+                // trips on a single page load. withWorkspaceRls() wraps the
+                // whole action in DB::transaction(), and PgBouncer runs in
+                // transaction pooling, so one server connection stayed
+                // pinned across all 200. A handful of concurrent workspace
+                // loads was enough to exhaust the server-side pool and queue
+                // every other query in the application behind them.
+                //
+                // ROW_NUMBER() reproduces the per-collar `ORDER BY
+                // depth_from LIMIT 80` exactly; a plain `whereIn` with a
+                // global LIMIT would not — one deep hole would eat the whole
+                // budget and the rest would come back empty.
+                $bandsByCollar = [];
+                $collarIds = $collarRows->pluck('collar_id')->all();
+                if ($collarIds !== []) {
+                    $ranked = DB::table('gold.drillhole_intervals_visual')
+                        ->whereIn('collar_id', $collarIds)
                         ->where('interval_kind', 'lithology')
-                        ->orderBy('depth_from')
-                        ->limit(80)
-                        ->get(['depth_from', 'depth_to', 'lithology_code', 'color_hint']);
+                        ->selectRaw(
+                            'collar_id, depth_from, depth_to, lithology_code, color_hint, '
+                            .'ROW_NUMBER() OVER (PARTITION BY collar_id ORDER BY depth_from) AS rn',
+                        );
+
+                    foreach (
+                        DB::query()->fromSub($ranked, 'ranked')
+                            ->where('rn', '<=', 80)
+                            ->orderBy('collar_id')
+                            ->orderBy('depth_from')
+                            ->get() as $b
+                    ) {
+                        $bandsByCollar[(string) $b->collar_id][] = [
+                            'from' => (float) $b->depth_from,
+                            'to' => (float) $b->depth_to,
+                            'code' => (string) $b->lithology_code,
+                            'color' => (string) $b->color_hint,
+                        ];
+                    }
+                }
+
+                foreach ($collarRows as $cr) {
                     $firstHolesIntervals[] = [
                         'hole_id' => (string) ($cr->hole_id_canonical ?? $cr->hole_id),
                         'total_depth' => $cr->total_depth !== null ? (float) $cr->total_depth : null,
@@ -337,12 +374,9 @@ class WorkspaceController extends Controller
                         'northing' => $cr->northing !== null ? (float) $cr->northing : null,
                         'lat' => isset($cr->lat) ? (float) $cr->lat : null,
                         'lng' => isset($cr->lng) ? (float) $cr->lng : null,
-                        'bands' => $bands->map(fn ($b) => [
-                            'from' => (float) $b->depth_from,
-                            'to' => (float) $b->depth_to,
-                            'code' => (string) $b->lithology_code,
-                            'color' => (string) $b->color_hint,
-                        ])->values()->all(),
+                        // A hole with no lithology bands still gets an entry,
+                        // same as when its per-hole query returned nothing.
+                        'bands' => $bandsByCollar[(string) $cr->collar_id] ?? [],
                     ];
                 }
             } catch (\Throwable $e) { /* fallback empty */
@@ -638,19 +672,41 @@ class WorkspaceController extends Controller
             } catch (\Throwable $e) { /* fallback */
             }
             // Per-thickness tier counts — drives the "Ore tier ≥ Nm" toggles.
+            //
+            // One aggregate, not three. This was a loop over [5, 10, 20] that
+            // ran the same GROUP BY over gold.drillhole_intervals_visual each
+            // time and then counted the groups in PHP with `->get()->count()`
+            // — so every Workspace page load paid three full scans of the
+            // project's intervals AND pulled one row per qualifying collar
+            // across the wire three times, to produce three integers.
+            // `->count()` on a grouped builder returns a count per group,
+            // which is presumably why it was written that way; the shape that
+            // actually works is to group in a subquery and count outside it.
+            //
+            // SUM(CASE ...) rather than COUNT(*) FILTER: the filter clause is
+            // Postgres 9.4+ and SQLite 3.30+, and the test database is SQLite.
             $tierCounts = ['ore_5' => 0, 'ore_10' => 0, 'ore_20' => 0];
             try {
-                foreach ([5, 10, 20] as $threshold) {
-                    $key = 'ore_'.$threshold;
-                    $tierCounts[$key] = (int) DB::table('gold.drillhole_intervals_visual')
-                        ->where('project_id', $project->project_id)
-                        ->where('lithology_code', 'DERIVED-ORE')
-                        ->select('collar_id', DB::raw('SUM(depth_to - depth_from) AS thickness_m'))
-                        ->groupBy('collar_id')
-                        ->havingRaw('SUM(depth_to - depth_from) >= ?', [$threshold])
-                        ->get()
-                        ->count();
-                }
+                $tiers = DB::selectOne(
+                    'SELECT
+                        SUM(CASE WHEN thickness_m >= 5  THEN 1 ELSE 0 END) AS ore_5,
+                        SUM(CASE WHEN thickness_m >= 10 THEN 1 ELSE 0 END) AS ore_10,
+                        SUM(CASE WHEN thickness_m >= 20 THEN 1 ELSE 0 END) AS ore_20
+                       FROM (
+                         SELECT collar_id, SUM(depth_to - depth_from) AS thickness_m
+                           FROM gold.drillhole_intervals_visual
+                          WHERE project_id = ?
+                            AND lithology_code = ?
+                          GROUP BY collar_id
+                       ) AS hole_thickness',
+                    [$project->project_id, 'DERIVED-ORE'],
+                );
+
+                $tierCounts = [
+                    'ore_5' => (int) ($tiers->ore_5 ?? 0),
+                    'ore_10' => (int) ($tiers->ore_10 ?? 0),
+                    'ore_20' => (int) ($tiers->ore_20 ?? 0),
+                ];
             } catch (\Throwable $e) { /* fallback */
             }
 

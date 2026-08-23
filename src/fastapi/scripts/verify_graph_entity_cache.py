@@ -17,15 +17,15 @@ load. If the dev database has been wiped, update this UUID before running.
 import asyncio
 import time
 
-from neo4j import AsyncGraphDatabase
 import redis.asyncio as aioredis
+from neo4j import AsyncGraphDatabase
 
-from app.config import settings
 from app.agent.orchestrator import (
-    fetch_project_graph_entities,
-    _extract_graph_entities,
     _UNIVERSAL_GRAPH_ENTITIES,
+    _extract_graph_entities,
+    fetch_project_graph_entities,
 )
+from app.config import settings
 
 # Real project UUID from dev seed data (Athabasca Group project).
 REAL = '019d74a1-fba8-7165-9ae6-a5bf93eef97d'

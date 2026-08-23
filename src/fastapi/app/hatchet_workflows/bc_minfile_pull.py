@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -60,6 +59,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.hatchet.bc_minfile_pull")
@@ -105,18 +105,19 @@ class BcMinfilePullOutput(BaseModel):
 
 bc_minfile_pull = hatchet.workflow(
     name="bc_minfile_pull",
-    on_crons=["0 6 1 * *"],
+    # Moved 2026-08-21: 16:00 UTC on the 1st — 06:00 was inside the shutdown window.
+    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
+    # scales hatchet-worker-cc to zero and both DST candidate hours of
+    # each sweep count as closed. See
+    # tests/test_crons_avoid_the_shutdown_window.py.
+    on_crons=["0 16 1 * *"],
     input_validator=BcMinfilePullInput,
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 async def _load_source(

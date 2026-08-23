@@ -8,7 +8,6 @@ Covers:
   - pdf_ingester: chunking helpers
   - kg_sync: deposit-type mapping
   - passage_embedder: point ID generation
-  - tiff_ocr_ingester: garbage filter
 
 These tests are pure-Python (no DB / no model / no Qdrant) so they
 run fast in the substrate verifier.
@@ -211,77 +210,10 @@ def test_passage_embedder_point_id_is_passage_id():
     assert _passage_to_point_id("xyz") == _passage_to_point_id("xyz")
 
 
-# ─────────────────── tiff_ocr_ingester ────────────────────────────
-
-def test_tiff_ocr_garbage_filter_rejects_short_text():
-    from app.services.ingest.tiff_ocr_ingester import _is_garbage_text
-    assert _is_garbage_text("")
-    assert _is_garbage_text("hi")  # too short
-    assert _is_garbage_text(None)
-
-
-def test_tiff_ocr_garbage_filter_rejects_low_alpha_ratio():
-    from app.services.ingest.tiff_ocr_ingester import _is_garbage_text
-    # Lots of non-alpha noise
-    noise = "1234567890" * 20 + "###@@@$$$%%%" * 10
-    assert _is_garbage_text(noise)
-
-
-def test_tiff_ocr_garbage_filter_accepts_real_text():
-    from app.services.ingest.tiff_ocr_ingester import _is_garbage_text
-    real = (
-        "CENTURY GEOPHYSICAL CORPORATION ORE-GRADE ANALYSIS "
-        "COMPANY CAMECO USA WELL 5005-3960 FIELD SHIRLEY BASIN "
-        "DATE 08/12/11 K-FACTOR DEAD TIME"
-    )
-    assert not _is_garbage_text(real)
-
-
-# ───────────── tiff_ocr chunk-quality filter (Phase F.2) ──────────
-
-def test_chunk_quality_filter_accepts_narrative():
-    """Narrative text passes with reasonable stopword density."""
-    from app.services.ingest.tiff_ocr_ingester import _chunk_quality_passes_filter
-    narrative = (
-        "The uranium deposit is hosted in the sandstone of the "
-        "Wind River Formation. This is the result of a roll-front "
-        "process where reducing groundwater interacted with the "
-        "host rock and deposited uranium minerals along the redox "
-        "interface. The drill program targets the down-dip extension "
-        "of the known mineralization."
-    )
-    passes, reason = _chunk_quality_passes_filter(narrative)
-    # With default 0.0 stopword threshold + 20 vocab min, narrative passes
-    assert passes, f"narrative should pass; reason={reason}"
-
-
-def test_chunk_quality_filter_rejects_low_vocab():
-    """Chunk with vocab < FILTER_MIN_VOCAB_SIZE rejected."""
-    from app.services.ingest.tiff_ocr_ingester import _chunk_quality_passes_filter
-    # Only ~5 unique words, repeated
-    tabular = " ".join(["depth"] * 30 + ["gamma"] * 30 + ["grade"] * 30)
-    passes, reason = _chunk_quality_passes_filter(tabular)
-    assert not passes
-    assert reason is not None and reason.startswith("vocab_too_small")
-
-
-def test_chunk_quality_filter_stopword_threshold_env_driven(monkeypatch):
-    """When FILTER_MIN_STOPWORD_RATIO is raised, low-stopword text rejected."""
-    # Monkey-patch the module-level constant for the duration of the test
-    from app.services.ingest import tiff_ocr_ingester as _tio
-    monkeypatch.setattr(_tio, "FILTER_MIN_STOPWORD_RATIO", 0.15)
-    # ≥20 unique alpha words so vocab check passes; almost no stopwords
-    # so stopword-ratio check fires.
-    tabular = " ".join([
-        "gamma", "depth", "grade", "cameco", "wyoming", "shirley",
-        "basin", "uranium", "ore", "drill", "hole", "section",
-        "township", "range", "log", "tool", "probe", "casing",
-        "azimuth", "deviation", "survey", "field", "company", "date",
-        "fluid", "mud", "rig", "scale", "true", "north",
-    ])
-    passes, reason = _tio._chunk_quality_passes_filter(tabular)
-    assert not passes, f"expected rejection; reason={reason}"
-    assert reason is not None and reason.startswith("stopword_ratio_low")
-
+# tiff_ocr_ingester tests removed 2026-08-20 — ADR-0005 retired the
+# standalone TIFF OCR path in favour of tiff_normalize -> ingest_pdf,
+# and the module has now been deleted along with its garbage/chunk
+# quality filters. TIFF coverage lives in test_tiff_to_pdf.py and
+# test_tiff_normalize_workflow.py.
 
 # kg_sync regex test removed 2026-07-28 (B1) — same module deletion as above.

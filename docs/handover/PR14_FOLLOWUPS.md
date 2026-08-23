@@ -107,7 +107,7 @@ Cut over from Promtail to Grafana Alloy + (optional) OTel-collector consolidatio
 
 ### Context
 
-pr/14 scaffolded the Alloy migration: the `alloy` service is in `docker-compose.yml` running v1.10.0 SHA-pinned alongside Promtail, with a translated config at `docker/alloy/config.alloy`. The plan is at [`ops/runbooks/promtail-to-alloy-migration.md`](../runbooks/promtail-to-alloy-migration.md). This issue is the actual cutover.
+pr/14 scaffolded the Alloy migration: the `alloy` service is in `docker-compose.yml` running v1.10.0 SHA-pinned alongside Promtail, with a translated config at `docker/alloy/config.alloy`. The plan is at [`ops/runbooks/_archived/promtail-to-alloy-migration.md`](../runbooks/promtail-to-alloy-migration.md). This issue is the actual cutover.
 
 ### Acceptance criteria
 

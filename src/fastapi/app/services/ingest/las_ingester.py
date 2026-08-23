@@ -21,6 +21,7 @@ ST_Transform for the 4326 mirror column.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -120,9 +121,18 @@ async def _get_or_create_project(
     company: str,
     region: str,
     workspace_id: str,
-    commodity: str = "uranium",
+    commodity: str | None = None,
 ) -> str:
     """Idempotently fetch or create a `silver.projects` row.
+
+    `commodity` defaults to None, not a literal. This ingester was written
+    for the Wyoming Cameco / WSGS uranium archive and the default used to
+    be "uranium", which stamped that commodity onto the project row of any
+    LAS file — gold, copper, lithium — that reached this path. The column
+    is nullable and NULL is the honest value for "the LAS file does not
+    say". LAS 2.0 has no commodity field in the ~W section, so the only
+    truthful source is the caller. Mirrors the same fix applied to
+    silver.reports.commodity in xlsx_ingester (2026-08-21).
 
     Returns the project_id (UUID as string).
     """
@@ -321,7 +331,9 @@ async def ingest_las_file(
     """
     p = Path(las_path)
     try:
-        las = lasio.read(str(p))
+        # Hard rule 2 — lasio.read parses the whole curve set synchronously;
+        # a 3,000 m hole logged every 15 cm is 20,000 samples per curve.
+        las = await asyncio.to_thread(lasio.read, str(p))
     except Exception as e:
         return LASIngestResult(
             file_path=las_path, hole_id="", project_id=None, collar_id=None,

@@ -12,7 +12,6 @@ the kickoff). Manually invokable via ``audit_ledger_verify.run({})``.
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -20,6 +19,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 
@@ -49,13 +49,9 @@ audit_ledger_verify = hatchet.workflow(
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 @audit_ledger_verify.task(execution_timeout="5m")

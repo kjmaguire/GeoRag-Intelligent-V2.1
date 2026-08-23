@@ -98,16 +98,39 @@ def test_project_or_public_admits_legacy_and_public(monkeypatch, _scope_fn):
     assert has_public_match, "should[] must admit explicit public rows"
 
 
-def test_unknown_mode_fails_open(monkeypatch, _scope_fn, caplog):
-    """A typo in the setting must NOT silently drop every document."""
+def test_unknown_mode_fails_closed_to_the_callers_own_project(
+    monkeypatch, _scope_fn, caplog,
+):
+    """A typo in the setting must not widen retrieval across projects.
+
+    Changed 2026-08-21. This used to return None -- no filter at all -- so a
+    typo in QDRANT_DOCUMENT_PROJECT_SCOPE silently promoted every query to
+    cross-project search over the whole workspace, and the only trace was
+    one WARNING line. The failure mode is a confidently wrong answer citing
+    another project's report, which nobody reads logs to discover.
+
+    The old test's worry -- "must NOT silently drop every document" -- is
+    not what fail-closed means here. Scoping to the caller's own project is
+    the conservative reading of an unreadable policy: it is exactly what
+    `cross_project` mode's own project filter does, so a correctly-scoped
+    query is unaffected. The worst case is a user seeing "no data in this
+    project", which is a question they will ask about, rather than a
+    citation they will believe.
+    """
     import logging
+
+    from qdrant_client.models import Filter
 
     _set_mode(monkeypatch, "stricct")  # typo
     with caplog.at_level(logging.WARNING, logger="app.agent.tools"):
         flt = _scope_fn("proj-123")
 
-    assert flt is None
+    assert isinstance(flt, Filter), "an unreadable policy must not mean 'no filter'"
+    assert flt.must[0].match.value == "proj-123"
     assert any("unknown QDRANT_DOCUMENT_PROJECT_SCOPE" in r.message for r in caplog.records)
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), (
+        "a mis-set tenancy-adjacent policy is an ERROR, not a WARNING"
+    )
 
 
 def test_empty_project_id_in_strict_still_builds_filter(monkeypatch, _scope_fn):

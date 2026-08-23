@@ -85,7 +85,6 @@ from app.agent.deps import AgentDeps, ToolContext  # noqa: E402
 from app.agent.tools import search_documents  # noqa: E402
 from app.config import settings  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Golden retrieval set — mirrors tests/test_retrieval_quality.py RETRIEVAL_CASES
 # but tracks a per-case substring list so we catch variant surface forms.
@@ -145,7 +144,7 @@ def _chunk_haystack(chunk: Any) -> str:
         str(getattr(chunk, "document_title", "") or ""),
         str(getattr(chunk, "section_title", "") or ""),
         str(getattr(chunk, "section_number", "") or ""),
-        str((getattr(chunk, "text", "") or ""))[:2000],
+        str(getattr(chunk, "text", "") or "")[:2000],
     ]
     return " ".join(parts).lower()
 

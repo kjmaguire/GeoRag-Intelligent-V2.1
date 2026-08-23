@@ -21,20 +21,28 @@ differ. What it does share is the hole: curves attach to a collar, resolved
 the same way, so a LAS file for a hole nobody uploaded is reported rather
 than dropped.
 
-Re-ingest replaces
-------------------
+Re-ingest replaces — but only what this file carries
+---------------------------------------------------
 ``well_log_curves`` has no natural key, so a re-upload would append a second
 copy of every curve. Same reasoning as the interval tables in
 ``ingest_tabular``: duplicated curves are silent and corrupt exactly what
-gets read, so an upload replaces the curves recorded for the holes it
-mentions and reports how many it replaced.
+gets read, so an upload replaces the curves it is about to write and reports
+how many it replaced.
+
+"the curves it is about to write" is the correction. This used to delete
+every curve on the hole before inserting, and a hole routinely has curves
+from more than one LAS file — a gamma probe run and a density/resistivity
+run are different tool strings on different days. Ingesting the second file
+destroyed the first file's curves, and a file whose curves were all below
+``_MIN_SAMPLES`` wiped the hole and wrote nothing back. The unique
+constraint is on ``(collar_id, curve_name)``, so curves from different files
+were always meant to coexist.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import tempfile
 import time as _t
 from pathlib import Path
@@ -46,6 +54,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field, field_validator
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress, hatchet
 from app.hatchet_workflows.ingest_tabular import _collar_index, _resolve_collar
 
@@ -58,13 +67,9 @@ SUPPORTED_EXTENSIONS = frozenset({".las"})
 _MIN_SAMPLES = 1
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 class IngestWellLogsInput(BaseModel):
@@ -141,12 +146,20 @@ async def run_ingest_well_logs(
             f"supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
-    run_id = input.run_id or await _progress.start_run(
+    # Always create the row, under the run_id the caller minted. Laravel
+    # stamps a UUID on every upload, and this used to read
+    # `input.run_id or start_run(...)` — so the INSERT never fired, no row
+    # existed, and every stage/completion/failure UPDATE below silently
+    # matched zero rows. The upload was invisible in the Ingestion Runs UI,
+    # successes and failures alike. start_run() is an upsert now, so the
+    # trigger endpoint and this preflight may both call it.
+    run_id = await _progress.start_run(
         workspace_id=input.workspace_id,
         project_id=input.project_id,
         minio_key=input.minio_key,
         triggered_by="upload",
         workflow_run_id=getattr(ctx, "workflow_run_id", None),
+        run_id=input.run_id,
     )
 
     warnings: list[dict[str, Any]] = []
@@ -211,13 +224,36 @@ async def run_ingest_well_logs(
                         and c.name != result.depth_curve_name
                     ]
 
+                    # Replace only the curves THIS file carries, not
+                    # everything on the hole.
+                    #
+                    # The delete used to be `WHERE collar_id = $1` with no
+                    # curve filter, and a hole routinely has curves from more
+                    # than one LAS: a gamma probe run and a density /
+                    # resistivity run are separate tool strings, separate
+                    # files, often separate days. Ingesting the second one
+                    # deleted the first one's curves. The schema does not
+                    # require that -- the unique constraint is on
+                    # (collar_id, curve_name), so GAMMA from file A and RES
+                    # from file B coexist perfectly well.
+                    #
+                    # The sharper case: a LAS whose curves are ALL below
+                    # _MIN_SAMPLES leaves `usable` empty. That deleted every
+                    # curve on the hole and wrote nothing back, and reported
+                    # success.
+                    #
+                    # Re-ingesting the same file is still idempotent: its own
+                    # curve names are exactly the ones removed first.
+                    curve_names = [c.name for c in usable]
+
                     async with conn.transaction():
                         replaced = int(
                             await conn.fetchval(
                                 "WITH d AS (DELETE FROM silver.well_log_curves "
-                                "WHERE collar_id = $1::uuid RETURNING 1) "
+                                "WHERE collar_id = $1::uuid "
+                                "  AND curve_name = ANY($2::text[]) RETURNING 1) "
                                 "SELECT count(*) FROM d",
-                                collar_id,
+                                collar_id, curve_names,
                             ) or 0
                         )
                         for c in usable:
@@ -236,8 +272,36 @@ async def run_ingest_well_logs(
             finally:
                 await conn.close()
 
+        # Report what actually landed, not just that the workflow ran to
+        # the end. mark_completed_by_run downgrades to 'partial' when the
+        # row count is zero or warnings are attached, and persists the
+        # warnings so their text reaches the Ingestion Runs page instead of
+        # dying inside the Hatchet run object.
         if run_id:
-            await _progress.mark_completed_by_run(run_id=run_id)
+            transitioned = await _progress.mark_completed_by_run(
+                run_id=run_id,
+                rows_written=written,
+                warnings=warnings,
+            )
+            if transitioned:
+                # See _progress.broadcast_terminal. The orphan case matters
+                # most here: LAS well names routinely disagree with the
+                # collar file's hole_id, so "no collar matched" is the
+                # normal first outcome — and it is the one the geologist
+                # has to be told about, not left to discover from an empty
+                # strip log.
+                await _progress.broadcast_terminal(
+                    workspace_id=input.workspace_id,
+                    project_id=input.project_id,
+                    run_id=run_id,
+                    stage="persist",
+                    status=_progress.terminal_status(
+                        rows_written=written, warnings=warnings,
+                    ),
+                    message=_progress.terminal_message(
+                        rows_written=written, warnings=warnings, noun="curve",
+                    ),
+                )
 
     except Exception as exc:
         if run_id:
@@ -267,6 +331,36 @@ async def run_ingest_well_logs(
     )
     log.info("ingest_well_logs complete: %s", out.model_dump())
     return out
+
+
+
+
+# ---------------------------------------------------------------------------
+# Failure hook (2026-08-21). Mirrors ingest_zip_archive.on_failure.
+# ---------------------------------------------------------------------------
+@ingest_well_logs.on_failure_task(
+    name="on_failure",
+    execution_timeout="30s",
+    schedule_timeout="30m",
+    retries=2,
+)
+async def on_failure(input: IngestWellLogsInput, ctx: Context) -> dict[str, Any]:
+    """Close the ingest_progress row when the workflow dies.
+
+    Without this hook a Hatchet cancellation — concurrency-queue
+    expiry, a manual cancel, a worker SIGTERM — left the row created
+    by start_run sitting at 'queued' with nothing to close it, because
+    the body that would have closed it never ran. The 15-minute stale
+    sweep was the only backstop.
+    """
+    return await _progress.close_run_after_workflow_failure(
+        workflow_name="ingest_well_logs",
+        workspace_id=str(input.workspace_id) if input.workspace_id else None,
+        project_id=str(input.project_id) if input.project_id else None,
+        minio_key=input.minio_key,
+        run_id=input.run_id,
+        ctx=ctx,
+    )
 
 
 __all__ = [

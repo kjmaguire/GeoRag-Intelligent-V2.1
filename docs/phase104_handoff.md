@@ -40,11 +40,11 @@ Re-exported from `app.services.support_cockpit`. Smoke-tested:
 
 ### §11.4 — 5 DR runbook scaffolds
 
-`ops/runbooks/dr-1-postgres-loss.md` — Postgres data loss
-`ops/runbooks/dr-2-store-divergence.md` — Cross-store divergence
-`ops/runbooks/dr-3-ransomware.md` — Ransomware / data tampering
-`ops/runbooks/dr-4-full-datacenter.md` — Full region loss
-`ops/runbooks/dr-5-partial-outage.md` — Partial-outage degraded mode
+`ops/runbooks/_archived/dr-1-postgres-loss.md` — Postgres data loss
+`ops/runbooks/_archived/dr-2-store-divergence.md` — Cross-store divergence
+`ops/runbooks/_archived/dr-3-ransomware.md` — Ransomware / data tampering
+`ops/runbooks/_archived/dr-4-full-datacenter.md` — Full region loss
+`ops/runbooks/_archived/dr-5-partial-outage.md` — Partial-outage degraded mode
 
 Each runbook:
 - Scope statement (what's in/out)

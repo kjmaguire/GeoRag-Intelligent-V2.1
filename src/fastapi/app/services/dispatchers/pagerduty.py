@@ -1,4 +1,31 @@
-"""PagerDuty Events API v2 dispatcher for escalation_routing.
+"""NOT WIRED — no caller, no integration key, no PagerDuty account.
+
+Read this before assuming the platform can page a human. It cannot.
+
+`create_pagerduty_incident` is a complete and correct Events v2 client:
+dedup keys, severity mapping, retry handling. It has zero call sites
+outside its own package re-export and its unit tests, and
+`PAGERDUTY_INTEGRATION_KEY` defaults to empty and is set on no container
+app. Every detector in the codebase — cost_burn_watcher included, at
+severity "high", where it can suspend a workspace's LLM activity —
+terminates in an `audit.audit_ledger` row plus an admin-surface broadcast
+that reaches nobody unless someone is already watching that screen.
+
+The escalation that DOES work is the log-marker route: a detector logs a
+distinctive marker, a Log Analytics scheduled query rule matches it, and
+`georag-alerts-ag` emails a real address. See
+`cost_burn_watcher.COST_BURN_ALERT_MARKER` and rule 5d in
+`deploy/azure/alerts/create-alerts.sh`.
+
+Kept rather than deleted so the Events v2 shape is here if a PagerDuty
+account is ever provisioned — deleting it would also delete its tests,
+which needs approval. If that decision goes the other way, this whole
+package and tests/test_phase10_dispatchers.py go together.
+
+
+ORIGINAL MODULE DOCSTRING
+------------------------
+PagerDuty Events API v2 dispatcher for escalation_routing.
 
 When `PAGERDUTY_INTEGRATION_KEY` is empty, the dispatcher is a
 no-op — escalation_routing still returns its advisory recommendation

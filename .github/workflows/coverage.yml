@@ -1,0 +1,271 @@
+name: Coverage (measured, not gated)
+
+# =============================================================================
+# There was no code-coverage measurement anywhere in this repository.
+#
+# COVERAGE.md reads like one -- it is a hand-maintained matrix of "which
+# subsystem has tests", written by people, never checked against a tool, and
+# therefore an opinion formatted as data. The 21 Aug audit flagged it, and
+# the fix is not to delete that document but to produce an actual number
+# beside it.
+#
+# WHY THIS IS NOT A PR GATE
+#
+# Two reasons, and the second is the real one.
+#
+#   1. Cost. A pcov run over the Postgres-gated suite plus a uv sync plus a
+#      full pytest pass is ~20 minutes. Every PR does not need that.
+#   2. There is no defensible threshold yet. Setting `--min=60` before
+#      anyone has seen the number produces one of two outcomes: a gate that
+#      is red on day one and gets disabled within a week, or a gate set so
+#      low it can only ever pass. Both are worse than no gate, and this
+#      repository has already been bitten by the second shape -- see the
+#      skeleton Tenant Isolation Auditor that echoed a description and
+#      exited 0 under the name of the property the product is sold on.
+#
+# So: measure weekly, write the number into the run summary, and let a
+# threshold be chosen from evidence. Promoting this to a gate is a
+# three-line change (add `--min`, add `needs:`, add to branch protection)
+# once there is a baseline to argue from.
+#
+# WHY PHPUNIT RUNS TWICE
+#
+# Neither config covers the suite. phpunit.xml forces DB_CONNECTION=sqlite,
+# so every RequiresPostgres test -- the RLS, tenancy and PostGIS coverage --
+# self-skips. phpunit.pgsql.xml runs those, but its <testsuites> list is
+# hand-authored and narrower than the tree. Reporting either alone is wrong
+# in a flattering direction, so both run and scripts/merge_clover.py takes
+# the union.
+# =============================================================================
+
+on:
+  schedule:
+    # Sunday 06:40 UTC. Deliberately outside 06:00-13:00 only in the sense
+    # that it touches nothing in Azure -- this workflow runs entirely on the
+    # runner and does not care about the nightly Postgres shutdown window.
+    - cron: '40 6 * * 0'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PHP_VERSION: '8.5'
+  NODE_VERSION: '24'
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  php:
+    name: PHP line coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: georag_dev_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+      redis:
+        image: redis:8-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          # pcov, not xdebug: xdebug's coverage driver is several times
+          # slower and this job already runs the suite twice.
+          coverage: pcov
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # Inertia::render() assertions resolve asset paths through the Vite
+      # manifest; without a build every such test fails before it can
+      # contribute a covered line.
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Vite build
+        run: npm run build
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: georag_dev_password
+
+      - name: Run migrations
+        run: php artisan migrate --force
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: georag_dev_password
+
+      # phpunit.pgsql.xml defaults DB_HOST to the docker-compose service
+      # name. It is a default rather than a forced value, so the process
+      # environment would win -- but the step below deliberately does not
+      # set one, to exercise the same resolution path a developer gets.
+      - name: Alias service containers by their compose names
+        run: |
+          echo "127.0.0.1 postgresql" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 redis"      | sudo tee -a /etc/hosts
+
+      # continue-on-error on both runs: a failing test must not cost us the
+      # coverage figure for everything that did run. The suites' pass/fail
+      # verdict is GeoRAG CI's job, and it gates PRs; this workflow exists
+      # to produce a number.
+      - name: PHPUnit — SQLite fast suite (with coverage)
+        continue-on-error: true
+        run: php artisan test --coverage-clover coverage-sqlite.xml
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_DATABASE: georag_test
+          DB_USERNAME: georag
+          DB_PASSWORD: georag_dev_password
+
+      - name: PHPUnit — Postgres-gated suite (with coverage)
+        continue-on-error: true
+        run: php artisan test -c phpunit.pgsql.xml --coverage-clover coverage-pgsql.xml
+
+      - name: Merge and report
+        run: |
+          # pipefail, because the exit status of `x | tee` is tee's. Both
+          # PHPUnit steps above are continue-on-error, so this step is the
+          # ONLY place a dead run can turn the job red -- and merge_clover
+          # exits non-zero precisely when it had to publish a figure
+          # derived from fewer runs than were asked for. Without this line
+          # that exit code is discarded and the understated percentage is
+          # published as though it were the merged one.
+          #
+          # `|| merge_rc=$?` rather than a bare pipeline: the default shell
+          # is `bash -e`, which would abort the step on the failure and
+          # skip the summary below -- losing the one paragraph that says
+          # WHICH run died and why the number is low.
+          set -o pipefail
+          merge_rc=0
+          python3 scripts/merge_clover.py coverage-merged.xml \
+            coverage-sqlite.xml coverage-pgsql.xml | tee php-summary.md \
+            || merge_rc=$?
+          {
+            echo "## PHP line coverage"
+            echo
+            cat php-summary.md
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$merge_rc"
+
+      - name: Upload Clover reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: php-coverage
+          path: |
+            coverage-merged.xml
+            coverage-sqlite.xml
+            coverage-pgsql.xml
+          if-no-files-found: warn
+          retention-days: 30
+
+  python:
+    name: Python line coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Same import-time singletons the python-test job in ci.yml documents:
+    # app.config.Settings() and hatchet_sdk's ClientConfig() are built at
+    # module import, so these must be present even though nothing here
+    # dials a database. Dummy values only.
+    env:
+      POSTGRES_PASSWORD: not-a-real-password
+      POSTGRES_DB: georag
+      POSTGRES_HOST: localhost
+      FASTAPI_SERVICE_KEY: ci-coverage-not-a-real-key
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install FastAPI dependencies
+        working-directory: src/fastapi
+        run: uv sync --extra dev
+
+      # Installed here rather than added to pyproject: this is a
+      # measurement tool for one weekly job, not something the application
+      # or its dev workflow depends on, and the project rule is not to
+      # change dependencies without approval.
+      - name: Add the coverage plugin for this run only
+        working-directory: src/fastapi
+        run: uv pip install pytest-cov
+
+      - name: pytest — fast suite (with coverage)
+        continue-on-error: true
+        working-directory: src/fastapi
+        run: |
+          uv run pytest tests/ --tb=no -q \
+            -m "not integration and not golden and not hallucination and not live and not chaos" \
+            --cov=app --cov-report=term --cov-report=xml:coverage.xml \
+            | tail -40 | tee ../../python-summary.txt
+
+      - name: Report
+        run: |
+          {
+            echo "## Python line coverage"
+            echo
+            echo '```'
+            tail -20 python-summary.txt 2>/dev/null || echo "no output captured"
+            echo '```'
+            echo
+            echo "Fast suite only. The integration, golden, hallucination, live"
+            echo "and chaos markers need the full stack and run in"
+            echo "release-rehearsal.yml, so anything exercised only there reads"
+            echo "as uncovered above."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: python-coverage
+          path: src/fastapi/coverage.xml
+          if-no-files-found: warn
+          retention-days: 30

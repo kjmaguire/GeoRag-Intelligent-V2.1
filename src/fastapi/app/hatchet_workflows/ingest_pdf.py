@@ -47,6 +47,7 @@ from pydantic import BaseModel, Field
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
@@ -112,13 +113,84 @@ def _compute_parse_max_workers() -> int:
     return max(1, min(os.cpu_count() or 1, 4))
 
 
+#: cgroup v2 puts the container's own limit and usage here. Container Apps
+#: runs on a Kubernetes-backed host, so this is the file that describes the
+#: 8 GiB the worker actually has.
+_CGROUP_V2_MAX = "/sys/fs/cgroup/memory.max"
+_CGROUP_V2_CURRENT = "/sys/fs/cgroup/memory.current"
+
+#: cgroup v1 fallback, for older hosts.
+_CGROUP_V1_LIMIT = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+_CGROUP_V1_USAGE = "/sys/fs/cgroup/memory/memory.usage_in_bytes"
+
+
+def _read_int(path: str) -> int | None:
+    try:
+        with open(path) as fh:  # noqa: PTH123
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _cgroup_available_mb() -> float | None:
+    """Memory left inside THIS container's cgroup, or None if unreadable.
+
+    psutil.virtual_memory() reads /proc/meminfo, which inside a
+    Kubernetes-backed container reports the HOST NODE, not the cgroup limit.
+    hatchet-worker-cc is 4 vCPU / 8 GiB with PARSE_MIN_FREE_RAM_MB=2500; with
+    two 400-page parses already running and the container at 7 GiB of its 8,
+    psutil would report the node's free memory — many GB on a shared ACA
+    node — the guard would clear instantly, a third parse would be submitted,
+    and the cgroup OOM-killer would fire. Which is the exact failure the
+    guard was added to prevent, and the symptom the 2026-08-17 comment below
+    chased and attributed to leaked worker processes.
+    """
+    for limit_path, usage_path in (
+        (_CGROUP_V2_MAX, _CGROUP_V2_CURRENT),
+        (_CGROUP_V1_LIMIT, _CGROUP_V1_USAGE),
+    ):
+        limit = _read_int(limit_path)
+        usage = _read_int(usage_path)
+        if limit is None or usage is None:
+            continue
+        # cgroup v2 writes the literal "max" when unlimited; _read_int gives
+        # None for that. v1 uses a sentinel near 2**63, which is not a real
+        # limit either.
+        if limit <= 0 or limit >= (1 << 62):
+            continue
+        return max(0.0, (limit - usage) / (1024 * 1024))
+
+    return None
+
+
+def _available_memory_mb() -> float | None:
+    """Available memory, measured against the container limit where there is one."""
+    cgroup_mb = _cgroup_available_mb()
+    if cgroup_mb is not None:
+        return cgroup_mb
+
+    try:
+        import psutil  # noqa: PLC0415
+    except ImportError:
+        # No cgroup and no psutil: nothing to measure with. Degrade
+        # gracefully — the caller still gets the parse done, and OOM risk
+        # falls back to the OS killer, which is what we had pre-Phase 5.
+        return None
+
+    return psutil.virtual_memory().available / (1024 * 1024)
+
+
 async def _wait_for_memory_headroom(
     min_free_mb: int,
     max_wait_s: int,
     poll_interval_s: float = 2.0,
 ) -> None:
-    """Block until ``psutil.virtual_memory().available`` ≥ ``min_free_mb``,
-    or raise MemoryError after ``max_wait_s``.
+    """Block until available memory ≥ ``min_free_mb``, or raise MemoryError
+    after ``max_wait_s``.
+
+    "Available" means inside this container's cgroup when there is one — see
+    _available_memory_mb. It used to mean psutil.virtual_memory(), which
+    measures the host node.
 
     Used before submitting a parse to the subprocess pool so concurrent
     parses don't pile on and OOM the worker. Polls every
@@ -129,16 +201,13 @@ async def _wait_for_memory_headroom(
     falls back to OS oom-killer, which is what we had pre-Phase 5
     anyway).
     """
-    try:
-        import psutil  # noqa: PLC0415
-    except ImportError:
-        return
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max_wait_s
     waited = 0.0
     while True:
-        vm = psutil.virtual_memory()
-        avail_mb = vm.available / (1024 * 1024)
+        avail_mb = _available_memory_mb()
+        if avail_mb is None:
+            return  # nothing to measure with; see _available_memory_mb
         if avail_mb >= min_free_mb:
             if waited > 0:
                 log.info(
@@ -235,6 +304,137 @@ def _reset_parse_pool() -> None:
 # Temporary directory for PDF bodies consumed by parser subprocesses.
 _PDF_BODY_CACHE_DIR = "/tmp/georag_ingest_pdf_cache"
 
+#: Delete anything in the cache dir older than this. Every path that
+#: creates a file there also deletes it, but only when its frame actually
+#: runs: a preflight that rejects the file, a parse that dies at the
+#: 3300 s hard timeout, a broken pool, a worker SIGKILLed by the cgroup,
+#: and a workflow whose preflight and parse landed on DIFFERENT workers
+#: all leave a body behind. A few orphaned 1.5 GB atlases fill a worker's
+#: ephemeral disk. Six hours is comfortably longer than the 60-minute
+#: parse timeout plus Hatchet's retry backoff, so this cannot delete a
+#: file a live run is still using.
+_PDF_BODY_CACHE_TTL_S = 6 * 3600
+
+
+def _reap_pdf_body_cache(ttl_s: int = _PDF_BODY_CACHE_TTL_S) -> int:
+    """Delete cache files older than ``ttl_s``. Returns the count removed.
+
+    Best-effort and never raises: failing to tidy up must not fail an
+    ingest.
+    """
+    removed = 0
+    try:
+        cutoff = time.time() - ttl_s
+        with os.scandir(_PDF_BODY_CACHE_DIR) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file() and entry.stat().st_mtime < cutoff:
+                        os.unlink(entry.path)
+                        removed += 1
+                except OSError:
+                    continue
+    except FileNotFoundError:
+        return 0
+    except Exception as exc:  # pragma: no cover — best-effort
+        log.warning("ingest_pdf: cache reap raised %s — ignoring", exc)
+    if removed:
+        log.info("ingest_pdf: reaped %d stale body cache file(s)", removed)
+    return removed
+
+
+def _hash_file(path: str) -> tuple[str, int]:
+    """sha256 + size of a file, read in chunks. Blocking; call in a thread."""
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+#: Upload-stack ceiling, mirrored from OCTANE_MAX_REQUEST_SIZE /
+#: PHP_UPLOAD_MAX_FILESIZE / the Laravel validator.
+_MAX_PDF_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _read_head(path: str, n: int) -> bytes:
+    """First ``n`` bytes of a file. Blocking; call in a thread."""
+    with open(path, "rb") as fh:
+        return fh.read(n)
+
+
+async def _declared_object_size(minio_key: str) -> int | None:
+    """Size from a HEAD, or None when the backend will not say.
+
+    None means "proceed and check the real size after downloading": a
+    HEAD that fails is not itself a reason to reject an upload, and the
+    GET that follows will fail for the same reason if the object is
+    genuinely unreachable.
+    """
+    try:
+        storage = get_async_storage_client()
+        meta = await storage.head(Bucket.BRONZE, minio_key)
+        size = meta.get("size") if isinstance(meta, dict) else None
+        return int(size) if size is not None else None
+    except Exception as exc:
+        log.info(
+            "ingest_pdf.preflight: HEAD failed for %s (%s) — falling back "
+            "to the post-download size check", minio_key, exc,
+        )
+        return None
+
+
+async def _download_to_cache(minio_key: str) -> tuple[str, str, int]:
+    """Stream an object to a run-scoped cache file.
+
+    Returns ``(path, sha256, size)``. The bytes never exist as one object
+    in this process: the storage client chunks them into the file handle
+    and the hash is computed by re-reading the file in 1 MiB blocks.
+
+    The filename is a run-unique uuid, not the sha — two concurrent
+    parses of the SAME file must not delete each other's input, and the
+    sha is not known until after the download anyway.
+    """
+    os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
+    _reap_pdf_body_cache()
+    path = f"{_PDF_BODY_CACHE_DIR}/body.{uuid.uuid4().hex}.pdf"
+    tmp_path = path + ".tmp"
+    storage = get_async_storage_client()
+    try:
+        await storage.get_file(Bucket.BRONZE, minio_key, tmp_path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            os.unlink(tmp_path)
+        raise
+    sha256, size = await asyncio.to_thread(_hash_file, path)
+    return path, sha256, size
+
+
+async def _resolve_body_path(minio_key: str, pre: dict) -> str:
+    """Path of the body for a parse, downloading it only if we must.
+
+    Preflight streams the body to the cache and passes its path forward,
+    so the common case costs no second download at all. But Hatchet is
+    free to run preflight and parse on DIFFERENT workers, where that path
+    does not exist — a missing file is a normal condition here, not an
+    error, and we fetch it again.
+    """
+    cached = (pre or {}).get("body_path")
+    if cached and os.path.exists(cached):
+        return cached
+    if cached:
+        log.info(
+            "ingest_pdf.parse: preflight body %s is not on this worker — "
+            "re-downloading key=%s", cached, minio_key,
+        )
+    path, _sha, _size = await _download_to_cache(minio_key)
+    return path
+
 # Phase 2 (2026-06-24): when set, persist captions each figure with the
 # Qwen3-VL sidecar (an S3 GET + a VL call per figure) and folds the description
 # into the figure's ReportSection text before embedding. Off by default — shares
@@ -245,9 +445,21 @@ _FIGURE_VL_CAPTIONS = (os.environ.get("FIGURE_VL_DESCRIPTIONS") or "").strip().l
 
 
 def _run_parser_subprocess(
-    body_bytes: bytes, sha256: str, progress_file: str | None = None,
+    body_path: str, sha256: str, progress_file: str | None = None,
 ) -> dict:
     """Module-level wrapper for the parse so ProcessPoolExecutor can pickle it.
+
+    Takes the PATH of an already-downloaded body, not the bytes. Passing
+    bytes meant the whole file was pickled through the pool's pipe (a
+    second copy in the parent's send buffer), materialised a third time
+    in the child, and then written straight back out to /tmp anyway — so
+    a 1.5 GB map atlas that passes the 2 GB cap needed several GB of
+    headroom on an 8 Gi worker to parse a file the parser only ever
+    reads from disk. Now only the path crosses the boundary.
+
+    The caller owns the file and deletes it; see `_parse_body`'s finally.
+    Deleting it here would be wrong now that preflight may have created
+    it for a parse that has not started yet.
 
     Returns a plain dict (not a Pydantic model) — easier to pickle across
     process boundaries; caller reconstitutes ParseOut.
@@ -259,21 +471,11 @@ def _run_parser_subprocess(
     section. Currently always empty — see the note in
     app.services.ingest.pdf_report.ReportParseResult.figure_manifest.
     """
-    import os as _os
     import time as _time
 
     from app.services.ingest.pdf_report import parse_pdf_report
 
-    _os.makedirs(_PDF_BODY_CACHE_DIR, exist_ok=True)
-    # Run-unique filename (sha prefix kept for debuggability): two
-    # concurrent parses of the SAME file must not delete each other's
-    # input via the shared finally-unlink below.
-    cached_path = f"{_PDF_BODY_CACHE_DIR}/{sha256}.{uuid.uuid4().hex}.pdf"
-    # Use a temp file inside the cache dir + rename for atomicity.
-    tmp_path = cached_path + ".tmp"
-    with open(tmp_path, "wb") as f:
-        f.write(body_bytes)
-    _os.replace(tmp_path, cached_path)
+    cached_path = body_path
 
     try:
         t_start = _time.monotonic()
@@ -326,6 +528,11 @@ def _run_parser_subprocess(
             "region": getattr(result, "region", None),
             "sections": _sections_out,
             "parse_quality_pct": float(getattr(result, "parse_quality_pct", 0.0) or 0.0),
+            # The number people believe parse_quality_pct is. See
+            # ReportParseResult.text_page_coverage_pct.
+            "text_page_coverage_pct": float(
+                getattr(result, "text_page_coverage_pct", 0.0) or 0.0
+            ),
             "parser_used": str(getattr(result, "parser_used", "unknown") or "unknown"),
             "skipped_elements": int(getattr(result, "skipped_elements", 0) or 0),
             "warnings": [
@@ -339,8 +546,11 @@ def _run_parser_subprocess(
             "is_scanned": bool(getattr(result, "is_scanned", False)),
         }
     finally:
-        with contextlib.suppress(Exception):
-            _os.unlink(cached_path)
+        # Intentionally does NOT unlink cached_path — the parse task owns
+        # the file (preflight may have created it) and removes it in its
+        # own finally, which also covers the hard-timeout and
+        # broken-pool paths where this frame never runs at all.
+        pass
 
 
 # =============================================================================
@@ -394,6 +604,12 @@ class PreflightOut(BaseModel):
     encrypted: bool
     valid: bool
     error: str | None = None
+    #: Where preflight left the downloaded body on the worker that ran
+    #: it. The parse task reads it from here instead of downloading the
+    #: file a second time — but Hatchet may schedule the two tasks on
+    #: different workers, so parse treats a missing path as a normal
+    #: cache miss and re-fetches. See `_resolve_body_path`.
+    body_path: str | None = None
 
 
 class ParseOut(BaseModel):
@@ -409,6 +625,10 @@ class ParseOut(BaseModel):
     region: str | None = None
     sections: list[dict] = Field(default_factory=list)
     parse_quality_pct: float = 0.0
+    # NI 43-101 heading coverage and page-level extraction coverage are
+    # different questions; carrying only the first is what let a document
+    # whose 300 pages OCR'd to nothing report as well parsed.
+    text_page_coverage_pct: float = 0.0
     parser_used: str = ""
     skipped_elements: int = 0
     warnings: list[dict] = Field(default_factory=list)
@@ -456,21 +676,9 @@ class IngestPdfFinalOut(BaseModel):
     # 'caption_figure') is Phase 2 ingestion-pipeline work.
     passages_written: int = 0
 
-# =============================================================================
-# Helpers
-# =============================================================================
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
-
-
-async def _download_from_s3(minio_key: str) -> bytes:
-    storage = get_async_storage_client()
-    return await storage.get_bytes(Bucket.BRONZE, minio_key)
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 def _sections_to_dict(sections) -> dict:
@@ -539,7 +747,14 @@ ingest_pdf = hatchet.workflow(
 # in a row, terminally failing a whole workflow (Madsen, 2026-08-07 11:32Z).
 @ingest_pdf.task(execution_timeout="180s", schedule_timeout="2h", retries=2)
 async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
-    """Download from S3, compute sha256, validate magic bytes + size + encryption."""
+    """Stream from S3 to disk, hash it, validate magic bytes + size + encryption.
+
+    The body is streamed to a run-scoped file under _PDF_BODY_CACHE_DIR and
+    its path is returned on PreflightOut, so the parse task does not have
+    to download the same object a second time. Nothing here ever holds the
+    whole file in memory — the size cap, the magic bytes, the /Encrypt
+    probe and the page count are all answered from the file on disk.
+    """
     log.info("ingest_pdf.preflight start key=%s", input.minio_key)
 
     # CC-03 Item 8 — lifecycle guard. If the project is not active, skip
@@ -605,65 +820,93 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
             step="preflight",
             workflow_run_id=getattr(ctx, "workflow_run_id", None),
         )
-    body = await _download_from_s3(input.minio_key)
-    file_size = len(body)
-    sha256 = hashlib.sha256(body).hexdigest()
-
     # Hard cap raised 2026-05-22 from 100MB to 2GB to match the upload
     # stack (OCTANE_MAX_REQUEST_SIZE / PHP_UPLOAD_MAX_FILESIZE / Laravel
-    # validator). Below this is just a sanity check against runaway memory.
-    if file_size > 2 * 1024 * 1024 * 1024:
+    # validator).
+    #
+    # Checked against the object's declared size BEFORE downloading. The
+    # cap used to be applied to `len(body)` after the whole file was
+    # already resident, which is the one place it could not help: a 4 GB
+    # upload had to be pulled into RAM in full before we were willing to
+    # say it was too big. HEAD is one request and costs nothing.
+    declared_size = await _declared_object_size(input.minio_key)
+    if declared_size is not None and declared_size > _MAX_PDF_BYTES:
         return PreflightOut(
-            sha256=sha256, page_count=0, file_size=file_size,
+            sha256="", page_count=0, file_size=declared_size,
             encrypted=False, valid=False,
-            error=f"PDF exceeds 2 GB (got {file_size})",
+            error=f"PDF exceeds 2 GB (got {declared_size})",
         )
-    if not body.startswith(b"%PDF-"):
+
+    body_path, sha256, file_size = await _download_to_cache(input.minio_key)
+    keep_body = False
+    try:
+        # Re-checked against what actually arrived: HEAD is metadata and
+        # a re-uploaded object can disagree with it.
+        if file_size > _MAX_PDF_BYTES:
+            return PreflightOut(
+                sha256=sha256, page_count=0, file_size=file_size,
+                encrypted=False, valid=False,
+                error=f"PDF exceeds 2 GB (got {file_size})",
+            )
+
+        header = await asyncio.to_thread(_read_head, body_path, 8192)
+        if not header.startswith(b"%PDF-"):
+            return PreflightOut(
+                sha256=sha256, page_count=0, file_size=file_size,
+                encrypted=False, valid=False,
+                error="missing %PDF- magic bytes",
+            )
+
+        # Encryption detection: bare `/Encrypt` substring match (the old
+        # logic) rejected NI 43-101 PDFs that merely had a "no copy"
+        # permission flag but extracted fine (Madsen PFS was a casualty).
+        # Real test: can we actually open + count pages?  If pikepdf can
+        # read it, downstream fitz/pdfplumber can extract from it.
+        encrypted_flag = b"/Encrypt" in header
+
+        def _count_pages() -> tuple[int, bool, str | None]:
+            import pikepdf
+            try:
+                # Opened by PATH: pikepdf maps the file rather than
+                # taking a BytesIO over a full in-memory copy.
+                with pikepdf.open(body_path) as pdf:
+                    return len(pdf.pages), False, None
+            except pikepdf.PasswordError as e:
+                return 0, True, f"password-protected: {e}"
+            except Exception as e:
+                return 0, encrypted_flag, f"pikepdf open failed: {e}"
+
+        page_count, password_protected, open_error = await asyncio.to_thread(
+            _count_pages,
+        )
+
+        # Only reject when the PDF is genuinely password-protected (can't
+        # open without a passphrase). Permission-flagged PDFs that pikepdf
+        # opens successfully proceed to extraction.
+        if password_protected:
+            return PreflightOut(
+                sha256=sha256, page_count=0, file_size=file_size,
+                encrypted=True, valid=False,
+                error=open_error or "PDF is password-protected",
+            )
+
+        # The only path that hands the body on to parse — every return
+        # above is a rejection, and the finally below deletes the file for
+        # all of them.
+        keep_body = True
         return PreflightOut(
-            sha256=sha256, page_count=0, file_size=file_size,
-            encrypted=False, valid=False,
-            error="missing %PDF- magic bytes",
+            sha256=sha256,
+            page_count=page_count,
+            file_size=file_size,
+            encrypted=encrypted_flag,
+            valid=True,
+            error=None,
+            body_path=body_path,
         )
-
-    # Encryption detection: bare `/Encrypt` substring match (the old logic)
-    # rejected NI 43-101 PDFs that merely had a "no copy" permission flag
-    # but extracted fine (Madsen PFS was a casualty). Real test: can we
-    # actually open + count pages?  If pikepdf can read it, downstream
-    # fitz/pdfplumber can extract from it.
-    encrypted_flag = b"/Encrypt" in body[:8192]
-
-    def _count_pages() -> tuple[int, bool, str | None]:
-        from io import BytesIO
-
-        import pikepdf
-        try:
-            with pikepdf.open(BytesIO(body)) as pdf:
-                return len(pdf.pages), False, None
-        except pikepdf.PasswordError as e:
-            return 0, True, f"password-protected: {e}"
-        except Exception as e:
-            return 0, encrypted_flag, f"pikepdf open failed: {e}"
-
-    page_count, password_protected, open_error = await asyncio.to_thread(_count_pages)
-
-    # Only reject when the PDF is genuinely password-protected (can't open
-    # without a passphrase). Permission-flagged PDFs that pikepdf opens
-    # successfully proceed to extraction.
-    if password_protected:
-        return PreflightOut(
-            sha256=sha256, page_count=0, file_size=file_size,
-            encrypted=True, valid=False,
-            error=open_error or "PDF is password-protected",
-        )
-
-    return PreflightOut(
-        sha256=sha256,
-        page_count=page_count,
-        file_size=file_size,
-        encrypted=encrypted_flag,
-        valid=True,
-        error=None,
-    )
+    finally:
+        if not keep_body:
+            with contextlib.suppress(Exception):
+                os.unlink(body_path)
 
 
 # ---- Step 2: parse — single call to v1.49 parse_pdf_report ------------------
@@ -705,7 +948,7 @@ async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
 async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
     """Inner body of parse() — wrapped so heartbeat_loop can manage the
     ticker around the entire blocking-subprocess section."""
-    body = await _download_from_s3(input.minio_key)
+    body_path = await _resolve_body_path(input.minio_key, pre)
 
     log.info("ingest_pdf.parse start key=%s", input.minio_key)
     # Run in subprocess (separate GIL) so heartbeats stay alive even on
@@ -804,7 +1047,11 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
         # task dying opaquely at the Hatchet timeout with a poisoned pool.
         result_dict = await asyncio.wait_for(
             loop.run_in_executor(
-                pool, _run_parser_subprocess, body, pre.get("sha256", ""), _progress_path,
+                pool,
+                _run_parser_subprocess,
+                body_path,
+                pre.get("sha256", ""),
+                _progress_path,
             ),
             timeout=3300,
         )
@@ -848,6 +1095,15 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
             await _relay_task
         with contextlib.suppress(Exception):
             os.unlink(_progress_path)
+        # The parse task owns the body file, whether preflight
+        # downloaded it or _resolve_body_path did. Deleting it here
+        # rather than inside the subprocess covers the paths where the
+        # subprocess frame never completes: the 3300 s hard timeout, a
+        # BrokenProcessPool, and a cancellation from Hatchet. On an
+        # 8 Gi worker with a small ephemeral disk, a handful of orphaned
+        # 1.5 GB atlases is a full disk.
+        with contextlib.suppress(Exception):
+            os.unlink(body_path)
     return ParseOut(**result_dict)
 
 
@@ -860,7 +1116,7 @@ INSERT INTO silver.reports (
     project_name, region, resource_estimate, sections_text,
     embedding_ids, parse_quality_pct, parser_used,
     is_scanned, source_file_sha256, project_id, workspace_id, page_count,
-    extraction_confidence, source_object_key,
+    extraction_confidence, source_object_key, text_page_coverage_pct,
     created_at, updated_at
 )
 VALUES (
@@ -868,7 +1124,7 @@ VALUES (
     $7, $8, $9::jsonb, $10::jsonb,
     ARRAY[]::text[], $11, $12,
     $13, $14, $16::uuid, $15::uuid, $17::int,
-    $18::real, $19,
+    $18::real, $19, $20::real,
     NOW(), NOW()
 )
 ON CONFLICT (report_id) DO UPDATE SET
@@ -890,6 +1146,7 @@ ON CONFLICT (report_id) DO UPDATE SET
     -- side-by-side view: without it there is no link from a report back to
     -- the PDF whose pages the extracted text is supposed to correspond to.
     source_object_key = EXCLUDED.source_object_key,
+    text_page_coverage_pct = EXCLUDED.text_page_coverage_pct,
     updated_at     = NOW()
 """
 
@@ -1138,6 +1395,104 @@ async def persist(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOut:
         return await _persist_body(input, ctx)
 
 
+async def _persist_preflight_rejection(
+    input: IngestPdfInput,
+    *,
+    pre: dict[str, Any],
+    parsed: dict[str, Any],
+) -> IngestPdfFinalOut:
+    """Close the run as failed and write NO report row.
+
+    Extracted from _persist_body 2026-08-21 (L1097). It was the one phase
+    of that 695-line function with no shared mutable state, and the phase
+    whose failure had already cost something.
+
+    2026-08-14 — preflight rejection must FAIL the run, not persist a
+    phantom report. parse() short-circuits with parser_used="skipped" when
+    preflight marked the file invalid (password-protected, missing %PDF-
+    magic, >2GB, inactive project). The old code fell through to the normal
+    persist path: an empty "(untitled)" silver.reports row landed,
+    embed_verify then saw zero unembedded passages and marked the run
+    COMPLETED — the rejection was invisible to the user. Now: mark the run
+    failed with the preflight error (which reaches
+    silver.ingest_progress.error_text and so the IngestionRuns UI), write
+    no report row, and return a skipped final output.
+
+    Note the asymmetry this function has to carry: the WORKFLOW succeeds
+    here. Returning a value rather than raising is deliberate — a rejected
+    upload is not a system fault and must not burn Hatchet retries — but it
+    means the on_failure hook never fires, so the terminal broadcast below
+    is the only thing that flips the UI without waiting for its poll.
+    """
+    preflight_error = pre.get("error") or next(
+        (
+            w.get("message")
+            for w in (parsed.get("warnings") or [])
+            if w.get("code") == "preflight_rejected" and w.get("message")
+        ),
+        "preflight rejected the file",
+    )
+    log.warning(
+        "ingest_pdf.persist: preflight rejected key=%s (%s) — failing "
+        "run, no report row written",
+        input.minio_key, preflight_error,
+    )
+
+    run_id: str | None = None
+    if input.workspace_id:
+        run_id = await ingest_progress.lookup_active_run_id(
+            workspace_id=str(input.workspace_id),
+            minio_key=input.minio_key,
+        )
+    if run_id:
+        await ingest_progress.mark_failed_by_run(
+            run_id=run_id,
+            stage="preflight",
+            error=f"preflight_rejected: {preflight_error}",
+        )
+        if input.project_id:
+            try:
+                from app.services.laravel_bridge import post_ingestion_progress  # noqa: PLC0415
+                await post_ingestion_progress(
+                    workspace_id=str(input.workspace_id),
+                    project_id=str(input.project_id),
+                    run_id=run_id,
+                    stage="preflight",
+                    status="failed",
+                    message=f"Upload rejected: {preflight_error}",
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort broadcast
+                # A broadcast failure must not turn a clean rejection into
+                # a workflow error. The row is already terminal; the UI
+                # picks it up on its next poll.
+                log.warning(
+                    "ingest_pdf.persist: preflight-rejection broadcast "
+                    "failed run=%s: %s", run_id, exc,
+                )
+
+    return IngestPdfFinalOut(
+        sha256=pre.get("sha256", ""),
+        parser_used="skipped",
+        parse_quality_pct=0.0,
+        page_count=int(pre.get("page_count", 0) or 0),
+        title=None,
+        authors=[],
+        company=None,
+        filing_date=None,
+        commodity=None,
+        project_name=None,
+        region=None,
+        sections_count=0,
+        resource_tables_count=0,
+        is_scanned=False,
+        warnings_count=len(parsed.get("warnings") or []),
+        parse_duration_ms=0,
+        persist_duration_ms=0,
+        report_id=None,
+        passages_written=0,
+    )
+
+
 async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOut:
     """Inner body of persist() — wrapped so heartbeat_loop can manage the
     ticker around the slow §04p dual-write + Postgres transaction."""
@@ -1146,82 +1501,12 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     parsed = ctx.task_output(parse)
     parsed = parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)
 
-    # 2026-08-14 — preflight rejection must FAIL the run, not persist a
-    # phantom report. parse() short-circuits with parser_used="skipped"
-    # when preflight marked the file invalid (password-protected, missing
-    # %PDF- magic, >2GB, inactive project). The old code fell through to
-    # the normal persist path: an empty "(untitled)" silver.reports row
-    # landed, embed_verify then saw zero unembedded passages and marked
-    # the run COMPLETED — the rejection was invisible to the user. Now:
-    # mark the run failed with the preflight error (reaches
-    # silver.ingest_progress.error_text → IngestionRuns UI), write NO
-    # report row, and return a skipped final output.
+    # Preflight rejection is its own phase and lives in its own function
+    # (L1097). parse() short-circuits with parser_used="skipped" when
+    # preflight marked the file invalid; everything below assumes a real
+    # parse result.
     if (parsed.get("parser_used") or "") == "skipped":
-        preflight_error = pre.get("error") or next(
-            (
-                w.get("message")
-                for w in (parsed.get("warnings") or [])
-                if w.get("code") == "preflight_rejected" and w.get("message")
-            ),
-            "preflight rejected the file",
-        )
-        log.warning(
-            "ingest_pdf.persist: preflight rejected key=%s (%s) — failing "
-            "run, no report row written",
-            input.minio_key, preflight_error,
-        )
-        run_id: str | None = None
-        if input.workspace_id:
-            run_id = await ingest_progress.lookup_active_run_id(
-                workspace_id=str(input.workspace_id),
-                minio_key=input.minio_key,
-            )
-        if run_id:
-            await ingest_progress.mark_failed_by_run(
-                run_id=run_id,
-                stage="preflight",
-                error=f"preflight_rejected: {preflight_error}",
-            )
-            # Best-effort terminal broadcast so the IngestionRuns UI flips
-            # without waiting for its poll — the workflow itself SUCCEEDS
-            # here, so the on_failure hook never fires for this path.
-            if input.project_id:
-                try:
-                    from app.services.laravel_bridge import post_ingestion_progress
-                    await post_ingestion_progress(
-                        workspace_id=str(input.workspace_id),
-                        project_id=str(input.project_id),
-                        run_id=run_id,
-                        stage="preflight",
-                        status="failed",
-                        message=f"Upload rejected: {preflight_error}",
-                    )
-                except Exception as exc:
-                    log.warning(
-                        "ingest_pdf.persist: preflight-rejection broadcast "
-                        "failed run=%s: %s", run_id, exc,
-                    )
-        return IngestPdfFinalOut(
-            sha256=pre.get("sha256", ""),
-            parser_used="skipped",
-            parse_quality_pct=0.0,
-            page_count=int(pre.get("page_count", 0) or 0),
-            title=None,
-            authors=[],
-            company=None,
-            filing_date=None,
-            commodity=None,
-            project_name=None,
-            region=None,
-            sections_count=0,
-            resource_tables_count=0,
-            is_scanned=False,
-            warnings_count=len(parsed.get("warnings") or []),
-            parse_duration_ms=0,
-            persist_duration_ms=0,
-            report_id=None,
-            passages_written=0,
-        )
+        return await _persist_preflight_rejection(input, pre=pre, parsed=parsed)
 
     t_start = time.monotonic()
     report_id = _stable_report_id(
@@ -1495,6 +1780,12 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     # only ever a workflow input and nothing on the produced
                     # row pointed back at its source.
                     input.minio_key,
+                    # $20 -- the fraction of pages that produced any text.
+                    # parse_quality_pct sitting alone on this row is what
+                    # let a report whose 300 pages OCR'd to nothing read
+                    # as well parsed, because its table of contents
+                    # yielded 17 NI 43-101 headings.
+                    float(parsed.get("text_page_coverage_pct", 0.0) or 0.0),
                 )
                 for ordinal, section in enumerate(parsed.get("sections") or []):
                     text = (section.get("text") or "").strip()

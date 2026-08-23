@@ -952,9 +952,9 @@ Three operational runbooks written. Module 1 status: Phase A/B/C (non-destructiv
 
 **Module 1 — Phase A/B/C (non-destructive) + D complete. C1 (volume-wipe cold-start) deferred pending 2026-04-26 Neo4j live dump + Kyle-authorized window.**
 
-- `ops/runbooks/cold-start.md`
-- `ops/runbooks/backup-restore.md`
-- `ops/runbooks/service-outage.md`
+- `ops/runbooks/_archived/cold-start.md`
+- `ops/runbooks/_archived/backup-restore.md`
+- `ops/runbooks/_archived/service-outage.md`
 
 ---
 

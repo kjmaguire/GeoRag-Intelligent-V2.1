@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
 import logging
 import os
@@ -190,10 +191,8 @@ def _build_dsn() -> str:
 
 async def _create_run(conn: asyncpg.Connection, source_path: str) -> UUID:
     size = None
-    try:
+    with contextlib.suppress(OSError):
         size = os.path.getsize(source_path)
-    except OSError:
-        pass
     return await conn.fetchval(
         """
         INSERT INTO bronze.ingest_runs (source_path, source_size_bytes, status)

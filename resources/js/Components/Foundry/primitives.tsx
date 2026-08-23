@@ -115,14 +115,21 @@ export function Stat({
     value,
     sub,
     tone = 'neutral',
+    title,
 }: {
     label: string;
     value: React.ReactNode;
     sub?: React.ReactNode;
     tone?: Tone;
+    /**
+     * Hover text. A three-word label over a bare integer is not always
+     * enough to say what the integer counts, or what a reader is meant to
+     * do about it — this is where the sentence goes.
+     */
+    title?: string;
 }) {
     return (
-        <div className="px-4 py-3.5" style={{ background: 'var(--bg-1)' }}>
+        <div className="px-4 py-3.5" style={{ background: 'var(--bg-1)' }} title={title}>
             <div className="text-[10px] font-mono uppercase tracking-[0.12em]" style={{ color: 'var(--fg-3)' }}>
                 {label}
             </div>

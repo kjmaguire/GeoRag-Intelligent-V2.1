@@ -11,6 +11,22 @@
 #     when schedule.interval is weekly).
 #   - Composer and npm + uv (Python) all opted in.
 #   - Reviewers/assignees left unset — repo CODEOWNERS handles routing.
+#
+# Corrections, 2026-08-22 — two ecosystems were watching the wrong thing:
+#
+#   pip -> uv     The `pip` updater maintains the constraints in
+#                 pyproject.toml but does NOT maintain uv.lock, and since
+#                 the 2026-08-21 image fix the production FastAPI image
+#                 installs FROM uv.lock (docker/fastapi.Dockerfile). So
+#                 the artefact that decides what ships was the one nothing
+#                 updated. The `uv` ecosystem maintains both.
+#
+#   docker "/"    Every Dockerfile lives under /docker, so the updater
+#                 found none of them and the digest-pinned base images
+#                 (python:3.13-slim, php:8.5-cli) got no PRs at all.
+#                 Digest pinning is the right call for reproducibility,
+#                 but pinning without an updater is just freezing the CVE
+#                 state at the moment someone pinned it.
 version: 2
 updates:
   - package-ecosystem: "composer"
@@ -47,7 +63,9 @@ updates:
       prefix: "chore(npm)"
       include: "scope"
 
-  - package-ecosystem: "pip"
+  # The application service. `uv`, not `pip`: uv.lock is what the
+  # production image installs, and the pip updater does not touch it.
+  - package-ecosystem: "uv"
     directory: "/src/fastapi"
     schedule:
       interval: "weekly"
@@ -60,7 +78,27 @@ updates:
       langchain:
         patterns: ["langchain*", "langgraph*", "langsmith*"]
     commit-message:
-      prefix: "chore(pip)"
+      prefix: "chore(uv)"
+      include: "scope"
+
+  # The two first-party packages the FastAPI image installs alongside the
+  # service (see docker/fastapi.Dockerfile). Neither carries a uv.lock —
+  # they are libraries, so Dependabot maintains their pyproject
+  # constraints, which is what the image resolves against.
+  - package-ecosystem: "uv"
+    directories:
+      - "/src/georag_geoparsers"
+      - "/src/georag_object_storage"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      patch-updates:
+        applies-to: version-updates
+        update-types: ["patch"]
+    commit-message:
+      prefix: "chore(uv)"
       include: "scope"
 
   - package-ecosystem: "github-actions"
@@ -72,8 +110,13 @@ updates:
       prefix: "chore(actions)"
       include: "scope"
 
+  # Every Dockerfile is under /docker, including the four in their own
+  # subdirectories (backup-agent, neo4j-exporter, postgresql). The glob
+  # covers both levels; "/" covered neither.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/docker"
+      - "/docker/**"
     schedule:
       interval: "monthly"
     open-pull-requests-limit: 5

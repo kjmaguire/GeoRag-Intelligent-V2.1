@@ -5,13 +5,16 @@ Module 4 Phase B Chunk 3 -- B3 identifier-boost detection.
 Purpose
 -------
 Identifier-heavy queries (e.g., "PLS-22-08 assay results" or "74I12 geology")
-benefit from a wider sparse-candidate pool in Qdrant: a specific drillhole ID
-is an exact-match token, not a semantic concept, so the SPLADE++ sparse branch
-picks it up better than the dense branch.
+need a different kind of retrieval from conceptual ones: a specific drillhole
+ID is an exact-match token, not a semantic concept, so the SPLADE++ sparse
+branch finds it where the dense branch does not.
 
 When an identifier is detected, the orchestrator raises the Qdrant sparse
-prefetch limit from the default 100 to 150 (SPARSE_BOOST_FACTOR = 1.5) so
-more exact-token candidates enter the cross-store RRF pool.
+prefetch limit from the default 100 to 150 (SPARSE_BOOST_FACTOR = 1.5).
+
+READ THE "Boost application" SECTION BELOW BEFORE RELYING ON THAT. Widening
+the prefetch does not change what reaches the answer, and this module used to
+say it did. Detection works; the boost it feeds is inert.
 
 Detection
 ---------
@@ -43,8 +46,8 @@ override `identifier_boost_disabled=True` would disable it, but that field
 does not exist yet.  Boost is applied whenever detect_identifiers() returns
 has_match=True.
 
-Boost application
------------------
+Boost application, and why it currently changes nothing
+------------------------------------------------------
 The boost_factor is passed to hybrid_query() / hybrid_query_no_workspace() as
 sparse_boost_factor.  Those functions multiply PREFETCH_LIMIT by the factor for
 the sparse Prefetch branch only.  The dense branch is unchanged.
@@ -52,8 +55,54 @@ the sparse Prefetch branch only.  The dense branch is unchanged.
     Default prefetch per branch: 100
     Boosted sparse prefetch:     150 (100 * 1.5)
 
-The dense branch stays at 100 so the RRF pool is deliberately sparse-heavy for
-identifier queries without ballooning total candidates beyond reason.
+This section used to end by saying the wider pool let "more exact-token
+candidates enter the cross-store RRF pool".  Measured 2026-08-21, it does
+not, and the arithmetic is not close.
+
+Qdrant fuses with Reciprocal Rank Fusion, which scores a candidate at
+1/(k + rank) with k = 2.  The fused result limit is RETRIEVAL_TOP_N = 40.
+
+    the 40th dense candidate      1 / (2 + 39)   = 0.0244
+    the first slot the boost adds 1 / (2 + 100)  = 0.0098
+    the last slot the boost adds  1 / (2 + 149)  = 0.0066
+
+The dense branch on its own supplies 100 candidates, so ranks 0-39 of the
+output are already filled by terms of at least 0.0244.  Every slot the
+boost adds scores between 2.5x and 3.7x lower than the weakest of them.  A
+chunk that ONLY the sparse branch finds, and only at rank 137, cannot reach
+the answer -- which is precisely the chunk an identifier query is asking
+for.
+
+Nothing here is broken in the sense of raising: detection works, the
+factor is threaded correctly, the prefetch really is widened, and the logs
+say the boost fired.  It simply has no reachable effect, and the log line
+saying it fired is the misleading part.
+
+What a real fix needs
+---------------------
+Widening a prefetch cannot help, because the problem is rank, not pool
+size.  The candidate has to arrive at a HIGH rank in a branch of its own:
+
+    a third Prefetch doing an exact MatchText on the detected token
+    against the payload `text` field, limit ~20
+
+That branch's rank 0 scores 1/(2+0) = 0.5, an order of magnitude above
+anything the dense branch produces, so a chunk literally containing
+"PLS-22-08" is guaranteed into the fused output.
+
+PRECONDITION, unverified as of 2026-08-21: MatchText requires a full-text
+payload index on `text`.  Nothing in the live tree creates one -- every
+create_payload_index call in the repo is in the dormant src/dagster tree or
+in database/raw/phase28/seed_ni43_chunks.py.  If the index is absent on the
+live collection the whole query_points call fails, taking document search
+down for exactly the queries this was meant to help.  Confirm the index
+exists on georag_chunks before implementing, and create it in a live
+migration path if it does not.
+
+tests/test_identifier_boost_is_inert.py pins the arithmetic above, so if
+PREFETCH_LIMIT, SPARSE_BOOST_FACTOR or RETRIEVAL_TOP_N move far enough to
+make the boost live, that shows up as a failing test rather than as a
+silent change of behaviour on the answer path.
 """
 
 from __future__ import annotations

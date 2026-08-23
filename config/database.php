@@ -248,7 +248,7 @@ return [
         // The `cache` connection routes to a dedicated `redis-cache` instance
         // (allkeys-lru, ephemeral) under the staging/prod compose profile when
         // REDIS_CACHE_HOST is set. Falls back to the default Redis instance in
-        // dev. See ops/runbooks/redis-3-instance-rollout.md.
+        // dev. See ops/runbooks/_archived/redis-3-instance-rollout.md.
         'cache' => [
             'url' => env('REDIS_URL'),
             'host' => env('REDIS_CACHE_HOST', env('REDIS_HOST', '127.0.0.1')),

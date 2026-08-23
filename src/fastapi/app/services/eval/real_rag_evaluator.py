@@ -42,6 +42,7 @@ from typing import Any
 import asyncpg
 import httpx
 
+from app.db.dsn import build_dsn
 from app.services.eval.workspace_evaluator import (
     QuestionRecord,
     QuestionResult,
@@ -56,13 +57,9 @@ _DEPS_SINGLETON: Any = None
 _DEPS_LOCK: asyncio.Lock = asyncio.Lock()
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 async def _build_agent_deps() -> Any:
@@ -297,6 +294,7 @@ async def evaluate_question_real_rag(
         validate_chunk_provenance,
         validate_citation_presence,
         validate_entity_resolution,
+        validate_language_compliance,
         validate_numeric_claims,
         validate_refusal_correctness,
         validate_retrieval_quality,
@@ -304,6 +302,9 @@ async def evaluate_question_real_rag(
 
     response_text = response.text or ""
     outcomes = [
+        validate_language_compliance(
+            response_text=response_text, question=question,
+        ),
         validate_refusal_correctness(
             response_text=response_text, question=question,
         ),

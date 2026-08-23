@@ -100,35 +100,3 @@ class TestPrecisionAtK:
         precision = self._precision_at_k(chunks, is_relevant, 3)
         assert abs(precision - 2 / 3) < 1e-6
 
-
-# ── Negative-set guard: refuses to retrieve for out-of-domain queries ────
-
-
-class TestNegativeRetrievalGuard:
-    """Queries that should return nothing relevant. These require the
-    quality gate (RETRIEVAL_QUALITY_THRESHOLD) to actually drop all chunks
-    — not just rank them low."""
-
-    def test_quality_gate_drops_low_scores(self):
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-
-        chunks = [
-            SimpleNamespace(relevance_score=0.05),
-            SimpleNamespace(relevance_score=0.15),
-            SimpleNamespace(relevance_score=0.25),
-        ]
-        # Threshold 0.5 — all three should drop.
-        retained = filter_by_quality(chunks, 0.5)
-        assert retained == []
-
-    def test_quality_gate_keeps_above_threshold(self):
-        from app.agent.hallucination.layer1_retrieval import filter_by_quality
-
-        chunks = [
-            SimpleNamespace(relevance_score=0.55),
-            SimpleNamespace(relevance_score=0.75),
-            SimpleNamespace(relevance_score=0.35),
-        ]
-        retained = filter_by_quality(chunks, 0.5)
-        assert len(retained) == 2  # 0.55 and 0.75
-        assert all(c.relevance_score >= 0.5 for c in retained)

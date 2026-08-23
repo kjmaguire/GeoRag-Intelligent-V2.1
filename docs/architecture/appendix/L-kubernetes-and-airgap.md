@@ -164,44 +164,44 @@ chapter when they age into doctrine.
 
 | Runbook | Topic |
 |---|---|
-| [authz-audit-triage.md](../../../ops/runbooks/authz-audit-triage.md) | Investigating authz audit log spikes |
-| [backup-restore.md](../../../ops/runbooks/backup-restore.md) | End-to-end backup + restore drill |
-| [citation-pipeline.md](../../../ops/runbooks/citation-pipeline.md) | Citation lifecycle debugging |
-| [claude-code-mcp-migration.md](../../../ops/runbooks/claude-code-mcp-migration.md) | Migrating Claude Code MCP servers |
-| [cold-start.md](../../../ops/runbooks/cold-start.md) | Full-stack cold start |
-| [container-hardening.md](../../../ops/runbooks/container-hardening.md) | Non-root user migration per service |
-| [data-version.md](../../../ops/runbooks/data-version.md) | `workspaces.data_version` semantics |
-| [datastore-tuning.md](../../../ops/runbooks/datastore-tuning.md) | PG / Neo4j / Qdrant tuning |
-| [dem-self-host.md](../../../ops/runbooks/dem-self-host.md) | Self-hosted DEM tile service |
-| [deploy-rollback.md](../../../ops/runbooks/deploy-rollback.md) | Rolling back a bad deploy |
-| [dr-1-postgres-loss.md](../../../ops/runbooks/dr-1-postgres-loss.md) | DR drill 1: Postgres total loss |
-| [dr-2-store-divergence.md](../../../ops/runbooks/dr-2-store-divergence.md) | DR drill 2: PG ↔ Qdrant ↔ Neo4j divergence |
-| [dr-3-ransomware.md](../../../ops/runbooks/dr-3-ransomware.md) | DR drill 3: ransomware response |
-| [dr-4-full-datacenter.md](../../../ops/runbooks/dr-4-full-datacenter.md) | DR drill 4: full datacenter loss |
-| [dr-5-partial-outage.md](../../../ops/runbooks/dr-5-partial-outage.md) | DR drill 5: partial outage |
-| [drillhole-label-rename.md](../../../ops/runbooks/drillhole-label-rename.md) | Renaming the canonical `:DrillHole` label |
-| [evidence-model.md](../../../ops/runbooks/evidence-model.md) | Evidence-item lifecycle |
-| [hybrid-retrieval.md](../../../ops/runbooks/hybrid-retrieval.md) | Debugging hybrid retrieval results |
-| [ingestion-pipeline.md](../../../ops/runbooks/ingestion-pipeline.md) | Ingest pipeline triage |
-| [llm-model-swap.md](../../../ops/runbooks/llm-model-swap.md) | Swapping the served LLM model |
-| [log-retention.md](../../../ops/runbooks/log-retention.md) | Log retention policy + Loki cleanup |
-| [martin-tile-server.md](../../../ops/runbooks/martin-tile-server.md) | Martin tile server triage |
-| [migration-rollback.md](../../../ops/runbooks/migration-rollback.md) | Rolling back a Laravel migration |
-| [neo4j-backup.md](../../../ops/runbooks/neo4j-backup.md) | Neo4j online-dump procedure |
-| [on-call.md](../../../ops/runbooks/on-call.md) | On-call rotation contract |
-| [qdrant-snapshot.md](../../../ops/runbooks/qdrant-snapshot.md) | Qdrant snapshot + restore |
-| [redis-3-instance-rollout.md](../../../ops/runbooks/redis-3-instance-rollout.md) | Future 3-instance Redis topology rollout |
-| [redis-topology.md](../../../ops/runbooks/redis-topology.md) | Current Redis topology decisions |
-| [refusal-rate-spike.md](../../../ops/runbooks/refusal-rate-spike.md) | Investigating sudden refusal-rate climbs |
-| [retrieval-cache.md](../../../ops/runbooks/retrieval-cache.md) | Retrieval cache layer triage |
-| [retrieval-pipeline.md](../../../ops/runbooks/retrieval-pipeline.md) | Retrieval pipeline triage |
-| [retrieval-tuning.md](../../../ops/runbooks/retrieval-tuning.md) | Retrieval / reranker tuning loop |
-| [s3-abstraction.md](../../../ops/runbooks/s3-abstraction.md) | S3 / SeaweedFS abstraction layer |
-| [secret-management.md](../../../ops/runbooks/secret-management.md) | Secret management overview |
-| [secret-rotation.md](../../../ops/runbooks/secret-rotation.md) | Per-secret rotation procedure |
-| [service-outage.md](../../../ops/runbooks/service-outage.md) | Generic service-outage triage |
-| [validation-corpora.md](../../../ops/runbooks/validation-corpora.md) | Validation corpus maintenance |
-| [volume-migration.md](../../../ops/runbooks/volume-migration.md) | Moving a named volume between hosts |
+| [authz-audit-triage.md](../../../ops/runbooks/_archived/authz-audit-triage.md) | Investigating authz audit log spikes |
+| [backup-restore.md](../../../ops/runbooks/_archived/backup-restore.md) | End-to-end backup + restore drill |
+| [citation-pipeline.md](../../../ops/runbooks/_archived/citation-pipeline.md) | Citation lifecycle debugging |
+| [claude-code-mcp-migration.md](../../../ops/runbooks/_archived/claude-code-mcp-migration.md) | Migrating Claude Code MCP servers |
+| [cold-start.md](../../../ops/runbooks/_archived/cold-start.md) | Full-stack cold start |
+| [container-hardening.md](../../../ops/runbooks/_archived/container-hardening.md) | Non-root user migration per service |
+| [data-version.md](../../../ops/runbooks/_archived/data-version.md) | `workspaces.data_version` semantics |
+| [datastore-tuning.md](../../../ops/runbooks/_archived/datastore-tuning.md) | PG / Neo4j / Qdrant tuning |
+| [dem-self-host.md](../../../ops/runbooks/_archived/dem-self-host.md) | Self-hosted DEM tile service |
+| [deploy-rollback.md](../../../ops/runbooks/_archived/deploy-rollback.md) | Rolling back a bad deploy |
+| [dr-1-postgres-loss.md](../../../ops/runbooks/_archived/dr-1-postgres-loss.md) | DR drill 1: Postgres total loss |
+| [dr-2-store-divergence.md](../../../ops/runbooks/_archived/dr-2-store-divergence.md) | DR drill 2: PG ↔ Qdrant ↔ Neo4j divergence |
+| [dr-3-ransomware.md](../../../ops/runbooks/_archived/dr-3-ransomware.md) | DR drill 3: ransomware response |
+| [dr-4-full-datacenter.md](../../../ops/runbooks/_archived/dr-4-full-datacenter.md) | DR drill 4: full datacenter loss |
+| [dr-5-partial-outage.md](../../../ops/runbooks/_archived/dr-5-partial-outage.md) | DR drill 5: partial outage |
+| [drillhole-label-rename.md](../../../ops/runbooks/_archived/drillhole-label-rename.md) | Renaming the canonical `:DrillHole` label |
+| [evidence-model.md](../../../ops/runbooks/_archived/evidence-model.md) | Evidence-item lifecycle |
+| [hybrid-retrieval.md](../../../ops/runbooks/_archived/hybrid-retrieval.md) | Debugging hybrid retrieval results |
+| [ingestion-pipeline.md](../../../ops/runbooks/_archived/ingestion-pipeline.md) | Ingest pipeline triage |
+| [llm-model-swap.md](../../../ops/runbooks/_archived/llm-model-swap.md) | Swapping the served LLM model |
+| [log-retention.md](../../../ops/runbooks/_archived/log-retention.md) | Log retention policy + Loki cleanup |
+| [martin-tile-server.md](../../../ops/runbooks/_archived/martin-tile-server.md) | Martin tile server triage |
+| [migration-rollback.md](../../../ops/runbooks/_archived/migration-rollback.md) | Rolling back a Laravel migration |
+| [neo4j-backup.md](../../../ops/runbooks/_archived/neo4j-backup.md) | Neo4j online-dump procedure |
+| [on-call.md](../../../ops/runbooks/_archived/on-call.md) | On-call rotation contract |
+| [qdrant-snapshot.md](../../../ops/runbooks/_archived/qdrant-snapshot.md) | Qdrant snapshot + restore |
+| [redis-3-instance-rollout.md](../../../ops/runbooks/_archived/redis-3-instance-rollout.md) | Future 3-instance Redis topology rollout |
+| [redis-topology.md](../../../ops/runbooks/_archived/redis-topology.md) | Current Redis topology decisions |
+| [refusal-rate-spike.md](../../../ops/runbooks/_archived/refusal-rate-spike.md) | Investigating sudden refusal-rate climbs |
+| [retrieval-cache.md](../../../ops/runbooks/_archived/retrieval-cache.md) | Retrieval cache layer triage |
+| [retrieval-pipeline.md](../../../ops/runbooks/_archived/retrieval-pipeline.md) | Retrieval pipeline triage |
+| [retrieval-tuning.md](../../../ops/runbooks/_archived/retrieval-tuning.md) | Retrieval / reranker tuning loop |
+| [s3-abstraction.md](../../../ops/runbooks/_archived/s3-abstraction.md) | S3 / SeaweedFS abstraction layer |
+| [secret-management.md](../../../ops/runbooks/_archived/secret-management.md) | Secret management overview |
+| [secret-rotation.md](../../../ops/runbooks/_archived/secret-rotation.md) | Per-secret rotation procedure |
+| [service-outage.md](../../../ops/runbooks/_archived/service-outage.md) | Generic service-outage triage |
+| [validation-corpora.md](../../../ops/runbooks/_archived/validation-corpora.md) | Validation corpus maintenance |
+| [volume-migration.md](../../../ops/runbooks/_archived/volume-migration.md) | Moving a named volume between hosts |
 
 ## 10. Other operational artifacts in `ops/`
 

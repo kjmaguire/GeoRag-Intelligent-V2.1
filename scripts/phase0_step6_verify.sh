@@ -130,7 +130,7 @@ MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker cp \
     "$PY_SRC" georag-fastapi:/tmp/_phase0_step6_smoke.py >/dev/null
 if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' docker exec \
     -e WS_ID="${WS_ID}" \
-    -e REDIS_PASSWORD='N2Wz3FdVExUkEs8AysiAmh4usppA8FZ' \
+    -e REDIS_PASSWORD="${REDIS_PASSWORD:?REDIS_PASSWORD must be set (source .env); it used to be hardcoded here, in a public repo}" \
     georag-fastapi python3 -u //tmp/_phase0_step6_smoke.py > /tmp/step6_smoke.log 2>&1; then
     check "10-agent smoke (all phase0 agents invocable)" ok
     cat /tmp/step6_smoke.log | head -40

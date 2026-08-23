@@ -576,7 +576,7 @@ Full schedule table in [`CICD_PIPELINE.md`](CICD_PIPELINE.md) §6.7.
 
 ### 7.6 Disaster recovery
 
-Five DR scenarios documented in `ops/runbooks/dr-1-postgres-loss.md` through `dr-5-partial-outage.md`. Cold-start procedure in `ops/runbooks/cold-start.md` + [`../OPERATOR-AFTERNOON.md`](../OPERATOR-AFTERNOON.md).
+Five DR scenarios documented in `ops/runbooks/_archived/dr-1-postgres-loss.md` through `dr-5-partial-outage.md`. Cold-start procedure in `ops/runbooks/_archived/cold-start.md` + [`../OPERATOR-AFTERNOON.md`](../OPERATOR-AFTERNOON.md).
 
 ---
 

@@ -370,7 +370,17 @@ def parse_csv_geochronology(
         if record is not None:
             records.append(record)
         else:
-            logger.warning("Skipping geochron row: %s", skip_entry.get("reason"))
+            # Log the structured code and row number, not the free-text
+            # reason: the reason interpolates the offending cell verbatim
+            # (`{raw.get("isotopic_system")!r}`), so a malformed upload
+            # writes arbitrary customer file content into a shared log
+            # store. The full reason still travels in the returned
+            # `skipped` list, which is what the UI and the run record read.
+            logger.warning(
+                "Skipping geochron row %s: %s",
+                skip_entry.get("row"),
+                skip_entry.get("code"),
+            )
             skipped.append(skip_entry)
 
     result = GeochronParseResult(

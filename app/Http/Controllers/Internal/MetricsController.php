@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Internal;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -28,14 +27,19 @@ use Throwable;
  * dep tree for marginal benefit. The exposition format is plain text with three
  * lines per series (HELP, TYPE, value); writing it directly is ~50 lines.
  *
- * Authentication posture (per audit)
- * ----------------------------------
- * `/metrics` is unauthenticated by design — Prometheus needs to scrape without
- * carrying a session. The endpoint is firewalled at the Docker network layer
- * (port 80 inside the compose network is NOT exposed externally) and at the
- * application layer via {@see self::isAllowedScraper()} which only admits
- * private-IP callers. Public deployments must add nginx-level allow/deny rules
- * (documented in `ops/runbooks/secret-management.md`).
+ * Authentication posture
+ * ----------------------
+ * `/metrics` requires the `service.key` shared secret (`X-Service-Key`), the
+ * same one the internal FastAPI callbacks use. A scraper carries a header, not
+ * a session, so this costs it nothing.
+ *
+ * It used to be gated on `$request->ip()` being an RFC-1918 address instead.
+ * That is not a control the application can verify: `ip()` reads the
+ * X-Forwarded-For chain, the chain is client-supplied, and production trusts
+ * every proxy — so `X-Forwarded-For: 10.0.0.1` was enough for any anonymous
+ * caller on the internet to read Horizon queue depths, Pulse exception counts,
+ * slow-query counts and authz-deny counters. Confirmed live against the
+ * production ingress during the 2026-08-20 review.
  *
  * Octane-safe
  * -----------
@@ -47,12 +51,8 @@ final class MetricsController extends Controller
     /**
      * GET /metrics  — Prometheus exposition.
      */
-    public function __invoke(Request $request): Response
+    public function __invoke(): Response
     {
-        if (! $this->isAllowedScraper($request)) {
-            return new Response('forbidden', 403, ['Content-Type' => 'text/plain']);
-        }
-
         $lines = [];
         try {
             $lines = array_merge($lines, $this->horizonQueueDepth());
@@ -118,41 +118,18 @@ final class MetricsController extends Controller
         );
     }
 
-    /**
-     * Only admit private-network callers. The Prometheus server in the same
-     * compose network sees an internal IP. Public traffic is rejected.
-     *
-     * Module 9 Chunk 9.5 wired TrustProxies, so `$request->ip()` already
-     * reflects the X-Forwarded-For chain. We check the resulting client IP
-     * against RFC 1918 + loopback ranges.
-     */
-    private function isAllowedScraper(Request $request): bool
-    {
-        $ip = (string) $request->ip();
-        if ($ip === '' || $ip === '::1' || $ip === '127.0.0.1') {
-            return true;
-        }
-        // Match IPv4 RFC 1918 + loopback. IPv6 ULA (fc00::/7) accepted via str-prefix.
-        if (preg_match('/^10\./', $ip)) {
-            return true;
-        }
-        if (preg_match('/^192\.168\./', $ip)) {
-            return true;
-        }
-        if (preg_match('/^172\.(1[6-9]|2[0-9]|3[0-1])\./', $ip)) {
-            return true;
-        }
-        if (str_starts_with($ip, 'fc') || str_starts_with($ip, 'fd')) {
-            return true;
-        }
-
-        return false;
-    }
-
     /** @return list<string> */
     private function horizonQueueDepth(): array
     {
-        if (! class_exists(MetricsRepository::class)) {
+        // interface_exists, not class_exists: the Horizon MetricsRepository
+        // is an INTERFACE, and class_exists() returns false for interfaces
+        // — so this guard was always true, and
+        // horizon_queue_depth has never emitted a single sample despite
+        // Horizon being a hard composer requirement with a running container
+        // app. The one metric that would show the `llm` queue backing up
+        // reported "not installed" instead, so no alert could ever be built
+        // on it.
+        if (! interface_exists(MetricsRepository::class) && ! class_exists(MetricsRepository::class)) {
             return ['# horizon_queue_depth: Horizon not installed'];
         }
 
@@ -161,12 +138,7 @@ final class MetricsController extends Controller
             '# TYPE horizon_queue_depth gauge',
         ];
 
-        $queues = (array) config('horizon.defaults.queue', ['default']);
-        if (empty($queues)) {
-            $queues = ['default'];
-        }
-
-        foreach ((array) $queues as $queue) {
+        foreach ($this->horizonQueueNames() as $queue) {
             try {
                 $depth = (int) Redis::connection('horizon')->llen("queues:{$queue}");
             } catch (Throwable) {
@@ -178,22 +150,93 @@ final class MetricsController extends Controller
         return $lines;
     }
 
+    /**
+     * Every queue any Horizon supervisor is configured to consume.
+     *
+     * `horizon.defaults` is keyed by SUPERVISOR NAME, so `defaults.queue`
+     * is not a path that exists — the real ones are
+     * `defaults.supervisor-1.queue` and `defaults.supervisor-llm.queue`.
+     * Reading the non-existent key returned null and fell through to the
+     * `['default']` fallback, so the fixed guard above restored the metric
+     * for exactly one queue and left out `llm` — the queue the comment
+     * above says the metric exists to watch, and the one that actually
+     * backs up, because a stuck LLM stream holds its worker for the full
+     * 300-second job timeout.
+     *
+     * Derived rather than listed so adding a supervisor to config/horizon.php
+     * is enough; there is no second copy here to forget.
+     *
+     * @return list<string>
+     */
+    private function horizonQueueNames(): array
+    {
+        $queues = [];
+
+        foreach ((array) config('horizon.defaults', []) as $supervisor) {
+            foreach ((array) ($supervisor['queue'] ?? []) as $queue) {
+                if (is_string($queue) && $queue !== '') {
+                    $queues[] = $queue;
+                }
+            }
+        }
+
+        // Environment blocks may add supervisors the defaults don't declare.
+        foreach ((array) config('horizon.environments', []) as $supervisors) {
+            foreach ((array) $supervisors as $supervisor) {
+                foreach ((array) ($supervisor['queue'] ?? []) as $queue) {
+                    if (is_string($queue) && $queue !== '') {
+                        $queues[] = $queue;
+                    }
+                }
+            }
+        }
+
+        $queues = array_values(array_unique($queues));
+
+        return $queues === [] ? ['default'] : $queues;
+    }
+
     /** @return list<string> */
     private function octaneWorkers(): array
     {
-        // Octane exposes worker stats via its own server; we approximate
-        // busy-ratio from the request-in-flight cache key the runtime maintains.
-        $busy = (int) Cache::get('octane:workers:busy', 0);
-        $total = (int) Cache::get('octane:workers:total', max(1, (int) config('services.octane_metrics.workers')));
+        // `octane_workers_total` is real: services.octane_metrics.workers
+        // reads the same OCTANE_WORKERS the container start command passes
+        // to `octane:start --workers`.
+        $total = (int) Cache::get(
+            'octane:workers:total',
+            max(1, (int) config('services.octane_metrics.workers')),
+        );
 
-        return [
-            '# HELP octane_workers_busy Currently-busy Octane workers',
-            '# TYPE octane_workers_busy gauge',
-            sprintf('octane_workers_busy %d', $busy),
+        $lines = [
             '# HELP octane_workers_total Total Octane workers',
             '# TYPE octane_workers_total gauge',
             sprintf('octane_workers_total %d', $total),
         ];
+
+        // `octane_workers_busy` used to be emitted unconditionally from
+        // `Cache::get('octane:workers:busy', 0)` — a key NOTHING in this
+        // repository writes. A busy gauge that can never rise is not an
+        // unmeasured signal, it is a WRONG one: it renders as a flat,
+        // healthy-looking zero on the Service Health dashboard while the
+        // 4-worker, maxReplicas=1 deployment is saturated. Emitting a
+        // fabricated constant is worse than emitting nothing.
+        //
+        // Emitted only if something actually wrote it, so a future writer
+        // lights this up with no change here. There is no in-request route
+        // to Swoole's `$server->stats()` — Octane binds no server instance
+        // into the container — so a real busy count needs a tick listener
+        // (see config/octane.php's `tick` hooks) writing worker stats into
+        // the Octane cache table. Until that exists, absent is honest.
+        if (Cache::has('octane:workers:busy')) {
+            $lines[] = '# HELP octane_workers_busy Currently-busy Octane workers';
+            $lines[] = '# TYPE octane_workers_busy gauge';
+            $lines[] = sprintf(
+                'octane_workers_busy %d',
+                (int) Cache::get('octane:workers:busy'),
+            );
+        }
+
+        return $lines;
     }
 
     /** @return list<string> */
@@ -321,6 +364,17 @@ final class MetricsController extends Controller
      */
     private function dagsterRunsByStatus(): array
     {
+        // Dagster was retired 2026-07-28 and this block still dialled
+        // `postgresql:5432` — the docker-compose hostname — on EVERY
+        // scrape. On Azure that name does not resolve, so each scrape paid
+        // a failed connect against the 2s PDO timeout and wrote a
+        // Log::warning into Log Analytics, then emitted a
+        // `{status="none"} 0` placeholder that made a dead stack look
+        // merely idle. Off unless explicitly enabled.
+        if (! config('services.dagster.enabled', false)) {
+            return [];
+        }
+
         $lines = [
             '# HELP dagster_runs_total Total Dagster runs by terminal status (since DB inception)',
             '# TYPE dagster_runs_total gauge',

@@ -48,13 +48,48 @@ def test_every_intent_has_a_profile(intent: Intent) -> None:
     assert p.primary_tools  # at least one primary tool
 
 
-def test_factual_profile_is_bm25_weighted_standards_first() -> None:
+def test_factual_profile_declares_standards_first_intent() -> None:
+    """Renamed 2026-08-21 from ...is_bm25_weighted_standards_first.
+
+    The old name asserted something untrue. ``bm25_weight`` is inert: the
+    field's own description says "NOT YET WIRED", fusion is a bare
+    ``FusionQuery(fusion=Fusion.RRF)`` with no branch weighting
+    (qdrant_service.py), and factual_lookup's 0.75 therefore behaves
+    identically to anomaly_detection's 0.3. A test named for weighting
+    reads as proof that weighting happens, which is how the number came to
+    be cited in the ADR narrative as if it tuned the pipeline.
+
+    The assertion is kept -- the DECLARED intent is still worth locking, so
+    a future wiring change has a stated target to hit -- but the name now
+    says what it checks: a number in a config object.
+    """
     p = profile_for_intent("factual_lookup")
     assert p.primary_tools == ["search_documents"]
-    assert p.bm25_weight >= 0.7  # standards-first
+    assert p.bm25_weight >= 0.7, "declared intent only; nothing reads this yet"
     assert p.answer_emphasis == "exact_citation"
     assert not p.adversarial_pass_enabled
     assert not p.conflict_detection_enabled
+
+
+def test_bm25_weight_is_still_unread_by_the_retrieval_path() -> None:
+    """If this fails, somebody wired it -- and the test above needs its
+    docstring rewritten, plus a benchmark, because per-intent weighting is
+    a real change to what reaches the answer."""
+    import pathlib as _pathlib
+
+    app_dir = _pathlib.Path(__file__).resolve().parent.parent / "app"
+    readers = [
+        str(path.relative_to(app_dir))
+        for path in app_dir.rglob("*.py")
+        if path.name != "retrieval_profile.py"
+        and "bm25_weight" in path.read_text(encoding="utf-8", errors="replace")
+    ]
+    assert readers == [], (
+        "bm25_weight now has readers under app/: "
+        + ", ".join(readers)
+        + " -- update test_factual_profile_declares_standards_first_intent, "
+        "which documents it as inert."
+    )
 
 
 def test_synthesis_profile_enables_conflict_detection() -> None:
@@ -892,7 +927,14 @@ async def test_validate_node_skips_layer5_when_no_pg_pool(monkeypatch) -> None:
     result = await validate_node(state)
 
     assert called is False
-    assert result["response"] is response
+    # Identity no longer holds: validate_node stamps the §04i verdict onto
+    # the response before returning it (validation_state, added 2026-08-21),
+    # so what comes back is a model_copy. The claim these tests make is that
+    # the ANSWER is unharmed, which is what is asserted here.
+    assert result["response"].text == response.text
+    assert result["response"].citations == response.citations
+    assert result["response"].confidence == response.confidence
+    assert result["response"].validation_state == "clean"
 
 
 @pytest.mark.asyncio
@@ -917,7 +959,14 @@ async def test_validate_node_swallows_layer5_failure(monkeypatch) -> None:
     state = state.model_copy(update={"response": response})
     result = await validate_node(state)  # must not raise
 
-    assert result["response"] is response
+    # Identity no longer holds: validate_node stamps the §04i verdict onto
+    # the response before returning it (validation_state, added 2026-08-21),
+    # so what comes back is a model_copy. The claim these tests make is that
+    # the ANSWER is unharmed, which is what is asserted here.
+    assert result["response"].text == response.text
+    assert result["response"].citations == response.citations
+    assert result["response"].confidence == response.confidence
+    assert result["response"].validation_state == "clean"
 
 
 @pytest.mark.asyncio

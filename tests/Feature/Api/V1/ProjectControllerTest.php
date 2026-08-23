@@ -83,9 +83,93 @@ class ProjectControllerTest extends TestCase
     // -------------------------------------------------------------------------
     // store
     // -------------------------------------------------------------------------
+    //
+    // Creating a project requires a tenant to create it IN. A brand-new
+    // account has no project memberships, so it has no workspace, so it
+    // cannot create anything — which is the point: registration used to be
+    // open, and store() used to fall back to a hardcoded workspace UUID, so
+    // a stranger's second API call put them inside the production tenant.
+    // An administrator bootstrapping a fresh deployment is the exception.
+
+    /** Acting user who is allowed to create projects (fresh deployment). */
+    private function actingAsAdmin(): User
+    {
+        $admin = User::factory()->create(['is_admin' => true]);
+        $this->actingAs($admin);
+
+        return $admin;
+    }
+
+    public function test_store_is_forbidden_for_a_user_with_no_workspace(): void
+    {
+        // $this->user from setUp() has no project memberships.
+        $response = $this->postJson('/api/v1/projects', [
+            'project_name' => 'Stranger Danger',
+        ]);
+
+        $response->assertForbidden();
+        $this->assertDatabaseMissing('projects', ['project_name' => 'Stranger Danger']);
+    }
+
+    public function test_store_uses_the_creators_own_workspace(): void
+    {
+        $existing = Project::factory()->create([
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $this->user->projects()->attach($existing->project_id, ['role' => 'owner']);
+
+        $response = $this->postJson('/api/v1/projects', [
+            'project_name' => 'Second Property',
+            'orientation_reference' => 'BOH',
+        ]);
+
+        $response->assertCreated();
+        $this->assertDatabaseHas('projects', [
+            'project_name' => 'Second Property',
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+    }
+
+    public function test_store_refuses_a_workspace_the_creator_does_not_belong_to(): void
+    {
+        $mine = Project::factory()->create([
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $this->user->projects()->attach($mine->project_id, ['role' => 'owner']);
+
+        $response = $this->postJson('/api/v1/projects', [
+            'project_name' => 'Somebody Elses Tenant',
+            'workspace_id' => 'a0000000-0000-0000-0000-000000000001',
+        ]);
+
+        $response->assertUnprocessable();
+        $this->assertDatabaseMissing('projects', ['project_name' => 'Somebody Elses Tenant']);
+    }
+
+    public function test_store_is_ambiguous_when_the_creator_belongs_to_several_workspaces(): void
+    {
+        foreach (['b0000000-0000-0000-0000-0000000000ff', 'c0000000-0000-0000-0000-0000000000ff'] as $ws) {
+            $p = Project::factory()->create(['workspace_id' => $ws]);
+            $this->user->projects()->attach($p->project_id, ['role' => 'owner']);
+        }
+
+        // Picking one would put half this user's work in the wrong tenant.
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Ambiguous',
+            'orientation_reference' => 'BOH',
+        ])->assertUnprocessable();
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Ambiguous',
+            'orientation_reference' => 'BOH',
+            'workspace_id' => 'c0000000-0000-0000-0000-0000000000ff',
+        ])->assertCreated();
+    }
 
     public function test_store_creates_project_and_returns_201(): void
     {
+        $this->actingAsAdmin();
+
         $payload = [
             'project_name' => 'Goldfields North',
             'crs_datum' => 'EPSG:32654',
@@ -107,6 +191,8 @@ class ProjectControllerTest extends TestCase
 
     public function test_store_returns_422_when_project_name_is_missing(): void
     {
+        $this->actingAsAdmin();
+
         $response = $this->postJson('/api/v1/projects', [
             'company' => 'Apex Mining',
         ]);
@@ -117,6 +203,8 @@ class ProjectControllerTest extends TestCase
 
     public function test_store_returns_422_when_magnetic_declination_is_out_of_range(): void
     {
+        $this->actingAsAdmin();
+
         $response = $this->postJson('/api/v1/projects', [
             'project_name' => 'Test Project',
             'magnetic_declination' => 999,
@@ -128,6 +216,8 @@ class ProjectControllerTest extends TestCase
 
     public function test_store_returns_422_when_orientation_reference_is_invalid(): void
     {
+        $this->actingAsAdmin();
+
         $response = $this->postJson('/api/v1/projects', [
             'project_name' => 'Test Project',
             'orientation_reference' => 'INVALID',

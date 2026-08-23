@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "COMPARABILITY_KEYS",
+    "comparability_report",
     "load_report",
     "build_question_map",
     "diff_passes",
@@ -32,6 +34,98 @@ __all__ = [
     "render_text",
     "render_json_diff",
 ]
+
+
+#: Fields of ``meta.model_stack`` that must agree before two reports can be
+#: diffed. A change to any of them moves the score for reasons that have
+#: nothing to do with the change under test.
+COMPARABILITY_KEYS = (
+    "llm_backend",
+    "llm_deployment",
+    "embedding_backend",
+    "embedding_model",
+    "reranker_backend",
+    "reranker_model",
+    "qdrant_collection",
+)
+
+
+def comparability_report(
+    before: dict[str, Any], after: dict[str, Any],
+) -> dict[str, Any]:
+    """Can these two reports be diffed at all?
+
+    Added 2026-08-21. The nightly had been diffing ``ci_nightly.json``
+    against ``bench_results_to_commit_baseline.json`` — dated 2026-05-28,
+    git_sha "unknown", 20 questions at a 20% pass rate, generated before the
+    Qwen3 embedding/reranker swap, the Layer-1 threshold recalibration, the
+    Cohere/Foundry migration and the ADR-0010 collection cutover, against a
+    real LLM — while the candidate side runs a STUBBED LLM and stubbed
+    embeddings. ``diff_passes`` silently intersects on question ID, and only
+    2 of the baseline's 20 IDs are reproducible from the committed corpus,
+    so the printed delta was computed over a 2-question overlap between two
+    unrelated stacks. Because the step was ``continue-on-error`` it always
+    reported green, and a green diff reads as evidence of stability.
+
+    Nothing in either artefact made that visible, which is the real defect:
+    a comparison is only as meaningful as the reader's ability to tell that
+    it isn't. ``run_golden_benchmark`` now stamps ``meta.model_stack``; this
+    function is what reads it.
+
+    Returns a dict with ``comparable`` (bool), ``reasons`` (list of
+    human-readable strings) and ``overlap`` (shared question count). A
+    report with no ``model_stack`` — every artefact written before
+    2026-08-21 — is treated as NOT comparable, because unknown provenance is
+    exactly the case that produced the false green.
+    """
+    reasons: list[str] = []
+
+    b_stack = (before.get("meta") or {}).get("model_stack") or {}
+    a_stack = (after.get("meta") or {}).get("model_stack") or {}
+
+    if not b_stack:
+        reasons.append(
+            "BEFORE has no meta.model_stack (written before 2026-08-21) — "
+            "the stack that produced it is unknown",
+        )
+    if not a_stack:
+        reasons.append(
+            "AFTER has no meta.model_stack (written before 2026-08-21) — "
+            "the stack that produced it is unknown",
+        )
+
+    if b_stack and a_stack:
+        for key in COMPARABILITY_KEYS:
+            b_val, a_val = b_stack.get(key), a_stack.get(key)
+            if b_val != a_val:
+                reasons.append(f"{key}: {b_val!r} -> {a_val!r}")
+
+    b_ids = {r.get("question_id") for r in before.get("results", [])}
+    a_ids = {r.get("question_id") for r in after.get("results", [])}
+    overlap = len(b_ids & a_ids)
+    if overlap == 0:
+        reasons.append(
+            "the two reports share no question IDs — any delta is a "
+            "comparison of disjoint question sets",
+        )
+    elif overlap < _MIN_MEANINGFUL_OVERLAP:
+        reasons.append(
+            f"only {overlap} question(s) are present in both reports — "
+            f"a pass-rate delta over {overlap} question(s) is noise",
+        )
+
+    return {
+        "comparable": not reasons,
+        "reasons": reasons,
+        "overlap": overlap,
+        "before_stack": b_stack,
+        "after_stack": a_stack,
+    }
+
+
+#: Below this many shared questions a pass-rate delta is not a measurement.
+#: The nightly's real overlap with the committed baseline was 2.
+_MIN_MEANINGFUL_OVERLAP = 5
 
 
 def load_report(path: Path) -> dict[str, Any]:

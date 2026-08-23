@@ -116,7 +116,7 @@ the FT is the post-cutover decision point.
 - `georag_chunks-7722704038637137-2026-06-04-16-41-38.snapshot` (91 MB) — overnight snapshot
 - `georag_chunks-7722704038637137-2026-06-04-17-07-40.snapshot` (additional) — immediately before drop
 
-Rollback procedure: see [ops/runbooks/qwen3-embedding-cutover.md §Rollback](../runbooks/qwen3-embedding-cutover.md#rollback).
+Rollback procedure: see [ops/runbooks/_archived/qwen3-embedding-cutover.md §Rollback](../runbooks/qwen3-embedding-cutover.md#rollback).
 
 ## What's changed in production right now
 

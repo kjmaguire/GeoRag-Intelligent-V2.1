@@ -739,25 +739,46 @@ class TestSearchDocuments:
         assert result.chunks[0].relevance_score == pytest.approx(1 / (1 + math.exp(-5.0)))
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_cosine_ordering_when_no_reranker(self) -> None:
-        """Without a reranker, search_documents uses raw Qdrant cosine scores
-        and the Layer 1 quality gate."""
+    async def test_falls_back_to_rrf_ordering_when_no_reranker(self) -> None:
+        """Without a reranker, search_documents returns RRF order, degraded.
+
+        This test used to assert the opposite, and its fixture is why the
+        bug survived: it gave the Qdrant points cosine-shaped scores (0.72,
+        0.15) and asserted the 0.15 one was filtered out by the Layer 1
+        quality gate.
+
+        Real points on this path do not carry cosine scores. `hybrid_query`
+        fuses a dense and a sparse prefetch with server-side RRF, so
+        `point.score` is rank-derived — a small number bounded by the fusion
+        constant, with no relation to similarity. Gating those with a
+        calibrated 0.5 dropped every chunk, and because `reranker is None`
+        is reachable from nothing more exotic than an unset
+        AZURE_FOUNDRY_API_KEY, that turned every document query in the
+        system into "insufficient information".
+
+        The contract now matches the `rerank_degraded` branch, which is the
+        same situation: RRF order, truncated to RERANKER_TOP_K, flagged so
+        the answer can say the precision stage did not run.
+        """
         import numpy as np
 
-        fake_point_pass = MagicMock()
-        fake_point_pass.id = "chunk-uuid-001"
-        fake_point_pass.score = 0.72  # above threshold
-        fake_point_pass.payload = {
+        # RRF-shaped scores, which is what hybrid_query actually returns.
+        # Both sit far below RETRIEVAL_QUALITY_THRESHOLD; under the old code
+        # that meant zero chunks reached the agent.
+        fake_point_top = MagicMock()
+        fake_point_top.id = "chunk-uuid-001"
+        fake_point_top.score = 0.0328  # top of both prefetch branches
+        fake_point_top.payload = {
             "text": "Resource estimate paragraph.",
             "document_title": "NI 43-101",
             "report_id": "rep-001",
             "document_type": "NI43",
         }
 
-        fake_point_fail = MagicMock()
-        fake_point_fail.id = "chunk-uuid-002"
-        fake_point_fail.score = 0.15  # below threshold
-        fake_point_fail.payload = {
+        fake_point_lower = MagicMock()
+        fake_point_lower.id = "chunk-uuid-002"
+        fake_point_lower.score = 0.0161  # further down one branch
+        fake_point_lower.payload = {
             "text": "Boilerplate legal text.",
             "document_title": "NI 43-101",
             "report_id": "rep-001",
@@ -765,7 +786,7 @@ class TestSearchDocuments:
         }
 
         mock_qdrant_response = MagicMock()
-        mock_qdrant_response.points = [fake_point_pass, fake_point_fail]
+        mock_qdrant_response.points = [fake_point_top, fake_point_lower]
 
         mock_qdrant = AsyncMock()
         mock_qdrant.query_points = AsyncMock(return_value=mock_qdrant_response)
@@ -791,9 +812,12 @@ class TestSearchDocuments:
                 patch("app.services.sparse_encoder.encode_sparse", return_value={1: 0.5}):
             mock_settings.TIMEOUT_QDRANT_S = 5.0
             mock_settings.RETRIEVAL_TOP_N = 20
+            # Deliberately above every RRF score in the fixture. It must
+            # not be consulted on this path; that it was is the bug.
             mock_settings.RETRIEVAL_QUALITY_THRESHOLD = 0.3
-            # Reranker settings should not be read, but set them anyway to
-            # confirm the fallback path doesn't accidentally use them.
+            # RERANKER_TOP_K IS read here — it is how many chunks the
+            # precision stage would have handed back, so the degraded path
+            # returns the same number rather than the full candidate set.
             mock_settings.RERANKER_SCORE_THRESHOLD = 0.0
             mock_settings.RERANKER_TOP_K = 5
 
@@ -803,11 +827,18 @@ class TestSearchDocuments:
                 project_id="proj-test-uuid",
             )
 
-        # Only the chunk above RETRIEVAL_QUALITY_THRESHOLD=0.3 survives.
-        assert result.count == 1
-        assert result.chunks[0].chunk_id == "chunk-uuid-001"
-        # data_source must NOT contain "reranked".
+        # Both survive, in RRF order. Neither would have, before.
+        assert result.count == 2
+        assert [c.chunk_id for c in result.chunks] == [
+            "chunk-uuid-001",
+            "chunk-uuid-002",
+        ]
+        # The caller has to be able to tell that these scores are not
+        # comparable to a reranked run's — plan_executor keys its
+        # min_relevance gate off exactly this.
+        assert result.rerank_degraded is True
         assert "reranked" not in result.data_source
+        assert "rerank unavailable" in result.data_source
 
 
 # ---------------------------------------------------------------------------
@@ -926,6 +957,9 @@ class TestVerifyNumericalClaim:
         """Returns verified=True when claimed and db values match within tolerance."""
         mock_conn = AsyncMock()
         mock_conn.fetchrow = AsyncMock(return_value={"total_depth": 350.001})
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -950,6 +984,9 @@ class TestVerifyNumericalClaim:
         """Returns verified=False when claimed and db values diverge beyond tolerance."""
         mock_conn = AsyncMock()
         mock_conn.fetchrow = AsyncMock(return_value={"total_depth": 400.0})
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -992,6 +1029,9 @@ class TestVerifyNumericalClaim:
         """Returns verified=False when the row does not exist in the database."""
         mock_conn = AsyncMock()
         mock_conn.fetchrow = AsyncMock(return_value=None)
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -1056,6 +1096,9 @@ class TestVerifyNumericalClaim:
 
         mock_conn = AsyncMock()
         mock_conn.fetchrow = _capture_fetchrow
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -1093,6 +1136,9 @@ class TestVerifyNumericalClaim:
 
         mock_conn = AsyncMock()
         mock_conn.fetchrow = _capture_fetchrow
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -1130,6 +1176,9 @@ class TestVerifyNumericalClaim:
 
         mock_conn = AsyncMock()
         mock_conn.fetchrow = _capture_fetchrow
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -1155,6 +1204,9 @@ class TestVerifyNumericalClaim:
         old (never-real) "structure_id"."""
         mock_conn = AsyncMock()
         mock_conn.fetchrow = AsyncMock(return_value={"true_dip": 45.0})
+        # acquire_scoped() opens a transaction; a bare AsyncMock's
+        # .transaction() returns a coroutine, not an async CM.
+        _wire_scoped_conn(mock_conn)
         mock_pool = MagicMock()
         mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)

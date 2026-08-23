@@ -824,7 +824,7 @@ docker compose exec -T neo4j cypher-shell -u neo4j -p "$PASS" \
 Automation lives in-container: `docker/neo4j/backup.sh` is mounted into
 `georag-backup-agent` and triggered by Ofelia on the schedule defined in
 the compose `ofelia.job-exec.neo4j-backup.*` labels. See
-`ops/runbooks/neo4j-backup.md` for operator procedures (DRY_RUN, manual
+`ops/runbooks/_archived/neo4j-backup.md` for operator procedures (DRY_RUN, manual
 trigger, restore).
 
 ---
@@ -1283,7 +1283,7 @@ docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning SLOWL
 
 ## Martin tile server — config changes and grant audit
 
-See `ops/runbooks/martin-tile-server.md` for:
+See `ops/runbooks/_archived/martin-tile-server.md` for:
 
 - Why `docker compose restart martin` is wrong on WSL2 and the correct
   `docker rm -f georag-martin && docker compose up -d martin` workaround.

@@ -166,6 +166,52 @@ AZURE_FOUNDRY_RERANK_TIMEOUT_S = float(
     os.environ.get("AZURE_FOUNDRY_RERANK_TIMEOUT_S", "8.0")
 )
 
+# 2026-08-20 — retry profile for the *interactive* rerank call, deliberately
+# tighter than `_foundry_retry`'s ingestion defaults (4 retries, 30s cap =
+# up to 70s). A geologist waiting on a chat answer would rather have
+# slightly-worse ordering in 2 seconds than perfect ordering in 40. Two
+# retries at 2s/4s covers the transient 429 blip that shared-TPM quota
+# actually produces.
+AZURE_FOUNDRY_RERANK_RETRIES = int(
+    os.environ.get("AZURE_FOUNDRY_RERANK_RETRIES", "2")
+)
+AZURE_FOUNDRY_RERANK_MAX_BACKOFF_S = float(
+    os.environ.get("AZURE_FOUNDRY_RERANK_MAX_BACKOFF_S", "4.0")
+)
+
+# The reranker's total wall-clock budget must stay strictly UNDER the
+# caller's asyncio.wait_for budget (settings.TIMEOUT_RERANKER_S), or the
+# retry logic is dead code: wait_for fires first, the branch degrades to raw
+# Qdrant cosine ordering, and the executor thread keeps retrying in the
+# background. That is exactly the state this file was in until 2026-08-20 —
+# an 8.0s per-call HTTP timeout under an 8.0s wait_for, so a single slow
+# call consumed the entire budget with nothing left for a retry.
+#
+# Deriving it from the same setting rather than a second env var is the
+# point: two independently-configured timeouts are how the original drift
+# happened. This margin is what the derivation leaves for the executor
+# hand-off and score post-processing.
+_RERANK_BUDGET_MARGIN_S = 1.0
+
+
+def _caller_budget_s() -> float:
+    """Wall-clock the reranker may spend before its caller gives up.
+
+    Read from ``settings.TIMEOUT_RERANKER_S`` — the same value
+    ``search_documents`` passes to ``asyncio.wait_for`` — so the two cannot
+    drift apart again. Imported lazily and defensively: this module is also
+    loaded by the reranker sidecar and by eval scripts, where app.config may
+    not be importable, and a config problem must degrade to the old
+    behavior rather than take the reranker out entirely.
+    """
+    try:
+        from app.config import settings  # noqa: PLC0415
+
+        budget = float(settings.TIMEOUT_RERANKER_S)
+    except Exception:  # noqa: BLE001
+        budget = 8.0
+    return max(1.0, budget - _RERANK_BUDGET_MARGIN_S)
+
 
 def active_reranker_version() -> str:
     """Return the version string to persist to answer_runs.reranker_version.
@@ -289,13 +335,20 @@ class _FoundryReranker:
         api_key: str,
         deployment: str,
         timeout_s: float,
+        total_budget_s: float | None = None,
     ) -> None:
         self._url = endpoint.rstrip("/") + "/providers/cohere/v2/rerank"
         self._api_key = api_key
         self._deployment = deployment
         self._timeout_s = timeout_s
+        # None keeps the pre-2026-08-20 unbounded-retry behavior, for
+        # non-interactive callers (eval harness, scripts) that have no
+        # wait_for above them.
+        self._total_budget_s = total_budget_s
 
     def predict(self, pairs: list[tuple[str, str]]) -> list[float]:
+        import time  # noqa: PLC0415
+
         import httpx  # noqa: PLC0415
 
         from app.services._foundry_retry import with_foundry_retry  # noqa: PLC0415
@@ -303,6 +356,15 @@ class _FoundryReranker:
         groups: dict[str, list[int]] = {}
         for i, (query, _passage) in enumerate(pairs):
             groups.setdefault(str(query), []).append(i)
+
+        # One deadline for the whole predict, not one per group: the caller's
+        # wait_for wraps this entire method, so N groups must share the budget
+        # rather than each claiming it.
+        deadline = (
+            time.monotonic() + self._total_budget_s
+            if self._total_budget_s is not None
+            else None
+        )
 
         scores: list[float] = [0.0] * len(pairs)
         with httpx.Client(timeout=self._timeout_s) as client:
@@ -321,7 +383,13 @@ class _FoundryReranker:
                         },
                     )
 
-                resp = with_foundry_retry(_do, label="foundry_rerank")
+                resp = with_foundry_retry(
+                    _do,
+                    label="foundry_rerank",
+                    max_retries=AZURE_FOUNDRY_RERANK_RETRIES,
+                    max_backoff_s=AZURE_FOUNDRY_RERANK_MAX_BACKOFF_S,
+                    deadline=deadline,
+                )
                 for result in resp.json()["results"]:
                     scores[indices[result["index"]]] = float(result["relevance_score"])
         return scores
@@ -532,6 +600,7 @@ def get_reranker_or_none() -> (
     fallback) without try/except boilerplate. Env is read fresh each call so
     it stays monkeypatchable in tests.
     """
+    caller_budget_s = _caller_budget_s()
     if RERANKER_BACKEND == "foundry":
         endpoint = (os.environ.get("AZURE_FOUNDRY_ENDPOINT") or "").strip()
         api_key = (os.environ.get("AZURE_FOUNDRY_API_KEY") or "").strip()
@@ -544,11 +613,20 @@ def get_reranker_or_none() -> (
             return None
         return _FoundryReranker(
             endpoint, api_key, AZURE_FOUNDRY_RERANK_DEPLOYMENT,
-            AZURE_FOUNDRY_RERANK_TIMEOUT_S,
+            # A single HTTP call must never be allowed to eat the whole
+            # budget, or there is by definition no room for the retry.
+            min(AZURE_FOUNDRY_RERANK_TIMEOUT_S, caller_budget_s / 2.0),
+            total_budget_s=caller_budget_s,
         )
     service_url = (os.environ.get("RERANKER_SERVICE_URL") or "").strip()
     if service_url:
-        timeout_s = float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10"))
+        # Same drift as the foundry path had: the sidecar's default 10s
+        # timeout sat above an 8s wait_for, so a slow sidecar was always
+        # cancelled rather than allowed to answer late.
+        timeout_s = min(
+            float(os.environ.get("RERANKER_SERVICE_TIMEOUT_S", "10")),
+            caller_budget_s,
+        )
         return _RemoteReranker(service_url, timeout_s)
     try:
         return _get_reranker()

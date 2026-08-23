@@ -57,6 +57,32 @@ def query_hash(query: str | None, key: str | None = None) -> str:
     return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:16]
 
 
+
+def text_shape(text: str | None) -> str:
+    """A content-free description of a string, for diagnostics.
+
+    Answers "why did this input behave oddly" without answering "what did
+    it say". Used where a raw excerpt would otherwise be logged: the
+    failure modes that make people reach for the excerpt -- an empty
+    sparse vector, a tokenizer producing nothing -- are properties of
+    character classes and length, both of which are here.
+    """
+    if text is None:
+        return "len=0 shape=<none>"
+    if not text:
+        return "len=0 shape=<empty>"
+
+    ascii_letters = sum(1 for c in text if c.isascii() and c.isalpha())
+    digits = sum(1 for c in text if c.isdigit())
+    spaces = sum(1 for c in text if c.isspace())
+    non_ascii = sum(1 for c in text if not c.isascii())
+    other = len(text) - ascii_letters - digits - spaces - non_ascii
+
+    return (
+        f"len={len(text)} alpha={ascii_letters} digit={digits} "
+        f"space={spaces} nonascii={non_ascii} other={other}"
+    )
+
 def project_tag(project_id: Any) -> str:
     """Short fingerprint for a project_id for log correlation.
 

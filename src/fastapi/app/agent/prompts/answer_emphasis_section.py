@@ -52,15 +52,21 @@ ANSWER EMPHASIS — synthesis with conflict detection (synthesis):
 
 18. The Interpretations section MUST contain a named sub-section "Conflicting \
 evidence" when the Evidence Set carries disagreeing claims about the same \
-measurement, interval, or entity. Begin that sub-section with the literal \
+measurement, interval, or entity. You are the only thing that looks for these: \
+there is no upstream conflict detector, so a disagreement you pass over is a \
+disagreement the system never reports. Begin that sub-section with the literal \
 header "### Conflicting evidence" and list each conflict as a bullet \
 naming the entity, the property in conflict, and the citations on each side.
 19. State the source hierarchy applied (e.g. NI 43-101 reports > drill logs > \
 field notes) when conflicting sources are weighted unequally.
 20. The Uncertainty section's drivers must include "Multiple sources disagree" \
 when ANY conflict was surfaced under Interpretations.
-21. When no conflicts are present, write "### Conflicting evidence" followed by \
-"_None detected in the retrieved corpus._" — do NOT omit the header.
+21. When you find no disagreement, write "### Conflicting evidence" followed by \
+"_No disagreement found among the passages provided._" — do NOT omit the \
+header, and do NOT write that none exist in the corpus. You have seen the \
+retrieved Evidence Set only, which is a slice of the corpus chosen by \
+similarity and then cut to fit a context budget; nothing has scanned the \
+rest. Say what you checked, not what exists.
 """
 
 
@@ -218,7 +224,34 @@ _FRAGMENTS: dict[AnswerEmphasis, str] = {
 
 
 def fragment_for(emphasis: AnswerEmphasis) -> str:
-    """Return the prompt fragment for *emphasis*, or empty string."""
+    """Return the prompt fragment for *emphasis*, or empty string.
+
+    Gated on GEO_ANSWER_OIUR_ENABLED, and gated HERE rather than at the
+    call site on purpose. Every fragment below is written against the OIUR
+    answer schema — they instruct the model to populate "the Observations
+    section", "the Uncertainty section", to emit `:empty:` sentinels, and
+    they cross-reference "rule 12". None of that exists in the base prompt;
+    it lives in the OIUR block, which oiur_section.py only appends when this
+    flag is on. The flag is False in production.
+    #
+    So every production query was getting the DEFAULT prompt (rules 1-10,
+    flat prose) immediately followed by rules 18-21 ordering the model to
+    fill in sections of a schema it had never been shown. The observable
+    result is stray "### Conflicting evidence - _None detected in the
+    retrieved corpus._" blocks and "Recommended actions: Not applicable"
+    lines stapled onto ordinary flat answers, plus degraded compliance with
+    the rules that DO apply.
+
+    assemble_node's comment already claimed this was "empty when the OIUR
+    flag is off". It was describing behaviour nothing implemented — the
+    check simply was not written. Putting it inside the function makes the
+    comment true and keeps the next caller from reintroducing the gap.
+    """
+    from app.config import settings  # noqa: PLC0415
+
+    if not getattr(settings, "GEO_ANSWER_OIUR_ENABLED", False):
+        return ""
+
     return _FRAGMENTS.get(emphasis, "")
 
 

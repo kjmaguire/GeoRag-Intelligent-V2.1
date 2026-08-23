@@ -1,6 +1,6 @@
 # ADR-0012: Structured-to-NL summary corpus expansion
 
-| Status     | Proposed                                              |
+| Status     | Accepted (2026-08-21) — implemented, not yet scheduled |
 |------------|-------------------------------------------------------|
 | Date       | 2026-05-28                                            |
 | Deciders   | Kyle (SME)                                            |
@@ -187,3 +187,58 @@ this evening's GPU window):
 The four stubs (samples / structures / las_curves / public_geo /
 review_queue) each become independent follow-up PRs with their own
 template + tests. No ordering dependency between them.
+
+
+---
+
+## 2026-08-21 — implemented as a Hatchet workflow
+
+**Status moved Proposed → Accepted.** The decision below is unchanged; what
+changed is that it now has a producer that can actually run.
+
+### What happened in between
+
+The asset group this ADR specifies was built in `src/dagster/` — and
+`src/dagster/` went dormant on 2026-07-28. No container app, no scheduler,
+no way to materialize anything. So from July onwards this ADR described a
+live product gap whose fix existed but could not execute, which is the
+worst of the three possible states.
+
+The three implemented synthesizers (assays, lithology, collars) are now
+`src/fastapi/app/hatchet_workflows/nl_summaries.py`. The renderers are
+ported unchanged — they were good, and their output is the retrieval
+surface, so rewriting them would have been risk for no gain.
+
+### One deliberate change from the original
+
+The Dagster fetches had **no workspace predicate**. Tolerable for an asset
+running as a privileged role over the whole warehouse; wrong under RLS.
+Every fetch is now workspace-scoped and the run binds
+`bind_workspace_scope`, so it can only read and write one tenant's rows.
+Without that a single run would synthesize across every workspace and the
+RLS policy would silently decide which passages landed.
+
+### What is still open, and it is not a technical question
+
+**The workflow carries no cron.** A first run over an existing corpus
+writes one passage per assay group, per lithology interval and per
+drillhole — and every one of them is then embedded. That is a real spend
+on a corpus nobody has sized. `dry_run: true` renders and counts without
+writing, which is the intended way to find out how large before agreeing
+to it.
+
+Scheduling it is an operator decision. Registering it was not.
+
+### The five stubs are still stubs
+
+`samples`, `structures`, `las_curves`, `review_queue` and `public_geo`
+were TODO in the Dagster tree and are absent here. Each is still an
+independent follow-up with its own template and tests, with no ordering
+dependency between them — unchanged from the Execution order section
+above.
+
+### The bench sequence above is stale in one detail
+
+Steps 1–2 name `dagster asset materialize`. The equivalent is now
+triggering the `nl_summaries` workflow with a `workspace_id`, optionally
+narrowed with `sources: ["assays"]`. Everything after step 3 stands.

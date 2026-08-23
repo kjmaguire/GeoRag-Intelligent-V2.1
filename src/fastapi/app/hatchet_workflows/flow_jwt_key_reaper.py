@@ -20,6 +20,7 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 
@@ -43,13 +44,9 @@ flow_jwt_key_reaper = hatchet.workflow(
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 @flow_jwt_key_reaper.task(execution_timeout="2m")

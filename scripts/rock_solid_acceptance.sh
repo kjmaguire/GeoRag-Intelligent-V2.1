@@ -27,7 +27,7 @@ if [ -z "$SVC" ]; then
 fi
 export FASTAPI_SERVICE_KEY="$SVC"
 
-PG_DSN_C="postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@postgresql:5432/georag"
+PG_DSN_C="postgresql://georag:georag_dev_password@postgresql:5432/georag"
 
 run_suite() {
     local label="$1"

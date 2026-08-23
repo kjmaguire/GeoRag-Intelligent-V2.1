@@ -74,6 +74,50 @@ _ABBREVIATIONS: dict[str, str] = {
     "PEA":   "preliminary economic assessment",
     "PFS":   "pre-feasibility study",
     "FS":    "feasibility study",
+
+    # ── Uranium (added 2026-08-21) ───────────────────────────────
+    # The flagship corpus is Cameco / Athabasca uranium material and the
+    # table had no uranium entry at all — while identifier_boost._COMMODITY_
+    # CODES lists both U and U3O8. "What U3O8 grades did the Triple R zone
+    # return?" matched nothing and went to the embedder unexpanded, with the
+    # passages phrasing the same content as "uranium assays" and "eU3O8
+    # equivalent". Highest-frequency vocabulary gap in the module.
+    #
+    # Bare "U" stays out: it is ambiguous with the pronoun and with unit
+    # symbols. The compound forms are unambiguous.
+    "U3O8":  "uranium oxide",
+    "eU3O8": "equivalent uranium oxide",
+    "U₃O₈": "uranium oxide",
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Synonym groups — full words geologists vary on, added 2026-08-21.
+#
+# The table above is abbreviations only, and expansion therefore did nothing
+# for the terms people actually phrase differently. A user asks about
+# "grades"; the passage says "assays". A user asks about an "intercept"; the
+# report calls it an "intersection". Neither the dense nor the sparse branch
+# had any help bridging that, and sparse in particular had no shared token
+# to match on at all.
+#
+# Deliberately small. Each group is a set of terms that mean the same thing
+# in an assay/intercept context, so appending the alternatives adds recall
+# without changing what the query is asking.
+# ───────────────────────────────────────────────────────────────────
+_SYNONYMS: dict[str, str] = {
+    "grade":        "assay tenor",
+    "grades":       "assays tenor",
+    "assay":        "grade",
+    "assays":       "grades",
+    "intercept":    "intersection",
+    "intercepts":   "intersections",
+    "intersection": "intercept",
+    "intersections": "intercepts",
+    "true width":   "downhole width",
+    "downhole width": "true width",
+    "collar":       "drillhole location",
+    "cut-off":      "cutoff grade",
+    "cutoff":       "cut-off grade",
 }
 
 # Word-boundary pattern compiled once. Sorted longest-first so
@@ -81,6 +125,18 @@ _ABBREVIATIONS: dict[str, str] = {
 _ABBREVIATIONS_BY_LENGTH = sorted(
     _ABBREVIATIONS.items(), key=lambda kv: -len(kv[0])
 )
+
+# One alternation, longest-first so "true width" matches before "width" would
+# and "intersections" before "intersection". Compiled once.
+_SYNONYM_PATTERN = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(term)
+        for term in sorted(_SYNONYMS, key=len, reverse=True)
+    )
+    + r")\b",
+    re.IGNORECASE,
+) if _SYNONYMS else None
 
 
 def expand_query(query: str, *, max_expansions: int = 6) -> str:
@@ -124,6 +180,31 @@ def expand_query(query: str, *, max_expansions: int = 6) -> str:
             expanded = pat.sub(f"{abbr} ({full})", expanded, count=1)
             used.add(abbr.lower())
             expansions_added += 1
+
+    # Synonym groups run after the abbreviations, against whatever budget is
+    # left.
+    #
+    # ONE pass over the string, not one pass per term. The groups are mutual
+    # — "grade" offers "assay", "assay" offers "grade" — so a per-term loop
+    # re-scans text it has just inserted and nests: "grades" became
+    # "grades (assays (grades) tenor)", and "cut-off grade" degenerated into
+    # four levels of parentheses. A single alternation, longest-first, with a
+    # callback that expands each term at most once, cannot see its own
+    # output.
+    remaining = max(0, max_expansions - expansions_added)
+    if remaining and _SYNONYM_PATTERN is not None:
+        budget = {"left": remaining}
+
+        def _annotate(match: re.Match[str]) -> str:
+            found = match.group(0)
+            key = found.lower()
+            if budget["left"] <= 0 or key in used:
+                return found
+            used.add(key)
+            budget["left"] -= 1
+            return f"{found} ({_SYNONYMS[key]})"
+
+        expanded = _SYNONYM_PATTERN.sub(_annotate, expanded)
 
     return expanded
 

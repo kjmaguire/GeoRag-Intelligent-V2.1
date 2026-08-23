@@ -415,7 +415,7 @@ For dev (single instance, mixed workloads), the current configuration is pragmat
 - Separate Redis instance for queue + sessions (`appendonly yes`, `appendfsync everysec`, `maxmemory-policy noeviction` for queue)
 - Optionally: separate Redis for Reverb pub/sub
 
-The dev compose does NOT yet implement this separation. This is explicitly called out in the compose comment (Redis review #1) and in the module spec as acceptable for dev. Phase B must document the prod plan in `ops/runbooks/backup-restore.md`.
+The dev compose does NOT yet implement this separation. This is explicitly called out in the compose comment (Redis review #1) and in the module spec as acceptable for dev. Phase B must document the prod plan in `ops/runbooks/_archived/backup-restore.md`.
 
 **Finding:**
 
@@ -473,7 +473,7 @@ These are straightforward fixes authorized by the module spec and do not trigger
 - WIN-01: Add `__pycache__` to `.gitignore`, document root file ownership in dev setup
 - WIN-02: Remove stale `nul` file from project root
 - IMG-01: Investigate correct Neo4j patch-version tag (requires Kyle sign-off before applying)
-- RDS-01: Document prod Redis separation plan in `ops/runbooks/backup-restore.md`
+- RDS-01: Document prod Redis separation plan in `ops/runbooks/_archived/backup-restore.md`
 
 ---
 

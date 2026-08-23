@@ -209,6 +209,7 @@ class ReportController extends Controller
                     'r.version',
                     'r.is_scanned',
                     'r.parse_quality_pct',
+                    'r.text_page_coverage_pct',
                     'r.sections_text',
                     DB::raw('COALESCE(p.passages, 0) AS passages'),
                     DB::raw('COALESCE(p.embedded, 0) AS embedded'),
@@ -235,6 +236,7 @@ class ReportController extends Controller
                 'version' => (int) ($r->version ?? 1),
                 'is_scanned' => (bool) ($r->is_scanned ?? false),
                 'parse_quality_pct' => isset($r->parse_quality_pct) ? (float) $r->parse_quality_pct : null,
+                'text_page_coverage_pct' => isset($r->text_page_coverage_pct) ? (float) $r->text_page_coverage_pct : null,
                 'sections_count' => $sectionsCount,
                 'has_content' => $sectionsCount > 0,
                 'passages' => $passages,
@@ -403,6 +405,10 @@ class ReportController extends Controller
                 'region' => (string) ($row->region ?? ''),
                 'project_name' => (string) ($row->project_name ?? ''),
                 'parse_quality_pct' => isset($row->parse_quality_pct) ? (float) $row->parse_quality_pct : null,
+                // Extraction completeness. parse_quality_pct above is
+                // NI 43-101 section coverage and answers a different
+                // question -- see the migration comment on the column.
+                'text_page_coverage_pct' => isset($row->text_page_coverage_pct) ? (float) $row->text_page_coverage_pct : null,
                 'is_scanned' => (bool) ($row->is_scanned ?? false),
                 'page_count' => isset($row->page_count) ? (int) $row->page_count : null,
                 'parser_used' => (string) ($row->parser_used ?? ''),
@@ -584,6 +590,22 @@ class ReportController extends Controller
      * flag whose record_id maps to a passage of this report surfaces on
      * the report header. record_type filtered to the two document-scoped
      * values (document_chunk + table_extraction) per ADR-0010 §6a.
+     *
+     * NO LIVE WRITER (measured 2026-08-21).
+     *
+     * `silver.data_quality_flags` is written only by
+     * src/dagster/georag_dagster/dq_writer.py. Dagster went dormant on
+     * 2026-07-28 and has no container app in the Azure resource group, so
+     * this table is empty in production and everything below returns zero.
+     *
+     * This is the third read-against-an-unwritten-table in this codebase:
+     * SourcesController (2026-08-17) and this controller's own passage
+     * lookup (2026-08-18) both joined bronze.provenance for rows the live
+     * ingest path never writes. Both were found as UI regressions rather
+     * than caught in review.
+     *
+     * src/fastapi/tests/test_data_quality_flags_have_no_live_writer.py
+     * fails once a writer appears, and names this comment.
      *
      * @return array{counts: array<string, int>, open_total: int, flags: array<int, array<string, mixed>>}
      */

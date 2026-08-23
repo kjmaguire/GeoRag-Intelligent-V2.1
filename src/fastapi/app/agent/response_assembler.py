@@ -18,9 +18,11 @@ invented by the LLM.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Literal
 
 from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
+from app.agent.llm_calls import get_run_llm_model
 from app.agent.public_geoscience_tool import (
     PublicGeoscienceRecord,
     PublicGeoscienceSearchResult,
@@ -60,7 +62,54 @@ EMPTY_SOURCE_SENTINELS: frozenset[str] = frozenset({
     "no-tool-call",
     "georag_reports:empty",
     "pg_public_geoscience:empty",
+    "silver.collars:miss",
 })
+
+#: Suffixes `_extract_source_id` mints when a result carried no rows.
+#:
+#: The zero-row id is structural, not a fixed sentinel: an assay lookup that
+#: found nothing yields `silver.samples:element=U3O8:count=0`, a spatial one
+#: `silver.collars:count=0`, a graph one `neo4j:count=0`. Enumerating those
+#: as literals is what left the set covering three shapes out of eleven.
+_EMPTY_SOURCE_SUFFIXES: tuple[str, ...] = (
+    ":count=0",          # assays, spatial collars, neo4j
+    ":rows=0:first_row=none",   # ADR-0007 project summary card
+)
+
+#: Substrings that mark a zero-row card result.
+_EMPTY_SOURCE_MARKERS: tuple[str, ...] = (
+    ":holes=0:",         # ADR-0007 drill-traces card
+    ":curves=0:reports=0",   # project overview with no metadata at all
+)
+
+
+def is_empty_source_id(source_id: str) -> bool:
+    """True when this source id came from a tool result carrying no rows.
+
+    Used by BOTH second-line filters -- the IND-6 ungrounded-answer guard
+    below and `confidence_computer._count_independent_sources` -- because a
+    Citation carries only the id string, not the result it came from.
+
+    `test_empty_source_ids.py` builds an empty instance of every type
+    `_extract_source_id` handles and requires this to agree with
+    `_is_empty_tool_result`. That test, not this function, is what stops
+    the next result type being silently uncovered.
+
+    The lithology case is the one that needs a condition rather than a
+    suffix: `silver.lithology_logs:hole=X:collar=Y:intervals=0` is a hole
+    with a collar and no logged intervals, which `_is_empty_tool_result`
+    deliberately treats as NON-empty -- collar metadata alone answers
+    "tell me about hole X". Only the collar-less form is empty.
+    """
+    if not source_id:
+        return True
+    if source_id in EMPTY_SOURCE_SENTINELS:
+        return True
+    if source_id.endswith(_EMPTY_SOURCE_SUFFIXES):
+        return True
+    if any(marker in source_id for marker in _EMPTY_SOURCE_MARKERS):
+        return True
+    return source_id.endswith(":intervals=0") and ":collar=" not in source_id
 
 
 def assign_citation_ids(
@@ -262,10 +311,19 @@ def assemble_response(
         )
         sources_used.append(source_chunk_id)
 
-    # If we have tool results but the LLM text has no markers, append them.
-    if citations and not _CITATION_MARKER_RE.search(text):
-        markers = " ".join(c.citation_id for c in citations)
-        text = f"{text.rstrip('.')} {markers}."
+    # The answer text is returned as written. This used to staple every
+    # citation id onto the last sentence whenever the model emitted none:
+    # a five-sentence geological interpretation with no markers came back
+    # reading "… [NI43-1] [NI43-2] [DATA-3]." and the frontend rendered
+    # three citation chips. Every claim then LOOKED sourced while no claim
+    # was mapped to any chunk, and a fabricated sentence was indistinguishable
+    # from a grounded one.
+    #
+    # It also destroyed the signal: an answer with no markers is a detectable
+    # failure, and stapling markers on made it undetectable. classify_guards
+    # now raises CITATION_INCOMPLETE for exactly this state (see the
+    # text_has_markers argument), which is what CLAUDE.md hard rule 4 needs in
+    # order to be enforceable at all.
 
     # Fallback citation if the LLM produced text but no tools were called.
     if not citations:
@@ -281,8 +339,10 @@ def assemble_response(
             )
         )
         sources_used.append("no-tool-call")
-        if not _CITATION_MARKER_RE.search(text):
-            text = f"{text.rstrip('.')} [DATA-1]."
+        # No marker is appended for the placeholder either. GeoRAGResponse
+        # requires at least one Citation, so the sentinel exists to satisfy
+        # the type — writing its marker into the answer would present "no
+        # tool call executed" to the reader as a source.
 
     # Compute confidence from tool result quality AND answer text.
     # Refusal responses get low confidence even when tools succeeded.
@@ -322,9 +382,7 @@ def assemble_response(
     # excluded only 'no-tool-call', so an empty DocumentSearchResult's
     # 'georag_reports:empty' citation counted as real evidence and a
     # zero-hit retrieval shipped as a normal-confidence answer.
-    _real_sources = [
-        s for s in sources_used if s and s not in EMPTY_SOURCE_SENTINELS
-    ]
+    _real_sources = [s for s in sources_used if not is_empty_source_id(s)]
     if not _real_sources and not _is_refusal(text):
         logger.warning(
             "assemble_response: ungrounded answer (no real sources_used; "
@@ -345,7 +403,60 @@ def assemble_response(
         confidence=confidence,
         sources_used=sources_used,
         geo_answer=geo_answer,
+        degraded_sources=_collect_degraded_sources(tool_results),
+        # The model that actually produced `text`, read from the per-run
+        # contextvar `_call_llm` sets on every answer-producing call. Laravel
+        # persists it to query_audit_log.llm_model; see the block above
+        # `record_run_llm_model` in llm_calls.py for why the previous
+        # mechanism (a "routing" SSE frame) never delivered a value.
+        llm_model=get_run_llm_model(),
     )
+
+
+#: Markers a tool stamps into ``data_source`` when it returned partial or
+#: no data. The orchestrator deliberately falls through on a tool failure
+#: — "partial data is always preferable to a hard failure" — which is the
+#: right call, but it left the user unable to tell a thin answer from a
+#: complete one.
+_DEGRADED_MARKERS: tuple[str, ...] = (
+    "(timeout)",
+    "(error)",
+    "(rerank unavailable)",
+)
+
+
+def _collect_degraded_sources(tool_results: list[tuple[str, Any]]) -> list[str]:
+    """Human-readable labels for retrieval surfaces that did not fully work.
+
+    GeoRAGResponse.degraded_sources has existed since the C7 audit, with a
+    description of the warning chip the frontend would render from it. Until
+    now nothing ever wrote to it: it defaulted to an empty list on every
+    response, which the UI reads as "all sources succeeded". So a Qdrant
+    timeout and a clean retrieval produced identical-looking answers, and a
+    reranker outage was invisible in the response entirely — the data_source
+    string still said "(reranked)".
+
+    Deliberately derived from the tool results rather than threaded through
+    as a parameter: a tool that learns to report its own degradation is then
+    surfaced without touching this function or its callers.
+    """
+    labels: list[str] = []
+
+    for tool_name, result in tool_results:
+        if getattr(result, "rerank_degraded", False):
+            # One label per surface. This result's data_source also carries
+            # the "(rerank unavailable)" marker, and reporting both would
+            # tell the reader the same thing twice in different words.
+            labels.append("Document ranking (reranker unavailable)")
+            continue
+
+        source = str(getattr(result, "data_source", "") or "")
+        if any(marker in source for marker in _DEGRADED_MARKERS):
+            labels.append(f"{source} via {tool_name}")
+
+    # Stable order, no duplicates — two tools hitting the same dead backend
+    # is one degraded source to a reader, not two.
+    return sorted(set(labels))
 
 
 def _maybe_parse_geo_answer(
@@ -695,30 +806,33 @@ def _pg_record_title(record: PublicGeoscienceRecord) -> str:
 # Phrases that indicate the LLM is refusing to answer due to insufficient data
 # OR refusing because the user's question contained a physically impossible
 # premise (P1 wave-4 follow-up — the NUMERIC system prompt now teaches the
-# model to refuse + correct queries like "above 500% uranium"). When ANY of
-# these phrases appear, confidence must be low regardless of tool-call success.
-_REFUSAL_PHRASES = (
+# model to refuse + correct queries like "above 500% uranium").
+#
+# 2026-08-21 — split into two tiers, because this was one tuple scanned as
+# unanchored substrings over the ENTIRE answer, and half of it is ordinary
+# geological vocabulary. "no data", "not found", "insufficient", "not
+# available" and "no drill hole" appear in most real, well-grounded,
+# fully-cited answers, because most real answers say what they could not
+# establish. Every one of those was classified as a refusal and had its
+# confidence forced to 0.1:
+#
+#   "Hole PLS-22-08 returned 1.85 g/t Au over 12.5 m [DATA-1]. Core
+#    recovery data is not available for the upper 40 m [NI43-2]."
+#
+# That answer is the behaviour the citation contract asks for, and it scored
+# the same as "I don't have that." It also defeated the safeguard the
+# starts-with branch below already carried — its comment says it exists so
+# "No drill holes intersected mineralisation" is read as an answer rather
+# than a refusal, and then "no drill hole" in this tuple overrode it.
+
+#: Refusals that name the ASSISTANT, or state a physical impossibility.
+#: Unambiguous wherever they land, so these are scanned over the whole body.
+_REFUSAL_PHRASES_ANYWHERE = (
     "i don't have",
     "i do not have",
     "don't have data",
     "do not have data",
-    "no data",
-    "insufficient",
-    "unable to",
-    "cannot find",
-    "can't find",
-    "not found",
-    "not in the database",
-    "no record",
-    "no information",
-    "not available",
-    "out of scope",
-    # Impossible-premise refusal shapes from the NUMERIC few-shots:
     "not a possible value",
-    "no hole can",
-    "no drill hole",
-    "not possible",
-    "well beyond",
     "physically impossible",
     "beyond physical",
     "impossible value",
@@ -730,14 +844,72 @@ _REFUSAL_PHRASES = (
     "only geological questions",
 )
 
+#: Ordinary geological vocabulary that only means refusal when the answer
+#: LEADS with it. A refusal opens with the refusal; an answer mentions the
+#: gap after it has said what it does know.
+_REFUSAL_PHRASES_OPENING = (
+    "no data",
+    "insufficient",
+    "unable to",
+    "cannot find",
+    "can't find",
+    "not found",
+    "not in the database",
+    "no record",
+    "no information",
+    "not available",
+    "out of scope",
+    # Impossible-premise refusal shapes from the NUMERIC few-shots.
+    #
+    # "no drill hole" and "well beyond" used to be here and are deliberately
+    # gone. "No drill holes intersected mineralisation above the cut-off" is
+    # an ANSWER, and it is the exact sentence the starts-with branch below
+    # documents itself as protecting — the phrase list overrode that branch
+    # for months. The genuine refusal shape ("No drill hole CAN be 3,000 m
+    # deep") is caught by that branch instead, which requires a can/is verb.
+    # "well beyond" is likewise ordinary prose; "beyond physical" and
+    # "physically impossible" carry the impossible-premise meaning.
+    "no hole can",
+    "not possible",
+)
+
+#: Union, kept so anything reasoning about "the refusal vocabulary" as a
+#: whole still has one name for it.
+_REFUSAL_PHRASES = _REFUSAL_PHRASES_ANYWHERE + _REFUSAL_PHRASES_OPENING
+
+#: Below this length an answer IS its refusal — there is no room for it to
+#: have said something substantive first — so the opening tier is scanned
+#: over the whole text. This is what keeps two-sentence refusals like
+#: "I checked silver.collars for the Triple R zone. No records were
+#: returned." detectable without re-admitting the false positives, which
+#: are long, cited answers.
+_SHORT_ANSWER_CHARS = 400
+
+
+def _first_sentence(lower: str) -> str:
+    """First sentence of an already-lowercased answer.
+
+    Splits on sentence-ending punctuation FOLLOWED BY WHITESPACE, so a
+    decimal does not end a sentence. `lower.split(".", 1)[0]` cut
+    "1.85 g/t Au over 12.5 m" down to "1", which made every grade-bearing
+    opening sentence unreadable to the checks below.
+    """
+    return re.split(r"(?<=[.!?])\s+", lower, maxsplit=1)[0]
+
 
 def _is_refusal(text: str) -> bool:
     """Detect whether the LLM answer is a refusal rather than a real answer.
 
-    Two detection paths:
-      1. Substring match against _REFUSAL_PHRASES — catches "I don't have",
-         "insufficient", "no record", and (post-wave-4) "not a possible value".
-      2. Starts-with refusal preamble — the system prompt's RULE 10
+    Three detection paths:
+      1. Substring match against _REFUSAL_PHRASES_ANYWHERE — first-person
+         and physical-impossibility forms, unambiguous anywhere in the body.
+      2. _REFUSAL_PHRASES_OPENING in the first sentence (or anywhere, if
+         the whole answer is shorter than _SHORT_ANSWER_CHARS), and only
+         when the answer carries no citation markers at all. These are
+         ordinary geological words; whether the answer grounded anything,
+         and where the words sit, is what separates a refusal from an
+         answer that reports a gap.
+      3. Starts-with refusal preamble — the system prompt's RULE 10
          (impossible-premise) instructs models to BEGIN refusals with "No"
          or "That's not possible". A leading "No <noun> can be / cannot be"
          is a much more reliable signal of refusal than any single phrase.
@@ -745,12 +917,30 @@ def _is_refusal(text: str) -> bool:
     if not text:
         return False
     lower = text.lower().lstrip()
-    if any(phrase in lower for phrase in _REFUSAL_PHRASES):
+    if any(phrase in lower for phrase in _REFUSAL_PHRASES_ANYWHERE):
         return True
+
     # Starts-with refusal preambles (system prompt RULE 10 emits these).
     # Anchored on the FIRST sentence so a body paragraph that happens to
     # contain "no" doesn't trip the heuristic.
-    first_sentence = lower.split(".", 1)[0]
+    first_sentence = _first_sentence(lower)
+
+    # The opening tier is ordinary geological vocabulary, so it is only
+    # consulted when the answer has grounded nothing. A refusal cites
+    # nothing by construction; an answer that carries citation markers AND
+    # says what it could not establish is a qualified answer — which is
+    # precisely the behaviour CLAUDE.md rule 4 asks for, and it was being
+    # scored identically to "I don't have that."
+    #
+    # A first-person hedge that does cite ("I searched X [NI43-1] but ...")
+    # still reads as a refusal via the ANYWHERE tier above.
+    if not CITATION_MARKER_RE.search(text):
+        opening_scope = (
+            lower if len(lower) <= _SHORT_ANSWER_CHARS else first_sentence
+        )
+        if any(phrase in opening_scope for phrase in _REFUSAL_PHRASES_OPENING):
+            return True
+
     refusal_preambles = (
         "no ",
         "that's not possible",

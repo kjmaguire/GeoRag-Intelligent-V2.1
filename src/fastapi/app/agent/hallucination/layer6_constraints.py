@@ -39,7 +39,10 @@ Design decisions
 
 Pydantic AI output_validator
 -----------------------------
-Registered in geo_agent.py with ``@geo_agent.output_validator``.
+LIVE, but not the way this docstring used to say. It claimed
+registration in geo_agent.py, which does not exist. What actually
+reaches this module is orchestrator_validators.py importing
+``_find_violations`` from it.
 """
 
 from __future__ import annotations
@@ -47,14 +50,23 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic_ai import ModelRetry, RunContext
 
 from app.agent.deps import AgentDeps
 from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
+from app.agent.hole_id_patterns import (
+    HOLE_CONTEXT_RE as _HOLE_CONTEXT_RE,
+)
+from app.agent.hole_id_patterns import (
+    HOLE_ID_RE as _HOLE_ID_RE,
+)
+from app.agent.hole_id_patterns import (
+    NUMERIC_HOLE_ID_RE as _NUMERIC_HOLE_ID_RE,
+)
 from app.config import settings
 from app.models.rag import GeoRAGResponse
 
@@ -84,7 +96,36 @@ class GeologicalConstraint:
     unit_hint:
         Appended to violation messages to make the correction actionable.
     context_chars:
-        How many characters around the number to scan for keywords (default 80).
+        How far BACK from the number to look for a governing keyword. English
+        puts the noun before the value — "azimuth of 045", "a dip of -60",
+        "a total depth of 510 m" — so this window is what actually attaches a
+        number to a quantity. Keep it tight: a wide window pulls in the
+        *neighbouring* clause's keyword and flags a correct value against the
+        wrong constraint.
+    lookahead_chars:
+        How far FORWARD to look, for the trailing-unit form ("1.85 g/t Au").
+        Much shorter than the backward window, because a keyword that far
+        after a number usually belongs to the next clause, not this one.
+    absolute_value:
+        Compare |value| against the bounds. Set for dip, where reports use
+        both the negative downhole convention (-60) and the positive one (60)
+        and neither is an error.
+    unit_scales:
+        Multipliers that bring a value written in some OTHER unit into the
+        unit the bounds are expressed in, keyed by the unit token as it
+        appears after the number.
+
+        Without this the bounds silently assume every value is already in the
+        constraint's unit. ``grade_gold_max_ppm`` caps gold at 1000 ppm and
+        lists ``ppm`` and ``g/t`` as keywords — 1 g/t is 1 ppm, so those two
+        agree. ppb does not: a perfectly ordinary "1020 ppb Au" (1.02 g/t)
+        was compared against 1000 **ppm** and reported as a geological
+        impossibility. ppb is the standard unit for low-grade gold, so the
+        guard false-positived on a whole class of normal answers — and the
+        error runs the other way too, since 2 % Au (20,000 ppm) passed.
+
+        Unit arithmetic only. The BOUNDS remain an SME decision and are not
+        touched by this: 1000 ppm is still 1000 ppm.
     """
 
     name: str
@@ -92,8 +133,11 @@ class GeologicalConstraint:
     min_value: float | None
     max_value: float | None
     unit_hint: str = ""
-    context_chars: int = 200
+    context_chars: int = 40
     negative_keywords: Sequence[str] = ()  # if any match, skip this constraint
+    unit_scales: Mapping[str, float] = field(default_factory=dict)
+    lookahead_chars: int = 15
+    absolute_value: bool = False
 
 
 # Phase 12 Step 3 (R-P11-l6-config) — SME-editable constraint table.
@@ -124,8 +168,14 @@ def _load_constraints_from_json() -> list[GeologicalConstraint]:
                 min_value=entry.get("min_value"),
                 max_value=entry.get("max_value"),
                 unit_hint=entry.get("unit_hint", ""),
-                context_chars=int(entry.get("context_chars", 200)),
+                context_chars=int(entry.get("context_chars", 40)),
                 negative_keywords=tuple(entry.get("negative_keywords", ())),
+                lookahead_chars=int(entry.get("lookahead_chars", 15)),
+                absolute_value=bool(entry.get("absolute_value", False)),
+                unit_scales={
+                    str(k): float(v)
+                    for k, v in (entry.get("unit_scales") or {}).items()
+                },
             )
         )
     return out
@@ -148,6 +198,86 @@ _CITATION_MARKER_RE = CITATION_MARKER_RE
 # ---------------------------------------------------------------------------
 
 
+def _governing_constraint(
+    text: str,
+    number_start: int,
+    number_end: int,
+) -> tuple[GeologicalConstraint, str] | None:
+    """Return the constraint whose keyword actually governs this number.
+
+    The number belongs to exactly ONE quantity, and in English that quantity
+    is named by the nearest keyword — almost always immediately before the
+    value ("a dip of -60"), occasionally immediately after it as a unit
+    ("1.85 g/t Au"). So we pick the single nearest keyword occurrence and
+    check that constraint alone.
+
+    This replaces a symmetric ±200-character window that fired *every*
+    constraint whose keyword appeared anywhere nearby. On the ordinary
+    sentence "…at an azimuth of 045 degrees and a dip of -60 degrees,
+    reaching a total depth of 510 m", that window put `azimuth`, `dip` and
+    `depth` in scope of all three numbers, so 045 was tested against the dip
+    range (max 0) and 510 against the azimuth range (max 360) — two
+    violations on a factually perfect answer. Every Layer 6 warning is
+    graded `high`, which sets should_retry, floors confidence to 0.2 and
+    prepends a fabrication banner, so a clean drill-geometry answer arrived
+    looking like a suspected hallucination.
+
+    Returns (constraint, matched_keyword_text) or None when no keyword is
+    near enough to attach.
+    """
+    best: tuple[int, GeologicalConstraint, str] | None = None
+
+    for constraint in GEOLOGICAL_CONSTRAINTS:
+        back_start = max(0, number_start - constraint.context_chars)
+        behind = text[back_start:number_start]
+        ahead = text[number_end:number_end + constraint.lookahead_chars]
+
+        for kw in constraint.keywords:
+            # Backward: distance from the END of the keyword to the number.
+            for m in re.finditer(kw, behind, re.IGNORECASE):
+                distance = len(behind) - m.end()
+                if best is None or distance < best[0]:
+                    best = (distance, constraint, m.group(0))
+            # Forward: distance from the number to the START of the keyword.
+            for m in re.finditer(kw, ahead, re.IGNORECASE):
+                distance = m.start()
+                if best is None or distance < best[0]:
+                    best = (distance, constraint, m.group(0))
+
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _unit_scale(
+    text: str, number_end: int, constraint: GeologicalConstraint,
+) -> float:
+    """Multiplier bringing the value at ``number_end`` into the bounds' unit.
+
+    Reads the unit token written immediately after the number — the form
+    English actually uses for measurements ("1020 ppb", "2.31 g/t Au") — and
+    looks it up in ``constraint.unit_scales``. Returns 1.0 when no declared
+    unit follows, which is both the common case and the safe one: an
+    unrecognised unit means "compare as written", exactly the old behaviour.
+
+    Deliberately does NOT search backwards. A preceding unit is nearly always
+    the previous clause's ("... 1.02 g/t Au, and 40 % of the core"), and
+    attaching it here would scale a number by a unit that is not its own.
+    """
+    if not constraint.unit_scales:
+        return 1.0
+
+    tail = text[number_end:number_end + 12].lstrip()
+    for token, scale in constraint.unit_scales.items():
+        if tail.lower().startswith(token.lower()):
+            # Guard against "ppm" matching the "pp" of a longer token: the
+            # next character must not continue the word.
+            rest = tail[len(token):]
+            if not rest or not (rest[0].isalnum() or rest[0] == "/"):
+                return scale
+    return 1.0
+
+
 def _check_value_against_constraint(
     value: float,
     text: str,
@@ -157,35 +287,28 @@ def _check_value_against_constraint(
 ) -> bool:
     """Return True if this value violates this constraint.
 
-    Violation requires:
-      1. A keyword for this constraint appears within context_chars of the number.
-      2. The value is outside [min_value, max_value].
+    The caller has already established that ``constraint`` is the one
+    governing this number (see :func:`_governing_constraint`); this decides
+    only whether the value is out of bounds.
     """
-    # Extract the surrounding context window.
-    ctx_start = max(0, number_start - constraint.context_chars)
-    ctx_end = min(len(text), number_end + constraint.context_chars)
-    context = text[ctx_start:ctx_end].lower()
-
-    # Check whether any keyword fires in the context window.
-    keyword_matched = any(
-        re.search(kw, context, re.IGNORECASE) for kw in constraint.keywords
-    )
-    if not keyword_matched:
-        return False
-
-    # Check negative keywords — if any match, this is a false positive.
+    # Negative keywords still use a wide window: "easting" or "UTM" anywhere
+    # near a number is reason to leave it alone regardless of what governs it.
     if constraint.negative_keywords:
-        negative_matched = any(
+        ctx_start = max(0, number_start - 200)
+        ctx_end = min(len(text), number_end + 200)
+        context = text[ctx_start:ctx_end]
+        if any(
             re.search(nk, context, re.IGNORECASE)
             for nk in constraint.negative_keywords
-        )
-        if negative_matched:
+        ):
             return False
 
-    # Check bounds.
-    if constraint.min_value is not None and value < constraint.min_value:
+    compared = abs(value) if constraint.absolute_value else value
+    compared *= _unit_scale(text, number_end, constraint)
+
+    if constraint.min_value is not None and compared < constraint.min_value:
         return True
-    return bool(constraint.max_value is not None and value > constraint.max_value)
+    return bool(constraint.max_value is not None and compared > constraint.max_value)
 
 
 @dataclass
@@ -197,18 +320,39 @@ class ConstraintViolation:
     context_snippet: str  # short excerpt around the number for the retry message
 
 
+def _masked_ranges(text: str) -> list[tuple[int, int]]:
+    """Character ranges holding numbers that are not geological values.
+
+    Two kinds:
+
+    * Citation markers — [DATA-3] is a reference index, not a measurement.
+    * Drill-hole identifiers — PLS-22-08 is a name. Its digits were being
+      read as two signed numbers, -22 and -8, and tested against whatever
+      constraint happened to be nearby: mentioning a hole by name in a
+      sentence about its depth produced two depth violations before the
+      sentence said anything about depth at all.
+
+    Numeric-only hole IDs (36-1085) are masked only when the text actually
+    talks about holes, matching the gate viz_builder puts on the same
+    pattern — otherwise a depth interval like "20-30 m" would be masked.
+    """
+    ranges: list[tuple[int, int]] = [
+        (m.start(), m.end()) for m in _CITATION_MARKER_RE.finditer(text)
+    ]
+    ranges.extend((m.start(), m.end()) for m in _HOLE_ID_RE.finditer(text))
+    if _HOLE_CONTEXT_RE.search(text):
+        ranges.extend((m.start(), m.end()) for m in _NUMERIC_HOLE_ID_RE.finditer(text))
+    return ranges
+
+
 def _find_violations(text: str) -> list[ConstraintViolation]:
     """Scan response text and return all geological constraint violations.
 
-    Numbers that appear inside citation markers ([DATA-X], [NI43-X], [PUB-X])
-    are excluded — they are reference indices, not geological values, and must
-    not be tested against physical plausibility constraints.
+    Numbers inside citation markers and drill-hole identifiers are excluded
+    (see :func:`_masked_ranges`), and each remaining number is tested against
+    the one constraint that governs it (see :func:`_governing_constraint`).
     """
-    # Collect all character ranges covered by citation markers so we can skip
-    # numbers that fall inside them.
-    citation_ranges: list[tuple[int, int]] = [
-        (m.start(), m.end()) for m in _CITATION_MARKER_RE.finditer(text)
-    ]
+    masked = _masked_ranges(text)
 
     violations: list[ConstraintViolation] = []
 
@@ -220,23 +364,27 @@ def _find_violations(text: str) -> list[ConstraintViolation]:
 
         start, end = m.start(), m.end()
 
-        # Skip any number whose match position overlaps a citation marker.
-        if any(cs <= start < ce for cs, ce in citation_ranges):
+        # Skip any number that overlaps a masked range at all — a hole ID
+        # yields several numbers and every one of them must go.
+        if any(ms < end and start < me for ms, me in masked):
             continue
 
-        for constraint in GEOLOGICAL_CONSTRAINTS:
-            if _check_value_against_constraint(value, text, start, end, constraint):
-                snippet_start = max(0, start - 30)
-                snippet_end = min(len(text), end + 30)
-                snippet = text[snippet_start:snippet_end].replace("\n", " ").strip()
-                violations.append(
-                    ConstraintViolation(
-                        value=value,
-                        constraint=constraint,
-                        context_snippet=snippet,
-                    )
+        governing = _governing_constraint(text, start, end)
+        if governing is None:
+            continue
+        constraint, _keyword = governing
+
+        if _check_value_against_constraint(value, text, start, end, constraint):
+            snippet_start = max(0, start - 30)
+            snippet_end = min(len(text), end + 30)
+            snippet = text[snippet_start:snippet_end].replace("\n", " ").strip()
+            violations.append(
+                ConstraintViolation(
+                    value=value,
+                    constraint=constraint,
+                    context_snippet=snippet,
                 )
-                break  # one violation per number is enough
+            )
 
     return violations
 
@@ -254,7 +402,9 @@ async def check_geological_constraints(
 
     This is hallucination prevention Layer 6.
 
-    Registration: @geo_agent.output_validator in geo_agent.py.
+    LIVE via orchestrator_validators.py, which imports
+    ``_find_violations`` from this module. (Not via geo_agent.py —
+    that file does not exist.)
 
     Checks performed:
     1. All numbers with geological keyword context against the constraint table.

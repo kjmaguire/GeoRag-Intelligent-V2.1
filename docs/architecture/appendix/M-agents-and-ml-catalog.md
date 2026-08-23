@@ -285,7 +285,7 @@ See [Ch 16 §1](../manual/16-algorithmic-spines.md).
 | Label-synthesis generator | `ELVISIO/Qwen3-30B-A3B-Instruct-2507-AWQ` | vLLM | GPU | No |
 | Source-trust model | — | `train_source_trust` workflow | CPU at serve | n/a (sklearn-style) |
 | Target scoring model | — | `train_target_model` workflow | CPU at serve | weighted; Phase 12 = XGBoost+SHAP |
-| Answer-quality judge | Qwen3-14B-AWQ (as judge) | `score_answer_quality` workflow | GPU | No |
+| ~~Answer-quality judge~~ | — | **REMOVED 09d1d35 (2026-07-27)** — `score_answer_quality` deleted; no answer-quality judge runs anywhere. `audit.query_audit_log.faithfulness_score` / `context_precision_score` are permanently NULL. | — | — |
 
 ## 16. Open work tracked
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Internal;
 
 use App\Events\WorkspaceDataUpdated;
+use App\Http\Controllers\Internal\IngestionProgressBroadcastController;
 use App\Jobs\DebounceWorkspaceMvRefresh;
 use App\Models\Project;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -172,5 +173,65 @@ final class IngestionProgressBroadcastControllerTest extends TestCase
     {
         $this->postJson('/api/internal/v1/ingest-progress/broadcast', $this->payload('completed'))
             ->assertUnauthorized();
+    }
+
+    /**
+     * 'partial' is what ingest_tabular / ingest_spatial / ingest_well_logs
+     * report when rows land AND something is worth saying — the orphaned
+     * -intervals case, overwhelmingly. It was missing from the validation
+     * rule, so the three workflows that produce it could not report
+     * themselves finished at all: a 422 came back and the run stayed
+     * silent.
+     */
+    public function test_partial_status_is_accepted(): void
+    {
+        Queue::fake();
+
+        $this->withHeaders(['X-Service-Key' => $this->serviceKey])
+            ->postJson(
+                '/api/internal/v1/ingest-progress/broadcast',
+                $this->payload('partial', ['message' => '120 rows written — 37 orphaned']),
+            )
+            ->assertOk();
+    }
+
+    public function test_partial_status_bumps_data_version_and_dispatches_refresh(): void
+    {
+        Queue::fake();
+
+        // The rows ARE in Silver — a warning alongside them does not make
+        // them invisible. Refusing to bump here would leave exactly the
+        // ingests that had problems as the ones the map never shows.
+        $this->withHeaders(['X-Service-Key' => $this->serviceKey])
+            ->postJson('/api/internal/v1/ingest-progress/broadcast', $this->payload('partial'))
+            ->assertOk()
+            ->assertJsonPath('side_effects.data_version_bumped', true)
+            ->assertJsonPath('side_effects.mv_refresh_dispatched', true);
+
+        $wsv = DB::scalar(
+            'SELECT data_version FROM silver.workspaces WHERE workspace_id = ?::uuid',
+            [$this->workspaceId],
+        );
+        $this->assertSame(1, (int) $wsv);
+
+        Queue::assertPushed(DebounceWorkspaceMvRefresh::class);
+    }
+
+    public function test_the_data_landed_set_is_exactly_completed_and_partial(): void
+    {
+        // Pinned rather than inferred: this constant decides which runs
+        // invalidate the read side, and widening it to "any terminal
+        // status" would bump data_version for runs that wrote nothing.
+        $this->assertSame(
+            ['completed', 'partial'],
+            IngestionProgressBroadcastController::DATA_LANDED_STATUSES,
+        );
+    }
+
+    public function test_an_unknown_status_is_still_rejected(): void
+    {
+        $this->withHeaders(['X-Service-Key' => $this->serviceKey])
+            ->postJson('/api/internal/v1/ingest-progress/broadcast', $this->payload('finished'))
+            ->assertStatus(422);
     }
 }

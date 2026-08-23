@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Events\WorkspaceDataUpdated;
 use App\Http\Controllers\Controller;
+use App\Http\Middleware\InjectTraceparent;
 use App\Http\Requests\StoreQueryRequest;
 use App\Jobs\StreamQueryFromFastApi;
 use App\Models\ChatConversation;
@@ -80,7 +81,15 @@ class QueryController extends Controller
             'query_id' => $queryId,
             'query_text' => $queryText,
             'ip_address' => $request->ip(),
-            'llm_model' => config('services.fastapi.llm_model', 'qwen2.5:14b'),
+            // Provisional. This is the model we EXPECT to answer with, not
+            // the one that did — no model has been called yet at reservation
+            // time. StreamQueryFromFastApi overwrites it from the completed
+            // payload's `llm_model` once the answer lands. The literal
+            // second argument here used to read 'qwen2.5:14b' — an Ollama
+            // model retired two backends ago — which was unreachable dead
+            // code (config() only falls back when the KEY is absent, and it
+            // is not) but described the wrong system to anyone reading it.
+            'llm_model' => config('services.fastapi.llm_model'),
         ]);
 
         // Phase 3 — broadcast WorkspaceDataUpdated with affected_types=['audit_log']
@@ -217,6 +226,10 @@ class QueryController extends Controller
                 $conversationId = null;
             }
         }
+        // Carry this request's W3C trace context into the job so the
+        // FastAPI call it makes lands in the same trace. InjectTraceparent
+        // put it on the request attributes; nothing had ever read it back
+        // out, so the trace died at the queue boundary.
         StreamQueryFromFastApi::dispatch(
             $queryId,
             $row->project_id,
@@ -224,6 +237,8 @@ class QueryController extends Controller
             $channel,
             $envelope,         // Phase 3 / Step 3.2 — context envelope dict / null.
             $conversationId,   // Plan §3e — chat thread for multi-turn history.
+        )->withTraceparent(
+            $request->attributes->get(InjectTraceparent::ATTRIBUTE_KEY),
         );
 
         return response()->json([

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use App\Events\QueryStreamEvent;
+use App\Http\Middleware\InjectTraceparent;
 use App\Models\ChatMessage;
 use App\Models\QueryAuditLog;
 use App\Services\FastApiJwtMinter;
@@ -51,9 +52,29 @@ class StreamQueryFromFastApi implements ShouldQueue
     use SerializesModels;
 
     /**
+     * Headroom between the inner HTTP read timeout and this job's own
+     * timeout, in seconds. Covers the post-stream work: the audit-log
+     * completion write and the terminal broadcast.
+     */
+    private const TIMEOUT_HEADROOM_SECONDS = 30;
+
+    /**
      * Maximum seconds this job is allowed to run before Horizon kills it.
-     * Generous enough for large RAG responses but bounded so stuck jobs
-     * do not consume a worker forever.
+     *
+     * DERIVED from services.fastapi.stream_timeout in the constructor, not
+     * configured independently. The invariant is that the inner Guzzle read
+     * timeout must expire first, so the stream fails with a diagnosable
+     * ConnectionException that failed() can turn into a terminal `failed`
+     * event -- rather than Horizon killing the worker mid-stream, which
+     * leaves the client waiting on its own watchdog.
+     *
+     * That invariant used to live in a comment in config/services.php
+     * ("Must be less than the Horizon job $timeout (300 s)") next to an
+     * env-tunable value, with the 300 hard-coded here. Raising
+     * FASTAPI_STREAM_TIMEOUT past 300 would have inverted it silently.
+     *
+     * The property default stands in for jobs serialised before this became
+     * dynamic; the constructor overwrites it for every new dispatch.
      */
     public int $timeout = 300;
 
@@ -93,6 +114,53 @@ class StreamQueryFromFastApi implements ShouldQueue
         // typed property default because PHP 8.2+ rejects child/trait
         // `$queue` composition when defaults differ.
         $this->queue = 'llm';
+
+        $this->timeout = self::timeoutSeconds();
+    }
+
+    /**
+     * The job timeout implied by the configured stream timeout.
+     *
+     * Public so a test can assert the ordering without reaching into a
+     * dispatched job.
+     */
+    public static function timeoutSeconds(): int
+    {
+        return (int) config('services.fastapi.stream_timeout', 270)
+            + self::TIMEOUT_HEADROOM_SECONDS;
+    }
+
+    /**
+     * W3C trace id for the HTTP request that queued this job, so the
+     * FastAPI call it makes joins the same trace.
+     *
+     * An ordinary property with an explicit default, not a promoted
+     * constructor property: promoted defaults belong to the parameter,
+     * not the property, so a job serialised before this field existed
+     * would unserialise with the property UNINITIALISED and throw on
+     * first read. A property-level default is applied at object
+     * creation and then overwritten by whatever the payload carries,
+     * so in-flight jobs drain safely across the deploy.
+     */
+    private ?string $traceparent = null;
+
+    /**
+     * Set the trace context this job should propagate. Called by the
+     * dispatcher with `$request->attributes->get(InjectTraceparent::ATTRIBUTE_KEY)`.
+     */
+    public function withTraceparent(?string $traceparent): self
+    {
+        $this->traceparent = InjectTraceparent::isValid($traceparent)
+            ? $traceparent
+            : null;
+
+        return $this;
+    }
+
+    /** The 32-hex trace-id, for log correlation. Null when unset. */
+    public function traceId(): ?string
+    {
+        return InjectTraceparent::traceIdOf($this->traceparent);
     }
 
     public function handle(): void
@@ -157,6 +225,7 @@ class StreamQueryFromFastApi implements ShouldQueue
             'project_id' => $this->projectId,
             'channel' => $this->channel,
             'fastapi_url' => $fastApiUrl,
+            'trace_id' => $this->traceId(),
         ]);
 
         try {
@@ -189,14 +258,27 @@ class StreamQueryFromFastApi implements ShouldQueue
             $context = stream_context_create([
                 'http' => [
                     'method' => 'POST',
-                    'header' => [
+                    'header' => array_values(array_filter([
                         'Content-Type: application/json',
                         'Accept: text/event-stream',
                         'Authorization: Bearer '.$jwt,
                         // Kept for one release to give FastAPI a graceful
                         // cutover window; B7 follow-up drops it on that side.
                         'X-Service-Key: '.$serviceKey,
-                    ],
+                        // W3C trace context. Without this FastAPI's
+                        // StructuredAccessLogMiddleware mints an unrelated
+                        // trace id and there is no join key between the two
+                        // services' logs — you are left correlating Log
+                        // Analytics by timestamp across a queue hop.
+                        // Omitted entirely when the dispatcher had no trace
+                        // context (console dispatch, replayed job): an empty
+                        // header would fail the middleware's v00 validation
+                        // and be replaced by a minted one anyway.
+                        $this->traceparent !== null ? 'traceparent: '.$this->traceparent : null,
+                        // The query id doubles as the request id, so a
+                        // support ticket quoting one finds both sides.
+                        'X-Request-ID: '.$this->queryId,
+                    ])),
                     'content' => $payload,
                     'timeout' => $streamTimeout,
                     'ignore_errors' => true,
@@ -220,6 +302,7 @@ class StreamQueryFromFastApi implements ShouldQueue
             Log::info('StreamQueryFromFastApi: got response', [
                 'query_id' => $this->queryId,
                 'status' => $statusCode,
+                'trace_id' => $this->traceId(),
             ]);
 
             if ($statusCode < 200 || $statusCode >= 300) {
@@ -334,22 +417,26 @@ class StreamQueryFromFastApi implements ShouldQueue
 
             if ($row !== null && $this->completedPayload !== null) {
                 $sourcesUsed = $this->completedPayload['sources_used'] ?? [];
-                // R10 — attach routing decision alongside the flat source
-                // list. Stored as a trailing marker so existing reads that
-                // treat sources_used as a plain list keep working; we
-                // prefix with a sentinel so downstream consumers can split.
-                // Also mirror into a top-level `llm_model` refresh so the
-                // analytics aggregation (top_queries, avg_latency_ms by
-                // model) reflects the actual model that served, not the
-                // initial dispatch-time default.
-                if ($this->routingPayload !== null) {
-                    $sourcesUsed = array_merge(
-                        is_array($sourcesUsed) ? $sourcesUsed : [],
-                        ['__routing__:'.json_encode($this->routingPayload)],
-                    );
-                    if (! empty($this->routingPayload['model'])) {
-                        $row->llm_model = $this->routingPayload['model'];
-                    }
+                // Correct llm_model to the model that actually served.
+                //
+                // QueryController::store() stamps this column at RESERVATION
+                // time from config — before a model has been chosen, let
+                // alone called — so without this refresh it records a
+                // configuration value, not a fact.
+                //
+                // The refresh used to read a "routing" SSE frame carrying
+                // {tier, model, reason}. That frame never arrived: its
+                // producer lived in the flat app/agent/orchestrator.py
+                // module and was dropped when that module became a package,
+                // leaving a consumer here and another in FastAPI's
+                // queries.py with nothing upstream of either. The column
+                // therefore held its dispatch-time default for every query
+                // ever logged. GeoRAGResponse.llm_model replaces the whole
+                // sentinel protocol: it rides the `completed` payload we
+                // already read for text, citations and confidence.
+                $servedBy = $this->completedPayload['llm_model'] ?? null;
+                if (is_string($servedBy) && $servedBy !== '') {
+                    $row->llm_model = $servedBy;
                 }
                 $row->response_text = $this->completedPayload['text'] ?? null;
                 $row->citations = $this->completedPayload['citations'] ?? [];
@@ -377,18 +464,11 @@ class StreamQueryFromFastApi implements ShouldQueue
 
                 $row->save();
             } elseif ($row !== null && $this->failedPayload !== null) {
-                // On failure still record the routing decision so we can
-                // distinguish "DEEP tier failed" from "FAST tier failed"
-                // in post-incident analytics.
-                if ($this->routingPayload !== null) {
-                    $row->sources_used = array_merge(
-                        is_array($row->sources_used) ? $row->sources_used : [],
-                        ['__routing__:'.json_encode($this->routingPayload)],
-                    );
-                    if (! empty($this->routingPayload['model'])) {
-                        $row->llm_model = $this->routingPayload['model'];
-                    }
-                }
+                // A failure has no `completed` payload and therefore no
+                // served-by model. Leaving llm_model at its dispatch-time
+                // value is the honest outcome here: it records what the
+                // system intended to use, and the failure marker in
+                // response_text says the attempt did not produce an answer.
                 $row->response_text = $this->formatFailureMarker($this->failedPayload);
                 $row->response_time_ms = $elapsed;
                 $row->save();
@@ -517,15 +597,6 @@ class StreamQueryFromFastApi implements ShouldQueue
     /** Failed event payload — captured for audit log failure update. */
     private ?array $failedPayload = null;
 
-    /**
-     * R10 — routing decision captured from FastAPI's per-query `routing`
-     * frame ({tier, model, reason}). Flushed into the audit row on
-     * completion or failure so analytics can report tier/model mix.
-     * Latest routing decision wins if FastAPI emits multiple (e.g. the
-     * failover path emits a second one with reason='failover').
-     */
-    private ?array $routingPayload = null;
-
     private function formatFailureMarker(array $payload): string
     {
         $code = $payload['code'] ?? 'UNKNOWN';
@@ -562,20 +633,16 @@ class StreamQueryFromFastApi implements ShouldQueue
             $this->completedPayload = $payload;
         } elseif ($eventType === 'failed') {
             $this->failedPayload = $payload;
-        } elseif ($eventType === 'routing') {
-            // B1 follow-up (R10) — FastAPI emits a routing frame per query
-            // carrying {tier, model, reason}. Persist to the audit row so
-            // the Query Usage analytics panel can report cost/model mix and
-            // so operators can see which queries hit DEEP tier vs failed
-            // over from FAST. We capture on the instance first and flush
-            // in handle() after the stream drains so a partial stream
-            // doesn't leave a half-written row.
-            $this->routingPayload = [
-                'tier' => $payload['tier'] ?? null,
-                'model' => $payload['model'] ?? null,
-                'reason' => $payload['reason'] ?? 'classifier',
-            ];
         }
+        // A `routing` branch used to live here, capturing {tier, model,
+        // reason} for the audit row. It has been removed along with its
+        // counterpart in FastAPI's queries.py: no code emitted that frame
+        // — the producer was lost in the orchestrator package refactor —
+        // and nothing read the `__routing__:` marker it wrote into
+        // sources_used, in PHP or in React. Both halves of a protocol with
+        // neither producer nor consumer read as working wiring, which is
+        // how llm_model went unnoticed. The model now rides the `completed`
+        // payload as GeoRAGResponse.llm_model.
 
         // Defensive: a single SSE frame failing to broadcast (size limit,
         // transient Reverb hiccup) MUST NOT abort the stream — we still

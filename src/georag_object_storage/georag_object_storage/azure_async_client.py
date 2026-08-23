@@ -29,10 +29,9 @@ def _read_file(file_path: str) -> bytes:
         return fh.read()
 
 
-def _write_file(file_path: str, data: bytes) -> None:
-    """Blocking file write, run off the event loop via ``asyncio.to_thread``."""
-    with open(file_path, "wb") as fh:
-        fh.write(data)
+def _open_for_write(file_path: str):
+    """Blocking open, run off the event loop via ``asyncio.to_thread``."""
+    return open(file_path, "wb")
 
 
 def build_async_blob_service_client(config: AzureBlobConfig) -> BlobServiceClient:
@@ -130,11 +129,32 @@ class AsyncAzureBlobStorage:
             raise ObjectStorageError(str(exc)) from exc
 
     async def get_file(self, bucket: Bucket, key: str, file_path: str) -> None:
+        """Download to a path without ever holding the whole object in RAM.
+
+        Was ``readall()`` into a bytes object followed by a single write,
+        which made the "download to a file" method peak at the object's full
+        size in memory — the one thing a caller reaches for this method to
+        avoid. On the Hatchet worker that is a 1.5 GB PDF resident before
+        anything has looked at it.
+
+        Chunked rather than ``readinto(fh)`` (which is what the sync sibling
+        uses, correctly): ``readinto`` writes each chunk to the handle
+        synchronously, and on an async worker those writes land on the event
+        loop. A multi-GB download would then block the loop for the length
+        of every write, starving the heartbeats that tell Hatchet this task
+        is still alive — the failure mode that has bitten this codebase
+        more than once. Iterating ``chunks()`` and pushing each write to a
+        thread keeps peak memory at one chunk AND keeps the loop free.
+        """
         name = self._container_name(bucket)
         try:
-            stream = await self._blob_client(bucket, key).download_blob()
-            data = await stream.readall()
-            await asyncio.to_thread(_write_file, file_path, data)
+            downloader = await self._blob_client(bucket, key).download_blob()
+            fh = await asyncio.to_thread(_open_for_write, file_path)
+            try:
+                async for chunk in downloader.chunks():
+                    await asyncio.to_thread(fh.write, chunk)
+            finally:
+                await asyncio.to_thread(fh.close)
         except ResourceNotFoundError as exc:
             raise ObjectNotFoundError(name, key) from exc
         except Exception as exc:
