@@ -510,19 +510,53 @@ jobs:
       - name: Post-deploy smoke (FastAPI, Laravel bridge, Postgres, Qdrant)
         run: |
           set -o pipefail
-          OUT=$(az containerapp exec -g "$AZURE_RG" -n fastapi-cc \
-            --command "python3 /app/scripts/ops/post_deploy_smoke.py" \
-            < /dev/null 2>&1 | tr -d '\r') || true
+          mkdir -p /tmp/rollback
+
+          # `script -qec` allocates a PTY, and that is load-bearing.
+          # `az containerapp exec` is the SSH command underneath, and on
+          # POSIX it calls tty.setcbreak(sys.stdin.fileno()) before it
+          # runs anything. With `< /dev/null` -- or any non-terminal
+          # stdin, which is every GitHub runner -- that raises
+          #     termios.error: (25, 'Inappropriate ioctl for device')
+          # and the CLI dies on connect. On 2026-08-23, the first time
+          # this step ever ran, that crash was read as "the smoke failed"
+          # and rolled back a deployment that had already passed revision
+          # health and the /up check. Do not remove the wrapper; a local
+          # test on Windows proves nothing, because tty.setcbreak is
+          # POSIX-only and the CLI takes a different branch there.
+          OUT=$(script -qec "az containerapp exec -g $AZURE_RG -n fastapi-cc --command 'python3 /app/scripts/ops/post_deploy_smoke.py'" /dev/null 2>&1 | tr -d '\r') || true
           echo "$OUT"
 
           # `az containerapp exec` exits 0 for a successful CONNECTION no
           # matter what the command did, so the exit code proves nothing.
-          # The script's contract is a SMOKE_OK sentinel on success.
-          if ! echo "$OUT" | grep -q "SMOKE_OK"; then
-            echo "::error::post-deploy smoke FAILED — the deployment is up but not working. Rolling back."
+          # The script's contract is three-way and both sentinels are on
+          # its last line: SMOKE_OK, or SMOKE_FAILED: <checks>.
+          if echo "$OUT" | grep -q "SMOKE_OK"; then
+            echo "post-deploy smoke passed"
+            exit 0
+          fi
+
+          # NEITHER sentinel means the script never got far enough to
+          # print one -- the harness broke, the connection failed, the
+          # image lacks the script. That is not evidence the deployment
+          # is bad, and reverting five apps on the strength of a broken
+          # gate is a self-inflicted outage. Fail the job loudly so a
+          # human looks, and leave the images alone; the rollback step
+          # below reads this marker and refuses.
+          #
+          # The distinction is the whole lesson from the 2026-08-23
+          # rollback: "the check failed" and "the check could not run"
+          # are different facts, and only one of them is about the app.
+          if ! echo "$OUT" | grep -q "SMOKE_FAILED"; then
+            touch /tmp/rollback/smoke-inconclusive
+            echo "::error::post-deploy smoke could not RUN -- no SMOKE_OK and no SMOKE_FAILED in its output."
+            echo "::error::The deploy passed revision health and /up, so the images are being LEFT AS DEPLOYED."
+            echo "::error::Fix the harness, then re-run. Check for a termios/PTY error above."
             exit 1
           fi
-          echo "post-deploy smoke passed"
+
+          echo "::error::post-deploy smoke FAILED — the deployment is up but not working. Rolling back."
+          exit 1
 
       - name: Rollback on failure or cancellation
         # cancelled() matters here (2026-08-14 audit): this workflow's
@@ -536,6 +570,27 @@ jobs:
         timeout-minutes: 10
         run: |
           echo "::warning::deploy failed or was cancelled mid-flight — rolling back to the pre-deploy image on each app"
+
+          # ── An inconclusive gate is not a failed deployment ────────────
+          # Set by the smoke step when it produced neither of the script's
+          # sentinels, i.e. the check never ran. Rolling back on that
+          # reverts five healthy apps because a harness broke -- which is
+          # exactly what happened on 2026-08-23, when az containerapp exec
+          # died on a missing TTY and took a good deploy with it.
+          #
+          # Same reasoning as the live-migration guard below: doing
+          # nothing is the safe state, and it is the intervention that
+          # would break it. The job still fails, so nothing ships
+          # silently and a human decides.
+          if [ -f /tmp/rollback/smoke-inconclusive ]; then
+            echo "::error::post-deploy smoke was INCONCLUSIVE (it could not run) — refusing to roll back"
+            echo "The apps are running the NEWLY deployed images and passed revision"
+            echo "health and /up. Verify by hand, then either re-run the smoke or roll"
+            echo "back deliberately:"
+            echo "  bash deploy/azure/containerapps/rollback.sh   # if one exists"
+            echo "  az containerapp update -g $AZURE_RG -n <app> --image <previous>"
+            exit 1
+          fi
 
           # ── Never roll back underneath a live migration ────────────────
           # The migrate poll gives up at replicaTimeout+60s, but giving up
