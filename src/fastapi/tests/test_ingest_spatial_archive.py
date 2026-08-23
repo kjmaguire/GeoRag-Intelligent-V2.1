@@ -21,6 +21,7 @@ expectations were written:
 """
 from __future__ import annotations
 
+import ast
 import json
 import zipfile
 from pathlib import Path
@@ -671,3 +672,322 @@ class TestTheCallerConsumesTheStructuredResult:
             "difference between a delivery that ingested cleanly and one "
             "that ingested in part"
         )
+class TestWhatCameWithEachShapefile:
+    """``members`` answers "what should be opened". It cannot also answer
+    "what arrived", and after SHAPE_RESTORE_SHX the second question is the
+    one that matters.
+
+    A lone ``.shp`` inside a zip is now READABLE -- GDAL rebuilds the index
+    from the ``.shp`` itself -- so the extractor can no longer refuse it,
+    and nothing downstream can work out what was in the delivery either: by
+    the time the parser has run, GDAL may have WRITTEN the ``.shx`` that was
+    never sent. Only the extractor sees the archive as it arrived.
+
+    Four tests in this file pin ``members == ['faults.shp']``. That stays
+    true; the inventory rides alongside it on the dataclass that exists for
+    exactly this purpose.
+    """
+
+    def test_a_complete_bundle_lists_its_sidecars(self, tmp_path) -> None:
+        archive = _zip(tmp_path / "shp.zip", [
+            ("faults.shp", b"shp"),
+            ("faults.dbf", b"dbf"),
+            ("faults.shx", b"shx"),
+            ("faults.prj", b"prj"),
+            ("faults.cpg", b"UTF-8"),
+            ("readme.txt", b"hi"),
+        ])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert [p.name for p in result.members] == ["faults.shp"]
+        assert list(result.companions.values()) == [
+            [".cpg", ".dbf", ".prj", ".shx"],
+        ]
+
+    def test_a_lone_shapefile_is_returned_with_an_empty_inventory(
+        self, tmp_path,
+    ) -> None:
+        """Four of the eight archives in the RedStar delivery are exactly
+        this: a ``.shp`` zipped on its own. Refusing them was the old
+        behaviour and it refused readable data; the inventory is what lets
+        the CRS gate say WHICH file is missing instead of failing with
+        GDAL's message about a config option."""
+        archive = _zip(tmp_path / "lone.zip", [("faults.shp", b"shp")])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert [p.name for p in result.members] == ["faults.shp"]
+        assert list(result.companions.values()) == [[]]
+
+    def test_a_mis_cased_prj_is_not_reported_as_absent(self, tmp_path) -> None:
+        """GDAL on Linux is case-sensitive; this inventory is not, on
+        purpose. The real delivery holds ``drobeck_shumagin_veins.shp``
+        beside ``Drobeck_Shumagin_Veins.prj``. Resolving that case is
+        somebody else's job -- what this must not do is tell a geologist to
+        send a file that is sitting in the zip they already sent, because a
+        missing CRS is now a refusal."""
+        archive = _zip(tmp_path / "case.zip", [
+            ("drobeck_shumagin_veins.shp", b"shp"),
+            ("Drobeck_Shumagin_Veins.PRJ", b"prj"),
+        ])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert list(result.companions.values()) == [[".prj"]]
+
+    def test_a_same_stem_file_that_is_not_a_sidecar_is_not_counted(
+        self, tmp_path,
+    ) -> None:
+        archive = _zip(tmp_path / "extra.zip", [
+            ("faults.shp", b"shp"),
+            ("faults.prj", b"prj"),
+            ("faults.xml", b"<x/>"),
+            ("faults.txt", b"notes"),
+        ])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert list(result.companions.values()) == [[".prj"]]
+
+    def test_sidecars_of_a_different_layer_are_not_borrowed(
+        self, tmp_path,
+    ) -> None:
+        """Two shapefiles in one folder, one complete and one not. Reading
+        the folder rather than the stem would report the incomplete layer
+        as having a .prj and write it at longitude 400,798."""
+        archive = _zip(tmp_path / "two.zip", [
+            ("claims.shp", b"shp"), ("claims.prj", b"prj"),
+            ("faults.shp", b"shp"),
+        ])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        by_name = {
+            Path(k).name: v for k, v in result.companions.items()
+        }
+        assert by_name == {"claims.shp": [".prj"], "faults.shp": []}
+
+    def test_same_stem_layers_in_different_folders_stay_separate(
+        self, tmp_path,
+    ) -> None:
+        """Deliveries arrive as a folder per theme, and the same stem in two
+        of them is normal. Keying the inventory on the name rather than the
+        path would merge them and lend one layer the other's .prj."""
+        archive = _zip(tmp_path / "themes.zip", [
+            ("GIS/structural/faults.shp", b"shp"),
+            ("GIS/structural/faults.prj", b"prj"),
+            ("GIS/claims/faults.shp", b"shp"),
+        ])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert sorted(result.companions.values()) == [[], [".prj"]]
+
+    def test_non_shapefile_members_get_no_entry(self, tmp_path) -> None:
+        """A GeoJSON has no sidecars to be missing. An empty entry would
+        read as "delivered incomplete"."""
+        archive = _zip(tmp_path / "gj.zip", [("faults.geojson", _GEOJSON)])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert result.companions == {}
+
+    def test_the_inventory_keys_are_the_member_paths(self, tmp_path) -> None:
+        """The caller looks these up by the member it is about to parse."""
+        archive = _zip(tmp_path / "keys.zip", [
+            ("faults.shp", b"shp"), ("faults.prj", b"prj"),
+        ])
+
+        result = sp._extract_archive(archive, tmp_path / "out")
+
+        assert set(result.companions) == {str(result.members[0])}
+
+
+def _workflow_ast() -> ast.AsyncFunctionDef:
+    """The task body, parsed. Source-scanned rather than executed: running
+    it needs Hatchet, object storage and Postgres, and the properties below
+    are structural."""
+    tree = ast.parse(Path(sp.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_ingest_spatial":
+            return node
+    raise AssertionError("run_ingest_spatial not found — renamed?")
+
+
+def _called_names(node: ast.AST) -> set[str]:
+    names = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        func = child.func
+        if isinstance(func, ast.Attribute):
+            names.add(func.attr)
+        elif isinstance(func, ast.Name):
+            names.add(func.id)
+    return names
+
+
+class TestTheLoneShapefileGuardIsInverted:
+    """A bare ``.shp`` used to be refused before the download.
+
+    That was right when it was written and is wrong now. MEASURED with
+    SHAPE_RESTORE_SHX on: a ``.shp`` with no sidecars at all opens and
+    yields every feature, because GDAL regenerates the index from the
+    ``.shp`` itself. The guard refused data the pipeline can read -- and it
+    never caught the case that actually happens, because both upload
+    wizards zip a bare ``.shp`` before sending it and ingest_zip_archive
+    re-zips one itself, so the real shape is a lone ``.shp`` INSIDE an
+    archive, which that branch never saw.
+
+    What no config option recovers is the ``.prj``, so the refusal moved
+    rather than disappeared.
+    """
+
+    def test_no_branch_refuses_a_file_for_being_a_shapefile(self) -> None:
+        tree = ast.parse(Path(sp.__file__).read_text(encoding="utf-8"))
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "suffix"
+            and any(
+                isinstance(c, ast.Constant) and c.value == ".shp"
+                for c in node.comparators
+            )
+        ]
+        assert offenders == [], (
+            f"line(s) {offenders} branch on the upload being a lone .shp. "
+            "GDAL reads one now; refusing it rejects data the pipeline can "
+            "handle. The refusal belongs on the missing CRS, which is the "
+            "part nothing can reconstruct."
+        )
+
+    def test_shp_is_still_a_supported_extension(self) -> None:
+        """Guards the guard: the check above also passes if .shp stops
+        being routed here at all, which would be a worse bug."""
+        assert ".shp" in sp.SUPPORTED_EXTENSIONS
+        assert ".shp" in sp.VECTOR_EXTENSIONS
+
+
+class TestTheRefusalRunsWhereARollbackIsStillPossible:
+    def test_the_crs_gate_is_inside_the_write_transaction(self) -> None:
+        """A refused delivery must not cost the geologist the PREVIOUS,
+        good ingest of the same file. The write path deletes the old rows
+        and re-inserts, so a gate outside that transaction would leave the
+        delete committed and nothing to replace it."""
+        transactions = [
+            node for node in ast.walk(_workflow_ast())
+            if isinstance(node, ast.AsyncWith)
+            and any(
+                isinstance(item.context_expr, ast.Call)
+                and isinstance(item.context_expr.func, ast.Attribute)
+                and item.context_expr.func.attr == "transaction"
+                for item in node.items
+            )
+        ]
+        assert transactions, "the write transaction is gone — moved?"
+        assert any(
+            "_crs_refusal" in _called_names(node) for node in transactions
+        ), (
+            "the CRS gate must run inside the delete-then-reinsert "
+            "transaction, so refusing a file rolls the delete back"
+        )
+
+    def test_the_gate_raises_rather_than_warning(self) -> None:
+        """'partial' would not do. Laravel's DATA_LANDED_STATUSES is
+        ['completed','partial'], so a partial with zero rows still bumps
+        data_version and fires the MV refresh."""
+        node = _workflow_ast()
+        raises_on_refusal = [
+            n for n in ast.walk(node)
+            if isinstance(n, ast.If)
+            and isinstance(n.test, ast.Name)
+            and n.test.id == "refusal"
+            and any(isinstance(b, ast.Raise) for b in n.body)
+        ]
+        assert raises_on_refusal, "a refusal must raise, not attach a warning"
+
+
+class TestTheFailurePathTellsSomebody:
+    def test_the_handler_broadcasts_as_well_as_recording(self) -> None:
+        """No ingest workflow broadcast on failure before this one: the row
+        went to 'failed' in Postgres and the page showing it was never
+        told, so a refused upload sat on screen as "running" until somebody
+        reloaded. A refusal nobody sees is not much better than the silent
+        corruption it replaced."""
+        handlers = [
+            h for h in ast.walk(_workflow_ast())
+            if isinstance(h, ast.ExceptHandler)
+            and "mark_failed_by_run" in _called_names(h)
+        ]
+        assert handlers, "the failure handler no longer records the failure"
+        for handler in handlers:
+            assert "broadcast_terminal" in _called_names(handler)
+
+    def test_the_broadcast_status_is_failed(self) -> None:
+        """'failed' is accepted by the Laravel validator and is correctly
+        OUTSIDE DATA_LANDED_STATUSES — it notifies without bumping
+        data_version or refreshing the materialised views, which is what a
+        run that deliberately wrote nothing needs."""
+        broadcasts = [
+            n for n in ast.walk(_workflow_ast())
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "broadcast_terminal"
+        ]
+        statuses = [
+            kw.value.value
+            for call in broadcasts
+            for kw in call.keywords
+            if kw.arg == "status" and isinstance(kw.value, ast.Constant)
+        ]
+        assert "failed" in statuses
+
+
+class TestTheParseLoopKeepsTheRunAlive:
+    def test_the_member_loop_beats(self) -> None:
+        """There was no heartbeat at all between 'parse' and 'persist', and
+        the stale sweep times a run out after fifteen silent minutes.
+        SHAPE_RESTORE_SHX rebuilding a large index widens that gap, and a
+        run relabelled 'timed_out' hands the geologist a failure for a file
+        that is still ingesting."""
+        loops = [
+            n for n in ast.walk(_workflow_ast())
+            if isinstance(n, ast.For)
+            and "mark_stage_progress" in _called_names(n)
+        ]
+        assert loops, (
+            "no per-member heartbeat: the parse stage can run for minutes "
+            "with nothing feeding last_heartbeat_at"
+        )
+
+
+class TestTheOverrideReachesTheParser:
+    def test_every_parse_call_forwards_source_epsg(self) -> None:
+        """Four call sites — QGIS project layers, a project inside a zip, an
+        archive member, a direct upload. An override wired into three of
+        them is a field that works depending on how the file was delivered,
+        which is worse than one that does not work at all."""
+        calls = [
+            n for n in ast.walk(_workflow_ast())
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "to_thread"
+        ]
+        parse_calls = [
+            n for n in calls
+            if any(
+                isinstance(a, ast.Name) and a.id == "parse_spatial_file"
+                for a in n.args
+            )
+        ]
+        assert len(parse_calls) == 4, (
+            f"expected 4 parse_spatial_file call sites, found "
+            f"{len(parse_calls)} — a new one needs the override too"
+        )
+        for call in parse_calls:
+            assert "source_epsg" in {kw.arg for kw in call.keywords}, (
+                f"the call at line {call.lineno} drops the uploader's CRS"
+            )

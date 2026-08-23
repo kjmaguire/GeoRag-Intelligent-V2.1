@@ -9,11 +9,12 @@
  * Source of truth for function names and sourceLayer strings:
  *   database/migrations/2026_04_22_130000_create_silver_mvt_functions.php
  *   database/migrations/2026_04_22_140000_create_silver_boundary_formation_working_geochem.php
+ *   database/migrations/2026_08_23_120000_create_silver_spatial_features_mvt_function.php
  *
  * DO NOT edit sourceLayer strings without re-confirming the ST_AsMVT literal
  * inside the corresponding PostgreSQL function.
  *
- * Module 8 Chunks 8.5 + 8.6.
+ * Module 8 Chunks 8.5 + 8.6; imported-features layers added 2026-08-23.
  */
 
 export interface MvtLayerOutline {
@@ -42,6 +43,38 @@ export interface MvtLayerDef {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     paint: Record<string, any>;
     outline?: MvtLayerOutline;
+    /**
+     * Opt-in vector-source sharing. Entries that declare the SAME `sourceKey`
+     * are backed by ONE MapLibre vector source instead of one per entry.
+     *
+     * Needed because a single tile function may publish several ST_AsMVT
+     * layers in one tile — silver.pg_spatial_features_by_project does exactly
+     * that (imported_points / imported_lines / imported_polygons), since one
+     * MapLibre layer has one `type` and cannot paint points, lines and
+     * polygons at once. Without sharing, the three entries would open three
+     * identical vector sources and fetch the same bytes three times.
+     *
+     * Defaults to the entry's own `id`, i.e. one source per entry — the
+     * behaviour every pre-2026-08-23 layer relies on.
+     *
+     * CONSTRAINT: `minzoom` / `maxzoom` are properties of the SOURCE, not of
+     * the layer, in MapView's add-layer effect. Entries that share a
+     * `sourceKey` MUST therefore declare identical minzoom/maxzoom — only the
+     * first entry to be processed actually creates the source, so a differing
+     * value on a later entry is silently discarded.
+     */
+    sourceKey?: string;
+}
+
+/**
+ * MapLibre vector-source id for a registry entry.
+ *
+ * Entries sharing a `sourceKey` collapse onto one source id; everything else
+ * keeps the historical `mvt-<id>-source` name. Use this everywhere instead of
+ * interpolating the id by hand.
+ */
+export function mvtSourceId(layer: Pick<MvtLayerDef, 'id' | 'sourceKey'>): string {
+    return `mvt-${layer.sourceKey ?? layer.id}-source`;
 }
 
 /**
@@ -103,6 +136,83 @@ export const MVT_LAYERS: MvtLayerDef[] = [
         },
         outline: {
             paint: { 'line-color': '#0ea5e9', 'line-width': 1.5, 'line-opacity': 0.7 },
+        },
+    },
+
+    // ── Imported spatial features — silver.spatial_features ─────────────────
+    //
+    // The only layer group whose source table is DELIBERATELY MIXED GEOMETRY:
+    // silver.spatial_features.geom is geometry(Geometry,4326) and one .shp /
+    // .gpkg / .gdb / .dxf import can land points, lines and polygons together.
+    // A MapLibre layer has exactly one `type`, so three entries are required.
+    //
+    // The split happens in the DATABASE, not here:
+    // silver.pg_spatial_features_by_project emits three ST_AsMVT layers —
+    // imported_polygons / imported_lines / imported_points — into ONE tile
+    // (the MVT Tile message's `layers` field is `repeated`, so concatenating
+    // the three encodings is a legal multi-layer tile). The shared `sourceKey`
+    // below is what makes the three entries draw from that single tile
+    // request instead of fetching it three times.
+    // See database/migrations/2026_08_23_120000_create_silver_spatial_features_mvt_function.php
+    //
+    // Placement: above the three base fills (boundaries / formations /
+    // seismic) so imported outlines are readable over them, and below every
+    // project-native layer (traces / workings / geochem / collars) so
+    // primary data is never obscured by imported reference geometry.
+    //
+    // One colour family (rose-500 #f43f5e) across all three so a geologist
+    // reads them as one group and can tell imported data from every
+    // dedicated-table layer at a glance.
+    //
+    // minzoom/maxzoom are identical across the three by requirement — see the
+    // CONSTRAINT note on MvtLayerDef.sourceKey.
+    {
+        id: 'imported-polygons',
+        label: 'Imported areas',
+        functionName: 'pg_spatial_features_by_project',
+        sourceKey: 'spatial-features',
+        sourceLayer: 'imported_polygons', // ST_AsMVT(t, 'imported_polygons', 4096, 'geom')
+        type: 'fill',
+        minzoom: 0,
+        maxzoom: 16,
+        paint: {
+            'fill-color': '#f43f5e',         // rose-500
+            'fill-opacity': 0.14,
+        },
+        outline: {
+            paint: { 'line-color': '#f43f5e', 'line-width': 1.5, 'line-opacity': 0.75 },
+        },
+    },
+    {
+        id: 'imported-lines',
+        label: 'Imported lines',
+        functionName: 'pg_spatial_features_by_project',
+        sourceKey: 'spatial-features',
+        sourceLayer: 'imported_lines',      // ST_AsMVT(t, 'imported_lines', 4096, 'geom')
+        type: 'line',
+        minzoom: 0,
+        maxzoom: 16,
+        paint: {
+            'line-color': '#f43f5e',
+            'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.5, 10, 1.5, 14, 2.5],
+            'line-opacity': 0.85,
+        },
+    },
+    {
+        id: 'imported-points',
+        label: 'Imported points',
+        functionName: 'pg_spatial_features_by_project',
+        sourceKey: 'spatial-features',
+        sourceLayer: 'imported_points',     // ST_AsMVT(t, 'imported_points', 4096, 'geom')
+        type: 'circle',
+        minzoom: 0,
+        maxzoom: 16,
+        paint: {
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 1.5, 10, 3, 16, 6],
+            'circle-color': '#f43f5e',
+            'circle-stroke-width': 0.75,
+            'circle-stroke-color': '#ffffff',
+            'circle-opacity': 0.85,
         },
     },
 
@@ -193,22 +303,37 @@ export const MVT_LAYERS: MvtLayerDef[] = [
  *
  * Seismic and geochem are both interactive — geologists need click popups
  * to inspect survey metadata and sample assay codes.
+ *
+ * All three imported-feature layers are interactive too: an imported feature
+ * carries no legend of its own, so the popup is the only place its
+ * feature_type, originating source_layer/source_file and georeferencing
+ * provenance (georef_method, crs_confidence) are visible.
  */
 export const MVT_INTERACTIVE_LAYERS: string[] = [
     'mvt-collars',
     'mvt-historic-workings',
     'mvt-seismic',
     'mvt-geochem',
+    'mvt-imported-points',
+    'mvt-imported-lines',
+    'mvt-imported-polygons',
 ];
 
 /**
  * Default visibility state for all MVT layers.
  * Seismic and geochem default to true — geologists want to see them immediately.
+ *
+ * The three imported-feature layers default to true as well: the whole point
+ * of the layer group is that an uploaded shapefile shows up on the map without
+ * the user having to know a hidden toggle exists.
  */
 export const MVT_DEFAULT_VISIBILITY: Record<string, boolean> = {
     boundaries: true,
     formations: true,
     seismic: true,
+    'imported-polygons': true,
+    'imported-lines': true,
+    'imported-points': true,
     traces: true,
     'historic-workings': true,
     geochem: true,

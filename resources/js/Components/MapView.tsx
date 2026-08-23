@@ -13,7 +13,7 @@ import type {
     AddLayerObject,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { MVT_LAYERS, MVT_INTERACTIVE_LAYERS, MVT_DEFAULT_VISIBILITY } from '../lib/mvtLayers';
+import { MVT_LAYERS, MVT_INTERACTIVE_LAYERS, MVT_DEFAULT_VISIBILITY, mvtSourceId } from '../lib/mvtLayers';
 import {
     mergeLayerVisibility,
     readLayerVisibility,
@@ -855,7 +855,11 @@ export default function MapView({
         if (!map || !mapReady || !useMvt || mvtLayersAddedRef.current) return;
 
         MVT_LAYERS.forEach((layer) => {
-            const sourceId = `mvt-${layer.id}-source`;
+            // mvtSourceId(), not `mvt-${layer.id}-source`: entries that declare a
+            // shared `sourceKey` (the three imported-features layers) must resolve
+            // to ONE source so the multi-layer tile is fetched once, not once per
+            // MapLibre layer. Everything else still gets its own per-id source.
+            const sourceId = mvtSourceId(layer);
             const layerId = `mvt-${layer.id}`;
 
             // Add vector tile source from Martin via Laravel proxy.
@@ -960,12 +964,20 @@ export default function MapView({
         if (!map || !mapReady || !useMvt || !mvtLayersAddedRef.current) return;
         if (!projectId) return;
 
+        // Several registry entries can share one source (see MvtLayerDef.sourceKey).
+        // setTiles() on a shared source must fire ONCE — calling it again with the
+        // same URL re-triggers a full tile reload of a source that is already
+        // correct, so track which source ids have been swapped in this pass.
+        const swapped = new Set<string>();
+
         MVT_LAYERS.forEach((layer) => {
-            const sourceId = `mvt-${layer.id}-source`;
+            const sourceId = mvtSourceId(layer);
+            if (swapped.has(sourceId)) return;
             const source = map.getSource(sourceId);
             // VectorTileSource has setTiles; guard with type check before calling
             if (source && (source as VectorTileSource).setTiles) {
                 (source as VectorTileSource).setTiles([buildSilverTileUrl(layer.functionName, projectId, workspaceDataVersion)]);
+                swapped.add(sourceId);
             }
         });
     }, [workspaceDataVersion, mapReady, useMvt, projectId]);
@@ -1042,6 +1054,38 @@ export default function MapView({
                 `);
             }
 
+            // Imported spatial features (silver.spatial_features) — the three
+            // source-layers published by silver.pg_spatial_features_by_project.
+            // These rows have no dedicated table and no legend of their own, so
+            // the popup is where the import's identity AND its georeferencing
+            // provenance live: georef_method='assumed' or a low crs_confidence
+            // means the outline's position is a guess, and a geologist must be
+            // able to see that before trusting it.
+            if (
+                sourceLayer === 'imported_points'
+                || sourceLayer === 'imported_lines'
+                || sourceLayer === 'imported_polygons'
+            ) {
+                const crsConf = props.crs_confidence != null
+                    ? `${(parseFloat(String(props.crs_confidence)) * 100).toFixed(0)}%`
+                    : null;
+                const georef = props.georef_method != null ? String(props.georef_method) : null;
+                // Red for a guessed CRS, amber for a human override, grey otherwise.
+                const georefColor = georef === 'assumed'
+                    ? '#ef4444'
+                    : georef === 'manual' ? '#f59e0b' : '#9ca3af';
+                const originLabel = [props.source_layer, props.source_file]
+                    .filter((part) => part != null && String(part) !== '')
+                    .map(escapeHtml)
+                    .join(' · ');
+                return wrap(`
+                    <div style="font-weight: 700; font-size: 13px; color: #f43f5e; margin-bottom: 3px;">${escapeHtml(props.feature_name ?? 'Imported feature')}</div>
+                    <div style="color: #d1d5db;">${escapeHtml(props.feature_type ?? '—')}${props.feature_role ? ` · ${escapeHtml(props.feature_role)}` : ''}</div>
+                    ${originLabel ? `<div style="color: #9ca3af; margin-top: 2px; font-size: 10px;">${originLabel}</div>` : ''}
+                    ${georef ? `<div style="color: ${georefColor}; margin-top: 3px; font-size: 10px;">CRS ${escapeHtml(props.source_crs ?? '—')} · ${escapeHtml(georef)}${crsConf ? ` · ${crsConf}` : ''}</div>` : ''}
+                `);
+            }
+
             // Default collar/working popup
             const totalDepth = props.total_depth != null ? parseFloat(String(props.total_depth)).toFixed(0) + ' m TD' : '—';
             return wrap(`
@@ -1092,7 +1136,13 @@ export default function MapView({
             // Debounce — don't recreate popup on every pixel move
             const feat = features[0];
             const props = feat.properties as Record<string, unknown>;
-            const featureKey = props.hole_id ?? props.survey_name ?? props.sample_id ?? feat.id;
+            // props.feature_id is in the chain because the imported-features
+            // layers carry none of the three named keys and ST_AsMVT is called
+            // with 4 args, so feat.id is undefined for them. Without it the
+            // debounce compares undefined against the initial undefined
+            // _hoverFeatureKey, returns early, and no hover popup ever opens.
+            const featureKey = props.hole_id ?? props.survey_name ?? props.sample_id
+                ?? props.feature_id ?? feat.id;
             if (popupRef.current?._hoverFeatureKey === featureKey) return;
 
             popupRef.current?.remove();

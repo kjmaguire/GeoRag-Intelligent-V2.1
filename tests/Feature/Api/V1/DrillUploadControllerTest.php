@@ -221,6 +221,47 @@ class DrillUploadControllerTest extends TestCase
             ->assertJsonPath('dispatch.dispatched', false);
     }
 
+    public function test_source_epsg_reaches_the_ingest_tabular_trigger(): void
+    {
+        // IngestTabularInput has accepted `source_epsg` since it shipped and
+        // has never once been sent one, so every drill file uploaded through
+        // this route has silently taken DEFAULT_SOURCE_EPSG = 32613 (UTM
+        // 13N). Correct in Saskatchewan; a continent out for the Alaskan
+        // collars this override exists for (26904 = NAD83 / UTM 4N).
+        $this->actingAs($this->user)
+            ->postJson($this->url(), [
+                'file' => $this->csv('collars_unga.csv'),
+                'source_epsg' => 26904,
+            ])
+            ->assertStatus(201)
+            ->assertJsonPath('source_epsg', 26904)
+            ->assertJsonPath('dispatch.source_epsg', 26904);
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/shadow/ingest_tabular/trigger')
+                && ($request['source_epsg'] ?? null) === 26904
+                // Adding one hint must not displace the other.
+                && ($request['sheet_type'] ?? null) === 'collar';
+        });
+    }
+
+    public function test_source_epsg_is_omitted_when_not_supplied(): void
+    {
+        // Absence and null are not the same message. ingest_tabular reads a
+        // missing key as "no operator assertion, use the default"; sending
+        // the key as null says nothing extra and invites a future reader to
+        // treat it as an explicit choice.
+        $this->actingAs($this->user)
+            ->postJson($this->url(), ['file' => $this->csv('collars_2024.csv')])
+            ->assertStatus(201)
+            ->assertJsonMissingPath('source_epsg');
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/shadow/ingest_tabular/trigger')
+                && ! array_key_exists('source_epsg', $request->data());
+        });
+    }
+
     public function test_duplicate_sha256_returns_existing_row_without_re_uploading(): void
     {
         $payload = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";

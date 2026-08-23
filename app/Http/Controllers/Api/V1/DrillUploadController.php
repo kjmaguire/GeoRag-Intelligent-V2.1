@@ -47,6 +47,22 @@ use Throwable;
  */
 class DrillUploadController extends Controller
 {
+    /**
+     * EPSG code bounds for the `source_epsg` override.
+     *
+     * Named rather than inlined for two reasons. It is the same range the
+     * database already enforces (chk_spatial_features_crs_native, and the
+     * matching CHECK on silver.geophysics_surveys.crs_epsg), so a single
+     * symbol keeps the two definitions visibly paired. And
+     * UploadSizeCapConsistencyTest greps this file for a literal
+     * `'max:<5+ digits>'` rule to stop a hand-written FILE SIZE cap creeping
+     * back in; 32767 is a coordinate-system identifier, not a size, and it
+     * should not have to weaken that guard to coexist with it.
+     */
+    private const EPSG_MIN = 1024;
+
+    private const EPSG_MAX = 32767;
+
     /** Bronze object-key prefix; workspace-scoped to keep multi-tenant blast radius tight. */
     private const BRONZE_PREFIX = 'drill-uploads';
 
@@ -70,6 +86,23 @@ class DrillUploadController extends Controller
             // whole memory allocation of the container serving the request.
             'file' => ['required', 'file', 'max:'.Uploads::maxKilobytes()],
             'vendor_profile_id' => ['nullable', 'integer', 'exists:vendor_profiles,id'],
+            // Operator-supplied CRS for the collar coordinates in this file.
+            // Same rule and same wire type as UploadController and
+            // StoreQueryRequest: an EPSG integer, never a CRS string,
+            // bounded by the DB CHECK on the columns it lands in.
+            //
+            // Wiring this surface is not optional. ingest_tabular has always
+            // accepted source_epsg and has never once been sent one, so every
+            // drill file uploaded here has silently taken its
+            // DEFAULT_SOURCE_EPSG of 32613 (UTM 13N). An override wired only
+            // into the wizard's /upload route would have left this one
+            // guessing.
+            'source_epsg' => ['nullable', 'integer', 'min:'.self::EPSG_MIN, 'max:'.self::EPSG_MAX],
+        ], [
+            // Inline validate() has no messages() to hang these on; keep the
+            // wording identical to StoreQueryRequest::messages().
+            'source_epsg.min' => 'EPSG codes must be in the range 1024-32767.',
+            'source_epsg.max' => 'EPSG codes must be in the range 1024-32767.',
         ]);
 
         $file = $request->file('file');
@@ -146,6 +179,7 @@ class DrillUploadController extends Controller
         );
 
         $vendorProfileId = $validated['vendor_profile_id'] ?? null;
+        $sourceEpsg = $validated['source_epsg'] ?? null;
 
         try {
             $this->streamToBronze($storage, $seaweedfsKey, $file->getRealPath(), $vendorProfileId);
@@ -237,6 +271,7 @@ class DrillUploadController extends Controller
             selection: $selection,
             fileSize: (int) $file->getSize(),
             vendorProfileId: $vendorProfileId,
+            sourceEpsg: $sourceEpsg,
         );
 
         $body = [
@@ -248,6 +283,11 @@ class DrillUploadController extends Controller
             'sheet_type' => $selection['sheet_type'],
             'dispatch' => $dispatch,
         ];
+
+        // Echoed only when supplied, mirroring UploadController.
+        if ($sourceEpsg !== null) {
+            $body['source_epsg'] = $sourceEpsg;
+        }
 
         // A classified route (hatchet_tabular/fastapi_pdf — NOT 'unrouted',
         // which has
@@ -267,7 +307,7 @@ class DrillUploadController extends Controller
     }
 
     /**
-     * @return array{dispatched: bool, run_id?: ?string, workflow_run_id?: ?string, error?: ?string, route: string}
+     * @return array{dispatched: bool, run_id?: ?string, workflow_run_id?: ?string, sheet_type?: ?string, source_epsg?: ?int, error?: ?string, route: string}
      */
     private function dispatch(
         $user,
@@ -277,6 +317,7 @@ class DrillUploadController extends Controller
         array $selection,
         int $fileSize,
         ?int $vendorProfileId,
+        ?int $sourceEpsg = null,
     ): array {
         $route = $selection['route'];
 
@@ -298,6 +339,7 @@ class DrillUploadController extends Controller
                 workspaceId: $workspaceId,
                 seaweedfsKey: $seaweedfsKey,
                 sheetType: $selection['sheet_type'],
+                sourceEpsg: $sourceEpsg,
             );
         }
 
@@ -323,7 +365,13 @@ class DrillUploadController extends Controller
      * classifies from the header row (or per sheet), which is why the
      * key is omitted entirely instead of being sent as null.
      *
-     * @return array{dispatched: bool, workflow_run_id?: ?string, sheet_type?: ?string, error?: ?string, route: string}
+     * `$sourceEpsg` follows the same omit-when-null convention, and for a
+     * stronger reason: IngestTabularInput treats a null source_epsg as
+     * "assume DEFAULT_SOURCE_EPSG", so sending the key explicitly as null
+     * says nothing the omission does not, while sending a real value is the
+     * only way a caller has ever been able to correct that assumption.
+     *
+     * @return array{dispatched: bool, workflow_run_id?: ?string, sheet_type?: ?string, source_epsg?: ?int, error?: ?string, route: string}
      */
     private function dispatchTabular(
         User $user,
@@ -331,6 +379,7 @@ class DrillUploadController extends Controller
         string $workspaceId,
         string $seaweedfsKey,
         ?string $sheetType,
+        ?int $sourceEpsg = null,
     ): array {
         try {
             $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
@@ -355,6 +404,9 @@ class DrillUploadController extends Controller
             ];
             if ($sheetType !== null) {
                 $payload['sheet_type'] = $sheetType;
+            }
+            if ($sourceEpsg !== null) {
+                $payload['source_epsg'] = $sourceEpsg;
             }
 
             // Same per-workspace throttle as the PDF path above: an operator
@@ -389,6 +441,7 @@ class DrillUploadController extends Controller
                 'dispatched' => true,
                 'workflow_run_id' => $body['hatchet_workflow_run_id'] ?? $body['workflow_run_id'] ?? null,
                 'sheet_type' => $sheetType,
+                'source_epsg' => $sourceEpsg,
                 'route' => 'hatchet_tabular',
             ];
         } catch (Throwable $e) {

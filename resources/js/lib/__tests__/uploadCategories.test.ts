@@ -9,11 +9,15 @@ import uploadControllerSource from '../../../../app/Http/Controllers/Api/V1/Uplo
 import {
   CATEGORY_EXTS,
   CATEGORY_LABEL,
+  EPSG_MAX,
+  EPSG_MIN,
   LIVE_CATEGORIES,
   RETIRED_CATEGORIES,
   acceptedExtensions,
   categoryForExtension,
   extensionOf,
+  parseEpsg,
+  supportsCrsOverride,
   type Category,
 } from '../uploadCategories';
 
@@ -95,6 +99,27 @@ describe('categoryForExtension', () => {
     expect(categoryForExtension('las')).toBe('well_logs');
   });
 
+  it('routes MapInfo entry points to spatial and its sidecars nowhere', () => {
+    // .tab and .mif are what GDAL opens. Everything else in a MapInfo set
+    // travels inside the ZIP shapefileBundle builds and must NOT resolve to a
+    // category of its own — .dat in particular is claimed by the retired
+    // `xyz` category, and a .mid opens directly, so accepting one as an
+    // upload would ingest a MIF/MID pair twice.
+    expect(categoryForExtension('tab')).toBe('spatial');
+    expect(categoryForExtension('mif')).toBe('spatial');
+    for (const ext of ['dat', 'map', 'id', 'ind', 'mid']) {
+      expect(categoryForExtension(ext), `'${ext}' resolved to a category`).toBeNull();
+    }
+  });
+
+  it('routes a standalone .dbf to the tabular category, not to spatial', () => {
+    // A .dbf beside its .shp never reaches this function — groupShapefiles
+    // zips it into the bundle first. One arriving here has no .shp, so it is
+    // an attribute table, and ingest_spatial would die on it with
+    // "'DataFrame' object has no attribute 'crs'".
+    expect(categoryForExtension('dbf')).toBe('tables');
+  });
+
   it('never returns a retired category', () => {
     // .sgy and .xyz map to retired categories, so they must resolve to null
     // rather than to a category the upload would be refused for.
@@ -149,7 +174,82 @@ describe('acceptedExtensions', () => {
     expect(accepted).toContain('shp');
     expect(accepted).toContain('las');
     expect(accepted).toContain('qgz');
+    expect(accepted).toContain('tab');
+    expect(accepted).toContain('mif');
+    expect(accepted).toContain('dbf');
     // .sgy belongs only to a retired category.
     expect(accepted).not.toContain('sgy');
+  });
+
+  it('does not offer bundle-only members as standalone uploads', () => {
+    // These reach the server inside a ZIP or not at all. Offering one as its
+    // own upload gets a 422 at the door, which is how the drop zone taught
+    // people to delete their sidecars before importing.
+    const accepted = acceptedExtensions();
+    for (const ext of ['shx', 'prj', 'cpg', 'dat', 'map', 'id', 'ind', 'mid']) {
+      expect(accepted, `.${ext}`).not.toContain(ext);
+    }
+  });
+});
+
+describe('parseEpsg', () => {
+  it('accepts a bare EPSG number inside the range the database enforces', () => {
+    expect(parseEpsg('26904')).toEqual({ epsg: 26904 });
+    expect(parseEpsg('  32613 ')).toEqual({ epsg: 32613 });
+    expect(parseEpsg(String(EPSG_MIN))).toEqual({ epsg: EPSG_MIN });
+    expect(parseEpsg(String(EPSG_MAX))).toEqual({ epsg: EPSG_MAX });
+  });
+
+  it('treats empty as no override rather than as an error', () => {
+    // The override is optional and a file that declares its own CRS wins
+    // over it anyway, so blank must not block the upload.
+    expect(parseEpsg('')).toEqual({});
+    expect(parseEpsg('   ')).toEqual({});
+  });
+
+  it('refuses a CRS string, which is the wrong wire type', () => {
+    // silver.spatial_features.crs_epsg_native is an integer with a CHECK
+    // constraint. Passing 'EPSG:26904' through would be a second spelling of
+    // one concept across two ingest paths that share this screen.
+    expect(parseEpsg('EPSG:26904').error).toBeTruthy();
+    expect(parseEpsg('WGS84').error).toBeTruthy();
+    expect(parseEpsg('-26904').error).toBeTruthy();
+    expect(parseEpsg('269.04').error).toBeTruthy();
+  });
+
+  it('refuses codes outside 1024-32767', () => {
+    expect(parseEpsg('4').error).toContain(`${EPSG_MIN}-${EPSG_MAX}`);
+    expect(parseEpsg('1023').error).toBeTruthy();
+    expect(parseEpsg('32768').error).toBeTruthy();
+    expect(parseEpsg('999999').error).toBeTruthy();
+  });
+});
+
+describe('supportsCrsOverride', () => {
+  it('offers the override on every category routed to spatial or tabular ingest', () => {
+    // Exactly the categories UploadController::GEOLOGY_WORKFLOWS maps to
+    // ingest_spatial or ingest_tabular — the two workflows whose input model
+    // declares source_epsg, and the two dispatchGeologyIngest() forwards it to.
+    for (const cat of [
+      'spatial',
+      'collars',
+      'surveys',
+      'lithology',
+      'samples',
+      'excel',
+      'tables',
+    ] as Category[]) {
+      expect(supportsCrsOverride(cat), cat).toBe(true);
+    }
+  });
+
+  it('withholds it where the value would be dropped in transit', () => {
+    // reports -> ingest_pdf/tiff_normalize, archive -> ingest_zip_archive,
+    // well_logs -> ingest_well_logs. None of the three has the field, and a
+    // control whose value is silently discarded is worse than no control.
+    for (const cat of ['reports', 'archive', 'well_logs'] as Category[]) {
+      expect(supportsCrsOverride(cat), cat).toBe(false);
+    }
+    expect(supportsCrsOverride(null)).toBe(false);
   });
 });
