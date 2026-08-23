@@ -125,7 +125,7 @@ class DrillFileRouterTest extends TestCase
                 $expected,
                 $known,
                 "{$name} routes to sheet_type '{$expected}', which "
-                .'ingest_tabular does not recognise'
+                .'ingest_tabular does not recognise',
             );
         }
     }

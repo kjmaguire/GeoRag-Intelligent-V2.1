@@ -310,7 +310,7 @@ def _verify_snapshot_manifest(
     # Neo4j single bucket
     n4_expected = (stores.get("neo4j") or {}).get("node_count")
     n4_actual = live_counts.get("neo4j_nodes")
-    if n4_expected is not None and n4_actual not in (None, -1):
+    if n4_expected is not None and n4_actual is not None and n4_actual != -1:
         if int(n4_actual) != int(n4_expected):
             mismatches.append({
                 "store": "neo4j",
@@ -321,7 +321,7 @@ def _verify_snapshot_manifest(
     # Qdrant
     q_expected = (stores.get("qdrant") or {}).get("point_count")
     q_actual = live_counts.get("qdrant_points")
-    if q_expected is not None and q_actual not in (None, -1):
+    if q_expected is not None and q_actual is not None and q_actual != -1:
         if int(q_actual) != int(q_expected):
             mismatches.append({
                 "store": "qdrant",

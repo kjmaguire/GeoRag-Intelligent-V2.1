@@ -1,79 +1,7 @@
 parameters:
 	ignoreErrors:
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$created_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
 			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$ip_address\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$llm_model\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sources_used\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Console/Commands/DumpAuditPii.php
@@ -107,18 +35,6 @@ parameters:
 			identifier: larastan.noEnvCallsOutsideOfConfig
 			count: 1
 			path: app/Console/Commands/Ingestion/ReingestProject.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\|Illuminate\\Database\\Eloquent\\Collection\<int, App\\Models\\QueryAuditLog\>\:\:\$query_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/RestoreAuditPii.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\|Illuminate\\Database\\Eloquent\\Collection\<int, App\\Models\\QueryAuditLog\>\:\:\$response_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/RestoreAuditPii.php
 
 		-
 			message: '#^Dead catch \- Illuminate\\Contracts\\Encryption\\DecryptException is never thrown in the try block\.$#'
@@ -301,18 +217,6 @@ parameters:
 			path: app/Http/Controllers/Api/V1/QueryController.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Api/V1/QueryController.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$query_text\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Api/V1/QueryController.php
-
-		-
 			message: '#^Call to an undefined method Illuminate\\Foundation\\Bus\\PendingDispatch\:\:withTraceparent\(\)\.$#'
 			identifier: method.notFound
 			count: 1
@@ -367,19 +271,7 @@ parameters:
 			path: app/Http/Controllers/Foundry/OverviewController.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$created_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Foundry/OverviewController.php
-
-		-
 			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Foundry/OverviewController.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Http/Controllers/Foundry/OverviewController.php
@@ -727,55 +619,7 @@ parameters:
 			path: app/Jobs/StreamQueryFromFastApi.php
 
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$citations\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$confidence\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
 			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$llm_model\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$metadata\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_text\.$#'
-			identifier: property.notFound
-			count: 5
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$response_time_ms\.$#'
-			identifier: property.notFound
-			count: 4
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$sources_used\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Jobs/StreamQueryFromFastApi.php
@@ -965,54 +809,6 @@ parameters:
 			identifier: missingType.generics
 			count: 1
 			path: app/Models/WellLogCurve.php
-
-		-
-			message: '#^Access to constant RESOURCE_TYPE_BLOB on an unknown class MicrosoftAzure\\Storage\\Blob\\Internal\\BlobResources\.$#'
-			identifier: class.notFound
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Call to method generateBlobServiceSharedAccessSignatureToken\(\) on an unknown class MicrosoftAzure\\Storage\\Blob\\BlobSharedAccessSignatureHelper\.$#'
-			identifier: class.notFound
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Call to static method createBlobService\(\) on an unknown class MicrosoftAzure\\Storage\\Blob\\BlobRestProxy\.$#'
-			identifier: class.notFound
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Call to static method createBlobServiceWithTokenCredential\(\) on an unknown class MicrosoftAzure\\Storage\\Blob\\BlobRestProxy\.$#'
-			identifier: class.notFound
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Instantiated class League\\Flysystem\\AzureBlobStorage\\AzureBlobStorageAdapter not found\.$#'
-			identifier: class.notFound
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Instantiated class MicrosoftAzure\\Storage\\Blob\\BlobSharedAccessSignatureHelper not found\.$#'
-			identifier: class.notFound
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Parameter \#1 \$adapter of class League\\Flysystem\\Filesystem constructor expects League\\Flysystem\\FilesystemAdapter, League\\Flysystem\\AzureBlobStorage\\AzureBlobStorageAdapter given\.$#'
-			identifier: argument.type
-			count: 1
-			path: app/Providers/AppServiceProvider.php
-
-		-
-			message: '#^Parameter \#2 \$adapter of class Illuminate\\Filesystem\\FilesystemAdapter constructor expects League\\Flysystem\\FilesystemAdapter, League\\Flysystem\\AzureBlobStorage\\AzureBlobStorageAdapter given\.$#'
-			identifier: argument.type
-			count: 1
-			path: app/Providers/AppServiceProvider.php
 
 		-
 			message: '#^Using nullsafe property access "\?\-\>id" on left side of \?\? is unnecessary\. Use \-\> instead\.$#'
@@ -1253,15 +1049,3 @@ parameters:
 			identifier: nullsafe.neverNull
 			count: 1
 			path: database/seeders/VendorProfiles/MxDepositSeeder.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$project_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: routes/channels.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$user_id\.$#'
-			identifier: property.notFound
-			count: 1
-			path: routes/channels.php
