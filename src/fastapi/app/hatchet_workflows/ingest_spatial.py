@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time as _t
@@ -64,6 +65,20 @@ log = logging.getLogger("georag.hatchet.ingest_spatial")
 VECTOR_EXTENSIONS = frozenset({
     ".shp", ".geojson", ".json", ".gpkg", ".gml", ".gpx",
     ".dxf", ".dgn", ".gdb", ".fgb",
+    # MapInfo, 2026-08-23. The parser learned "MapInfo File" in the same
+    # change that added .tab/.mif to Laravel's CATEGORIES and the frontend
+    # bundler -- but NOT to this set, which is what _extract_archive uses to
+    # decide which extracted members are worth opening. The result was that a
+    # zipped .tab unpacked correctly, matched nothing here, and was reported
+    # as "archive contains no readable vector file ... must include the .shp",
+    # which is both wrong and unactionable. Five real MapInfo tables were
+    # refused that way before this line existed.
+    #
+    # ONLY the two masters. .dat/.map/.id/.ind/.mid are sidecars read THROUGH
+    # the master; .mid in particular opens directly, so listing it would
+    # ingest a MIF/MID pair twice -- the same trap the shapefile sidecars are
+    # kept out of this set to avoid.
+    ".tab", ".mif",
 })
 QGIS_PROJECT_EXTENSIONS = frozenset({".qgs", ".qgz"})
 
@@ -202,7 +217,7 @@ INSERT INTO silver.spatial_features (
     $7, $8, $9, $10::jsonb,
     $11, $12, $13,
     NOW(), NOW(),
-    ST_SetSRID(ST_GeomFromText($14::text), 4326)
+    ST_Force2D(ST_SetSRID(ST_GeomFromText($14::text), 4326))
 )
 """
 
@@ -536,6 +551,34 @@ def _reported_layers(parse_result: Any, layer_override: str | None) -> list[str]
     ))
 
 
+#: WKT for a 3D geometry names the dimension before the coordinate list --
+#: "POINT Z (...)", "LINESTRING ZM (...)". Cheap to spot, and we only need to
+#: know whether the layer has any.
+_WKT_HAS_Z_RE = re.compile(r"^\s*[A-Z]+\s+Z", re.IGNORECASE)
+
+
+def _layer_drops_z(parse_result: Any) -> bool:
+    """True when this layer carries Z that the 2D geom column cannot hold.
+
+    silver.spatial_features.geom is geometry(Geometry, 4326) with
+    coord_dimension 2, so a 3D WKT makes PostGIS reject the INSERT outright --
+    "Geometry has Z dimension but column does not" -- and takes every feature
+    in the file down with it, not just the 3D ones. A real DXF failed exactly
+    that way on 2026-08-23.
+
+    The INSERT now wraps the geometry in ST_Force2D, which fixes the failure.
+    This exists so the fix is not silent: a PointZ collar file's Z IS its
+    elevation, and quietly flattening it is the same class of loss as quietly
+    assuming a CRS. Checked over the features rather than a declared type
+    because the parser reports geometry_type per feature.
+    """
+    for feat in getattr(parse_result, "features", None) or ():
+        wkt = getattr(feat, "geometry_wkt", None)
+        if wkt and _WKT_HAS_Z_RE.match(wkt):
+            return True
+    return False
+
+
 async def _write_features(
     conn: asyncpg.Connection,
     *,
@@ -781,7 +824,9 @@ async def run_ingest_spatial(
                         "detail": (
                             "The archive contains no readable vector or QGIS "
                             "file. A zipped shapefile must include the .shp "
-                            "itself, not only its .dbf/.shx sidecars."
+                            "itself, not only its .dbf/.shx sidecars; a zipped "
+                            "MapInfo table must include the .tab or .mif, not "
+                            "only its .dat/.map/.id."
                         ),
                     })
                 parsed = []
@@ -963,6 +1008,17 @@ async def run_ingest_spatial(
                         # geometry -- to a geologist as a sentence rather
                         # than as a token they have to look up.
                         warnings.extend(_renderable(result.warnings))
+                        if _layer_drops_z(result):
+                            warnings.append({
+                                "code": "z_dropped",
+                                "detail": (
+                                    f"'{layer_name or filename}' carries 3D "
+                                    "coordinates. The map stores 2D geometry, so "
+                                    "the Z value was dropped -- if it is an "
+                                    "elevation you need, it has to come in as an "
+                                    "attribute column."
+                                ),
+                            })
                         crs_conf, georef = _crs_quality(
                             result, requested_epsg=input.source_epsg,
                         )

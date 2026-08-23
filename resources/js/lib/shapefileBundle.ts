@@ -22,6 +22,34 @@
  * `.dat` and index in `.id`, and a `.mif` carries its attributes in a
  * separate `.mid`. Uploading a lone `.tab` is uploading nothing.
  *
+ * Two things this module does that go past assembling a ZIP, both because the
+ * alternative is asking the user for information already sitting in the folder
+ * they just dropped:
+ *
+ *   - CRS DONATION. When the selection's coordinate-system sidecars - `.prj`
+ *     and `.qpj` alike - agree on exactly ONE WKT, and that WKT actually
+ *     names a CRS, those bytes are copied into every shapefile bundle that
+ *     declares none of its own, under the recipient's own stem. Nothing is
+ *     parsed here beyond lifting a display name out of the WKT: the server
+ *     reads the copy with pyproj exactly as it reads any other `.prj`, and it
+ *     still measures the fit of the coordinate system against the geometry
+ *     and stores that score as `crs_confidence`/`georef_method`, so a donated
+ *     CRS that does not match is not recorded as a confident one. Two
+ *     distinct WKTs in one selection and nothing is donated at all - a
+ *     delivery carrying two coordinate systems must not have one of them
+ *     quietly spread across the other's files.
+ *
+ *     A bundle that took a copy carries `crsFrom`, and that is the ONLY way
+ *     to identify a recipient. Stems are not unique across folders - see
+ *     `groupKey`, which keeps `geology/faults.shp` and `claims/faults.shp`
+ *     deliberately apart, and the real delivery has exactly that - so a
+ *     screen matching recipients by stem mis-attributes the donation and
+ *     strips the wrong member back out when the user declines it.
+ *   - RASTER `.tab`. A MapInfo TAB whose header says `Type "RASTER"` is the
+ *     georeferencing for a scanned image, not a vector table. It has no
+ *     `.dat`/`.map`/`.id` and never will, so reporting it as an incomplete
+ *     vector set asks the user for files that do not exist.
+ *
  * Two rules this module will not bend:
  *
  *   1. Nothing is DISCARDED silently. A member that cannot be bundled comes
@@ -98,6 +126,29 @@ export const BUNDLE_MEMBER_EXTS: string[] = [
 
 export type BundleKind = 'shapefile' | 'mapinfo';
 
+/**
+ * Where a bundle's coordinate system came from, when it came from another
+ * file.
+ *
+ * Carried ON the bundle rather than looked up by stem in `CrsDonation`,
+ * because stems are not unique: a folder import holding `geology/faults.shp`
+ * and `claims/faults.shp` produces two bundles with the same `stem`, only one
+ * of which may have taken a copy. Matching on the stem attributes the
+ * donation to both, and the "remove the donated .prj" path then strips a
+ * member out of an archive that never received one.
+ *
+ * `memberName` is the exact ZIP entry that was added, so removing it again is
+ * an exact-name operation and not a reconstruction from the stem.
+ */
+export interface CrsProvenance {
+    /** File the WKT came from, e.g. `Drobeck_Shumagin_Veins.prj`. */
+    sourceName: string;
+    /** Human label parsed out of the WKT, e.g. `NAD 1983 UTM Zone 4N`. */
+    label: string;
+    /** The exact entry written into this bundle, e.g. `geology_poly.prj`. */
+    memberName: string;
+}
+
 export interface SpatialBundle {
     /** `<basename>.zip` - what gets uploaded, under the `spatial` category. */
     file: File;
@@ -115,6 +166,12 @@ export interface SpatialBundle {
      * is that the user finds out here, not from a failed run later.
      */
     verdict: string | null;
+    /**
+     * Set when this bundle was given a `.prj` it did not have, null when its
+     * coordinate system is its own. This is the recipient marker - never the
+     * stem.
+     */
+    crsFrom?: CrsProvenance | null;
 }
 
 /** Backwards-compatible alias: every bundle used to be a shapefile. */
@@ -125,6 +182,35 @@ export interface UnusableFile {
     file: File;
     /** Why it cannot be uploaded on its own. Render this. */
     reason: string;
+}
+
+/**
+ * One `.prj` from the selection, copied into the bundles that had none.
+ *
+ * Only ever set when the whole selection agrees on a single coordinate
+ * system, and only ever reported when at least one bundle actually took a
+ * copy. The screens render this as one line with a control to turn it off:
+ * applied by default because the point is to stop making the user type the
+ * same EPSG code once per file, visible because a CRS the file did not
+ * declare is not the same fact as a CRS it did.
+ */
+export interface CrsDonation {
+    /** File name the WKT came from, e.g. `Drobeck_Shumagin_Veins.prj`. */
+    sourceName: string;
+    /** Raw `.prj` text, copied verbatim into each recipient bundle. */
+    wkt: string;
+    /** Human label parsed out of the WKT's PROJCS/GEOGCS name, for the UI. */
+    label: string;
+    /**
+     * Stems of the bundles that received a copy, one entry per recipient.
+     *
+     * For the summary banner - how many bundles took it, and which datasets
+     * to name in one line. NOT an identity: two shapefiles in different
+     * folders can share a stem, so a screen deciding whether a given bundle
+     * is a recipient must read `SpatialBundle.crsFrom` instead. Duplicate
+     * entries here are real, not a bug: they are two different bundles.
+     */
+    appliedTo: string[];
 }
 
 export interface GroupResult {
@@ -140,6 +226,12 @@ export interface GroupResult {
      * attribute table in its own right and goes to `passthrough`.
      */
     unusable: UnusableFile[];
+    /**
+     * The single coordinate system this selection agreed on, and where it was
+     * copied to, or null when there was nothing to donate, nothing agreed on,
+     * or nothing that needed it.
+     */
+    crsDonation: CrsDonation | null;
 }
 
 function extOf(name: string): string {
@@ -171,7 +263,18 @@ function groupKey(f: File): string {
     return `${dir} ${stemOf(f).toLowerCase()}`;
 }
 
-async function zipOf(stem: string, members: File[]): Promise<File> {
+/**
+ * @param donated Extra member written under a name of our choosing rather
+ *   than its own - the donated `.prj`, which has to arrive as `<stem>.prj`
+ *   for GDAL to read it as this shapefile's coordinate system. The source
+ *   File is handed to JSZip directly so the bytes are copied verbatim, with
+ *   no text round-trip to mangle the encoding of a WKT.
+ */
+async function zipOf(
+    stem: string,
+    members: File[],
+    donated: { name: string; source: File } | null = null,
+): Promise<File> {
     const zip = new JSZip();
     for (const m of members) {
         // Bare names only. rejectArchive() refuses an absolute or
@@ -179,23 +282,159 @@ async function zipOf(stem: string, members: File[]): Promise<File> {
         // archive is ever opened.
         zip.file(m.name, m);
     }
+    if (donated) {
+        zip.file(donated.name, donated.source);
+    }
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
     return new File([blob], `${stem}.zip`, { type: 'application/zip' });
 }
 
-function shapefileVerdict(missing: string[]): string | null {
+/**
+ * Compare two `.prj` files by content, not by bytes.
+ *
+ * The same WKT is routinely written twice with a different trailing newline,
+ * or wrapped across lines by one toolchain and not another. Treating those as
+ * two coordinate systems would suppress the donation on exactly the deliveries
+ * that need it most.
+ */
+function normaliseWkt(text: string): string {
+    return text.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * Extensions that carry a coordinate-system declaration beside a `.shp`.
+ *
+ * `.qpj` is here because QGIS wrote its own copy of the WKT into one for
+ * years, and that copy can say something DIFFERENT from the `.prj` beside it
+ * - or be the only declaration in the folder. Harvesting only `.prj` made a
+ * shapefile carrying just a `.qpj` read as declaring nothing, which is the
+ * one state that attracts a donation, so the file would be handed a
+ * coordinate system contradicting the one it actually declares.
+ */
+const CRS_SIDECARS = new Set(['prj', 'qpj']);
+
+/**
+ * The WKT keywords that actually name a coordinate reference system: WKT1's
+ * `PROJCS`/`GEOGCS` and WKT2's `PROJCRS`/`GEOGCRS`.
+ *
+ * This is the gate on donating at all. "The selection agrees on one WKT" is
+ * satisfied by a single EMPTY `.prj`, and by one holding a stray line of
+ * junk - a set of size one either way - and `crsLabel` then falls back to the
+ * file name, so the screen would offer `donor.prj` as the coordinate system
+ * being applied to seven other files. A donor has to name a CRS; anything
+ * else and the recipients keep the ordinary "set an EPSG code" verdict.
+ */
+const CRS_WKT_RE = /\b(?:PROJCS|GEOGCS|PROJCRS|GEOGCRS)\s*\[/i;
+
+/**
+ * The one piece of WKT reading this module does: the quoted name on PROJCS,
+ * or failing that on GEOGCS (and their WKT2 spellings), for a label a human
+ * can check at a glance.
+ *
+ * Deliberately NOT a WKT -> EPSG resolution. That belongs to pyproj on the
+ * server, which already does it for every other `.prj`; a second, weaker
+ * implementation in the browser would be a new way to be confidently wrong
+ * about a coordinate system, which is the bug this whole change exists to
+ * close.
+ */
+function crsLabel(wkt: string, fallback: string): string {
+    const match =
+        /\bPROJCS\s*\[\s*"([^"]+)"/i.exec(wkt) ??
+        /\bPROJCRS\s*\[\s*"([^"]+)"/i.exec(wkt) ??
+        /\bGEOGCS\s*\[\s*"([^"]+)"/i.exec(wkt) ??
+        /\bGEOGCRS\s*\[\s*"([^"]+)"/i.exec(wkt);
+    if (!match) return fallback;
+    return match[1].replace(/_/g, ' ').trim();
+}
+
+/**
+ * A MapInfo TAB header declaring `Type "RASTER"` (NATIVE tables write it
+ * unquoted, raster ones quoted - accept both).
+ */
+const RASTER_TAB_RE = /^\s*Type\s+"?RASTER"?/im;
+
+/** `  File "bmgc_ungaissouth_geology_1990.tif"` in a TAB header. */
+const TAB_IMAGE_RE = /^\s*File\s+"([^"]+)"/im;
+
+/** Strip any directory part a TAB header wrote into its `File` line. */
+function baseName(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path;
+}
+
+/**
+ * @param hasQpj The set carries a `.qpj`. It is not CRS-less then, so the
+ *   "declares no coordinate system" wording would be false - but the ingest
+ *   inventories `.shx`/`.dbf`/`.prj`/`.cpg` and refuses on a missing `.prj`,
+ *   so an EPSG code is still the way through.
+ */
+function shapefileVerdict(missing: string[], hasQpj = false): string | null {
     // A missing .shx is not worth a word: GDAL rebuilds the index from the
     // .shp itself (SHAPE_RESTORE_SHX), measured on a real four-point file.
     const notes: string[] = [];
     if (missing.includes('prj')) {
         notes.push(
-            'no .prj, so this file declares no coordinate system - set an EPSG code below, or the ingest will refuse it',
+            hasQpj
+                ? 'no .prj - the coordinate system is declared in a .qpj, which the ingest does not read, so set an EPSG code below or add the .prj'
+                : 'no .prj, so this file declares no coordinate system - set an EPSG code below, or the ingest will refuse it',
         );
     }
     if (missing.includes('dbf')) {
         notes.push('no .dbf, so the features will land with no attributes');
     }
     return notes.length > 0 ? `Incomplete shapefile: ${notes.join('; ')}.` : null;
+}
+
+/**
+ * Verdict for a bundle that got its coordinate system from another file.
+ *
+ * It must not read as though the set were complete - it is not, the `.prj`
+ * is a copy - and it must name the source, because a coordinate system the
+ * file did not declare is the one thing on this screen the user is best
+ * placed to catch.
+ *
+ * `missing` here has already had `prj` removed, so the shared builder never
+ * contradicts this by also demanding an EPSG code.
+ */
+function donatedCrsVerdict(missing: string[], sourceName: string, label: string): string {
+    const note =
+        `No .prj of its own: the coordinate system was copied from ${sourceName} (${label}), ` +
+        'the only one in this selection. The ingest still checks it against the geometry and ' +
+        'flags it if it does not fit.';
+    const rest = shapefileVerdict(missing);
+    return rest ? `${rest} ${note}` : note;
+}
+
+/**
+ * Why a raster TAB is not an incomplete vector set.
+ *
+ * The old message told the user to add the `.dat`, `.map` and `.id` - files a
+ * raster TAB has never had. Advice that cannot be followed reads as a broken
+ * importer, and it buried the two files carrying the georeferencing for the
+ * scanned geology maps in the delivery.
+ *
+ * The message it was replaced with then promised its own impossible thing:
+ * "upload the image itself and this file's coordinate system will be
+ * applied." Nothing applies it. This TAB is reported as unusable and never
+ * uploaded, and no code reads its `CoordSys` line, so the image goes up as an
+ * ordinary image. Saying otherwise inside the feature built to stop giving
+ * unfollowable advice is the same bug one message further on.
+ *
+ * The file name is deliberately NOT repeated here: both screens render an
+ * unusable row as `<file name>: <reason>`, so a reason that opens with the
+ * name prints it twice.
+ */
+function rasterTabReason(image: string | null, imageSelected: boolean): string {
+    const head =
+        image === null
+            ? 'Georeferencing for a scanned image, not a vector table.'
+            : `Georeferencing for ${image}, not a vector table.`;
+    const tail =
+        image === null
+            ? ''
+            : imageSelected
+              ? ` ${image} is in this selection and is being uploaded on its own.`
+              : ` ${image} was not selected - add it and drop the folder again to upload it.`;
+    return `${head}${tail} The coordinate system in this file is not read yet.`;
 }
 
 function mapinfoVerdict(masterExt: string, missing: string[]): string | null {
@@ -226,17 +465,82 @@ function mapinfoVerdict(masterExt: string, missing: string[]): string | null {
  * The name is historical: it groups MapInfo too.
  */
 export async function groupShapefiles(files: File[]): Promise<GroupResult> {
-    const byKey = new Map<string, File[]>();
+    const bundles: SpatialBundle[] = [];
+    const passthrough: File[] = [];
+    const unusable: UnusableFile[] = [];
+    const rasterTabs: UnusableFile[] = [];
+
+    // ---- Raster TABs, before anything can mistake one for a vector set ----
+    //
+    // A TAB's header is plain text at the very start of the file, so telling
+    // the two kinds apart - the extension is identical - costs one slice.
+    //
+    // Only the HEAD is read. `f.text()` reads the whole file, and a `.tab` is
+    // only reliably short for the raster ones: a NATIVE table's header grows
+    // with its field list, and nothing stops a caller dropping something much
+    // larger with a `.tab` name. Both regexes below match inside the first
+    // couple of hundred bytes on every real fixture (401-748 bytes end to
+    // end), so 8 KiB is slack, not a limit anything real approaches.
+    const selectedNames = new Set(files.map((f) => f.name.toLowerCase()));
+    const vectorFiles: File[] = [];
     for (const f of files) {
+        if (extOf(f.name) !== 'tab') {
+            vectorFiles.push(f);
+            continue;
+        }
+        const header = await f.slice(0, 8192).text();
+        if (!RASTER_TAB_RE.test(header)) {
+            vectorFiles.push(f);
+            continue;
+        }
+        const match = TAB_IMAGE_RE.exec(header);
+        const image = match ? baseName(match[1]) : null;
+        rasterTabs.push({
+            file: f,
+            reason: rasterTabReason(
+                image,
+                image !== null && selectedNames.has(image.toLowerCase()),
+            ),
+        });
+    }
+
+    // ---- The one coordinate system this selection agrees on, if any ----
+    //
+    // Harvested across the WHOLE selection, not per group: the `.prj` that
+    // rescues seven CRS-less shapefiles is routinely three folders away from
+    // all of them, attached to the one dataset that was exported properly.
+    // An orphaned `.prj` counts too - it is a declaration of the delivery's
+    // coordinate system whoever it was meant for. So does a `.qpj`: leaving
+    // it out of the comparison is how a folder holding one coordinate system
+    // in `.prj` files and a second in a `.qpj` would look unanimous.
+    const crsFiles: { file: File; text: string; key: string }[] = [];
+    for (const f of vectorFiles) {
+        if (!CRS_SIDECARS.has(extOf(f.name))) continue;
+        const text = await f.text();
+        crsFiles.push({ file: f, text, key: normaliseWkt(text) });
+    }
+    const distinctWkts = new Set(crsFiles.map((c) => c.key));
+    // Prefer a `.prj` as the named source purely so the file the screen tells
+    // the user to go and check is the one they will recognise. The bytes are
+    // the same whichever is picked, or there would be more than one distinct
+    // WKT here and no donation at all.
+    const agreed =
+        distinctWkts.size === 1
+            ? (crsFiles.find((c) => extOf(c.file.name) === 'prj') ?? crsFiles[0])
+            : null;
+    // Agreement is not enough: one empty `.prj` agrees with itself. Donate
+    // only text that names a CRS.
+    const donor = agreed && CRS_WKT_RE.test(agreed.text) ? agreed : null;
+    const donorLabel = donor ? crsLabel(donor.text, donor.file.name) : '';
+    const appliedTo: string[] = [];
+
+    const byKey = new Map<string, File[]>();
+    for (const f of vectorFiles) {
         const key = groupKey(f);
         const bucket = byKey.get(key);
         if (bucket) bucket.push(f);
         else byKey.set(key, [f]);
     }
-
-    const bundles: SpatialBundle[] = [];
-    const passthrough: File[] = [];
-    const unusable: UnusableFile[] = [];
 
     for (const group of byKey.values()) {
         // Every file starts unclaimed; each master takes its own sidecars and
@@ -253,13 +557,43 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
             // Only the three GDAL genuinely needs are worth warning about.
             const missing = ['shx', 'dbf', 'prj'].filter((e) => !present.has(e));
             const stem = stemOf(shp);
+            // A `.qpj` is a declaration of this set's own coordinate system.
+            // It does not satisfy the ingest, which reads the `.prj` - so it
+            // stays in `missing` - but it does disqualify the set as a
+            // recipient: copying another file's WKT in beside a `.qpj` saying
+            // something else is the contradiction this feature must not
+            // create.
+            const declaresCrs = present.has('prj') || present.has('qpj');
+
+            // The copy is named for its recipient, not for its source: GDAL
+            // reads `<stem>.prj` beside `<stem>.shp` and nothing else.
+            const donated =
+                donor && !declaresCrs ? { name: `${stem}.prj`, source: donor.file } : null;
+            const reported = donated ? missing.filter((e) => e !== 'prj') : missing;
+            if (donated) appliedTo.push(stem);
+
             bundles.push({
-                file: await zipOf(stem, members),
+                file: await zipOf(stem, members, donated),
                 stem,
                 kind: 'shapefile',
-                members: members.map((m) => m.name),
-                missing,
-                verdict: shapefileVerdict(missing),
+                members: donated
+                    ? [...members.map((m) => m.name), donated.name]
+                    : members.map((m) => m.name),
+                missing: reported,
+                // The recipient marker. Two bundles can share `stem`; only
+                // the one that actually took a copy carries this.
+                crsFrom:
+                    donated && donor
+                        ? {
+                              sourceName: donor.file.name,
+                              label: donorLabel,
+                              memberName: donated.name,
+                          }
+                        : null,
+                verdict:
+                    donated && donor
+                        ? donatedCrsVerdict(reported, donor.file.name, donorLabel)
+                        : shapefileVerdict(missing, present.has('qpj')),
             });
         }
 
@@ -281,6 +615,10 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
                 kind: 'mapinfo',
                 members: members.map((m) => m.name),
                 missing,
+                // A TAB's coordinate system lives in its .map; GDAL never
+                // reads a .prj beside one, so a MapInfo bundle is never a
+                // recipient.
+                crsFrom: null,
                 verdict: mapinfoVerdict(masterExt, missing),
             });
         }
@@ -316,7 +654,35 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
         }
     }
 
-    return { bundles, passthrough, unusable };
+    // A donation only exists once something took it. One orphaned `.prj` and
+    // nothing else in the selection is still an orphaned `.prj`, and saying
+    // otherwise would put a "coordinate system applied" line on a screen where
+    // nothing was applied to anything.
+    const crsDonation: CrsDonation | null =
+        donor && appliedTo.length > 0
+            ? {
+                  sourceName: donor.file.name,
+                  wkt: donor.text,
+                  label: donorLabel,
+                  appliedTo,
+              }
+            : null;
+
+    // An orphaned `.prj` or `.qpj` whose WKT was donated is no longer
+    // unusable - its content is in the ZIPs. Every one of them matches here
+    // by construction (a donation requires them all to agree), and leaving
+    // one behind would tell the user a file "has nothing to attach to"
+    // moments after the same bytes were attached to seven bundles.
+    const donatedPrjFiles = new Set(
+        crsDonation ? crsFiles.filter((c) => c.key === donor?.key).map((c) => c.file) : [],
+    );
+
+    return {
+        bundles,
+        passthrough,
+        unusable: [...unusable.filter((u) => !donatedPrjFiles.has(u.file)), ...rasterTabs],
+        crsDonation,
+    };
 }
 
 /** True if `ext` is a shapefile sidecar - used to explain why one was skipped. */
