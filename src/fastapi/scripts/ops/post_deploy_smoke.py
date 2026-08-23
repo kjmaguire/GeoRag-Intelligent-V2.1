@@ -90,14 +90,27 @@ def _report(name: str, ok: bool, detail: str) -> None:
         failures.append(name)
 
 
-#: Where this process's own app is listening. 127.0.0.1, not "localhost":
-#: the name resolves to BOTH 127.0.0.1 and ::1 in this container
-#: (confirmed by getaddrinfo inside a live replica), and a connect to ::1
-#: where the loopback has no IPv6 address raises
-#: `[Errno 99] Cannot assign requested address` rather than a refusal.
-#: That is the error this check produced on 2026-08-23, and it rolled the
-#: whole deploy back. The literal has no name to resolve and no second
-#: family to fall through to.
+#: Where this process's own app is listening.
+#:
+#: What is MEASURED, inside a live replica: `localhost` resolves to both
+#: 127.0.0.1 and ::1, with the IPv4 address first; at rest, GET /health
+#: on either returns 200. So a plain name lookup is not, by itself, the
+#: bug -- and the tidy "localhost picks ::1 and ::1 is dead" story does
+#: not survive that measurement. Do not repeat it as the cause.
+#:
+#: What is KNOWN about the failure: on 2026-08-23 this check raised
+#: `[Errno 99] Cannot assign requested address` seconds after the
+#: rollout, while the other three checks in this same script -- Laravel,
+#: Postgres, Qdrant -- all passed from the same container at the same
+#: moment. So container networking was up; the LOOPBACK specifically was
+#: not usable yet. EADDRNOTAVAIL is "that address is not assignable",
+#: not the ECONNREFUSED a closed port gives, which fits an interface
+#: still being configured rather than an app not yet listening.
+#:
+#: The retry below is therefore the load-bearing fix. The literal is
+#: defence in depth: it removes a resolution step and a second address
+#: family from a path that has already produced this error once, and
+#: costs nothing.
 #:
 #: 8000 is fastapi-cc's ingress `targetPort`. Not read from a PORT
 #: variable: there isn't one in this container (verified inside a live
