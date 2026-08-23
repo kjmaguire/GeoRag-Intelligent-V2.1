@@ -39,6 +39,36 @@ class XLSXIngestResult:
     skipped_reason: str | None = None
 
 
+#: Legacy Excel. openpyxl reads the OOXML .xlsx zip and nothing else, so it
+#: raises InvalidFileException on the OLE2 binary that .xls actually is.
+_XLS_SUFFIXES = frozenset({".xls", ".xlt"})
+
+
+def _xls_sheet_texts(path: str) -> list[tuple[str, str]]:
+    """Read a legacy .xls into (title, tab-separated text) pairs.
+
+    Delegates to georag_geoparsers, which owns spreadsheet reading and is where
+    xlrd is declared. This module cannot import xlrd directly:
+    check_pyproject_covers_imports gates every import under app/ against
+    src/fastapi/pyproject.toml, and adding the dist there would mean two
+    readers for one format plus a uv.lock + requirements.lock.txt
+    regeneration for a library that is already installed.
+
+    xlsx_parser has had an xlrd path since it was written; this module -- the
+    text fallback for sheets the drill classifier did not claim -- called
+    openpyxl unconditionally, and openpyxl reads OOXML zips, not the OLE2
+    binary that .xls is. A real customer file therefore reported
+    "produced no searchable text" for data that was readable all along.
+    """
+    from georag_geoparsers.xlsx_parser import read_xls_sheets  # noqa: PLC0415
+
+    # georag_geoparsers ships no py.typed, so mypy sees Any coming back.
+    # Bind it to the declared shape rather than widening this function's
+    # signature -- the contract is ours to state, not the untyped import's.
+    sheets: list[tuple[str, str]] = read_xls_sheets(path)
+    return sheets
+
+
 def _format_sheet_as_text(sheet) -> str:
     """Format an openpyxl worksheet as tab-separated text.
 
@@ -142,6 +172,41 @@ async def ingest_xlsx_file(
             file_path=xlsx_path, document_id=None,
             sheets_processed=0, rows_total=0, passages_inserted=0,
             skipped=True, skipped_reason="no_sheets_requested",
+        )
+
+    # Legacy .xls never reaches openpyxl: it is an OLE2 binary, not an OOXML
+    # zip, and load_workbook raises InvalidFileException on it. Handled here
+    # rather than left to the except below so the geologist gets their data
+    # instead of "produced no searchable text".
+    if p.suffix.lower() in _XLS_SUFFIXES:
+        try:
+            xls_texts = await asyncio.to_thread(_xls_sheet_texts, str(p))
+        except Exception as e:
+            log.warning(
+                "xlsx_ingester: xlrd could not read '%s': %s",
+                xlsx_path, e, exc_info=True,
+            )
+            return XLSXIngestResult(
+                file_path=xlsx_path, document_id=None,
+                sheets_processed=0, rows_total=0, passages_inserted=0,
+                skipped=True, skipped_reason=f"xlrd_failed:{type(e).__name__}",
+            )
+        if only_sheets is not None:
+            xls_texts = [t for t in xls_texts if t[0] in only_sheets]
+        if not xls_texts:
+            return XLSXIngestResult(
+                file_path=xlsx_path, document_id=None,
+                sheets_processed=0, rows_total=0, passages_inserted=0,
+                skipped=True, skipped_reason="empty_workbook",
+            )
+        return await land_sheets_as_text(
+            conn,
+            path=p,
+            sheet_texts=xls_texts,
+            total_rows=sum(t[1].count(chr(10)) + 1 for t in xls_texts),
+            workspace_id=workspace_id,
+            project_id=project_id,
+            parser_used="xlrd",
         )
 
     try:
