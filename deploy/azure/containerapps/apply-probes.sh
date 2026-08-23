@@ -284,6 +284,47 @@ fi
 # ---------------------------------------------------------------------
 # Verify against the live resource rather than trusting the PATCH result.
 # ---------------------------------------------------------------------
+# Settle first. A successful PATCH returns before `containerapp list`
+# reflects it: applying horizon's probes on 2026-08-23 printed "applied"
+# and this pass, running immediately after, still showed "-- none --" on
+# that app. `show` on the same app moments later had probes: 2, so the
+# apply was fine and the VERIFY was wrong -- the worst way for a check to
+# fail, because it sends you to re-apply something that already worked.
+#
+# Poll rather than sleep a fixed amount: read until the app reports the
+# probe count its spec asks for, then stop. A genuine failure still falls
+# out at the deadline and is still reported by the listing below.
+if [ "$APPLY" -eq 1 ]; then
+    printf 'waiting for the control plane to reflect the change'
+    for _ in $(seq 1 15); do
+        # az runs in BASH and pipes JSON in, the same shape as the listing
+        # below. Calling it from inside Python via subprocess looks tidier
+        # and is broken on Windows, where `az` is a .cmd and not directly
+        # executable -- it raised WinError 2 on every poll, so the loop
+        # spun its full deadline and verified nothing.
+        if az containerapp list -g "$RG" -o json 2>/dev/null \
+            | "$PY" -c "
+import json, sys
+spec = json.load(open(sys.argv[1], encoding='utf-8'))
+by_name = {a['name']: a for a in json.load(sys.stdin)}
+for app, want in spec.items():
+    if app.startswith('_') or app not in by_name:
+        continue
+    have = (by_name[app]['properties']['template']['containers'][0].get('probes')) or []
+    if len(have) != len(want['probes']):
+        raise SystemExit(1)
+raise SystemExit(0)
+" "$SPEC"
+        then
+            printf ' ok\n'
+            break
+        fi
+        printf '.'
+        sleep 4
+    done
+    echo
+fi
+
 echo
 echo "-- live probe count per app --"
 az containerapp list -g "$RG" -o json 2>/dev/null | "$PY" -c "
