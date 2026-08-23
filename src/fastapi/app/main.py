@@ -254,7 +254,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # read a second time. The old form could report a different host from
     # the one it had just connected to, which is precisely the failure
     # mode you are reading this log line to diagnose.
-    logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
+    # CodeQL flags this because a DSN built from POSTGRES_PASSWORD reaches
+    # a log call, and it cannot see that redact_dsn strips the password
+    # component structurally (app/db/dsn.py, asserted in
+    # tests/test_build_dsn_single_source.py::TestRedactDsn). Suppressed
+    # here rather than dismissed in the UI so the reasoning sits next to
+    # the code -- if redact_dsn ever stops redacting, its own tests fail
+    # first and this comment is the pointer to them.
+    logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))  # codeql[py/clear-text-logging-sensitive-data]
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
         min_size=2,

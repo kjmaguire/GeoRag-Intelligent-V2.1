@@ -296,8 +296,10 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
       3. Aggregate pass/fail/latency/tokens + failure-layer histogram.
       4. Return the report dict.
     """
+    # See the note at app/main.py's pool log line: redact_dsn strips the
+    # password structurally, which CodeQL's taint tracking cannot see.
     log.info("bench.start dsn=%s sha=%s label=%s",
-             redact_dsn(_dsn()),
+             redact_dsn(_dsn()),  # codeql[py/clear-text-logging-sensitive-data]
              _git_sha(),
              args.label)
 
