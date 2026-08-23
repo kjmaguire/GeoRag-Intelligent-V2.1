@@ -45,50 +45,28 @@ _XLS_SUFFIXES = frozenset({".xls", ".xlt"})
 
 
 def _xls_sheet_texts(path: str) -> list[tuple[str, str]]:
-    """Read a legacy .xls into the same (title, tab-separated text) pairs.
+    """Read a legacy .xls into (title, tab-separated text) pairs.
 
-    xlsx_parser.py has had an xlrd path for the typed-drill route since it was
-    written; this module — the text fallback that catches every sheet the drill
-    classifier did not claim — did not, and called openpyxl unconditionally. A
-    real .xls therefore reached the fallback and died as
-    "openpyxl_failed:InvalidFileException", reported to the geologist as
-    "3 sheet(s) ... produced no searchable text". The file was readable the
-    whole time; only this branch could not read it.
+    Delegates to georag_geoparsers, which owns spreadsheet reading and is where
+    xlrd is declared. This module cannot import xlrd directly:
+    check_pyproject_covers_imports gates every import under app/ against
+    src/fastapi/pyproject.toml, and adding the dist there would mean two
+    readers for one format plus a uv.lock + requirements.lock.txt
+    regeneration for a library that is already installed.
 
-    xlrd is already in the image (1.2.0). The version matters: 2.x dropped .xls
-    support entirely, so a future bump has to keep 1.x or move to a different
-    reader, and this will start failing loudly rather than silently if it does.
+    xlsx_parser has had an xlrd path since it was written; this module -- the
+    text fallback for sheets the drill classifier did not claim -- called
+    openpyxl unconditionally, and openpyxl reads OOXML zips, not the OLE2
+    binary that .xls is. A real customer file therefore reported
+    "produced no searchable text" for data that was readable all along.
     """
-    import xlrd  # noqa: PLC0415
+    from georag_geoparsers.xlsx_parser import read_xls_sheets  # noqa: PLC0415
 
-    book = xlrd.open_workbook(path, on_demand=True)
-    try:
-        out: list[tuple[str, str]] = []
-        for name in book.sheet_names():
-            sheet = book.sheet_by_name(name)
-            lines = []
-            for r in range(sheet.nrows):
-                cells = [
-                    "" if v is None else str(v).strip()
-                    for v in sheet.row_values(r)
-                ]
-                if any(cells):
-                    lines.append("\t".join(cells))
-            if lines:
-                out.append((name, "\n".join(lines)))
-        return out
-    finally:
-        # on_demand=True keeps the OLE2 file handle open until released, and a
-        # Hatchet worker is long-lived enough for that to matter. Not a
-        # suppress: the ratchet is right that a handler with nothing to say is
-        # still worth a line when someone is debugging a leaked descriptor.
-        try:
-            book.release_resources()
-        except Exception:
-            log.debug(
-                "xlsx_ingester: xlrd release_resources failed for %s",
-                path, exc_info=True,
-            )
+    # georag_geoparsers ships no py.typed, so mypy sees Any coming back.
+    # Bind it to the declared shape rather than widening this function's
+    # signature -- the contract is ours to state, not the untyped import's.
+    sheets: list[tuple[str, str]] = read_xls_sheets(path)
+    return sheets
 
 
 def _format_sheet_as_text(sheet) -> str:
