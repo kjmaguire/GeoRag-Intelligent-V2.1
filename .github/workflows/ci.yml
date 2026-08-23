@@ -424,6 +424,17 @@ jobs:
       - name: Lint georag_geoparsers
         run: ruff check src/georag_geoparsers/
 
+      # ruff's S110/BLE001 would flag all 262 existing sites at once, and
+      # the only ways to land that are one unreviewable diff or `# noqa`
+      # everywhere -- which turns a real signal into decoration. This
+      # ratchets per file instead: existing debt is visible and attributed,
+      # new silent handlers fail.
+      - name: Handler discrimination (the ratchet must reject, not just pass)
+        run: bash scripts/tests/silent_exception_handlers_test.sh
+
+      - name: No new exception handlers that tell nobody
+        run: python scripts/check_silent_exception_handlers.py
+
       # Report only — never fails the job. A 2026-08-22 audit found ~3,400
       # lines across ten modules with no importer, on top of ~1,700 lines of
       # hallucination layers and ~630 lines of prompt modules deleted the

@@ -322,6 +322,7 @@ class TestThePooledFallbackIsNotAComposeHostname:
         # Grepping the source instead would match the comment explaining
         # the removal, which is its own well-worn trap in this repo.
         import ast
+        import contextlib
         from pathlib import Path
 
         config_py = Path(__file__).resolve().parent.parent / "app" / "config.py"
@@ -333,10 +334,10 @@ class TestThePooledFallbackIsNotAComposeHostname:
                 continue
             target = node.target
             if isinstance(target, ast.Name) and target.id.startswith("POSTGRES_"):
-                try:
+                # A non-literal default (a Field(...) call, an env
+                # lookup) is simply not one this test can rule on.
+                with contextlib.suppress(ValueError):
                     defaults[target.id] = ast.literal_eval(node.value)
-                except ValueError:
-                    pass
 
         assert defaults["POSTGRES_HOST"] == ""
         assert defaults["POSTGRES_PORT"] is None
