@@ -17,8 +17,8 @@ from hatchet_sdk import Context
 from pydantic import BaseModel
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn as _build_dsn
 from app.hatchet_workflows import hatchet
-from app.hatchet_workflows.backup_postgres import _build_dsn
 
 log = logging.getLogger("georag.hatchet.pg_partman_maintenance")
 

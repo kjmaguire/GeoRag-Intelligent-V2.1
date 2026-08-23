@@ -30,10 +30,6 @@ import sys
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.answer_quality_watch import answer_quality_watch  # OBS-12
 from app.hatchet_workflows.audit_ledger_verify import audit_ledger_verify
-from app.hatchet_workflows.backup_postgres import backup_postgres  # §11.1
-from app.hatchet_workflows.backup_qdrant import backup_qdrant  # §11.1
-from app.hatchet_workflows.backup_redis import backup_redis  # §11.1
-from app.hatchet_workflows.backup_seaweedfs import backup_seaweedfs  # §11.1
 from app.hatchet_workflows.cold_tier_archive import cold_tier_archive_workflow  # §11.10
 from app.hatchet_workflows.continuous_learning_loop import continuous_learning_loop  # doc-phase 102
 from app.hatchet_workflows.cost_burn_watcher import cost_burn_watcher  # §5
@@ -211,18 +207,25 @@ POOLS = {
         # Doc-phase 102 / Master-plan §12.10 — continuous_learning_loop
         # cron orchestrator tracks retraining readiness.
         continuous_learning_loop,
-        # Master-plan §11.1 — nightly backup crons. Staggered 15 min
-        # apart starting 02:00 UTC (per kickoff locked defaults).
-        backup_postgres,    # 02:00 UTC
-        # backup_neo4j (was 02:15 UTC) deleted 2026-08-19 — Neo4j dropped entirely
-        # 2026-07-28 (B1), and the workflow shelled out via `docker exec`
-        # to a container that no longer exists (and never would on Azure
-        # Container Apps regardless — no docker daemon access from within
-        # a Container App). Was registered as a guaranteed nightly failure
-        # with nothing to back up; caught in a full-app review, 2026-08-05.
-        backup_qdrant,      # 02:30 UTC
-        backup_redis,       # 02:45 UTC
-        backup_seaweedfs,   # 03:00 UTC
+        # Master-plan §11.1 nightly backup crons -- backup_postgres,
+        # backup_qdrant, backup_redis and backup_seaweedfs -- DELETED
+        # 2026-08-23 at Kyle's direction. They wrote to a SeaweedFS
+        # substrate that does not exist on Azure, so all four had been a
+        # guaranteed nightly failure since the migration: ~35 log lines a
+        # day of a capability nobody had.
+        #
+        # Not a gap. Postgres carries 35-day point-in-time restore from
+        # Azure's own automated backups, which these never added to;
+        # Qdrant is derived data rebuildable by re-embedding from
+        # silver.document_passages; Redis is cache plus Horizon queues.
+        # Blob storage is the one irreplaceable copy and is LRS -- three
+        # replicas in one datacentre, which covers hardware failure and
+        # not deletion. That trade was made deliberately.
+        #
+        # backup_neo4j went earlier, 2026-08-19, for the same shape of
+        # reason: Neo4j was dropped in B1 and the workflow shelled out via
+        # `docker exec` to a container that could never exist on Container
+        # Apps.
         # 2026-06-27 audit T5 — advance the three monthly-partitioned
         # ledgers before their p_premake=3 window expires. 04:15 UTC.
         pg_partman_maintenance,

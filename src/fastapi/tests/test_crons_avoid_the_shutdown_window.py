@@ -20,7 +20,9 @@ WHY THIS IS A TEST AND NOT A ONE-TIME FIX
     The window used to be 00:00-10:00 UTC. Workflows were moved out of it
     -- ``enrich_passage_context`` carries a comment explaining that 10:30
     "is after the server is back and before the backups (11:00 / 11:30)",
-    which was true. On 2026-08-21 the window moved to Pacific time, and
+    which was true at the time -- those backup crons were themselves
+    deleted on 2026-08-23, so the second half of that sentence now names
+    nothing. On 2026-08-21 the window moved to Pacific time, and
     10:30 UTC became the middle of it. The reasoning did not rot; the
     ground moved under it.
 

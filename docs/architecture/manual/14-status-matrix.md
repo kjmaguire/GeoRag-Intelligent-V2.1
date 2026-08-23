@@ -112,7 +112,7 @@ the rest of the manual mentions.
 | `score_targets` | Live |
 | `external_notification` | Live (Kestra-triggered) |
 | `public_geoscience_pull` | Partial — Kestra flow live, but bc_minfile/nrcan_geo paths superseded by Dagster (see note in [worker.py](../../../src/fastapi/app/hatchet_workflows/worker.py)) |
-| `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | Live (dev-only) |
+| `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | **Deleted** — `backup_neo4j` 2026-08-19 (Neo4j dropped in B1), the other four 2026-08-23. All wrote to a SeaweedFS substrate that does not exist on Azure, so every run had failed since the migration. Deliberate: Postgres carries 35-day PITR from Azure's automated backups, Qdrant is rebuildable by re-embedding from `silver.document_passages`, and Redis is cache plus Horizon queues. Blob storage is the one irreplaceable copy and is LRS-only. |
 | `cold_tier_archive_workflow` | Partial — bucket policies live, lifecycle automation tested only on small sets |
 | `workspace_export`, `restore_workspace` | Partial — golden path verified, larger-than-RAM workspaces unproven |
 | `evaluate_workspace`, `eval_real_rag_nightly` | Removed (09d1d35, 2026-07-27). The scheduled RAG evaluation no longer exists; the only surviving entry point is the operator CLI `src/fastapi/scripts/run_golden_benchmark.py`, plus the `eval-gate.yml` nightly harness self-check (stubbed LLM — it proves the harness imports, not that answers are good). |
