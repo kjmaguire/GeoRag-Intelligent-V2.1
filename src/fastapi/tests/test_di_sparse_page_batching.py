@@ -131,3 +131,76 @@ class TestFailureModes:
             out = pdf_report._ocr_page_selection_di("/tmp/x.pdf", [3, 9])
 
         assert sorted(out) == [3]
+
+
+class TestTheBudgetIsRefundedForPagesNeverSent:
+    """A block is charged up front and can then answer for fewer pages.
+
+    The charge has to happen before the request, because the check and the
+    increment must be atomic across the OCR threads. But every page the
+    request did not answer for goes back to the per-page path and is
+    charged a SECOND time -- so one failed slice spent twice its pages of
+    a cap whose whole purpose is to bound spend, and a document could
+    report "budget exhausted" (and lose every table past the cap to
+    tesseract) having sent a fraction of it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_budget(self):
+        for registry in (
+            pdf_report._DI_PAGES_USED,
+            pdf_report._DI_CAP_LOGGED,
+            pdf_report._DI_CAP_EXHAUSTED,
+        ):
+            registry.clear()
+        yield
+        for registry in (
+            pdf_report._DI_PAGES_USED,
+            pdf_report._DI_CAP_LOGGED,
+            pdf_report._DI_CAP_EXHAUSTED,
+        ):
+            registry.clear()
+
+    def test_a_failed_slice_costs_nothing(self) -> None:
+        with patch.object(
+            pdf_report,
+            "_slice_page_selection_pdf_bytes",
+            side_effect=RuntimeError("pikepdf said no"),
+        ), patch.object(di, "ocr_page_block_sync") as sync:
+            assert pdf_report._ocr_page_selection_di("/x.pdf", [3, 9, 40]) == {}
+
+        sync.assert_not_called()
+        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 0
+
+    def test_a_failed_request_costs_nothing(self) -> None:
+        # ocr_page_block_sync degrades to {} on a failed or timed-out
+        # analysis -- one Azure does not bill for either.
+        with patch.object(
+            pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF"
+        ), patch.object(di, "ocr_page_block_sync", return_value={}):
+            assert pdf_report._ocr_page_selection_di("/x.pdf", [3, 9]) == {}
+
+        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 0
+
+    def test_only_the_pages_it_answered_for_stay_charged(self) -> None:
+        with patch.object(
+            pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF"
+        ), patch.object(
+            di, "ocr_page_block_sync", return_value={1: di.PageOcrResult("ok", 0.9)}
+        ):
+            out = pdf_report._ocr_page_selection_di("/x.pdf", [3, 9, 40])
+
+        assert sorted(out) == [3]
+        # Pages 9 and 40 are re-driven individually and pay there.
+        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 1
+
+    def test_a_fully_answered_block_keeps_its_whole_charge(self) -> None:
+        answered = {
+            local: di.PageOcrResult(f"p{local}", 0.9) for local in (1, 2, 3)
+        }
+        with patch.object(
+            pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF"
+        ), patch.object(di, "ocr_page_block_sync", return_value=answered):
+            pdf_report._ocr_page_selection_di("/x.pdf", [3, 9, 40])
+
+        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 3

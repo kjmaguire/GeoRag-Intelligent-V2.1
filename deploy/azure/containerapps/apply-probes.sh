@@ -43,7 +43,9 @@
 #
 # The order is: merge the image change, let CD deploy it, then run this
 # with --horizon. The script refuses to touch that app without the flag,
-# and warns if the running image predates the entrypoint.
+# and refuses again if the running image predates the entrypoint --
+# see check_horizon_image below, which resolves the image tag against
+# this clone's history.
 set -uo pipefail
 
 RG=georag
@@ -84,6 +86,42 @@ print(' '.join(k for k in spec if not k.startswith('_')))
 
 rc=0
 
+# The header's promise, kept rather than asserted. CD tags images with the
+# short git sha (georagacrcc.azurecr.io/georag/laravel:47d77b1), so "does
+# the running image carry the entrypoint" is a question this clone can
+# answer directly. Applying the probe to an image without it configures a
+# liveness check against a port nothing listens on, and a failing liveness
+# probe is a restart loop -- the one outcome this whole opt-in exists to
+# prevent, and not one a dry run would reveal.
+check_horizon_image() {
+    _img="$("$PY" -c "
+import json, sys
+container = json.load(open(sys.argv[1], encoding='utf-8'))['properties']['template']['containers'][0]
+print(container.get('image') or '')
+" "$1")"
+    _tag="${_img##*:}"
+
+    if [ -z "$_tag" ] || [ "$_tag" = "$_img" ]; then
+        echo "   WARNING: no tag on image '${_img}' -- cannot verify it carries horizon-entrypoint.sh"
+        return 0
+    fi
+    if ! git -C "$HERE" rev-parse --verify --quiet "${_tag}^{commit}" >/dev/null 2>&1; then
+        # An unknown tag is not evidence of anything: a shallow clone or a
+        # stale fetch looks identical to a bad image from here.
+        echo "   WARNING: image tag '${_tag}' is not a commit in this clone -- run 'git fetch' or verify by hand"
+        return 0
+    fi
+    if git -C "$HERE" cat-file -e "${_tag}:docker/horizon-entrypoint.sh" 2>/dev/null; then
+        echo "   image ${_tag} carries docker/horizon-entrypoint.sh"
+        return 0
+    fi
+
+    echo "   REFUSING: image ${_tag} predates docker/horizon-entrypoint.sh."
+    echo "   The probe would check a port nothing listens on -- a restart loop."
+    echo "   Let CD deploy the image first, then re-run."
+    return 1
+}
+
 for APP in $APPS; do
     if [ "$APP" = "laravel-horizon-cc" ] && [ "$HORIZON" -eq 0 ]; then
         echo "== ${APP}: skipped (needs --horizon, and the image must carry horizon-entrypoint.sh first)"
@@ -98,6 +136,12 @@ for APP in $APPS; do
     if ! az containerapp show -g "$RG" -n "$APP" -o json > "$CURRENT" 2>/dev/null; then
         echo "== ${APP}: not found in resource group ${RG} -- skipped"
         rc=1
+        continue
+    fi
+
+    if [ "$APP" = "laravel-horizon-cc" ] && ! check_horizon_image "$CURRENT"; then
+        rc=1
+        rm -f "$CURRENT" "$MERGED"
         continue
     fi
 
@@ -202,13 +246,29 @@ PYEOF
     # Inline, not --body @file. `az rest` does not expand a leading @
     # for this parameter -- it posts the literal string and ARM answers
     # "Unexpected character encountered while parsing value: @".
-    PATCH_ERR="$(az rest --method PATCH --url "$URL" \
+    #
+    # Branch on the EXIT CODE, not on whether stderr was empty. Silence is
+    # not success: `az rest` writes nothing to stderr on a plain 4xx, so an
+    # ARM rejection printed "applied" and left rc=0, and the verify pass at
+    # the end was the only thing standing between that and a script that
+    # lies about what it did.
+    PATCH_ERR_FILE="$(mktemp -t probes-err-XXXXXX.txt)"
+    az rest --method PATCH --url "$URL" \
         --headers "Content-Type=application/json" \
-        --body "$(cat "$MERGED")" 2>&1 >/dev/null)"
-    if [ -z "$PATCH_ERR" ]; then
+        --body "$(cat "$MERGED")" >/dev/null 2>"$PATCH_ERR_FILE"
+    patch_rc=$?
+    PATCH_ERR="$(cat "$PATCH_ERR_FILE")"
+    rm -f "$PATCH_ERR_FILE"
+
+    if [ "$patch_rc" -eq 0 ]; then
         echo "   applied"
+        # Warnings survive a success and are worth seeing; they are not
+        # a failure.
+        if [ -n "$PATCH_ERR" ]; then
+            echo "   (az said: $(printf '%s' "$PATCH_ERR" | strip_cr | head -2))"
+        fi
     else
-        echo "   FAILED: $(printf '%s' "$PATCH_ERR" | strip_cr | head -3)"
+        echo "   FAILED (rc=${patch_rc}): $(printf '%s' "$PATCH_ERR" | strip_cr | head -3)"
         rc=1
     fi
 

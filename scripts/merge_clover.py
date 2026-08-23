@@ -39,9 +39,20 @@ from pathlib import Path
 
 
 def _collect(path: Path) -> dict[str, dict[int, int]]:
-    """{file path: {line number: hit count}} for one Clover report."""
+    """{file path: {line number: hit count}} for one Clover report.
+
+    Raises ValueError when the file is not parseable Clover XML. A PHPUnit
+    run killed partway through (the coverage job's steps are
+    continue-on-error, so a timeout or an OOM lands here) leaves a
+    truncated file, not a missing one — and an unhandled ParseError in a
+    step that is NOT continue-on-error fails the job with a stack trace
+    instead of the one sentence that explains it.
+    """
     per_file: dict[str, dict[int, int]] = defaultdict(dict)
-    root = ET.parse(path).getroot()
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        raise ValueError(f"{path} is not parseable Clover XML: {exc}") from exc
     for file_el in root.iter("file"):
         name = file_el.get("name")
         if not name:
@@ -70,15 +81,23 @@ def main(argv: list[str]) -> int:
 
     merged: dict[str, dict[int, int]] = defaultdict(dict)
     used: list[str] = []
+    lost: list[str] = []
     for path in inputs:
         if not path.is_file():
             # A missing report means that PHPUnit run did not get far
             # enough to write one. Say so rather than silently reporting a
             # number derived from fewer runs than the caller asked for.
             print(f"WARNING: {path} does not exist -- excluded", file=sys.stderr)
+            lost.append(path.name)
+            continue
+        try:
+            collected = _collect(path)
+        except ValueError as exc:
+            print(f"WARNING: {exc} -- excluded", file=sys.stderr)
+            lost.append(path.name)
             continue
         used.append(path.name)
-        for name, lines in _collect(path).items():
+        for name, lines in collected.items():
             target = merged[name]
             for num, count in lines.items():
                 target[num] = max(target.get(num, 0), count)
@@ -111,10 +130,33 @@ def main(argv: list[str]) -> int:
     print("| metric | value |")
     print("| --- | --- |")
     print(f"| reports merged | {', '.join(used)} |")
+    if lost:
+        print(f"| **reports MISSING** | **{', '.join(lost)}** |")
     print(f"| files | {len(merged)} |")
     print(f"| executable lines | {total} |")
     print(f"| covered lines | {covered} |")
     print(f"| **line coverage** | **{pct:.1f}%** |")
+    if lost:
+        print(
+            "|  | figure below the true one -- a run's coverage is missing, "
+            "not zero |"
+        )
+
+    if lost:
+        # Non-zero, and this is the point of the script rather than a
+        # detail of it. Both PHPUnit steps are continue-on-error, so a run
+        # that died leaves NO other red mark on the job: without this the
+        # summary published a headline percentage derived from fewer runs
+        # than were asked for, understating in exactly the direction the
+        # module docstring says merging exists to avoid, and reading as a
+        # real coverage drop for whoever looks next.
+        print(
+            f"ERROR: {len(lost)} of {len(inputs)} report(s) unreadable "
+            f"({', '.join(lost)}) -- the figure above is not the merged one",
+            file=sys.stderr,
+        )
+        return 1
+
     return 0
 
 

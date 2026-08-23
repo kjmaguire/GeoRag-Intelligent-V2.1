@@ -165,13 +165,29 @@ jobs:
 
       - name: Merge and report
         run: |
+          # pipefail, because the exit status of `x | tee` is tee's. Both
+          # PHPUnit steps above are continue-on-error, so this step is the
+          # ONLY place a dead run can turn the job red -- and merge_clover
+          # exits non-zero precisely when it had to publish a figure
+          # derived from fewer runs than were asked for. Without this line
+          # that exit code is discarded and the understated percentage is
+          # published as though it were the merged one.
+          #
+          # `|| merge_rc=$?` rather than a bare pipeline: the default shell
+          # is `bash -e`, which would abort the step on the failure and
+          # skip the summary below -- losing the one paragraph that says
+          # WHICH run died and why the number is low.
+          set -o pipefail
+          merge_rc=0
           python3 scripts/merge_clover.py coverage-merged.xml \
-            coverage-sqlite.xml coverage-pgsql.xml | tee php-summary.md
+            coverage-sqlite.xml coverage-pgsql.xml | tee php-summary.md \
+            || merge_rc=$?
           {
             echo "## PHP line coverage"
             echo
             cat php-summary.md
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$merge_rc"
 
       - name: Upload Clover reports
         if: always()

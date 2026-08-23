@@ -33,7 +33,7 @@
 |
 | TWO ROUTES, BECAUSE PAUSED IS NOT DEAD
 |
-|   GET /up     liveness  — 200 unless Horizon is absent or Redis is gone
+|   GET /up     liveness  — 200 unless the supervisor stopped looping
 |   GET /ready  readiness — 200 only when Horizon is actively processing
 |
 | `horizon:pause` is a deliberate operator action. If a paused supervisor
@@ -47,6 +47,14 @@
 | It does not check queue depth. A deep queue is a capacity problem and
 | restarting the container makes it worse; that belongs in an alert, not a
 | liveness probe. Only "the supervisor is not running" restarts anything.
+|
+| For the same reason it does not fail liveness on an unreachable Redis or
+| a boot error: a restart cannot reach Redis either, so a dependency
+| outage would become a restart loop that additionally kills every job in
+| flight. Those answer 503 on /ready and 200 on /up. A boot failure needs
+| no help from this file — Horizon is PID 1 in this container, so if the
+| framework cannot boot, `php artisan horizon` exits and the platform
+| restarts the replica on its own.
 |
 */
 
@@ -105,11 +113,33 @@ try {
 
     echo json_encode(['status' => 'running', 'masters' => count($masters)]);
 } catch (Throwable $e) {
-    // A boot failure or an unreachable Redis is itself a reason to be
-    // unhealthy: Horizon cannot do useful work without Redis, and unlike
-    // a pause this is not a state anyone chose. The body carries the
-    // exception class only — this response is unauthenticated, and the
-    // probe never reads it.
-    http_response_code(503);
-    echo json_encode(['status' => 'error', 'error' => $e::class]);
+    // Readiness and liveness answer differently here, for the same reason
+    // they differ on `paused`.
+    //
+    // Horizon cannot do useful work without Redis, so /ready is 503 — the
+    // platform stops sending it work, which is true and harmless.
+    //
+    // /up must NOT be, and this is the trap: a 503 on liveness restarts
+    // the container. Restarting does not reach Redis, so a Redis outage
+    // becomes a restart loop that also kills whatever jobs were in flight
+    // — the same "restarting makes it worse" case this file's header
+    // already refuses to apply to queue depth. Liveness restarts only
+    // what a restart can fix: this process, wedged. That case is the
+    // `! $masters` branch above, which is reached only when Redis
+    // ANSWERED and had no heartbeat in it. When Redis comes back and
+    // Horizon is genuinely dead, that branch fires and the restart
+    // happens then.
+    //
+    // The body carries the exception class only — this response is
+    // unauthenticated, and the probe never reads it. The log line is how
+    // an operator finds out, since a 200 here is otherwise silent.
+    error_log(sprintf(
+        'horizon-health: %s on %s: %s',
+        $e::class,
+        $path,
+        $e->getMessage(),
+    ));
+
+    http_response_code($path === '/ready' ? 503 : 200);
+    echo json_encode(['status' => 'degraded', 'error' => $e::class]);
 }

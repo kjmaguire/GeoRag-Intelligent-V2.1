@@ -242,6 +242,16 @@ class TestRedactDsn:
         # people will reach for. Returning it unchanged would leak.
         assert redact_dsn("host=pg password=s3cret dbname=georag") == "*****"
 
+    def test_a_malformed_port_redacts_instead_of_raising(self) -> None:
+        from app.db.dsn import redact_dsn
+
+        # urlsplit defers parsing the authority until a component is read,
+        # so `.port` -- not the split -- is what raises on ":abc". This
+        # function is called from main.py's lifespan: raising here killed
+        # startup with the unredacted DSN in the traceback, and in the
+        # frame locals Sentry attaches to the event.
+        assert redact_dsn("postgresql://georag:s3cret@pg:abc/georag") == "*****"
+
     def test_the_real_dsn_this_deployment_builds_carries_no_password(self) -> None:
         import os
         from unittest import mock
@@ -275,6 +285,28 @@ class TestThePooledFallbackIsNotAComposeHostname:
 
     @staticmethod
     def _only_direct(monkeypatch) -> None:
+        # `build_dsn` reads os.environ FIRST and app.config.settings second,
+        # so deleting the variables is only half of "no POSTGRES_HOST".
+        #
+        # It is also not order-independent: app.config.settings is a
+        # pydantic-settings singleton, built once at first import and never
+        # rebuilt. The `env` fixture above sets POSTGRES_HOST=pgbouncer, so
+        # whichever test in this file calls build_dsn first bakes
+        # "pgbouncer" into that singleton for the whole session --
+        # monkeypatch unsets the environment on teardown, but nothing can
+        # unset the singleton. These assertions passed alone and failed on
+        # a full-file run, which is the worst way for a guard to be wrong:
+        # green in CI, absent in fact.
+        #
+        # Dropping the settings fallback entirely is what this class means
+        # by "no POSTGRES_HOST". That the Settings CLASS carries no
+        # hostname default is a separate claim, pinned by
+        # `test_the_settings_defaults_carry_no_hostname` below, which reads
+        # the class via ast for exactly this reason.
+        from app.db import dsn as dsn_module
+
+        monkeypatch.setattr(dsn_module, "_settings", lambda: None)
+
         for name in ("POSTGRES_HOST", "POSTGRES_PORT"):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("POSTGRES_DIRECT_HOST", "pg.example.internal")

@@ -1993,21 +1993,11 @@ def _parse_with_fitz(
 
         def _ocr_one_page(n: int):
             try:
-                _batched = _short_batched.get(n)
-                if _batched is not None and _batched.text.strip():
-                    _assessment = _assess_ocr_result(
-                        _batched.text,
-                        [word.confidence for word in _batched.words]
-                        or [_batched.mean_confidence],
-                        detected_region_count=_batched.detected_region_count,
-                        ocr_method="document_intelligence",
-                    )
-                    return n, (
-                        _batched.text,
-                        _batched.mean_confidence,
-                        _assessment,
-                        list(_batched.tables),
-                    ), None
+                _usable = _usable_batched_page(
+                    _short_batched.get(n), page_num=n, pdf_path=path
+                )
+                if _usable is not None:
+                    return n, _usable, None
                 # Phase 3 — capture mean_conf from tesseract per-word data.
                 # return_tables — DI prebuilt-layout table grids (always []
                 # on the tesseract path).
@@ -2232,47 +2222,26 @@ def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
         return _buf.getvalue()
 
 
-def _slice_page_block_pdf_bytes(pdf_path: str, first_page: int, page_count: int) -> bytes:
-    """Extract a contiguous run of pages into one in-memory PDF.
-
-    Batching 2026-08-20: the batched Document Intelligence path uploads
-    blocks, not pages. Slicing rather than sending the whole file keeps
-    the original per-page argument intact — a 40 MB report re-uploaded
-    once per block would still push O(size x blocks) bytes — while cutting
-    the number of uploads by the block size. Same `_PIKEPDF_LOCK`
-    discipline as `_slice_single_page_pdf_bytes`: the cached
-    ``pikepdf.Pdf`` is shared across the OCR threads.
-    """
-    import io as _io
-
-    import pikepdf as _pikepdf
-
-    with _PIKEPDF_LOCK:
-        _src = _get_cached_pikepdf(pdf_path)
-        _block = _pikepdf.Pdf.new()
-        for _offset in range(page_count):
-            _block.pages.append(_src.pages[first_page - 1 + _offset])
-        _buf = _io.BytesIO()
-        _block.save(_buf)
-        return _buf.getvalue()
-
-
-
 def _slice_page_selection_pdf_bytes(
     pdf_path: str, page_numbers: Sequence[int]
 ) -> bytes:
-    """Extract an arbitrary, non-contiguous set of pages into one PDF.
+    """Extract an arbitrary set of pages into one in-memory PDF.
 
-    The contiguous slicer above serves the fully-scanned path, where every
-    page needs OCR and blocks fall out naturally. The MIXED path -- a
-    text-native report with an appendix of plates, or scattered scanned
-    inserts -- has a sparse page set, and that is the common shape in this
-    corpus.
+    Batching 2026-08-20: the batched Document Intelligence path uploads
+    groups of pages, not pages. Slicing rather than sending the whole file
+    keeps the original per-page argument intact — a 40 MB report
+    re-uploaded once per block would still push O(size x blocks) bytes —
+    while cutting the number of uploads by the block size. Same
+    `_PIKEPDF_LOCK` discipline as `_slice_single_page_pdf_bytes`: the
+    cached ``pikepdf.Pdf`` is shared across the OCR threads.
 
-    Slicing by selection rather than by range is what makes batching
-    possible there at all: forming contiguous runs out of a sparse set
-    either gives runs of length one (no saving) or sweeps in pages that
-    already had text, which are billed per page and did not need OCR.
+    Selection, not range, is what makes this one function serve both
+    callers. The fully-scanned path wants contiguous blocks and passes a
+    ``range``; the MIXED path -- a text-native report with an appendix of
+    plates, or scattered scanned inserts, the commoner shape in this
+    corpus -- has a sparse set, where forming contiguous runs either gives
+    runs of length one (no saving) or sweeps in pages that already had
+    text and are billed per page anyway.
     """
     import io as _io
 
@@ -2375,6 +2344,31 @@ def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
             return False
         _DI_PAGES_USED[pdf_path] += pages
         return True
+
+
+def _di_budget_refund(pdf_path: str, pages: int) -> None:
+    """Return pages to the budget that were charged but never sent.
+
+    A block is charged up front, because the check and the increment have
+    to be atomic (see `_di_budget_take`). When the block then answers for
+    fewer pages than it charged for -- the slice failed, the request
+    failed, DI returned a short mapping -- those pages are re-driven
+    individually and charged a SECOND time. One failed slice therefore
+    spent twice its pages of a cap whose entire job is to bound spend, and
+    a document could report "budget exhausted" having actually sent a
+    fraction of the cap.
+
+    Refunding only what was not sent keeps the counter meaning what
+    `_di_budget_warning` says it means: pages Document Intelligence
+    actually read.
+    """
+    if pages <= 0:
+        return
+    with _PIKEPDF_LOCK:
+        used = _DI_PAGES_USED.get(pdf_path)
+        if used is None:
+            return
+        _DI_PAGES_USED[pdf_path] = max(0, used - pages)
 
 
 def _di_budget_warning(pdf_path: str) -> dict[str, Any] | None:
@@ -2499,29 +2493,14 @@ def _di_block_plan(total_pages: int, block_size: int) -> list[tuple[int, int]]:
 def _ocr_page_block_di(pdf_path: str, first_page: int, page_count: int) -> dict[int, Any]:
     """OCR one contiguous block of pages in a single DI request.
 
-    Returns ``{absolute_page_number: PageOcrResult}``. An empty mapping
-    means the block never produced an answer — budget exhausted, the
-    slice failed, or the request failed — and the caller must drive those
-    pages individually. A page the block *did* answer for but with no
-    text is present with empty text, which is a different (and cheaper to
-    recover from) situation.
+    A contiguous block is a selection whose pages happen to run
+    consecutively, so this is the selection path with a ``range``. They
+    were two near-identical functions until 2026-08-23, which is how the
+    same missing quality check came to exist twice — once per copy.
     """
-    from . import document_intelligence_client as _di
-
-    if not _di_budget_take(pdf_path, page_count):
-        return {}
-    try:
-        pdf_bytes = _slice_page_block_pdf_bytes(pdf_path, first_page, page_count)
-    except Exception as slice_exc:  # noqa: BLE001
-        logger.warning(
-            "pdf_report: page-block slice failed for pages %d-%d of '%s' (%s) "
-            "— falling back to per-page document_intelligence",
-            first_page, first_page + page_count - 1, pdf_path, slice_exc,
-        )
-        return {}
-    block = _di.ocr_page_block_sync(pdf_bytes, page_count)
-    # DI numbers pages relative to the uploaded block, which starts at 1.
-    return {first_page + local - 1: result for local, result in block.items()}
+    return _ocr_page_selection_di(
+        pdf_path, range(first_page, first_page + page_count)
+    )
 
 
 def _ocr_page_selection_di(
@@ -2532,12 +2511,14 @@ def _ocr_page_selection_di(
     Returns ``{absolute_page_number: PageOcrResult}`` for the pages the
     request answered. An empty mapping means the caller must drive those
     pages individually -- budget exhausted, slice failed, or the request
-    failed -- which is the same contract as `_ocr_page_block_di`.
+    failed. A page the request *did* answer for but with no text is
+    present with empty text, which is a different (and cheaper to recover
+    from) situation.
 
     The page-number remap is by POSITION, not by arithmetic: DI numbers
     the pages of the uploaded document 1..N, and the uploaded document is
-    `page_numbers` in the order given. `first_page + local - 1` would be
-    wrong here for every page after a gap.
+    `page_numbers` sorted. `first_page + local - 1` is right only while
+    the selection is contiguous, and wrong for every page after a gap.
     """
     from . import document_intelligence_client as _di
 
@@ -2554,13 +2535,22 @@ def _ocr_page_selection_di(
             "(%s) — falling back to per-page document_intelligence",
             len(ordered), pdf_path, slice_exc,
         )
+        # Nothing was uploaded, so nothing was billed. Without the refund
+        # these pages are charged here and again on the per-page path.
+        _di_budget_refund(pdf_path, len(ordered))
         return {}
     block = _di.ocr_page_block_sync(pdf_bytes, len(ordered))
-    return {
+    mapped = {
         ordered[local - 1]: result
         for local, result in block.items()
         if 1 <= local <= len(ordered)
     }
+    # Pages the request never answered for go back to the per-page path,
+    # where each pays the budget again. `ocr_page_block_sync` degrades to
+    # {} on a failed or timed-out analysis — an analysis Azure does not
+    # bill for either.
+    _di_budget_refund(pdf_path, len(ordered) - len(mapped))
+    return mapped
 
 
 def _ocr_single_page(
@@ -3060,6 +3050,49 @@ def _is_catastrophic_assessment(assessment: dict[str, Any] | None) -> bool:
     from .ocr_quality import OcrRoutingTier
 
     return assessment.get("tier") == OcrRoutingTier.CatastrophicFailure.value
+
+
+def _usable_batched_page(
+    batched: Any | None,
+    *,
+    page_num: int,
+    pdf_path: str,
+) -> tuple[str, float, dict[str, Any], list[list[list[str]]]] | None:
+    """A batched block's answer for one page, or None to drive it per-page.
+
+    The batched paths short-circuit on ``batched.text.strip()`` alone. That
+    is the 2026-08-21 bug one level up: text is not the same as usable
+    text, and a page that came back as fragmented tokens at catastrophic
+    confidence -- the ordinary outcome for a skewed plan sheet, and the
+    exact page the tiled escalation exists to rescue -- was accepted,
+    stored, embedded and cited. `_ocr_single_page` reads the assessment it
+    computes; both batched callers computed one and then only attached it
+    to the return value.
+
+    Returning None sends the page to `_ocr_single_page`, where
+    ``skip_di_page_request=True`` (it IS in the batch mapping) starts it at
+    the bounded raster tiles without paying for a second DI request.
+    """
+    if batched is None or not batched.text.strip():
+        return None
+
+    assessment = _assess_ocr_result(
+        batched.text,
+        [word.confidence for word in batched.words] or [batched.mean_confidence],
+        detected_region_count=batched.detected_region_count,
+        ocr_method="document_intelligence",
+    )
+    if _is_catastrophic_assessment(assessment):
+        logger.info(
+            "pdf_report: batched document_intelligence returned "
+            "catastrophic-tier text for page %d of '%s' (%s) — trying "
+            "bounded raster tiles",
+            page_num, pdf_path,
+            ", ".join(assessment.get("reasons") or ()) or "no reason",
+        )
+        return None
+
+    return batched.text, batched.mean_confidence, assessment, list(batched.tables)
 
 
 def _ocr_quality_warning(
@@ -3614,21 +3647,11 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
 
     def _ocr_one(page_num: int):
         try:
-            batched = _batched.get(page_num)
-            if batched is not None and batched.text.strip():
-                assessment = _assess_ocr_result(
-                    batched.text,
-                    [word.confidence for word in batched.words]
-                    or [batched.mean_confidence],
-                    detected_region_count=batched.detected_region_count,
-                    ocr_method="document_intelligence",
-                )
-                return page_num, (
-                    batched.text,
-                    batched.mean_confidence,
-                    assessment,
-                    list(batched.tables),
-                ), None
+            usable = _usable_batched_page(
+                _batched.get(page_num), page_num=page_num, pdf_path=path
+            )
+            if usable is not None:
+                return page_num, usable, None
             return page_num, _ocr_single_page(
                 path,
                 page_num,

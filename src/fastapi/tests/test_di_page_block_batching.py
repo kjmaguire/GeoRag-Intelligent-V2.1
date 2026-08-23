@@ -425,7 +425,7 @@ class TestBlockBudget:
             pdf_report, "_di_budget_take",
             side_effect=lambda _p, pages: taken.append(pages) or True,
         ), patch.object(
-            pdf_report, "_slice_page_block_pdf_bytes", return_value=b"%PDF-1.4",
+            pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF-1.4",
         ), patch.object(
             di, "ocr_page_block_sync", return_value={1: di.PageOcrResult("x", 0.9)},
         ):
@@ -437,14 +437,14 @@ class TestBlockBudget:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         with patch.object(pdf_report, "_di_budget_take", return_value=False), \
-             patch.object(pdf_report, "_slice_page_block_pdf_bytes") as slicer:
+             patch.object(pdf_report, "_slice_page_selection_pdf_bytes") as slicer:
             assert pdf_report._ocr_page_block_di("/scan.pdf", 1, 25) == {}
         slicer.assert_not_called()
 
     def test_local_page_numbers_are_rebased_onto_the_document(self) -> None:
         with patch.object(pdf_report, "_di_budget_take", return_value=True), \
              patch.object(
-                 pdf_report, "_slice_page_block_pdf_bytes", return_value=b"%PDF-1.4",
+                 pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF-1.4",
              ), patch.object(
                  di, "ocr_page_block_sync",
                  return_value={
@@ -463,7 +463,7 @@ class TestBlockBudget:
     def test_slice_failure_yields_an_empty_mapping(self) -> None:
         with patch.object(pdf_report, "_di_budget_take", return_value=True), \
              patch.object(
-                 pdf_report, "_slice_page_block_pdf_bytes",
+                 pdf_report, "_slice_page_selection_pdf_bytes",
                  side_effect=RuntimeError("corrupt xref"),
              ):
             assert pdf_report._ocr_page_block_di("/scan.pdf", 1, 25) == {}

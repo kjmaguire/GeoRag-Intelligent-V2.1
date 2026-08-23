@@ -41,7 +41,14 @@ from __future__ import annotations
 import ast
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+
+# ast.TryStar is 3.11+; the tree targets 3.13, but this script is also the
+# kind of thing someone runs under whatever python is on the path.
+_TRY_NODES: tuple[type[ast.AST], ...] = (ast.Try,) + (
+    (ast.TryStar,) if hasattr(ast, "TryStar") else ()
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = REPO_ROOT / "scripts" / "silent_exception_handlers.json"
@@ -61,9 +68,41 @@ REPORTING_ROOTS = frozenset(
 REPORTING_SUBSTRINGS = ("log", "warn", "capture", "report", "alert", "emit")
 
 
+def _own_nodes(handler: ast.ExceptHandler) -> Iterator[ast.AST]:
+    """Nodes on THIS handler's own code path.
+
+    `ast.walk` descends through everything, which reads a nested
+    construct's speech as the outer handler's. Two shapes matter:
+
+      * an inner `try` whose OWN handler logs -- that log line runs only
+        if the inner try fails, so it says nothing about the outer catch;
+      * a function defined inside the handler that logs when called.
+
+    Both make the ratchet bypassable by nesting, and both undercount the
+    real debt, which is the number the baseline is built from and the
+    whole point of the file.
+
+    An inner try's body, else and finally DO count: they are code this
+    handler runs.
+    """
+    stack: list[ast.AST] = list(handler.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef),
+        ):
+            continue
+        if isinstance(node, _TRY_NODES):
+            stack.extend([*node.body, *node.orelse, *node.finalbody])
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
 def _speaks(handler: ast.ExceptHandler) -> bool:
     """True if this handler re-raises or says something."""
-    for node in ast.walk(handler):
+    for node in _own_nodes(handler):
         if isinstance(node, ast.Raise):
             return True
         if not isinstance(node, ast.Call):
@@ -108,37 +147,15 @@ def _caught_name_of(node: ast.expr) -> str:
     return "?"
 
 
-def scan_breakdown() -> dict[str, int]:
-    """Silent handlers grouped by what they catch.
+def _iter_silent_handlers() -> Iterator[tuple[str, ast.ExceptHandler]]:
+    """Every silent handler in the scanned roots, as (repo-relative path, node).
 
-    The bald total is not the finding. 262 sounds like 262 hidden bugs; in
-    practice a third of them are `except ImportError` around an optional
-    metrics import and another third catch a narrow ValueError/TypeError
-    from a parse that has a sensible default. The ones that matter are the
-    handlers that catch bare `Exception` and then say nothing -- those hide
-    anything at all, including the failure you are looking for.
+    One traversal, because there were two and they had already drifted:
+    `scan` warned on a file it could not parse and `scan_breakdown` skipped
+    it in silence, so the total and the by-exception breakdown printed
+    beside it could be computed over different sets of files -- the exact
+    failure this script exists to catch, in the script itself.
     """
-    breakdown: dict[str, int] = {}
-    for root in ROOTS:
-        base = REPO_ROOT / root
-        if not base.is_dir():
-            continue
-        for path in sorted(base.rglob("*.py")):
-            if "__pycache__" in path.parts:
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ExceptHandler) and not _speaks(node):
-                    name = _caught_name(node)
-                    breakdown[name] = breakdown.get(name, 0) + 1
-    return breakdown
-
-
-def scan() -> dict[str, int]:
-    counts: dict[str, int] = {}
     for root in ROOTS:
         base = REPO_ROOT / root
         if not base.is_dir():
@@ -151,13 +168,33 @@ def scan() -> dict[str, int]:
             except SyntaxError as exc:
                 print(f"WARNING: could not parse {path}: {exc}", file=sys.stderr)
                 continue
-            silent = sum(
-                1
-                for node in ast.walk(tree)
-                if isinstance(node, ast.ExceptHandler) and not _speaks(node)
-            )
-            if silent:
-                counts[path.relative_to(REPO_ROOT).as_posix()] = silent
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler) and not _speaks(node):
+                    yield relative, node
+
+
+def scan_breakdown() -> dict[str, int]:
+    """Silent handlers grouped by what they catch.
+
+    The bald total is not the finding. 262 sounds like 262 hidden bugs; in
+    practice a third of them are `except ImportError` around an optional
+    metrics import and another third catch a narrow ValueError/TypeError
+    from a parse that has a sensible default. The ones that matter are the
+    handlers that catch bare `Exception` and then say nothing -- those hide
+    anything at all, including the failure you are looking for.
+    """
+    breakdown: dict[str, int] = {}
+    for _path, node in _iter_silent_handlers():
+        name = _caught_name(node)
+        breakdown[name] = breakdown.get(name, 0) + 1
+    return breakdown
+
+
+def scan() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path, _node in _iter_silent_handlers():
+        counts[path] = counts.get(path, 0) + 1
     return counts
 
 

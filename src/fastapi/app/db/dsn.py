@@ -209,10 +209,20 @@ def redact_dsn(dsn: str) -> str:
 
     try:
         parts = urlsplit(dsn)
+        password = parts.password
+        port = parts.port
     except ValueError:
+        # urlsplit parses the netloc lazily, so a malformed authority --
+        # ":abc" as a port is the realistic one, from a hand-edited
+        # DATABASE_URL -- raises when a component is READ, not when the URL
+        # is split. Reading `.port` outside this block meant the one
+        # function whose job is to keep a DSN out of a traceback was the
+        # thing that put it in one: main.py redacts during lifespan, so the
+        # process died at startup with the raw credential in the log, and
+        # in the frame locals Sentry ships with the event.
         return "*****"
 
-    if not parts.scheme or parts.password is None:
+    if not parts.scheme or password is None:
         # Either not a URL at all (libpq keyword/value form, e.g.
         # "host=... password=..."), or a URL carrying no password. The
         # keyword/value form is not something build_dsn emits, but this
@@ -221,8 +231,8 @@ def redact_dsn(dsn: str) -> str:
         return dsn if parts.scheme and "password" not in dsn.lower() else "*****"
 
     host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
+    if port:
+        host = f"{host}:{port}"
     netloc = f"{parts.username or ''}:*****@{host}"
 
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))

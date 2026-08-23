@@ -64,7 +64,20 @@ return new class extends Migration
         // are table-wide — which UPDATE is, when granted without a column
         // list. Re-stating it is a no-op when that is already true and the
         // difference between a working ingest and a 500 when it is not.
-        DB::statement('GRANT SELECT, INSERT, UPDATE ON silver.reports TO georag_app');
+        //
+        // Guarded on the role existing, which is the 2026-08-19 incident
+        // this comment was already citing: GRANT against an absent role is
+        // a hard error, migrations run BEFORE the image deploys, and the
+        // whole of CD stops. The role is absent on every fresh database
+        // that has not run init-roles.sql — which includes CI and every
+        // developer's sqlite-free local Postgres.
+        $hasAppRole = DB::selectOne(
+            "SELECT 1 AS present FROM pg_roles WHERE rolname = 'georag_app'",
+        );
+
+        if ($hasAppRole) {
+            DB::statement('GRANT SELECT, INSERT, UPDATE ON silver.reports TO georag_app');
+        }
     }
 
     public function down(): void

@@ -130,6 +130,16 @@ async def _insert_row(
     except asyncpg.exceptions.UndefinedColumnError:
         # No `id` column on the target → some tables (audit_ledger) use
         # composite keys. Skip the conflict clause entirely.
+        #
+        # Worth a line: without the conflict clause this INSERT is no
+        # longer idempotent, so a re-run of the restore duplicates rows
+        # instead of skipping them. That is a real difference in what the
+        # restore did, and the retry below succeeding made it invisible.
+        log.debug(
+            "_insert_row: %s has no id column; retrying without "
+            "ON CONFLICT (this insert is not idempotent)",
+            qualified_table,
+        )
         sql_noconflict = (
             f"INSERT INTO {qualified_table} ({col_list}) "
             f"VALUES ({placeholders})"

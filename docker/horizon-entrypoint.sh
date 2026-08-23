@@ -30,25 +30,37 @@ set -eu
 HEALTH_PORT="${HORIZON_HEALTH_PORT:-8080}"
 HEALTH_ROUTER="${HORIZON_HEALTH_ROUTER:-/app/docker/horizon-health.php}"
 
+# No listener is not "degraded", it is a restart loop with no explanation:
+# laravel-horizon-cc carries a liveness probe on this port, so a Horizon
+# that starts without one is killed on the failureThreshold and killed
+# again on the next replica, forever, while the logs say only that it
+# started. Exiting here costs the same availability and says why.
+#
+# The router ships in the image (docker/laravel.Dockerfile `COPY . .`), so
+# reaching either of these branches means a broken image or a bad
+# HORIZON_HEALTH_ROUTER override — both worth stopping for, and neither
+# survivable by carrying on.
 if [ ! -f "$HEALTH_ROUTER" ]; then
-    echo "horizon-entrypoint: $HEALTH_ROUTER missing; starting Horizon unprobed" >&2
-else
-    # Access logs go to /dev/null on purpose. A probe every 15 seconds is
-    # ~5,800 lines a day of "GET /up 200" per replica, and health-probe
-    # noise is already a third of one tier's Log Analytics volume. Startup
-    # failures are still caught, below.
-    php -S "0.0.0.0:${HEALTH_PORT}" "$HEALTH_ROUTER" >/dev/null 2>&1 &
-    HEALTH_PID=$!
-
-    # One check that it survived binding the port. Steady state stays
-    # silent; a port clash or a syntax error in the router would otherwise
-    # show up only as a restart loop with no explanation in the logs.
-    sleep 1
-    if kill -0 "$HEALTH_PID" 2>/dev/null; then
-        echo "horizon-entrypoint: health endpoint on :${HEALTH_PORT} (pid ${HEALTH_PID})"
-    else
-        echo "horizon-entrypoint: health endpoint failed to start on :${HEALTH_PORT}" >&2
-    fi
+    echo "horizon-entrypoint: $HEALTH_ROUTER missing — refusing to start Horizon" >&2
+    echo "horizon-entrypoint: the liveness probe on :${HEALTH_PORT} would restart-loop this replica" >&2
+    exit 1
 fi
+
+# Access logs go to /dev/null on purpose. A probe every 15 seconds is
+# ~5,800 lines a day of "GET /up 200" per replica, against a 2 GB/day cap
+# on the workspace. Startup failures are still caught, below.
+php -S "0.0.0.0:${HEALTH_PORT}" "$HEALTH_ROUTER" >/dev/null 2>&1 &
+HEALTH_PID=$!
+
+# One check that it survived binding the port. Steady state stays silent;
+# a port clash or a syntax error in the router would otherwise show up
+# only as a restart loop with no explanation in the logs.
+sleep 1
+if ! kill -0 "$HEALTH_PID" 2>/dev/null; then
+    echo "horizon-entrypoint: health endpoint failed to start on :${HEALTH_PORT} — refusing to start Horizon" >&2
+    exit 1
+fi
+
+echo "horizon-entrypoint: health endpoint on :${HEALTH_PORT} (pid ${HEALTH_PID})"
 
 exec php artisan horizon
