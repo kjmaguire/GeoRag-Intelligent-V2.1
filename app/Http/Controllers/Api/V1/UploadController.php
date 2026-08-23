@@ -30,6 +30,22 @@ use Throwable;
  */
 class UploadController extends Controller
 {
+    /**
+     * EPSG code bounds for the `source_epsg` override.
+     *
+     * Named rather than inlined for two reasons. It is the same range the
+     * database already enforces (chk_spatial_features_crs_native, and the
+     * matching CHECK on silver.geophysics_surveys.crs_epsg), so a single
+     * symbol keeps the two definitions visibly paired. And
+     * UploadSizeCapConsistencyTest greps this file for a literal
+     * `'max:<5+ digits>'` rule to stop a hand-written FILE SIZE cap creeping
+     * back in; 32767 is a coordinate-system identifier, not a size, and it
+     * should not have to weaken that guard to coexist with it.
+     */
+    private const EPSG_MIN = 1024;
+
+    private const EPSG_MAX = 32767;
+
     public function __construct(
         private readonly ShadowRouter $shadowRouter,
         private readonly HatchetDispatchThrottle $dispatchThrottle,
@@ -239,7 +255,7 @@ class UploadController extends Controller
             // (crs_epsg_native BETWEEN 1024 AND 32767) on the column it
             // eventually lands in. The parser applies it ONLY when the file
             // declares no CRS of its own — a declared CRS always wins.
-            'source_epsg' => ['nullable', 'integer', 'min:1024', 'max:32767'],
+            'source_epsg' => ['nullable', 'integer', 'min:'.self::EPSG_MIN, 'max:'.self::EPSG_MAX],
         ], [
             // store() validates inline rather than through a FormRequest, so
             // there is no messages() to hang these on. Without them an

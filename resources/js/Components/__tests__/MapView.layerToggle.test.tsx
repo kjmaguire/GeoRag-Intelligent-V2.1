@@ -2,7 +2,7 @@
  * MapView layer toggle tests — Module 8 Chunk 8.7 (Deliverable C).
  *
  * Tests the silver layer toggle panel:
- *   - All 7 layers appear with correct labels
+ *   - All 10 layers appear with correct labels
  *   - Toggling a layer calls setLayoutProperty on the correct MapLibre layer ids
  *   - Layers with outline (boundaries/formations/seismic) toggle BOTH fill + outline
  *   - Default visibility state matches MVT_DEFAULT_VISIBILITY
@@ -166,8 +166,11 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         expect(region).toBeTruthy();
     });
 
-    // ── Test 2: All 7 layers render as toggles with correct labels ────────────
-    it('renders a toggle for each of the 7 silver layers with correct labels', async () => {
+    // ── Test 2: Every layer renders as a toggle with the right label ─────────
+    // 7 until 2026-08-23, when silver.spatial_features finally got a tile
+    // function. It is the only mixed-geometry source, so it contributes three
+    // layers (points / lines / areas) rather than one.
+    it('renders a toggle for each of the 10 silver layers with correct labels', async () => {
         render(<MapView projectId="proj-1" useMartinTiles={true} />);
         triggerMapLoad();
 
@@ -178,7 +181,7 @@ describe('MapView layer toggle panel — Deliverable C', () => {
             MVT_LAYERS.some((l) => cb.id === `layer-toggle-${l.id}`),
         );
         expect(layerCheckboxes).toHaveLength(MVT_LAYERS.length);
-        expect(MVT_LAYERS.length).toBe(7);
+        expect(MVT_LAYERS.length).toBe(10);
     });
 
     // ── Test 3: Each label text matches MvtLayerDef.label ────────────────────
@@ -324,6 +327,9 @@ describe('MapView layer toggle panel — Deliverable C', () => {
             'historic-workings': 'Historic workings',
             geochem:             'Geochem samples',
             collars:             'Collars',
+            'imported-points':   'Imported points',
+            'imported-lines':    'Imported lines',
+            'imported-polygons': 'Imported areas',
         };
 
         for (const layer of MVT_LAYERS) {

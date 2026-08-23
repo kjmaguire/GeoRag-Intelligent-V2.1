@@ -47,6 +47,22 @@ use Throwable;
  */
 class DrillUploadController extends Controller
 {
+    /**
+     * EPSG code bounds for the `source_epsg` override.
+     *
+     * Named rather than inlined for two reasons. It is the same range the
+     * database already enforces (chk_spatial_features_crs_native, and the
+     * matching CHECK on silver.geophysics_surveys.crs_epsg), so a single
+     * symbol keeps the two definitions visibly paired. And
+     * UploadSizeCapConsistencyTest greps this file for a literal
+     * `'max:<5+ digits>'` rule to stop a hand-written FILE SIZE cap creeping
+     * back in; 32767 is a coordinate-system identifier, not a size, and it
+     * should not have to weaken that guard to coexist with it.
+     */
+    private const EPSG_MIN = 1024;
+
+    private const EPSG_MAX = 32767;
+
     /** Bronze object-key prefix; workspace-scoped to keep multi-tenant blast radius tight. */
     private const BRONZE_PREFIX = 'drill-uploads';
 
@@ -81,7 +97,7 @@ class DrillUploadController extends Controller
             // DEFAULT_SOURCE_EPSG of 32613 (UTM 13N). An override wired only
             // into the wizard's /upload route would have left this one
             // guessing.
-            'source_epsg' => ['nullable', 'integer', 'min:1024', 'max:32767'],
+            'source_epsg' => ['nullable', 'integer', 'min:'.self::EPSG_MIN, 'max:'.self::EPSG_MAX],
         ], [
             // Inline validate() has no messages() to hang these on; keep the
             // wording identical to StoreQueryRequest::messages().
