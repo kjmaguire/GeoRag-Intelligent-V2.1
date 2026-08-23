@@ -211,9 +211,19 @@ RUN mkdir -p \
     && chown -R www-data:www-data storage bootstrap/cache \
     && chmod -R 775 storage bootstrap/cache
 
+# The horizon entrypoint has to be executable regardless of what the build
+# context's filesystem thinks. Git tracks the mode bit, but a checkout on
+# Windows -- where this image is built as often as not -- does not
+# reproduce it, and the failure mode is a container that exits instantly
+# with "permission denied" on every deploy.
+RUN chmod +x /app/docker/horizon-entrypoint.sh
+
 # Octane listens on port 80 (HTTP).
-# Reverb WebSocket port (8080) is defined as an exposed port in compose —
-# we expose it here as documentation; the compose service applies the binding.
+# Reverb WebSocket port (8080) is defined as an exposed port in compose --
+# we expose it here as documentation; the compose service applies the
+# binding. The horizon service also serves 8080, for its health endpoint
+# only (docker/horizon-health.php); the three services never share a
+# container, so the reuse is not a conflict.
 EXPOSE 80
 EXPOSE 8080
 
@@ -224,6 +234,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 
 # Default command starts the Octane/Swoole HTTP server.
 # Override this in docker-compose.yml for horizon and reverb containers:
-#   horizon:  php artisan horizon
+#   horizon:  /app/docker/horizon-entrypoint.sh
 #   reverb:   php artisan reverb:start --host=0.0.0.0 --port=8080
+#
+# horizon runs through the entrypoint rather than `php artisan horizon`
+# directly so that the container also serves a health endpoint -- Container
+# Apps probes speak only HTTP and TCP, and a bare supervisor offers
+# neither. The entrypoint execs Horizon, so it is still PID 1 and still
+# drains on SIGTERM.
 CMD ["php", "artisan", "octane:start", "--host=0.0.0.0", "--port=80", "--server=swoole"]

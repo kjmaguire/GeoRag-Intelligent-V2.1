@@ -563,7 +563,14 @@ services:
     image: georag/laravel:latest
     container_name: georag-laravel-horizon
     restart: unless-stopped
-    command: php artisan horizon
+    # Not `php artisan horizon` directly: the entrypoint starts a health
+    # listener beside the supervisor and then execs Horizon, so Horizon is
+    # still PID 1 and still drains on SIGTERM. Compose does not need the
+    # listener -- its healthcheck below can exec `horizon:status` -- but
+    # Azure Container Apps probes speak only HTTP and TCP, so this is the
+    # code path production runs. Dev should exercise it, not something
+    # adjacent to it.
+    command: /app/docker/horizon-entrypoint.sh
     environment:
       APP_NAME: ${APP_NAME:-GeoRAG}
       APP_ENV: ${APP_ENV:-local}
