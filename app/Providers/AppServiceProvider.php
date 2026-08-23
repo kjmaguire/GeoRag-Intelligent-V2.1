@@ -129,11 +129,18 @@ class AppServiceProvider extends ServiceProvider
                         function (string $path, \DateTimeInterface $expiration, array $options = []) use (
                             $sasHelper, $accountName, $container
                         ): string {
+                            // The SDK types $signedExpiry as DateTime|string,
+                            // not DateTimeInterface, and Laravel hands the
+                            // callback a DateTimeInterface -- in practice a
+                            // Carbon, which is a DateTimeImmutable and so is
+                            // NOT a DateTime. Passing it through happened to
+                            // work because the SDK only formats the value,
+                            // but it does not satisfy the signature.
                             $token = $sasHelper->generateBlobServiceSharedAccessSignatureToken(
                                 BlobResources::RESOURCE_TYPE_BLOB,
                                 "{$container}/{$path}",
                                 'r',
-                                $expiration,
+                                \DateTime::createFromInterface($expiration),
                             );
 
                             return "https://{$accountName}.blob.core.windows.net/{$container}/{$path}?{$token}";

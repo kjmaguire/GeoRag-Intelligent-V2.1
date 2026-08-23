@@ -1,12 +1,6 @@
 parameters:
 	ignoreErrors:
 		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Console/Commands/DumpAuditPii.php
-
-		-
 			message: '#^Method App\\Console\\Commands\\GoldenSetReport\:\:formatReport\(\) has parameter \$samples with no type specified\.$#'
 			identifier: missingType.parameter
 			count: 1
@@ -209,12 +203,6 @@ parameters:
 			identifier: missingType.iterableValue
 			count: 1
 			path: app/Http/Controllers/Api/V1/PublicGeoscience/PublicGeoscienceMapController.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Http/Controllers/Api/V1/QueryController.php
 
 		-
 			message: '#^Call to an undefined method Illuminate\\Foundation\\Bus\\PendingDispatch\:\:withTraceparent\(\)\.$#'
@@ -614,12 +602,6 @@ parameters:
 
 		-
 			message: '#^Access to an undefined property App\\Models\\ChatMessage\:\:\$metadata\.$#'
-			identifier: property.notFound
-			count: 1
-			path: app/Jobs/StreamQueryFromFastApi.php
-
-		-
-			message: '#^Access to an undefined property App\\Models\\QueryAuditLog\:\:\$dispatched_at\.$#'
 			identifier: property.notFound
 			count: 1
 			path: app/Jobs/StreamQueryFromFastApi.php
