@@ -76,6 +76,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -89,15 +90,57 @@ def _report(name: str, ok: bool, detail: str) -> None:
         failures.append(name)
 
 
+#: Where this process's own app is listening. 127.0.0.1, not "localhost":
+#: the name resolves to BOTH 127.0.0.1 and ::1 in this container
+#: (confirmed by getaddrinfo inside a live replica), and a connect to ::1
+#: where the loopback has no IPv6 address raises
+#: `[Errno 99] Cannot assign requested address` rather than a refusal.
+#: That is the error this check produced on 2026-08-23, and it rolled the
+#: whole deploy back. The literal has no name to resolve and no second
+#: family to fall through to.
+#:
+#: 8000 is fastapi-cc's ingress `targetPort`. Not read from a PORT
+#: variable: there isn't one in this container (verified inside a live
+#: replica), so an env lookup would be a derivation from nothing that
+#: silently redirects the check the day somebody sets PORT for an
+#: unrelated reason. If targetPort ever moves, this check fails loudly,
+#: which is the correct outcome -- the app would not be answering where
+#: the ingress sends traffic either.
+SELF_URL = "http://127.0.0.1:8000/health"
+
+#: This runs seconds after the rollout reports the revision healthy, at
+#: which point the process may be listening but not yet serving. One
+#: attempt makes the gate a coin toss on startup timing, and its failure
+#: mode is a full rollback of five apps -- so retry, briefly, and only
+#: for the connection.
+SELF_ATTEMPTS = 6
+SELF_BACKOFF = 5
+
+
 def check_fastapi_self() -> None:
-    try:
-        with urllib.request.urlopen(
-            "http://localhost:8000/health", timeout=TIMEOUT,
-        ) as r:
-            body = r.read().decode()[:200]
-        _report("fastapi-self", r.status == 200, f"HTTP {r.status} {body}")
-    except Exception as exc:  # noqa: BLE001 — any failure is a failed check
-        _report("fastapi-self", False, f"{type(exc).__name__}: {exc}")
+    last = ""
+    for attempt in range(1, SELF_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(SELF_URL, timeout=TIMEOUT) as r:
+                body = r.read().decode()[:200]
+            _report(
+                "fastapi-self",
+                r.status == 200,
+                f"HTTP {r.status} {body}"
+                + (f" (attempt {attempt})" if attempt > 1 else ""),
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — any failure is a failed check
+            last = f"{type(exc).__name__}: {exc}"
+            if attempt < SELF_ATTEMPTS:
+                print(f"[....] fastapi-self: {last} — retrying in {SELF_BACKOFF}s")
+                time.sleep(SELF_BACKOFF)
+
+    _report(
+        "fastapi-self", False,
+        f"{last} (after {SELF_ATTEMPTS} attempts over "
+        f"{SELF_BACKOFF * (SELF_ATTEMPTS - 1)}s against {SELF_URL})",
+    )
 
 
 def check_laravel_bridge() -> None:
