@@ -160,14 +160,14 @@ def check_qdrant() -> None:
 async def _pg() -> str:
     import asyncpg  # noqa: PLC0415 — only present inside the image
 
-    from app.config import settings  # noqa: PLC0415
+    from app.db.dsn import build_dsn  # noqa: PLC0415
 
-    sslmode = getattr(settings, "POSTGRES_SSLMODE", "require")
-    dsn = (
-        f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
-        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}"
-        f"/{settings.POSTGRES_DB}?sslmode={sslmode}"
-    )
+    # This was the sixty-first hand-rolled DSN -- assembled from settings
+    # fields with no percent-encoding, so a password containing "@" made it
+    # dial a different host and report the deployment unhealthy for a
+    # reason that had nothing to do with the deployment. build_dsn is the
+    # one place that knows how to do this.
+    dsn = build_dsn(scheme="postgresql", include_sslmode=True)
     conn = await asyncpg.connect(dsn, timeout=TIMEOUT)
     try:
         # to_regclass, not a row count: silver.document_passages is under

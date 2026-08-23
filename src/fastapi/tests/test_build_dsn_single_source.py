@@ -256,3 +256,95 @@ class TestRedactDsn:
         }
         with mock.patch.dict(os.environ, env, clear=False):
             assert "s3cret" not in redact_dsn(build_dsn())
+
+
+class TestThePooledFallbackIsNotAComposeHostname:
+    """`build_dsn(direct=False)` with no POSTGRES_HOST must not invent one.
+
+    POSTGRES_HOST defaulted to the literal "pgbouncer" and POSTGRES_PORT to
+    6432 -- docker-compose service coordinates, which resolve in exactly
+    one environment.
+
+    Nothing was broken by it: `direct` defaults to True, so the only
+    caller reaching that branch is main.py's request-path pool, and
+    fastapi-cc sets POSTGRES_HOST explicitly. These assertions exist so
+    the next service that calls build_dsn(direct=False) -- on a host that
+    does not happen to define POSTGRES_HOST -- gets a DSN that works
+    instead of a DNS failure.
+    """
+
+    @staticmethod
+    def _only_direct(monkeypatch) -> None:
+        for name in ("POSTGRES_HOST", "POSTGRES_PORT"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("POSTGRES_DIRECT_HOST", "pg.example.internal")
+        monkeypatch.setenv("POSTGRES_DIRECT_PORT", "5432")
+        monkeypatch.setenv("POSTGRES_USER", "georag_app")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "pw")
+        monkeypatch.setenv("POSTGRES_DB", "georag")
+
+    def test_pooled_falls_back_to_the_direct_host(self, monkeypatch) -> None:
+        from app.db.dsn import build_dsn
+
+        self._only_direct(monkeypatch)
+        dsn = build_dsn(direct=False)
+
+        assert "pgbouncer" not in dsn
+        assert "pg.example.internal:5432" in dsn
+
+    def test_an_explicit_pooler_is_still_honoured(self, monkeypatch) -> None:
+        from app.db.dsn import build_dsn
+
+        self._only_direct(monkeypatch)
+        monkeypatch.setenv("POSTGRES_HOST", "pgbouncer")
+        monkeypatch.setenv("POSTGRES_PORT", "6432")
+
+        # The fix removes a default, not the capability.
+        assert "pgbouncer:6432" in build_dsn(direct=False)
+
+    def test_direct_ignores_the_pooler_entirely(self, monkeypatch) -> None:
+        from app.db.dsn import build_dsn
+
+        self._only_direct(monkeypatch)
+        monkeypatch.setenv("POSTGRES_HOST", "pgbouncer")
+
+        assert "pg.example.internal:5432" in build_dsn(direct=True)
+
+    def test_the_settings_defaults_carry_no_hostname(self) -> None:
+        # The environment is only half of it: _read falls back to the
+        # Settings class default, so a compose name left there would win
+        # over the fallback above -- the test above would pass while a real
+        # deployment still dialled "pgbouncer".
+        #
+        # Read via ast rather than importing app.config: Settings has
+        # required fields with no defaults, so importing it outside a
+        # fixture that populates the environment raises ValidationError.
+        # Grepping the source instead would match the comment explaining
+        # the removal, which is its own well-worn trap in this repo.
+        import ast
+        from pathlib import Path
+
+        config_py = Path(__file__).resolve().parent.parent / "app" / "config.py"
+        tree = ast.parse(config_py.read_text(encoding="utf-8"))
+
+        defaults: dict[str, object] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AnnAssign) or node.value is None:
+                continue
+            target = node.target
+            if isinstance(target, ast.Name) and target.id.startswith("POSTGRES_"):
+                try:
+                    defaults[target.id] = ast.literal_eval(node.value)
+                except ValueError:
+                    pass
+
+        assert defaults["POSTGRES_HOST"] == ""
+        assert defaults["POSTGRES_PORT"] is None
+
+        # POSTGRES_DIRECT_HOST is deliberately NOT asserted the same way.
+        # It also defaults to a compose service name ("postgresql"), which
+        # is the same shape -- but it is the documented local-dev default
+        # for the path everything uses, every real deployment sets it
+        # explicitly, and emptying it would break `docker compose up` for
+        # no gain. The pooled pair is different: it is reached by one
+        # caller, on hosts that may never define it.

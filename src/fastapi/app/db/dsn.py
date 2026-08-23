@@ -131,12 +131,40 @@ def build_dsn(
     password = _read("POSTGRES_PASSWORD", "")
     database = _read("POSTGRES_DB", "georag")
 
+    direct_host = _read("POSTGRES_DIRECT_HOST", "postgresql")
+    direct_port = _read("POSTGRES_DIRECT_PORT", "5432")
+
     if direct:
-        host = _read("POSTGRES_DIRECT_HOST", "postgresql")
-        port = _read("POSTGRES_DIRECT_PORT", "5432")
+        host, port = direct_host, direct_port
     else:
-        host = _read("POSTGRES_HOST", "pgbouncer")
-        port = _read("POSTGRES_PORT", "6432")
+        # The pooled fallback is the DIRECT host, not the literal
+        # "pgbouncer". That name is a docker-compose service and resolves
+        # nowhere else, so as a default it is a hostname that works in one
+        # environment and fails DNS in every other -- the same shape as the
+        # MV-refresh compose hostname the full-stack review found.
+        #
+        # Nothing is broken by it today: `direct` defaults to True, so the
+        # only caller that reaches this branch is main.py's request-path
+        # pool, and fastapi-cc does define POSTGRES_HOST. This is a latent
+        # edge removed, not an outage fixed. The next service that calls
+        # build_dsn(direct=False) is the one that would have found it.
+        #
+        # Falling back to the direct host means a deployment naming one
+        # Postgres endpoint works, and PgBouncer becomes an explicit
+        # opt-in rather than a default that resolves differently per
+        # environment.
+        #
+        # Opting in is NOT currently safe, for a reason worth stating here
+        # rather than rediscovering: Azure's built-in PgBouncer runs
+        # pool_mode=transaction, and six call sites still use
+        # `set_config(..., false)` -- a SESSION-scoped GUC. Under
+        # transaction pooling a session GUC does not reliably survive to
+        # the next statement and can be observed by whoever holds that
+        # server connection next. For app.workspace_id that is a
+        # cross-tenant read. Convert those six to transaction scope before
+        # pointing POSTGRES_HOST at :6432.
+        host = _read("POSTGRES_HOST", direct_host)
+        port = _read("POSTGRES_PORT", direct_port)
 
     # `safe=""` so every reserved character is encoded. An unencoded "@" in
     # a password splits the authority section and the DSN silently points

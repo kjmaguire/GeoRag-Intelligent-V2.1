@@ -47,7 +47,7 @@ from qdrant_client import AsyncQdrantClient
 from starlette.responses import Response  # for /metrics return-type resolution
 
 from app.config import settings
-from app.db.dsn import build_dsn
+from app.db.dsn import build_dsn, redact_dsn
 from app.logging_config import configure_json_logging
 from app.services.qdrant_conn import qdrant_client_kwargs
 
@@ -250,12 +250,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # and high connection churn, which is what a transaction pooler is for.
     # Background work uses build_dsn() (direct) instead; see app/db/dsn.py.
     pg_dsn = build_dsn(direct=False, scheme="postgresql", include_sslmode=True)
-    logger.info(
-        "Connecting asyncpg pool -> %s:%s/%s",
-        settings.POSTGRES_HOST,
-        settings.POSTGRES_PORT,
-        settings.POSTGRES_DB,
-    )
+    # Log the DSN that was actually built, redacted -- not settings fields
+    # read a second time. The old form could report a different host from
+    # the one it had just connected to, which is precisely the failure
+    # mode you are reading this log line to diagnose.
+    logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
         min_size=2,

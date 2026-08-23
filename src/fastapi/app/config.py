@@ -159,8 +159,21 @@ class Settings(BaseSettings):
     # PostgreSQL / PgBouncer
     # -------------------------------------------------------------------------
 
-    POSTGRES_HOST: str = "pgbouncer"
-    POSTGRES_PORT: int = 6432
+    # Deliberately EMPTY, not "pgbouncer"/6432. Those were docker-compose
+    # service coordinates, and a default that resolves in exactly one
+    # environment is a hostname waiting to fail DNS in every other. Unset
+    # means "no separate pooler": build_dsn() falls back to the direct
+    # host, so a deployment naming one Postgres endpoint works and
+    # PgBouncer is an explicit opt-in.
+    #
+    # This is hardening, not a repair. build_dsn()'s `direct` parameter
+    # defaults to True, so the compose default was only ever reachable
+    # from main.py's request-path pool, and fastapi-cc sets POSTGRES_HOST
+    # explicitly. See app/db/dsn.py for why opting in to the pooler is not
+    # safe yet (transaction pooling vs six session-scoped set_config
+    # calls).
+    POSTGRES_HOST: str = ""
+    POSTGRES_PORT: int | None = None
     POSTGRES_DB: str = "georag"
     POSTGRES_USER: str = "georag"
     POSTGRES_PASSWORD: str
