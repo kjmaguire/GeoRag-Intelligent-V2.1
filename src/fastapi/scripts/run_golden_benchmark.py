@@ -297,9 +297,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
       4. Return the report dict.
     """
     # See the note at app/main.py's pool log line: redact_dsn strips the
-    # password structurally, which CodeQL's taint tracking cannot see.
+    # password structurally, which CodeQL's taint tracking cannot see, and
+    # an inline `# codeql[...]` marker does not suppress the alert -- code
+    # scanning ignores those. Dismissed through the API instead.
     log.info("bench.start dsn=%s sha=%s label=%s",
-             redact_dsn(_dsn()),  # codeql[py/clear-text-logging-sensitive-data]
+             redact_dsn(_dsn()),
              _git_sha(),
              args.label)
 

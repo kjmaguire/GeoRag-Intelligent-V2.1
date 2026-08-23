@@ -254,14 +254,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # read a second time. The old form could report a different host from
     # the one it had just connected to, which is precisely the failure
     # mode you are reading this log line to diagnose.
-    # CodeQL flags this because a DSN built from POSTGRES_PASSWORD reaches
-    # a log call, and it cannot see that redact_dsn strips the password
+    # CodeQL flags this (py/clear-text-logging-sensitive-data, high)
+    # because a DSN built from POSTGRES_PASSWORD reaches a log call, and
+    # its taint tracking cannot see that redact_dsn strips the password
     # component structurally (app/db/dsn.py, asserted in
-    # tests/test_build_dsn_single_source.py::TestRedactDsn). Suppressed
-    # here rather than dismissed in the UI so the reasoning sits next to
-    # the code -- if redact_dsn ever stops redacting, its own tests fail
-    # first and this comment is the pointer to them.
-    logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))  # codeql[py/clear-text-logging-sensitive-data]
+    # tests/test_build_dsn_single_source.py::TestRedactDsn, including the
+    # malformed-port case that used to raise instead of redacting).
+    #
+    # A `# codeql[...]` comment does NOT suppress this -- GitHub code
+    # scanning does not honour inline suppression comments, and one sat
+    # on this line raising the alert anyway. The alert is dismissed
+    # through the API instead, with this reasoning as the dismissal
+    # comment. Do not re-add a suppression marker; it only looks like a
+    # guard.
+    #
+    # The real guard is TestRedactDsn: if redact_dsn ever stops
+    # redacting, those tests fail before this line can leak anything.
+    #
+    # Not fixed by logging components instead of the built DSN -- see the
+    # paragraph above about reporting a host you did not connect to.
+    logger.info("Connecting asyncpg pool -> %s", redact_dsn(pg_dsn))
     pg_pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=pg_dsn,
         min_size=2,
