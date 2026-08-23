@@ -97,8 +97,14 @@ jobs:
 
       # --testdox so a failure names the invariant that broke rather than
       # a test-method identifier.
+      # -c phpunit.pgsql.xml is load-bearing, not tidiness. The default
+      # phpunit.xml pins `DB_CONNECTION=sqlite` with force="true", which
+      # OVERRIDES the DB_CONNECTION=pgsql this job sets in `env:` -- so
+      # without it every RLS test in here self-skips against SQLite while
+      # the suite still reports OK. That is what the first run of this
+      # workflow did: 45 tests, 32 skipped, green.
       - name: Tenancy suite
-        run: php vendor/bin/phpunit --no-coverage --testdox tests/Feature/Tenancy
+        run: php vendor/bin/phpunit -c phpunit.pgsql.xml --no-coverage --testdox tests/Feature/Tenancy
 
       # A suite that skips itself is the skeleton again in a better costume.
       # WorkspaceRlsCoverageTest is the load-bearing one -- it walks every
@@ -110,7 +116,7 @@ jobs:
       - name: Assert the RLS coverage test actually ran
         run: |
           TEST=tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php
-          php vendor/bin/phpunit --no-coverage "$TEST" > /tmp/rls.txt 2>&1 || { cat /tmp/rls.txt; exit 1; }
+          php vendor/bin/phpunit -c phpunit.pgsql.xml --no-coverage "$TEST" > /tmp/rls.txt 2>&1 || { cat /tmp/rls.txt; exit 1; }
           cat /tmp/rls.txt
           if grep -qE "Skipped:|Incomplete:|No tests executed|OK \(0 tests" /tmp/rls.txt; then
             echo "::error::WorkspaceRlsCoverageTest did not execute. It skips itself when the connection is not Postgres, which means this job proved nothing about tenant isolation."
