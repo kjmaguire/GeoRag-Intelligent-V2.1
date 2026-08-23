@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 from app.middleware import _PROBE_PATHS, StructuredAccessLogMiddleware
 

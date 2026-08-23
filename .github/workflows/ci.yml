@@ -580,6 +580,11 @@ jobs:
         run: bash scripts/tests/redis_manifests_test.sh
       - name: Redis persistence and memory-headroom invariants
         run: python scripts/check_redis_manifests.py
+      # coverage.yml runs weekly, so its merger would otherwise only be
+      # exercised once a week -- and a wrong merge prints a plausible
+      # percentage rather than failing.
+      - name: Clover merge is a union, not a last-write-wins
+        run: bash scripts/tests/merge_clover_test.sh
 
   # ─── Schema/Qdrant drift smoke gate ───────────────────────────────────
   # 2026-08-04 incident: two schema-drift bugs shipped straight through
