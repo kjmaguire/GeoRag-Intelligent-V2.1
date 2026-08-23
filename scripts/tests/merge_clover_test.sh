@@ -62,12 +62,48 @@ expect_pct "a file seen by one run still enters the denominator" "50.0%" "${WORK
 clover "${WORK}/empty.xml" '<file name="/app/C.php"><line num="1" type="stmt" count="0"/><line num="2" type="stmt" count="0"/></file>'
 expect_pct "zero coverage reports zero, not a crash" "0.0%" "${WORK}/empty.xml"
 
-# --- a missing report is reported, not silently dropped --------------
-if "$PYTHON" "$MERGER" "${WORK}/out.xml" "${WORK}/only-a.xml" "${WORK}/nope.xml" 2>&1 >/dev/null \
-   | grep -q 'does not exist'; then
+# --- a missing report is reported AND fails the run ------------------
+# Warning is not enough. Both PHPUnit steps in coverage.yml are
+# continue-on-error, so this script's exit code is the only thing that
+# can turn the job red when a run dies -- and a headline percentage
+# merged from one report of two understates in exactly the flattering
+# direction the merger exists to prevent, while reading as a real
+# coverage drop to whoever looks next.
+#
+# Captured, not piped: `set -o pipefail` above means a pipeline into grep
+# returns the merger's exit code, so the two claims have to be checked
+# separately or they conflate.
+PARTIAL_ERR="$("$PYTHON" "$MERGER" "${WORK}/out.xml" "${WORK}/only-a.xml" "${WORK}/nope.xml" 2>&1 >/dev/null)"
+partial_rc=$?
+if printf '%s' "$PARTIAL_ERR" | grep -q 'does not exist'; then
     printf 'ok   a missing report warns\n'; PASS=$((PASS + 1))
 else
     printf 'FAIL a missing report was dropped silently\n'; FAIL=$((FAIL + 1))
+fi
+if [ "$partial_rc" -ne 0 ]; then
+    printf 'ok   a partial merge is a non-zero exit\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL a partial merge published a headline figure and exited 0\n'; FAIL=$((FAIL + 1))
+fi
+
+# --- a truncated report is named, not a traceback --------------------
+# A run killed by a timeout or an OOM leaves a half-written file, not a
+# missing one. An unhandled ParseError in a step that is NOT
+# continue-on-error fails the job with a stack trace instead of the one
+# line that says which run died.
+printf '<?xml version="1.0"?>\n<coverage><project><file name="/app/A.php"><line num="1" type="stmt" count="1"/></file' \
+    > "${WORK}/truncated.xml"
+TRUNC_ERR="$("$PYTHON" "$MERGER" "${WORK}/out.xml" "${WORK}/only-a.xml" "${WORK}/truncated.xml" 2>&1 >/dev/null)"
+trunc_rc=$?
+if printf '%s' "$TRUNC_ERR" | grep -q 'not parseable Clover XML'; then
+    printf 'ok   a truncated report names itself\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL a truncated report was not identified\n'; FAIL=$((FAIL + 1))
+fi
+if [ "$trunc_rc" -ne 0 ] && ! printf '%s' "$TRUNC_ERR" | grep -q 'Traceback'; then
+    printf 'ok   a truncated report fails the run without a traceback\n'; PASS=$((PASS + 1))
+else
+    printf 'FAIL a truncated report exited 0 or raised\n'; FAIL=$((FAIL + 1))
 fi
 
 # --- no readable reports at all is a failure, not 0%% -----------------
