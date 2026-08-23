@@ -150,6 +150,12 @@ _RECOVERY_WORKFLOW_BY_PREFIX: dict[str, str] = {
     "samples": "ingest_tabular",
     "excel": "ingest_tabular",
     "tabular": "ingest_tabular",
+    # 2026-08-23: standalone .dbf. A dBASE table with no same-stem .shp is an
+    # attribute table, not a shapefile sidecar, and lands in
+    # silver.attribute_tables via ingest_tabular. It needs an entry here for
+    # the same reason every other category does — without one the sweep marks
+    # a stalled upload timed_out and never retries it.
+    "tables": "ingest_tabular",
 }
 
 #: Prefixes that are also a sheet_type hint for ingest_tabular.
