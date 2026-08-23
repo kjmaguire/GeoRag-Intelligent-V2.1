@@ -209,6 +209,7 @@ class ReportController extends Controller
                     'r.version',
                     'r.is_scanned',
                     'r.parse_quality_pct',
+                    'r.text_page_coverage_pct',
                     'r.sections_text',
                     DB::raw('COALESCE(p.passages, 0) AS passages'),
                     DB::raw('COALESCE(p.embedded, 0) AS embedded'),
@@ -235,6 +236,7 @@ class ReportController extends Controller
                 'version' => (int) ($r->version ?? 1),
                 'is_scanned' => (bool) ($r->is_scanned ?? false),
                 'parse_quality_pct' => isset($r->parse_quality_pct) ? (float) $r->parse_quality_pct : null,
+                'text_page_coverage_pct' => isset($r->text_page_coverage_pct) ? (float) $r->text_page_coverage_pct : null,
                 'sections_count' => $sectionsCount,
                 'has_content' => $sectionsCount > 0,
                 'passages' => $passages,
@@ -403,6 +405,10 @@ class ReportController extends Controller
                 'region' => (string) ($row->region ?? ''),
                 'project_name' => (string) ($row->project_name ?? ''),
                 'parse_quality_pct' => isset($row->parse_quality_pct) ? (float) $row->parse_quality_pct : null,
+                // Extraction completeness. parse_quality_pct above is
+                // NI 43-101 section coverage and answers a different
+                // question -- see the migration comment on the column.
+                'text_page_coverage_pct' => isset($row->text_page_coverage_pct) ? (float) $row->text_page_coverage_pct : null,
                 'is_scanned' => (bool) ($row->is_scanned ?? false),
                 'page_count' => isset($row->page_count) ? (int) $row->page_count : null,
                 'parser_used' => (string) ($row->parser_used ?? ''),

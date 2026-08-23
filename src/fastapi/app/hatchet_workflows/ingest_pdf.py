@@ -528,6 +528,11 @@ def _run_parser_subprocess(
             "region": getattr(result, "region", None),
             "sections": _sections_out,
             "parse_quality_pct": float(getattr(result, "parse_quality_pct", 0.0) or 0.0),
+            # The number people believe parse_quality_pct is. See
+            # ReportParseResult.text_page_coverage_pct.
+            "text_page_coverage_pct": float(
+                getattr(result, "text_page_coverage_pct", 0.0) or 0.0
+            ),
             "parser_used": str(getattr(result, "parser_used", "unknown") or "unknown"),
             "skipped_elements": int(getattr(result, "skipped_elements", 0) or 0),
             "warnings": [
@@ -620,6 +625,10 @@ class ParseOut(BaseModel):
     region: str | None = None
     sections: list[dict] = Field(default_factory=list)
     parse_quality_pct: float = 0.0
+    # NI 43-101 heading coverage and page-level extraction coverage are
+    # different questions; carrying only the first is what let a document
+    # whose 300 pages OCR'd to nothing report as well parsed.
+    text_page_coverage_pct: float = 0.0
     parser_used: str = ""
     skipped_elements: int = 0
     warnings: list[dict] = Field(default_factory=list)
@@ -1107,7 +1116,7 @@ INSERT INTO silver.reports (
     project_name, region, resource_estimate, sections_text,
     embedding_ids, parse_quality_pct, parser_used,
     is_scanned, source_file_sha256, project_id, workspace_id, page_count,
-    extraction_confidence, source_object_key,
+    extraction_confidence, source_object_key, text_page_coverage_pct,
     created_at, updated_at
 )
 VALUES (
@@ -1115,7 +1124,7 @@ VALUES (
     $7, $8, $9::jsonb, $10::jsonb,
     ARRAY[]::text[], $11, $12,
     $13, $14, $16::uuid, $15::uuid, $17::int,
-    $18::real, $19,
+    $18::real, $19, $20::real,
     NOW(), NOW()
 )
 ON CONFLICT (report_id) DO UPDATE SET
@@ -1137,6 +1146,7 @@ ON CONFLICT (report_id) DO UPDATE SET
     -- side-by-side view: without it there is no link from a report back to
     -- the PDF whose pages the extracted text is supposed to correspond to.
     source_object_key = EXCLUDED.source_object_key,
+    text_page_coverage_pct = EXCLUDED.text_page_coverage_pct,
     updated_at     = NOW()
 """
 
@@ -1770,6 +1780,12 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     # only ever a workflow input and nothing on the produced
                     # row pointed back at its source.
                     input.minio_key,
+                    # $20 -- the fraction of pages that produced any text.
+                    # parse_quality_pct sitting alone on this row is what
+                    # let a report whose 300 pages OCR'd to nothing read
+                    # as well parsed, because its table of contents
+                    # yielded 17 NI 43-101 headings.
+                    float(parsed.get("text_page_coverage_pct", 0.0) or 0.0),
                 )
                 for ordinal, section in enumerate(parsed.get("sections") or []):
                     text = (section.get("text") or "").strip()

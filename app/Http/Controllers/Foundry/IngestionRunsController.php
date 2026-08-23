@@ -237,6 +237,7 @@ class IngestionRunsController extends Controller
                 'title' => $r['title'],
                 'parser_used' => $r['parser_used'],
                 'parse_quality_pct' => $r['parse_quality_pct'],
+                'text_page_coverage_pct' => $r['text_page_coverage_pct'],
                 'is_scanned' => $r['is_scanned'],
                 'passages' => $r['passages'],
                 'embedded' => $r['embedded'],
@@ -278,7 +279,8 @@ class IngestionRunsController extends Controller
     /**
      * @return list<array{
      *     report_id: string, title: string, parser_used: ?string,
-     *     parse_quality_pct: ?float, is_scanned: bool, passages: int, embedded: int,
+     *     parse_quality_pct: ?float, text_page_coverage_pct: ?float,
+     *     is_scanned: bool, passages: int, embedded: int,
      * }>
      */
     private function loadReports(string $projectId, string $workspaceId): array
@@ -302,6 +304,7 @@ class IngestionRunsController extends Controller
                 r.title,
                 r.parser_used,
                 r.parse_quality_pct,
+                r.text_page_coverage_pct,
                 r.is_scanned,
                 COALESCE(p.passages, 0) AS passages,
                 COALESCE(p.embedded, 0) AS embedded
@@ -327,6 +330,13 @@ class IngestionRunsController extends Controller
             'parse_quality_pct' => $r->parse_quality_pct === null
                 ? null
                 : (float) $r->parse_quality_pct,
+            // Extraction completeness, which is what the "Quality" column
+            // used to be read as. parse_quality_pct above is NI 43-101
+            // section-heading coverage and answers a different question;
+            // null here means the row predates the column, not zero.
+            'text_page_coverage_pct' => $r->text_page_coverage_pct === null
+                ? null
+                : (float) $r->text_page_coverage_pct,
             'is_scanned' => (bool) $r->is_scanned,
             'passages' => (int) $r->passages,
             'embedded' => (int) $r->embedded,

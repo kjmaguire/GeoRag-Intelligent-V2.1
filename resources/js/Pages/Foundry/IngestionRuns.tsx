@@ -98,6 +98,8 @@ interface CompletedRow {
     title: string;
     parser_used: string | null;
     parse_quality_pct: number | null;
+    /** pages_with_text / page_count. null on rows ingested before the column existed. */
+    text_page_coverage_pct: number | null;
     is_scanned: boolean;
     passages: number;
     embedded: number;
@@ -469,12 +471,19 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                             <div className="overflow-x-auto">
                                 <div className="min-w-[720px]">
                                     <div
-                                        className="grid grid-cols-[1fr_90px_100px_120px_160px_120px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
+                                        className="grid grid-cols-[1fr_90px_100px_100px_110px_150px_110px] text-[10px] font-mono uppercase tracking-wider px-4 py-2 border-b"
                                         style={{ color: 'var(--fg-3)', borderColor: 'var(--line-1)' }}
                                     >
                                         <div>Report</div>
                                         <div>Parser</div>
-                                        <div>Quality</div>
+                                        {/* NOT "Quality". parse_quality_pct is NI 43-101
+                                            section-heading coverage; a flawlessly
+                                            extracted survey with no numbered sections
+                                            scores 0%. "Text pages" beside it is the
+                                            extraction number people were reading this
+                                            column as. */}
+                                        <div>NI 43-101</div>
+                                        <div>Text pages</div>
                                         <div>Passages</div>
                                         <div>Embedded</div>
                                         <div>Uploaded</div>
@@ -482,7 +491,7 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                     {runs.completed.map((r) => (
                                         <div
                                             key={r.report_id}
-                                            className="grid grid-cols-[1fr_90px_100px_120px_160px_120px] text-xs px-4 py-2.5 border-b items-center"
+                                            className="grid grid-cols-[1fr_90px_100px_100px_110px_150px_110px] text-xs px-4 py-2.5 border-b items-center"
                                             style={{ borderColor: 'var(--line-1)' }}
                                         >
                                             <div className="truncate" style={{ color: 'var(--fg-0)' }} title={r.title}>
@@ -496,8 +505,17 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                             <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
                                                 {r.parser_used ?? '—'}
                                             </div>
-                                            <div className="font-mono" style={{ color: qualityColor(r.parse_quality_pct) }}>
+                                            <div className="font-mono" style={{ color: 'var(--fg-2)' }}>
                                                 {r.parse_quality_pct === null ? '—' : `${qualityPct(r.parse_quality_pct)}%`}
+                                            </div>
+                                            <div
+                                                className="font-mono"
+                                                style={{ color: qualityColor(r.text_page_coverage_pct) }}
+                                                title="Fraction of the PDF's pages that produced any text"
+                                            >
+                                                {r.text_page_coverage_pct === null
+                                                    ? '—'
+                                                    : `${qualityPct(r.text_page_coverage_pct)}%`}
                                             </div>
                                             <div className="font-mono" style={{ color: 'var(--fg-1)' }}>
                                                 {r.passages.toLocaleString()}
@@ -544,6 +562,17 @@ function qualityPct(fraction: number | null): number | null {
     return fraction === null ? null : Math.min(100, Math.round(fraction * 100));
 }
 
+/**
+ * Colour for TEXT PAGE COVERAGE, not for NI 43-101 section coverage.
+ *
+ * It used to tint the section-coverage column, where low is not bad: a
+ * 1970s government geophysics survey extracted flawlessly has no numbered
+ * sections and scores 0%, and painting that red said "this ingest failed"
+ * about a document that had parsed and embedded cleanly. Text page
+ * coverage is the number where low genuinely is bad — 0% means no page
+ * produced a character — so the colour moved to the column it describes
+ * and the section-coverage column is now reported neutrally.
+ */
 function qualityColor(fraction: number | null): string {
     const pct = qualityPct(fraction);
     if (pct === null) return 'var(--fg-3)';

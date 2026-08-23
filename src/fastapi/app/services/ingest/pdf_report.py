@@ -258,6 +258,16 @@ class ReportParseResult:
     region: str | None
     sections: list[ReportSection]
     parse_quality_pct: float        # Fraction of expected sections found (0.0–1.0+)
+    # Fraction of the document's pages that produced any text at all.
+    #
+    # This is the extraction question, and the one people believe
+    # parse_quality_pct answers. It does not: parse_quality_pct is NI
+    # 43-101 heading coverage, so a 1970s government geophysics survey
+    # extracted flawlessly scores 0.0 for having no numbered sections,
+    # and a report whose table of contents yielded 17 headings while 300
+    # pages OCR'd to nothing scores 1.0. Both numbers travel together now
+    # so the second cannot be read as the first.
+    text_page_coverage_pct: float = 0.0
     parser_used: str = "unknown"
     skipped_elements: int = 0
     warnings: list = field(default_factory=list)
@@ -3780,6 +3790,25 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
         return OcrAttemptResult("", "ocr_tesseract")
 
 
+
+def _text_page_coverage(
+    per_page_text: list[tuple[int, str]] | None,
+) -> tuple[int, int, float]:
+    """(pages, pages that produced text, fraction) for a parsed document.
+
+    Split out so both return paths of parse_pdf_report can report it --
+    the empty-text early return is precisely the case where "0% of pages
+    produced text" is the whole story, and it used to return a result
+    carrying only parse_quality_pct=0.0, which reads as "not a technical
+    report" rather than "we got nothing".
+    """
+    total = len(per_page_text) if per_page_text else 0
+    with_text = sum(
+        1 for _page, text in (per_page_text or []) if text and text.strip()
+    )
+    return total, with_text, (round(with_text / total, 4) if total else 0.0)
+
+
 def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParseResult:
     """Parse a NI 43-101 PDF technical report and return a :class:`ReportParseResult`.
 
@@ -4041,6 +4070,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
             region=None,
             sections=[],
             parse_quality_pct=0.0,
+            text_page_coverage_pct=_text_page_coverage(per_page_text)[2],
             parser_used=parser_used,
             skipped_elements=skipped_elements,
             warnings=extraction_warnings,
@@ -4103,19 +4133,22 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         # OCR'd to nothing scores 1.0.
         #
         # This is the extraction question, and `per_page_text` is already
-        # in hand. Reported rather than stored: giving it a column is a
-        # migration, and giving it the RIGHT column means renaming
-        # parse_quality_pct to ni43101_section_coverage_pct along with
-        # every reader. Both are follow-ups. Having the two numbers side
-        # by side in one log line is what makes the difference visible at
-        # all.
+        # in hand. It is now STORED as well as logged --
+        # silver.reports.text_page_coverage_pct, carried through ParseOut
+        # and shown beside the section-coverage figure in the UI, where
+        # the label reads "NI 43-101 sections" rather than "parse
+        # quality". That was the actual defect: not that the number was
+        # wrong, but that it was presented as the answer to a question it
+        # does not answer.
+        #
+        # Renaming parse_quality_pct to ni43101_section_coverage_pct is
+        # still a follow-up. It is on every report row and read by the
+        # Dagster assets, the Laravel controllers and two React pages, so
+        # it is a data migration with consumers rather than hygiene -- and
+        # with the honest number stored beside it, much less urgent.
         # per_page_text is list[tuple[page_number, text]], not list[str].
-        _pages_total = len(per_page_text) if per_page_text else 0
-        _pages_with_text = sum(
-            1 for _page_num, _text in (per_page_text or []) if _text and _text.strip()
-        )
-        text_page_coverage = (
-            round(_pages_with_text / _pages_total, 4) if _pages_total else 0.0
+        _pages_total, _pages_with_text, text_page_coverage = _text_page_coverage(
+            per_page_text
         )
         _span.set_attribute("pdf.pages_total", _pages_total)
         _span.set_attribute("pdf.pages_with_text", _pages_with_text)
@@ -4264,6 +4297,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         region=region,
         sections=sections,
         parse_quality_pct=parse_quality_pct,
+        text_page_coverage_pct=text_page_coverage,
         parser_used=parser_used,
         skipped_elements=skipped_elements,
         warnings=extraction_warnings,

@@ -59,6 +59,8 @@ export interface ReportListRow {
     version: number;
     is_scanned: boolean;
     parse_quality_pct: number | null;
+    /** pages_with_text / page_count. null on rows ingested before the column existed. */
+    text_page_coverage_pct: number | null;
     sections_count: number;
     has_content: boolean;
     passages: number;
@@ -76,6 +78,8 @@ interface ReportDetail {
     region: string;
     project_name: string;
     parse_quality_pct: number | null;
+    /** pages_with_text / page_count. null on rows ingested before the column existed. */
+    text_page_coverage_pct: number | null;
     is_scanned: boolean;
     page_count: number | null;
     parser_used: string;
@@ -769,6 +773,25 @@ function QualityTab({
                         value={
                             typeof report.parse_quality_pct === 'number'
                                 ? `${Math.min(100, Math.round(report.parse_quality_pct * 100))}% of the 17-section baseline`
+                                : '—'
+                        }
+                    />
+                    {/*
+                      * The extraction number, and the one the row above is
+                      * routinely mistaken for. A report whose table of
+                      * contents yielded 17 headings while 300 pages OCR'd
+                      * to nothing shows 100% above and near 0% here — which
+                      * is the combination worth catching, and was invisible
+                      * while only the first was stored.
+                      *
+                      * '—' means not measured (ingested before the column
+                      * existed), which is deliberately distinct from 0%.
+                      */}
+                    <MetaRow
+                        label="Text extracted"
+                        value={
+                            typeof report.text_page_coverage_pct === 'number'
+                                ? `${Math.round(report.text_page_coverage_pct * 100)}% of pages produced text`
                                 : '—'
                         }
                     />
