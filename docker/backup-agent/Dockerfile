@@ -47,7 +47,7 @@
 #   docker exec georag-backup-agent pg_basebackup --version   # expect 18.x
 # Digest pinned 2026-06-24 from alpine:3.22
 # docker pull alpine:3.22 && docker inspect alpine:3.22 --format '{{index .RepoDigests 0}}'
-FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+FROM alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # Install backup tools in a single layer.
 # postgresql18-client: pg_basebackup 18.3 sourced from Alpine edge repos via
