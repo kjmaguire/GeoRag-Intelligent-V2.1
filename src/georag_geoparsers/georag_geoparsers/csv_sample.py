@@ -38,6 +38,7 @@ from georag_geoparsers._unit_ambiguity import (
     detect_wide_format,
     merge_flags,
 )
+from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +380,7 @@ def _pivot_long_to_wide(
     return wide_df, assay_col_names, pivoted_flags, pivoted_unit_ambiguity
 
 
-def _build_column_map(csv_columns: list) -> tuple:
+def _build_column_map(csv_columns: list, *, aliases: dict | None = None) -> tuple:
     """Map canonical field names to the first matching CSV column alias found.
 
     Also identifies assay columns (those matching ASSAY_COLUMN_RE) and returns
@@ -396,7 +397,9 @@ def _build_column_map(csv_columns: list) -> tuple:
         assay_cols   — list of CSV column names that are commodity assay columns
         unmapped     — CSV columns that matched no canonical alias and no assay pattern
     """
-    column_map, unmatched = build_column_map(csv_columns, COLUMN_ALIASES)
+    column_map, unmatched = build_column_map(
+        csv_columns, aliases if aliases is not None else COLUMN_ALIASES,
+    )
     matched_csv_cols = set(column_map.values())
 
     # Identify assay columns
@@ -694,6 +697,7 @@ def parse_csv_samples(
     source: Union[str, Path, IO],  # noqa: UP007
     *,
     null_values: list = None,
+    vendor_aliases: dict[str, list[str]] | None = None,
 ) -> SampleParseResult:
     """Parse a CSV geochemical sample file and return a :class:`SampleParseResult`.
 
@@ -703,6 +707,19 @@ def parse_csv_samples(
         Absolute file path (str or Path) or a file-like text stream.
     null_values:
         Additional strings to treat as null (on top of the Polars defaults).
+    vendor_aliases:
+        Extra column spellings keyed by canonical field name, merged ahead
+        of COLUMN_ALIASES so they win on a tie. Two callers use this: a
+        stored vendor profile (CC-02 Item 6), and a column mapping the USER
+        confirmed for one file, which arrives as a single-entry list per
+        field. The mapping is still matched through ``_header_match``, so a
+        spelling that differs only in case or separators still lands.
+
+        A mapped column stops being an assay column: assay detection runs
+        over what alias matching did NOT claim, so naming ``Au_ppm`` as the
+        sample_id would remove it from ``commodity_assays``. That is the
+        correct reading of an explicit instruction, but it is worth knowing
+        before mapping a column that looks like a grade.
 
     Returns
     -------
@@ -786,7 +803,10 @@ def parse_csv_samples(
 
     logger.info("CSV loaded: %d rows, %d columns: %s", total_rows, len(csv_columns), csv_columns)
 
-    column_map, assay_cols, unmapped = _build_column_map(csv_columns)
+    effective_aliases = merge_vendor_aliases(COLUMN_ALIASES, vendor_aliases)
+    column_map, assay_cols, unmapped = _build_column_map(
+        csv_columns, aliases=effective_aliases,
+    )
 
     # ---------------------------------------------------------------------------
     # Long-format detection and pivot — must run before unmapped column logging
@@ -851,7 +871,9 @@ def parse_csv_samples(
         # Replace df and derived variables with the pivoted wide version
         df = wide_df
         csv_columns = df.columns
-        column_map, pivoted_assay_from_map, unmapped = _build_column_map(csv_columns)
+        column_map, pivoted_assay_from_map, unmapped = _build_column_map(
+            csv_columns, aliases=effective_aliases,
+        )
         assay_cols = pivoted_assay_cols
         total_rows = len(df)
 

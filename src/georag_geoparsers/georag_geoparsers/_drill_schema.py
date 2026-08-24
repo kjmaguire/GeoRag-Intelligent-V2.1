@@ -69,7 +69,8 @@ COLLAR_ALIASES: dict[str, list[str]] = {
     ],
     "elevation": [
         "Elevation", "ELEV", "RL", "Z", "Z_Coord", "Collar_RL",
-        "Collar_Elevation", "Altitude", "Height", "MASL", "Topo",
+        "Collar_Elevation", "Collar_Height", "Altitude", "Height",
+        "MASL", "Topo",
     ],
     "total_depth": [
         "TotalDepth", "Total_Depth", "DEPTH", "TD", "MaxDepth", "EOH",

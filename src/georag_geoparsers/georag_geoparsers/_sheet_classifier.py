@@ -125,6 +125,7 @@ def classify_sheet_type(
     headers: list[str],
     *,
     min_required_coverage: float = MIN_REQUIRED_COVERAGE,
+    column_map=None,
 ) -> tuple[str, float]:
     """Classify an Excel sheet's header row as one of the known types.
 
@@ -134,7 +135,18 @@ def classify_sheet_type(
         The sheet's first-row column names.
     min_required_coverage : float, optional
         Fraction of REQUIRED_FIELDS the winning type must match.
-        Defaults to ``MIN_REQUIRED_COVERAGE`` (0.75).
+        Defaults to ``MIN_REQUIRED_COVERAGE`` (0.66).
+    column_map : dict, optional
+        A mapping the user confirmed, ``{sheet_type: {field: column}}``.
+
+        Classification has to see it, or the mapping could never take
+        effect on the sheets that most need one: a sheet whose headers we
+        do not recognise is classified ``unknown`` and sent to the text
+        fallback, so it never reaches the parser the mapping was written
+        for. Naming the columns is what makes the sheet classifiable, and
+        the same map then resolves them — the classifier and the parser
+        agreeing about what a header means is the invariant this whole
+        module depends on.
 
     Returns
     -------
@@ -165,10 +177,13 @@ def classify_sheet_type(
     best_total_matches: int = 0
 
     for sheet_type, (aliases, required) in schemas.items():
+        user_fields = (column_map or {}).get(sheet_type) or {}
         # Track which canonical fields matched any alias in the headers.
         matched_canonicals: set[str] = set()
         for canonical, alias_list in aliases.items():
-            if headers_lower & _alias_skeletons(canonical, alias_list):
+            named = user_fields.get(canonical)
+            extra = [named] if isinstance(named, str) and named.strip() else []
+            if headers_lower & _alias_skeletons(canonical, [*extra, *alias_list]):
                 matched_canonicals.add(canonical)
 
         required_matched = matched_canonicals & set(required)

@@ -39,6 +39,7 @@ from georag_geoparsers._drill_schema import (
 )
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,11 @@ class CollarParseResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _build_column_map(csv_columns: list[str]) -> tuple[dict[str, str], list[str]]:
+def _build_column_map(
+    csv_columns: list[str],
+    *,
+    aliases: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, str], list[str]]:
     """Map canonical field names to the first matching CSV column alias found.
 
     Matching is delegated to ``_header_match``, which folds case, separators
@@ -127,7 +132,7 @@ def _build_column_map(csv_columns: list[str]) -> tuple[dict[str, str], list[str]
         column_map   — {canonical_name: csv_column_name}
         unmapped     — CSV columns that matched no canonical alias
     """
-    return build_column_map(csv_columns, COLUMN_ALIASES)
+    return build_column_map(csv_columns, aliases if aliases is not None else COLUMN_ALIASES)
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -259,6 +264,7 @@ def parse_csv_collars(
     source: Union[str, Path, IO[str]],  # noqa: UP007
     *,
     null_values: list[str] | None = None,
+    vendor_aliases: dict[str, list[str]] | None = None,
 ) -> CollarParseResult:
     """Parse a CSV collar file and return a :class:`CollarParseResult`.
 
@@ -269,6 +275,14 @@ def parse_csv_collars(
     null_values:
         Additional strings to treat as null (on top of the Polars defaults).
         Common survey software emits "-", "N/A", "NULL", "n/a".
+    vendor_aliases:
+        Extra column spellings keyed by canonical field name, merged ahead
+        of COLUMN_ALIASES so they win on a tie. Two callers use this:
+        a stored vendor profile (CC-02 Item 6), and a column mapping the
+        USER confirmed for one file, which arrives as a single-entry list
+        per field. The mapping is still matched through
+        ``_header_match``, so a user who types ``Hole ID`` for a column
+        headed ``hole_id`` gets what they meant.
 
     Returns
     -------
@@ -360,7 +374,8 @@ def parse_csv_collars(
     logger.info("CSV loaded: %d rows, %d columns: %s", total_rows, len(csv_columns), csv_columns)
 
     # --- Build column map ---
-    column_map, unmapped = _build_column_map(csv_columns)
+    effective_aliases = merge_vendor_aliases(COLUMN_ALIASES, vendor_aliases)
+    column_map, unmapped = _build_column_map(csv_columns, aliases=effective_aliases)
 
     if unmapped:
         logger.warning(

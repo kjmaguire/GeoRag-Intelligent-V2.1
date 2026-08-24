@@ -137,6 +137,7 @@ from georag_geoparsers._drill_schema import (
     detect_coordinate_mode,
 )
 from georag_geoparsers._header_match import build_column_map
+from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 log = logging.getLogger("georag.ingest.csv_collar")
 
@@ -372,7 +373,11 @@ def canonicalize(hole_id: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 # Column mapping + row validation
 # ---------------------------------------------------------------------------
-def _build_column_map(csv_columns: list[str]) -> tuple[dict[str, str], list[str]]:
+def _build_column_map(
+    csv_columns: list[str],
+    *,
+    aliases: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, str], list[str]]:
     """Map canonical field names to this file's columns.
 
     Shares ``_header_match`` with the polars parsers and the sheet
@@ -381,7 +386,9 @@ def _build_column_map(csv_columns: list[str]) -> tuple[dict[str, str], list[str]
     matching here was exact and case-sensitive, choosing the right category
     by hand was the surest way to have every row rejected.
     """
-    return build_column_map(csv_columns, COLUMN_ALIASES)
+    return build_column_map(
+        csv_columns, aliases if aliases is not None else COLUMN_ALIASES,
+    )
 
 
 def _cast_float(value: Any) -> float | None:
@@ -584,6 +591,7 @@ async def ingest_csv_collar_file(
     workspace_id: str,
     project_id: str,
     ingest_run_id: str | None = None,
+    user_column_map: dict[str, str] | None = None,
 ) -> CSVCollarIngestResult:
     """Ingest one CSV collar file into `silver.collars` + `bronze.provenance`.
 
@@ -605,6 +613,11 @@ async def ingest_csv_collar_file(
             .log/.tif/.xlsx/.pdf branches in ``_ingest_one`` already use
             ``input.project_id`` directly.
         ingest_run_id: optional bronze.provenance.ingest_run_id link.
+        column_map: a mapping the user confirmed, ``{canonical_field:
+            source column}``. Applied AHEAD of the built-in spellings
+            rather than instead of them, so naming the one column we could
+            not find does not oblige the user to re-state the six we did.
+            Unmapped fields keep ordinary alias matching.
 
     Returns:
         CSVCollarIngestResult. ``skipped=True`` means the file produced
@@ -650,7 +663,18 @@ async def ingest_csv_collar_file(
         rows_raw.append(normalized)
     total_rows = len(rows_raw)
 
-    column_map, unmapped = _build_column_map(csv_columns)
+    # Named `user_column_map` in the signature, not `column_map`: the local
+    # below holds the RESOLVED map (canonical -> the column actually found),
+    # which is a different thing from the user's instruction, and one name
+    # for both invites reading the wrong one.
+    user_aliases = {
+        canonical: [source]
+        for canonical, source in (user_column_map or {}).items()
+        if isinstance(source, str) and source.strip()
+    }
+    column_map, unmapped = _build_column_map(
+        csv_columns, aliases=merge_vendor_aliases(COLUMN_ALIASES, user_aliases),
+    )
     missing_required = REQUIRED_FIELDS - set(column_map.keys())
     if missing_required:
         log.warning(

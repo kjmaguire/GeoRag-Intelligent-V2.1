@@ -29,6 +29,7 @@ from georag_geoparsers._dip_convention import DipConvention, detect_dip_conventi
 from georag_geoparsers._drill_schema import SURVEY_ALIASES, SURVEY_REQUIRED
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +102,13 @@ class SurveyParseResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _build_column_map(csv_columns: list) -> tuple:
+def _build_column_map(csv_columns: list, *, aliases: dict | None = None) -> tuple:
     """Map canonical field names to the first matching CSV column alias found.
 
     Case, separators and unit suffixes are folded by ``_header_match``, so
     ``Depth (m)`` and ``depth_m`` reach the same field as ``Depth``.
     """
-    return build_column_map(csv_columns, COLUMN_ALIASES)
+    return build_column_map(csv_columns, aliases if aliases is not None else COLUMN_ALIASES)
 
 
 def _cast_float(value) -> float:
@@ -234,6 +235,7 @@ def parse_csv_surveys(
     source: Union[str, Path, IO],  # noqa: UP007
     *,
     null_values: list = None,
+    vendor_aliases: dict[str, list[str]] | None = None,
 ) -> SurveyParseResult:
     """Parse a CSV downhole survey file and return a :class:`SurveyParseResult`.
 
@@ -243,6 +245,13 @@ def parse_csv_surveys(
         Absolute file path (str or Path) or a file-like text stream.
     null_values:
         Additional strings to treat as null (on top of the Polars defaults).
+    vendor_aliases:
+        Extra column spellings keyed by canonical field name, merged ahead
+        of COLUMN_ALIASES so they win on a tie. Two callers use this: a
+        stored vendor profile (CC-02 Item 6), and a column mapping the USER
+        confirmed for one file, which arrives as a single-entry list per
+        field. The mapping is still matched through ``_header_match``, so a
+        spelling that differs only in case or separators still lands.
 
     Returns
     -------
@@ -324,7 +333,9 @@ def parse_csv_surveys(
 
     logger.info("CSV loaded: %d rows, %d columns: %s", total_rows, len(csv_columns), csv_columns)
 
-    column_map, unmapped = _build_column_map(csv_columns)
+    column_map, unmapped = _build_column_map(
+        csv_columns, aliases=merge_vendor_aliases(COLUMN_ALIASES, vendor_aliases),
+    )
 
     if unmapped:
         logger.warning(
