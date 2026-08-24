@@ -433,6 +433,46 @@ final class WorkspaceRlsCoverageTest extends TestCase
     }
 
     /**
+     * SECURITY regression test for the 2026-08-24 FORCE sweep.
+     *
+     * `ENABLE ROW LEVEL SECURITY` exempts the table's OWNER; only `FORCE`
+     * makes the policy apply to it. A live census on 2026-08-24 found 75 of
+     * 160 RLS-enabled production tables were still ENABLE-only, so the
+     * `georag` owner role (what MIGRATE_DB_USERNAME connects as) bypassed
+     * their policies entirely. Migration
+     * 2026_08_24_010000_force_row_level_security_on_all_rls_enabled_tables
+     * swept every such table via pg_class; this pins the invariant so a
+     * future migration cannot reintroduce an owner-exempt table by writing
+     * ENABLE without FORCE.
+     */
+    public function test_every_rls_enabled_table_is_forced(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('RLS is Postgres-only.');
+        }
+
+        $rows = DB::select(<<<'SQL'
+            SELECT n.nspname || '.' || c.relname AS qualified
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind IN ('r', 'p')
+               AND c.relrowsecurity
+               AND NOT c.relforcerowsecurity
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+             ORDER BY 1
+        SQL);
+
+        $this->assertSame(
+            [],
+            array_map(static fn ($r): string => $r->qualified, $rows),
+            'Tables with RLS ENABLEd but not FORCEd — the owner role bypasses '
+            .'their policies entirely. Add FORCE ROW LEVEL SECURITY alongside '
+            .'ENABLE in the creating migration; see '
+            .'2026_08_24_010000_force_row_level_security_on_all_rls_enabled_tables.',
+        );
+    }
+
+    /**
      * SECURITY regression test for the 2026-08-15 THIRD pass on the
      * fail-open→fail-closed conversion — the first of the two prior
      * passes' "8 remaining high-traffic tables" to actually convert.

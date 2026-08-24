@@ -8,17 +8,21 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
  * Which tenant a request gets bound to.
  *
  * The GUC write itself is Postgres-only and skipped here (SQLite has no
- * set_config and no RLS); what these cover is the resolution, which is where
- * a mistake would be dangerous. Binding the WRONG workspace is worse than
- * binding none: an unbound request is visibly over-broad, a wrongly-bound one
- * returns a confidently empty page, or someone else's rows.
+ * set_config and no RLS); what these cover is the resolution and the
+ * fail-closed control flow, which is where a mistake would be dangerous.
+ * Binding the WRONG workspace is worse than binding none: an unbound request
+ * is visibly over-broad, a wrongly-bound one returns a confidently empty
+ * page, or someone else's rows. And a request whose bind FAILED must not run
+ * at all — see test_a_failed_bind_aborts_the_request_before_the_controller.
  *
  * The end-to-end assertion — that a route under the authenticated group
  * cannot serve a request with the GUC unset — needs a real Postgres and lives
@@ -121,5 +125,54 @@ final class BindWorkspaceRlsContextTest extends TestCase
             ->getJson("/_test/rls/echo/{$stranger->project_id}")
             ->assertOk()
             ->assertJsonPath('workspace_id', null);
+    }
+
+    /**
+     * The fail-closed contract: a request whose GUC bind FAILS must never
+     * reach a controller. On the fail-open policy shape that still covers
+     * most of the cluster, an unarmed request sees every workspace's rows —
+     * so "log a warning and carry on" was itself the vulnerability (verified
+     * live 2026-08-24: 16 of 18 populated RLS tables returned every row to
+     * georag_app with the GUC unset).
+     */
+    public function test_a_failed_bind_aborts_the_request_before_the_controller(): void
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            // On a real Postgres, the middleware's fail-closed disconnect
+            // would sever the connection RefreshDatabase's transaction rides
+            // on. The live-Postgres behaviour is pinned by the tenancy suite
+            // (FailClosedRlsPolicyTest); this test is about the middleware's
+            // control flow, which SQLite exercises fine.
+            $this->markTestSkipped('Simulated bind failure is SQLite-suite-only.');
+        }
+
+        // Make isPostgres() report true while the live connection stays
+        // SQLite, so bind() gets past its driver guard.
+        $default = (string) config('database.default');
+        config()->set("database.connections.{$default}.driver", 'pgsql');
+
+        // The statement cannot be made to fail organically: the suite's
+        // SQLite compatibility hook (tests/TestCase.php) rewrites
+        // `SELECT set_config(...)` into a harmless SELECT 1. Throw at the
+        // facade seam instead — the same failure surface an unreachable
+        // Postgres presents. Partial mock, so everything else (connection
+        // resolution, the RefreshDatabase transaction) passes through.
+        DB::partialMock()
+            ->shouldReceive('statement')
+            ->andThrow(new RuntimeException('simulated: could not reach Postgres'));
+
+        $reached = false;
+        Route::middleware(['api'])->get('/_test/rls/failed-bind', function () use (&$reached): array {
+            $reached = true;
+
+            return ['ok' => true];
+        });
+
+        $this->getJson('/_test/rls/failed-bind')->assertStatus(503);
+
+        $this->assertFalse(
+            $reached,
+            'The controller ran after the RLS bind failed — the request proceeded without tenant isolation.',
+        );
     }
 }

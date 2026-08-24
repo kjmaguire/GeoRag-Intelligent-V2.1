@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Throwable;
 
 /**
@@ -50,6 +51,16 @@ use Throwable;
  * cross-tenant read, just harder to reproduce. So this writes on every
  * request, including the ones it cannot resolve, where it writes the empty
  * string. No path leaves a previous request's value in place.
+ *
+ * ## Why a failed bind is a 503
+ *
+ * Most RLS policies in this cluster are still fail-open (see
+ * docs/architecture/fail-open-rls-posture-2026-08-21.md): an unset or empty
+ * `app.workspace_id` admits every workspace's rows. A request allowed past a
+ * failed bind therefore runs with tenancy disarmed — or silently inherits
+ * whatever the previous request on this Octane worker bound. bind() refuses:
+ * it throws a 503 before the controller runs and severs the connection so
+ * the stale session cannot be handed to the next request either.
  */
 class BindWorkspaceRlsContext
 {
@@ -66,10 +77,18 @@ class BindWorkspaceRlsContext
         try {
             return $next($request);
         } finally {
-            // Belt and braces. The next request rebinds anyway, but a
-            // connection returned to Octane's pool should not be carrying a
-            // tenant identity around with it.
-            $this->bind(null);
+            try {
+                // Belt and braces. The next request rebinds anyway, but a
+                // connection returned to Octane's pool should not be carrying
+                // a tenant identity around with it.
+                $this->bind(null);
+            } catch (Throwable) {
+                // bind() has already logged and severed the connection. The
+                // response in flight was produced under a correctly bound
+                // GUC; replacing it with a 503 because CLEANUP failed would
+                // fail good requests, and the disconnect already guarantees
+                // no later request can inherit this session's tenant.
+            }
         }
     }
 
@@ -95,14 +114,52 @@ class BindWorkspaceRlsContext
                 [$workspaceId ?? ''],
             );
         } catch (Throwable $e) {
-            // A database that is down is the next query's problem to report,
-            // not this middleware's. What must not happen is a request
-            // proceeding while silently inheriting the previous tenant.
-            Log::warning('BindWorkspaceRlsContext: could not bind app.workspace_id', [
+            // Fail CLOSED. What must not happen is a request proceeding while
+            // silently inheriting the previous tenant — and on the fail-open
+            // policy shape that still covers most of this cluster, an unset
+            // or empty GUC is worse than a stale one: it admits EVERY
+            // workspace's rows. A database that is down surfaces as a 5xx
+            // either way; this way it cannot surface as someone else's data.
+            Log::error('BindWorkspaceRlsContext: could not bind app.workspace_id — refusing to serve the request', [
                 'event' => 'rls.bind_failed',
                 'workspace_id' => $workspaceId,
                 'exception' => $e->getMessage(),
             ]);
+
+            $this->severConnection();
+
+            throw new HttpException(
+                503,
+                'Row-level security could not be armed for this request; '
+                .'refusing to serve it without tenant isolation. '
+                .'(log event: rls.bind_failed)',
+                $e,
+            );
+        }
+    }
+
+    /**
+     * A session whose GUC state is unknown must not go back into Octane's
+     * pool: the next request's resolveWorkspaceId() reads silver.projects
+     * BEFORE its own bind() runs, so a stale tenant value would be live for
+     * exactly that window. Disconnecting guarantees the next request starts
+     * from a fresh session.
+     *
+     * Guarded on the LIVE connection's driver, not isPostgres(): under the
+     * test suite the config can claim pgsql while the resolved connection is
+     * still SQLite, and dropping an in-memory SQLite connection destroys the
+     * schema mid-test.
+     */
+    private function severConnection(): void
+    {
+        try {
+            $connection = DB::connection();
+            if ($connection->getDriverName() === 'pgsql') {
+                $connection->disconnect();
+            }
+        } catch (Throwable) {
+            // Best effort. If the connection cannot even be resolved, it is
+            // not going back into the pool carrying a GUC either.
         }
     }
 
