@@ -74,9 +74,11 @@ env:
   ACR_NAME: georagacrcc
   ACR_LOGIN_SERVER: georagacrcc.azurecr.io
   # The Postgres flexible server behind laravel-migrate-job and every app.
-  # Deliberately Stopped 06:00-13:00 UTC nightly for cost — the deploy job
-  # has to be aware of that window (see the "Ensure Postgres is running"
-  # step) or any merge to main inside it dies at the migrate step.
+  # Deliberately Stopped 23:00-06:00 US-Pacific nightly for cost (see
+  # deploy/azure/containerapps/shutdown-job.yaml; 06:00-13:00 UTC in PDT,
+  # 07:00-14:00 UTC in PST). The deploy job gates on its state — see the
+  # "Postgres gate" step — so an in-window merge fails with the real
+  # story instead of a generic migrate failure.
   PG_SERVER: georag-pg-cc
 
 # Least-privilege default for every job in this file. CodeQL's
@@ -290,10 +292,12 @@ jobs:
     # (See the 2026-08-11 note this
     # replaced, which was sized for the pre-split single job.)
     #
-    # 2026-08-24: +15 over the previous 40 to absorb the worst case of the
-    # new "Ensure Postgres is running" step — waiting out an in-flight
-    # nightly stop (up to 300s) plus a cold start to Ready (up to 600s +
-    # 30s grace) before the migrate chain even begins.
+    # 2026-08-24: 40 -> 55. The Postgres gate carries its own 12-minute
+    # step timeout (it can ride out a Starting/Updating server for up to
+    # 600s before the migrate chain begins), and this budget has to fund
+    # that cap ON TOP of the ~40 the pre-gate chain was already sized
+    # for — funding it at less would push a slow-gate deploy into a
+    # job-level timeout mid-rollout instead of a step-level failure.
     timeout-minutes: 55
     environment:
       name: production
@@ -315,6 +319,49 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Postgres gate ──────────────────────────────────────────────────
+      # georag-pg-cc is deliberately Stopped for part of every night
+      # (23:00-06:00 US-Pacific; the same shutdown sweep scales the HTTP
+      # tier to zero — see shutdown-job.yaml). A merge to main inside
+      # that window used to sail through the gates and die at the migrate
+      # step with a generic "migration job ended in Failed" (run
+      # 32701044183, 2026-08-24 07:41 UTC), then need a manual rerun.
+      #
+      # The gate reports the real state and stops BEFORE anything is
+      # mutated. Deliberately NOT an auto-start: with fastapi-cc at zero
+      # replicas the post-deploy smoke has nothing to exec into, so an
+      # in-window deploy would migrate the schema, fail its health gates,
+      # and roll the app images back — OLD code against a NEW schema, the
+      # exact half-deployed state the rollback exists to prevent. Waking
+      # the platform properly is the startup sweep's tested job, not
+      # something to re-implement here. Full reasoning in the script's
+      # header; behaviour pinned by the gate_* cases in
+      # deploy/azure/containerapps/scripts/tests/run.sh.
+      #
+      # First step after login so an in-window merge fails in seconds,
+      # not after two image scans. Bounded so a wedged control plane
+      # fails THIS step (and the rollback step then reports that nothing
+      # was deployed) instead of eating the job budget.
+      - name: Postgres gate (nightly stop window)
+        timeout-minutes: 12
+        env:
+          GATE_RESOURCE_GROUP: ${{ env.AZURE_RG }}
+          GATE_PG_SERVER: ${{ env.PG_SERVER }}
+          GATE_RUN_ID: ${{ github.run_id }}
+        run: |
+          # The checkout above is the DEPLOYED sha, not main — a hotfix
+          # or rollback redeploy of an older sha (workflow_dispatch -f
+          # sha=...) checks out a tree that predates this script. Skip
+          # the gate there rather than blocking an emergency redeploy on
+          # a missing file: the old behaviour (an in-window deploy dies
+          # at the migrate step) is the worst that restores.
+          GATE=deploy/azure/containerapps/scripts/cd-pg-gate.sh
+          if [ ! -f "$GATE" ]; then
+            echo "::warning::$GATE not present in this sha (pre-gate tree) — skipping the Postgres gate"
+            exit 0
+          fi
+          bash "$GATE"
 
       # ── Scan the images that are actually about to ship ────────────────
       # docker-build.yml already runs a blocking Trivy CRITICAL scan and
@@ -363,109 +410,6 @@ jobs:
           ignore-unfixed: true
           severity: CRITICAL
 
-      # ── Postgres nightly stop window (06:00-13:00 UTC) ─────────────────
-      # georag-pg-cc is deliberately Stopped 06:00-13:00 UTC every night to
-      # save cost. A merge to main inside that window used to sail through
-      # the gates, reach the migrate step, and die with a generic
-      # "migration job ended in Failed" (run 32701044183, 2026-08-24 07:41
-      # UTC) that said nothing about WHY — then need a manual `gh run
-      # rerun` after 13:00.
-      #
-      # A deploy is a deliberate action that needs the database, so when
-      # the server is Stopped INSIDE the window, start it — the re-stop
-      # step at the end of this job returns it to its cost-saving state. A
-      # server found Stopped OUTSIDE the window is a different fact: no
-      # automation we know about stops it then, so auto-starting would
-      # override an operator's deliberate action. Fail fast and say so
-      # instead.
-      #
-      # Placed after the Trivy gates so a CVE failure never starts the
-      # server for nothing, and before the snapshot/migrate chain because
-      # everything from here on needs Postgres up.
-      #
-      # A deploy that STRADDLES 06:00 UTC (gates pass before the nightly
-      # stop lands, migrate runs after) can still fail mid-migrate; that
-      # failure is now self-healing — the rerun lands in this step, finds
-      # the server Stopped in-window, and starts it.
-      - name: Ensure Postgres is running (nightly stop window)
-        id: pg-start
-        run: |
-          state() {
-            az postgres flexible-server show -g "$AZURE_RG" -n "$PG_SERVER" \
-              --query state -o tsv 2>/dev/null || echo "Unknown"
-          }
-          in_window() {
-            # 10#: force base-10 so 08/09 don't parse as bad octal
-            H=$((10#$(date -u +%H)))
-            [ "$H" -ge 6 ] && [ "$H" -lt 13 ]
-          }
-
-          STATE=$(state)
-          echo "$PG_SERVER state: $STATE"
-
-          # The 06:00 nightly stop may still be in flight; `start` errors
-          # against a Stopping server, so wait the transition out first.
-          if [ "$STATE" = "Stopping" ]; then
-            for i in $(seq 1 30); do
-              sleep 10
-              STATE=$(state)
-              echo "waiting out Stopping: $STATE ($i/30)"
-              [ "$STATE" != "Stopping" ] && break
-            done
-          fi
-
-          case "$STATE" in
-            Ready)
-              exit 0
-              ;;
-            Stopped)
-              if ! in_window; then
-                echo "::error::$PG_SERVER is Stopped OUTSIDE the nightly 06:00-13:00 UTC cost window — refusing to auto-start a server an operator stopped deliberately. Start it yourself, then re-run this workflow:"
-                echo "  az postgres flexible-server start -g $AZURE_RG -n $PG_SERVER"
-                exit 1
-              fi
-              echo "$PG_SERVER is in its nightly stop window — starting it for this deploy; it will be re-stopped when the deploy finishes"
-              # Flag BEFORE issuing the start: if the CLI dies mid-poll the
-              # server may come up anyway, and an issued start we lost track
-              # of must still be re-stopped at the end.
-              echo "started=true" >> "$GITHUB_OUTPUT"
-              if ! az postgres flexible-server start -g "$AZURE_RG" -n "$PG_SERVER"; then
-                echo "::error::failed to start $PG_SERVER during its nightly stop window (06:00-13:00 UTC). Investigate, or re-run after 13:00 UTC when the scheduler has started it."
-                exit 1
-              fi
-              ;;
-            Starting|Updating)
-              # Starting: the 13:00 scheduler or an operator beat us to it.
-              # Updating: a maintenance operation that normally returns to
-              # Ready on its own. Either way: wait, and since this run did
-              # not start the server, never stop it at the end.
-              echo "$PG_SERVER is '$STATE' — waiting for Ready; this run did not start it and will not stop it"
-              ;;
-            *)
-              echo "::error::$PG_SERVER is in state '$STATE' — cannot deploy against it. If this is the nightly stop window (06:00-13:00 UTC), re-run after 13:00 UTC."
-              exit 1
-              ;;
-          esac
-
-          # `az postgres flexible-server start` normally polls to completion,
-          # but confirm Ready ourselves — this loop is also the wait for the
-          # Starting branch above.
-          for i in $(seq 1 60); do
-            STATE=$(state)
-            echo "waiting for Ready: $STATE ($i/60)"
-            if [ "$STATE" = "Ready" ]; then
-              # Control-plane Ready can lead actual connection acceptance
-              # by a few seconds, and the migrate job connects the moment
-              # its replica boots. Cheap insurance against a flaky first
-              # migrate on a cold start.
-              sleep 30
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::error::$PG_SERVER did not reach Ready within 600s (last state: $STATE). Re-run this workflow; if it keeps failing, check the server in the portal."
-          exit 1
-
       # Capture the currently-active image digest for every app/job this
       # deploy touches, before changing anything, so a failed health check
       # has something exact to roll back to.
@@ -497,10 +441,26 @@ jobs:
 
           az containerapp job update -g "$AZURE_RG" -n laravel-migrate-job \
             --image "${ACR_LOGIN_SERVER}/georag/laravel:${SHORT_SHA}"
+
+          # The rollback step runs in a separate shell and needs to know
+          # whether this execution is still moving before it touches
+          # images. "pending" is written BEFORE the start call: if ARM
+          # accepts the start but the CLI dies before rendering the name
+          # (runner blip, throttled --query), the execution exists with no
+          # id on disk — and the rollback step must treat that as "a
+          # migration may be running", not as "no migration".
+          echo "pending" > /tmp/rollback/migrate-exec-id
           EXEC_ID=$(az containerapp job start -g "$AZURE_RG" -n laravel-migrate-job \
             --query "name" -o tsv)
-          # The rollback step runs in a separate shell and needs to know
-          # whether this execution is still moving before it touches images.
+          # A zero exit with EMPTY output (throttled --query render) must
+          # not overwrite "pending" with "": an execution likely exists
+          # that we cannot name, and the rollback guard keys its refusal
+          # off the marker. Fail here rather than polling a nameless
+          # execution for 660s.
+          if [ -z "$EXEC_ID" ]; then
+            echo "::error::job start returned no execution name — a migration may be running that this run cannot identify"
+            exit 1
+          fi
           echo "$EXEC_ID" > /tmp/rollback/migrate-exec-id
 
           # Read the deadline off the job instead of hardcoding one. The poll
@@ -692,8 +652,8 @@ jobs:
           # ── Nothing deployed yet → nothing to roll back ────────────────
           # /tmp/rollback/mutation-started is written by the migrate step
           # immediately before this job's first mutating az call. Absent,
-          # the failure was in a pre-deploy gate — azure/login, a Trivy
-          # scan, the Postgres window check, the snapshot — and every app
+          # the failure was in a pre-deploy gate — azure/login, the
+          # Postgres gate, a Trivy scan, the snapshot — and every app
           # is still running exactly what it ran before this workflow
           # began. This used to fall through to the loop below and print
           # "no pre-deploy snapshot ... production may be in a mixed
@@ -743,6 +703,17 @@ jobs:
           # would break it.
           if [ -f /tmp/rollback/migrate-exec-id ]; then
             EXEC_ID=$(cat /tmp/rollback/migrate-exec-id)
+            # "pending" means the start call was issued but its execution
+            # name never made it to disk. An execution may be running that
+            # we cannot query by name — same refusal as Running, for the
+            # same reason: apps are still on their pre-deploy images, so
+            # doing nothing is the safe state.
+            if [ "$EXEC_ID" = "pending" ] || [ -z "$EXEC_ID" ]; then
+              echo "::error::a migration start was issued but its execution id was lost — refusing to roll back images while a migration may be running"
+              echo "Check the latest execution by hand, then decide:"
+              echo "  az containerapp job execution list -g $AZURE_RG -n laravel-migrate-job -o table"
+              exit 1
+            fi
             MSTATUS=$(az containerapp job execution show -g "$AZURE_RG" \
               -n laravel-migrate-job --job-execution-name "$EXEC_ID" \
               --query "properties.status" -o tsv 2>/dev/null || echo "")
@@ -789,59 +760,3 @@ jobs:
             exit 1
           fi
           echo "rollback complete — all five apps and the migrate job reverted"
-
-      # ── Counterpart of pg-start ──────────────────────────────────────────
-      # Return georag-pg-cc to its cost-saving Stopped state, but only if
-      # ALL of the following hold:
-      #   - this run is the thing that started it (pg-start's `started`
-      #     output — never stop a server the scheduler or an operator
-      #     started);
-      #   - it is still inside the 06:00-13:00 UTC window (past 13:00 the
-      #     server is supposed to be running, and the 13:00 scheduler start
-      #     may already have fired);
-      #   - no migration execution is still Running (same guard as the
-      #     rollback step — never yank the database out from under a
-      #     migration the poll gave up watching).
-      #
-      # `success() || failure()` and not `always()`: a run cancelled by
-      # concurrency's cancel-in-progress means a NEWER deploy is already
-      # underway and needs the server — stopping it here would just make
-      # the superseding run pay the start wait again. Left running, the
-      # worst case is the server burns until the next nightly 06:00 stop.
-      #
-      # Every skip path here exits 0: on a successful deploy this step must
-      # not repaint the run red over a cost cleanup — the warning
-      # annotation is the signal, and the nightly scheduler reconciles the
-      # server state within a day regardless.
-      - name: Re-stop Postgres (this run started it)
-        if: (success() || failure()) && steps.pg-start.outputs.started == 'true'
-        timeout-minutes: 10
-        run: |
-          H=$((10#$(date -u +%H)))
-          if [ "$H" -lt 6 ] || [ "$H" -ge 13 ]; then
-            echo "nightly stop window is already over ($(date -u +%H:%M) UTC) — leaving $PG_SERVER running; the scheduler owns it from here"
-            exit 0
-          fi
-
-          if [ -f /tmp/rollback/migrate-exec-id ]; then
-            EXEC_ID=$(cat /tmp/rollback/migrate-exec-id)
-            MSTATUS=$(az containerapp job execution show -g "$AZURE_RG" \
-              -n laravel-migrate-job --job-execution-name "$EXEC_ID" \
-              --query "properties.status" -o tsv 2>/dev/null || echo "")
-            if [ "$MSTATUS" = "Running" ]; then
-              echo "::warning::migration execution $EXEC_ID is still Running — leaving $PG_SERVER up; the nightly scheduler will stop it at the next 06:00 UTC"
-              exit 0
-            fi
-          fi
-
-          STATE=$(az postgres flexible-server show -g "$AZURE_RG" -n "$PG_SERVER" \
-            --query state -o tsv 2>/dev/null || echo "Unknown")
-          if [ "$STATE" != "Ready" ]; then
-            echo "::warning::$PG_SERVER is '$STATE', not Ready — skipping the re-stop; the nightly scheduler will reconcile it"
-            exit 0
-          fi
-
-          echo "re-stopping $PG_SERVER to finish out its nightly cost window"
-          if ! az postgres flexible-server stop -g "$AZURE_RG" -n "$PG_SERVER"; then
-            echo "::warning::failed to re-stop $PG_SERVER — it will keep running (and billing) until the nightly scheduler stops it at 06:00 UTC"
-          fi
