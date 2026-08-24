@@ -29,6 +29,25 @@ use Illuminate\Support\Facades\DB;
  * WorkspaceRlsCoverageTest::test_every_rls_enabled_table_is_forced pins the
  * invariant against regression from here on.
  *
+ * ## Why ownership-filtered
+ *
+ * `ALTER TABLE ... FORCE ROW LEVEL SECURITY` requires ownership. Production
+ * migrates as `georag`, which owns all 160 tables, so an unfiltered sweep
+ * succeeds there — but CI's `migrations-production-privileges` gate
+ * deliberately splits ownership (`bootstrap` applies `database/raw/`,
+ * `georag_ci` runs migrations, with no membership between them) and an
+ * unfiltered sweep aborts the whole DO block on the first table it does not
+ * own, taking the rest of the migration chain down with it. That is not a
+ * harness artefact to route around: it is the ownership split this project
+ * intends, and a migration that only works under single ownership would
+ * break CD the first time `database/raw/` is applied by its own role.
+ *
+ * So the loop forces only what `current_user` can, and RAISEs a WARNING
+ * naming anything left behind — visible in the migrate job log without
+ * failing a deploy. WorkspaceRlsCoverageTest still asserts the strong
+ * invariant (zero ENABLE-without-FORCE) against the test cluster, where
+ * ownership is uniform, so a genuine regression is still caught.
+ *
  * ## Blast radius
  *
  * The change is confined to the OWNER role: `georag_app` was always subject
@@ -53,7 +72,8 @@ return new class extends Migration
         DB::statement(<<<'SQL'
             DO $$
             DECLARE
-                tbl regclass;
+                tbl     regclass;
+                skipped text[] := '{}';
             BEGIN
                 FOR tbl IN
                     SELECT c.oid::regclass
@@ -63,10 +83,27 @@ return new class extends Migration
                        AND c.relrowsecurity
                        AND NOT c.relforcerowsecurity
                        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                       AND pg_has_role(current_user, c.relowner, 'USAGE')
                      ORDER BY n.nspname, c.relname
                 LOOP
                     EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY', tbl);
                 END LOOP;
+
+                SELECT array_agg(n.nspname || '.' || c.relname ORDER BY 1)
+                  INTO skipped
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE c.relkind IN ('r', 'p')
+                   AND c.relrowsecurity
+                   AND NOT c.relforcerowsecurity
+                   AND n.nspname NOT IN ('pg_catalog', 'information_schema');
+
+                IF skipped IS NOT NULL THEN
+                    RAISE WARNING
+                        'FORCE ROW LEVEL SECURITY skipped % table(s) owned by another role: %. '
+                        'Re-run this as each owning role, or reassign ownership.',
+                        cardinality(skipped), array_to_string(skipped, ', ');
+                END IF;
             END
             $$;
         SQL);
