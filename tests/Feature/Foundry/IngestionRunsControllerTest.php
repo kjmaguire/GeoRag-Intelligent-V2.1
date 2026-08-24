@@ -8,6 +8,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia;
@@ -371,5 +372,124 @@ final class IngestionRunsControllerTest extends TestCase
             .'frontend backs off from a 5s to a 30s poll when in_flight hits '
             .'0, so real progress would then take up to 30s to appear.',
         );
+    }
+
+    // ── Column remap ────────────────────────────────────────────────────
+    //
+    // The gap this closes: when alias matching misses a REQUIRED column the
+    // whole file is refused, and the only remedy the app offered was
+    // "rename the key columns and re-upload" — which asks a geologist to
+    // edit their source data to suit our vocabulary, and which they cannot
+    // do at all for a file they received from someone else.
+    //
+    // The bytes are already in bronze, so this re-triggers the same
+    // workflow against the same object rather than re-uploading anything.
+
+    public function test_a_confirmed_mapping_is_dispatched_to_the_workflow(): void
+    {
+        Http::fake([
+            '*/internal/v1/shadow/ingest_tabular/trigger' => Http::response(
+                ['workflow_run_id' => 'wfr-remap-1'], 202,
+            ),
+        ]);
+
+        $this->actingAs($this->user)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => "collars/{$this->project->project_id}/20260824_204518_assays.csv",
+                'sheet_type' => 'collar',
+                'column_map' => ['hole_id' => 'Site Ref', 'easting' => 'Grid Ref East'],
+            ])
+            ->assertStatus(202)
+            ->assertJson(['dispatched' => true]);
+
+        Http::assertSent(function ($request) {
+            // Keyed by sheet_type: one workbook can map its collar sheet and
+            // its lithology sheet differently.
+            return $request['column_map'] === [
+                'collar' => ['hole_id' => 'Site Ref', 'easting' => 'Grid Ref East'],
+            ] && $request['sheet_type'] === 'collar';
+        });
+    }
+
+    public function test_a_key_from_another_project_is_refused(): void
+    {
+        // The key arrives from the browser, and it is the only thing between
+        // "re-run my file" and "ingest another project's object into mine".
+        // RLS scopes the WRITES; the read would already have happened.
+        Http::fake();
+
+        $this->actingAs($this->user)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => 'collars/'.Str::uuid().'/20260824_204518_someone_elses.csv',
+                'sheet_type' => 'collar',
+                'column_map' => ['hole_id' => 'Site Ref'],
+            ])
+            ->assertStatus(422);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_a_project_the_user_is_not_a_member_of_is_refused(): void
+    {
+        Http::fake();
+        $outsider = User::factory()->create();
+
+        $this->actingAs($outsider)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => "collars/{$this->project->project_id}/x.csv",
+                'sheet_type' => 'collar',
+                'column_map' => ['hole_id' => 'Site Ref'],
+            ])
+            ->assertStatus(404);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_an_unknown_sheet_type_is_refused(): void
+    {
+        Http::fake();
+
+        $this->actingAs($this->user)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => "collars/{$this->project->project_id}/x.csv",
+                'sheet_type' => 'geochemistry',
+                'column_map' => ['hole_id' => 'Site Ref'],
+            ])
+            ->assertStatus(422);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_a_field_name_that_is_not_ours_is_refused(): void
+    {
+        // Canonical field names are the app's own vocabulary, not free text.
+        Http::fake();
+
+        $this->actingAs($this->user)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => "collars/{$this->project->project_id}/x.csv",
+                'sheet_type' => 'collar',
+                'column_map' => ['DROP TABLE' => 'Site Ref'],
+            ])
+            ->assertStatus(422);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_an_empty_mapping_is_refused(): void
+    {
+        // Re-running with nothing mapped refuses the file a second time for
+        // the same reason, which reads as "the mapping did not work".
+        Http::fake();
+
+        $this->actingAs($this->user)
+            ->postJson("/projects/{$this->project->slug}/ingestion-runs/remap", [
+                'minio_key' => "collars/{$this->project->project_id}/x.csv",
+                'sheet_type' => 'collar',
+                'column_map' => [],
+            ])
+            ->assertStatus(422);
+
+        Http::assertNothingSent();
     }
 }

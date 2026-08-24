@@ -656,11 +656,53 @@ def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
     }
 
 
+def _remap_facts(result: Any, sheet_type: str) -> dict[str, Any] | None:
+    """What the UI needs to offer a column mapping for a refused sheet.
+
+    Read off the parse result rather than out of the refusal message: every
+    parser's result dataclass carries ``column_map`` and
+    ``unmapped_columns``, so one shape covers all four, and the UI is
+    offering the columns the parser ACTUALLY saw rather than a list
+    reconstructed from prose.
+
+    Returns None when nothing is missing — there is then no mapping to
+    offer, and a control that appears over a sheet with no gap is noise.
+
+    ``columns`` deliberately includes the ones that DID map. A user
+    correcting a mis-match ("that is not the easting, this is") needs the
+    whole column list, not only the leftovers.
+    """
+    from georag_geoparsers._drill_schema import schemas  # noqa: PLC0415
+
+    entry = schemas().get(sheet_type)
+    if entry is None:
+        return None
+    _aliases, required = entry
+
+    mapped: dict[str, str] = dict(getattr(result, "column_map", None) or {})
+    unmapped: list[str] = list(getattr(result, "unmapped_columns", None) or [])
+    missing = sorted(set(required) - set(mapped))
+    if not missing:
+        return None
+
+    columns = sorted({*mapped.values(), *unmapped})
+    if not columns:
+        return None
+
+    return {
+        "sheet_type": sheet_type,
+        "missing": missing,
+        "mapped": dict(sorted(mapped.items())),
+        "columns": columns,
+    }
+
+
 def _wrote_nothing_warning(
     *, label: str, classified_as: str, reason: str | None,
     from_category: bool = False,
     headers_matched: str | None = None,
     retry_reason: str | None = None,
+    remap: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Say which sheet was refused, what it was taken for, and why.
 
@@ -742,7 +784,7 @@ def _wrote_nothing_warning(
             f"right type or rename its columns to ones the "
             f"{classified_as} parser recognises."
         )
-    return {
+    warning: dict[str, Any] = {
         "code": "classified_but_nothing_written",
         "message": (
             f"'{label}' was treated as a {classified_as} sheet, but no "
@@ -755,6 +797,13 @@ def _wrote_nothing_warning(
             f"table; the warnings beside this one report what landed. {fix}"
         ),
     }
+    if remap is not None:
+        # Structured, so the Ingestion Runs page can offer the columns this
+        # sheet actually has instead of repeating the prose above. `label`
+        # rides along because a workbook's warnings all land in one array
+        # and the control has to know which sheet it is correcting.
+        warning["remap"] = {"label": label, **remap}
+    return warning
 
 
 def _category_corrected_warning(
@@ -1118,7 +1167,10 @@ async def run_ingest_tabular(
     #: category-forced sheets, so the warning can advise from what the
     #: headers actually say rather than speculate.
     wrote_nothing: list[
-        tuple[str, str, str | None, bool, str | None, str | None]
+        tuple[
+            str, str, str | None, bool, str | None, str | None,
+            dict[str, Any] | None,
+        ]
     ] = []
     #: Searchable passages the text fallback landed. Part of what the run
     #: wrote — see the rows_written comment at the terminal write.
@@ -1407,6 +1459,10 @@ async def run_ingest_tabular(
                         forced,
                         headers_matched,
                         retry_reason,
+                        # The columns this sheet actually has, so the page
+                        # can offer a mapping instead of only explaining
+                        # the refusal.
+                        _remap_facts(result, sheet_type),
                     ))
 
                 if attribute_rows:
@@ -1439,6 +1495,7 @@ async def run_ingest_tabular(
                 # not have to read a worker log to find it.
                 for (
                     label, classified_as, reason, forced, matched, second,
+                    remap,
                 ) in wrote_nothing:
                     if label not in unclassified:
                         unclassified.append(label)
@@ -1449,6 +1506,7 @@ async def run_ingest_tabular(
                         from_category=forced,
                         headers_matched=matched,
                         retry_reason=second,
+                        remap=remap,
                     ))
 
                 # ── Whatever did not classify ───────────────────────────

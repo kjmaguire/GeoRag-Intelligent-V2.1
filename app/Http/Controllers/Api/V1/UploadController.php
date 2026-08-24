@@ -709,6 +709,106 @@ class UploadController extends Controller
     }
 
     /**
+     * Re-run ingest_tabular against an object already in bronze, with a
+     * column mapping the user confirmed.
+     *
+     * Public because IngestionRunsController owns the surface a geologist
+     * corrects a mapping from, and this controller owns the one place that
+     * knows how to reach the Hatchet trigger — service key, per-user JWT
+     * and the per-workspace dispatch throttle. A second copy of that in the
+     * Foundry controller is exactly the duplication that has already cost
+     * this codebase three drifting alias lists.
+     *
+     * Unlike the upload-time dispatchers, failures are RETURNED rather than
+     * swallowed. Those run inside an upload whose response must not be
+     * blocked by a trigger problem; this one has no other purpose, so a
+     * silent failure would leave the user watching a run that was never
+     * started.
+     *
+     * @param array<string, array<string, string>> $columnMap
+     *
+     * @return array<string, mixed>
+     */
+    public function dispatchTabularRemap(
+        $user,
+        string $workspaceId,
+        string $projectId,
+        string $minioKey,
+        string $sheetType,
+        array $columnMap,
+    ): array {
+        $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+        $serviceKey = config('services.fastapi.service_key');
+        if (! $serviceKey) {
+            Log::warning('UploadController: FASTAPI_SERVICE_KEY missing — remap not dispatched');
+
+            return ['dispatched' => false, 'error' => 'no_service_key'];
+        }
+
+        $payload = [
+            'workspace_id' => $workspaceId,
+            'project_id' => $projectId,
+            'minio_key' => $minioKey,
+            'run_id' => Str::uuid()->toString(),
+            'sheet_type' => $sheetType,
+            'column_map' => $columnMap,
+        ];
+
+        try {
+            $jwt = app(FastApiJwtMinter::class)->mint(
+                (string) ($user->id ?? 'unknown'),
+                $projectId,
+                [],
+            );
+
+            $this->dispatchThrottle->wait($workspaceId);
+
+            $resp = Http::withHeaders([
+                'X-Service-Key' => $serviceKey,
+                'Authorization' => 'Bearer '.$jwt,
+                'Accept' => 'application/json',
+            ])->timeout(15)->retry(3, 500)->post(
+                $fastApiBase.'/internal/v1/shadow/ingest_tabular/trigger',
+                $payload,
+            );
+        } catch (Throwable $e) {
+            Log::warning('UploadController: remap dispatch threw', [
+                'project_id' => $projectId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['dispatched' => false, 'error' => 'dispatch_failed'];
+        }
+
+        if (! $resp->successful()) {
+            Log::warning('UploadController: remap trigger returned non-2xx', [
+                'status' => $resp->status(),
+                'project_id' => $projectId,
+            ]);
+
+            return ['dispatched' => false, 'error' => 'fastapi_'.$resp->status()];
+        }
+
+        $body = $resp->json();
+
+        Log::info('UploadController: tabular remap dispatched', [
+            'project_id' => $projectId,
+            'minio_key' => $minioKey,
+            'sheet_type' => $sheetType,
+            // The FIELD names only. The column names are the user's own
+            // spreadsheet headers and can carry anything, including data.
+            'mapped_fields' => array_keys($columnMap[$sheetType] ?? []),
+        ]);
+
+        return [
+            'dispatched' => true,
+            'run_id' => $payload['run_id'],
+            'workflow_run_id' => $body['hatchet_workflow_run_id']
+                ?? $body['workflow_run_id'] ?? null,
+        ];
+    }
+
+    /**
      * Dispatch the ingest_zip_archive Hatchet workflow for a freshly-uploaded ZIP.
      *
      * Mirrors dispatchShadowIfPdf() — look up workspace_id, mint a JWT,

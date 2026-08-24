@@ -48,7 +48,28 @@ interface InFlightRow {
 interface IngestWarning {
     code?: string;
     detail?: string;
+    /** Present when the sheet was refused for want of a column mapping. */
+    remap?: RemapFacts;
     [key: string]: unknown;
+}
+
+/**
+ * What a refused sheet needs in order to be re-run with a mapping.
+ *
+ * Built by ingest_tabular from the parse result, so `columns` is what the
+ * parser ACTUALLY saw rather than a list reconstructed from the prose.
+ */
+interface RemapFacts {
+    /** Sheet name, or the filename for a single-table upload. */
+    label: string;
+    /** collar | survey | lithology | sample. */
+    sheet_type: string;
+    /** Required fields no column matched. These are what need answering. */
+    missing: string[];
+    /** Fields that DID match, and to which column. Shown for context. */
+    mapped: Record<string, string>;
+    /** Every column in the sheet, mapped or not. */
+    columns: string[];
 }
 
 /** One line of human-readable text for a warning, whatever shape it has. */
@@ -56,6 +77,194 @@ function warningText(w: IngestWarning): string {
     if (typeof w.detail === 'string' && w.detail) return w.detail;
     if (typeof w.code === 'string' && w.code) return w.code;
     return JSON.stringify(w);
+}
+
+/** `hole_id` → `Hole ID`, for a label a geologist reads rather than parses. */
+function fieldLabel(field: string): string {
+    return field
+        .split('_')
+        .map((part) => (part === 'id' ? 'ID' : part.charAt(0).toUpperCase() + part.slice(1)))
+        .join(' ');
+}
+
+/**
+ * Name the columns a refused sheet could not resolve, and re-run it.
+ *
+ * The refusal message used to end with "rename the key columns to standard
+ * names and re-upload" — advice that asks a geologist to edit their source
+ * data to suit our vocabulary, and which they cannot follow at all for a
+ * file they received from a third party. Worse, the one workaround the
+ * message did offer (upload under the matching category) SKIPS the tolerant
+ * classifier and lands on the stricter parser, so following it was the
+ * surest way to lose the file.
+ *
+ * Nothing is re-uploaded: the bytes are already in bronze and this
+ * re-triggers the same workflow against the same object.
+ *
+ * Only the MISSING fields get a control. Offering all ten would bury the
+ * two that actually need an answer, and the eight that resolved are shown
+ * as read-only context so the user can see the parser is not lost.
+ */
+function ColumnMapper({
+    slug,
+    minioKey,
+    facts,
+}: {
+    slug: string;
+    minioKey: string;
+    facts: RemapFacts;
+}) {
+    const [open, setOpen] = useState(false);
+    const [choices, setChoices] = useState<Record<string, string>>({});
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [sent, setSent] = useState(false);
+
+    // Every missing field must be answered: re-running with a partial
+    // mapping refuses the file a second time for the fields still unnamed,
+    // which reads as "the mapping did not work".
+    const answered = facts.missing.filter((f) => (choices[f] ?? '').length > 0);
+    const ready = answered.length === facts.missing.length;
+
+    // A column may only stand for one field. Two dropdowns on the same
+    // column silently drops one of them at the parser, where a column is
+    // claimed once.
+    const duplicate = new Set(answered.map((f) => choices[f])).size !== answered.length;
+
+    async function submit() {
+        setBusy(true);
+        setError(null);
+        try {
+            const token = document
+                .querySelector('meta[name="csrf-token"]')
+                ?.getAttribute('content');
+            const res = await fetch(`/projects/${slug}/ingestion-runs/remap`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    ...(token ? { 'X-CSRF-TOKEN': token } : {}),
+                },
+                body: JSON.stringify({
+                    minio_key: minioKey,
+                    sheet_type: facts.sheet_type,
+                    column_map: choices,
+                }),
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => null);
+                throw new Error(body?.message ?? `Re-run failed (${res.status})`);
+            }
+            setSent(true);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Re-run failed');
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    if (sent) {
+        return (
+            <div className="text-[10px] mt-1" style={{ color: 'var(--accent)' }}>
+                Re-running “{facts.label}” with your mapping — it will reappear above as
+                a new run.
+            </div>
+        );
+    }
+
+    if (!open) {
+        return (
+            <button
+                type="button"
+                onClick={() => setOpen(true)}
+                className="text-[10px] mt-1 underline underline-offset-2"
+                style={{ color: 'var(--accent)' }}
+            >
+                Map columns for “{facts.label}” instead of renaming them
+            </button>
+        );
+    }
+
+    return (
+        <div
+            className="mt-2 rounded border p-3 text-[11px]"
+            style={{ borderColor: 'var(--line-2)', background: 'var(--bg-2)' }}
+        >
+            <div className="mb-2" style={{ color: 'var(--fg-1)' }}>
+                Which column in <strong>{facts.label}</strong> holds each of these?
+            </div>
+
+            <div className="flex flex-col gap-2">
+                {facts.missing.map((field) => (
+                    <label key={field} className="flex items-center gap-2">
+                        <span className="w-28 shrink-0" style={{ color: 'var(--fg-2)' }}>
+                            {fieldLabel(field)}
+                        </span>
+                        <select
+                            value={choices[field] ?? ''}
+                            onChange={(e) =>
+                                setChoices((c) => ({ ...c, [field]: e.target.value }))
+                            }
+                            className="flex-1 min-w-0 rounded border px-2 py-1"
+                            style={{
+                                background: 'var(--bg-1)',
+                                color: 'var(--fg-0)',
+                                borderColor: 'var(--line-2)',
+                            }}
+                        >
+                            <option value="">— choose a column —</option>
+                            {facts.columns.map((col) => (
+                                <option key={col} value={col}>
+                                    {col}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                ))}
+            </div>
+
+            {Object.keys(facts.mapped).length > 0 && (
+                <div className="mt-2 font-mono text-[10px]" style={{ color: 'var(--fg-3)' }}>
+                    Already resolved:{' '}
+                    {Object.entries(facts.mapped)
+                        .map(([field, col]) => `${fieldLabel(field)} → ${col}`)
+                        .join(' · ')}
+                </div>
+            )}
+
+            {duplicate && (
+                <div className="mt-2 text-[10px]" style={{ color: 'var(--warn)' }}>
+                    Two fields are pointing at the same column — each column can only
+                    stand for one.
+                </div>
+            )}
+            {error && (
+                <div className="mt-2 text-[10px]" style={{ color: 'var(--warn)' }}>
+                    {error}
+                </div>
+            )}
+
+            <div className="mt-3 flex items-center gap-2">
+                <button
+                    type="button"
+                    disabled={!ready || duplicate || busy}
+                    onClick={submit}
+                    className="rounded px-3 py-1 text-[11px] disabled:opacity-40"
+                    style={{ background: 'var(--accent)', color: 'var(--bg-0)' }}
+                >
+                    {busy ? 'Re-running…' : 'Re-run with this mapping'}
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setOpen(false)}
+                    className="text-[10px] underline underline-offset-2"
+                    style={{ color: 'var(--fg-3)' }}
+                >
+                    Cancel
+                </button>
+            </div>
+        </div>
+    );
 }
 
 const STEP_LABELS: Record<string, string> = {
@@ -435,13 +644,21 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                     </div>
                                                 )}
                                                 {(f.warnings ?? []).map((w, i) => (
-                                                    <div
-                                                        key={i}
-                                                        className="text-[10px] mt-0.5 truncate"
-                                                        style={{ color: 'var(--warn)' }}
-                                                        title={warningText(w)}
-                                                    >
-                                                        {warningText(w)}
+                                                    <div key={i}>
+                                                        <div
+                                                            className="text-[10px] mt-0.5 truncate"
+                                                            style={{ color: 'var(--warn)' }}
+                                                            title={warningText(w)}
+                                                        >
+                                                            {warningText(w)}
+                                                        </div>
+                                                        {w.remap && (
+                                                            <ColumnMapper
+                                                                slug={project.slug}
+                                                                minioKey={f.key}
+                                                                facts={w.remap}
+                                                            />
+                                                        )}
                                                     </div>
                                                 ))}
                                             </div>
