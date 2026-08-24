@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import {
     BUNDLE_MEMBER_EXTS,
+    bundleKey,
+    dedupeFiles,
+    fileKey,
     groupShapefiles,
     isMapInfoSidecar,
     isShapefileSidecar,
@@ -1025,5 +1028,115 @@ describe('groupShapefiles — WKT-carriage donation (.dxf/.dgn)', () => {
         const { wktRecipients } = await groupShapefiles([makeFile('plan.dxf')]);
 
         expect(wktRecipients).toHaveLength(0);
+    });
+});
+
+/**
+ * The 2026-08-24 defect: grouping ran per `addFiles` call, so a `.dbf`
+ * picked up in a later batch than its `.shp` had no master in ITS batch,
+ * fell through to `passthrough`, and was uploaded as a standalone dBASE
+ * table. Seven of eight bundles reached blob storage holding `.shp` +
+ * `.prj` and nothing else, and the ingest reported them as imported.
+ *
+ * The fix is in the screens — they accumulate every selected file and
+ * re-group the whole set — so what is pinned here is the property that
+ * makes it work, plus the keys that carry a user's edits across the
+ * rebuild.
+ */
+describe('groupShapefiles — grouping the whole selection, not one batch', () => {
+    const shp = () => makeFile('geology_poly.shp');
+    const dbf = () => makeFile('geology_poly.dbf');
+    const prj = () => makeFile('geology_poly.prj');
+
+    it('strands the .dbf when batches are grouped separately', async () => {
+        // Not the desired behaviour — the reason the screens must merge
+        // before calling. If this ever stops holding, the accumulate step
+        // is no longer load-bearing and the comment above is stale.
+        const first = await groupShapefiles([shp(), prj()]);
+        expect(await membersOf(first.bundles[0].file)).not.toContain('geology_poly.dbf');
+
+        const second = await groupShapefiles([dbf()]);
+        expect(second.bundles).toHaveLength(0);
+        expect(second.passthrough.map((f) => f.name)).toEqual(['geology_poly.dbf']);
+    });
+
+    it('keeps the .dbf when the batches are merged first', async () => {
+        const { bundles } = await groupShapefiles([shp(), prj(), dbf()]);
+        expect(bundles).toHaveLength(1);
+        expect(await membersOf(bundles[0].file)).toContain('geology_poly.dbf');
+        expect(bundles[0].missing).not.toContain('dbf');
+    });
+
+    it('reports a genuinely geometry-only set as missing its .dbf', async () => {
+        const { bundles } = await groupShapefiles([shp(), prj()]);
+        expect(bundles[0].missing).toContain('dbf');
+        expect(bundles[0].verdict).toContain('no .dbf');
+    });
+});
+
+describe('selection identity across a regroup', () => {
+    it('a bundle keys on its members, so same-stem sets stay apart', async () => {
+        const { bundles } = await groupShapefiles([
+            makeFile('faults.shp', 'geology'),
+            makeFile('faults.dbf', 'geology'),
+            makeFile('faults.shp', 'claims'),
+        ]);
+        expect(bundles).toHaveLength(2);
+        expect(bundleKey(bundles[0])).not.toEqual(bundleKey(bundles[1]));
+    });
+
+    it('a bundle key is stable when the same selection is grouped again', async () => {
+        const build = () =>
+            groupShapefiles([makeFile('geology_poly.shp'), makeFile('geology_poly.dbf')]);
+        const a = await build();
+        const b = await build();
+        // The ZIPs are different File objects; the key is what survives.
+        expect(a.bundles[0].file).not.toBe(b.bundles[0].file);
+        expect(bundleKey(a.bundles[0])).toEqual(bundleKey(b.bundles[0]));
+    });
+
+    it('a file key distinguishes same-named files from different folders', () => {
+        expect(fileKey(makeFile('notes.csv', 'geology'))).not.toEqual(
+            fileKey(makeFile('notes.csv', 'claims')),
+        );
+    });
+
+    it('dedupeFiles drops a re-selected file rather than queueing it twice', () => {
+        // `lastModified` must be pinned: `new File()` stamps it from the
+        // clock, so two calls a millisecond apart model two DIFFERENT files
+        // and the test passes or fails on timing. A file re-selected from
+        // disk keeps its mtime, which is the case being modelled.
+        const onDisk = (name: string) =>
+            new File(['x'], name, { lastModified: 1_700_000_000_000 });
+
+        const deduped = dedupeFiles([onDisk('a.csv'), onDisk('a.csv'), onDisk('b.csv')]);
+        expect(deduped.map((f) => f.name)).toEqual(['a.csv', 'b.csv']);
+    });
+
+    it('dedupeFiles keeps two genuinely different files of the same name', () => {
+        const a = new File(['x'], 'notes.csv', { lastModified: 1 });
+        const b = new File(['yy'], 'notes.csv', { lastModified: 2 });
+        expect(dedupeFiles([a, b])).toHaveLength(2);
+    });
+
+    it('a bundle carries its source files so removing the row un-selects them', async () => {
+        const { bundles } = await groupShapefiles([
+            makeFile('geology_poly.shp'),
+            makeFile('geology_poly.dbf'),
+        ]);
+        expect(bundles[0].sources.map((f) => f.name).sort()).toEqual([
+            'geology_poly.dbf',
+            'geology_poly.shp',
+        ]);
+    });
+
+    it('a donated .prj is NOT a source — removing the recipient must not un-select it', async () => {
+        const { bundles } = await groupShapefiles([
+            makeFile('geology_poly.shp'),
+            makeFile('donor.prj', '', 'PROJCS["NAD 1983 UTM Zone 4N",UNIT["Meter",1.0]]'),
+        ]);
+        const recipient = bundles.find((b) => b.stem === 'geology_poly');
+        expect(recipient?.crsFrom?.memberName).toBe('geology_poly.prj');
+        expect(recipient?.sources.map((f) => f.name)).toEqual(['geology_poly.shp']);
     });
 });
