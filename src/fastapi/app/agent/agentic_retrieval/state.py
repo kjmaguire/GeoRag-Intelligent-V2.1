@@ -128,6 +128,21 @@ class AgenticRetrievalState(BaseModel):
     # prompt path was skipped (test paths driving nodes directly).
     system_prompt_tokens_estimate: int | None = None
 
+    # ---- LLM spend (L1546) -------------------------------------
+    # Cumulative token usage for this run, folded on at the return of
+    # every node that can call the LLM (classify, assemble, repair).
+    #
+    # These have to live on the state rather than being read from
+    # `llm_calls.get_run_token_usage()` at persist time: LangGraph
+    # runs each node in its own asyncio.Task, and a Task receives a
+    # COPY of the context, so a contextvar set inside assemble_node is
+    # invisible to persist_node. Verified 2026-08-21 with a two-node
+    # probe — the value read back as its default, not as what the
+    # earlier node set. Reading the contextvar at persist would have
+    # written a confident, permanent zero.
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+
     # ── Plan §4b/§4c — repair loop state extensions ─────────────────────
     # See docs/architecture/repair_loop_spec.md §3 for the contract.
     # Stage 1 (shadow mode): repair_shadow_node populates these from

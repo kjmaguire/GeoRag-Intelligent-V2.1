@@ -47,7 +47,6 @@ from dataclasses import dataclass
 
 import httpx
 
-
 DEFAULT_QUERIES = [
     "How many drill holes are in this project?",
     "What is the deepest hole and its depth?",

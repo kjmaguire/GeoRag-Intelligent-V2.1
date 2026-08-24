@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# Morning restore sweep (plan C6) for the `georag` resource group. Runs as
+# the inline body of the startup-scheduler-cc Container Apps Job; see
+# deploy/azure/containerapps/startup-job.yaml, which embeds this file
+# verbatim. scripts/check_scheduler_job_parity.py fails CI if the two
+# copies drift, so edit THIS file and re-run the parity check.
+#
+# Restores all eight apps to min-replicas 1 and starts the Postgres
+# server, in dependency order: foundational services, then the app tier
+# that talks to them, then Laravel. Each tier waits for the previous one
+# rather than firing eight updates at once, because Laravel booting
+# before fastapi-cc is healthy produces a first-request failure that
+# looks like an outage.
+#
+# Read shutdown-sweep.sh's header first — it explains the three
+# conventions this file shares: no `set -e` with failures collected
+# instead, progress on stderr because stdout is block-buffered in a
+# container, and Postgres judged by the server's state rather than by the
+# CLI's exit code. What follows is only what differs here.
+#
+# ---------------------------------------------------------------------
+# THE BUG THIS FILE EXISTS TO FIX
+# ---------------------------------------------------------------------
+# `az postgres flexible-server start ... || echo "skip postgres"` has
+# masked a genuine failure on every retained day. Measured 2026-08-21:
+#
+#   ContainerAppConsoleLogs_CL | where Log_s has 'ServerIsNotStopped'
+#     -> 2 lines/day on 15 of 15 days, 2026-08-03 .. 2026-08-21
+#
+# each reading `(ServerIsNotStopped) Start operation is only supported on
+# servers that are in 'Stopped' state. Server 'georag-pg-cc' is in
+# 'Ready' state.` — and every one of those job executions is recorded
+# Succeeded. The cause is benign (an operator restarts the stack inside
+# the shutdown window, so the server is already up by 10:00 UTC), but the
+# signal is not: the same mask, the same green execution, and the same
+# silence would follow a quota failure or a platform fault that left the
+# database down for the working day.
+#
+# Judging by state rather than by exit code separates the two without
+# guessing at Azure's error codes: already-Ready is the success we
+# wanted, and any state that is not Ready or Starting is a real failure
+# no matter what the command returned.
+#
+# ---------------------------------------------------------------------
+# WHY A FAILED WAIT IS RECORDED BUT DOES NOT ABORT THE SWEEP
+# ---------------------------------------------------------------------
+# wait_running/wait_healthy used to print "continuing anyway" and return
+# 0. Continuing is right — a tier that is slow to report is not a reason
+# to leave the tiers above it down for the day — but returning 0 made the
+# whole tiered-startup design unfalsifiable: no run has ever been able to
+# tell you that Laravel was brought up against an unhealthy fastapi-cc.
+# They now record a failure and continue, so the sweep still finishes and
+# the execution still goes red.
+set -uo pipefail
+
+RG="${SWEEP_RESOURCE_GROUP:-georag}"
+PG_SERVER="${SWEEP_PG_SERVER:-georag-pg-cc}"
+WAIT_TIMEOUT="${SWEEP_WAIT_TIMEOUT:-90}"
+WAIT_INTERVAL="${SWEEP_WAIT_INTERVAL:-5}"
+
+# max-replicas is set alongside min-replicas because the shutdown sweep
+# leaves min at 0 and an `update` that changes nothing creates no new
+# revision. The per-app maximum is hardcoded rather than read back:
+# Container Apps Jobs have no state store between runs. If an app's real
+# max-replicas changes, change it here too.
+TIER1=(redis-cc qdrant-cc hatchet-cc)
+TIER2=(hatchet-worker-cc fastapi-cc)
+TIER3=(laravel-octane-cc laravel-horizon-cc laravel-reverb-cc)
+APP_COUNT=$(( ${#TIER1[@]} + ${#TIER2[@]} + ${#TIER3[@]} ))
+
+FAILURES=()
+
+log()  { printf '%s\n' "$*" >&2; }
+fail() { FAILURES+=("$1"); log "FAILED: $1"; }
+
+# --- DST guard --------------------------------------------------------
+# Identical to shutdown-sweep.sh apart from the target hour; see that
+# file for the epoch arithmetic and why the transition instants are
+# 10:00/09:00 UTC. Duplicated rather than sourced because a Container
+# Apps Job takes one inline script and has no filesystem to share.
+TARGET_LOCAL_HOUR="${SWEEP_TARGET_LOCAL_HOUR:-06}"
+NOW="${SWEEP_NOW_EPOCH:-$(date -u +%s)}"
+YEAR=$(date -u -d "@${NOW}" +%Y)
+
+first_sunday_epoch() {
+  local weekday add
+  weekday=$(date -u -d "$1" +%u)
+  add=$(( (7 - weekday) % 7 ))
+  date -u -d "$1 +${add} days" +%s
+}
+
+DST_START=$(( $(first_sunday_epoch "${YEAR}-03-01") + 7 * 86400 + 10 * 3600 ))
+DST_END=$((   $(first_sunday_epoch "${YEAR}-11-01")               + 9 * 3600 ))
+
+if [ "$NOW" -ge "$DST_START" ] && [ "$NOW" -lt "$DST_END" ]; then
+  OFFSET_HOURS=-7   # PDT
+else
+  OFFSET_HOURS=-8   # PST
+fi
+
+LOCAL_HOUR=$(date -u -d "@$(( NOW + OFFSET_HOURS * 3600 ))" +%H)
+if [ "$LOCAL_HOUR" != "$TARGET_LOCAL_HOUR" ]; then
+  log "DST-safety double-fire: US-Pacific local hour is ${LOCAL_HOUR} (offset ${OFFSET_HOURS}h), not ${TARGET_LOCAL_HOUR} -- skipping"
+  exit 0
+fi
+
+# --- helpers ----------------------------------------------------------
+wait_for() {
+  # $1 = app, $2 = revision property to read, $3 = value that means ready.
+  local app="$1" property="$2" want="$3" waited=0 observed=""
+  while [ "$waited" -lt "$WAIT_TIMEOUT" ]; do
+    observed=$(az containerapp revision list -g "$RG" -n "$app" \
+                 --query "[?properties.active]|[0].properties.${property}" \
+                 -o tsv 2>/dev/null || echo "")
+    if [ "$observed" = "$want" ]; then
+      log "$app: ${observed} (${waited}s)"
+      return 0
+    fi
+    sleep "$WAIT_INTERVAL"
+    waited=$(( waited + WAIT_INTERVAL ))
+  done
+  fail "$app did not reach ${want} within ${WAIT_TIMEOUT}s (${property}=${observed:-unknown})"
+  return 1
+}
+
+wait_running() { wait_for "$1" runningState RunningAtMaxScale; }
+wait_healthy() { wait_for "$1" healthState  Healthy; }
+
+start_tier() {
+  local label="$1"; shift
+  log "--- ${label} ---"
+  for app in "$@"; do
+    # --output none: see shutdown-sweep.sh. These eight calls are what
+    # produced 13,197 console lines across the two jobs on 2026-08-20..21.
+    if az containerapp update -g "$RG" -n "$app" \
+         --min-replicas 1 --max-replicas 1 --output none; then
+      log "$app: min-replicas 1"
+    else
+      fail "min-replicas 1 on $app"
+    fi
+  done
+}
+
+# --- sweep ------------------------------------------------------------
+if ! az login --identity --output none; then
+  log "FATAL: az login --identity failed; no action taken"
+  exit 1
+fi
+
+log "--- starting ${PG_SERVER} ---"
+start_rc=0
+az postgres flexible-server start -g "$RG" -n "$PG_SERVER" --output none || start_rc=$?
+
+pg_state=$(az postgres flexible-server show -g "$RG" -n "$PG_SERVER" \
+             --query state -o tsv 2>/dev/null || echo "")
+case "$pg_state" in
+  Ready|Starting)
+    if [ "$start_rc" -ne 0 ]; then
+      # The daily ServerIsNotStopped case. Reported, not masked, and not
+      # counted as a failure: the database is up, which is the whole
+      # point of the step.
+      log "${PG_SERVER}: start command exited ${start_rc} but server is ${pg_state} -- already running, continuing"
+    else
+      log "${PG_SERVER}: ${pg_state}"
+    fi
+    ;;
+  "")
+    fail "could not read ${PG_SERVER} state after start (start exited ${start_rc})"
+    ;;
+  *)
+    fail "${PG_SERVER} is ${pg_state} after start (start exited ${start_rc}) -- app tier will come up against a stopped database"
+    ;;
+esac
+
+start_tier "tier 1: foundational services (redis, qdrant, hatchet engine)" "${TIER1[@]}"
+for app in "${TIER1[@]}"; do
+  wait_running "$app" || true
+done
+
+start_tier "tier 2: app services that depend on tier 1" "${TIER2[@]}"
+wait_running hatchet-worker-cc || true
+wait_healthy fastapi-cc || true
+
+start_tier "tier 3: Laravel tier (depends on fastapi-cc for chat/query bridge)" "${TIER3[@]}"
+wait_healthy laravel-octane-cc || true
+wait_running laravel-horizon-cc || true
+wait_running laravel-reverb-cc || true
+
+TOTAL=$(( APP_COUNT + 1 ))
+if [ ${#FAILURES[@]} -eq 0 ]; then
+  log "startup sweep complete: ${TOTAL}/${TOTAL} apps started and all readiness checks passed"
+  exit 0
+fi
+
+log "startup sweep INCOMPLETE: ${#FAILURES[@]} problem(s)"
+for f in "${FAILURES[@]}"; do
+  log "  - $f"
+done
+exit 1

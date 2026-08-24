@@ -20,7 +20,6 @@ Triggering manually:
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -30,6 +29,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.what_changed_detector import (
     WhatChangedInput,
@@ -82,17 +82,18 @@ class WeeklyDigestOutput(BaseModel):
 what_changed_weekly = hatchet.workflow(
     name="what_changed_weekly",
     input_validator=WeeklyDigestInput,
-    on_crons=["0 6 * * 1"],  # Mondays at 06:00 UTC
+    # Moved 2026-08-21: 17:00 UTC Monday — 06:00 was inside the shutdown window.
+    # Nothing between 06:00 and 14:00 UTC can run — shutdown-sweep.sh
+    # scales hatchet-worker-cc to zero and both DST candidate hours of
+    # each sweep count as closed. See
+    # tests/test_crons_avoid_the_shutdown_window.py.
+    on_crons=["0 17 * * 1"],  # Mondays at 06:00 UTC
 )
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 async def _list_active_workspaces(

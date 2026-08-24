@@ -13,7 +13,7 @@ Status: **Draft.** Defines what "tested" means for every feature class.
 | **Python unit** | pytest | `src/fastapi/tests/unit/**`, `src/dagster/tests/unit/**` | every PR |
 | **Python integration** | pytest + ephemeral PG/Qdrant/Neo4j | `src/fastapi/tests/integration/**` | every PR |
 | **pgTAP** | pgTAP | `database/tests/pgtap/**` | every PR |
-| **RAG golden** | Hatchet `eval_real_rag_nightly` | `eval/golden/*.yaml` | nightly |
+| **RAG golden** | `scripts/run_golden_benchmark.py` (manual) | `tests/golden_questions/seed_template.yaml` -> `eval.golden_questions` | **on demand only** — the `eval_real_rag_nightly` workflow was removed 09d1d35 (2026-07-27). `eval-gate.yml` runs nightly but against a STUBBED LLM: it proves the harness imports, not that answers are good. |
 | **Load** | k6 | `docs/load_tests/**` | weekly |
 | **Failure / chaos** | custom (toxiproxy) | `tests/Chaos/**` (planned) | weekly |
 | **Acceptance** | per-phase `phase-verify` skill | `docs/*kickoff*.md` checklists | on-demand at milestone gate |

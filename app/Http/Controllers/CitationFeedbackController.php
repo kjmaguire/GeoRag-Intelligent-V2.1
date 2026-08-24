@@ -72,8 +72,7 @@ class CitationFeedbackController extends Controller
             return response()->json(['error' => 'FASTAPI_SERVICE_KEY not configured'], 500);
         }
         $base = rtrim(
-            config('services.fastapi.internal_url')
-                ?? config('services.fastapi.internal_url'),
+            config('services.fastapi.internal_url'),
             '/',
         );
 

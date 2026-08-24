@@ -1,105 +1,217 @@
 # v1.5-01 — Playwright e2e CI job.
 #
 # Runs the real-browser e2e specs under tests/e2e/*.spec.ts against a
-# running Laravel + Inertia + Martin + PostGIS stack. The specs cover
-# UI invariants that jsdom-based Vitest can't catch (stacking contexts,
-# real layout, MapLibre tile pipeline, real SSE streams).
+# running Laravel + Inertia + PostGIS stack. The specs cover UI invariants
+# that jsdom-based Vitest cannot catch (stacking contexts, real layout,
+# MapLibre tile pipeline, real SSE streams).
 #
-# Triggers
-# --------
-# - pull_request — block PRs that break the e2e flows.
-# - workflow_dispatch — on-demand re-run.
-# - cron — weekly safety net (Mon 03:00 UTC) so green CI doesn't
-#   silently mask infra drift.
+# ─── 2026-08-21: this workflow no longer runs on pull_request ────────────
 #
-# Runner requirement
-# ------------------
-# GitHub-hosted ubuntu-latest can run Playwright + Chromium in a single
-# container, but it CANNOT reliably bring up the full Docker Compose
-# stack (Postgres + PostGIS + Martin + Laravel Octane + FastAPI + Ollama)
-# within the 6-hour wall budget on shared infra.
+# It used to. The `runner-check` job wrote `available=false` unconditionally,
+# the Playwright job was gated on that output, and the workflow concluded
+# SUCCESS — so every PR showed a green check named "E2E — Playwright" while
+# all four specs, including tests/e2e/project-switch-idor.spec.ts, had never
+# executed once. Every historical run is 6-8 seconds long, which is the
+# runtime of the skip and nothing else.
 #
-# This workflow targets a self-hosted runner labelled `georag-e2e`.
-# Until that runner is provisioned, the workflow is gated to skip
-# (no failures, no false greens).
+# The self-hosted-runner premise the skip was built on is also stale:
+# ci.yml's `e2e-smoke` job already boots Postgres + Qdrant + Redis + uvicorn
+# + a stub backend on plain ubuntu-latest in under three minutes. A
+# self-hosted `georag-e2e` runner is not needed and is not coming.
 #
-# To bring this online:
-#   1. Provision a self-hosted runner with Docker available.
-#   2. Add the label `georag-e2e` in the runner config.
-#   3. Add repo secret CI_DEMO_PASSWORD (matches seeded demo user).
-#   4. Remove the `runner-check` skip-gate below.
+# What actually blocks this suite is four concrete, checkable things — all
+# verified 2026-08-21, and NONE of them a runner:
+#
+#   1. `@playwright/test` is not in package.json. Not a version mismatch —
+#      the package is absent from dependencies and devDependencies alike,
+#      so the specs' `import { test } from '@playwright/test'` cannot even
+#      typecheck, and `npx playwright test` would fetch an unpinned package
+#      at job runtime. Adding a dependency needs a maintainer decision.
+#
+#   2. `DemoProjectSeeder` does not exist. The old job called
+#      `db:seed --class=DemoProjectSeeder`; a repo-wide grep finds that name
+#      in exactly one place — the old job itself. It has never existed.
+#
+#   3. `DemoUserSeeder` is not a substitute. It grants a demo user access to
+#      an ALREADY-EXISTING project ("Seed a demo user with owner access to
+#      the existing project"); it creates no project. A CI database migrated
+#      from empty has nothing for it to attach to, so the specs would log in
+#      successfully and then find no project to drive.
+#
+#   4. The password does not match. DemoUserSeeder hardcodes `georag2026`;
+#      the specs default to `password` and the old job passed a
+#      `CI_DEMO_PASSWORD` secret that is not set on this repo.
+#
+# Until 1-4 are resolved this workflow is dispatch-only. That is deliberate:
+# a workflow that runs nothing must not appear in the PR checks list at all.
+# A stub that reports green is worse than no check, because it occupies the
+# slot where a real check would be noticed to be missing.
+#
+# To bring it online:
+#   1. `npm i -D @playwright/test` and commit the lockfile change.
+#   2. Write DemoProjectSeeder (workspace + project + membership + at least
+#      one ingested document, so chat-citation.spec.ts has something to cite).
+#   3. Set repo secret CI_DEMO_PASSWORD, or make the seeder read one.
+#   4. Delete the `preflight` job below. The rig after it is modelled on
+#      ci.yml's proven e2e-smoke job and should need no further changes.
 
-name: E2E — Playwright
+name: E2E — Playwright (dispatch-only, not wired)
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'resources/js/**'
-      - 'tests/e2e/**'
-      - 'playwright.config.ts'
-      - 'app/**'
-      - 'docker-compose.yml'
+  # NO pull_request trigger. See the header — this ran on every PR and
+  # reported success without executing a single spec.
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 3 * * 1'  # Mon 03:00 UTC
 
 permissions:
   contents: read
 
-jobs:
-  runner-check:
-    name: Self-hosted runner availability
-    runs-on: ubuntu-latest
-    outputs:
-      runner_available: ${{ steps.check.outputs.available }}
-    steps:
-      - id: check
-        run: |
-          # Until the self-hosted runner is provisioned, skip cleanly.
-          # Replace this body with `echo "available=true" >> $GITHUB_OUTPUT`
-          # once the `georag-e2e` runner is online.
-          echo "available=false" >> $GITHUB_OUTPUT
-          echo "::warning::Self-hosted runner 'georag-e2e' not yet provisioned — e2e suite skipped."
+env:
+  PHP_VERSION: '8.4'
 
+jobs:
+  # ─── Preflight ────────────────────────────────────────────────────────
+  # Fails with a precise reason rather than skipping into a green tick.
+  # Delete this job once the four blockers above are cleared.
+  preflight:
+    name: Preflight — are the specs runnable yet?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the four known blockers
+        run: |
+          blocked=0
+
+          if ! grep -q '"@playwright/test"' package.json; then
+            echo "::error::@playwright/test is not in package.json — the specs cannot run"
+            blocked=1
+          fi
+
+          if [ ! -f database/seeders/DemoProjectSeeder.php ]; then
+            echo "::error::database/seeders/DemoProjectSeeder.php does not exist — the specs have no project to drive"
+            blocked=1
+          fi
+
+          if [ -z "${{ secrets.CI_DEMO_PASSWORD }}" ]; then
+            echo "::error::repo secret CI_DEMO_PASSWORD is not set — login in every spec's beforeEach will fail"
+            blocked=1
+          fi
+
+          if [ "$blocked" -eq 1 ]; then
+            echo ""
+            echo "This suite is NOT wired. See the header of .github/workflows/e2e.yml."
+            echo "Failing loudly is the point: the previous version reported success here."
+            exit 1
+          fi
+
+          echo "All four blockers clear — delete the preflight job."
+
+  # ─── The real suite ───────────────────────────────────────────────────
+  # Modelled on ci.yml's e2e-smoke job (ubuntu-latest, ~3 minutes), not on
+  # a self-hosted Docker Compose host. Gated on preflight, so it cannot run
+  # — and cannot report a misleading result — until the blockers are gone.
   e2e:
     name: Playwright suite
-    needs: runner-check
-    if: needs.runner-check.outputs.runner_available == 'true'
-    runs-on: [self-hosted, georag-e2e]
-    timeout-minutes: 45
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
+        env:
+          POSTGRES_USER: georag
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
 
     env:
-      E2E_BASE_URL: http://localhost:8888
+      E2E_BASE_URL: http://127.0.0.1:8888
       E2E_USER_EMAIL: demo@georag.dev
       E2E_USER_PASSWORD: ${{ secrets.CI_DEMO_PASSWORD }}
+      DB_CONNECTION: pgsql
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_DATABASE: georag_test
+      DB_USERNAME: georag
+      DB_PASSWORD: test_password
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Boot Docker stack
-        run: |
-          docker compose -f docker-compose.yml up -d \
-            postgresql pgbouncer redis qdrant neo4j \
-            laravel-octane martin fastapi
-          # Wait for Octane health.
-          for _ in $(seq 1 60); do
-            curl -fs "${E2E_BASE_URL}/up" >/dev/null && break
-            sleep 5
-          done
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis
+          coverage: none
 
-      - name: Migrate + seed demo project
-        run: |
-          docker compose exec -T laravel-octane php artisan migrate --force
-          docker compose exec -T laravel-octane php artisan db:seed --class=DemoProjectSeeder --force
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
-      - name: Install npm deps + Playwright Chromium
+      - name: Prepare environment
+        run: |
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
+
+      - name: Migrate + seed
+        run: |
+          php artisan migrate --force
+          php artisan db:seed --class=DemoProjectSeeder --force
+
+      - name: Build frontend assets
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npm run build
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # `php artisan serve` rather than Octane/Swoole: the specs exercise
+      # HTTP + Inertia + cookies, none of which depend on the Swoole runtime,
+      # and the built-in server needs no extension build on the runner.
+      - name: Serve the app
+        run: |
+          php artisan serve --host=127.0.0.1 --port=8888 \
+            > /tmp/artisan_serve.log 2>&1 &
+          echo $! > /tmp/serve.pid
+          for _ in $(seq 1 30); do
+            curl -fs "${E2E_BASE_URL}/up" >/dev/null && exit 0
+            sleep 2
+          done
+          echo "::error::app did not become healthy within 60s"
+          tail -n 100 /tmp/artisan_serve.log
+          exit 1
+
+      # Start narrow. project-switch-idor and chat-citation are the two that
+      # cover ground the PHPUnit suite genuinely cannot reach; map-layer-toggle
+      # and chat-audit can be added once these two are stably green.
+      #
+      # --retries=0 overrides playwright.config.ts's `process.env.CI ? 2 : 0`.
+      # Retry-until-green would mask exactly the flakiness a first wiring-up
+      # is meant to expose. Turn retries back on once a baseline exists.
       - name: Run Playwright suite
-        run: npx playwright test --reporter=github
+        run: |
+          npx playwright test \
+            tests/e2e/project-switch-idor.spec.ts \
+            tests/e2e/chat-citation.spec.ts \
+            --retries=0 --reporter=github
 
       - name: Upload Playwright artifacts on failure
         if: failure()
@@ -111,6 +223,10 @@ jobs:
             test-results/
           retention-days: 14
 
-      - name: Tear down stack
+      - name: Dump server log on failure
+        if: failure()
+        run: tail -n 200 /tmp/artisan_serve.log || true
+
+      - name: Stop the server
         if: always()
-        run: docker compose down -v --remove-orphans
+        run: '[ -f /tmp/serve.pid ] && kill "$(cat /tmp/serve.pid)" 2>/dev/null || true'

@@ -15,8 +15,8 @@ triggers manually after each cluster ingest.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
-import os
 
 import asyncpg
 from hatchet_sdk import (
@@ -24,8 +24,9 @@ from hatchet_sdk import (
     ConcurrencyLimitStrategy,
     Context,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.ingest.passage_embedder import embed_pending_passages
 
@@ -43,17 +44,29 @@ _EMBEDDABLE_OCR_PREDICATE = (
 
 
 class EmbedPendingPassagesInput(BaseModel):
-    # REC#1 (2026-06-03) — workspace_id is REQUIRED. The Pydantic
-    # Field no longer has a default. Bootstrap callers (Dagster
-    # scheduled embed, manual reingest CLI) get the legacy default via
-    # `bootstrap_workspace_id(reason=...)` from
-    # `app.hatchet_workflows._workspace_input`, which logs +
-    # increments WORKSPACE_RESOLUTION_FAILURES so the bootstrap usage
-    # stays observable.
+    # REC#1 (2026-06-03) — a dispatcher must not be able to omit
+    # workspace_id and silently scope to the default tenant. Bootstrap
+    # callers (manual reingest CLI, backfills) go through
+    # `bootstrap_workspace_id(reason=...)` in
+    # `app.hatchet_workflows._workspace_input`, which logs + increments
+    # WORKSPACE_RESOLUTION_FAILURES so the bootstrap usage stays observable.
+    #
+    # 2026-08-21 — the field-level `Field(...)` requirement moved to the
+    # model validator below. A required field cannot be expressed as a cron
+    # payload: a declarative `on_crons` trigger sends NO input (the SDK
+    # hardcodes `cron_input=None`), so `{}` is all the validator ever sees
+    # and every */10 tick would die on ValidationError.
+    #
+    # REC#1's actual guarantee — a dispatcher cannot omit workspace_id and
+    # silently get the default tenant — is unchanged, and still enforced at
+    # construction time rather than deferred to the task body. See
+    # _require_workspace_unless_fanout.
     workspace_id: str = Field(
-        ...,
+        default="",
         description=(
-            "Workspace UUID for RLS scoping. REQUIRED — see "
+            "Workspace UUID for RLS scoping. Required for a single-project "
+            'run; may be empty ONLY on the project_id="*" fan-out, which '
+            "resolves the workspace per project. See "
             "_workspace_input.bootstrap_workspace_id for the legitimate "
             "default-tenant bootstrap path."
         ),
@@ -72,6 +85,30 @@ class EmbedPendingPassagesInput(BaseModel):
         description="Cap for smoke runs. None = no limit.",
     )
 
+    @model_validator(mode="after")
+    def _require_workspace_unless_fanout(self) -> EmbedPendingPassagesInput:
+        """REC#1, expressed as a rule instead of a required field.
+
+        The hazard REC#1 removed is a dispatcher omitting workspace_id and
+        silently scoping to the default tenant. That is still rejected here,
+        at construction time, for every dispatcher: naming a specific project
+        without a workspace raises.
+
+        The one payload that may omit it is the fan-out, `project_id="*"`,
+        which resolves the workspace per project from the passage rows and so
+        never scopes to a default. That is also the only shape a cron can
+        send, since `on_crons` carries no input at all.
+        """
+        if self.project_id != "*" and not self.workspace_id:
+            raise ValueError(
+                "workspace_id is required when project_id names a specific "
+                'project; it may only be omitted on the project_id="*" '
+                "fan-out, which resolves the workspace per project. For a "
+                "legitimate default-tenant caller use "
+                "_workspace_input.bootstrap_workspace_id(reason=...)."
+            )
+        return self
+
 
 class EmbedPendingPassagesOutput(BaseModel):
     projects_processed: int
@@ -85,13 +122,9 @@ class EmbedPendingPassagesOutput(BaseModel):
     recovery_runs_created: int = 0
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 embed_pending_passages_wf = hatchet.workflow(
@@ -113,35 +146,98 @@ embed_pending_passages_wf = hatchet.workflow(
     # bulk run can't be interrupted by a tiny safety-net tick.
     # Concurrency key: use workspace_id when provided (manual/ingest triggers),
     # fall back to the literal string "cron" for cron-fired runs that have no
-    # workspace_id in the input. Without this fallback the expression evaluates
-    # to null on cron runs, causing all cron jobs to pile up in the same null
-    # concurrency slot and block indefinitely (bug fixed 2026-06-01).
+    # workspace_id in the input.
+    #
+    # 2026-08-21 — the 2026-06-01 version of this fallback did not work, and
+    # that is why both crons here had effectively never fired: 93 runs over
+    # 18 days against ~2,610 expected, every one of them an inline dispatch
+    # from ingest_pdf.persist rather than a cron tick.
+    #
+    # It tested `input.workspace_id != ''`, i.e. for the key being EMPTY. On
+    # a cron run the key is ABSENT — a declarative `on_crons` trigger sends
+    # no input at all (hatchet_sdk/runnables/workflow.py:257 hardcodes
+    # `cron_input=None`), so cel-go raises `no such key: workspace_id` while
+    # evaluating the expression, and pkg/repository/task.go:2103 records the
+    # run with an initial state of FAILED. The run is failed by the engine
+    # before any worker sees it, which is why the worker log had nothing in
+    # it to find. `has()` is the absence-safe form; the engine's own tests
+    # cover this exact shape (internal/cel/cel_test.go:40), so it compiles
+    # at registration — important, since an uncompilable expression fails
+    # PutWorkflow and takes the whole worker's registration down. `string()`
+    # coerces rather than fails if a caller ever sends a non-string
+    # workspace_id (task.go:2108 rejects a non-string concurrency key).
     concurrency=ConcurrencyExpression(
-        expression="input.workspace_id != '' ? input.workspace_id : 'cron'",
+        expression=(
+            "has(input.workspace_id) && string(input.workspace_id) != '' "
+            "? string(input.workspace_id) : 'cron'"
+        ),
         max_runs=1,
         limit_strategy=ConcurrencyLimitStrategy.GROUP_ROUND_ROBIN,
     ),
 )
 
 
+#: Log marker for a Qdrant collection that has silently lost points.
+#:
+#: PG says a passage is embedded; Qdrant does not have it. Nothing else
+#: notices — retrieval just returns fewer hits, and the passage is
+#: unreachable while every record says it is fine.
+#:
+#: Matched by alert rule 5e in deploy/azure/alerts/create-alerts.sh. There
+#: is no metric to threshold: the Prometheus registry on this worker is
+#: unscraped, so the log line IS the signal.
+QDRANT_PARTIAL_LOSS_MARKER = "QDRANT_PARTIAL_LOSS"
+
+
+#: Hard cap on the bootstrap subprocess spawned by the drift self-heal.
+#:
+#: init_qdrant.py talks to the same Qdrant instance whose emptiness
+#: triggered the heal, so "reachable but not serving" hangs it. Two
+#: minutes is far longer than a healthy bootstrap and far shorter than
+#: the task's 2 h execution_timeout, which is what it blocked for before.
+_QDRANT_BOOTSTRAP_TIMEOUT_S = 120
+
+#: How many passages one drift reset may un-embed.
+#:
+#: The reset is triggered by a single count() returning zero, which is
+#: also what a slow restore looks like. Uncapped it nulled every
+#: embedding_id in every workspace and billed a full corpus re-embed on
+#: a transient reading. Capped, a false positive costs this many
+#: re-embeds and a genuine wipe still recovers completely — the drift
+#: condition holds until the collection refills, so the next sweep takes
+#: the next batch.
+_QDRANT_DRIFT_RESET_BATCH = 5000
+
+
 @embed_pending_passages_wf.task(execution_timeout="2h", schedule_timeout="2h", retries=0)
 async def run(
     input: EmbedPendingPassagesInput, ctx: Context
 ) -> EmbedPendingPassagesOutput:
+    # targets is (workspace_id, project_id). The workspace travels with the
+    # project rather than coming from the input, because this fan-out spans
+    # every workspace: embedding project P under a different workspace's id
+    # binds the wrong RLS scope, so the pass sees no rows and reports a
+    # cheerful zero. Latent until now only because the cron never fired.
     if input.project_id == "*":
         conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
         try:
             rows = await conn.fetch(
-                "SELECT DISTINCT r.project_id::text AS pid "
+                "SELECT DISTINCT r.project_id::text AS pid, "
+                "       dp.workspace_id::text AS wid "
                 "  FROM silver.document_passages dp "
                 "  JOIN silver.reports r ON r.report_id = dp.document_id "
                 " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
             )
-            project_ids = [r["pid"] for r in rows]
+            targets = [(r["wid"], r["pid"]) for r in rows if r["wid"]]
         finally:
             await conn.close()
     else:
-        project_ids = [input.project_id]
+        # workspace_id is guaranteed non-empty here — the input model's
+        # _require_workspace_unless_fanout validator rejects a specific
+        # project without one before this task ever runs.
+        targets = [(input.workspace_id, input.project_id)]
+
+    project_ids = [pid for _, pid in targets]
 
     # Phase 3 of the reliability spec — orphan-document recovery layer.
     # Before the per-project embed loop runs, walk silver.document_passages
@@ -244,32 +340,83 @@ async def run(
                         stdout=_aio.subprocess.PIPE,
                         stderr=_aio.subprocess.STDOUT,
                     )
-                    _out, _ = await _proc.communicate()
+                    # Bounded. The condition that brings us here — Qdrant
+                    # answers get_collections but the collection is empty —
+                    # is also what a half-up Qdrant looks like during a slow
+                    # restore, and init_qdrant.py talks to that same
+                    # instance. Unbounded, communicate() blocked for the
+                    # task's full 2 h execution_timeout while every inline
+                    # embed dispatch from persist queued behind it
+                    # (max_runs=1 per workspace).
+                    try:
+                        _out, _ = await _aio.wait_for(
+                            _proc.communicate(),
+                            timeout=_QDRANT_BOOTSTRAP_TIMEOUT_S,
+                        )
+                    except TimeoutError:
+                        _proc.kill()
+                        with contextlib.suppress(Exception):
+                            await _proc.wait()
+                        log.error(
+                            "embed_pending_passages.qdrant_bootstrap timed out "
+                            "after %ds and was killed — NOT resetting "
+                            "embedding_id. Qdrant is reachable but not "
+                            "serving; this needs a human.",
+                            _QDRANT_BOOTSTRAP_TIMEOUT_S,
+                        )
+                        _out = b""
                     log.info(
                         "embed_pending_passages.qdrant_bootstrap rc=%s tail=%s",
                         _proc.returncode,
                         (_out or b"")[-300:].decode(errors="replace"),
                     )
                     if _proc.returncode == 0:
+                        # Capped. This used to be every row in every
+                        # workspace in one statement, fired by a single
+                        # count() reading zero — so a slow restore or a
+                        # collection mid-rebuild nulled the entire corpus
+                        # and billed a full re-embed.
+                        #
+                        # A batch bounds what a false positive costs while
+                        # still fully recovering a genuine wipe: the drift
+                        # condition stays true until the collection is
+                        # repopulated, so successive sweeps keep going. The
+                        # ORDER BY makes the batches deterministic instead
+                        # of re-picking arbitrary rows each tick.
                         _reset = await _heal_conn.execute(
                             "UPDATE silver.document_passages "
                             "SET embedding_id = NULL, updated_at = NOW() "
-                            "WHERE embedding_id IS NOT NULL"
+                            "WHERE passage_id IN ("
+                            "  SELECT passage_id FROM silver.document_passages "
+                            "  WHERE embedding_id IS NOT NULL "
+                            "  ORDER BY created_at "
+                            "  LIMIT $1"
+                            ")",
+                            _QDRANT_DRIFT_RESET_BATCH,
                         )
                         log.info(
-                            "embed_pending_passages.qdrant_drift reset %s — "
-                            "re-embed begins this sweep", _reset,
+                            "embed_pending_passages.qdrant_drift reset %s "
+                            "(cap %d of %d embedded) — re-embed begins this "
+                            "sweep; further batches follow on later sweeps "
+                            "while the collection stays empty",
+                            _reset, _QDRANT_DRIFT_RESET_BATCH, _pg_embedded,
                         )
-                        # Re-resolve the project list: the pre-heal query saw
+                        # Re-resolve the target list: the pre-heal query saw
                         # zero pending passages, so without this the reset
                         # rows would wait for the NEXT cron tick.
+                        #
+                        # Must rebuild `targets`, not `project_ids` — the
+                        # embed loop iterates (workspace_id, project_id)
+                        # pairs, and project_ids is only a derived label.
                         _rows = await _heal_conn.fetch(
-                            "SELECT DISTINCT r.project_id::text AS pid "
+                            "SELECT DISTINCT r.project_id::text AS pid, "
+                            "       dp.workspace_id::text AS wid "
                             "  FROM silver.document_passages dp "
                             "  JOIN silver.reports r ON r.report_id = dp.document_id "
                             " WHERE dp.embedding_id IS NULL AND r.project_id IS NOT NULL"
                         )
-                        project_ids = [r["pid"] for r in _rows]
+                        targets = [(r["wid"], r["pid"]) for r in _rows if r["wid"]]
+                        project_ids = [pid for _, pid in targets]
                 elif _qdrant_points is not None and _pg_embedded > 0:
                     # F21 (2026-08-11) — partial-loss detection. The
                     # all-empty branch above only fires when the collection
@@ -307,14 +454,20 @@ async def run(
                                     exact=True,
                                 )).count
                                 if _pg_n > 0 and (_pg_n - _q_n) / _pg_n > 0.02:
-                                    log.warning(
-                                        "embed_pending_passages.qdrant_partial_loss "
-                                        "project=%s pg_embedded=%d qdrant=%d "
+                                    # ERROR, and carrying the marker. This
+                                    # was a WARNING in a stream nobody
+                                    # watches, which for a gap PG cannot
+                                    # see is the same as no detection: the
+                                    # passages are unretrievable and every
+                                    # record says they are fine.
+                                    log.error(
+                                        "%s project=%s pg_embedded=%d qdrant=%d "
                                         "(%.1f%% missing) — Qdrant dropped points "
                                         "PG still believes are embedded; run "
                                         "scripts/reset_embeddings_for_reencode.py "
                                         "for the project or investigate the "
                                         "collection.",
+                                        QDRANT_PARTIAL_LOSS_MARKER,
                                         _pr["pid"], _pg_n, _q_n,
                                         100.0 * (_pg_n - _q_n) / _pg_n,
                                     )
@@ -356,10 +509,15 @@ async def run(
                 "falling back to per-project loads", exc,
             )
 
-    for pid in project_ids:
+    # Workspaces this run actually wrote points for. The Guard 3 retrieval
+    # smoke below needs a real workspace to query, and on the fan-out there
+    # is no single input workspace to use.
+    upserted_workspaces: set[str] = set()
+
+    for wid, pid in targets:
         try:
             r = await embed_pending_passages(
-                workspace_id=input.workspace_id,
+                workspace_id=wid,
                 project_id=pid,
                 embedding_model=embedding_model,
                 batch_size=input.batch_size,
@@ -370,6 +528,8 @@ async def run(
             total_upserted += r.qdrant_points_upserted
             total_skipped += r.passages_skipped
             errors.extend(r.errors)
+            if r.qdrant_points_upserted > 0:
+                upserted_workspaces.add(wid)
         except Exception as e:
             errors.append(f"project={pid}:{type(e).__name__}:{e}")
             log.warning(
@@ -379,29 +539,59 @@ async def run(
     # Orphan / cross-project pass: passages without a parent report
     # (chunk_kind in {'public_geo_synthesis','kg_narrative',
     # 'structured_summary',...}) have document_id NULL so the per-project
-    # loop above never touches them. Run an unscoped sweep so the TIER 0b
-    # public-geo backfill and ADR-0012 synthesizer outputs get embedded.
+    # loop above never touches them. Sweep them so the TIER 0b public-geo
+    # backfill and ADR-0012 synthesizer outputs get embedded.
+    #
+    # "Unscoped" was always aspirational — embed_pending_passages binds RLS
+    # to whatever workspace_id it is handed, so a single id covers exactly
+    # one workspace's orphans. Resolve the owning workspaces from the rows
+    # themselves and sweep each, same as the per-project pass above.
     if input.project_id == "*":
+        orphan_workspaces: list[str] = []
         try:
-            r = await embed_pending_passages(
-                workspace_id=input.workspace_id,
-                project_id=None,
-                embedding_model=embedding_model,
-                batch_size=input.batch_size,
-                max_passages=input.max_passages,
-            )
-            total_seen += r.passages_seen
-            total_embedded += r.passages_embedded
-            total_upserted += r.qdrant_points_upserted
-            total_skipped += r.passages_skipped
-            errors.extend(r.errors)
-            log.info(
-                "embed_pending_passages.orphan_pass seen=%d embedded=%d upserted=%d",
-                r.passages_seen, r.passages_embedded, r.qdrant_points_upserted,
-            )
+            orphan_conn = await asyncpg.connect(_dsn(), statement_cache_size=0)
+            try:
+                orphan_rows = await orphan_conn.fetch(
+                    "SELECT DISTINCT workspace_id::text AS wid "
+                    "  FROM silver.document_passages "
+                    " WHERE embedding_id IS NULL "
+                    "   AND document_id IS NULL "
+                    "   AND workspace_id IS NOT NULL"
+                )
+                orphan_workspaces = [r["wid"] for r in orphan_rows]
+            finally:
+                await orphan_conn.close()
         except Exception as e:
-            errors.append(f"orphan_pass:{type(e).__name__}:{e}")
-            log.warning("embed_pending_passages.orphan_pass_failed err=%s", e)
+            errors.append(f"orphan_pass_discovery:{type(e).__name__}:{e}")
+            log.warning("embed_pending_passages.orphan_discovery_failed err=%s", e)
+
+        for wid in orphan_workspaces:
+            try:
+                r = await embed_pending_passages(
+                    workspace_id=wid,
+                    project_id=None,
+                    embedding_model=embedding_model,
+                    batch_size=input.batch_size,
+                    max_passages=input.max_passages,
+                )
+                total_seen += r.passages_seen
+                total_embedded += r.passages_embedded
+                total_upserted += r.qdrant_points_upserted
+                total_skipped += r.passages_skipped
+                errors.extend(r.errors)
+                if r.qdrant_points_upserted > 0:
+                    upserted_workspaces.add(wid)
+                log.info(
+                    "embed_pending_passages.orphan_pass ws=%s seen=%d embedded=%d "
+                    "upserted=%d",
+                    wid, r.passages_seen, r.passages_embedded,
+                    r.qdrant_points_upserted,
+                )
+            except Exception as e:
+                errors.append(f"orphan_pass:{wid}:{type(e).__name__}:{e}")
+                log.warning(
+                    "embed_pending_passages.orphan_pass_failed ws=%s err=%s", wid, e,
+                )
 
     log.info(
         "embed_pending_passages.complete projects=%d seen=%d embedded=%d "
@@ -424,12 +614,19 @@ async def run(
     # Failure is loud (ERROR + Prom + audit) but non-blocking — the
     # data IS embedded, the issue is in the query path and needs human
     # triage rather than blocking ingest.
-    if total_upserted > 0:
+    #
+    # On the fan-out there is no input workspace, so smoke one that this run
+    # actually wrote points for — a smoke against an arbitrary or empty
+    # workspace proves nothing. Sorted for a deterministic pick.
+    smoke_workspace = input.workspace_id or (
+        sorted(upserted_workspaces)[0] if upserted_workspaces else ""
+    )
+    if total_upserted > 0 and smoke_workspace:
         try:
             from app.hatchet_workflows.embed_pending_passages_smoke import (  # noqa: PLC0415
                 run_retrieval_smoke,
             )
-            smoke = await run_retrieval_smoke(workspace_id=input.workspace_id)
+            smoke = await run_retrieval_smoke(workspace_id=smoke_workspace)
             log.info("embed_pending_passages.smoke result=%s", smoke)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"smoke_failed:{type(exc).__name__}:{exc}")
@@ -437,7 +634,7 @@ async def run(
                 "embed_pending_passages.smoke_failed err=%s — embed succeeded "
                 "but retrieval is broken for workspace=%s. Investigate before "
                 "the next user query.",
-                exc, input.workspace_id,
+                exc, smoke_workspace,
             )
 
     # Sweep silver.ingest_progress: any row sitting at embed_verify/embedding
@@ -468,7 +665,7 @@ async def run(
                        ip.workspace_id::text AS workspace_id,
                        ip.project_id::text   AS project_id
                 FROM silver.ingest_progress ip
-                WHERE ip.status NOT IN ('completed','failed','cancelled','timed_out')
+                WHERE ip.status NOT IN ({_ingest_progress.TERMINAL_STATUS_SQL})
                   AND ip.current_step IN ('embed_verify', 'embedding')
                   AND ip.project_id::text = ANY($1::text[])
                   AND NOT EXISTS (

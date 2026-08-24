@@ -1,0 +1,82 @@
+# Integration tests that CI runs against a real Postgres.
+#
+# WHY A MANIFEST AND NOT `-m integration`
+# ---------------------------------------
+# The `integration` marker selects 413 tests. ci.yml deselects all of them
+# on every PR and routes them to release-rehearsal.yml, which has NEVER
+# RUN (zero runs; its only live trigger is manual dispatch, and the repo's
+# one tag does not match `v*.*.*`). So 413 tests execute nowhere.
+#
+# Turning the whole marker on would be red on day one. Measured
+# 2026-08-21 against postgis/postgis:18-3.6 + `php artisan migrate`:
+#
+#     192 passed, 125 failed, 91 errors, 5 skipped
+#
+# The failures are not flakiness, they are missing infrastructure — the
+# tests need things a Postgres service alone does not provide:
+#
+#   * a real LLM  — test_golden_queries (30), test_hallucination_failures
+#     (20), test_public_geoscience_{golden,hallucination}
+#   * Qdrant + embeddings — test_retrieval_quality (11)
+#   * the database/raw/ SQL layer, which `artisan migrate` does not apply
+#     — e.g. test_nightly_ingestion_integrity dies on
+#     `relation "outbox.pending_propagations" does not exist`, a table
+#     that exists in PRODUCTION but is created only by raw SQL
+#   * Neo4j, Langfuse, and other side services
+#
+# This manifest is therefore the subset VERIFIED green, so the job can be
+# BLOCKING from the start rather than joining the repo's collection of
+# advisory jobs nobody looks at. 142 passed / 4 skipped / 0 failed across
+# these 27 files.
+#
+# GROWING IT
+# ----------
+# Add a file here as soon as it passes. The list is deliberately explicit:
+# a wildcard would silently re-admit the 125 failures the moment someone
+# adds a marker. When the raw-SQL layer is applied in CI, most of
+# test_ingest_silver_state / test_tool_gateway / test_cross_workspace_audit
+# should follow in one go.
+#
+# Blank lines and #-comments are ignored.
+
+# ── Ingestion reliability: the sweeps that guard run completion ────────
+# These are the seven modules the 2026-08-14 audit named as the highest-
+# value uncovered ground, and running them for the first time found three
+# real defects (a swallowed terminal-write failure, a test whose FK could
+# never be satisfied, and a staleness window the test never caught up with).
+tests/test_ingest_progress_state_machine.py
+tests/test_stale_run_detector.py
+tests/test_orphan_sweep.py
+tests/test_mv_refresh.py
+tests/test_reliability_metrics.py
+tests/test_embed_pending_completion_sweep.py
+tests/test_phase8_embed_verify.py
+
+# ── Audit / tenancy ───────────────────────────────────────────────────
+tests/test_hash_chain_proof.py
+tests/test_support_access_audit.py
+tests/test_workspace_audit_excerpt.py
+
+# ── Support + operations surfaces ─────────────────────────────────────
+tests/test_support_packet.py
+tests/test_support_replay_workflow.py
+tests/test_escalation_routing.py
+tests/test_root_cause_investigation.py
+tests/test_customer_response_drafting.py
+tests/test_decision_recorder.py
+tests/test_decision_summary.py
+
+# ── Learning loops + models ───────────────────────────────────────────
+tests/test_continuous_learning_loop.py
+tests/test_field_outcome_learning_workflow.py
+tests/test_train_models.py
+
+# ── Domain surfaces ───────────────────────────────────────────────────
+tests/test_hypothesis_generator.py
+tests/test_mechanical_questions.py
+tests/test_neo4j_drillhole_label.py
+tests/test_section11_3_wave2_extras.py
+tests/test_sme_seeders.py
+tests/test_whatchanged_report_integration.py
+tests/test_langfuse_link.py
+tests/test_usage_events_write_integration.py

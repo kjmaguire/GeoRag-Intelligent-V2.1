@@ -109,16 +109,35 @@ return new class extends Migration
             $this->grantPerObject($schema, $tablePrivileges, isSequence: false);
             $this->grantPerObject($schema, $sequencePrivileges, isSequence: true);
 
-            // 2. Cover everything a future migration creates. FOR ROLE georag
-            //    is the important part — default privileges apply per grantor,
-            //    and migrations create their objects as georag.
+            // 2. Cover everything a future migration creates. The grantor
+            //    is the important part — default privileges apply PER
+            //    GRANTOR, and they have to name the role that will actually
+            //    create the objects.
+            //
+            //    CURRENT_USER, not a literal `georag` (fixed 2026-08-21).
+            //    The hardcoded name made this migration environment-specific:
+            //    it is `georag` only on Azure. Under ci.yml's
+            //    migrations-production-privileges job the migration role is
+            //    `georag_ci`, so the statement died with
+            //      SQLSTATE[42704] ERROR: role "georag" does not exist
+            //    and took the whole chain down — the SECOND blocker in that
+            //    gate, invisible until the CREATE EVENT TRIGGER blocker
+            //    ahead of it was fixed and the chain could run far enough to
+            //    reach this. A permanently-red advisory gate hides its own
+            //    next failure.
+            //
+            //    grantPerObject() below already resolves the owner with
+            //    pg_has_role(current_user, ...) — this half simply did not
+            //    apply the same rule, and CURRENT_USER restores the intent
+            //    the comment always described ("the role migrations create
+            //    their objects as") without pinning it to one deployment.
             DB::statement(sprintf(
-                'ALTER DEFAULT PRIVILEGES FOR ROLE georag IN SCHEMA %s GRANT %s ON TABLES TO georag_app',
+                'ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA %s GRANT %s ON TABLES TO georag_app',
                 $schema,
                 $tablePrivileges,
             ));
             DB::statement(sprintf(
-                'ALTER DEFAULT PRIVILEGES FOR ROLE georag IN SCHEMA %s GRANT %s ON SEQUENCES TO georag_app',
+                'ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA %s GRANT %s ON SEQUENCES TO georag_app',
                 $schema,
                 $sequencePrivileges,
             ));

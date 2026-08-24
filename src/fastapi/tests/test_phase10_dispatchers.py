@@ -194,3 +194,111 @@ async def test_pagerduty_summary_truncates_to_1024_chars() -> None:
         )
 
     assert len(captured["payload"]["payload"]["summary"]) == 1024
+
+
+# ---------------------------------------------------------------------------
+# OBS-14 — where a cost-burn alert actually goes
+# ---------------------------------------------------------------------------
+
+
+class TestTheEscalationPathThatExists:
+    """PagerDuty is not it, and the module now says so.
+
+    `create_pagerduty_incident` above is a complete Events v2 client with
+    dedup keys and a severity map, and has never had a caller.
+    PAGERDUTY_INTEGRATION_KEY is empty and set on no container app. Read
+    without context it implies the platform can page a human; it cannot.
+
+    What exists is the log-marker route: a detector logs a distinctive
+    string, a Log Analytics scheduled query rule matches it, and
+    `georag-alerts-ag` emails a real address. These tests pin that the
+    cost-burn detector is on it, because until 2026-08-22 its "high"
+    severity alert — the one that precedes suspending a workspace's LLM
+    activity — terminated in a database row.
+    """
+
+    def test_the_dispatcher_says_it_is_not_wired(self) -> None:
+        from app.services.dispatchers import pagerduty
+
+        assert pagerduty.__doc__ is not None
+        assert "NOT WIRED" in pagerduty.__doc__
+
+    def test_the_dispatcher_still_has_no_caller(self) -> None:
+        """If someone wires it, this fails — and the NOT WIRED banner
+        needs to come off in the same change."""
+        from pathlib import Path
+
+        app_dir = Path(__file__).resolve().parent.parent / "app"
+        callers = []
+
+        for path in app_dir.rglob("*.py"):
+            if "dispatchers" in path.parts:
+                continue
+            if "create_pagerduty_incident" in path.read_text(
+                encoding="utf-8", errors="replace"
+            ):
+                callers.append(str(path.name))
+
+        assert callers == [], (
+            f"{callers} now call the PagerDuty dispatcher. Good — but remove "
+            "the NOT WIRED banner from services/dispatchers/pagerduty.py, "
+            "and set PAGERDUTY_INTEGRATION_KEY, or it still cannot page."
+        )
+
+    def test_the_cost_burn_alert_leaves_the_database(self) -> None:
+        import inspect
+
+        from app.hatchet_workflows import cost_burn_watcher
+
+        assert cost_burn_watcher.COST_BURN_ALERT_MARKER
+
+        source = inspect.getsource(cost_burn_watcher)
+        assert "COST_BURN_ALERT_MARKER," in source, (
+            "the marker is defined but never logged, so the alert still "
+            "ends in audit.audit_ledger and reaches nobody"
+        )
+
+    def test_the_marker_is_distinctive_enough_to_match_on(self) -> None:
+        """It is matched with `Log_s has '<marker>'`. A short or
+        lower-case marker would match ordinary log prose and stack
+        traces, and the alert would fire on nothing."""
+        from app.hatchet_workflows.cost_burn_watcher import (
+            COST_BURN_ALERT_MARKER,
+        )
+
+        assert COST_BURN_ALERT_MARKER.isupper()
+        assert "_" in COST_BURN_ALERT_MARKER
+        assert len(COST_BURN_ALERT_MARKER) > 12
+
+    def test_an_alert_rule_matches_the_marker(self) -> None:
+        """The marker and the rule are in different repos-worth of file
+        and drift silently: the log line keeps being written and nothing
+        is listening."""
+        from pathlib import Path
+
+        from app.hatchet_workflows.cost_burn_watcher import (
+            COST_BURN_ALERT_MARKER,
+        )
+
+        repo = Path(__file__).resolve().parents[3]
+        script = (repo / "deploy" / "azure" / "alerts" / "create-alerts.sh").read_text(
+            encoding="utf-8"
+        )
+
+        assert COST_BURN_ALERT_MARKER in script, (
+            "no scheduled query rule matches the cost-burn marker, so the "
+            "log line goes nowhere"
+        )
+
+    def test_the_alert_does_not_carry_query_text(self) -> None:
+        """A 30-day log store is not where customer questions belong —
+        the same rule sparse_encoder was fixed for."""
+        import inspect
+
+        from app.hatchet_workflows import cost_burn_watcher
+
+        source = inspect.getsource(cost_burn_watcher)
+        marker_call = source[source.index("COST_BURN_ALERT_MARKER,"):][:400]
+
+        for leaky in ("query_text", "question", "prompt"):
+            assert leaky not in marker_call, leaky

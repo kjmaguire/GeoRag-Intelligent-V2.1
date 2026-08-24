@@ -1,5 +1,9 @@
 """Track A.2 Phase 1.B — decomposer logic.
 
+NOT WIRED (measured 2026-08-22). Nothing under app/ imports this
+module. Query decomposition does not happen on the live answer
+path.
+
 Per `docs/plans/track-a2-agentic-retrieval.md` D1 (trigger detection) and D2
 (sub-query taxonomy).
 

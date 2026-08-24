@@ -37,6 +37,10 @@ from app.models.rag import GeoRAGResponse
 
 logger = logging.getLogger(__name__)
 
+#: Bumped when the chat path's prompt/graph shape changes materially,
+#: so a usage.usage_events row can be attributed to a code version.
+CHAT_USAGE_AGENT_VERSION = "agentic-v2"
+
 
 # ---------------------------------------------------------------------------
 # classify
@@ -160,7 +164,13 @@ async def classify_node(state: AgenticRetrievalState) -> dict[str, Any]:
         result.used_llm_fallback,
         result.matched_triggers[:5],
     )
-    return {"intent": result.intent, "intent_result": result}
+    return {
+        "intent": result.intent,
+        "intent_result": result,
+        # The classifier escalates to the LLM on ambiguous queries
+        # (result.used_llm_fallback), and those tokens are billed.
+        **_fold_token_usage(state),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +499,41 @@ async def _call_tool_safely(tool_name: str, query: str, deps: Any) -> Any | None
         return None
 
 
+def _fold_token_usage(state: AgenticRetrievalState) -> dict[str, int]:
+    """Fold THIS node's LLM token spend onto the run total.
+
+    Every node that can reach the LLM returns ``**_fold_token_usage(state)``
+    alongside its own update, so the totals accumulate across
+    classify → assemble → repair.
+
+    This exists because `llm_calls.get_run_token_usage()` cannot be read at
+    the end of the run. LangGraph executes each node in its own
+    `asyncio.Task`, and a Task is created with a COPY of the current
+    context — so a `ContextVar.set()` inside assemble_node is invisible
+    everywhere downstream. Verified 2026-08-21 with a two-node probe: node
+    A set a contextvar to 41, node B read back the default. A
+    `get_run_token_usage()` call in persist_node would have written a
+    confident, permanent 0 into `silver.answer_runs.input_tokens`, which is
+    worse than the NULL it replaced.
+
+    Reading inside the node is safe for the same reason: the counters were
+    reset to the parent's values when this node's Task was created, so what
+    they hold now is exactly what this node spent.
+    """
+    from app.agent.llm_calls import get_run_token_usage  # noqa: PLC0415
+
+    try:
+        node_input, node_output = get_run_token_usage()
+    except Exception:  # pragma: no cover — accounting must never break a run
+        logger.debug("agentic_retrieval: token usage read failed", exc_info=True)
+        return {}
+
+    return {
+        "llm_input_tokens": state.llm_input_tokens + int(node_input or 0),
+        "llm_output_tokens": state.llm_output_tokens + int(node_output or 0),
+    }
+
+
 def _build_adversarial_query(query: str) -> str:
     """Rewrite a query to surface DISCONFIRMING evidence.
 
@@ -580,7 +625,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     *(_lookup_collar(hid) for hid in hole_ids)
                 )
                 for result in collar_results:
-                    if result is not None:
+                    if _worth_citing("query_collar_details", result):
                         results.append(("query_collar_details", result))
                 logger.info(
                     "agentic_retrieval.execute: hole-id pre-pass yielded %d result(s)"
@@ -610,7 +655,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
         *(_dispatch_primary(tool_name) for tool_name in profile.primary_tools)
     )
     for tool_name, result in primary_results:
-        if result is not None:
+        if _worth_citing(tool_name, result):
             results.append((tool_name, result))
 
     # Adversarial pass (hypothesis-generation only) — re-issue the
@@ -638,10 +683,14 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 if len(_fresh) != len(_adv_chunks):
                     result.chunks = _fresh
                     result.count = len(_fresh)
-            results.append(("search_documents_adversarial", result))
-            logger.info(
-                "agentic_retrieval.execute: adversarial pass returned a result"
-            )
+            # Checked here rather than at the `result is not None` guard
+            # above, because the dedupe immediately preceding this can empty
+            # a result that arrived non-empty.
+            if _worth_citing("search_documents_adversarial", result):
+                results.append(("search_documents_adversarial", result))
+                logger.info(
+                    "agentic_retrieval.execute: adversarial pass returned a result"
+                )
 
     # Secondary tools — best-effort; failures don't block the pipeline.
     # We invoke them only when the primary pass yielded fewer than a small
@@ -664,7 +713,7 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
             *(_dispatch_secondary(tool_name) for tool_name in profile.secondary_tools)
         )
         for tool_name, result in secondary_results:
-            if result is not None:
+            if _worth_citing(tool_name, result):
                 results.append((tool_name, result))
 
     # ADR-0007 PR-2 — stereonet card. Trigger off explicit query keywords
@@ -785,6 +834,119 @@ async def execute_node(state: AgenticRetrievalState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _worth_citing(tool_name: str, result: Any) -> bool:
+    """Keep a tool result only if it carries rows worth citing.
+
+    `_is_empty_tool_result` has existed since Phase F.4, is documented as
+    mandatory — "empty tool results must be dropped *before* citation
+    assignment so they don't produce zero-relevance citations that trip the
+    Layer 1 retrieval_quality gate" — is exported in `__all__`, and had zero
+    call sites anywhere in the tree.
+
+    The cost was quiet rather than loud. `_compute_confidence` takes the
+    arithmetic MEAN of per-result relevance, so a strong document answer
+    paired with one structured lookup that returned zero rows reported
+    roughly half the confidence it had earned. The empty result also took a
+    line in the LLM's Evidence Set block and drew a citation marker for a
+    tool that found nothing.
+
+    Visualization cards (query_stereonet, query_drill_traces_3d) are NOT
+    routed through this. They are not evidence, and `_is_empty_tool_result`
+    would not recognise their types anyway — it returns False for anything
+    it does not know, so passing them through would be a silent no-op that
+    reads as coverage.
+    """
+    if result is None:
+        return False
+
+    from app.agent.tool_result_helpers import _is_empty_tool_result  # noqa: PLC0415
+
+    if _is_empty_tool_result(result):
+        logger.info(
+            "agentic_retrieval.execute: dropped empty %s result before "
+            "citation assignment",
+            tool_name,
+        )
+        return False
+    return True
+
+
+def _categories_from_tool_results(
+    tool_results: list[tuple[str, Any]],
+) -> dict[str, bool]:
+    """Which shapes of evidence actually made it into the context block.
+
+    Feeds ``orchestrator._select_system_prompt``, which picks between the
+    DEFAULT / NUMERIC / NARRATIVE / GRAPH system-prompt variants.
+
+    Until 2026-08-21 both production call sites passed ``categories=None``,
+    and ``_select_system_prompt`` short-circuits to DEFAULT on a falsy
+    ``categories`` before any branch runs. NUMERIC, NARRATIVE, GRAPH and the
+    ``SYSTEM_PROMPT_ROUTING_ENABLED`` flag were therefore dead on the live
+    path: the only callers that ever reached the routing logic were two test
+    modules. A count query ("how many holes exceeded 500 m?") never received
+    the NUMERIC variant whose entire purpose is "quote verbatim from
+    HIGH-CONFIDENCE SUMMARIES", and a document-heavy NI 43-101 question never
+    received NARRATIVE's paraphrase-fidelity discipline.
+
+    The in-code justification was that "the per-intent base preamble doesn't
+    change here, only the answer-emphasis suffix does" — but that suffix is
+    appended only under ``GEO_ANSWER_OIUR_ENABLED``, which is False in
+    production. With both mechanisms off, every query in production got the
+    same unshaped DEFAULT prompt.
+
+    Derived from RESULTS rather than from the classifier's intent guess.
+    ``assemble_node`` runs after ``execute_node``, so by this point we know
+    what evidence exists rather than what the query looked like — and the
+    variant's job is to tell the model how to handle the evidence it is
+    about to read. A classifier that predicted "assay" for a query whose
+    assay lookup returned nothing would otherwise select NUMERIC for a
+    context containing only prose.
+
+    Visualization results (``query_stereonet``, ``query_drill_traces_3d``)
+    are deliberately excluded: they are rendered as cards, are not evidence,
+    and do not appear in the context block that the variant is shaping.
+    """
+    from app.agent.public_geoscience_tool import (  # noqa: PLC0415
+        PublicGeoscienceSearchResult,
+    )
+    from app.agent.tools import (  # noqa: PLC0415
+        AssayDataResult,
+        CollarDetailsResult,
+        CoverageGapResult,
+        DocumentSearchResult,
+        DownholeLogsResult,
+        GraphTraversalResult,
+        ProjectOverviewResult,
+        ProjectSummaryResult,
+        SpatialQueryResult,
+    )
+
+    buckets: dict[str, tuple[type, ...]] = {
+        "documents": (DocumentSearchResult,),
+        "public_geo": (PublicGeoscienceSearchResult,),
+        "graph": (GraphTraversalResult,),
+        "spatial": (SpatialQueryResult, CollarDetailsResult),
+        "assay": (AssayDataResult,),
+        "downhole": (DownholeLogsResult,),
+        "overview": (
+            ProjectOverviewResult,
+            ProjectSummaryResult,
+            CoverageGapResult,
+        ),
+    }
+
+    categories: dict[str, bool] = {}
+    for _tool_name, result in tool_results:
+        if result is None:
+            continue
+        for name, types in buckets.items():
+            if isinstance(result, types):
+                categories[name] = True
+                break
+    return categories
+
+
 def _render_tool_results_context(
     tool_results: list[tuple[str, Any]],
     *,
@@ -811,10 +973,11 @@ def _render_tool_results_context(
     fencing but is dead code (confirmed zero call sites outside the
     retired legacy orchestrator's re-export and tests). Reusing its
     ``_fence_untrusted``/``_UNTRUSTED_GUARD`` here, gated by the SAME
-    ``settings.PROMPT_INJECTION_DELIMITING_ENABLED`` flag (default False
-    pending a golden-eval pass — see config.py), closes that gap: once the
-    flag is flipped it now actually protects the path real traffic runs
-    through, not just the abandoned one. Fencing is applied to the two
+    ``settings.PROMPT_INJECTION_DELIMITING_ENABLED`` flag (default True
+    since 2026-08-21; it was False for the first eight weeks, and live
+    ``fastapi-cc`` never set it, so this path ran unfenced) closes that
+    gap: the fence now protects the path real traffic runs through, not
+    just the abandoned one. Fencing is applied to the two
     externally-sourced free-text surfaces the model sees — retrieved
     document-chunk text and public-geoscience record dumps — mirroring
     exactly what ``_build_context`` fences (structured PostGIS/Neo4j/
@@ -837,9 +1000,35 @@ def _render_tool_results_context(
     from app.agent.response_assembler import assign_citation_ids  # noqa: PLC0415
     from app.config import settings as _settings  # noqa: PLC0415
 
-    _CHUNK_TEXT_CAP = 1800    # per document chunk
-    _STRUCTURED_CAP = 1200    # per structured (non-chunk) result
-    _TOTAL_BUDGET = 24_000    # whole context block
+    # Imported, not re-typed. Chunks are already bounded at ingest to
+    # WINDOW_CHARS, and this used to cut them again at 1,800 — 64% of every
+    # retrieved chunk was discarded before the model saw it, while the
+    # citation for that chunk went into the answer regardless. A citation
+    # pointing at text nobody read is worse than no citation: it looks
+    # like evidence. pdf_report's own sizing comment says the window was
+    # chosen so five chunks land at ~6,250 tokens; this cap was what stopped
+    # that from happening.
+    from app.services.ingest.pdf_report import WINDOW_CHARS  # noqa: PLC0415
+
+    _CHUNK_TEXT_CAP = WINDOW_CHARS   # i.e. never cut a chunk mid-way
+    _STRUCTURED_CAP = 1200           # per structured (non-chunk) result
+
+    # Derived from the active backend's context window rather than frozen.
+    # 24,000 characters was sized for the 16K-context local vLLM deployment
+    # and never revisited after the move to Azure Foundry, where the window
+    # is 100,000 TOKENS — so the evidence budget was about 6% of what was
+    # available, and the shortfall was paid for by truncating chunks.
+    #
+    # ~4 chars/token is the usual English approximation. The clamp is the
+    # point of the expression: spend a documented slice of the window, and
+    # never let a backend with a huge window turn every query into a
+    # 100K-token bill. At 48,000 characters the top five 5,000-char chunks
+    # fit whole with room for the structured blocks beside them.
+    _CHARS_PER_TOKEN = 4
+    _TOTAL_BUDGET = min(
+        48_000,
+        int(_settings.effective_max_context_tokens * 0.30) * _CHARS_PER_TOKEN,
+    )
     _fence_enabled = bool(_settings.PROMPT_INJECTION_DELIMITING_ENABLED)
 
     # Each entry is (rendered_text, tool_name, citation_id) — the tool
@@ -877,7 +1066,17 @@ def _render_tool_results_context(
                 page = getattr(chunk, "page", None)
                 if page is not None:
                     header += f" | page {page}"
-                text = (getattr(chunk, "text", "") or "")[:_CHUNK_TEXT_CAP]
+                # annotated_text, not text. A page-image chunk's content is
+                # a vision model's DESCRIPTION of the page, and annotated_text
+                # is what carries the "not quoted text from the document"
+                # prefix. Reading .text here stripped that prefix, so a
+                # generated description reached the model looking exactly
+                # like an extract it could quote. context_builder.py:144 on
+                # the legacy path already read annotated_text; this path did
+                # not.
+                text = (getattr(chunk, "annotated_text", None)
+                        or getattr(chunk, "text", "")
+                        or "")[:_CHUNK_TEXT_CAP]
                 if _fence_enabled:
                     text = _fence_untrusted(text)
                 blocks.append((f"{header}\n{text}", tool_name, cid))
@@ -1092,10 +1291,15 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             workspace_id=getattr(state.deps, "workspace_id", None),
         )
 
-    # System prompt selection — empty categories dict so the routing falls
-    # to DEFAULT (the per-intent base preamble doesn't change here, only
-    # the answer-emphasis suffix does).
-    system_prompt = _select_system_prompt(categories=None, query=state.query)
+    # System-prompt variant selection. Derived from the evidence actually
+    # retrieved — see _categories_from_tool_results for why this used to be
+    # a hardcoded `categories=None` and what that cost. Set
+    # SYSTEM_PROMPT_ROUTING_ENABLED=false to go back to always-DEFAULT
+    # without a deploy.
+    system_prompt = _select_system_prompt(
+        categories=_categories_from_tool_results(state.tool_results),
+        query=state.query,
+    )
 
     # Plan §0b — estimate static system-prompt tokens for the trace.
     # chars/4 is the cheap-and-good-enough proxy used by plan §0b's
@@ -1134,8 +1338,10 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             )
 
     # Step 2.5 — append the per-intent answer-emphasis fragment matching
-    # the retrieval profile. Empty when no profile or when the OIUR flag
-    # is off (the base prompt is unchanged in that case).
+    # the retrieval profile. Empty when there is no profile, and empty when
+    # GEO_ANSWER_OIUR_ENABLED is off — the fragments reference sections that
+    # only exist inside the OIUR block. That second condition is enforced
+    # inside fragment_for(); it used to be asserted only by this comment.
     if state.retrieval_profile is not None:
         try:
             from app.agent.prompts.answer_emphasis_section import (  # noqa: PLC0415
@@ -1222,6 +1428,24 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         openai_http_client=openai_client,
         system_prompt=system_prompt,
         audit_label="agentic_retrieval",
+        # The reader sees these tokens as the model produces them, and every
+        # §04i guard runs afterwards: graph order is assemble -> validate ->
+        # demote -> repair_shadow -> persist, and validate_node only ever
+        # mutates the object that rides the `completed` frame. So for the
+        # 15-30 s a synthesis takes, the text on screen has had zero
+        # validation applied — orphan citation markers still present,
+        # ungrounded numbers unflagged, no banner — and at `completed` it is
+        # silently replaced.
+        #
+        # Holding the stream one guard behind was considered and rejected:
+        # Layer 4 resolves entities against silver.collars and Layer 3
+        # cross-checks numbers against tool results, so the checks are async
+        # DB round-trips, not something that can run per-sentence without
+        # turning streaming into a stutter. What ships instead is honesty
+        # about the window — the message carries validation_state (default
+        # "unverified"), and Chat.tsx renders a "not yet fact-checked" pill
+        # while isStreaming and keeps it as "unverified" if the stream is cut
+        # off before `completed` arrives.
         token_callback=state.token_callback,
         workspace_id=getattr(state.deps, "workspace_id", None),
         redis_client=getattr(state.deps, "redis_client", None),
@@ -1252,7 +1476,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         envelope_notes=state.envelope_notes,
         unspecified_descriptions=unspecified_field_descriptions(state.context_envelope),
     )
-    return {"response": response}
+    return {"response": response, **_fold_token_usage(state)}
 
 
 def _build_chat_card_payloads(
@@ -1634,6 +1858,25 @@ def _floor_confidence_with_warning_banner(
         return response
 
 
+def _extract_conflicts_safely(text: str) -> list[dict[str, Any]] | None:
+    """`extract_conflicting_evidence`, but never fatal to an answer.
+
+    A parse failure must not cost the user their answer — the worst case is
+    the status quo ante, an unpopulated field.
+    """
+    from app.agent.conflict_extraction import (  # noqa: PLC0415
+        extract_conflicting_evidence,
+    )
+
+    try:
+        return extract_conflicting_evidence(text or "")
+    except Exception:  # pragma: no cover — defensive
+        logger.exception(
+            "agentic_retrieval.validate: conflicting-evidence parse failed"
+        )
+        return None
+
+
 async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     """Run the Layer-2/3/4/6 post-assembly validation the legacy path uses.
 
@@ -1665,10 +1908,10 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     from an answer that passed every check cleanly, and ``should_retry``
     never fired so the confidence-floor/banner mechanism below never
     engaged either. That is a fail-OPEN posture on exactly the exception
-    path meant to protect against fabrication. Per
-    ``app.agent.hallucination.layer_completeness``'s documented "if any
-    guard raises, treat as failed" design intent, the except branch now
-    fails CLOSED: it reuses the same confidence-floor + warning-banner UX
+    path meant to protect against fabrication. Per the "if any guard
+    raises, treat as failed" posture the §04i guard contract specifies
+    (documented in the deleted layer_completeness.py until 2026-08-21, and
+    now carried by this comment), the except branch now fails CLOSED: it reuses the same confidence-floor + warning-banner UX
     as a genuine should_retry=True guard failure (via
     ``_floor_confidence_with_warning_banner``) and returns
     ``validation_warnings`` describing that validation could not run, so
@@ -1725,6 +1968,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "internal error",
         )
         response = await _enrich_provenance_safely(response)
+        response = response.model_copy(update={"validation_state": "unverified"})
         return {"response": response, "validation_warnings": [_unverified_warning]}
 
     if should_retry:
@@ -1762,7 +2006,44 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             warnings,
         )
 
+    # L909 — the state the UI actually branches on. `confidence` is a
+    # retrieval-strength number (see GeoRAGResponse.confidence): a
+    # structured-only hit scores 0.95 whatever the synthesis says, and the
+    # frontend rendered 0.05 and 0.95 in the same neutral pill. This is the
+    # signal that says whether anything checked the ANSWER.
+    #
+    # Any warning at all counts as flagged. The warnings that reach here are
+    # guard findings — an ungrounded number, an entity that resolves to
+    # nothing, a violated geological constraint — not chatter; `should_retry`
+    # is the subset severe enough to also floor the confidence and prepend a
+    # banner, but a single ungrounded number in an otherwise clean answer is
+    # exactly the case the old UX lost entirely (below NUMERIC_RETRY_THRESHOLD,
+    # so no banner, no floor, and demote_node is a no-op while
+    # GEO_ANSWER_OIUR_ENABLED is False).
     response = await _enrich_provenance_safely(response)
+
+    # L941 — read the model's "### Conflicting evidence" sub-section back into
+    # the structured field. Until 2026-08-21 `conflicting_evidence` had no
+    # production writer at all, so `conflicts_present` in apply_guard_demotion
+    # was permanently False and the "conflicting sources force Low confidence"
+    # rule could not fire however loudly the answer reported a disagreement.
+    # See app/agent/conflict_extraction.py for what this is (a parser for the
+    # model's report) and what it is not (a detector).
+    conflicts = _extract_conflicts_safely(response.text)
+
+    # Stamped last, after Layer 5 enrichment, so the object handed to
+    # enrich_provenance is the one assemble_node built — several tests assert
+    # that identity, and enrichment has no bearing on the verdict.
+    update: dict[str, Any] = {
+        "validation_state": "flagged" if warnings else "clean",
+    }
+    if conflicts:
+        update["conflicting_evidence"] = conflicts
+        logger.info(
+            "agentic_retrieval.validate: %d conflicting-evidence row(s) "
+            "parsed from the answer", len(conflicts),
+        )
+    response = response.model_copy(update=update)
     return {"response": response, "validation_warnings": warnings}
 
 
@@ -1951,6 +2232,9 @@ async def repair_shadow_node(state: AgenticRetrievalState) -> dict[str, Any]:
         except Exception:  # pragma: no cover — defensive
             logger.debug("repair sentry stamp failed (non-fatal)", exc_info=True)
 
+        # The repair loop re-issues the LLM (`_reissue_llm_only`), and
+        # those retries are billed like any other call.
+        update_dict.update(_fold_token_usage(state))
         return update_dict
     except Exception:  # pragma: no cover — defensive
         logger.exception(
@@ -2198,7 +2482,13 @@ async def _reissue_llm_only(
         workspace_id=getattr(state.deps, "workspace_id", None),
     )
 
-    system_prompt = _select_system_prompt(categories=None, query=state.query) + suffix
+    # Same variant the first attempt used — a repair pass that switched
+    # prompt variants mid-loop would be repairing against different rules
+    # than the answer it is repairing.
+    system_prompt = _select_system_prompt(
+        categories=_categories_from_tool_results(state.tool_results),
+        query=state.query,
+    ) + suffix
 
     openai_client = getattr(state.deps, "openai_http_client", None)
     anthropic_client = getattr(state.deps, "anthropic_client", None)
@@ -2347,6 +2637,86 @@ def _build_terminal_refusal_payload(
 # ---------------------------------------------------------------------------
 # persist (Phase 4 follow-up — closes the lineage gap the smoke test exposed)
 # ---------------------------------------------------------------------------
+
+
+async def _write_chat_usage_event(
+    pg_pool: Any,
+    *,
+    workspace_id: str | None,
+    model_id: str | None,
+    backend: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: int | None,
+    trace_id: str | None,
+    answer_run_id: str | None,
+) -> None:
+    """Record one `usage.usage_events` row for an answered chat query.
+
+    `usage.usage_events` had **0 rows** in production on 2026-08-21. The
+    only writer was `agents/wrapper.py`'s `@georag_agent` decorator, which
+    covers the phase0 ops agents and not the chat path — the path that
+    spends the money. `cost_burn_watcher` sums this table every 5 minutes
+    to decide whether to emit `cost.burn.alert` and, at 2x the hourly
+    ceiling, to call `_suspend_workspace`. With no rows, every workspace
+    summed to $0 and neither branch could ever run.
+
+    On `projected_cost_usd`: it is 0 unless the model has a published rate
+    in `agent/pricing.py`. Production runs `Cohere-command-a-plus-05-2026`,
+    which has no entry, so `estimate_cost_usd` would have returned
+    STANDARD-tier Sonnet pricing — a number with no relationship to the
+    invoice. Recording 0 keeps the token counts (which ARE facts) while
+    leaving the cost column empty, and `cost_burn_watcher`'s
+    `HAVING SUM(projected_cost_usd) > 0` skips the workspace rather than
+    suspending it over an invented figure. Add the rate to `_PRICE_TABLE`
+    and both the alert and the hard stop start working, with no change
+    here.
+
+    Best-effort: the answer has already been streamed to the user by the
+    time this runs, so a failed write is logged and swallowed.
+    """
+    from app.agent.pricing import estimate_cost_usd, has_pricing  # noqa: PLC0415
+
+    cost_usd = 0.0
+    if model_id and has_pricing(model_id):
+        cost_usd = estimate_cost_usd(
+            model=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    try:
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO usage.usage_events
+                    (workspace_id, agent_name, agent_version, model_profile,
+                     model_id, tokens_prompt, tokens_completion,
+                     projected_cost_usd, latency_ms, outcome, trace_id,
+                     invocation_id)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::uuid)
+                """,
+                workspace_id,
+                "chat_rag",
+                CHAT_USAGE_AGENT_VERSION,
+                backend,
+                model_id,
+                int(input_tokens),
+                int(output_tokens),
+                cost_usd,
+                latency_ms,
+                "success",
+                trace_id,
+                answer_run_id,
+            )
+    except Exception:
+        logger.warning(
+            "agentic_retrieval.persist: usage_events INSERT failed — this "
+            "query's spend is unaccounted for and cost_burn_watcher will "
+            "not see it",
+            exc_info=True,
+            extra={"workspace_id": workspace_id, "trace_id": trace_id},
+        )
 
 
 async def _insert_answer_run_with_retry(
@@ -2525,6 +2895,17 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 exc_info=True,
             )
 
+    # Run totals folded across every LLM-capable node — see
+    # `_fold_token_usage` for why these ride on the state instead of being
+    # read from the contextvar here.
+    _input_tokens = int(getattr(state, "llm_input_tokens", 0) or 0)
+    _output_tokens = int(getattr(state, "llm_output_tokens", 0) or 0)
+    _answering_model = (
+        getattr(state.response, "llm_model", None) or _settings.effective_llm_model
+    )
+    _backend_label = _normalize_backend(getattr(_settings, "LLM_BACKEND", None))
+    _answer_run_id: str | None = None
+
     try:
         row = await _insert_answer_run_with_retry(
             pg_pool,
@@ -2544,10 +2925,12 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 lineage_qaqc_filters_applied,
                 answer_schema_version,
                 confidence,
-                latency_ms
+                latency_ms,
+                input_tokens,
+                output_tokens
             ) VALUES (
                 $1::uuid, $2::uuid, $3, $4, 0, $5, $6, $7, $8::uuid,
-                $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14
+                $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16
             )
             RETURNING answer_run_id
             """,
@@ -2556,7 +2939,14 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             state.query,
             spec_query_class,
             citation_state,
-            _settings.effective_llm_model,
+            # The model that actually answered, not the one configured.
+            # `llm_calls.record_run_llm_model()` stamps this inside the same
+            # node as the LLM call and it rides here on the response object;
+            # `settings.effective_llm_model` is only a fallback for runs that
+            # produced no answer-bearing call. The identical bug on
+            # `audit.query_audit_log.llm_model` was fixed on 2026-08-21 —
+            # this was its second home.
+            _answering_model,
             # Audit 2026-08-14 (finding 5): the agentic path previously
             # never wrote backend_used (silent NULL). Record the active
             # LLM backend, normalised onto the answer_runs_backend_valid
@@ -2570,7 +2960,18 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             cols["answer_schema_version"],
             _response_confidence,
             _latency_ms,
+            # These two columns have existed since 2026-04-21 and had never
+            # been written: production held exactly one answer_runs row and
+            # `count(input_tokens)` was 0. `llm_calls.py` even documents the
+            # orchestrator as reading `get_run_token_usage()` "immediately
+            # before the answer_runs INSERT" — the INSERT named 15 columns
+            # and neither token column was among them.
+            _input_tokens,
+            _output_tokens,
         )
+
+        if row is not None:
+            _answer_run_id = str(row["answer_run_id"])
 
         if row and state.response is not None:
             from uuid import UUID as _UUID  # noqa: PLC0415
@@ -2681,6 +3082,9 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     GuardErrorCode,
                     classify_guards,
                 )
+                from app.agent.hallucination.citation_markers import (  # noqa: PLC0415
+                    CITATION_MARKER_RE as _CITATION_MARKER_RE,
+                )
                 _conflicting = bool(
                     state.response is not None
                     and getattr(state.response, "conflicting_evidence", None)
@@ -2694,6 +3098,15 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     ),
                     citation_lifecycle_state=citation_state,
                     conflicting_evidence_present=_conflicting,
+                    # Does the answer actually cite anything, or does it just
+                    # come with citations attached? The assembler used to
+                    # guarantee the two matched by stapling every marker onto
+                    # the last sentence, which made the difference invisible.
+                    text_has_markers=(
+                        bool(_CITATION_MARKER_RE.search(state.response.text))
+                        if state.response is not None
+                        else None
+                    ),
                 )
                 _guard_failure_codes = [c.value for c in _guard_codes]
 
@@ -2916,6 +3329,23 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
             exc_info=True,
             extra={"alert": True},
         )
+
+    # L1546 — meter the spend. Deliberately outside the try above: the
+    # tokens were bought whether or not the lineage row landed, and a cost
+    # record that vanishes whenever persistence fails is precisely the
+    # blind spot this closes. `_answer_run_id` is None when the INSERT
+    # never returned one; usage.usage_events.invocation_id is nullable.
+    await _write_chat_usage_event(
+        pg_pool,
+        workspace_id=workspace_id,
+        model_id=_answering_model,
+        backend=_backend_label,
+        input_tokens=_input_tokens,
+        output_tokens=_output_tokens,
+        latency_ms=_latency_ms,
+        trace_id=getattr(state.deps, "trace_id", None),
+        answer_run_id=_answer_run_id,
+    )
 
     # Return the (possibly mutated) response so LangGraph propagates the
     # stamped answer_run_id back to the caller. Mutation-in-place would

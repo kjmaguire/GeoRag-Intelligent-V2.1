@@ -152,17 +152,55 @@ async def test_mark_failed_records_stage_and_error(fresh_run):
 
 
 async def test_mark_completed_records_report_id(fresh_run):
+    """A completion that names a report must record it.
+
+    The report row is REAL, not a fabricated UUID.
+    silver.ingest_progress.report_id carries
+    `ingest_progress_report_id_fk REFERENCES silver.reports(report_id)`, so
+    a made-up id makes the terminal UPDATE raise
+    ForeignKeyViolationError — which mark_completed_by_run swallowed,
+    turning the whole thing into `assert False is True` with the cause
+    invisible. Production callers pass an id they just inserted; the test
+    now does the same.
+    """
     run_id, _ = fresh_run
+    report_id = str(uuid.uuid4())
 
-    fake_report = str(uuid.uuid4())
-    transitioned = await ingest_progress.mark_completed_by_run(
-        run_id=run_id, report_id=fake_report,
-    )
-    assert transitioned is True
+    conn = await asyncpg.connect(ingest_progress._dsn(), statement_cache_size=0)
+    try:
+        await conn.execute(
+            """
+            INSERT INTO silver.reports (report_id, title, project_id, workspace_id)
+            VALUES ($1::uuid, $2, $3::uuid, $4::uuid)
+            """,
+            report_id, "state-machine test report", _TEST_PROJECT, _TEST_WORKSPACE,
+        )
+    finally:
+        await conn.close()
 
-    row = await ingest_progress.get_run(run_id=run_id)
-    assert row is not None
-    assert row["status"] == "completed"
+    try:
+        transitioned = await ingest_progress.mark_completed_by_run(
+            run_id=run_id, report_id=report_id,
+        )
+        # `is True` matters: mark_completed_by_run is a TRI-state. None means
+        # the write FAILED and the row is still non-terminal, which used to
+        # be reported as False — indistinguishable from a harmless
+        # already-terminal no-op.
+        assert transitioned is True
+
+        row = await ingest_progress.get_run(run_id=run_id)
+        assert row is not None
+        assert row["status"] == "completed"
+        # The assertion this test is named for, which it never actually made.
+        assert str(row["report_id"]) == report_id
+    finally:
+        conn = await asyncpg.connect(ingest_progress._dsn(), statement_cache_size=0)
+        try:
+            await conn.execute(
+                "DELETE FROM silver.reports WHERE report_id = $1::uuid", report_id,
+            )
+        finally:
+            await conn.close()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,142 @@
+{
+  "_comment": [
+    "Liveness and readiness probes for the Container Apps that shipped without any.",
+    "",
+    "Five of eight apps had an empty `probes` array, so Container Apps had no way",
+    "to tell a hung process from a healthy one: a worker whose event loop had",
+    "stopped turning kept its replica, kept its lease on the queue, and reported",
+    "the revision Healthy. Only qdrant-cc, fastapi-cc and laravel-octane-cc were",
+    "covered, and those three are the ones nobody worries about.",
+    "",
+    "Applied by apply-probes.sh, which merges these into each app's live template",
+    "rather than replacing it. Keep this file and the live config in step: CD only",
+    "ever sends `--image`, so probes set here survive every deploy, which also",
+    "means a drift introduced here is permanent until someone notices.",
+    "",
+    "TIMING. failureThreshold x periodSeconds is how long a wedged container",
+    "keeps running. Liveness is deliberately slack (>= 90s) because the cost of a",
+    "false restart is a killed job; readiness is tight because its only cost is a",
+    "revision briefly reporting unhealthy."
+  ],
+
+  "redis-cc": {
+    "_why": "TCP 6379, no HTTP surface. A tcpSocket probe proves the listener accepts connections, which is the failure that matters: Redis wedged on a slow AOF rewrite stops accepting long before the process exits.",
+    "probes": [
+      {
+        "type": "Liveness",
+        "tcpSocket": { "port": 6379 },
+        "initialDelaySeconds": 20,
+        "periodSeconds": 30,
+        "timeoutSeconds": 5,
+        "failureThreshold": 3
+      },
+      {
+        "type": "Readiness",
+        "tcpSocket": { "port": 6379 },
+        "initialDelaySeconds": 5,
+        "periodSeconds": 10,
+        "timeoutSeconds": 3,
+        "failureThreshold": 3
+      }
+    ]
+  },
+
+  "hatchet-cc": {
+    "_why": "The engine speaks gRPC on 7077 and nothing else on this app's ingress. Container Apps probes cannot speak gRPC, so tcpSocket is the honest ceiling here -- it catches a dead or unbound listener, not a broken engine. initialDelay is 45s because the engine runs its own schema migration on boot.",
+    "probes": [
+      {
+        "type": "Liveness",
+        "tcpSocket": { "port": 7077 },
+        "initialDelaySeconds": 45,
+        "periodSeconds": 30,
+        "timeoutSeconds": 5,
+        "failureThreshold": 3
+      },
+      {
+        "type": "Readiness",
+        "tcpSocket": { "port": 7077 },
+        "initialDelaySeconds": 15,
+        "periodSeconds": 10,
+        "timeoutSeconds": 3,
+        "failureThreshold": 3
+      }
+    ]
+  },
+
+  "hatchet-worker-cc": {
+    "_why": "The Hatchet Python SDK ships a healthcheck server that answers /health on 8001 and returns 503 when the action listener's event loop has been blocked past a threshold. That is exactly the audit's finding -- a hung worker staying in rotation -- so this app gets a real health signal rather than a socket check. The env block below turns it on; without it the port is closed and every probe fails.",
+    "env": [
+      { "name": "HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED", "value": "true" },
+      { "name": "HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT", "value": "8001" },
+      {
+        "_why": "The SDK default is 5s, which a CPU-bound stretch inside the listener process would trip routinely. Parsing runs in a process pool, so the listener should never block for 30s; if it does, it is wedged.",
+        "name": "HATCHET_CLIENT_WORKER_HEALTHCHECK_EVENT_LOOP_BLOCK_THRESHOLD_SECONDS",
+        "value": "30"
+      }
+    ],
+    "probes": [
+      {
+        "type": "Liveness",
+        "httpGet": { "path": "/health", "port": 8001, "scheme": "HTTP" },
+        "initialDelaySeconds": 45,
+        "periodSeconds": 30,
+        "timeoutSeconds": 5,
+        "failureThreshold": 5
+      },
+      {
+        "type": "Readiness",
+        "httpGet": { "path": "/health", "port": 8001, "scheme": "HTTP" },
+        "initialDelaySeconds": 20,
+        "periodSeconds": 15,
+        "timeoutSeconds": 5,
+        "failureThreshold": 3
+      }
+    ]
+  },
+
+  "laravel-reverb-cc": {
+    "_why": "Reverb registers its own health route at /up (Servers/Reverb/Http/Factory.php), served by the same event loop that serves websockets -- so a 200 there means the loop is turning, which a tcpSocket check on 8080 would not.",
+    "probes": [
+      {
+        "type": "Liveness",
+        "httpGet": { "path": "/up", "port": 8080, "scheme": "HTTP" },
+        "initialDelaySeconds": 25,
+        "periodSeconds": 30,
+        "timeoutSeconds": 5,
+        "failureThreshold": 3
+      },
+      {
+        "type": "Readiness",
+        "httpGet": { "path": "/up", "port": 8080, "scheme": "HTTP" },
+        "initialDelaySeconds": 10,
+        "periodSeconds": 10,
+        "timeoutSeconds": 3,
+        "failureThreshold": 3
+      }
+    ]
+  },
+
+  "laravel-horizon-cc": {
+    "_why": "`php artisan horizon` serves no HTTP, and Container Apps probes speak only HTTP and TCP -- there is no exec probe to run `horizon:status` with. So the image now starts a small health listener alongside the supervisor (docker/horizon-entrypoint.sh -> docker/horizon-health.php) that answers /up on 8080 by reading Horizon's own master-supervisor heartbeat out of Redis. A stale heartbeat is the wedged-supervisor signal; the listener answering at all is not. Liveness reads /up and readiness reads /ready because they must disagree about `horizon:pause`: a paused supervisor is not ready, but restarting it would silently undo a deliberate operator action.",
+    "_requires": "laravel image built at or after the commit that adds docker/horizon-entrypoint.sh, AND the app's command set to that entrypoint. apply-probes.sh checks both and skips this app rather than configuring a probe that can only fail.",
+    "command": ["/app/docker/horizon-entrypoint.sh"],
+    "probes": [
+      {
+        "type": "Liveness",
+        "httpGet": { "path": "/up", "port": 8080, "scheme": "HTTP" },
+        "initialDelaySeconds": 60,
+        "periodSeconds": 30,
+        "timeoutSeconds": 10,
+        "failureThreshold": 4
+      },
+      {
+        "type": "Readiness",
+        "httpGet": { "path": "/ready", "port": 8080, "scheme": "HTTP" },
+        "initialDelaySeconds": 30,
+        "periodSeconds": 15,
+        "timeoutSeconds": 10,
+        "failureThreshold": 3
+      }
+    ]
+  }
+}

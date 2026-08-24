@@ -1,5 +1,9 @@
 """Track A.2 Phase 1.C-i — DecompositionPlan executor.
 
+NOT WIRED (measured 2026-08-22). Nothing under app/ imports this
+module. It is the executor for decomposer.py, which is equally
+unreachable.
+
 Executes every pending sub-query in a DecompositionPlan against the
 appropriate existing retrieval tool.  Returns the same plan instance
 (mutated in place) so the caller can re-emit to
@@ -464,13 +468,36 @@ async def _dispatch_document_passage_search(
         query_text=inp.query_text,
         project_id=ctx.deps.project_id,
         limit=inp.top_k,
-        score_threshold=inp.min_relevance,
     )
+
+    # `min_relevance` (0.5-0.6, set by decomposer) is a calibrated [0,1]
+    # gate. It is meaningful against the reranker's relevance probability and
+    # meaningless against a Qdrant RRF fusion score, which is rank-derived
+    # and an order of magnitude smaller.
+    #
+    # The old comment here read "apply min_relevance filter that the tool
+    # doesn't guarantee without reranker" — the premise was right and the
+    # remedy inverted it. Without a reranker the tool CANNOT guarantee a
+    # calibrated score, so re-applying the calibrated bar downstream dropped
+    # every passage and turned "the reranker is down" into "this project has
+    # no documents about that", with no trace beyond a degraded flag nobody
+    # was reading.
+    #
+    # search_documents has already truncated the degraded path to
+    # RERANKER_TOP_K, so skipping the gate does not widen the result set; it
+    # returns the same count in RRF order instead of returning nothing.
+    apply_relevance_gate = not result.rerank_degraded
+    if not apply_relevance_gate:
+        logger.warning(
+            "plan_executor: rerank degraded for sq=%s — passing %d passages in "
+            "RRF order and skipping the min_relevance=%.2f gate (those scores "
+            "are not on a comparable scale)",
+            sq.id, len(result.chunks), inp.min_relevance,
+        )
 
     passages = []
     for chunk in result.chunks:
-        # Apply min_relevance filter that the tool doesn't guarantee without reranker.
-        if chunk.relevance_score < inp.min_relevance:
+        if apply_relevance_gate and chunk.relevance_score < inp.min_relevance:
             continue
         # TODO(phase-1c-ii): map chunk_id directly to silver.document_passages UUID
         try:

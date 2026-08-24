@@ -17,6 +17,9 @@ Exit codes:
   0 — pass rate stayed the same or improved
   1 — pass rate regressed (CI gate)
   2 — malformed input
+  3 — the two reports are not comparable (different model stack, no
+      ``meta.model_stack`` provenance, or too small a question overlap).
+      Pass ``--allow-incomparable`` to downgrade this to a warning.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.eval.benchmark_compare import (  # noqa: E402
     build_question_map,
+    comparability_report,
     diff_passes,
     diff_summary,
     load_report,
@@ -48,10 +52,36 @@ def main() -> int:
         "--json", action="store_true",
         help="Emit a JSON diff instead of pretty text.",
     )
+    parser.add_argument(
+        "--allow-incomparable", action="store_true",
+        help="Diff anyway when the two reports were produced by different "
+             "model stacks or share too few questions. Prints the reasons "
+             "either way; without this flag an incomparable pair exits 3 "
+             "rather than printing a delta that means nothing.",
+    )
     args = parser.parse_args()
 
     before = load_report(args.before)
     after = load_report(args.after)
+
+    comparability = comparability_report(before, after)
+    if not comparability["comparable"]:
+        header = (
+            "INCOMPARABLE REPORTS — a delta between these two does not "
+            "measure a change in quality:"
+        )
+        for reason in comparability["reasons"]:
+            header += f"\n  - {reason}"
+        if not args.allow_incomparable:
+            print(header, file=sys.stderr)
+            print(
+                "\nRefusing to print a delta. Re-run with "
+                "--allow-incomparable if you want it anyway.",
+                file=sys.stderr,
+            )
+            return 3
+        print(f"WARNING: {header}\n", file=sys.stderr)
+
     before_map = build_question_map(before)
     after_map = build_question_map(after)
 

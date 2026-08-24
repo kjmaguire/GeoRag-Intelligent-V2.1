@@ -1,5 +1,18 @@
 # Azure Container Apps manifest for the self-hosted Redis instance.
-# Deployed via: az containerapp create -g georag -n redis-cc --environment georag-env-cc --yaml deploy/azure/containerapps/redis.yaml
+#
+# APPLY WITH:  bash deploy/azure/containerapps/apply-redis.sh --apply
+#
+# DO NOT apply this file directly with `az containerapp update --yaml`.
+# The `secrets:` block below has to be present for Container Apps to
+# accept the shape, and its value is the placeholder
+# REPLACE_AT_DEPLOY_TIME because the real password is not in git. Sending
+# it verbatim sets the live `redis-password` secret to that literal
+# string, and every client — Laravel cache, sessions, Horizon queues, the
+# FastAPI tier — fails auth against a Redis that is otherwise perfectly
+# healthy. apply-redis.sh strips that block (omitting it leaves the
+# existing secret alone), refuses to send anything still containing the
+# placeholder, and verifies the secret survived.
+#
 # (name/environment carry the `-cc` canadacentral-migration suffix — see
 # deploy/azure/containerapps/shutdown-job.yaml's header for why.)
 #
@@ -7,10 +20,104 @@
 # scaled to 0 overnight by the C6 auto-shutdown scheduler — Azure Cache
 # for Redis bills continuously and can't pause. See plan C4/C6.
 #
-# No persistent volume: Container Apps' Azure Files mount adds real setup
-# (storage account + env storage link) for a queue/session/cache store
-# that's fully disposable at demo scale — accepted trade-off, matches the
-# "clean/empty start acceptable" posture used elsewhere in this lift.
+# ---------------------------------------------------------------------
+# THIS INSTANCE HOLDS FOUR THINGS, AND THAT DRIVES EVERY SETTING BELOW
+# ---------------------------------------------------------------------
+# db0: Laravel queue jobs, Horizon supervisor state, and sessions
+# db1: Laravel cache
+# db2, db3: spare
+# (config/database.php: REDIS_DB=0, REDIS_QUEUE_DB=0, REDIS_SESSION_DB=0,
+# REDIS_CACHE_DB=1)
+#
+# Queue jobs are the only thing here that cannot be regenerated, and they
+# are the only thing here with NO TTL. Every choice below follows from
+# that one fact.
+#
+# ---------------------------------------------------------------------
+# WHY --appendonly no, WHEN EVERY OTHER TARGET IN THIS REPO SAYS yes
+# ---------------------------------------------------------------------
+# docker-compose.yml, charts/georag/templates/redis.yaml, and all three
+# kubernetes/manifests/*.yaml run `--appendonly yes` AND mount a volume
+# at /data. That combination is correct and deliberate; docker-compose.yml
+# spells out the reason at its `redis:` service:
+#
+#   "Running with `save "" appendonly no` means every restart wipes queue
+#    jobs in flight + logs everyone out."
+#
+# The Azure lift copied the flag and did not copy the volume. Container
+# Apps has no volume here (mounting Azure Files needs a storage account
+# plus an environment storage link), so /data is the replica's ephemeral
+# layer: the AOF is destroyed on every restart, and the scheduler restarts
+# this app twice a day on purpose. The protection the flag names has never
+# existed on Azure — it only cost fsyncs and rewrite forks.
+#
+# `--save ""` was in the compose command and was ALSO dropped in the port,
+# which silently left Redis's built-in RDB save points active. So until
+# now this replica ran two persistence mechanisms, both forking, both
+# writing to a disk that is thrown away.
+#
+# Turning both off is not a downgrade in durability. There was no
+# durability. It removes the two largest transient memory consumers from a
+# container that (see below) has none to spare.
+#
+# If durable queues are ever wanted here, the fix is a volume, not a flag:
+# provision a storage account, add an environment storage link, mount it
+# at /data, and set BOTH `--appendonly yes` and `--dir /data`.
+# scripts/check_redis_manifests.py enforces that pairing.
+#
+# ---------------------------------------------------------------------
+# WHY volatile-lru, WHICH IS NEITHER OF THE TWO VALUES THIS FILE HAS HAD
+# ---------------------------------------------------------------------
+# This file previously said `allkeys-lru`; the live app had drifted to
+# `noeviction`. Both are wrong, in opposite directions, because both
+# ignore that queue jobs and cache share one instance:
+#
+#   allkeys-lru   evicts ANY key under pressure, including queued jobs.
+#                 Silent, unlogged job loss — the worst outcome available.
+#   noeviction    refuses every write once full, including queue pushes.
+#                 The app stops accepting work; nothing is lost, but
+#                 nothing proceeds either.
+#   volatile-lru  evicts only keys that carry a TTL. Cache entries and
+#                 sessions have TTLs; queue lists and delayed-job zsets do
+#                 not. Under pressure this sheds exactly the regenerable
+#                 data and never touches a job.
+#
+# volatile-lru is safe here only because nothing writes un-expiring cache
+# keys: `forever(` appears zero times under app/. If Cache::forever() or
+# rememberForever() is ever introduced, those keys become un-evictable and
+# this choice needs revisiting.
+#
+# ---------------------------------------------------------------------
+# WHY 384mb IN A 512 MiB CONTAINER, AND NOT 512mb
+# ---------------------------------------------------------------------
+# The live app ran `--maxmemory 512mb` inside a 0.5Gi container. Those are
+# the same number: 512 MiB. Redis's maxmemory governs its own dataset
+# accounting only — client output buffers, replication buffers, allocator
+# fragmentation and any fork's copy-on-write all sit ON TOP of it. With
+# zero headroom the platform OOM-kills the container before Redis's own
+# guard can engage, which makes the eviction policy unreachable: it would
+# not have mattered which of the three values above was set.
+#
+# docker/compose.redis-staging.yml already states the house rule, three
+# times, in its own comments: container memory = maxmemory + 25%.
+#   2 GiB maxmemory -> 2560 MiB      1 GiB -> 1280 MiB      512 MiB -> 640 MiB
+# 384mb * 1.25 = 480 MiB, which fits 512 MiB. Container Apps only allows
+# memory = cpu * 2 GiB, so 640 MiB is not expressible; lowering maxmemory
+# restores the convention without moving to a bigger, costlier SKU.
+#
+# This costs nothing in practice. Measured working set over 24h to
+# 2026-08-22 was 4.1 MB, flat, max 4.3 MB — 384mb is roughly 90x the
+# observed peak. The cap exists to bound a runaway, not to size the
+# workload.
+#
+# ---------------------------------------------------------------------
+# RESOURCES MATCH WHAT IS DEPLOYED
+# ---------------------------------------------------------------------
+# This file used to claim cpu 0.5 / memory 1Gi while the live app ran
+# 0.25 / 0.5Gi. At a 4 MB working set the smaller SKU is correct and the
+# manifest is what changed. A manifest that disagrees with production is
+# not a record of anything.
+#
 # --requirepass is a secretRef, not a literal, so the password isn't in
 # this file or in `az containerapp show` output.
 properties:
@@ -32,10 +139,10 @@ properties:
         args:
           - >-
             redis-server
-            --maxmemory 512mb
-            --maxmemory-policy allkeys-lru
-            --appendonly yes
-            --appendfsync everysec
+            --maxmemory 384mb
+            --maxmemory-policy volatile-lru
+            --appendonly no
+            --save ""
             --databases 4
             --tcp-backlog 511
             --timeout 600
@@ -53,8 +160,8 @@ properties:
           - name: REDIS_PASSWORD
             secretRef: redis-password
         resources:
-          cpu: 0.5
-          memory: 1Gi
+          cpu: 0.25
+          memory: 0.5Gi
     scale:
       minReplicas: 1
       maxReplicas: 1

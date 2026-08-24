@@ -287,6 +287,7 @@ async def _get_or_create_document(
     source_sha256: str,
     company: str | None = None,
     region: str | None = None,
+    commodity: str | None = None,
     is_scanned: bool = False,
     page_count: int | None = None,
 ) -> str:
@@ -294,16 +295,43 @@ async def _get_or_create_document(
 
     Returns the report_id (UUID as string) — used as document_id in
     silver.document_passages.
+
+    `commodity` defaults to None (SQL NULL), not "uranium" — this ingester
+    was written for the Wyoming Cameco / WSGS uranium archive and used to
+    hardcode that literal in the VALUES list with no way for a caller to
+    override it, stamping "uranium" onto the report row of every PDF it
+    ingested. It extracts no metadata of its own (it reads page text and
+    chunks it, nothing more), so the caller is the only truthful source.
+    Same fix, same reasoning, as the `silver.reports.commodity` hardcode
+    removed from `xlsx_ingester` and the `silver.projects.commodity` one
+    removed from `las_ingester` / `cluster_runner`, both 2026-08-21.
     """
-    # Reuse if same file content already ingested (dedupe by sha)
+    # Reuse if same file content already ingested (dedupe by sha), scoped to
+    # the project. The lookup had no project predicate, so the same PDF
+    # uploaded into a SECOND project found the FIRST project's report and
+    # wrote its passages under it — invisible in the project the user
+    # actually uploaded to, and attached to one they may not even be a
+    # member of. A shared NI 43-101 or regional survey PDF landing in two
+    # projects is not an exotic way for a report sha to collide.
+    #
+    # `IS NOT DISTINCT FROM`, not `=` as in `xlsx_ingester`: project_id is
+    # nullable here and the NULL path is reachable (cluster_runner resolves
+    # the project by slug plus two fallbacks and can come out with None,
+    # after which the PDF pass still runs). Under three-valued logic
+    # `project_id = NULL` is UNKNOWN, so an equality predicate would match
+    # nothing and mint a fresh report on every unscoped call, duplicating
+    # every passage under a new document_id — trading the leak for the
+    # idempotency this function's first line promises. NULL matches only
+    # NULL, and a row belonging to no project leaks into no project.
     row = await conn.fetchrow(
         """
         SELECT report_id::text AS report_id
           FROM silver.reports
          WHERE source_file_sha256 = $1
+           AND project_id IS NOT DISTINCT FROM $2::uuid
          LIMIT 1
         """,
-        source_sha256,
+        source_sha256, project_id,
     )
     if row:
         return row["report_id"]
@@ -314,12 +342,12 @@ async def _get_or_create_document(
              commodity, source_file_sha256, is_scanned, parser_used,
              page_count, created_at, updated_at)
         VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5,
-                'uranium', $6, $7, 'pdfminer.six',
+                $9, $6, $7, 'pdfminer.six',
                 $8::int, NOW(), NOW())
         RETURNING report_id::text AS report_id
         """,
         project_id, workspace_id, title[:500], company, region,
-        source_sha256, is_scanned, page_count,
+        source_sha256, is_scanned, page_count, commodity,
     )
     return row["report_id"]
 
@@ -385,8 +413,13 @@ async def ingest_pdf_file(
     workspace_id: str,
     project_id: str | None = None,
     title_override: str | None = None,
+    commodity: str | None = None,
 ) -> PDFIngestResult:
     """Ingest one PDF into silver.reports + silver.document_passages.
+
+    `commodity` lands on the report row verbatim; None (SQL NULL) means
+    "not determined", which is the truth for every caller that does not
+    know one. See `_get_or_create_document` for why it is not "uranium".
 
     Returns a PDFIngestResult.
     """
@@ -429,6 +462,7 @@ async def ingest_pdf_file(
         project_id=project_id,
         workspace_id=workspace_id,
         source_sha256=sha,
+        commodity=commodity,
         page_count=len(pages),
     )
 

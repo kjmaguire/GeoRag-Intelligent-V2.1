@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Foundry;
 
+use App\Http\Controllers\Api\V1\UploadController;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Services\StorageService;
@@ -134,10 +135,31 @@ class IngestionRunsController extends Controller
         //    every failed run ever stays pinned in "in flight" forever.
         $terminalSteps = ['failed', 'cancelled', 'timed_out'];
         foreach ($progress as $p) {
-            if ($p['current_step'] === 'completed') {
+            // A 'partial' run also sets current_step='completed' — it DID
+            // reach the end. It stays in this list anyway, because it is the
+            // case the user most needs to see: the file finished processing
+            // and produced nothing, or produced something and also
+            // complained. Filtering on current_step alone is what made
+            // "completed, zero rows written" render as an unqualified green
+            // row with the explanation nowhere on the page.
+            $isPartial = ($p['status'] ?? '') === 'partial';
+            // A clean completion WITH a report row is rendered by the
+            // completed card below (built from silver.reports), so it is
+            // dropped here rather than said twice. A clean completion
+            // WITHOUT one — a shapefile, a drill CSV, a LAS file — used to
+            // be dropped by this same test, which erased the run from the
+            // page at the moment it succeeded: the completed card is
+            // reports-only, so success was the one outcome with no row
+            // anywhere. It now stays, rendered green, for the same 24 h
+            // window partial and failed rows already get.
+            if ($p['current_step'] === 'completed' && ! $isPartial
+                && ($p['report_id'] ?? null) !== null) {
                 continue;
             }
-            if (in_array((string) $p['current_step'], $terminalSteps, true)
+            $settled = $isPartial
+                || $p['current_step'] === 'completed'
+                || in_array((string) $p['current_step'], $terminalSteps, true);
+            if ($settled
                 && $p['started_at'] !== null
                 && strtotime((string) $p['started_at']) < time() - 86400) {
                 continue;
@@ -156,15 +178,25 @@ class IngestionRunsController extends Controller
                 // the current step (stage_pct 0..1 written by the worker's
                 // page-level relay). Falls back to the old step quantization
                 // when the worker hasn't reported sub-step progress.
-                'progress_pct' => $p['total_steps'] > 0
-                    ? (int) round(
-                        ((max(0, $p['step_index'] - 1) + (float) ($p['stage_pct'] ?? 0.0))
-                            / $p['total_steps']) * 100,
-                    )
-                    : 0,
+                //
+                // A run whose current_step IS 'completed' has no current
+                // step to be fractionally inside of — the formula rendered
+                // every finished row at (n-1)/n, so "Finished with
+                // warnings · 80%" sat on runs that had run to the end.
+                'progress_pct' => $p['current_step'] === 'completed'
+                    ? 100
+                    : ($p['total_steps'] > 0
+                        ? (int) round(
+                            ((max(0, $p['step_index'] - 1) + (float) ($p['stage_pct'] ?? 0.0))
+                                / $p['total_steps']) * 100,
+                        )
+                        : 0),
                 'has_real_progress' => true,
                 'failed' => $p['failed_at'] !== null,
                 'error_text' => $p['error_text'],
+                'status' => $p['status'] ?? 'started',
+                'rows_written' => $p['rows_written'] ?? null,
+                'warnings' => $p['warnings'] ?? [],
             ];
         }
 
@@ -208,6 +240,9 @@ class IngestionRunsController extends Controller
                     'has_real_progress' => false,
                     'failed' => false,
                     'error_text' => null,
+                    'status' => 'queued',
+                    'rows_written' => null,
+                    'warnings' => [],
                 ];
             }
         }
@@ -222,6 +257,7 @@ class IngestionRunsController extends Controller
                 'title' => $r['title'],
                 'parser_used' => $r['parser_used'],
                 'parse_quality_pct' => $r['parse_quality_pct'],
+                'text_page_coverage_pct' => $r['text_page_coverage_pct'],
                 'is_scanned' => $r['is_scanned'],
                 'passages' => $r['passages'],
                 'embedded' => $r['embedded'],
@@ -250,11 +286,30 @@ class IngestionRunsController extends Controller
             return strcmp($b['uploaded_at'] ?? '', $a['uploaded_at'] ?? '');
         });
 
+        // Settled rows (completed / partial / failed…) ride in the same list
+        // for their 24 h grace window, but they are not IN FLIGHT: the header
+        // count, the stat tile and — importantly — the page's poll cadence
+        // all read this total, and counting settled rows kept the 5 s fast
+        // poll running for a day after everything had finished.
+        //
+        // Both fields are consulted because rows from before the status
+        // column existed (2026-08-21) carry current_step='completed' with a
+        // NULL status — read by the mapper as 'queued', which would count a
+        // long-finished run as moving forever.
+        $settledStatuses = ['completed', 'partial', 'failed', 'cancelled', 'timed_out'];
+        $settledSteps = ['completed', 'failed', 'cancelled', 'timed_out'];
+        $stillMoving = count(array_filter(
+            $inFlight,
+            static fn (array $r): bool => ! in_array((string) $r['status'], $settledStatuses, true)
+                && ! in_array((string) $r['stage'], $settledSteps, true)
+                && ! (bool) $r['failed'],
+        ));
+
         return [
             'in_flight' => $inFlight,
             'completed' => $completedRows,
             'totals' => [
-                'in_flight' => count($inFlight),
+                'in_flight' => $stillMoving,
                 'completed' => count($completedRows),
             ],
         ];
@@ -263,7 +318,8 @@ class IngestionRunsController extends Controller
     /**
      * @return list<array{
      *     report_id: string, title: string, parser_used: ?string,
-     *     parse_quality_pct: ?float, is_scanned: bool, passages: int, embedded: int,
+     *     parse_quality_pct: ?float, text_page_coverage_pct: ?float,
+     *     is_scanned: bool, passages: int, embedded: int,
      * }>
      */
     private function loadReports(string $projectId, string $workspaceId): array
@@ -287,6 +343,7 @@ class IngestionRunsController extends Controller
                 r.title,
                 r.parser_used,
                 r.parse_quality_pct,
+                r.text_page_coverage_pct,
                 r.is_scanned,
                 COALESCE(p.passages, 0) AS passages,
                 COALESCE(p.embedded, 0) AS embedded
@@ -312,6 +369,13 @@ class IngestionRunsController extends Controller
             'parse_quality_pct' => $r->parse_quality_pct === null
                 ? null
                 : (float) $r->parse_quality_pct,
+            // Extraction completeness, which is what the "Quality" column
+            // used to be read as. parse_quality_pct above is NI 43-101
+            // section-heading coverage and answers a different question;
+            // null here means the row predates the column, not zero.
+            'text_page_coverage_pct' => $r->text_page_coverage_pct === null
+                ? null
+                : (float) $r->text_page_coverage_pct,
             'is_scanned' => (bool) $r->is_scanned,
             'passages' => (int) $r->passages,
             'embedded' => (int) $r->embedded,
@@ -327,7 +391,8 @@ class IngestionRunsController extends Controller
      *     minio_key: string, filename: string, current_step: string,
      *     step_index: int, total_steps: int, started_at: ?string,
      *     updated_at: ?string, failed_at: ?string, error_text: ?string,
-     *     report_id: ?string,
+     *     report_id: ?string, status: string, rows_written: ?int,
+     *     warnings: list<array<string, mixed>>,
      * }>
      */
     private function loadProgressRows(string $projectId): array
@@ -347,7 +412,15 @@ class IngestionRunsController extends Controller
                        to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS updated_at,
                        to_char(failed_at,  'YYYY-MM-DD"T"HH24:MI:SSOF') AS failed_at,
                        error_text,
-                       report_id::text AS report_id
+                       report_id::text AS report_id,
+                       -- Added 2026-08-21. A run that reached the end having
+                       -- written nothing used to render as an unqualified
+                       -- green "Completed" while the warning explaining why
+                       -- ("upload the collar file first") lived only inside
+                       -- the Hatchet run object.
+                       status,
+                       rows_written,
+                       warnings::text AS warnings
                 FROM silver.ingest_progress
                 WHERE project_id = ?
                 ORDER BY minio_key, attempt_number DESC, started_at DESC
@@ -371,7 +444,35 @@ class IngestionRunsController extends Controller
             'failed_at' => $r->failed_at,
             'error_text' => $r->error_text,
             'report_id' => $r->report_id,
+            'status' => (string) ($r->status ?? 'queued'),
+            'rows_written' => $r->rows_written !== null ? (int) $r->rows_written : null,
+            'warnings' => self::decodeWarnings($r->warnings ?? null),
         ], $rows);
+    }
+
+    /**
+     * Decode the jsonb warnings array, tolerating anything unexpected.
+     *
+     * The column is NOT NULL DEFAULT '[]', but this page has to render for
+     * rows written before the column existed and for a database that has
+     * not run the migration yet — a malformed value must not take the
+     * Ingestion Runs page down with it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function decodeWarnings(mixed $raw): array
+    {
+        if (! is_string($raw) || $raw === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+
+        if (! is_array($decoded)) {
+            return [];
+        }
+
+        return array_values(array_filter($decoded, 'is_array'));
     }
 
     /**
@@ -421,7 +522,12 @@ class IngestionRunsController extends Controller
         $disk = $this->storage->bronzeReadOnly();
         $out = [];
 
-        foreach (['reports', 'tiff'] as $prefix) {
+        // Every prefix an upload can land under, not just the two PDF ones.
+        // Scanning only reports/ + tiff/ meant a CSV, XLSX, shapefile,
+        // GeoPackage, QGIS project or LAS file had no fallback row here — so
+        // when its progress row was also missing, the upload was invisible on
+        // this page in both directions, success and failure alike.
+        foreach (UploadController::bronzePrefixes() as $prefix) {
             try {
                 $keys = $disk->files("{$prefix}/{$projectId}");
             } catch (\Throwable $e) {

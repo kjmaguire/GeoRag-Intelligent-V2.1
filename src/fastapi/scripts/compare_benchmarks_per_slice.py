@@ -23,7 +23,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-
 REGRESSION_TOLERANCE = 0.02  # 2pp per Kyle's locked retirement criterion
 
 
@@ -68,7 +67,7 @@ def main() -> int:
     regressions: list[tuple[str, float, float]] = []
     improvements: list[tuple[str, float, float]] = []
 
-    print(f"=== Per-slice pass_rate diff ===")
+    print("=== Per-slice pass_rate diff ===")
     print(f"baseline:  {args.before.name}")
     print(f"candidate: {args.after.name}")
     print()

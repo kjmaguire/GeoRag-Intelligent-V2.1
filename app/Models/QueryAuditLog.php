@@ -7,6 +7,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 
 /**
@@ -23,6 +24,40 @@ use Illuminate\Support\Facades\Crypt;
  *   SHA-256 hash of the normalised query is written to query_text_hash on
  *   every save. The analytics layer groups by that hash instead of by the
  *   raw query. Plaintext is only ever visible through this model.
+ *
+ * The @property block below is not decoration. Larastan infers Eloquent
+ * attributes from the schema when it can reach one, and neither this
+ * workstation nor the phpstan CI job has a database -- so every read of
+ * `$row->query_text` was an "undefined property" living in
+ * phpstan-baseline.neon instead. Twenty-eight such entries across six
+ * files, and they disagreed between local and CI depending on what each
+ * could introspect. Declaring the shape once here is what the baseline
+ * was standing in for.
+ *
+ * Types follow $casts: encrypted values read back as strings, the three
+ * array casts as arrays, confidence and the two deprecated scores as
+ * floats, the timestamps as Carbon.
+ *
+ * @property string $audit_id
+ * @property int|null $user_id
+ * @property string|null $project_id
+ * @property string|null $workspace_id
+ * @property string|null $query_id
+ * @property string|null $query_text
+ * @property string|null $query_text_hash
+ * @property string|null $response_text
+ * @property array<int, mixed>|null $citations
+ * @property array<int, mixed>|null $sources_used
+ * @property float|null $confidence
+ * @property int|null $response_time_ms
+ * @property string|null $llm_model
+ * @property string|null $ip_address
+ * @property array<string, mixed>|null $metadata
+ * @property Carbon|null $dispatched_at
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
+ * @property float|null $faithfulness_score
+ * @property float|null $context_precision_score
  */
 class QueryAuditLog extends Model
 {
@@ -54,6 +89,14 @@ class QueryAuditLog extends Model
         'llm_model',
         'ip_address',
         'dispatched_at',
+        // DEPRECATED 2026-07-27. Both are kept fillable and cast so the
+        // values written between 2026-05-30 and 2026-07-27 still read
+        // back correctly, but NOTHING WRITES THEM ANY MORE:
+        // score_answer_quality.py was removed in 09d1d35. A filter like
+        // `where('faithfulness_score', '<', 0.5)` returns zero rows and
+        // reads as "no low-faithfulness answers" when it means "nothing
+        // has been scored since July". Live answer quality lives in
+        // silver.answer_runs (see the answer_quality_watch workflow).
         'faithfulness_score',
         'context_precision_score',
     ];
@@ -82,6 +125,8 @@ class QueryAuditLog extends Model
         // merge in the job would clobber instead of extend.
         'metadata' => 'array',
         'dispatched_at' => 'datetime',
+        // See the note on $fillable: deprecated, no writer since
+        // 2026-07-27, NULL on every row created since.
         'faithfulness_score' => 'float',
         'context_precision_score' => 'float',
     ];

@@ -34,7 +34,6 @@ Manually invokable via ``repair_shadow_aggregate.run({"workspace_id":
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
@@ -42,6 +41,7 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.db import bind_workspace_scope
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 logger = logging.getLogger(__name__)
@@ -92,13 +92,9 @@ repair_shadow_aggregate = hatchet.workflow(
 )
 
 
-def _build_dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_build_dsn = build_dsn
 
 
 # ---------------------------------------------------------------------------

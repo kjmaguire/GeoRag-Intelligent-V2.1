@@ -29,7 +29,6 @@ Usage:
 import asyncio
 import logging
 import os
-import sys
 
 import asyncpg
 from neo4j import AsyncGraphDatabase

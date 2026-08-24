@@ -24,8 +24,17 @@
 set -euo pipefail
 
 # Prompt-path patterns — any staged file matching these triggers the check.
-ORCHESTRATOR="src/fastapi/app/agent/orchestrator.py"
-PROMPT_PATTERN="^(src/fastapi/app/agent/orchestrator\.py|src/fastapi/app/prompts/|src/fastapi/app/agent/prompts/)"
+#
+# 2026-08-21: both constants named `orchestrator.py`, which has not
+# existed since it was replaced by the `orchestrator/` PACKAGE.
+# _SYSTEM_PROMPT_VERSION lives at orchestrator/__init__.py:265. The gate
+# was therefore broken in both directions: edits to the live inline
+# prompts matched nothing and ran no check, while edits under
+# agent/prompts/ ran a check that diffed a nonexistent path and could
+# never be satisfied. Directory-scoped now, so a future submodule split
+# does not silently reopen the same hole.
+ORCHESTRATOR="src/fastapi/app/agent/orchestrator/"
+PROMPT_PATTERN="^(src/fastapi/app/agent/orchestrator/|src/fastapi/app/prompts/|src/fastapi/app/agent/prompts/)"
 
 # Detect staged files in prompt paths.
 STAGED_PROMPTS=$(git diff --cached --name-only 2>/dev/null | grep -E "${PROMPT_PATTERN}" || true)
@@ -50,7 +59,7 @@ echo "Staged prompt files:"
 echo "${STAGED_PROMPTS}" | sed 's/^/  /'
 echo ""
 echo "Any edit to a prompt-path file must be accompanied by an increment"
-echo "to _SYSTEM_PROMPT_VERSION in ${ORCHESTRATOR}."
+echo "to _SYSTEM_PROMPT_VERSION in ${ORCHESTRATOR}__init__.py."
 echo ""
 echo "Why this matters:"
 echo "  - Anthropic prompt cache uses the literal text of cache_control"
@@ -60,5 +69,5 @@ echo "  - RETRIEVAL_STRATEGY_VERSION (query_classifier.py) should also be"
 echo "    bumped (sub-minor) when prompt content changes — see the v2.1"
 echo "    example in that file."
 echo ""
-echo "Fix: increment _SYSTEM_PROMPT_VERSION in ${ORCHESTRATOR}, then re-stage."
+echo "Fix: increment _SYSTEM_PROMPT_VERSION in ${ORCHESTRATOR}__init__.py, then re-stage."
 exit 1

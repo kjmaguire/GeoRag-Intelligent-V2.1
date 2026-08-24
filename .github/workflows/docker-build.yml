@@ -32,6 +32,15 @@ concurrency:
   group: docker-build-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default for every job in this file. CodeQL's
+# actions/missing-workflow-permissions flags a workflow with no explicit
+# block because it then inherits the repository default, which can be
+# read-write for the whole repo. Jobs that genuinely need more (SARIF
+# upload, OIDC, package push) keep their own `permissions:` block, which
+# overrides this one rather than adding to it.
+permissions:
+  contents: read
+
 jobs:
   # ─── Docker build + push (GHCR on main) + Trivy + SBOM ──────────────────
   # Strategy:
@@ -68,7 +77,7 @@ jobs:
   # and are arm64-clean. The compose stack also includes vLLM (prod LLM
   # tier), which is x86_64-only — arm64 hosts could run dev (Ollama) but
   # never the prod LLM tier directly. See
-  # ops/runbooks/llm-model-swap.md for the (now moot) arm64 caveat.
+  # ops/runbooks/_archived/llm-model-swap.md for the (now moot) arm64 caveat.
   #
   # Closes: H-A4-02 (images now pushed on main), L-A4-08 (SBOM), L-A4-09 (Trivy).
   docker-build:

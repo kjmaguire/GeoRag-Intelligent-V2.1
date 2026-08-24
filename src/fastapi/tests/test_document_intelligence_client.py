@@ -119,10 +119,16 @@ class TestOcrPage:
         assert result.detected_region_count == 2
         # prebuilt-layout is the default model since scanned-table support
         # (2026-08-11); AZURE_DI_MODEL_ID is the prebuilt-read escape hatch.
+        # prebuilt-layout is the default model since scanned-table support
+        # (2026-08-11); markdown output was added 2026-08-20 (see
+        # test_di_analyze_options.py) and is on by default.
+        from azure.ai.documentintelligence.models import DocumentContentFormat
+
         mock_client.begin_analyze_document.assert_awaited_once_with(
             "prebuilt-layout",
             body=b"%PDF-1.4 fake bytes",
             pages="3",
+            output_content_format=DocumentContentFormat.MARKDOWN,
         )
 
     async def test_reconstructs_text_from_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,14 +198,29 @@ class TestOcrPage:
             result = await di.ocr_image(b"\x89PNG fake")
 
         assert result.text == "Tile"
+        from azure.ai.documentintelligence.models import DocumentContentFormat
+
         mock_client.begin_analyze_document.assert_awaited_once_with(
             "prebuilt-layout",
             body=b"\x89PNG fake",
+            output_content_format=DocumentContentFormat.MARKDOWN,
         )
 
     async def test_extracts_layout_tables_as_grids(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Scanned-table support (2026-08-11): prebuilt-layout `tables` become
-        row-major grids; span content lands in the anchor cell only."""
+        """Scanned-table support: prebuilt-layout `tables` become row-major
+        grids, and a spanned cell fills EVERY column it covers.
+
+        Changed 2026-08-21. Span content used to land in the anchor cell
+        only, leaving "" in the covered positions -- so a merged unit or
+        category header ("Au g/t" spanning three assay columns, "Depth (m)"
+        spanning From/To) vanished from every column but the first, and the
+        columns under it were left unlabelled. The SDK emits ONE cell at the
+        anchor with column_span=2; no cell exists at (0, 1), so nothing else
+        was ever going to fill it.
+
+        An anchor still never overwrites another anchor: where two cells
+        disagree about a position, the one that owns it wins.
+        """
         monkeypatch.setenv(di.ENDPOINT_ENV, "https://example.cognitiveservices.azure.com")
         monkeypatch.setenv(di.KEY_ENV, "fake-key")
 
@@ -230,7 +251,52 @@ class TestOcrPage:
 
         assert result.tables == [
             [
-                ["Hole ID", "", "Au g/t"],
+                # (0, 1) is covered by the span from (0, 0) and now carries
+                # the header text rather than "".
+                ["Hole ID", "Hole ID", "Au g/t"],
                 ["MAD-22-001", "120.5", "7.2"],
             ]
         ]
+
+
+class TestThePairedTimeoutsStayOrdered:
+    """The outer cap must always exceed the inner one.
+
+    They were two independent literals (180.0 and 210.0) whose required
+    ordering lived only in a prose comment. Raising the analyze cap for a
+    slow high-resolution deployment and missing the second constant
+    inverts them: the bridge fires first, so every slow page returns the
+    `di_poller_hung` sentinel instead of a clean fail-soft result carrying
+    a real error string — and the comment explaining the intended ordering
+    silently becomes false.
+
+    Pinned as a test as well as a derivation because the derivation is
+    exactly the kind of thing a later edit re-flattens into a literal
+    "for clarity".
+    """
+
+    def test_the_bridge_cap_is_derived_not_written_twice(self) -> None:
+        from app.services.ingest import document_intelligence_client as di
+
+        assert di._SYNC_BRIDGE_TIMEOUT_SECONDS == (
+            di._ANALYZE_TIMEOUT_SECONDS + di._BRIDGE_MARGIN_SECONDS
+        )
+
+    def test_the_outer_cap_leaves_room_for_the_inner_one_to_fail_cleanly(
+        self,
+    ) -> None:
+        from app.services.ingest import document_intelligence_client as di
+
+        assert di._BRIDGE_MARGIN_SECONDS > 0
+        assert di._SYNC_BRIDGE_TIMEOUT_SECONDS > di._ANALYZE_TIMEOUT_SECONDS
+
+    def test_the_block_path_derives_its_pair_the_same_way(self) -> None:
+        """The block path was already correct and is why the derived form
+        is the right shape here — if it stops deriving, this file has two
+        conventions again."""
+        import inspect
+
+        from app.services.ingest import document_intelligence_client as di
+
+        source = inspect.getsource(di)
+        assert "_block_timeout_seconds(page_count) + 30.0" in source

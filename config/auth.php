@@ -21,6 +21,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Open Registration
+    |--------------------------------------------------------------------------
+    |
+    | POST /api/v1/auth/register creates a user and hands back a Sanctum
+    | token with no invite, no email verification and no approval. There is
+    | no registration UI — the endpoint exists for tests and for local
+    | bootstrapping — but it was reachable on the production ingress, and a
+    | brand-new account was one POST /api/v1/projects away from owning a
+    | project inside the real tenant.
+    |
+    | Closed unless explicitly opened. Accounts are created by an operator.
+    |
+    */
+
+    'registration_open' => env('REGISTRATION_OPEN', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Authentication Guards
     |--------------------------------------------------------------------------
     |

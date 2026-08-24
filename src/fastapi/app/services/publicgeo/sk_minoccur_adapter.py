@@ -19,13 +19,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from typing import Any, NamedTuple
 from uuid import UUID, uuid4
 
 import asyncpg
 
 from app.audit import emit_audit
+from app.db.dsn import build_dsn
 
 log = logging.getLogger("georag.publicgeo.sk_minoccur_adapter")
 
@@ -40,13 +40,9 @@ class SKMinOccurSyncResult(NamedTuple):
     sync_method: str
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 # 14 Saskatchewan mineral occurrences. SMDI-style external IDs.

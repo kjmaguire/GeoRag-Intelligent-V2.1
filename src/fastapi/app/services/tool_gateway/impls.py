@@ -16,7 +16,6 @@ import contextlib
 import logging
 from typing import Any
 
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.db import scoped_connection
 from app.metrics import WORKSPACE_RESOLUTION_FAILURES
 from app.services.qdrant_conn import qdrant_client_kwargs
@@ -55,13 +54,21 @@ async def _query_postgis_readonly(inputs: dict[str, Any]) -> dict[str, Any]:
         return {"error": "only SELECT statements allowed"}
     if any(banned in sql.lower() for banned in (";", "insert ", "update ", "delete ", "drop ", "alter ", "create ", "grant ", "revoke ")):
         return {"error": "potentially-mutating clause rejected"}
+    # Fail CLOSED. This used to rebind silently to
+    # LEGACY_DEFAULT_TENANT_UUID, so an authenticated tenant-B query
+    # returned tenant-A rows — and it incremented the failure counter
+    # inline rather than going through bootstrap_workspace_id(reason=...),
+    # bypassing the allowlist gate every other elevation in this codebase
+    # routes through. The gateway now injects ctx.workspace_id at dispatch,
+    # so a missing value here means something is genuinely wrong rather
+    # than merely unspecified.
     workspace_id = inputs.get("workspace_id")
     if not workspace_id:
-        workspace_id = LEGACY_DEFAULT_TENANT_UUID
         with contextlib.suppress(Exception):
             WORKSPACE_RESOLUTION_FAILURES.labels(
                 site="tool_gateway.query_pg_readonly"
             ).inc()
+        return {"error": "workspace_id is required"}
     args = inputs.get("args", [])
     # REC#2 (2026-06-03) — canonical workspace-scoped connection. The
     # helper opens a transaction, sets `app.workspace_id` via the
@@ -102,18 +109,27 @@ async def _retrieve_qdrant(inputs: dict[str, Any]) -> dict[str, Any]:
     workspace_id = inputs.get("workspace_id")
     k = int(inputs.get("k", 10))
 
+    # Precondition, checked before any client is built. Qdrant has NO
+    # row-level-security backstop, so the payload filter is the only
+    # tenant boundary in this path — there is no safe way to run the
+    # scroll without a workspace.
+    if not workspace_id:
+        return {"error": "workspace_id is required", "hits": [], "count": 0}
+
     # We need an embedding for the query — the proper path is the SPLADE
     # encoder, but as a starting point return points filtered by payload
     # match-string rather than vector similarity. Real embedding wiring
     # is wave 2 (would call services/qdrant_service.retrieve()).
     client = AsyncQdrantClient(**qdrant_client_kwargs())
     try:
-        flt = None
-        if workspace_id:
-            flt = Filter(must=[FieldCondition(
-                key="workspace_id",
-                match=MatchValue(value=workspace_id),
-            )])
+        # `flt = None` used to be reachable here when workspace_id was
+        # absent, which did not mean "unscoped query" — it meant "scroll
+        # every tenant's chunks out of the collection". The precondition
+        # above now makes that unrepresentable.
+        flt = Filter(must=[FieldCondition(
+            key="workspace_id",
+            match=MatchValue(value=workspace_id),
+        )])
         batch, _ = await client.scroll(
             collection_name=collection,
             scroll_filter=flt,

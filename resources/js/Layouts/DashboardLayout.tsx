@@ -114,6 +114,7 @@ export default function DashboardLayout({ children, currentSlug }: DashboardLayo
                         View
                     </span>
                     <select
+                        aria-label="Dashboard view"
                         value={pickerValue}
                         onChange={handlePickerChange}
                         className="min-w-[240px] cursor-pointer rounded px-3.5 py-2 text-[13px] transition-colors"

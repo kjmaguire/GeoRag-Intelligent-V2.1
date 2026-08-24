@@ -197,10 +197,24 @@ class TestRendererAssemblerLockstep:
             assert cid in assembled_ids
 
     def test_each_chunk_block_carries_its_own_id(self) -> None:
+        """One block per chunk, each opening with its own citation id.
+
+        This used to index blocks[0] and blocks[1] directly. That held
+        only while PROMPT_INJECTION_DELIMITING_ENABLED defaulted False;
+        it has defaulted True since 2026-08-21 (and fastapi-cc has
+        carried it since the same day), so the first block is now the
+        untrusted-data guard preamble. The claim under test is the
+        id-per-chunk lockstep, not the block offset, so the chunk blocks
+        are located rather than indexed.
+        """
         context = _render_tool_results_context(
             [("search_documents", _make_doc_result(2))]
         )
-        blocks = context.split("\n\n")
+        blocks = [
+            b for b in context.split(chr(10) * 2) if b.startswith("[NI43-")
+        ]
+
+        assert len(blocks) == 2
         assert blocks[0].startswith("[NI43-1] Technical Report 1")
         assert blocks[1].startswith("[NI43-2] Technical Report 2")
 
@@ -239,11 +253,35 @@ class TestEmptyRetrievalSentinels:
         assert response.citations[0].source_chunk_id == "georag_reports:empty"
 
     def test_sentinel_set_contains_all_known_placeholders(self) -> None:
-        assert {
+        """Every known placeholder is recognised as carrying no rows.
+
+        This used to assert the frozenset equalled exactly three literals,
+        which is the enumeration the 2026-08-22 audit finding is about: it
+        locked in the three shapes that were known and could not notice the
+        eight that were not (`silver.collars:miss`,
+        `silver.samples:element=X:count=0`, `neo4j:count=0`, ...).
+
+        Asserting recognition rather than membership keeps the guarantee
+        the name claims while letting the predicate grow.
+        """
+        from app.agent.response_assembler import is_empty_source_id
+
+        for placeholder in (
             "no-tool-call",
             "georag_reports:empty",
             "pg_public_geoscience:empty",
-        } == EMPTY_SOURCE_SENTINELS
+        ):
+            assert placeholder in EMPTY_SOURCE_SENTINELS
+            assert is_empty_source_id(placeholder) is True
+
+        # And the shapes the literal set could never have covered.
+        for structural in (
+            "silver.collars:miss",
+            "silver.samples:element=U3O8:count=0",
+            "neo4j:count=0",
+            "silver.lithology_logs:intervals=0",
+        ):
+            assert is_empty_source_id(structural) is True
 
     def test_confidence_computer_uses_the_same_sentinels(self) -> None:
         """Lockstep regression — every sentinel excluded by the IND-6 guard

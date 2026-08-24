@@ -166,7 +166,7 @@ HTML doc grows it past the point where it serves as a quick reference.
   Migration prepared by graph-engineer: all code paths updated from
   `:Drillhole` to `:DrillHole`, migration script authored at
   `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher`, runbook
-  at `ops/runbooks/drillhole-label-rename.md`. Operator applies the
+  at `ops/runbooks/_archived/drillhole-label-rename.md`. Operator applies the
   migration during next maintenance window per the runbook.
 
 ---

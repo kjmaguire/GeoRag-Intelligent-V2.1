@@ -50,6 +50,18 @@ FAILOVERS = Counter(
 )
 
 # ---------------------------------------------------------------------------
+# Reranker degradation — the precision stage did not run.
+# ---------------------------------------------------------------------------
+
+RERANK_DEGRADED_TOTAL = Counter(
+    "georag_rerank_degraded_total",
+    "search_documents calls that returned RRF-ordered results because the "
+    "reranker timed out or raised. Answers on this path carry raw fusion "
+    "scores an order of magnitude below a Cohere score, which drags down "
+    "citation relevance and answer confidence for evidence that was fine.",
+)
+
+# ---------------------------------------------------------------------------
 # C5/C6 + R15 prompt caching (Anthropic ephemeral cache AND vLLM prefix cache).
 # ---------------------------------------------------------------------------
 
@@ -524,6 +536,8 @@ SOURCE_TRUST_BOOST_RANK_DELTA = Histogram(
 
 DI_OCR_PAGES_TOTAL = Counter(
     "georag_di_ocr_pages_total",
-    "Azure Document Intelligence pages analyzed (1 per analyze request; "
-    "tiles count individually, matching Azure billing).",
+    "Azure Document Intelligence pages analyzed, matching Azure billing. "
+    "Incremented by the PAGE COUNT of each analyze request, not once per "
+    "request: a block submission covers many pages and is billed per page. "
+    "Tiles of an oversized raster count individually.",
 )

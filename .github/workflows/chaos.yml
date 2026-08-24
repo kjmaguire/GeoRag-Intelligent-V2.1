@@ -1,10 +1,14 @@
 # Module 10 Chunk 10.7 — weekly chaos / resilience CI gate.
 #
-# Runs `pytest -m chaos` against the project's chaos suite
-# (src/fastapi/tests/test_chaos_resilience.py — 21 tests). These tests
-# intentionally inject backend failures and exercise the orchestrator's
-# fail-open contracts; they're slow and noisy, so we keep them OFF the
-# per-PR fast suite and run weekly instead.
+# Runs `pytest -m chaos` against src/fastapi/tests/test_chaos_resilience.py.
+#
+# SCOPE (corrected 2026-08-21). This header used to advertise "21 tests"
+# that "inject backend failures and exercise the orchestrator's fail-open
+# contracts". The file is 27 lines and holds exactly ONE test: an LLM
+# classifier ConnectionError must return None rather than block retrieval.
+# `-m chaos` selects 1 of 2227 collected items. Nothing here covers a
+# Qdrant, reranker or LLM-backend outage — those contracts are unwritten,
+# not merely unrun, and the inflated number made the gap invisible.
 #
 # Triggers
 # --------
@@ -13,8 +17,9 @@
 #
 # Failure handling
 # ----------------
-# A failure does NOT block a PR. It opens a GitHub issue tagged
-# `chaos-regression` so the on-call rotation triages within the week.
+# A failure does NOT block a PR. It files/updates a single GitHub issue
+# tagged `chaos-regression` so the on-call rotation triages within the week.
+# One issue, not one per run — see the dedupe in the last step.
 
 name: Chaos / Resilience
 
@@ -36,6 +41,21 @@ jobs:
     name: Chaos pytest suite
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # 2026-08-21: without these, pytest never reached a single test. It
+    # aborted during COLLECTION with `ValidationError: 2 validation errors
+    # for Settings / FASTAPI_SERVICE_KEY / POSTGRES_PASSWORD / Field
+    # required` — app.config.Settings() and hatchet_sdk's ClientConfig()
+    # are module-level singletons built at import time, so every file that
+    # transitively imports them needs these present even though this job
+    # dials nothing. Twelve consecutive weekly runs failed this way and
+    # filed twelve issues. Values are dummies copied from ci.yml's
+    # python-test job (ci.yml:855-857) — never real secrets.
+    env:
+      FASTAPI_SERVICE_KEY: test-service-key-must-be-at-least-32-bytes-long
+      POSTGRES_PASSWORD: test_password
+      HATCHET_CLIENT_TOKEN: eyJhbGciOiAibm9uZSIsICJ0eXAiOiAiSldUIn0.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwgInNlcnZlcl91cmwiOiAibG9jYWxob3N0OjcwNzAiLCAiZ3JwY19icm9hZGNhc3RfYWRkcmVzcyI6ICJsb2NhbGhvc3Q6NzA3MCJ9.
+
     steps:
       - uses: actions/checkout@v7
 
@@ -50,7 +70,31 @@ jobs:
 
       - name: Run chaos tests
         working-directory: src/fastapi
-        run: uv run pytest tests/ -v --tb=short -m chaos --junit-xml=chaos-results.xml
+        # --strict-markers so a typo'd marker fails loudly instead of
+        # selecting nothing, and -p no:randomly for a stable order.
+        run: |
+          uv run pytest tests/ -v --tb=short -m chaos \
+            --strict-markers -p no:randomly \
+            --junit-xml=chaos-results.xml
+
+      # A collection abort and "no tests matched" both exit non-zero in a
+      # way that reads like a regression. They are not one: they mean the
+      # suite did not run. Separate them so the issue text can say which.
+      - name: Assert the suite actually selected tests
+        if: always()
+        working-directory: src/fastapi
+        run: |
+          if [ ! -f chaos-results.xml ]; then
+            echo "::error::no junit XML — pytest died before running anything"
+            exit 1
+          fi
+          count=$(grep -o 'tests="[0-9]*"' chaos-results.xml | head -1 |
+                  grep -o '[0-9]*' || echo 0)
+          echo "chaos tests executed: ${count:-0}"
+          if [ "${count:-0}" -lt 1 ]; then
+            echo "::error::-m chaos selected zero tests"
+            exit 1
+          fi
 
       - name: Upload chaos test results
         if: always()
@@ -60,27 +104,56 @@ jobs:
           path: src/fastapi/chaos-results.xml
           retention-days: 90
 
-      - name: Open GitHub issue on regression
+      - name: File or update the chaos-regression issue
         if: failure()
         uses: actions/github-script@v9
         with:
           script: |
-            const title = `chaos-regression: weekly chaos run failed (${context.sha.substring(0,7)})`;
-            const body = [
-              '### Chaos suite regression',
+            // One standing thread, not one issue per run. The previous
+            // version called issues.create() unconditionally, so a
+            // persistent failure filed a fresh issue every Monday: 12
+            // runs produced 12 issues, 11 of them still open and
+            // indistinguishable from each other. That trains the
+            // maintainer to ignore a failure-to-issue automation that
+            // is, itself, working perfectly.
+            const label = 'chaos-regression';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/` +
+                           `${context.repo.repo}/actions/runs/${context.runId}`;
+            const line = [
+              `Weekly chaos run failed again on \`${context.sha.substring(0, 7)}\`.`,
               '',
-              `Weekly chaos run failed at ${new Date().toISOString()}.`,
-              '',
-              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `**Run:** ${runUrl}`,
               `**Commit:** ${context.sha}`,
               '',
-              'Triage steps in `ops/runbooks/refusal-rate-spike.md` and',
-              '`ops/runbooks/service-outage.md`. Re-run on dispatch once fix lands.',
+              'Triage steps in `ops/runbooks/_archived/refusal-rate-spike.md` and',
+              '`ops/runbooks/_archived/service-outage.md`.',
             ].join('\n');
-            await github.rest.issues.create({
+
+            const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              body,
-              labels: ['chaos-regression', 'priority:p2'],
+              state: 'open',
+              labels: label,
+              per_page: 1,
             });
+
+            if (existing.data.length > 0) {
+              const number = existing.data[0].number;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                body: line,
+              });
+              core.notice(`Commented on existing chaos-regression issue #${number}`);
+              return;
+            }
+
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'chaos-regression: weekly chaos run is failing',
+              body: ['### Chaos suite regression', '', line].join('\n'),
+              labels: [label, 'priority:p2'],
+            });
+            core.notice(`Opened chaos-regression issue #${created.data.number}`);

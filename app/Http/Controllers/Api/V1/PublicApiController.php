@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Services\FastApiJwtMinter;
+use App\Support\PaginationLimit;
 use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -103,13 +104,15 @@ class PublicApiController extends Controller
         }
         $projectIds = $user->projects()->pluck('silver.projects.project_id')->all();
 
-        $limit = (int) $request->query('limit', 25);
+        // Builder::limit() silently ignores a negative value, so the old
+        // `min($limit, 200)` let `?limit=-1` remove the LIMIT clause entirely.
+        $limit = PaginationLimit::clamp($request, 25, 'limit');
         $query = DB::table('silver.reports')->whereIn('project_id', $projectIds);
         $query = DB::connection()->getDriverName() === 'pgsql'
             ? $query->orderByRaw('created_at DESC NULLS LAST')
             : $query->orderByDesc('created_at');
         $rows = $query
-            ->limit(min($limit, 200))
+            ->limit($limit)
             ->get(['report_id as id', 'title', 'company', 'commodity', 'project_name', 'region', 'filing_date', 'created_at']);
 
         return response()->json(['items' => $rows, 'count' => $rows->count()]);
@@ -209,10 +212,20 @@ class PublicApiController extends Controller
         }
         $limit = (int) $request->query('limit', 50);
         $rows = DB::select(
+            // workspace_id = ? only. This used to OR in every row with a NULL
+            // workspace_id: platform-level and unattributed entries that
+            // belong to no tenant and were never scoped to the caller, handed
+            // to any member of any workspace complete with action_type,
+            // actor_id and target_schema/table/id.
+            //
+            // It also made the endpoint unreliable for its actual purpose.
+            // ORDER BY created_at DESC LIMIT applies AFTER the OR, so a burst
+            // of unattributed rows could push a workspace's own audit trail
+            // out of the response entirely.
             'SELECT id::text, action_type, actor_id, actor_kind,
                     target_schema, target_table, target_id, created_at
                FROM audit.audit_ledger
-              WHERE workspace_id = ?::uuid OR workspace_id IS NULL
+              WHERE workspace_id = ?::uuid
               ORDER BY created_at DESC
               LIMIT ?',
             [$workspaceId, min($limit, 500)],

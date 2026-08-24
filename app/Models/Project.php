@@ -12,6 +12,29 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
+/**
+ * A project row in silver.projects.
+ *
+ * The @property block is not decoration. Eloquent resolves columns
+ * dynamically, so larastan cannot see them, and every access to one of
+ * these was an "Access to an undefined property" entry in
+ * phpstan-baseline.neon — 20 of them across the controllers, which meant
+ * a genuine typo in a column name looked exactly like the existing noise.
+ * Declared here 2026-08-21; the corresponding baseline entries went with
+ * it.
+ *
+ * Only the plain columns are declared. `status` is deliberately left out:
+ * it is cast to ProjectStatus but read as both an enum and a string
+ * (see OverviewController's `is_object($project->status)` branch), so
+ * declaring one type would trade twenty honest baseline entries for a
+ * dishonest annotation.
+ *
+ * @property string $project_id
+ * @property string $workspace_id
+ * @property string $slug
+ * @property string $project_name
+ * @property int|null $crs_epsg
+ */
 class Project extends Model
 {
     /** @use HasFactory<ProjectFactory> */

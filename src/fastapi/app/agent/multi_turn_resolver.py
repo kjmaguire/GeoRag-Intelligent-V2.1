@@ -57,6 +57,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app.agent.hallucination.citation_markers import ALL_MARKER_RE
+from app.agent.hole_id_patterns import (
+    HOLE_CONTEXT_RE,
+    HOLE_ID_RE,
+    NUMERIC_HOLE_ID_RE,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,13 +227,26 @@ _COMPARATIVE_PATTERNS: tuple[tuple[re.Pattern[str], int], ...] = (
 # entity mentions to feed the resolver. False positives are worse than
 # misses (a bad resolution silently changes the user's question).
 
-# Hole IDs — matches PLS-22-08, DDH-1234, 36-1085, BG21-001, etc.
-# Structure: optional letters → optional dash → digits → 1-3 more
-# (-digits) segments. Requires at least one dash OR length ≥ 4 chars
-# to avoid matching trivial "unit 4" style fragments.
-_HOLE_ID_PATTERN = re.compile(
-    r"\b([A-Z]{0,4}-?\d{1,4}(?:[-\s]\d{1,4}){0,3})\b",
-)
+# Hole IDs. This used to carry its own pattern,
+# `[A-Z]{0,4}-?\d{1,4}(?:[-\s]\d{1,4}){0,3}`, and the `{0,4}` on the letter
+# prefix greedily ate the DATA / NI43 out of a citation marker while the
+# marker's own dash satisfied the "must contain a dash" filter. Nothing
+# stripped markers first, and this extractor runs over EVERY history turn
+# including the assistant's own answers — the Laravel bridge never writes
+# entity_mentions into chat_messages.metadata, so the heuristic fallback
+# always fires.
+#
+# The result: "Average grade was 1.85 g/t Au over 12.5 m [NI43-2]." yielded
+# the mention `NI43-2`, and a follow-up of "what is its depth?" was rewritten
+# into "what is NI43-2's depth?". That rewritten string is what the intent
+# classifier, the retrieval profile and every downstream hole-ID extractor
+# then saw. The retrieval was garbage and the only surface was a small
+# "Interpreted as:" chip.
+#
+# Now shares app.agent.hole_id_patterns with viz_builder and Layer 4, which
+# requires a two-letter minimum prefix (so "Figure A-1" is not a hole) and
+# gates bare numeric IDs on a hole-context word.
+_HOLE_ID_PATTERN = HOLE_ID_RE
 
 # Property / project names — title-case multi-word phrases followed by
 # the keyword 'property' / 'project' / 'deposit'. The leading letter
@@ -254,14 +274,19 @@ def extract_entity_mentions(
     mentions: list[EntityMention] = []
     seen: set[tuple[str, EntityType]] = set()
 
+    # Strip citation markers before looking for anything, exactly as every
+    # §04i layer already does. Without this the markers in the assistant's
+    # own previous answer are the richest source of "hole IDs" in the
+    # history.
+    text = ALL_MARKER_RE.sub(" ", text)
+
+    lettered_spans: list[tuple[int, int]] = []
+
     for match in _HOLE_ID_PATTERN.finditer(text):
         surface = match.group(1).strip()
         if not any(c.isdigit() for c in surface):
             continue  # bare letters aren't a hole ID
-        # Reject trivial matches: must have a dash OR ≥ 4 chars to
-        # qualify (avoids matching "unit 4" / "44" type noise).
-        if "-" not in surface and len(surface) < 4:
-            continue
+        lettered_spans.append(match.span(1))
         key = (surface.upper(), "hole")
         if key in seen:
             continue
@@ -271,6 +296,29 @@ def extract_entity_mentions(
             entity_type="hole",
             turn_index=turn_index,
         ))
+
+    # Numeric-only IDs (36-1085, the Cameco shape) only when the turn is
+    # actually talking about holes — otherwise "pages 11-14" and "the
+    # 20-30 m interval" become drill holes.
+    if HOLE_CONTEXT_RE.search(text):
+        for match in NUMERIC_HOLE_ID_RE.finditer(text):
+            start, end = match.span(1)
+            # "PLS-22-08" also contains "22-08". Taking both would give the
+            # resolver a second, wrong candidate for the same hole — and
+            # _resolve_pronouns picks the most recent mention, so which one
+            # wins would come down to iteration order.
+            if any(s <= start and end <= e for s, e in lettered_spans):
+                continue
+            surface = match.group(1).strip()
+            key = (surface.upper(), "hole")
+            if key in seen:
+                continue
+            seen.add(key)
+            mentions.append(EntityMention(
+                surface_form=surface,
+                entity_type="hole",
+                turn_index=turn_index,
+            ))
 
     for match in _PROPERTY_PATTERN.finditer(text):
         surface = match.group(1).strip()

@@ -85,9 +85,9 @@ def main() -> int:
     print(f"[runner] Command: {' '.join(pytest_cmd)}")
     print()
 
-    started_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    started_at = dt.datetime.now(dt.UTC).isoformat()
     proc = subprocess.run(pytest_cmd, env=env, capture_output=True, text=True)
-    finished_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    finished_at = dt.datetime.now(dt.UTC).isoformat()
 
     report = {
         "started_at": started_at,

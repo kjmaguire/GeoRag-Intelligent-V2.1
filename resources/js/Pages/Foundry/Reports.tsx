@@ -59,6 +59,8 @@ export interface ReportListRow {
     version: number;
     is_scanned: boolean;
     parse_quality_pct: number | null;
+    /** pages_with_text / page_count. null on rows ingested before the column existed. */
+    text_page_coverage_pct: number | null;
     sections_count: number;
     has_content: boolean;
     passages: number;
@@ -76,6 +78,8 @@ interface ReportDetail {
     region: string;
     project_name: string;
     parse_quality_pct: number | null;
+    /** pages_with_text / page_count. null on rows ingested before the column existed. */
+    text_page_coverage_pct: number | null;
     is_scanned: boolean;
     page_count: number | null;
     parser_used: string;
@@ -392,17 +396,46 @@ function QualityStrip({ quality }: { quality: QualityRollup }) {
                 className="grid grid-cols-2 sm:grid-cols-4 gap-px px-8 py-5"
                 style={{ background: 'var(--line-1)' }}
             >
-                <Stat label="ACCEPTED" value={String(totals.accepted)} tone="accent" />
+                {/* These four count silver.review_queue rows. That table has
+                    one writer (ingest_pdf) and no consumer: nothing moves a
+                    row's lifecycle off 'pending', and no triage surface
+                    exists. The labels used to say "needs review" and
+                    "Tier-2 pipeline", which named a review a user cannot
+                    perform and a pipeline that does not run — so the honest
+                    reading of a rising number was unavailable to anyone
+                    looking at it. Say what the number is and what to do. */}
+                <Stat
+                    label="ACCEPTED"
+                    value={String(totals.accepted)}
+                    tone="accent"
+                    title="Pages whose OCR confidence cleared the auto-accept threshold. These are indexed and retrievable by chat."
+                />
                 <Stat
                     label="FLAGGED"
                     value={String(totals.flagged)}
-                    sub={totals.flagged > 0 ? 'needs review' : 'clean'}
+                    sub={totals.flagged > 0 ? 'held back' : 'clean'}
+                    title={
+                        'Pages held back from indexing because OCR confidence '
+                        + 'was too low to trust. There is no triage queue yet — '
+                        + 'a cleaner scan of the same document is the way to '
+                        + 'recover them.'
+                    }
                 />
-                <Stat label="REJECTED" value={String(totals.rejected)} />
+                <Stat
+                    label="REJECTED"
+                    value={String(totals.rejected)}
+                    title="Pages the ingest pipeline refused outright — unreadable, or no extractable text at all."
+                />
                 <Stat
                     label="AWAITING OCR"
                     value={String(totals.awaiting_ocr)}
-                    sub="Tier-2 pipeline"
+                    sub={totals.awaiting_ocr > 0 ? 'no triage queue yet' : 'none'}
+                    title={
+                        'Pages routed to review rather than indexed. Nothing '
+                        + 'currently drains this queue, so the count only '
+                        + 'grows — it measures how much of the corpus chat '
+                        + 'cannot see, not work in progress.'
+                    }
                 />
             </section>
 
@@ -740,6 +773,25 @@ function QualityTab({
                         value={
                             typeof report.parse_quality_pct === 'number'
                                 ? `${Math.min(100, Math.round(report.parse_quality_pct * 100))}% of the 17-section baseline`
+                                : '—'
+                        }
+                    />
+                    {/*
+                      * The extraction number, and the one the row above is
+                      * routinely mistaken for. A report whose table of
+                      * contents yielded 17 headings while 300 pages OCR'd
+                      * to nothing shows 100% above and near 0% here — which
+                      * is the combination worth catching, and was invisible
+                      * while only the first was stored.
+                      *
+                      * '—' means not measured (ingested before the column
+                      * existed), which is deliberately distinct from 0%.
+                      */}
+                    <MetaRow
+                        label="Text extracted"
+                        value={
+                            typeof report.text_page_coverage_pct === 'number'
+                                ? `${Math.round(report.text_page_coverage_pct * 100)}% of pages produced text`
                                 : '—'
                         }
                     />

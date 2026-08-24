@@ -50,8 +50,15 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
+from app.hatchet_workflows.stale_run_detector import (
+    _TABULAR_SHEET_TYPE_PREFIXES,
+    _key_prefix,
+    recoverable_bronze_prefixes,
+    recovery_workflow_for_key,
+)
 from app.services.mv_refresh import refresh_views_with_advisory_lock
 
 log = logging.getLogger("georag.hatchet.nightly_ingestion_integrity")
@@ -78,13 +85,9 @@ ANALYZE_TABLES: tuple[str, ...] = (
 )
 
 
-def _dsn() -> str:
-    user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 def _fastapi_internal_url() -> str:
@@ -148,9 +151,26 @@ nightly_ingestion_integrity = hatchet.workflow(
 async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
     report = TierReport(tier=1, name="bronze_audit")
 
-    # Sweep query — matches the spec almost verbatim; predicate also
-    # filters out rows where another sweep instance currently holds a
-    # claim lock, and rows that have already exhausted dispatch attempts.
+    # Sweep query. Two things it must get right, and originally got wrong
+    # for every category except PDFs:
+    #
+    # 1. WHAT COUNTS AS LANDED. Only ingest_pdf writes silver.reports, so
+    #    LEFT JOINing against it declared every shapefile, workbook, LAS
+    #    and archive upload an orphan forever. `silver.ingest_progress` is
+    #    the ledger every ingest workflow writes, so for non-PDF keys the
+    #    question "did anything ever process this?" is asked there instead.
+    #    A row in ANY state means this file has a run of its own and is not
+    #    this tier's problem: queued/started belong to the stale sweep,
+    #    failed/timed_out are already visible to the user, and
+    #    completed/partial landed. This tier exists for the case where
+    #    NOTHING exists {D} a dispatch cancelled by queue expiry before any
+    #    task body ran.
+    #
+    # 2. WHAT IT CAN ACTUALLY RECOVER. A prefix with no recovery workflow
+    #    is excluded in SQL rather than examined and noted every night.
+    #    Skipping in Python appended one permanent `no_project_id:` note
+    #    per non-PDF upload ever made, on both the 02:00 and 04:00 passes,
+    #    which drowned the genuinely actionable entries.
     select_sql = f"""
         SELECT b.file_key, b.workspace_id::text AS workspace_id, b.sha256,
                b.dispatch_attempts, b.uploaded_at, b.document_type
@@ -158,7 +178,17 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
         LEFT JOIN silver.reports r
                ON r.source_file_sha256 = b.sha256
               AND r.workspace_id       = b.workspace_id
-        WHERE r.report_id IS NULL
+        WHERE (
+                CASE WHEN split_part(b.file_key, '/', 1) = 'reports'
+                     THEN r.report_id IS NULL
+                     ELSE NOT EXISTS (
+                            SELECT 1 FROM silver.ingest_progress p
+                             WHERE p.workspace_id = b.workspace_id
+                               AND p.minio_key    = b.file_key
+                          )
+                END
+              )
+          AND split_part(b.file_key, '/', 1) = ANY($1::text[])
           AND b.uploaded_at  < now() - interval '{BRONZE_ORPHAN_AGE_MINUTES} minutes'
           AND b.cancelled_at IS NULL
           AND (b.locked_until IS NULL OR b.locked_until < now())
@@ -175,28 +205,34 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
         RETURNING file_key, dispatch_attempts
     """
 
+    recoverable_prefixes = sorted(recoverable_bronze_prefixes())
+
     async with pool.acquire() as conn:
-        orphans = await conn.fetch(select_sql)
+        orphans = await conn.fetch(select_sql, recoverable_prefixes)
         report.items_examined = len(orphans)
 
         for orphan in orphans:
             file_key = orphan["file_key"]
             workspace_id = orphan["workspace_id"]
 
-            # F29 (2026-08-11) — eligibility BEFORE the claim. The claim_sql
-            # increments dispatch_attempts, so keys we can never dispatch
-            # (non-`reports/` prefixes with no derivable project_id) used to
-            # burn all 3 attempts on undispatchable rows and then fall out
-            # of the sweep silently. Skip them without claiming: they cost
-            # one note per night and stay visible until triaged.
-            # Extract project_id from the conventional reports/{projectId}/...
-            # prefix. Falls back to None — the FastAPI trigger validates.
+            # F29 (2026-08-11) — eligibility BEFORE the claim. claim_sql
+            # increments dispatch_attempts, so a key we cannot dispatch used
+            # to burn all 3 attempts and then fall out of the sweep silently.
+            #
+            # Every bronze key is `{prefix}/{project_id}/{ts}_{name}` (see
+            # UploadController::storeFile), not just the reports/ ones —
+            # reading project_id only for `reports` was the second half of
+            # why nothing else could be recovered. The SELECT has already
+            # excluded prefixes with no recovery workflow, so anything
+            # reaching here is routable; a key that still fails to yield a
+            # project_id is a malformed key and worth one note.
             parts = file_key.split("/")
-            project_id = parts[1] if len(parts) >= 2 and parts[0] == "reports" else None
+            project_id = parts[1] if len(parts) >= 2 and parts[1] else None
+            workflow_name = recovery_workflow_for_key(file_key)
 
-            if project_id is None:
+            if project_id is None or workflow_name is None:
                 report.items_skipped += 1
-                report.notes.append(f"no_project_id: {file_key}")
+                report.notes.append(f"unroutable_key: {file_key}")
                 continue
 
             claim = await conn.fetchrow(claim_sql, file_key, workspace_id)
@@ -206,7 +242,8 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
                 continue
 
             try:
-                run_id = await _dispatch_ingest_pdf(
+                run_id = await _dispatch_recovery(
+                    workflow_name=workflow_name,
                     workspace_id=workspace_id,
                     project_id=project_id,
                     minio_key=file_key,
@@ -224,17 +261,69 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
     return report
 
 
-async def _dispatch_ingest_pdf(
-    *, workspace_id: str, project_id: str, minio_key: str,
+def _recovery_trigger_payload(
+    *,
+    workflow_name: str,
+    workspace_id: str,
+    project_id: str,
+    minio_key: str,
+    run_id: str,
+    correlation_token: str,
+) -> dict:
+    """Body for a workflow's /internal/v1/shadow/{name}/trigger endpoint.
+
+    Two shapes, matching the two input models: the PDF/TIFF pair carry a
+    correlation_token and re-derive their own size, and the four that take
+    a caller-minted ``run_id`` get one so the progress row the endpoint
+    creates and the row the workflow upserts are the same row.
+    """
+    if workflow_name in ("ingest_pdf", "tiff_normalize"):
+        return {
+            "workspace_id": workspace_id,
+            "project_id": project_id,
+            "minio_key": minio_key,
+            "file_size": 0,            # the parser re-reads from S3 anyway
+            "vendor_profile_id": None,
+            "correlation_token": correlation_token,
+            "actor_id": None,
+        }
+
+    payload = {
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "minio_key": minio_key,
+        "run_id": run_id,
+    }
+    if workflow_name == "ingest_tabular":
+        # The upload category is the sheet_type hint the geologist chose;
+        # a CSV whose headers do not self-identify only routed correctly the
+        # first time because of it.
+        prefix = _key_prefix(minio_key)
+        if prefix in _TABULAR_SHEET_TYPE_PREFIXES:
+            payload["sheet_type"] = prefix
+    return payload
+
+
+async def _dispatch_recovery(
+    *, workflow_name: str, workspace_id: str, project_id: str, minio_key: str,
 ) -> str | None:
-    """POST to the existing FastAPI /internal/v1/shadow/ingest_pdf/trigger
-    endpoint. Uses the same X-Service-Key as the rest of the bridge."""
+    """POST to the FastAPI trigger endpoint for the OWNING workflow.
+
+    Was hardwired to ingest_pdf, which is why a geology upload could never
+    be recovered even once the orphan detection stopped mis-classifying it.
+    Going through the HTTP trigger rather than dispatching Hatchet directly
+    is deliberate: the endpoints carry the project-lifecycle guard and the
+    in-flight dedupe, and a nightly sweep is exactly the caller that must
+    not re-dispatch a run that is already queued.
+    """
     import uuid as _uuid
 
     service_key = os.environ.get("FASTAPI_SERVICE_KEY")
     if not service_key:
         log.warning("tier1.bronze: FASTAPI_SERVICE_KEY missing; cannot dispatch")
         return None
+
+    run_id = str(_uuid.uuid4())
 
     # ingest_pdf workflow requires a JWT Authorization header in addition
     # to the service key (matches the existing ShadowRouter flow). The
@@ -255,16 +344,18 @@ async def _dispatch_ingest_pdf(
         algorithm="HS256",
     )
 
-    url = _fastapi_internal_url().rstrip("/") + "/internal/v1/shadow/ingest_pdf/trigger"
-    payload = {
-        "workspace_id": workspace_id,
-        "project_id": project_id,
-        "minio_key": minio_key,
-        "file_size": 0,            # parser re-reads from S3 anyway
-        "vendor_profile_id": None,
-        "correlation_token": str(_uuid.uuid4()),
-        "actor_id": None,
-    }
+    url = (
+        _fastapi_internal_url().rstrip("/")
+        + f"/internal/v1/shadow/{workflow_name}/trigger"
+    )
+    payload = _recovery_trigger_payload(
+        workflow_name=workflow_name,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        minio_key=minio_key,
+        run_id=run_id,
+        correlation_token=str(_uuid.uuid4()),
+    )
     headers = {
         "Authorization": f"Bearer {jwt_token}",
         "X-Service-Key": service_key,
@@ -275,8 +366,8 @@ async def _dispatch_ingest_pdf(
         r = await client.post(url, json=payload, headers=headers)
     if r.status_code != 202:
         log.warning(
-            "tier1.bronze.trigger non-2xx key=%s status=%s body=%s",
-            minio_key, r.status_code, r.text[:200],
+            "tier1.bronze.trigger non-2xx workflow=%s key=%s status=%s body=%s",
+            workflow_name, minio_key, r.status_code, r.text[:200],
         )
         return None
     return (r.json() or {}).get("workflow_run_id")

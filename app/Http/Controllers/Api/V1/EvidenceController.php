@@ -69,14 +69,12 @@ class EvidenceController extends Controller
             return response()->json(['error' => 'not_found'], 404);
         }
 
-        $serviceKey = config('services.fastapi.service_key')
-            ?? env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             return response()->json(['error' => 'fastapi service key missing'], 500);
         }
         $fastApiBase = rtrim(
-            config('services.fastapi.internal_url')
-                ?? env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
+            config('services.fastapi.internal_url'),
             '/',
         );
 

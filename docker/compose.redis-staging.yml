@@ -1,8 +1,8 @@
 # =============================================================================
 # Compose overlay: Redis 3-instance staging/prod topology
 # =============================================================================
-# Authority: ops/runbooks/redis-3-instance-rollout.md
-# Companion: ops/runbooks/redis-topology.md (design rationale)
+# Authority: ops/runbooks/_archived/redis-3-instance-rollout.md
+# Companion: ops/runbooks/_archived/redis-topology.md (design rationale)
 #
 # This file is an OVERLAY, not a standalone compose. Apply alongside the
 # canonical compose:

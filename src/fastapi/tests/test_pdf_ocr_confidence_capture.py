@@ -282,9 +282,18 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
         return_confidence=False,
         return_assessment=False,
         return_tables=False,
+        *,
+        skip_di_page_request=False,
     ):
         assert return_confidence is True
         assert return_assessment is True
+        # The mixed-document path batches Document Intelligence requests
+        # since 2026-08-23 and tells this function when a page was already
+        # covered by a batch that found nothing. No DI is configured in
+        # this test, so no batch ran and there is nothing to skip -- a True
+        # here would mean the batch pass fired without a configured
+        # backend and silently suppressed the per-page request.
+        assert skip_di_page_request is False
         assessment = {
             "tier": "mandatory_review",
             "routing_decision": "review_required",
@@ -589,7 +598,14 @@ def test_tiled_document_intelligence_reconstructs_oversized_page(
 
     result, assessment = parser_module._ocr_tiled_pdf_page("/tmp/fake.pdf", 1)
 
-    assert result.text == "Top Seam Bottom"
+    # Changed 2026-08-21. This used to be " ".join(...) over the tiles,
+    # which collapsed a tiled page into ONE line -- exactly the bug fixed
+    # for the tesseract tiling path on 2026-05-22 and then reintroduced on
+    # the Document Intelligence path. The window chunker is line-oriented,
+    # so a single-line page cannot be split on a line boundary and a table
+    # row loses its row structure. Tiles are stacked vertically; a newline
+    # is what separates them.
+    assert result.text == "Top\nSeam\nBottom"
     assert len(result.words) == 3
     assert next(word for word in result.words if word.text == "Seam").confidence == 0.95
     assert assessment["signals"]["seam_duplicate_ratio"] == 0.25

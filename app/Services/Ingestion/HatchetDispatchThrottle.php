@@ -31,10 +31,19 @@ use Illuminate\Support\Facades\Log;
  * Single Redis (or whatever {@see CacheFactory} resolves to) sentinel
  * key per workspace, written with a TTL equal to the throttle window.
  * `Cache::add()` is atomic — only one caller per workspace wins per
- * window; the rest spin in 100ms increments until the key expires or
- * the 30s safety cap is hit. A safety-cap hit logs + falls through
- * (fail open) — better to dispatch and possibly cancel than to deadlock
- * an Octane worker indefinitely.
+ * window; the rest spin in 100ms increments until the key expires or the
+ * safety cap is hit. A safety-cap hit logs + falls through (fail open) —
+ * better to dispatch and possibly cancel than to deadlock an Octane
+ * worker indefinitely.
+ *
+ * The safety cap is DERIVED from the window ({@see maxWaitMsFor}), not
+ * configured separately. It was a flat 30 seconds against a sentinel that
+ * expires after one, and the wait is a `usleep` inside an Octane worker.
+ * Octane serves from a fixed worker pool, so a bulk import in a SINGLE
+ * workspace could park every worker in this loop — and while they are
+ * parked the application answers nothing at all, including requests that
+ * have nothing to do with uploads. A throttle that smooths an ingestion
+ * queue must not be able to take the web tier down with it.
  *
  * The sentinel TTL is rounded up to whole seconds because every backing
  * cache driver (database, file, array, even Redis via the Illuminate
@@ -57,17 +66,41 @@ class HatchetDispatchThrottle
      * Octane worker in usleep for >=2s per file (uploads are sequential
      * in the wizard, so a 20-file import spends 40s just waiting). 250ms
      * still smooths Hatchet's GROUP_ROUND_ROBIN intake.
+     *
+     * Note the granularity before tuning this: the sentinel TTL is
+     * `ceil($ms / 1000)` seconds because every cache driver coerces TTL to
+     * whole seconds, so every value from 1 through 1000 produces the same
+     * one-second window. Dropping 250 to 150 changes nothing; the next
+     * distinct setting up is 1001.
      */
     public static function defaultThrottleMs(): int
     {
         return (int) config('services.hatchet.dispatch_throttle_ms', 250);
     }
 
-    /** Hard ceiling on time spent waiting so we don't pin an Octane worker. */
+    /** Absolute ceiling, whatever the window. See {@see maxWaitMsFor}. */
     public const MAX_WAIT_MS = 30_000;
 
     /** Spin interval while waiting for the sentinel to expire. */
     public const POLL_INTERVAL_MS = 100;
+
+    /**
+     * Longest wait this mechanism can legitimately produce for a window.
+     *
+     * A sentinel cannot outlive its own TTL, so waiting appreciably longer
+     * than that TTL does not mean "still busy" — it means the cache is
+     * wedged or the clock has skewed, which is precisely what the fail-open
+     * branch in {@see wait()} exists for. Deriving the cap from the window
+     * keeps the two from drifting apart: MAX_WAIT_MS was thirty times the
+     * longest wait the default window can produce, and every millisecond of
+     * that overshoot was an Octane worker held out of the pool.
+     */
+    public static function maxWaitMsFor(int $throttleMs): int
+    {
+        $ttlMs = max(1, (int) ceil($throttleMs / 1000)) * 1000;
+
+        return min(self::MAX_WAIT_MS, $ttlMs + (self::POLL_INTERVAL_MS * 2));
+    }
 
     /**
      * Resolver, not the repository itself — Octane safety: the underlying
@@ -95,6 +128,7 @@ class HatchetDispatchThrottle
 
         $key = "hatchet:dispatch-throttle:{$workspaceId}";
         $ttlSeconds = max(1, (int) ceil($ms / 1000));
+        $maxWaitMs = self::maxWaitMsFor($ms);
         $waitedMs = 0;
         $cache = $this->cacheFactory->store();
 
@@ -112,14 +146,16 @@ class HatchetDispatchThrottle
             if ($claimed) {
                 return;
             }
-            if ($waitedMs >= self::MAX_WAIT_MS) {
-                // Hatchet's queue-saturation cancel-window is much longer
-                // than 30s; this branch only trips when something is wedged
-                // (cache stuck, clock skew). Better to dispatch and risk a
-                // single CANCELLED than to indefinitely pin the worker.
+            if ($waitedMs >= $maxWaitMs) {
+                // Past the sentinel's own TTL, so this is not contention —
+                // it is a wedged cache or a skewed clock. Hatchet's
+                // queue-saturation cancel window is far longer than one
+                // dispatch, so risking a single CANCELLED beats holding an
+                // Octane worker out of the pool any longer.
                 Log::warning('HatchetDispatchThrottle: max wait exceeded, failing open', [
                     'workspace_id' => $workspaceId,
                     'waited_ms' => $waitedMs,
+                    'max_wait_ms' => $maxWaitMs,
                     'throttle_ms' => $ms,
                 ]);
 

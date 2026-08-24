@@ -10,7 +10,8 @@ Two purges, one cron:
 1. audit.query_audit_log — DELETE rows older than
    ``QUERY_AUDIT_RETENTION_DAYS`` (default 180). NI 43-101 traceability
    only needs a bounded window online; long-term compliance history lives
-   in the pg backups (backup_postgres, 02:00 UTC nightly).
+   in Azure's automated Postgres backups (35-day PITR). The
+   backup_postgres cron this used to name was deleted 2026-08-23.
 
 2. silver.ingest_progress — DELETE rows in a terminal state older than
    ``INGEST_PROGRESS_RETENTION_DAYS`` (default 90), EXCEPT the newest

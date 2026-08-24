@@ -289,6 +289,10 @@ async def _agent_rag_stream(
         # "workspace_id missing — falling back to default tenant" on every query
         # (harmless single-tenant today; a cross-tenant leak once tenant #2 lands).
         workspace_id=(getattr(user, "workspace_id", None) if user else None),
+        # Cross-service join key for the usage / cost rows the graph
+        # writes. Comes off the stamper so there is exactly one trace
+        # id per request rather than two that nearly agree.
+        trace_id=(getattr(stamper, "trace_id", None) if stamper else None),
     )
 
     # B7 — defensive check that JWT project_id matches request body.
@@ -359,17 +363,26 @@ async def _agent_rag_stream(
     status_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
     async def _push_status(message: str) -> None:
-        # B1 — routing events are emitted through the same callback with
-        # a sentinel prefix so the orchestrator stays agnostic about the
-        # transport. Unwrap here into a structured "routing" frame.
-        if isinstance(message, str) and message.startswith("__routing__:"):
-            parts = message.split(":", 3)
-            # Format: __routing__:<tier>:<model>[:<reason>]
-            tier = parts[1] if len(parts) > 1 else "unknown"
-            model = parts[2] if len(parts) > 2 else "unknown"
-            reason = parts[3] if len(parts) > 3 else "classifier"
-            await status_queue.put(("routing", {"tier": tier, "model": model, "reason": reason}))
-            return
+        # A `__routing__:<tier>:<model>[:<reason>]` sentinel used to be
+        # unwrapped here into a structured "routing" frame that Laravel
+        # read to set query_audit_log.llm_model.
+        #
+        # Nothing ever sent it. The emitter lived in the flat
+        # app/agent/orchestrator.py module and did not survive that
+        # module becoming a package — the only remaining trace of it is
+        # the literal `__routing__:local_llm:` inside a stale May-14
+        # .pyc. Both consumers stayed in place (here, and in Laravel's
+        # StreamQueryFromFastApi), so the path looked wired from either
+        # end while carrying nothing.
+        #
+        # It would not have survived contact with a real model name in
+        # any case: split(":", 3) on `__routing__:FAST:qwen2.5:14b`
+        # yields model="qwen2.5" and reason="14b", because colons are
+        # legal in model identifiers and this format did not escape them.
+        #
+        # The answering model now rides the terminal `completed` payload
+        # as GeoRAGResponse.llm_model — one field on a frame that already
+        # has to arrive, instead of a second protocol to keep alive.
         await status_queue.put(("status", message))
 
     # P0 #5 — sequence counter + token pump. Both the Anthropic streaming
@@ -513,11 +526,6 @@ async def _agent_rag_stream(
             kind, payload = await status_queue.get()
             if kind == "status":
                 yield await _stamped_event("status", {"message": payload})
-            elif kind == "routing":
-                # B1 — routing decision (classifier tier + model).
-                # Laravel's StreamQueryFromFastApi can persist this to
-                # query_audit_log.llm_model / sources_used.routing.
-                yield await _stamped_event("routing", payload)
             elif kind == "bind":
                 # Eval 02 follow-up (2026-05-20) — citations-bound-pre-tokens.
                 # The orchestrator emits this AFTER evidence binding (Stage
@@ -761,7 +769,20 @@ async def post_query(
     # completed event carries the full GeoRAGResponse which Module 7 Chunk 4
     # will extend to surface the DB answer_run_id for cross-reference.
     _stream_run_id = uuid4()
-    _stamper = EventStamper(answer_run_id=_stream_run_id)
+    # EventStamper has accepted `trace_id` since Module 7 — its
+    # docstring says "Module 10 can inject it without a signature
+    # change" — and nothing ever injected it, so every SSE frame and
+    # every Redis replay entry carried trace_id=None. The value is
+    # worth having now: StructuredAccessLogMiddleware puts the
+    # inbound (Laravel-forwarded) traceparent on request.state, so
+    # this is the same id as the caller's, not a local invention.
+    _stamper = EventStamper(
+        answer_run_id=_stream_run_id,
+        # Two-level getattr: `request` is duck-typed in several tests
+        # and does not always carry a Starlette `.state`. A telemetry
+        # field must never be the thing that fails a query.
+        trace_id=getattr(getattr(request, "state", None), "trace_id", None),
+    )
 
     async def _guarded_stream() -> AsyncIterator[str]:
         """Wrap the agent stream with top-level error handling.

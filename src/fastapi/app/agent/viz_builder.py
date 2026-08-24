@@ -20,9 +20,13 @@ component it was the only possible source for.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
+from app.agent.hole_id_patterns import (
+    HOLE_CONTEXT_RE,
+    HOLE_ID_RE,
+    NUMERIC_HOLE_ID_RE,
+)
 from app.agent.tools import SpatialQueryResult
 from app.models.rag import MapPayload
 
@@ -42,28 +46,13 @@ logger = logging.getLogger(__name__)
 # REQUIRE a context word (hole/drillhole/etc) so depth ranges ("20-30 m")
 # and counts ("36 holes") do not false-positive.
 
-# (1) Letters then optional embedded digits, then dash + digit groups.
-#     Covers PLS-20-01, GH08-212, SRE09-12, IC-11, XLS-24-01, DH-2547.
-_HOLE_ID_RE = re.compile(
-    r"\b([A-Z]{2,6}\d{0,4}-\d{1,5}(?:-\d{1,5})?)\b",
-    re.IGNORECASE,
-)
-
-# (2) Numeric-only IDs — 2 or 3 groups separated by dashes. Bare digit
-#     ranges (depth intervals, page numbers, hole counts) would otherwise
-#     false-positive, so we gate the entire pattern on the presence of a
-#     drill-hole context word *anywhere* in the query (not as a tight
-#     lookbehind). Kyle's "this hole please tell me about it, 36-1085"
-#     places "hole" 30 chars before the digit run; a strict adjacency
-#     lookbehind drops the match and the orchestrator can't route to a
-#     collar lookup.
-_NUMERIC_HOLE_ID_RE = re.compile(
-    r"\b(\d{1,4}-\d{1,5}(?:-\d{1,5})?)\b",
-)
-_HOLE_CONTEXT_RE = re.compile(
-    r"\b(?:hole(?:\s*id)?s?|drill\s*holes?|drillholes?|ddh|borehole)\b",
-    re.IGNORECASE,
-)
+# Defined in app.agent.hole_id_patterns so Layer 6 can mask hole IDs before
+# it scans an answer for numbers without importing this module (and with it
+# the whole tool layer). Aliased to the historical private names so the call
+# sites below — and any test that patches them — keep working.
+_HOLE_ID_RE = HOLE_ID_RE
+_NUMERIC_HOLE_ID_RE = NUMERIC_HOLE_ID_RE
+_HOLE_CONTEXT_RE = HOLE_CONTEXT_RE
 
 
 # ---------------------------------------------------------------------------

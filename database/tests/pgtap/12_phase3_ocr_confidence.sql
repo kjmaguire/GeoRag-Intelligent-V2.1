@@ -130,16 +130,22 @@ SELECT throws_ok(
     'ocr_method = ''easyocr'' rejected by enum CHECK'
 );
 
--- ── 13. All four allowed ocr_method values accepted ──────────────────────────
+-- ── 13. Every allowed ocr_method value is accepted ──────────────────────────
 -- We test each one as a separate sanity insert that should succeed. Wrap in
 -- a savepoint so the inserts roll back individually and don't leak rows
 -- into other tests.
+--
+-- 'docling_rapidocr' is deliberately absent. Docling left the image on
+-- 2026-07-29 and migration 2026_08_20_070000 dropped the label from the
+-- CHECK: the constraint is the only machine-readable statement of which
+-- OCR engines this pipeline actually has, so a stale entry lets a typo'd
+-- or resurrected label pass validation instead of failing loudly. This
+-- list tracks that migration's CURRENT const, not history.
 DO $$
 DECLARE
     methods text[] := ARRAY[
         'fitz_native',
         'pdfplumber_native',
-        'docling_rapidocr',
         'tesseract',
         'document_intelligence',
         'unavailable'
@@ -165,7 +171,7 @@ BEGIN
     END LOOP;
 END $$;
 
-SELECT pass('All four valid ocr_method values accepted (fitz_native, pdfplumber_native, docling_rapidocr, tesseract, document_intelligence, unavailable)');
+SELECT pass('All five valid ocr_method values accepted (fitz_native, pdfplumber_native, tesseract, document_intelligence, unavailable)');
 
 SELECT * FROM finish();
 

@@ -36,6 +36,108 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Horizon dashboard access
+    |--------------------------------------------------------------------------
+    |
+    | App\Providers\HorizonServiceProvider::gate() has read
+    | `services.horizon.admin_emails` since the allowlist stopped being an
+    | empty array literal, and its docblock describes exactly the
+    | normalisation below. The block itself was never added, so the key did
+    | not resolve, the `[]` default won, and the gate denied everyone in
+    | every non-local environment -- which is the bug that change was written
+    | to fix. Setting HORIZON_ADMIN_EMAILS had no effect because nothing
+    | read it.
+    |
+    | Normalised here rather than in the provider so the gate compares
+    | like with like: lowercased, trimmed, empties dropped, reindexed.
+    | Unset still means an empty allowlist and no access -- fail closed is
+    | deliberate, a deploy that forgets the variable must not expose the
+    | queue dashboard.
+    |
+    */
+    'horizon' => [
+        'admin_emails' => array_values(array_filter(array_map(
+            static fn (string $email): string => strtolower(trim($email)),
+            explode(',', (string) env('HORIZON_ADMIN_EMAILS', '')),
+        ))),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | MapLibre basemap styles
+    |--------------------------------------------------------------------------
+    |
+    | CLAUDE.md hard rule #8: GeoRAG uses MapLibre GL so an on-prem
+    | deployment can run fully air-gapped. The style URL is the one thing
+    | maplibre-gl fetches over the network, so it is configured here,
+    | shared to the SPA as the `basemap_styles` Inertia prop by
+    | HandleInertiaRequests, and read through resources/js/lib/basemap.ts.
+    |
+    | That chain was complete at both ends and missing in the middle: the
+    | prop was shared, the accessor read it, and this block did not exist --
+    | so the prop was null on every response, every map fell back to the
+    | hard-coded public-CDN defaults in basemap.ts, and the documented
+    | one-env-var swap could not be performed at all.
+    |
+    | `glyphs` is not a style: it is the font-PBF endpoint a hand-built
+    | style object needs (WorkspaceMap's terrain style). It lived as a
+    | fourth hard-coded URL outside the registry, so an air-gapped
+    | deployment that swapped all three styles still reached for fonts on
+    | the public internet.
+    |
+    */
+    'basemap' => [
+        'styles' => [
+            'positron' => env('BASEMAP_STYLE_POSITRON', 'https://tiles.openfreemap.org/styles/positron'),
+            'bright' => env('BASEMAP_STYLE_BRIGHT', 'https://tiles.openfreemap.org/styles/bright'),
+            'dark_matter' => env(
+                'BASEMAP_STYLE_DARK_MATTER',
+                'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+            ),
+        ],
+        'glyphs' => env(
+            'BASEMAP_GLYPHS_URL',
+            'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/glyphs/{fontstack}/{range}.pbf',
+        ),
+        // The satellite basemap is a raster tile template, not a style.json,
+        // so WorkspaceMap wraps it in a minimal style object it builds
+        // inline. Configured here for the same reason as the rest: it is a
+        // network dependency an air-gapped deployment has to be able to
+        // repoint.
+        'satellite_tiles' => env(
+            'BASEMAP_SATELLITE_TILES',
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        ),
+        'satellite_attribution' => env('BASEMAP_SATELLITE_ATTRIBUTION', 'Tiles © Esri'),
+
+        // MapView's terrain + imagery sources. MapView is a different
+        // component from WorkspaceMap -- it backs Foundry/PublicGeoscience
+        // and the inline maps in chat -- and it reached for two hosts that
+        // appear nowhere else: a terrain-RGB DEM and Sentinel-2 cloudless
+        // imagery.
+        //
+        // Both were hard-coded, and both were absent from the CSP's
+        // connect-src while resources/views/app.blade.php preconnects to
+        // them, so the page warmed a TLS connection to a host the browser
+        // then refused to fetch from. Configuring them here puts them in
+        // the allowlist SecurityHeadersMiddleware derives, which is the
+        // actual fix; being repointable is the bonus.
+        //
+        // NOTE: `imagery_tiles` (EOX Sentinel-2) and `satellite_tiles`
+        // (Esri World Imagery) above are two different providers for the
+        // same idea, chosen by whichever component you happen to be
+        // looking at. That is drift, but resolving it changes which
+        // imagery a geologist sees over their project, so it is a product
+        // call and not a cleanup.
+        'dem_tiles' => env('BASEMAP_DEM_TILES', 'https://tiles.mapterhorn.com/tilejson.json'),
+        'imagery_tiles' => env(
+            'BASEMAP_IMAGERY_TILES',
+            'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg',
+        ),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | FastAPI Internal Service
     |--------------------------------------------------------------------------
     |
@@ -62,18 +164,35 @@ return [
         // Default `primary` is the canonical "current" key tag; rotate by
         // setting this env to e.g. `2026-q3` and provisioning the new secret.
         'service_key_kid' => env('FASTAPI_SERVICE_KEY_KID', 'primary'),
-        // Generous timeout for streaming responses (seconds). Must be less than
-        // the Horizon job $timeout (300 s) to avoid a race between Guzzle and
-        // the queue worker.
+        // Guzzle read timeout for the streaming answer response, in seconds.
+        //
+        // This is the SOURCE of the inner-must-expire-first invariant, not
+        // one half of it: StreamQueryFromFastApi derives its own Horizon
+        // $timeout as this value plus a fixed headroom, so raising this
+        // raises that. It used to be a comment here asserting "must be less
+        // than the Horizon job $timeout (300 s)" against a 300 hard-coded in
+        // the job, which raising FASTAPI_STREAM_TIMEOUT would have inverted
+        // without a word.
         'stream_timeout' => (int) env('FASTAPI_STREAM_TIMEOUT', 270),
-        // Canonical V1 LLM is Qwen/Qwen3-14B-AWQ served by vLLM (reverted from
-        // Qwen3-30B-A3B MoE in 2026-05 — see CLAUDE.md "LLM" entry and .env
-        // comment above LLM_PRIMARY_MODEL). The FastAPI app/config.py
-        // VLLM_MODEL default matches. Surfaced here so QueryController stamps
-        // accurate llm_model on every query_audit_log row instead of falling
-        // through to a hard-coded wrong default. Override per deploy when
-        // models swap.
-        'llm_model' => env('FASTAPI_LLM_MODEL', 'Qwen/Qwen3-14B-AWQ'),
+        // Stamped onto every query_audit_log row by QueryController.
+        //
+        // The default was 'Qwen/Qwen3-14B-AWQ' with a docblock explaining
+        // that it existed precisely so the audit row would be accurate
+        // — and FASTAPI_LLM_MODEL was never set on the production
+        // container, so the wrong default was exactly what got stamped.
+        // The vLLM cutover to Azure AI Foundry completed 2026-07-30, so
+        // every audit row since then names a model that has not served a
+        // request. For a platform selling cited, auditable answers for
+        // regulated mining disclosure, that makes any retrospective
+        // "which model produced this answer" question wrong, along with
+        // any cost or quality attribution built on the column.
+        //
+        // The default now matches what fastapi-cc actually runs
+        // (AZURE_FOUNDRY_DEPLOYMENT=Cohere-command-a-plus-05-2026, verified
+        // live 2026-08-21). Set FASTAPI_LLM_MODEL when the backend moves,
+        // and treat a mismatch between this and AZURE_FOUNDRY_DEPLOYMENT as
+        // a deploy error rather than a cosmetic one.
+        'llm_model' => env('FASTAPI_LLM_MODEL', 'Cohere-command-a-plus-05-2026'),
     ],
 
     'hatchet' => [
@@ -141,6 +260,18 @@ return [
     |
     */
     'dagster' => [
+        // Dagster was retired 2026-07-28 (trim B2). OFF by default: with it
+        // on, every /internal/metrics scrape opened a PDO connection to the
+        // hardcoded docker-compose host `postgresql:5432`, which does not
+        // resolve on Azure — so each scrape paid a failed connect against a
+        // 2s timeout and wrote a `dagster_metrics_query_failed` warning into
+        // Log Analytics, then emitted `dagster_runs_total{status="none"} 0`,
+        // making a decommissioned stack read as merely idle.
+        //
+        // Set DAGSTER_METRICS_ENABLED=true only where a Dagster runs DB is
+        // genuinely reachable (i.e. the self-hosted docker-compose stack).
+        'enabled' => (bool) env('DAGSTER_METRICS_ENABLED', false),
+
         'url' => env('DAGSTER_GRAPHQL_URL', 'http://dagster-webserver:3001'),
         'location' => env('DAGSTER_LOCATION', 'georag_dagster'),
         'repository' => env('DAGSTER_REPOSITORY', '__repository__'),
@@ -161,6 +292,27 @@ return [
         'pg_db' => env('DAGSTER_PG_DB', 'georag_dagster'),
         'pg_user' => env('DAGSTER_PG_USER', 'georag'),
         'pg_password' => env('DAGSTER_PG_PASSWORD', ''),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Octane worker count (for /internal/metrics only)
+    |--------------------------------------------------------------------------
+    |
+    | MetricsController::octaneWorkers() has read
+    | `config('services.octane_metrics.workers')` since it was written, and
+    | that key did not exist — so it resolved to null, `max(1, 0)` returned
+    | 1, and octane_workers_total reported 1 on a deployment running 4.
+    | Worker saturation was therefore invisible: the busy gauge could never
+    | exceed the total.
+    |
+    | Same source of truth as the runtime: the OCTANE_WORKERS env var the
+    | container start command passes to `octane:start --workers`.
+    |
+    */
+
+    'octane_metrics' => [
+        'workers' => (int) env('OCTANE_WORKERS', 4),
     ],
 
 ];

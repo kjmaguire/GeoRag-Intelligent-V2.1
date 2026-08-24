@@ -32,6 +32,8 @@
 
 import { useEffect, useRef } from 'react';
 
+import { listenPrivate } from '@/lib/echoChannel';
+
 export interface WorkspaceDataUpdatedEvent {
     workspace_id: string;
     project_id: string;
@@ -64,7 +66,6 @@ export function useWorkspaceDataUpdated(
         let pendingEvent: WorkspaceDataUpdatedEvent | null = null;
 
         const channelName = `project.${projectId}.ingestion`;
-        const ch = window.Echo.private(channelName);
 
         const fire = (): void => {
             if (!isMounted) return;
@@ -79,7 +80,9 @@ export function useWorkspaceDataUpdated(
             }
         };
 
-        ch.listen('.workspace.data_updated', (raw: unknown) => {
+        // Ref-counted: this channel has three other subscribers and a bare
+        // Echo.leave() on unmount would silently unbind all of them.
+        const unsubscribe = listenPrivate(channelName, '.workspace.data_updated', (raw) => {
             if (!isMounted) return;
             const event = raw as WorkspaceDataUpdatedEvent;
             if (event.project_id !== projectId) return;
@@ -100,7 +103,7 @@ export function useWorkspaceDataUpdated(
                 clearTimeout(debounceTimer);
                 debounceTimer = null;
             }
-            window.Echo?.leave(channelName);
+            unsubscribe();
         };
     }, [projectId]);
 }

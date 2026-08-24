@@ -145,6 +145,33 @@ async def bind_workspace_scope(
             f"bind_workspace_scope({site}): refusing to bind non-UUID "
             f"workspace_id={wid!r}. SQL injection class (Theme G)."
         )
+    # ── The rule this function documented but never enforced ──────────
+    # `set_config(..., true)` is SET LOCAL, and PostgreSQL DISCARDS
+    # SET LOCAL outside a transaction block. Every caller that did
+    # `pool.acquire()` without `conn.transaction()` therefore got a
+    # SILENT no-op and then ran queries with no workspace GUC bound —
+    # e.g. qdrant_fallback.py, whose comment literally read "Mandatory
+    # GUC for the RLS policy on document_passages".
+    #
+    # Whether that leaks depends on the shape of each table's policy: a
+    # fail-closed policy returns zero rows, a fail-open one returns
+    # everything. "It happens to be fail-closed on the tables we checked"
+    # is not a tenancy guarantee.
+    #
+    # Fail loud, matching setWorkspaceRlsContext() on the PHP side. A
+    # caller that really does own a bare, dedicated, non-pooled
+    # connection passes is_local=False — which the docstring above
+    # already instructs, and which several ingest workflows already do.
+    if is_local and not conn.is_in_transaction():
+        raise BareConnectionError(
+            f"bind_workspace_scope({site}): is_local=True issues SET LOCAL, "
+            f"which PostgreSQL discards outside a transaction — the GUC "
+            f"would silently NOT be bound and every following query would "
+            f"run unscoped. Wrap the call in `async with conn.transaction():`, "
+            f"use scoped_connection() which does it for you, or pass "
+            f"is_local=False if this is a dedicated non-pooled connection "
+            f"that is closed when done."
+        )
     await conn.execute(
         "SELECT set_config('app.workspace_id', $1, $2)",
         wid,

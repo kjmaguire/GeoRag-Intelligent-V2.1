@@ -24,7 +24,7 @@ from app.hatchet_workflows.what_changed_weekly import (
 
 PG_DSN = os.environ.get(
     "PG_DSN",
-    "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",
+    "postgresql://georag:georag_dev_password@localhost:5432/georag",
 )
 
 pytestmark = pytest.mark.integration

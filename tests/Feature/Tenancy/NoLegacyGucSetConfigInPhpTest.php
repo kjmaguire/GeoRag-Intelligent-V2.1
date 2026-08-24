@@ -71,9 +71,15 @@ class NoLegacyGucSetConfigInPhpTest extends TestCase
     public function test_no_php_file_calls_set_config_with_legacy_gucs(): void
     {
         $base = str_replace('\\', '/', base_path());
+        // tests/ added 2026-08-21. It was out of scope, which is how
+        // GuardSchemaRlsTest — the workspace-isolation PEN-TEST — came to
+        // bind the legacy GUC and report a false cross-tenant leak on four
+        // tables for months. A guard that does not cover the tests cannot
+        // see the tests lying to it.
         $roots = [
             $base.'/app',
             $base.'/database/seeders',
+            $base.'/tests',
         ];
 
         // Matches PHP-style set_config calls that target the legacy GUC,
@@ -84,6 +90,12 @@ class NoLegacyGucSetConfigInPhpTest extends TestCase
         $violations = [];
         foreach ($roots as $root) {
             foreach ($this->findPhpFiles($root) as $f) {
+                // This file quotes the legacy GUC in its own regex and in
+                // the comment above it; scanning itself would make the
+                // detector its own only violation.
+                if (realpath($f) === realpath(__FILE__)) {
+                    continue;
+                }
                 $contents = @file_get_contents($f);
                 if ($contents === false) {
                     continue;

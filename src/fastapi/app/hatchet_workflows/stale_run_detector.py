@@ -18,8 +18,10 @@ For each stale candidate we apply one of three resolutions:
   2. **Retry dispatch** — if the run died at ``preflight``/``parse``/
      ``persist`` (the actual file-processing stages) AND we have not
      already retried it ``RECOVERY_MAX_ATTEMPTS`` times, mark this row
-     ``timed_out`` and spawn a fresh ``ingest_pdf`` workflow with
-     ``triggered_by='stale_run_sweep'`` and ``parent_run_id`` set. This
+     ``timed_out`` and spawn a fresh run of the workflow that OWNS the
+     file (routed from the bronze key prefix - see
+     ``recovery_workflow_for_key``; a key we cannot route gets no retry)
+     with ``triggered_by='stale_run_sweep'`` and ``parent_run_id`` set. This
      gives observable lineage: every retry is an auditable attempt with a
      known parent + reason. ``attempt_number`` is derived server-side
      inside ``start_run`` so the cap is enforced even with concurrent
@@ -84,22 +86,114 @@ def _recovery_max_attempts() -> int:
     Counts the attempt_number of the doomed row; 3 means: original
     upload + 2 sweep-driven retries before we give up and just leave the
     row timed_out for manual investigation.
+
+    Delegates rather than re-reading the env var: orphan_sweep needs the
+    same cap (it had none until 2026-08-22), and two independent readings
+    of one variable, each with its own fallback, is exactly how the two
+    sweeps would end up disagreeing about when to stop.
     """
-    raw = os.environ.get("STALE_RUN_RECOVERY_MAX_ATTEMPTS", "3")
-    try:
-        v = int(raw)
-        return v if v > 0 else 3
-    except ValueError:
-        return 3
+    return ingest_progress.recovery_max_attempts()
 
 
 # Stages where a stale heartbeat genuinely means the parse work was lost
 # and a re-dispatch will produce useful progress. Stages downstream of
-# persist already have rows in silver.reports; re-running ingest_pdf for
-# them would just duplicate work or hit the dedupe-on-sha256 path. For
+# persist already have rows in silver.reports; re-running the ingest
+# workflow for them would just duplicate work or hit the dedupe path. For
 # embed_verify/embedding the embed_pending_passages cron is the recovery
-# path, not ingest_pdf.
+# path, not a re-ingest.
+#
+# These stage names are shared by EVERY ingest workflow, which is why
+# _RECOVERY_WORKFLOW_BY_PREFIX below exists: knowing the run is stale at
+# 'parse' says nothing about what kind of file it is.
 RETRY_STAGES: frozenset[str] = frozenset({"preflight", "parse", "persist"})
+
+
+# Which workflow owns a bronze key, keyed by its first path segment.
+#
+# Every ingest workflow writes the SAME stage names ("preflight", "parse",
+# "persist") into silver.ingest_progress, and the row does not record which
+# workflow wrote them. The sweep used to read a stale row at one of those
+# stages and unconditionally dispatch ingest_pdf - so a GeoPackage that
+# wedged in GDAL was "recovered" by handing it to the PDF parser, which
+# downloaded it, found no %PDF- magic and failed the recovery run with
+# `preflight_rejected: missing %PDF- magic bytes`. The user was left with two
+# failed rows, the second carrying a reason that had nothing to do with their
+# file, and the upload was never retried by the workflow that could actually
+# read it.
+#
+# The prefixes are the ones Laravel's UploadController mints
+# (`{category}/{project_id}/{ts}_{name}`, with `tiff` and `tabular` as the two
+# non-category prefixes) - see UploadController::bronzePrefixes(). A prefix
+# missing from this map gets no recovery attempt at all, which is the
+# behaviour we want for a key shape nobody here recognises: marking the row
+# timed_out and stopping is honest, while dispatching a guessed workflow
+# manufactures a second failure and a misleading error message.
+#
+# Re-dispatch is safe for all of these. ingest_pdf and tiff_normalize dedupe
+# on source_file_sha256; ingest_spatial, ingest_tabular and ingest_well_logs
+# all delete-then-insert scoped to (project, source_file) in one transaction,
+# so a re-run replaces rather than accumulates.
+_RECOVERY_WORKFLOW_BY_PREFIX: dict[str, str] = {
+    "reports": "ingest_pdf",
+    "tiff": "tiff_normalize",
+    "archive": "ingest_zip_archive",
+    "spatial": "ingest_spatial",
+    "well_logs": "ingest_well_logs",
+    # ingest_tabular handles both the typed drill categories and the two
+    # generic workbook prefixes. For the typed ones the prefix IS the
+    # sheet_type hint the geologist chose at upload time, and passing it back
+    # matters: a CSV whose headers do not self-identify only routed correctly
+    # the first time because of that hint.
+    "collars": "ingest_tabular",
+    "surveys": "ingest_tabular",
+    "lithology": "ingest_tabular",
+    "samples": "ingest_tabular",
+    "excel": "ingest_tabular",
+    "tabular": "ingest_tabular",
+    # 2026-08-23: standalone .dbf. A dBASE table with no same-stem .shp is an
+    # attribute table, not a shapefile sidecar, and lands in
+    # silver.attribute_tables via ingest_tabular. It needs an entry here for
+    # the same reason every other category does — without one the sweep marks
+    # a stalled upload timed_out and never retries it.
+    "tables": "ingest_tabular",
+}
+
+#: Prefixes that are also a sheet_type hint for ingest_tabular.
+_TABULAR_SHEET_TYPE_PREFIXES: frozenset[str] = frozenset(
+    {"collars", "surveys", "lithology", "samples"}
+)
+
+
+def _key_prefix(minio_key: str | None) -> str:
+    """First path segment of a bronze key, or '' when there isn't one."""
+    if not minio_key:
+        return ""
+    key = minio_key.lstrip("/")
+    # Some call sites carry the bucket name; the prefix we want is the one
+    # after it.
+    if key.startswith("bronze/"):
+        key = key[len("bronze/"):]
+    head, _, rest = key.partition("/")
+    return head if rest else ""
+
+
+def recovery_workflow_for_key(minio_key: str | None) -> str | None:
+    """Name of the workflow that should re-run ``minio_key``, or None.
+
+    None means "do not attempt recovery" - see _RECOVERY_WORKFLOW_BY_PREFIX.
+    """
+    return _RECOVERY_WORKFLOW_BY_PREFIX.get(_key_prefix(minio_key))
+
+
+def recoverable_bronze_prefixes() -> frozenset[str]:
+    """Every bronze prefix this module can route to a workflow.
+
+    Exported for the nightly bronze sweep, which needs the same answer one
+    step earlier: it filters unroutable prefixes out of its orphan SELECT
+    rather than examining and re-noting them every night forever. Two
+    sweeps, one routing table.
+    """
+    return frozenset(_RECOVERY_WORKFLOW_BY_PREFIX)
 
 
 class StaleRunDetectorInput(BaseModel):
@@ -190,26 +284,147 @@ async def _project_is_fully_embedded(
         return False
 
 
+def _build_recovery_payload(
+    *,
+    workflow_name: str,
+    stale_row: dict,
+    recovery_run_id: str,
+    correlation_token: str,
+):
+    """Return ``(workflow, input_model)`` for a recovery dispatch.
+
+    Two shapes of workflow live here, and the difference is how each one
+    finds its progress row:
+
+    * ingest_pdf and tiff_normalize take no ``run_id``. They call
+      `lookup_active_run_id(workspace_id, minio_key)` and adopt whichever
+      non-terminal row they find - which is the one `start_run` created a
+      moment ago.
+    * the three geology workflows and ingest_zip_archive take ``run_id``
+      explicitly and upsert the row under it.
+
+    ``file_size`` is informational for the PDF/TIFF pair: preflight
+    re-downloads and re-derives the real size against the 2 GB cap, so 0 is
+    safe here. (input.file_size has no other reference in either module.)
+    """
+    workspace_id = stale_row["workspace_id"]
+    project_id = stale_row["project_id"]
+    minio_key = stale_row["minio_key"]
+
+    if workflow_name == "ingest_pdf":
+        from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
+
+        return ingest_pdf, IngestPdfInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            file_size=0,
+            correlation_token=correlation_token,
+        )
+
+    if workflow_name == "tiff_normalize":
+        from app.hatchet_workflows.tiff_normalize import (
+            TiffNormalizeInput,
+            tiff_normalize,
+        )
+
+        return tiff_normalize, TiffNormalizeInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            file_size=0,
+            correlation_token=correlation_token,
+        )
+
+    if workflow_name == "ingest_zip_archive":
+        from app.hatchet_workflows.ingest_zip_archive import (
+            IngestZipArchiveInput,
+            ingest_zip_archive,
+        )
+
+        return ingest_zip_archive, IngestZipArchiveInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            run_id=recovery_run_id,
+        )
+
+    if workflow_name == "ingest_spatial":
+        from app.hatchet_workflows.ingest_spatial import (
+            IngestSpatialInput,
+            ingest_spatial,
+        )
+
+        return ingest_spatial, IngestSpatialInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            run_id=recovery_run_id,
+        )
+
+    if workflow_name == "ingest_well_logs":
+        from app.hatchet_workflows.ingest_well_logs import (
+            IngestWellLogsInput,
+            ingest_well_logs,
+        )
+
+        return ingest_well_logs, IngestWellLogsInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            run_id=recovery_run_id,
+        )
+
+    if workflow_name == "ingest_tabular":
+        from app.hatchet_workflows.ingest_tabular import (
+            IngestTabularInput,
+            ingest_tabular,
+        )
+
+        prefix = _key_prefix(minio_key)
+        return ingest_tabular, IngestTabularInput(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            minio_key=minio_key,
+            run_id=recovery_run_id,
+            sheet_type=(
+                prefix if prefix in _TABULAR_SHEET_TYPE_PREFIXES else None
+            ),
+        )
+
+    # Unreachable while this stays in lockstep with
+    # _RECOVERY_WORKFLOW_BY_PREFIX; raising rather than silently returning
+    # None means a new prefix added to the map without a branch here shows up
+    # as a logged dispatch failure instead of a run that is quietly never
+    # recovered.
+    raise ValueError(f"no recovery payload builder for workflow {workflow_name!r}")
+
+
 async def _dispatch_recovery_run(
     *,
     stale_row: dict,
 ) -> str | None:
-    """Spawn a fresh ingest_pdf workflow tied to the stale row by parent_run_id.
+    """Re-run the workflow that OWNS this file, tied to the stale row.
 
-    Returns the new run_id on success, None on any failure (caller will
-    fall back to plain timed_out without recovery).
+    Which workflow that is comes from the bronze key prefix; see
+    `recovery_workflow_for_key`. Returns the new run_id on success, None on
+    any failure or when the key belongs to no known workflow (caller falls
+    back to plain timed_out without recovery).
     """
+    workflow_name = recovery_workflow_for_key(stale_row.get("minio_key"))
+    if workflow_name is None:
+        log.info(
+            "stale_run_detector: no recovery workflow for key=%s — leaving "
+            "run=%s timed_out without a retry",
+            stale_row.get("minio_key"), stale_row.get("run_id"),
+        )
+        return None
+
     try:
         # Imported lazily — keeps the stale_run_detector worker bootable
-        # even when ingest_pdf has an import-time error.
+        # even when one of the ingest workflows has an import-time error.
         from uuid import uuid4
 
-        from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
-
-        # file_size is informational only — preflight re-downloads and
-        # re-derives size against the 2 GB cap from the actual bytes, so
-        # passing 0 here is safe. (Searched: input.file_size has zero
-        # references in ingest_pdf.py outside the input model.)
         # Reserve the per-run row BEFORE dispatching, so on_failure_task
         # (if dispatch fails immediately) can still find a row to update.
         recovery_run_id = await ingest_progress.start_run(
@@ -227,25 +442,25 @@ async def _dispatch_recovery_run(
             )
             return None
 
-        payload = IngestPdfInput(
-            workspace_id=stale_row["workspace_id"],
-            project_id=stale_row["project_id"],
-            minio_key=stale_row["minio_key"],
-            file_size=0,
+        workflow, payload = _build_recovery_payload(
+            workflow_name=workflow_name,
+            stale_row=stale_row,
+            recovery_run_id=recovery_run_id,
             correlation_token=f"stale-sweep-{uuid4()}",
         )
-        ref = await ingest_pdf.aio_run_no_wait(payload)
+        ref = await workflow.aio_run_no_wait(payload)
         log.info(
-            "stale_run_detector: dispatched recovery ingest_pdf "
+            "stale_run_detector: dispatched recovery %s "
             "parent=%s recovery=%s workflow_run_id=%s key=%s",
-            stale_row["run_id"], recovery_run_id, ref.workflow_run_id,
-            stale_row["minio_key"],
+            workflow_name, stale_row["run_id"], recovery_run_id,
+            ref.workflow_run_id, stale_row["minio_key"],
         )
         return recovery_run_id
     except Exception as exc:
         log.warning(
-            "stale_run_detector: recovery dispatch failed for run=%s key=%s: %s",
-            stale_row["run_id"], stale_row.get("minio_key"), exc,
+            "stale_run_detector: recovery dispatch failed for run=%s key=%s "
+            "workflow=%s: %s",
+            stale_row["run_id"], stale_row.get("minio_key"), workflow_name, exc,
         )
         return None
 
@@ -350,12 +565,17 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
 
         # Resolution 2 — retry-eligible. Mark the doomed row timed_out
         # AND spawn a fresh ingest_pdf run linked by parent_run_id.
-        will_retry = (
+        # `recovery_workflow_for_key` is part of the predicate, not just of
+        # the dispatch: a key we cannot route is not retry-eligible at all,
+        # and deciding that here keeps `start_run` from minting a recovery
+        # row that nothing will ever pick up.
+        will_retry = bool(
             current_step in RETRY_STAGES
             and (row["attempt_number"] or 1) < max_attempts
             and row["minio_key"]
             and row["workspace_id"]
             and row["project_id"]
+            and recovery_workflow_for_key(row["minio_key"])
         )
 
         # Resolution 3 (default) — mark timed_out. Always happens for

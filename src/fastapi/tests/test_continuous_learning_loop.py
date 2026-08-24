@@ -46,7 +46,11 @@ async def test_continuous_learning_loop_runs_against_real_workspaces() -> None:
     assert out.success is True
     # Scanned at least the workspaces that exist
     assert out.workspaces_scanned >= 1
-    assert out.workspaces_evaluated == out.workspaces_scanned
+    # `workspaces_evaluated` was asserted here to equal
+    # `workspaces_scanned`. It always did -- the loop it counted has no
+    # early exit -- which is why the field was removed on 2026-08-22
+    # along with `eval_regressions_detected`. Neither ever measured an
+    # evaluation; `evaluate_workspace` was deleted in 09d1d35.
 
 
 @pytest.mark.integration

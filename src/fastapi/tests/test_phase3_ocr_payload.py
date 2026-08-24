@@ -24,7 +24,7 @@ from app.services.ingest import pdf_report as _pdf_report_module
 # 1. _run_parser_subprocess section dicts include ocr_confidence + ocr_method
 # ---------------------------------------------------------------------------
 
-def test_run_parser_subprocess_includes_ocr_fields():
+def test_run_parser_subprocess_includes_ocr_fields(tmp_path):
     from app.hatchet_workflows import ingest_pdf as mod
 
     stub = MagicMock()
@@ -68,7 +68,13 @@ def test_run_parser_subprocess_includes_ocr_fields():
         "parse_pdf_report",
         MagicMock(return_value=stub),
     ):
-        out = mod._run_parser_subprocess(b"%PDF-1.4 fake", sha256="aa" * 32)
+        body = tmp_path / "fake.pdf"
+        body.write_bytes(b"%PDF-1.4 fake")
+        # _run_parser_subprocess takes the PATH of an already-downloaded
+        # body, not the bytes (2026-08-21). Passing bytes pickled the
+        # whole file through the pool's pipe and materialised it a third
+        # time in the child, which then wrote it back to disk anyway.
+        out = mod._run_parser_subprocess(str(body), sha256="aa" * 32)
 
     assert len(out["sections"]) == 2
     s0, s1 = out["sections"]

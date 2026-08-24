@@ -283,7 +283,37 @@ class GeoRAGResponse(BaseModel):
         ...,
         ge=0.0,
         le=1.0,
-        description="Composite confidence score across all 6 hallucination prevention layers",
+        description=(
+            "RETRIEVAL strength, not answer quality: the mean per-tool "
+            "relevance, capped at 0.95, floored to 0.1 on a refusal or a "
+            "no-tool-call answer. Every structured tool (PostGIS, Neo4j, "
+            "assay, downhole, overview) contributes a flat 1.0 when it "
+            "returned any rows at all, so a project that has drilling scores "
+            "0.95 on a question its corpus does not really answer. Only "
+            "document and public-geoscience search contribute a real score. "
+            "Read `validation_state` for whether the ANSWER was checked."
+        ),
+    )
+    # Audit 2026-08-21 — this field used to be described as a "composite
+    # confidence score across all 6 hallucination prevention layers". It never
+    # was: no layer contributes to the computation. The layers only ever
+    # SUBTRACT, via the 0.2 floor `validate_node` applies on a guard failure,
+    # so a 0.95 meant "at least one tool returned at least one row" and
+    # nothing more. Splitting the two signals is cheaper and more honest than
+    # inventing a synthesis-quality number at assembly time, before the guards
+    # have run.
+    validation_state: Literal["clean", "unverified", "flagged"] = Field(
+        default="unverified",
+        description=(
+            "What the §04i post-assembly guards concluded about THIS answer. "
+            "'clean' — Layer 3/4/6 ran and raised nothing. 'flagged' — a "
+            "guard raised at least one warning (ungrounded number, "
+            "unresolvable entity, violated geological constraint). "
+            "'unverified' — the checks did not complete, or have not run yet. "
+            "Defaults to 'unverified' deliberately: an answer that never "
+            "reached validate_node has not been checked, and must not read as "
+            "though it had."
+        ),
     )
     sources_used: list[str] = Field(
         ...,
@@ -304,6 +334,26 @@ class GeoRAGResponse(BaseModel):
             "Retrieval sources that errored or timed out during this query. "
             "Empty when all sources returned cleanly. Frontend renders a "
             "degraded-sources warning when non-empty."
+        ),
+    )
+    # 2026-08-21 — the model that actually produced `text`, so Laravel can
+    # stamp query_audit_log.llm_model with something true. Laravel writes
+    # that column at reservation time from a config default, i.e. before a
+    # model has been chosen; the refresh that was supposed to correct it
+    # depended on a "routing" SSE frame whose producer was deleted in the
+    # orchestrator package refactor, so the column has been recording a
+    # config value rather than a fact. Carrying it on the terminal
+    # `completed` payload removes the separate protocol entirely.
+    #
+    # Optional because a refusal or a hard failure can assemble a response
+    # without ever reaching an answer-producing LLM call — in that case
+    # there is no model to name, and NULL is the honest value.
+    llm_model: str | None = Field(
+        default=None,
+        description=(
+            "Model that generated this answer (e.g. "
+            "'Cohere-command-a-plus-05-2026'). Null when no answer-producing "
+            "LLM call ran — refusals and early failures."
         ),
     )
     # Plan §4b — typed guard codes that fired during post-assembly

@@ -10,6 +10,30 @@ interface IngestSummary {
     latest_in_flight: string | null;
 }
 
+interface OcrMethodRow {
+    method: string;
+    label: string;
+    is_ocr: boolean;
+    count: number;
+    flagged: number;
+}
+
+interface OcrCoverage {
+    total: number;
+    ocr_total: number;
+    native_total: number;
+    unknown_total: number;
+    flagged_total: number;
+    by_method: OcrMethodRow[];
+    /**
+     * Always null today, and typed that way on purpose. Coverage is not
+     * accuracy: there is no ground-truth page set and no CER/WER harness,
+     * so nothing here can say whether the OCR is CORRECT. This becomes a
+     * number when that harness exists.
+     */
+    measured_accuracy: null;
+}
+
 interface OverviewProps {
     project: {
         project_id: string;
@@ -25,10 +49,11 @@ interface OverviewProps {
     next_action: { title: string; detail: string; cta: string; href: string };
     recent_activity: Array<{ id: string; when: string; kind: 'query' | 'refusal' | string; text: string }>;
     ingest_summary: IngestSummary;
+    ocr_coverage: OcrCoverage;
     empty: boolean;
 }
 
-export default function FoundryOverview({ project, kpis, next_action, recent_activity, ingest_summary, empty }: OverviewProps) {
+export default function FoundryOverview({ project, kpis, next_action, recent_activity, ingest_summary, ocr_coverage, empty }: OverviewProps) {
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [ingest, setIngest] = useState<IngestSummary>(ingest_summary);
@@ -81,7 +106,7 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
     // navigation, no Vite re-bundle.
     useWorkspaceDataUpdated(project.project_id, () => {
         router.reload({
-            only: ['project', 'kpis', 'next_action', 'recent_activity', 'ingest_summary'],
+            only: ['project', 'kpis', 'next_action', 'recent_activity', 'ingest_summary', 'ocr_coverage'],
         });
     });
 
@@ -286,6 +311,72 @@ export default function FoundryOverview({ project, kpis, next_action, recent_act
                                     </div>
                                 </div>
                             ))
+                        )}
+                    </Card>
+                </section>
+
+                {/*
+                  * OCR corpus coverage. Coverage, NOT accuracy — see the
+                  * OcrCoverage interface above and ocrCoverage() in
+                  * OverviewController for why that distinction is the whole
+                  * point of this card.
+                  */}
+                <section className="px-8 pb-6">
+                    <Card
+                        eyebrow="DOCUMENT CORPUS"
+                        title={
+                            ocr_coverage.total === 0
+                                ? 'No passages yet'
+                                : `${ocr_coverage.ocr_total} of ${ocr_coverage.total} passages came from an OCR engine`
+                        }
+                    >
+                        {ocr_coverage.total === 0 ? (
+                            <p className="text-xs" style={{ color: 'var(--fg-3)' }}>
+                                Ingest a report and this will show which engine read it.
+                            </p>
+                        ) : (
+                            <>
+                                <p className="text-xs leading-relaxed mb-4" style={{ color: 'var(--fg-2)' }}>
+                                    How the text was obtained — <strong>not</strong> how accurate it is.
+                                    Nothing measures OCR accuracy yet, so treat a high OCR share as
+                                    &ldquo;more of this corpus was read by a machine that can misread&rdquo;,
+                                    not as an error rate.
+                                </p>
+                                <div className="grid gap-px" style={{ background: 'var(--line-1)' }}>
+                                    {ocr_coverage.by_method.map((m) => (
+                                        <div
+                                            key={m.method}
+                                            className="grid grid-cols-[1fr_auto_auto] gap-4 items-baseline px-3 py-2"
+                                            style={{ background: 'var(--bg-2)' }}
+                                        >
+                                            <span className="text-xs" style={{ color: 'var(--fg-1)' }}>
+                                                {m.label}
+                                                {m.is_ocr && (
+                                                    <span className="ml-2">
+                                                        <Pill tone="info">OCR</Pill>
+                                                    </span>
+                                                )}
+                                            </span>
+                                            <span className="text-xs font-mono tabular-nums" style={{ color: 'var(--fg-0)' }}>
+                                                {m.count}
+                                            </span>
+                                            <span
+                                                className="text-[10px] font-mono tabular-nums w-24 text-right"
+                                                style={{ color: m.flagged > 0 ? 'var(--warn)' : 'var(--fg-3)' }}
+                                            >
+                                                {m.flagged > 0 ? `${m.flagged} flagged` : '—'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                                {ocr_coverage.unknown_total > 0 && (
+                                    <p className="text-[10px] font-mono mt-3" style={{ color: 'var(--fg-3)' }}>
+                                        {ocr_coverage.unknown_total} passage
+                                        {ocr_coverage.unknown_total === 1 ? '' : 's'} predate the
+                                        ocr_method column and cannot be attributed to an engine.
+                                    </p>
+                                )}
+                            </>
                         )}
                     </Card>
                 </section>

@@ -138,13 +138,27 @@ async def _last_successful_refresh(
 
 async def _max_dependency_change(
     conn: asyncpg.Connection, view: MaterializedView,
-) -> object | None:
-    """Return MAX(created_at) across the view's silver dependencies.
+) -> tuple[object | None, bool]:
+    """Return (MAX(created_at) across the view's dependencies, scan_was_clean).
 
-    None if every dependency table is empty (legitimately nothing to refresh)
-    or if every dependency lacks a created_at column (defensive: assume stale).
+    The second element exists because a bare None meant two OPPOSITE
+    things and the caller could not tell them apart:
+
+      * every dependency table is empty -> legitimately nothing to
+        refresh, so SKIP;
+      * a dependency query failed (missing table, no created_at column,
+        no privilege) -> we do not know, so assume stale and REFRESH.
+
+    Resolving both as "refresh" meant the staleness short-circuit could
+    never fire on a workspace with no drill data yet: zero rows
+    everywhere, max_ts None, full REFRESH MATERIALIZED VIEW on every
+    single ingestion event, forever.
+
+    scan_was_clean is False as soon as any dependency query raises, which
+    keeps the defensive half of the old behaviour intact.
     """
     max_ts = None
+    scan_was_clean = True
     for dep in view.dependencies:
         try:
             row = await conn.fetchrow(f"SELECT MAX(created_at) AS max_ts FROM {dep}")
@@ -152,11 +166,12 @@ async def _max_dependency_change(
                 if max_ts is None or row["max_ts"] > max_ts:
                     max_ts = row["max_ts"]
         except Exception as exc:
+            scan_was_clean = False
             log.debug(
                 "mv_refresh: skipping dependency staleness check dep=%s err=%s",
                 dep, exc,
             )
-    return max_ts
+    return max_ts, scan_was_clean
 
 
 async def _row_count(conn: asyncpg.Connection, qualified: str) -> int | None:
@@ -248,12 +263,18 @@ async def _refresh_one(
                 last_finished = await _last_successful_refresh(
                     conn, view.qualified, workspace_id,
                 )
-                max_dep = await _max_dependency_change(conn, view)
-                if (
-                    last_finished is not None
-                    and max_dep is not None
-                    and _to_epoch(max_dep) <= _to_epoch(last_finished)
-                ):
+                max_dep, scan_was_clean = await _max_dependency_change(
+                    conn, view,
+                )
+                # `max_dep is None` with a CLEAN scan means every dependency
+                # table is empty — the strongest possible case for skipping,
+                # and previously the one case that always refreshed.
+                nothing_changed = max_dep is None or (
+                    _to_epoch(max_dep) <= _to_epoch(last_finished)
+                    if last_finished is not None
+                    else False
+                )
+                if last_finished is not None and scan_was_clean and nothing_changed:
                     log.info(
                         "mv_refresh: skipped (no dependency changes since %s) view=%s",
                         last_finished, view.qualified,

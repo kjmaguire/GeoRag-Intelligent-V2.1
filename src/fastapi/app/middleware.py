@@ -113,6 +113,18 @@ class GlobalTimeoutMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 
 
+# Liveness/readiness paths. A SUCCESSFUL request to one of these is
+# logged at DEBUG rather than INFO, so it does not reach the log store at
+# the default level; a failing one is still logged at INFO, because a
+# probe that started failing is the single most useful line in the file.
+#
+# Measured 2026-08-22: probe requests were 9,758 of fastapi-cc's 98,187
+# console lines over two days -- ten percent of the tier's volume spent
+# recording that nothing was wrong. (The 21 Aug audit put this at a third
+# of the tier; a third is not what the workspace shows.)
+_PROBE_PATHS = frozenset({"/health", "/ready", "/healthz", "/readyz", "/up"})
+
+
 class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
     """Per-request JSON log line + X-Request-ID round-trip.
 
@@ -128,8 +140,14 @@ class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
                          `--proxy-headers --forwarded-allow-ips` is set)
 
     The X-Request-ID is added to the response so callers can correlate
-    their client-side logs with our server-side logs. Laravel's
-    `StreamQueryFromFastApi` already forwards the inbound header.
+    their client-side logs with our server-side logs.
+
+    Laravel's `StreamQueryFromFastApi` forwards `traceparent` and
+    `X-Request-ID` (the query id) since 2026-08-21. Before that it sent
+    neither — this docstring claimed it did, which is exactly why nobody
+    noticed that every chat request got a freshly minted, unrelated trace
+    id here. If you are debugging a missing join key, check the header
+    array in that job rather than trusting this paragraph.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -159,7 +177,13 @@ class StructuredAccessLogMiddleware(BaseHTTPMiddleware):
         finally:
             duration_ms = round((time.perf_counter() - start) * 1000.0, 2)
             client_host = request.client.host if request.client else None
-            logger.info(
+            level = (
+                logging.DEBUG
+                if request.url.path in _PROBE_PATHS and status < 400
+                else logging.INFO
+            )
+            logger.log(
+                level,
                 "request",
                 extra={
                     "request_id": request_id,

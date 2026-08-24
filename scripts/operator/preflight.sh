@@ -168,7 +168,7 @@ fi
 # ---------------------------------------------------------------------------
 # O-05 — Cold-start runbook present (operator must execute on host)
 # ---------------------------------------------------------------------------
-if [ -f ops/runbooks/cold-start.md ]; then
+if [ -f ops/runbooks/_archived/cold-start.md ]; then
   check "O-05" "cold-start.md runbook available" ok \
     "Operator must execute on the prod host; this script cannot verify remote state."
 else

@@ -128,7 +128,17 @@ async def test_stale_run_in_embedding_with_zero_unembedded_becomes_completed():
     )
     await ingest_progress.mark_stage_started(run_id=run_id, stage="embed_verify")
     await ingest_progress.mark_stage_started(run_id=run_id, stage="embedding")
-    await _force_stale_heartbeat(run_id)
+    # DERIVED, not a literal. F2b (2026-08-11) gave embedding/embed_verify
+    # rows their own, much longer staleness window
+    # (STALE_RUN_DETECTOR_EMBED_MINUTES, default 120) because embeds
+    # serialize per workspace and a 15-minute clock was timing out healthy
+    # bulk-import rows. This test still backdated 30 minutes, so the row was
+    # not stale, the detector scanned 0 rows, and the assertion failed with
+    # `assert 0 >= 1`. Nobody noticed: the module is integration-marked and
+    # that marker executes in no workflow.
+    await _force_stale_heartbeat(
+        run_id, minutes_old=srd._embed_stale_after_minutes() + 30,
+    )
     try:
         # _project_is_fully_embedded → True (no unembedded passages exist
         # for this synthetic project since we never inserted any).

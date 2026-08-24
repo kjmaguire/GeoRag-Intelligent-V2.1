@@ -20,7 +20,7 @@ from app.services.cross_workspace_audit import emit_cross_workspace_alert
 
 PG_DSN = os.environ.get(
     "PG_DSN",
-    "postgresql://georag:OMljaORhiA7RGQN3ilfemNWpezF9waU@localhost:5432/georag",
+    "postgresql://georag:georag_dev_password@localhost:5432/georag",
 )
 
 

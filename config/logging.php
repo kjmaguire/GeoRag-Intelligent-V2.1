@@ -77,7 +77,20 @@ return [
         // or ship to Loki/Pulse without scraping the noisy app log. The
         // file is daily-rotated with a 30-day retention so compliance
         // queries have a workable history window.
+        // 2026-08-21: made a STACK, not a single daily file. On Azure
+        // Container Apps only stdout/stderr reaches Log Analytics, so the
+        // compliance record of every 403 the IDOR gates emit was being
+        // written to a rotating file inside a container that gets replaced
+        // on every deploy — generated, then thrown away. The file channel
+        // stays for local development, where tail -f is the point; stderr
+        // is what makes the record survive.
         'authz_audit' => [
+            'driver' => 'stack',
+            'channels' => explode(',', (string) env('AUTHZ_AUDIT_STACK', 'authz_audit_file,stderr')),
+            'ignore_exceptions' => false,
+        ],
+
+        'authz_audit_file' => [
             'driver' => 'daily',
             'path' => storage_path('logs/authz_audit.log'),
             'level' => env('AUTHZ_AUDIT_LEVEL', 'info'),

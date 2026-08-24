@@ -1,0 +1,774 @@
+# GENERATED FILE -- do not edit by hand.
+#
+# Exported from uv.lock by scripts/check_fastapi_lock_export.py, which CI
+# re-runs and diffs. docker/fastapi.Dockerfile installs from this file so
+# the image gets the versions CI actually tested, instead of re-resolving
+# pyproject.toml's ranges at build time.
+#
+# Regenerate after any dependency change:
+#   python scripts/check_fastapi_lock_export.py --write
+#
+affine==2.4.0
+    # via rasterio
+aioboto3==15.5.0
+    # via
+    #   georag-fastapi
+    #   georag-object-storage
+aiobotocore==2.25.1
+    # via aioboto3
+aiofiles==25.1.0
+    # via aioboto3
+aiohappyeyeballs==2.6.1
+    # via aiohttp
+aiohttp==3.14.3
+    # via
+    #   aiobotocore
+    #   hatchet-sdk
+aioitertools==0.13.0
+    # via aiobotocore
+aiosignal==1.4.0
+    # via aiohttp
+annotated-doc==0.0.4
+    # via
+    #   fastapi
+    #   typer
+annotated-types==0.7.0
+    # via pydantic
+anthropic==0.122.0
+    # via
+    #   georag-fastapi
+    #   pydantic-ai-slim
+anyio==4.13.0
+    # via
+    #   anthropic
+    #   httpx
+    #   httpx2
+    #   langsmith
+    #   openai
+    #   pydantic-ai-slim
+    #   pydantic-graph
+    #   starlette
+    #   watchfiles
+asyncpg==0.31.0
+    # via georag-fastapi
+attrs==26.1.0
+    # via
+    #   aiohttp
+    #   rasterio
+authlib==1.7.2
+    # via georag-fastapi
+azure-ai-documentintelligence==1.0.2
+    # via georag-fastapi
+azure-core==1.41.0
+    # via
+    #   azure-ai-documentintelligence
+    #   azure-identity
+    #   azure-storage-blob
+    #   georag-fastapi
+azure-identity==1.25.3
+    # via georag-object-storage
+azure-storage-blob==12.30.0
+    # via georag-object-storage
+backoff==2.2.1
+    # via langfuse
+boto3==1.40.61
+    # via
+    #   aiobotocore
+    #   georag-object-storage
+botocore==1.40.61
+    # via
+    #   aiobotocore
+    #   boto3
+    #   georag-object-storage
+    #   s3transfer
+brotli==1.2.0 ; platform_python_implementation == 'CPython'
+    # via fonttools
+brotlicffi==1.2.0.1 ; platform_python_implementation != 'CPython'
+    # via fonttools
+cachetools==7.0.5
+    # via georag-fastapi
+certifi==2026.2.25
+    # via
+    #   httpcore
+    #   httpx
+    #   pyogrio
+    #   pyproj
+    #   rasterio
+    #   requests
+    #   sentry-sdk
+cffi==2.0.0
+    # via
+    #   brotlicffi
+    #   cryptography
+    #   weasyprint
+charset-normalizer==3.4.7
+    # via
+    #   pdfminer-six
+    #   requests
+click==8.4.2
+    # via
+    #   cligj
+    #   huggingface-hub
+    #   rasterio
+    #   uvicorn
+cligj==0.7.2
+    # via rasterio
+cloudpickle==3.1.2
+    # via shap
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via
+    #   click
+    #   tqdm
+    #   typer
+contourpy==1.3.3
+    # via matplotlib
+cryptography==50.0.0
+    # via
+    #   authlib
+    #   azure-identity
+    #   azure-storage-blob
+    #   georag-fastapi
+    #   joserfc
+    #   msal
+    #   pdfminer-six
+    #   pyjwt
+cssselect2==0.9.0
+    # via weasyprint
+cuda-bindings==13.2.0 ; python_full_version < '3.15' and sys_platform == 'linux'
+    # via torch
+cuda-pathfinder==1.5.2 ; python_full_version < '3.15' and sys_platform == 'linux'
+    # via cuda-bindings
+cuda-toolkit==13.0.3.0 ; sys_platform == 'linux'
+    # via torch
+cycler==0.12.1
+    # via matplotlib
+deprecated==1.3.1
+    # via limits
+distro==1.9.0
+    # via
+    #   anthropic
+    #   langsmith
+    #   openai
+docstring-parser==0.17.0
+    # via anthropic
+et-xmlfile==2.0.0
+    # via openpyxl
+fastapi==0.141.1
+    # via
+    #   georag-fastapi
+    #   sentry-sdk
+filelock==3.25.2
+    # via
+    #   huggingface-hub
+    #   torch
+fonttools==4.63.0
+    # via
+    #   matplotlib
+    #   weasyprint
+frozenlist==1.8.0
+    # via
+    #   aiohttp
+    #   aiosignal
+fsspec==2026.3.0
+    # via
+    #   huggingface-hub
+    #   torch
+genai-prices==0.1.3
+    # via pydantic-ai-slim
+geopandas==1.1.4
+    # via georag-fastapi
+googleapis-common-protos==1.74.0
+    # via
+    #   grpcio-status
+    #   opentelemetry-exporter-otlp-proto-http
+griffelib==2.0.2
+    # via pydantic-ai-slim
+grpcio==1.80.0
+    # via
+    #   grpcio-status
+    #   grpcio-tools
+    #   hatchet-sdk
+    #   qdrant-client
+grpcio-status==1.80.0
+    # via hatchet-sdk
+grpcio-tools==1.80.0
+    # via hatchet-sdk
+h11==0.16.0
+    # via
+    #   httpcore
+    #   httpcore2
+    #   uvicorn
+h2==4.3.0
+    # via httpx
+hatchet-sdk==1.37.2
+    # via georag-fastapi
+hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+    # via huggingface-hub
+hpack==4.1.0
+    # via h2
+httpcore==1.0.9
+    # via httpx
+httpcore2==2.3.0
+    # via httpx2
+httptools==0.8.0
+    # via uvicorn
+httpx==0.28.1
+    # via
+    #   anthropic
+    #   georag-fastapi
+    #   huggingface-hub
+    #   langchain-core
+    #   langfuse
+    #   langgraph-sdk
+    #   langsmith
+    #   openai
+    #   pydantic-ai-slim
+    #   pydantic-graph
+    #   qdrant-client
+httpx2==2.3.0
+    # via genai-prices
+huggingface-hub==1.27.0
+    # via
+    #   sentence-transformers
+    #   tokenizers
+    #   transformers
+hyperframe==6.1.0
+    # via h2
+idna==3.11
+    # via
+    #   anyio
+    #   httpx
+    #   httpx2
+    #   requests
+    #   yarl
+importlib-metadata==8.7.1
+    # via opentelemetry-api
+isodate==0.7.2
+    # via
+    #   azure-ai-documentintelligence
+    #   azure-storage-blob
+jinja2==3.1.6
+    # via torch
+jiter==0.13.0
+    # via
+    #   anthropic
+    #   openai
+jmespath==1.1.0
+    # via
+    #   aiobotocore
+    #   boto3
+    #   botocore
+joblib==1.5.3
+    # via scikit-learn
+joserfc==1.7.4
+    # via authlib
+jsonpatch==1.33
+    # via langchain-core
+jsonpointer==3.1.1
+    # via jsonpatch
+kiwisolver==1.5.0
+    # via matplotlib
+langchain-core==1.5.5
+    # via
+    #   georag-fastapi
+    #   langgraph
+    #   langgraph-checkpoint
+    #   langgraph-prebuilt
+    #   langgraph-sdk
+langchain-protocol==0.0.18
+    # via
+    #   langchain-core
+    #   langgraph-sdk
+langdetect==1.0.9
+    # via georag-fastapi
+langfuse==3.15.0
+    # via georag-fastapi
+langgraph==1.2.11
+    # via georag-fastapi
+langgraph-checkpoint==4.2.0
+    # via
+    #   georag-fastapi
+    #   langgraph
+    #   langgraph-prebuilt
+langgraph-prebuilt==1.1.0
+    # via langgraph
+langgraph-sdk==0.4.2
+    # via langgraph
+langsmith==0.10.12
+    # via langchain-core
+lasio==0.32
+    # via georag-fastapi
+limits==5.8.0
+    # via slowapi
+llvmlite==0.48.0
+    # via
+    #   georag-fastapi
+    #   numba
+    #   shap
+logfire-api==4.31.1
+    # via pydantic-graph
+lxml==6.1.1
+    # via
+    #   pikepdf
+    #   python-docx
+markdown-it-py==4.2.0
+    # via rich
+markupsafe==3.0.3
+    # via jinja2
+matplotlib==3.11.1
+    # via
+    #   georag-fastapi
+    #   mplstereonet
+mdurl==0.1.2
+    # via markdown-it-py
+mplstereonet==0.6.3
+    # via georag-fastapi
+mpmath==1.3.0
+    # via sympy
+msal==1.37.0
+    # via
+    #   azure-identity
+    #   msal-extensions
+msal-extensions==1.3.1
+    # via azure-identity
+multidict==6.7.1
+    # via
+    #   aiobotocore
+    #   aiohttp
+    #   yarl
+neo4j==6.1.0
+    # via georag-fastapi
+networkx==3.6.1
+    # via torch
+numba==0.66.0
+    # via
+    #   georag-fastapi
+    #   shap
+numpy==2.4.4
+    # via
+    #   contourpy
+    #   geopandas
+    #   lasio
+    #   matplotlib
+    #   mplstereonet
+    #   numba
+    #   pandas
+    #   pyogrio
+    #   qdrant-client
+    #   rasterio
+    #   scikit-learn
+    #   scipy
+    #   sentence-transformers
+    #   shap
+    #   shapely
+    #   transformers
+    #   xgboost
+nvidia-cublas==13.1.1.3 ; sys_platform == 'linux'
+    # via
+    #   cuda-toolkit
+    #   nvidia-cudnn-cu13
+    #   nvidia-cusolver
+nvidia-cuda-cupti==13.0.85 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
+    # via
+    #   cuda-toolkit
+    #   nvidia-cublas
+nvidia-cuda-runtime==13.0.96 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+nvidia-cudnn-cu13==9.20.0.48 ; sys_platform == 'linux'
+    # via torch
+nvidia-cufft==12.0.0.61 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+nvidia-cufile==1.15.1.6 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+nvidia-curand==10.4.0.35 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+nvidia-cusolver==12.0.4.66 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+nvidia-cusparse==12.6.3.3 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver
+nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux'
+    # via torch
+nvidia-nccl-cu12==2.30.7 ; sys_platform == 'linux'
+    # via xgboost
+nvidia-nccl-cu13==2.29.7 ; sys_platform == 'linux'
+    # via torch
+nvidia-nvjitlink==13.0.88 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via
+    #   cuda-toolkit
+    #   nvidia-cufft
+    #   nvidia-cusolver
+    #   nvidia-cusparse
+nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
+    # via torch
+nvidia-nvtx==13.0.85 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via cuda-toolkit
+openai==2.54.0
+    # via
+    #   langfuse
+    #   pydantic-ai-slim
+openpyxl==3.1.5
+    # via georag-fastapi
+opentelemetry-api==1.39.1
+    # via
+    #   langfuse
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   pydantic-ai-slim
+opentelemetry-exporter-otlp-proto-common==1.39.1
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-http==1.39.1
+    # via langfuse
+opentelemetry-proto==1.39.1
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk==1.39.1
+    # via
+    #   langfuse
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-semantic-conventions==0.60b1
+    # via opentelemetry-sdk
+orjson==3.11.9
+    # via
+    #   langgraph-sdk
+    #   langsmith
+ormsgpack==1.12.2
+    # via langgraph-checkpoint
+packaging==25.0
+    # via
+    #   geopandas
+    #   huggingface-hub
+    #   langchain-core
+    #   langfuse
+    #   langsmith
+    #   limits
+    #   matplotlib
+    #   pikepdf
+    #   pyogrio
+    #   pytesseract
+    #   shap
+    #   transformers
+pandas==3.0.5
+    # via
+    #   geopandas
+    #   shap
+pdf2image==1.17.0
+    # via georag-fastapi
+pdfminer-six==20260107
+    # via
+    #   georag-fastapi
+    #   pdfplumber
+pdfplumber==0.11.10
+    # via georag-fastapi
+pikepdf==10.10.0
+    # via georag-fastapi
+pillow==12.3.0
+    # via
+    #   georag-fastapi
+    #   matplotlib
+    #   pdf2image
+    #   pdfplumber
+    #   pikepdf
+    #   pytesseract
+    #   weasyprint
+portalocker==3.2.0
+    # via qdrant-client
+prometheus-client==0.24.1
+    # via
+    #   hatchet-sdk
+    #   prometheus-fastapi-instrumentator
+prometheus-fastapi-instrumentator==8.1.0
+    # via georag-fastapi
+propcache==0.4.1
+    # via
+    #   aiohttp
+    #   yarl
+protobuf==6.33.6
+    # via
+    #   googleapis-common-protos
+    #   grpcio-status
+    #   grpcio-tools
+    #   hatchet-sdk
+    #   opentelemetry-proto
+    #   qdrant-client
+psutil==7.2.2
+    # via georag-fastapi
+pycparser==3.0 ; implementation_name != 'PyPy'
+    # via cffi
+pydantic==2.13.4
+    # via
+    #   anthropic
+    #   fastapi
+    #   genai-prices
+    #   georag-fastapi
+    #   hatchet-sdk
+    #   langchain-core
+    #   langfuse
+    #   langgraph
+    #   langsmith
+    #   openai
+    #   pydantic-ai-slim
+    #   pydantic-graph
+    #   pydantic-settings
+    #   qdrant-client
+pydantic-ai-slim==2.31.0
+    # via georag-fastapi
+pydantic-core==2.46.4
+    # via pydantic
+pydantic-graph==2.31.0
+    # via pydantic-ai-slim
+pydantic-settings==2.13.1
+    # via
+    #   georag-fastapi
+    #   hatchet-sdk
+pydyf==0.12.1
+    # via weasyprint
+pygments==2.20.0
+    # via rich
+pyjwt==2.13.0
+    # via
+    #   georag-fastapi
+    #   msal
+pyogrio==0.13.0
+    # via geopandas
+pyparsing==3.3.2
+    # via
+    #   matplotlib
+    #   rasterio
+pypdf==6.14.2
+    # via georag-fastapi
+pypdfium2==5.12.1
+    # via
+    #   georag-fastapi
+    #   pdfplumber
+pyphen==0.17.2
+    # via weasyprint
+pyproj==3.7.2
+    # via geopandas
+pytesseract==0.3.13
+    # via georag-fastapi
+python-dateutil==2.9.0.post0
+    # via
+    #   aiobotocore
+    #   botocore
+    #   hatchet-sdk
+    #   matplotlib
+    #   pandas
+python-docx==1.2.0
+    # via georag-fastapi
+python-dotenv==1.2.2
+    # via
+    #   pydantic-settings
+    #   uvicorn
+python-multipart==0.0.32
+    # via georag-fastapi
+pytz==2026.1.post1
+    # via neo4j
+pywin32==311 ; sys_platform == 'win32'
+    # via portalocker
+pyyaml==6.0.3
+    # via
+    #   huggingface-hub
+    #   langchain-core
+    #   transformers
+    #   uvicorn
+qdrant-client==1.19.0
+    # via georag-fastapi
+rasterio==1.5.0
+    # via georag-fastapi
+redis==7.4.0
+    # via georag-fastapi
+regex==2026.4.4
+    # via
+    #   tiktoken
+    #   transformers
+requests==2.33.1
+    # via
+    #   azure-core
+    #   langsmith
+    #   msal
+    #   opentelemetry-exporter-otlp-proto-http
+    #   requests-toolbelt
+    #   tiktoken
+requests-toolbelt==1.0.0
+    # via langsmith
+rich==15.0.0
+    # via typer
+s3transfer==0.14.0
+    # via boto3
+safetensors==0.8.0
+    # via transformers
+scikit-learn==1.8.0
+    # via
+    #   georag-fastapi
+    #   sentence-transformers
+    #   shap
+scipy==1.17.1
+    # via
+    #   scikit-learn
+    #   sentence-transformers
+    #   shap
+    #   xgboost
+sentence-transformers==5.7.0
+    # via georag-fastapi
+sentry-sdk==2.68.0
+    # via georag-fastapi
+setuptools==81.0.0
+    # via
+    #   grpcio-tools
+    #   torch
+shap==0.49.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
+    # via georag-fastapi
+shap==0.52.0 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
+    # via georag-fastapi
+shapely==2.1.2
+    # via geopandas
+shellingham==1.5.4
+    # via typer
+six==1.17.0
+    # via
+    #   langdetect
+    #   python-dateutil
+slicer==0.0.8
+    # via shap
+slowapi==0.1.10
+    # via georag-fastapi
+sniffio==1.3.1
+    # via
+    #   anthropic
+    #   langsmith
+    #   openai
+starlette==1.3.1
+    # via
+    #   fastapi
+    #   georag-fastapi
+    #   prometheus-fastapi-instrumentator
+sympy==1.14.0
+    # via torch
+tenacity==9.1.4
+    # via
+    #   hatchet-sdk
+    #   langchain-core
+threadpoolctl==3.6.0
+    # via scikit-learn
+tiktoken==0.12.0
+    # via pydantic-ai-slim
+tinycss2==1.5.1
+    # via
+    #   cssselect2
+    #   weasyprint
+tinyhtml5==2.1.0
+    # via weasyprint
+tokenizers==0.22.2
+    # via
+    #   sentence-transformers
+    #   transformers
+tqdm==4.67.3
+    # via
+    #   huggingface-hub
+    #   openai
+    #   sentence-transformers
+    #   shap
+    #   transformers
+transformers==5.15.0
+    # via
+    #   georag-fastapi
+    #   sentence-transformers
+triton==3.7.1 ; python_full_version < '3.15' and sys_platform == 'linux'
+    # via torch
+truststore==0.10.4
+    # via
+    #   httpcore2
+    #   httpx2
+typer==0.27.1
+    # via transformers
+typing-extensions==4.15.0
+    # via
+    #   anthropic
+    #   azure-ai-documentintelligence
+    #   azure-core
+    #   azure-identity
+    #   azure-storage-blob
+    #   fastapi
+    #   grpcio
+    #   huggingface-hub
+    #   langchain-core
+    #   langchain-protocol
+    #   langsmith
+    #   limits
+    #   openai
+    #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   pydantic
+    #   pydantic-core
+    #   python-docx
+    #   sentence-transformers
+    #   shap
+    #   torch
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via
+    #   fastapi
+    #   hatchet-sdk
+    #   pydantic
+    #   pydantic-ai-slim
+    #   pydantic-graph
+    #   pydantic-settings
+tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+    # via pandas
+urllib3==2.7.0
+    # via
+    #   botocore
+    #   georag-fastapi
+    #   hatchet-sdk
+    #   qdrant-client
+    #   requests
+    #   sentry-sdk
+uuid-utils==0.17.0
+    # via
+    #   langchain-core
+    #   langsmith
+uvicorn==0.52.3
+    # via georag-fastapi
+uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'
+    # via uvicorn
+watchfiles==1.1.1
+    # via uvicorn
+weasyprint==69.0
+    # via georag-fastapi
+webencodings==0.5.1
+    # via
+    #   cssselect2
+    #   tinycss2
+    #   tinyhtml5
+websockets==15.0.1
+    # via
+    #   langgraph-sdk
+    #   langsmith
+    #   uvicorn
+wrapt==1.17.3
+    # via
+    #   aiobotocore
+    #   deprecated
+    #   langfuse
+xgboost==3.3.0
+    # via georag-fastapi
+xxhash==3.8.1
+    # via
+    #   langgraph
+    #   langsmith
+yarl==1.23.0
+    # via aiohttp
+zipp==3.23.0
+    # via importlib-metadata
+zopfli==0.4.3
+    # via fonttools
+zstandard==0.25.0
+    # via langsmith

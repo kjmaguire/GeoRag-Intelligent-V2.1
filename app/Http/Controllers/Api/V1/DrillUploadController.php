@@ -6,11 +6,14 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
-use App\Services\Dagster\DagsterGraphQLClient;
-use App\Services\Dagster\DrillAssetSelector;
+use App\Models\User;
 use App\Services\FastApiJwtMinter;
+use App\Services\Ingestion\DrillFileRouter;
 use App\Services\Ingestion\HatchetDispatchThrottle;
 use App\Services\StorageService;
+use App\Support\SafeErrorMessage;
+use App\Support\UploadContentGuard;
+use App\Support\Uploads;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -28,8 +31,15 @@ use Throwable;
  *   1. Slug-based routing — matches Foundry's slug-scoped URLs.
  *   2. Writes a bronze.source_files row so the SRQ + lineage chain has
  *      an anchor (UploadController never persisted provenance).
- *   3. Synchronously dispatches the matching Dagster asset via GraphQL
- *      instead of waiting 5 minutes for the MinIO sensor poll.
+ *   3. Dispatches the matching Hatchet workflow synchronously
+ *      instead of waiting 5 minutes for an object-store sensor poll.
+ *
+ * Until 2026-08-22 this rejected every non-PDF extension with a 422
+ * blaming the 2026-07-28 Dagster retirement. `ingest_tabular` shipped
+ * on 2026-08-20 and UploadController restored the same formats the
+ * same day, so the two surfaces spent two days disagreeing about
+ * whether the platform accepts a collar CSV -- with the drill-specific
+ * one being the half that refused drill data.
  *
  * The two controllers intentionally do not share code in v1; the
  * generic /upload flow serves the data-import wizard, this one serves
@@ -37,7 +47,23 @@ use Throwable;
  */
 class DrillUploadController extends Controller
 {
-    /** SeaweedFS bronze prefix; workspace-scoped to keep multi-tenant blast radius tight. */
+    /**
+     * EPSG code bounds for the `source_epsg` override.
+     *
+     * Named rather than inlined for two reasons. It is the same range the
+     * database already enforces (chk_spatial_features_crs_native, and the
+     * matching CHECK on silver.geophysics_surveys.crs_epsg), so a single
+     * symbol keeps the two definitions visibly paired. And
+     * UploadSizeCapConsistencyTest greps this file for a literal
+     * `'max:<5+ digits>'` rule to stop a hand-written FILE SIZE cap creeping
+     * back in; 32767 is a coordinate-system identifier, not a size, and it
+     * should not have to weaken that guard to coexist with it.
+     */
+    private const EPSG_MIN = 1024;
+
+    private const EPSG_MAX = 32767;
+
+    /** Bronze object-key prefix; workspace-scoped to keep multi-tenant blast radius tight. */
     private const BRONZE_PREFIX = 'drill-uploads';
 
     private const ALLOWED_EXTS = ['csv', 'xlsx', 'xls', 'pdf'];
@@ -56,8 +82,27 @@ class DrillUploadController extends Controller
         }
 
         $validated = $request->validate([
-            'file' => ['required', 'file', 'max:2097152'],
+            // See App\Support\Uploads. This was `max:2097152` — 2 GiB, the
+            // whole memory allocation of the container serving the request.
+            'file' => ['required', 'file', 'max:'.Uploads::maxKilobytes()],
             'vendor_profile_id' => ['nullable', 'integer', 'exists:vendor_profiles,id'],
+            // Operator-supplied CRS for the collar coordinates in this file.
+            // Same rule and same wire type as UploadController and
+            // StoreQueryRequest: an EPSG integer, never a CRS string,
+            // bounded by the DB CHECK on the columns it lands in.
+            //
+            // Wiring this surface is not optional. ingest_tabular has always
+            // accepted source_epsg and has never once been sent one, so every
+            // drill file uploaded here has silently taken its
+            // DEFAULT_SOURCE_EPSG of 32613 (UTM 13N). An override wired only
+            // into the wizard's /upload route would have left this one
+            // guessing.
+            'source_epsg' => ['nullable', 'integer', 'min:'.self::EPSG_MIN, 'max:'.self::EPSG_MAX],
+        ], [
+            // Inline validate() has no messages() to hang these on; keep the
+            // wording identical to StoreQueryRequest::messages().
+            'source_epsg.min' => 'EPSG codes must be in the range 1024-32767.',
+            'source_epsg.max' => 'EPSG codes must be in the range 1024-32767.',
         ]);
 
         $file = $request->file('file');
@@ -69,16 +114,21 @@ class DrillUploadController extends Controller
             ], 422);
         }
 
-        // CSV/XLSX dispatched to Dagster's GraphQL API — a service retired
-        // with the 2026-07-28 trim (B2). Every such upload stored the file,
-        // then 502'd on a dead hostname. Reject up front with the same
-        // explanation shape UploadController::RETIRED_CATEGORIES uses,
-        // keeping PDF on the working FastAPI route.
-        if ($ext !== 'pdf') {
+        // This controller already sniffed the real MIME type further down —
+        // and only ever persisted it to bronze.source_files. Checking it
+        // here means the contradiction is caught before anything is stored
+        // or dispatched, rather than recorded alongside the file it
+        // describes. Lenient by design; see UploadContentGuard.
+        try {
+            $sniffedType = $file->getMimeType();
+        } catch (Throwable) {
+            $sniffedType = null;
+        }
+        if (UploadContentGuard::mimeMismatch($ext, $sniffedType)) {
             return response()->json([
-                'error' => 'retired_pipeline',
-                'message' => "Drill '.{$ext}' ingestion was retired with the Dagster services on 2026-07-28; "
-                    .'uploads were stored but never processed. PDF drill reports remain supported here.',
+                'error' => 'content_type_mismatch',
+                'message' => "This file is named '.{$ext}' but its contents are "
+                    ."'{$sniffedType}'. Rename it to match the real format.",
             ], 422);
         }
 
@@ -129,6 +179,7 @@ class DrillUploadController extends Controller
         );
 
         $vendorProfileId = $validated['vendor_profile_id'] ?? null;
+        $sourceEpsg = $validated['source_epsg'] ?? null;
 
         try {
             $this->streamToBronze($storage, $seaweedfsKey, $file->getRealPath(), $vendorProfileId);
@@ -136,7 +187,7 @@ class DrillUploadController extends Controller
             Log::error('DrillUploadController: bronze write failed', [
                 'project_id' => $project->project_id,
                 'workspace_id' => $workspaceId,
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ]);
 
             return response()->json([
@@ -145,7 +196,7 @@ class DrillUploadController extends Controller
             ], 500);
         }
 
-        $selection = DrillAssetSelector::select($ext, $originalName);
+        $selection = DrillFileRouter::select($ext, $originalName);
 
         // Security fix 2026-08-14 (MED): persist the server-sniffed MIME, not
         // the client-declared one — the client value is attacker-controlled.
@@ -171,7 +222,12 @@ class DrillUploadController extends Controller
                 'file_size_bytes' => $file->getSize(),
                 'mime_type' => $mimeType,
                 'source_type' => 'drill_upload',
-                'data_type' => $selection['asset_key'] ?? 'unrouted',
+                // The sheet-type hint, or null when the filename gave
+                // none and ingest_tabular will classify from the header
+                // row. 'unrouted' is reserved for an extension with no
+                // workflow at all — the two are not the same, and
+                // recording them alike hid which files were dispatched.
+                'data_type' => $selection['sheet_type'] ?? $selection['route'],
                 'campaign_id' => null,
                 'ingested_by' => (string) $user->id,
                 'ingested_at' => now(),
@@ -200,7 +256,7 @@ class DrillUploadController extends Controller
                 ], 200);
             }
             Log::error('DrillUploadController: source_files insert failed', [
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
                 'orphaned_key_deleted' => $seaweedfsKey,
             ]);
 
@@ -212,10 +268,10 @@ class DrillUploadController extends Controller
             project: $project,
             workspaceId: $workspaceId,
             seaweedfsKey: $seaweedfsKey,
-            sourceFileId: $sourceFileId,
             selection: $selection,
             fileSize: (int) $file->getSize(),
             vendorProfileId: $vendorProfileId,
+            sourceEpsg: $sourceEpsg,
         );
 
         $body = [
@@ -224,11 +280,17 @@ class DrillUploadController extends Controller
             'sha256' => $sha256,
             'size' => $file->getSize(),
             'route' => $selection['route'],
-            'asset_key' => $selection['asset_key'],
+            'sheet_type' => $selection['sheet_type'],
             'dispatch' => $dispatch,
         ];
 
-        // A classified route (dagster/fastapi_pdf — NOT 'unrouted', which has
+        // Echoed only when supplied, mirroring UploadController.
+        if ($sourceEpsg !== null) {
+            $body['source_epsg'] = $sourceEpsg;
+        }
+
+        // A classified route (hatchet_tabular/fastapi_pdf — NOT 'unrouted',
+        // which has
         // no dispatcher to fail) whose dispatch nonetheless failed used to
         // return 201 regardless, with the only signal a caller had to check
         // being `dispatch.dispatched === false` nested three levels deep.
@@ -245,17 +307,17 @@ class DrillUploadController extends Controller
     }
 
     /**
-     * @return array{dispatched: bool, run_id?: ?string, workflow_run_id?: ?string, error?: ?string, route: string}
+     * @return array{dispatched: bool, run_id?: ?string, workflow_run_id?: ?string, sheet_type?: ?string, source_epsg?: ?int, error?: ?string, route: string}
      */
     private function dispatch(
         $user,
         Project $project,
         string $workspaceId,
         string $seaweedfsKey,
-        string $sourceFileId,
         array $selection,
         int $fileSize,
         ?int $vendorProfileId,
+        ?int $sourceEpsg = null,
     ): array {
         $route = $selection['route'];
 
@@ -270,31 +332,15 @@ class DrillUploadController extends Controller
             );
         }
 
-        if ($route === 'dagster' && is_string($selection['asset_key'])) {
-            $opsConfig = [
-                // The bronze→silver asset pair both read object_key from
-                // the ops config — mirrors what minio_upload_sensor builds
-                // via sensor_helpers.build_sensor_run_config.
-                $selection['asset_key'] => [
-                    'config' => [
-                        'object_key' => $seaweedfsKey,
-                        'source_file_id' => $sourceFileId,
-                        'vendor_profile_id' => $vendorProfileId,
-                    ],
-                ],
-            ];
-
-            $result = app(DagsterGraphQLClient::class)->launchAssetMaterialization(
-                $selection['asset_key'],
-                $opsConfig,
+        if ($route === 'hatchet_tabular') {
+            return $this->dispatchTabular(
+                user: $user,
+                projectId: $project->project_id,
+                workspaceId: $workspaceId,
+                seaweedfsKey: $seaweedfsKey,
+                sheetType: $selection['sheet_type'],
+                sourceEpsg: $sourceEpsg,
             );
-
-            return [
-                'dispatched' => $result['dispatched'],
-                'run_id' => $result['run_id'],
-                'error' => $result['error'],
-                'route' => 'dagster',
-            ];
         }
 
         return [
@@ -302,6 +348,110 @@ class DrillUploadController extends Controller
             'route' => 'unrouted',
             'error' => 'no_dispatcher_for_extension',
         ];
+    }
+
+    /**
+     * Dispatch a CSV / XLSX drill upload to the ingest_tabular workflow.
+     *
+     * Mirrors UploadController::dispatchGeologyIngest() — same JWT +
+     * X-Service-Key handshake, same per-workspace throttle, same
+     * never-throw-out-of-the-upload-request contract. Kept as a separate
+     * method rather than shared with UploadController because the two
+     * surfaces derive `sheet_type` differently: the wizard has an explicit
+     * category from the picker, this one has only the filename.
+     *
+     * `$sheetType` may be null, and that is a real state rather than a
+     * failure — an unhinted CSV, or any workbook. ingest_tabular then
+     * classifies from the header row (or per sheet), which is why the
+     * key is omitted entirely instead of being sent as null.
+     *
+     * `$sourceEpsg` follows the same omit-when-null convention, and for a
+     * stronger reason: IngestTabularInput treats a null source_epsg as
+     * "assume DEFAULT_SOURCE_EPSG", so sending the key explicitly as null
+     * says nothing the omission does not, while sending a real value is the
+     * only way a caller has ever been able to correct that assumption.
+     *
+     * @return array{dispatched: bool, workflow_run_id?: ?string, sheet_type?: ?string, source_epsg?: ?int, error?: ?string, route: string}
+     */
+    private function dispatchTabular(
+        User $user,
+        string $projectId,
+        string $workspaceId,
+        string $seaweedfsKey,
+        ?string $sheetType,
+        ?int $sourceEpsg = null,
+    ): array {
+        try {
+            $fastApiBase = rtrim((string) config('services.fastapi.internal_url'), '/');
+            $serviceKey = config('services.fastapi.service_key');
+            if (! $serviceKey) {
+                Log::warning('DrillUploadController: FASTAPI_SERVICE_KEY missing — tabular ingest not dispatched');
+
+                return ['dispatched' => false, 'route' => 'hatchet_tabular', 'error' => 'no_service_key'];
+            }
+
+            $jwt = app(FastApiJwtMinter::class)->mint(
+                (string) ($user->id ?? 'unknown'),
+                $projectId,
+                [],
+            );
+
+            $payload = [
+                'workspace_id' => $workspaceId,
+                'project_id' => $projectId,
+                'minio_key' => $seaweedfsKey,
+                'run_id' => Str::uuid()->toString(),
+            ];
+            if ($sheetType !== null) {
+                $payload['sheet_type'] = $sheetType;
+            }
+            if ($sourceEpsg !== null) {
+                $payload['source_epsg'] = $sourceEpsg;
+            }
+
+            // Same per-workspace throttle as the PDF path above: an operator
+            // uploading a folder of drill exports bursts exactly as hard.
+            app(HatchetDispatchThrottle::class)->wait($workspaceId);
+
+            $resp = Http::withHeaders([
+                'X-Service-Key' => $serviceKey,
+                'Authorization' => 'Bearer '.$jwt,
+                'Accept' => 'application/json',
+            ])->timeout(15)->retry(3, 500)->post(
+                $fastApiBase.'/internal/v1/shadow/ingest_tabular/trigger',
+                $payload,
+            );
+
+            if (! $resp->successful()) {
+                Log::warning('DrillUploadController: tabular ingest returned non-2xx', [
+                    'status' => $resp->status(),
+                    'workspace_id' => $workspaceId,
+                ]);
+
+                return [
+                    'dispatched' => false,
+                    'route' => 'hatchet_tabular',
+                    'error' => 'fastapi_'.$resp->status(),
+                ];
+            }
+
+            $body = $resp->json();
+
+            return [
+                'dispatched' => true,
+                'workflow_run_id' => $body['hatchet_workflow_run_id'] ?? $body['workflow_run_id'] ?? null,
+                'sheet_type' => $sheetType,
+                'source_epsg' => $sourceEpsg,
+                'route' => 'hatchet_tabular',
+            ];
+        } catch (Throwable $e) {
+            Log::warning('DrillUploadController: tabular dispatch failed', [
+                'project_id' => $projectId,
+                'error' => SafeErrorMessage::forResponse($e),
+            ]);
+
+            return ['dispatched' => false, 'route' => 'hatchet_tabular', 'error' => 'exception'];
+        }
     }
 
     /**
@@ -317,8 +467,7 @@ class DrillUploadController extends Controller
     ): array {
         try {
             $fastApiBase = rtrim(
-                (string) (config('services.fastapi.internal_url')
-                    ?? config('services.fastapi.internal_url')),
+                (string) (config('services.fastapi.internal_url')),
                 '/',
             );
             $serviceKey = config('services.fastapi.service_key') ?? config('services.fastapi.service_key');
@@ -372,7 +521,7 @@ class DrillUploadController extends Controller
         } catch (Throwable $e) {
             Log::warning('DrillUploadController: PDF dispatch failed', [
                 'project_id' => $projectId,
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ]);
 
             return ['dispatched' => false, 'route' => 'fastapi_pdf', 'error' => 'exception'];

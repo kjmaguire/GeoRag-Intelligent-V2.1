@@ -32,10 +32,22 @@ class _MockConn:
         self.fetch_calls.append((sql, args))
         return self.rows
 
+    def is_in_transaction(self) -> bool:
+        # Real asyncpg connections expose this, and bind_workspace_scope
+        # now refuses is_local=True (SET LOCAL) outside a transaction —
+        # PostgreSQL discards it there, so the GUC would silently not be
+        # bound. Tracked rather than hardcoded True, so a production path
+        # that drops its transaction still fails here.
+        return getattr(self, "_in_tx", False)
+
     def transaction(self):
         @asynccontextmanager
         async def _tx():
-            yield None
+            self._in_tx = True
+            try:
+                yield None
+            finally:
+                self._in_tx = False
         return _tx()
 
 

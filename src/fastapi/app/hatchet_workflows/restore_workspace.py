@@ -42,7 +42,8 @@ from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
 from app.audit import emit_audit
-from app.db import bind_workspace_scope
+from app.db import scoped_connection
+from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.qdrant_conn import qdrant_client_kwargs
 
@@ -101,13 +102,9 @@ restore_workspace = hatchet.workflow(
 )
 
 
-def _dsn() -> str:
-    user = os.environ.get("POSTGRES_USER", "georag")
-    password = os.environ.get("POSTGRES_PASSWORD", "")
-    host = os.environ.get("POSTGRES_DIRECT_HOST", "postgresql")
-    port = os.environ.get("POSTGRES_DIRECT_PORT", "5432")
-    db = os.environ.get("POSTGRES_DB", "georag")
-    return f"postgres://{user}:{password}@{host}:{port}/{db}"
+# One DSN builder for the whole service — see app/db/dsn.py for why
+# sixty copies of this existed and what the drift cost.
+_dsn = build_dsn
 
 
 async def _count_postgres_rows(
@@ -118,11 +115,13 @@ async def _count_postgres_rows(
     """
     counts: dict[str, int] = {}
     try:
-        async with pool.acquire() as conn:
-            # Block-3 RLS: scope reads to the workspace being restored.
-            await bind_workspace_scope(
-                conn, workspace_id=workspace_str, site="hatchet.restore_workspace"
-            )
+        # Block-3 RLS: scope reads to the workspace being restored.
+        # scoped_connection acquires + opens a transaction + binds; the
+        # previous form bound on a bare pool.acquire(), where SET LOCAL is
+        # discarded and the scope was never applied.
+        async with scoped_connection(
+            pool, workspace_id=workspace_str, site="hatchet.restore_workspace",
+        ) as conn:
             for output_key, qualified_table, workspace_col in _PG_BASELINE_TABLES:
                 try:
                     if qualified_table == "silver.workspaces":
@@ -311,7 +310,7 @@ def _verify_snapshot_manifest(
     # Neo4j single bucket
     n4_expected = (stores.get("neo4j") or {}).get("node_count")
     n4_actual = live_counts.get("neo4j_nodes")
-    if n4_expected is not None and n4_actual not in (None, -1):
+    if n4_expected is not None and n4_actual is not None and n4_actual != -1:
         if int(n4_actual) != int(n4_expected):
             mismatches.append({
                 "store": "neo4j",
@@ -322,7 +321,7 @@ def _verify_snapshot_manifest(
     # Qdrant
     q_expected = (stores.get("qdrant") or {}).get("point_count")
     q_actual = live_counts.get("qdrant_points")
-    if q_expected is not None and q_actual not in (None, -1):
+    if q_expected is not None and q_actual is not None and q_actual != -1:
         if int(q_actual) != int(q_expected):
             mismatches.append({
                 "store": "qdrant",

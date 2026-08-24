@@ -13,7 +13,7 @@ import type {
     AddLayerObject,
 } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { MVT_LAYERS, MVT_INTERACTIVE_LAYERS, MVT_DEFAULT_VISIBILITY } from '../lib/mvtLayers';
+import { MVT_LAYERS, MVT_INTERACTIVE_LAYERS, MVT_DEFAULT_VISIBILITY, mvtSourceId } from '../lib/mvtLayers';
 import {
     mergeLayerVisibility,
     readLayerVisibility,
@@ -22,7 +22,7 @@ import {
 import { buildSilverTileUrl } from '../lib/tileUrl';
 import { createTileFailureWatchdog } from '../lib/tileFailureWatchdog';
 import { escapeHtml } from '../lib/escapeHtml';
-import { useBasemapStyleUrl } from '@/lib/basemap';
+import { useBasemapStyleUrl, useImageryTileUrl, useTerrainDemUrl } from '@/lib/basemap';
 import { useEvidenceMapPin } from '@/Hooks/useEvidenceMapPin';
 import { useSilverTileInvalidation } from '@/Hooks/useTileInvalidation';
 import type { PageProps } from '../types';
@@ -243,21 +243,36 @@ function useMapStyles(): Record<string, { label: string; url: string }> {
 //   3. maxzoom: 14 on DEM (data doesn't meaningfully improve beyond that)
 //   4. Globe projection only at z < 5 (mercator at project scale)
 //   5. Sources loaded lazily — only when satellite/terrain mode is activated
-// V1.5-12 — CDN URLs are now overridable via Vite env vars so on-prem
-// deployments can point at self-hosted DEM + satellite tiles without
-// re-building the SPA. Defaults preserve the dev experience (free public
-// tiles); production should set these to a self-hosted Martin or nginx.
+// V1.5-12 — the DEM + imagery URLs come from the shared @/lib/basemap
+// registry, which reads them from config/services.php via an Inertia prop
+// and still honours the VITE_* variables when a build baked them in.
+//
+// The comment this replaces said the Vite variables let an on-prem
+// deployment point at self-hosted tiles "without re-building the SPA".
+// `import.meta.env` is substituted by Vite at BUILD time, so they did the
+// opposite: a rebuild was the only way to change them, which an operator
+// handed a container image cannot do.
+//
+// The reason it mattered more than convenience: both hosts were hard-coded
+// here, preconnected in resources/views/app.blade.php, and missing from the
+// CSP's connect-src — so terrain and satellite mode were blocked in
+// production. connect-src is now derived from the same config.
+//
 // See ops/runbooks/dem-self-host.md for the self-hosting procedure
 // (terrain-RGB encoding via rio-rgbify, Martin raster_sources config,
 // nginx fallback).
-const DEFAULT_DEM_URL = 'https://tiles.mapterhorn.com/tilejson.json';
-const DEFAULT_SATELLITE_TILE_URL =
-    'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg';
-
-const DEM_TILES_URL: string =
-    (import.meta.env.VITE_DEM_TILES_URL as string | undefined) ?? DEFAULT_DEM_URL;
-const SATELLITE_TILES_URL: string =
-    (import.meta.env.VITE_SATELLITE_TILES_URL as string | undefined) ?? DEFAULT_SATELLITE_TILE_URL;
+const demSourceConfig = (url: string) => ({
+    type: 'raster-dem' as const,
+    url,
+    tileSize: 512,
+    maxzoom: 14,
+});
+const satelliteSourceConfig = (tiles: string) => ({
+    type: 'raster' as const,
+    tiles: [tiles],
+    tileSize: 256,
+    maxzoom: 18,
+});
 
 // ── CC-01 Item 2 — uncertainty-rings paint spec ──────────────────────────
 // Exported so registry-style tests can pin the filter + paint shape without
@@ -318,18 +333,6 @@ export const UNCERTAINTY_RINGS_MVT_SOURCE_ID = 'mvt-collars-source';
 export const UNCERTAINTY_RINGS_MVT_SOURCE_LAYER = 'collars';
 export const UNCERTAINTY_RINGS_GEOJSON_LAYER_ID = 'uncertainty-rings';
 
-const DEM_SOURCE_CONFIG = {
-    type: 'raster-dem' as const,
-    url: DEM_TILES_URL,
-    tileSize: 512,
-    maxzoom: 14,
-};
-const SATELLITE_SOURCE_CONFIG = {
-    type: 'raster' as const,
-    tiles: [SATELLITE_TILES_URL],
-    tileSize: 256,
-    maxzoom: 18,
-};
 
 // ── Tile request cancellation on rapid panning ───────────────────────────
 // When the user pans quickly (common in Rockies exploration), MapLibre
@@ -493,6 +496,10 @@ export default function MapView({
     const [mapStyle, setMapStyle] = useState('default');
     // Config-driven basemap URL registry (per CLAUDE.md hard rule #8).
     const mapStyles = useMapStyles();
+    // Terrain + imagery come from the same registry, so a deployment that
+    // repoints them also gets them into the CSP's connect-src.
+    const demTilesUrl = useTerrainDemUrl();
+    const imageryTilesUrl = useImageryTileUrl();
     const [error, setError]     = useState<string | null>(null);
     const [mapReady, setMapReady] = useState(false);
     // V1.5-11 — initialise from localStorage when present, falling through
@@ -736,12 +743,12 @@ export default function MapView({
             // Lazily create DEM + satellite sources on first terrain/satellite switch
             const ensureDemSource = () => {
                 if (!map.getSource('demSource')) {
-                    map.addSource('demSource', DEM_SOURCE_CONFIG);
+                    map.addSource('demSource', demSourceConfig(demTilesUrl));
                 }
             };
             const ensureSatelliteSource = () => {
                 if (!map.getSource('satelliteSource')) {
-                    map.addSource('satelliteSource', SATELLITE_SOURCE_CONFIG);
+                    map.addSource('satelliteSource', satelliteSourceConfig(imageryTilesUrl));
                 }
             };
             const ensureHillshadeLayer = () => {
@@ -815,7 +822,7 @@ export default function MapView({
             const msg = err instanceof Error ? err.message : String(err);
             console.debug('Style switch deferred:', msg);
         }
-    }, [mapStyle, mapReady]);
+    }, [mapStyle, mapReady, demTilesUrl, imageryTilesUrl]);
 
     // ── Dynamic terrain exaggeration on zoom — reduces GPU load at high zoom ──
     useEffect(() => {
@@ -848,7 +855,11 @@ export default function MapView({
         if (!map || !mapReady || !useMvt || mvtLayersAddedRef.current) return;
 
         MVT_LAYERS.forEach((layer) => {
-            const sourceId = `mvt-${layer.id}-source`;
+            // mvtSourceId(), not `mvt-${layer.id}-source`: entries that declare a
+            // shared `sourceKey` (the three imported-features layers) must resolve
+            // to ONE source so the multi-layer tile is fetched once, not once per
+            // MapLibre layer. Everything else still gets its own per-id source.
+            const sourceId = mvtSourceId(layer);
             const layerId = `mvt-${layer.id}`;
 
             // Add vector tile source from Martin via Laravel proxy.
@@ -953,12 +964,20 @@ export default function MapView({
         if (!map || !mapReady || !useMvt || !mvtLayersAddedRef.current) return;
         if (!projectId) return;
 
+        // Several registry entries can share one source (see MvtLayerDef.sourceKey).
+        // setTiles() on a shared source must fire ONCE — calling it again with the
+        // same URL re-triggers a full tile reload of a source that is already
+        // correct, so track which source ids have been swapped in this pass.
+        const swapped = new Set<string>();
+
         MVT_LAYERS.forEach((layer) => {
-            const sourceId = `mvt-${layer.id}-source`;
+            const sourceId = mvtSourceId(layer);
+            if (swapped.has(sourceId)) return;
             const source = map.getSource(sourceId);
             // VectorTileSource has setTiles; guard with type check before calling
             if (source && (source as VectorTileSource).setTiles) {
                 (source as VectorTileSource).setTiles([buildSilverTileUrl(layer.functionName, projectId, workspaceDataVersion)]);
+                swapped.add(sourceId);
             }
         });
     }, [workspaceDataVersion, mapReady, useMvt, projectId]);
@@ -1035,6 +1054,38 @@ export default function MapView({
                 `);
             }
 
+            // Imported spatial features (silver.spatial_features) — the three
+            // source-layers published by silver.pg_spatial_features_by_project.
+            // These rows have no dedicated table and no legend of their own, so
+            // the popup is where the import's identity AND its georeferencing
+            // provenance live: georef_method='assumed' or a low crs_confidence
+            // means the outline's position is a guess, and a geologist must be
+            // able to see that before trusting it.
+            if (
+                sourceLayer === 'imported_points'
+                || sourceLayer === 'imported_lines'
+                || sourceLayer === 'imported_polygons'
+            ) {
+                const crsConf = props.crs_confidence != null
+                    ? `${(parseFloat(String(props.crs_confidence)) * 100).toFixed(0)}%`
+                    : null;
+                const georef = props.georef_method != null ? String(props.georef_method) : null;
+                // Red for a guessed CRS, amber for a human override, grey otherwise.
+                const georefColor = georef === 'assumed'
+                    ? '#ef4444'
+                    : georef === 'manual' ? '#f59e0b' : '#9ca3af';
+                const originLabel = [props.source_layer, props.source_file]
+                    .filter((part) => part != null && String(part) !== '')
+                    .map(escapeHtml)
+                    .join(' · ');
+                return wrap(`
+                    <div style="font-weight: 700; font-size: 13px; color: #f43f5e; margin-bottom: 3px;">${escapeHtml(props.feature_name ?? 'Imported feature')}</div>
+                    <div style="color: #d1d5db;">${escapeHtml(props.feature_type ?? '—')}${props.feature_role ? ` · ${escapeHtml(props.feature_role)}` : ''}</div>
+                    ${originLabel ? `<div style="color: #9ca3af; margin-top: 2px; font-size: 10px;">${originLabel}</div>` : ''}
+                    ${georef ? `<div style="color: ${georefColor}; margin-top: 3px; font-size: 10px;">CRS ${escapeHtml(props.source_crs ?? '—')} · ${escapeHtml(georef)}${crsConf ? ` · ${crsConf}` : ''}</div>` : ''}
+                `);
+            }
+
             // Default collar/working popup
             const totalDepth = props.total_depth != null ? parseFloat(String(props.total_depth)).toFixed(0) + ' m TD' : '—';
             return wrap(`
@@ -1085,7 +1136,13 @@ export default function MapView({
             // Debounce — don't recreate popup on every pixel move
             const feat = features[0];
             const props = feat.properties as Record<string, unknown>;
-            const featureKey = props.hole_id ?? props.survey_name ?? props.sample_id ?? feat.id;
+            // props.feature_id is in the chain because the imported-features
+            // layers carry none of the three named keys and ST_AsMVT is called
+            // with 4 args, so feat.id is undefined for them. Without it the
+            // debounce compares undefined against the initial undefined
+            // _hoverFeatureKey, returns early, and no hover popup ever opens.
+            const featureKey = props.hole_id ?? props.survey_name ?? props.sample_id
+                ?? props.feature_id ?? feat.id;
             if (popupRef.current?._hoverFeatureKey === featureKey) return;
 
             popupRef.current?.remove();

@@ -92,8 +92,17 @@ class RetrievalProfile(BaseModel):
     conflict_detection_enabled: bool = Field(
         default=False,
         description=(
-            "Intended to make assemble inspect chunks for contradictions. NOT "
-            "YET WIRED — currently only logged in route_node, not acted on."
+            "Declares that this intent expects conflicting evidence to be "
+            "surfaced. Still not a switch: what actually drives conflict "
+            "surfacing is answer_emphasis='synthesis_with_conflicts', whose "
+            "prompt fragment orders the model to emit a '### Conflicting "
+            "evidence' sub-section, plus the parse in validate_node that reads "
+            "that section back into GeoRAGResponse.conflicting_evidence "
+            "(app/agent/conflict_extraction.py, wired 2026-08-21). Both "
+            "profiles that set this flag also set that emphasis, so the two "
+            "have never disagreed — but they could, and this one is the "
+            "duplicate. Either delete it or make it the single gate; do not "
+            "leave a second declaration of the same intent."
         ),
     )
     require_regulatory_constraints: bool = Field(

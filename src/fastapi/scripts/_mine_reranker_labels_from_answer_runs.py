@@ -69,7 +69,6 @@ Usage
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import logging
@@ -275,7 +274,10 @@ def main_sync(args):
             cur.execute(_FETCH_SQL)
             colnames = [d[0] for d in cur.description]
             raw_rows = cur.fetchall()
-            rows = [dict(zip(colnames, t)) for t in raw_rows]
+            # strict=False is a formality here: DB-API guarantees one
+            # cursor.description entry per column in every row, so
+            # the two can never disagree.
+            rows = [dict(zip(colnames, t, strict=False)) for t in raw_rows]
         logger.info("fetched %d eligible answer_run × positive_chunk rows", len(rows))
 
         # --- Per-row → training record ---

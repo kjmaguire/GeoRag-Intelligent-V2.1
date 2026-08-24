@@ -168,7 +168,7 @@ From [docker-compose.yml:2039-2065](../../../docker-compose.yml):
 | `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | unset | Enables Azure Document Intelligence OCR |
 | `AZURE_DOCUMENT_INTELLIGENCE_KEY` | unset | Azure OCR credential |
 | `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Azure is unavailable or empty |
-| `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated tier thresholds; unset routes uncertain OCR to review |
+| `OCR_ROUTING_THRESHOLDS_JSON` | unset | Tier thresholds; unset routes uncertain OCR to review. The shipped values are hand-picked, **not** calibrated — the assessment reports `thresholds_calibrated` only when the JSON carries a `calibrated_from` key naming an artefact. Supports per-engine bands via `by_ocr_method`, because DI (0.95–0.99) and Tesseract (0.70–0.85) confidences are not comparable. |
 | `PDF_PARSE_PAGE_WORKERS` | 4 | Page-level parallelism within a parse |
 | `PARSE_SUBPROCESS_MAX_WORKERS` | (auto) | Parallel parses per worker; empty → `min(cpu_count(), 4)` |
 | `BRONZE_LOCAL_DIR` | `/tmp/georag/bronze` | Body-bytes cache |

@@ -203,6 +203,86 @@ XlsxParseResult = ExcelParseResult
 # SHA-256 provenance helper
 # ---------------------------------------------------------------------------
 
+def read_sheet_rows(path: str, sheet_name: str = "") -> list[dict[str, Any]]:
+    """One sheet's rows as dicts keyed by its header row.
+
+    The four typed drill parsers reject a sheet whose columns none of their
+    aliases match, and until now the only thing left to do with it was
+    render it to prose. A geochemical certificate, an IP station list or a
+    radiometric-age table is not prose: it is a table whose columns simply
+    are not collar/survey/lithology/sample. This is the shape that lets the
+    workflow keep those values AS values.
+
+    Deliberately the same two loaders :func:`parse_xlsx_sheet` uses, so a
+    sheet that parses there reads here -- including the xlrd legacy path,
+    which is the only reader for .xls and lives in this package because
+    check_pyproject_covers_imports will not let the FastAPI side import it.
+    """
+    ext = Path(path).suffix.lower()
+    if ext == ".xls":
+        df, _resolved, _warnings = _xls_to_polars_df(path, sheet_name)
+    elif ext in _XLSX_EXTS:
+        df = (
+            pl.read_excel(path, sheet_name=sheet_name)
+            if sheet_name else pl.read_excel(path)
+        )
+    else:
+        raise ValueError(
+            f"read_sheet_rows: unsupported extension '{ext}' for '{path}'. "
+            f"Expected one of: .xlsx, .xlsm, .xls"
+        )
+    return df.to_dicts()
+
+
+def read_xls_sheets(path: str) -> list[tuple[str, str]]:
+    """Every non-empty sheet of a legacy .xls as (name, tab-separated text).
+
+    Exists so the FastAPI side does not have to import xlrd itself. It cannot:
+    check_pyproject_covers_imports gates every import under src/fastapi/app
+    against src/fastapi/pyproject.toml, and xlrd is declared HERE, in the
+    package that owns spreadsheet reading. Adding it to both would have meant
+    two readers for one format and a lockfile regeneration for a library that
+    is already installed.
+
+    Why it is needed at all: app/services/ingest/xlsx_ingester.py -- the text
+    fallback that catches every sheet the drill classifier did not claim --
+    called openpyxl unconditionally, and openpyxl reads the OOXML zip, not the
+    OLE2 binary that .xls actually is. A real customer .xls came back as
+    "produced no searchable text" while this module had been reading .xls
+    perfectly well on the typed-drill route the whole time.
+
+    Shape matches what the caller already builds from openpyxl worksheets:
+    first row is the header, rows are tab-separated, blank rows dropped, and a
+    sheet with nothing in it is omitted rather than yielding an empty string.
+    """
+    import xlrd  # noqa: PLC0415
+
+    book = xlrd.open_workbook(path, on_demand=True)
+    try:
+        out: list[tuple[str, str]] = []
+        for name in book.sheet_names():
+            sheet = book.sheet_by_name(name)
+            lines = []
+            for r in range(sheet.nrows):
+                cells = [
+                    "" if v is None else str(v).strip()
+                    for v in sheet.row_values(r)
+                ]
+                if any(cells):
+                    lines.append("\t".join(cells))
+            if lines:
+                out.append((name, "\n".join(lines)))
+        return out
+    finally:
+        try:
+            book.release_resources()
+        except Exception:
+            logger.debug(
+                "xlsx_parser: xlrd release_resources failed for %s",
+                path, exc_info=True,
+            )
+
+
 def _sha256_file(path: str) -> str:
     """Stream-hash the file at *path*, returning the hex digest."""
     h = hashlib.sha256()

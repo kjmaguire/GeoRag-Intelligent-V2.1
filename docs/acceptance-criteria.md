@@ -35,8 +35,8 @@ Updated: **2026-04-27** (V1.5 wrap + D2 sign-off).
 | CD workflow with dev → staging → prod stages | ✅ | `.github/workflows/cd.yml` (581 lines) |
 | Manual approval gate to prod via GitHub Environments | ✅ | `cd.yml` `environment: production` requires reviewer |
 | `.env.production.example` exists | ✅ | `.env.production.example` (458 lines, 143 keys) |
-| Secret management documented | ✅ | `ops/runbooks/secret-management.md` (SOPS + age) |
-| Per-credential rotation procedures | ✅ | `ops/runbooks/secret-rotation.md` (12 credential classes) |
+| Secret management documented | ✅ | `ops/runbooks/_archived/secret-management.md` (SOPS + age) |
+| Per-credential rotation procedures | ✅ | `ops/runbooks/_archived/secret-rotation.md` (12 credential classes) |
 | `SOPS_AGE_PRIVATE_KEY` GitHub Secret configured | ⏳ | Operator setup; documented in `secret-management.md` |
 | `STAGING_URL` + SSH host secrets configured | ⏳ | Operator setup; `cd.yml` graceful no-op until then |
 
@@ -84,7 +84,7 @@ Updated: **2026-04-27** (V1.5 wrap + D2 sign-off).
 | `traceparent` round-trip Laravel → FastAPI | ✅ | `InjectTraceparent.php` + `StructuredAccessLogMiddleware` extension; 14/14 tests green |
 | Full Monolog JSON formatter on Laravel channels | ✅ | V1.5-04: JsonFormatter on single/daily/authz_audit; Promtail pipeline simplified to single `json` stage. |
 | `python-json-logger` on FastAPI | ✅ | V1.5-05: hand-rolled JsonFormatter at `src/fastapi/app/logging_config.py`; 6/6 unit tests + live container verified. |
-| `query_audit_log` retention documented | ✅ | `ops/runbooks/log-retention.md` (8-row reference table) |
+| `query_audit_log` retention documented | ✅ | `ops/runbooks/_archived/log-retention.md` (8-row reference table) |
 
 ## Runbooks (19 → 28)
 
@@ -175,7 +175,7 @@ bash scripts/operator/preflight.sh           # confirm green
 | O-02 | Configure SSH host secrets (dev/staging/prod trio) | `set-github-secrets.sh` |
 | O-03 | Configure `STAGING_URL` (+ optional `*_BASE_URL`) | `set-github-secrets.sh` |
 | O-04 | Encrypt initial `.env.production.enc` | `bootstrap-secrets.sh` (interactive — prompts you to fill placeholders) |
-| O-05 | Run cold-start migration | `ops/runbooks/cold-start.md` (manual on prod host) |
+| O-05 | Run cold-start migration | `ops/runbooks/_archived/cold-start.md` (manual on prod host) |
 | O-06 | Capture first perf-baseline | First nightly run after O-03 set; commit YAML diff to `ops/baselines/2026-04-22-api-latency.md` |
 | O-07 | Wire Alertmanager destination | Manual on prod host: copy `docker/alertmanager/alertmanager.production.yml.example` → `alertmanager.production.yml`, substitute Slack/PagerDuty placeholders |
 
@@ -195,7 +195,7 @@ git commit -m "ci(cd): enforce deploy gates after operator provisioning"
 | V-02 | First nightly perf-baseline | After O-03 (STAGING_URL configured) |
 | V-03 | First e2e run | After self-hosted GH runner labelled `georag-e2e` is provisioned |
 | V-04 | First helm install in real cluster | After client cluster access; chart at `ops/charts/georag/` |
-| V-05 | D2 Drillhole rename execution | Run `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher` per `ops/runbooks/drillhole-label-rename.md` during next maintenance window |
+| V-05 | D2 Drillhole rename execution | Run `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher` per `ops/runbooks/_archived/drillhole-label-rename.md` during next maintenance window |
 
 After O-01..O-07 land, every box above is green or has an explicit
 deferred reason. **Ship.**

@@ -142,6 +142,16 @@ redis:
   persistence:
     enabled: true
     size: 5Gi
+  # Keep maxmemory at or under 80% of resources.limits.memory below.
+  # Redis's cap covers its dataset only -- buffers, fragmentation and
+  # fork copy-on-write sit on top, so a cap equal to the container
+  # limit is unreachable: the kernel kills the pod first. Overriding
+  # limits.memory means overriding this too.
+  maxmemory: "1536mb"
+  # volatile-lru evicts only TTL'd keys (cache, sessions) and never a
+  # queued job. Do not set allkeys-lru while queue and cache share
+  # this instance.
+  maxmemoryPolicy: volatile-lru
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits:   { cpu: "1",    memory: "2Gi" }

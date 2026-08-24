@@ -60,13 +60,29 @@ interface Citation {
     source_url?: string | null;
     staleness_seconds?: number | null;
 }
+/**
+ * What the §04i post-assembly guards concluded about an answer.
+ *
+ * Deliberately separate from `confidence`, which is a retrieval-strength
+ * number: every structured tool contributes a flat 1.0 when it returned any
+ * rows, so `conf 0.95` means "PostGIS found some collars", not "this answer
+ * is right". Backend: GeoRAGResponse.validation_state.
+ */
+type ValidationState = 'clean' | 'unverified' | 'flagged';
+
 interface ChatMessage {
     id: string;
     role: 'user' | 'assistant' | string;
     content: string;
     created_at: string;
     citations: Citation[];
+    // RETRIEVAL strength, not answer quality — see GeoRAGResponse.confidence.
+    // Every structured tool contributes a flat 1.0 when it returned any rows,
+    // so this is 0.95 for any question asked of a project that has drilling.
     confidence: number | null;
+    // What the §04i guards concluded about the answer itself. Rendered as the
+    // pill's tone; `confidence` alone cannot carry it.
+    validationState?: ValidationState | null;
     answer_run_id: string | null;
     status?: string | null;
     error?: string | null;
@@ -228,16 +244,30 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 : m)));
         }, 30_000);
         const fatal = setTimeout(() => {
-            const errMsg = 'The stream went quiet for 2 minutes — the realtime channel may have dropped. The answer below may be incomplete.';
+            // Two different situations wear the same timeout. "The answer
+            // above may be incomplete" is only true when there IS an answer;
+            // said over an empty bubble it sends the reader looking for text
+            // that never arrived.
+            const partial = 'The stream went quiet for 2 minutes — the realtime channel may have dropped. The text above is unchecked and may be incomplete.';
+            const nothing = 'The stream went quiet for 2 minutes and nothing arrived — the realtime channel may have dropped. Retry the question.';
             setMessages((prev) => prev.map((m) => (m.id === assistantId && m.isStreaming
                 ? {
                       ...m,
-                      // Preserve whatever streamed; only synthesize an error
-                      // body when nothing arrived at all.
-                      content: m.content || `Error: ${errMsg}`,
+                      // Preserve whatever streamed. Nothing is synthesized
+                      // into `content` — the error row below the bubble is
+                      // the one place the message belongs, and writing it
+                      // here too printed it twice.
                       status: null,
-                      error: errMsg,
+                      error: m.content ? partial : nothing,
                       isStreaming: false,
+                      // The text preserved above is the RAW stream. Every
+                      // §04i guard, the Layer-2 orphan-marker strip and the
+                      // confidence floor run server-side after generation
+                      // and only ever reach the browser on the `completed`
+                      // frame, which never arrived here. Unverified is the
+                      // truth about this text, and without it the bubble
+                      // reads exactly like a checked answer.
+                      validationState: 'unverified',
                   }
                 : m)));
             const ref = echoRef.current;
@@ -315,7 +345,15 @@ export default function FoundryChat({ project, threads, active_thread_id, active
             echoRef.current = null;
         }
         setStreaming(false);
-        setMessages((prev) => prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false, status: null } : m)));
+        // Stopped mid-generation: the partial text on screen never reached
+        // validate_node either. Same reasoning as the watchdog path above.
+        setMessages((prev) =>
+            prev.map((m) =>
+                m.isStreaming
+                    ? { ...m, isStreaming: false, status: null, validationState: 'unverified' }
+                    : m,
+            ),
+        );
     }
 
     // Clear timers on unmount so a navigation away mid-stream doesn't
@@ -343,6 +381,11 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                         metadata: {
                             citations: m.citations,
                             confidence: m.confidence,
+                            // Persisted alongside confidence so a reopened
+                            // thread can show that an answer was flagged.
+                            // Without it the flag lives only in the tab that
+                            // received the stream.
+                            validation_state: m.validationState ?? null,
                             answer_run_id: m.answer_run_id,
                         },
                     })),
@@ -492,6 +535,17 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                 } else if (eventType === 'completed') {
                     const finalText = String(event.text ?? accumulatedText);
                     const finalConfidence = typeof event.confidence === 'number' ? event.confidence : null;
+                    // Backend: GeoRAGResponse.validation_state, set by
+                    // validate_node. Absent on an older backend -> treat as
+                    // unverified rather than clean; the safe default is the
+                    // one that does not claim a check happened.
+                    const rawValidationState = String(event.validation_state ?? '');
+                    const finalValidationState: ValidationState =
+                        rawValidationState === 'clean'
+                            ? 'clean'
+                            : rawValidationState === 'flagged'
+                              ? 'flagged'
+                              : 'unverified';
                     const finalCitations = Array.isArray(event.citations) && event.citations.length > 0 ? event.citations : runningCitations;
                     const answerRunId = event.answer_run_id ? String(event.answer_run_id) : null;
                     // M2 P5 — viz_payload (chart hint) + map_payload (GeoJSON) ride on the
@@ -522,6 +576,7 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                                   ...m,
                                   content: finalText,
                                   confidence: finalConfidence,
+                                  validationState: finalValidationState,
                                   citations: finalCitations as Citation[],
                                   answer_run_id: answerRunId,
                                   status: null,
@@ -545,7 +600,31 @@ export default function FoundryChat({ project, threads, active_thread_id, active
                     setMessages((prev) =>
                         prev.map((m) =>
                             m.id === assistantId
-                                ? { ...m, content: `Error: ${errMsg}`, status: null, error: errMsg, isStreaming: false }
+                                ? {
+                                      ...m,
+                                      // Keep whatever streamed. This used to
+                                      // overwrite `content` with the error
+                                      // string, which threw away a partial
+                                      // answer — three paragraphs of retrieved
+                                      // text discarded because validation
+                                      // failed on the last claim — and then
+                                      // printed the same message twice, once
+                                      // as the answer body and once in the
+                                      // error row below it. The watchdog path
+                                      // in armWatchdog() already got this
+                                      // right; this branch did not.
+                                      status: null,
+                                      error: errMsg,
+                                      isStreaming: false,
+                                      // Same reasoning as the watchdog: every
+                                      // §04i guard runs server-side and only
+                                      // reaches the browser on the `completed`
+                                      // frame, which never arrived. Text that
+                                      // survived here is unchecked, and
+                                      // without saying so it renders exactly
+                                      // like a validated answer.
+                                      validationState: m.content ? 'unverified' : m.validationState,
+                                  }
                                 : m,
                         ),
                     );
@@ -850,6 +929,21 @@ type ResolvedCitation = {
     metadata?: Record<string, unknown>;
 };
 
+/**
+ * Pill tone for a retrieval-confidence score.
+ *
+ * The thresholds are the ones the backend already acts on, not new ones:
+ * `_floor_confidence_with_warning_banner` floors a guard-failed answer to
+ * 0.2, and `_compute_confidence` returns 0.1 for a refusal or a
+ * no-tool-call answer. So <= 0.2 is "the backend deliberately pushed this
+ * down" and < 0.5 is "barely anything scored".
+ */
+function confidenceTone(value: number): 'accent' | 'warn' | 'danger' {
+    if (value <= 0.2) return 'danger';
+    if (value < 0.5) return 'warn';
+    return 'accent';
+}
+
 function MessageBubble({
     m,
     projectId,
@@ -938,7 +1032,32 @@ function MessageBubble({
                         <span className="inline-block ml-1 animate-pulse" style={{ color: 'var(--accent)' }}>▍</span>
                     )}
                     {m.error && (
-                        <div className="mt-2 text-[10px] font-mono" style={{ color: 'var(--warn, #d97706)' }}>
+                        // When nothing streamed this row IS the bubble, so it
+                        // carries a border and a label rather than sitting as
+                        // a 10px afterthought under empty space. When text did
+                        // stream it stays a footnote qualifying the text above.
+                        <div
+                            className={
+                                m.content
+                                    ? 'mt-2 text-[10px] font-mono'
+                                    : 'text-xs font-mono rounded border px-3 py-2'
+                            }
+                            role="alert"
+                            style={
+                                m.content
+                                    ? { color: 'var(--warn, #d97706)' }
+                                    : {
+                                          color: 'var(--warn, #d97706)',
+                                          borderColor: 'var(--warn, #d97706)',
+                                          background: 'color-mix(in oklch, var(--warn, #d97706) 8%, transparent)',
+                                      }
+                            }
+                        >
+                            {!m.content && (
+                                <div className="uppercase tracking-wider mb-1 text-[10px]">
+                                    Answer failed
+                                </div>
+                            )}
                             {m.error}
                         </div>
                     )}
@@ -969,10 +1088,34 @@ function MessageBubble({
                     <span>{m.role}</span>
                     <span>·</span>
                     <span>{formatTime(m.created_at)}</span>
+                    {/* `conf` is RETRIEVAL strength — see
+                        GeoRAGResponse.confidence. It rendered tone="info" at
+                        every value, so a floored 0.05 answer and a strong 0.95
+                        one looked identical. The tone now tracks the number. */}
                     {m.confidence !== null && (
                         <>
                             <span>·</span>
-                            <Pill tone="info">conf {m.confidence.toFixed(2)}</Pill>
+                            <Pill tone={confidenceTone(m.confidence)}>
+                                conf {m.confidence.toFixed(2)}
+                            </Pill>
+                        </>
+                    )}
+                    {/* The answer-level verdict, rendered independently of the
+                        confidence number. It has to be independent: the two
+                        states that most need saying — a stream that was cut
+                        off, and one still in flight — have no confidence value
+                        at all, because that only arrives on `completed`.
+                        Nesting this inside the block above is what hid them. */}
+                    {!isUser && (m.isStreaming || (m.validationState && m.validationState !== 'clean')) && (
+                        <>
+                            <span>·</span>
+                            <Pill tone={m.validationState === 'flagged' ? 'danger' : 'warn'} dot>
+                                {m.isStreaming
+                                    ? 'not yet fact-checked'
+                                    : m.validationState === 'flagged'
+                                      ? 'fact-check flagged'
+                                      : 'unverified'}
+                            </Pill>
                         </>
                     )}
                     {/* Hover actions — copy on any settled assistant message,

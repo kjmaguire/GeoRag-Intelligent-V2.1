@@ -24,6 +24,7 @@ export type Category =
   | 'samples'
   | 'excel'
   | 'spatial'
+  | 'tables'
   | 'well_logs'
   | 'seismic'
   | 'xyz';
@@ -37,9 +38,27 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   lithology: ['csv', 'txt', 'tsv'],
   samples: ['csv', 'txt', 'tsv'],
   excel: ['xlsx', 'xls', 'xlsm'],
+  // A dBASE table with no `.shp` beside it is not a shapefile sidecar, it is
+  // an attribute table, and it routes to ingest_tabular. Its own category
+  // rather than a slot in `excel` or in the four drill categories: nothing
+  // in the extension says which drill table a .dbf holds, so listing it
+  // under collars/surveys/lithology/samples would make categoryForExtension
+  // pick one arbitrarily and pin a wrong sheet_type on every auto-routed
+  // file. A `.dbf` beside a same-stem `.shp` never reaches here —
+  // groupShapefiles() zips it into the shapefile bundle first, and that
+  // sibling is the only thing that discriminates the two cases.
+  tables: ['dbf'],
   // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
   // travel together and a lone .shp cannot be read without them.
-  spatial: ['geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'fgb', 'zip', 'qgs', 'qgz'],
+  // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their
+  // companions (.dat/.map/.id/.ind/.mid) are sidecars and are deliberately
+  // absent — `.dat` is already claimed by the retired `xyz` category, and a
+  // `.mid` opens on its own, so accepting one would ingest a MIF/MID pair
+  // twice. shapefileBundle.ts zips the whole set under this category.
+  spatial: [
+    'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
+    'fgb', 'gdb', 'zip', 'qgs', 'qgz', 'tab', 'mif',
+  ],
   well_logs: ['las'],
   seismic: ['sgy', 'segy'],
   xyz: ['xyz', 'dat', 'txt'],
@@ -53,7 +72,8 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   lithology: 'Lithology logs (CSV)',
   samples: 'Assay samples (CSV)',
   excel: 'Excel workbooks (XLSX)',
-  spatial: 'Spatial / GIS (SHP, GeoPackage, GeoJSON, QGIS, ZIP)',
+  tables: 'Attribute table (DBF)',
+  spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, ZIP)',
   well_logs: 'Well logs (LAS)',
   seismic: 'Seismic (SEG-Y)',
   xyz: 'XYZ grids / point data',
@@ -102,6 +122,7 @@ export function categoryForExtension(ext: string): Category | null {
     'lithology',
     'samples',
     'excel',
+    'tables',
     'spatial',
     'well_logs',
   ];
@@ -120,4 +141,86 @@ export function acceptedExtensions(): string[] {
     for (const ext of CATEGORY_EXTS[cat]) all.add(ext);
   }
   return [...all].sort();
+}
+
+/* ------------------------------------------------------------------ *
+ * Per-file CRS override (`source_epsg`)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The EPSG range the API accepts.
+ *
+ * Not a number this module invented. It is the rule already written in
+ * app/Http/Requests/StoreQueryRequest.php (`min:1024`, `max:32767`), which in
+ * turn matches the database CHECK on `silver.spatial_features.crs_epsg_native`
+ * and `silver.geophysics_surveys.crs_epsg`. Validating to a different bound
+ * here would put a fourth definition of "a valid CRS" in the codebase, and the
+ * one that disagrees is always the one the user meets first.
+ *
+ * The wire representation is an INTEGER. Never a string like 'EPSG:26904' —
+ * the tabular ingest path has taken `source_epsg` as an integer since it was
+ * built, and two spellings of one concept across two ingest paths that share
+ * this UI is how the categories drifted in the first place.
+ */
+export const EPSG_MIN = 1024;
+export const EPSG_MAX = 32767;
+
+export interface EpsgParse {
+  /** Set only when the text is a legal EPSG code. */
+  epsg?: number;
+  /** Set only when the text is present and illegal. Render it; do not upload. */
+  error?: string;
+}
+
+/**
+ * Parse a user-typed EPSG code.
+ *
+ * Empty is not an error — the override is optional, and the file's own
+ * declared CRS wins over it in every case where the file has one.
+ */
+export function parseEpsg(text: string): EpsgParse {
+  const trimmed = text.trim();
+  if (trimmed === '') return {};
+  if (!/^\d+$/.test(trimmed)) {
+    return { error: `“${trimmed}” is not an EPSG code — enter the number only, e.g. 26904.` };
+  }
+  const n = Number(trimmed);
+  if (n < EPSG_MIN || n > EPSG_MAX) {
+    return { error: `EPSG codes must be in the range ${EPSG_MIN}-${EPSG_MAX}.` };
+  }
+  return { epsg: n };
+}
+
+/**
+ * Whether a per-file CRS override is meaningful for this category.
+ *
+ * Exactly the categories UploadController forwards `source_epsg` on: the ones
+ * mapped to ingest_spatial or ingest_tabular, the two workflows whose input
+ * model declares the field. Offering the control anywhere else would render
+ * an input whose value is dropped in transit, which is worse than no input.
+ *
+ * `spatial` is why the override exists — a vector file that declares no
+ * coordinate system is now refused outright rather than silently filed at
+ * SRID 4326, which is what put an Alaskan shapefile at longitude 400,797.
+ * A shapefile or MapInfo bundle zipped by shapefileBundle.ts uploads under
+ * `spatial` too, not `archive`, so a ZIP from this screen reaches the same
+ * refusal and the same escape hatch.
+ *
+ * The tabular categories matter for a quieter reason: nothing has ever sent
+ * ingest_tabular a source_epsg, so every drill CSV the platform has ingested
+ * silently assumed EPSG:32613.
+ *
+ * `reports` (PDF/TIFF), `archive` (ingest_zip_archive) and `well_logs` have
+ * no such field and are deliberately absent.
+ */
+export function supportsCrsOverride(category: Category | null): boolean {
+  return (
+    category === 'spatial' ||
+    category === 'collars' ||
+    category === 'surveys' ||
+    category === 'lithology' ||
+    category === 'samples' ||
+    category === 'excel' ||
+    category === 'tables'
+  );
 }

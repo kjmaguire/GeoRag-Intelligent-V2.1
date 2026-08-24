@@ -97,7 +97,12 @@ def test_reconstruction_offsets_polygons_and_deduplicates_overlap() -> None:
 
     result = reconstruct_words(tiles, words)
 
-    assert result.text == "Top Seam Bottom"
+    # One word per line, not one line: the three survivors land at global
+    # y=10, y=490 and y=800. ReconstructionResult.text groups by the line
+    # bucket _reading_order_key already computes, because a tiled page that
+    # came back as a single 6,000-character line matched none of
+    # pdf_report's ^...$ MULTILINE heading regexes.
+    assert result.text == "Top\nSeam\nBottom"
     assert result.seam_duplicate_count == 1
     seam = next(word for word in result.words if word.text == "Seam")
     assert seam.confidence == 0.95

@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 """Fresh connection + autocommit + SET app.workspace_id; verify chr(0) RLS bypass."""
 from __future__ import annotations
-import os, psycopg2
+
+import os
+
+import psycopg2
+
 
 def fresh_conn():
     c = psycopg2.connect(

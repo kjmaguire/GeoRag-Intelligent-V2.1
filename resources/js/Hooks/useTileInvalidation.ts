@@ -17,6 +17,8 @@
 
 import { useEffect, useRef } from 'react';
 
+import { listenPrivate } from '@/lib/echoChannel';
+
 export interface SilverTileInvalidationEvent {
     workspace_id: string;
     project_id: string;
@@ -60,7 +62,6 @@ export function useSilverTileInvalidation(
         let pendingEvent: SilverTileInvalidationEvent | null = null;
 
         const channelName = `project.${projectId}.ingestion`;
-        const ch = window.Echo.private(channelName);
 
         const fire = (): void => {
             if (!isMounted) return;
@@ -80,7 +81,12 @@ export function useSilverTileInvalidation(
             }
         };
 
-        ch.listen('.workspace.data_updated', (raw: unknown) => {
+        // Ref-counted — MapView is rendered INSIDE pages that also run
+        // useWorkspaceDataUpdated on this same channel, so an Echo.leave()
+        // here (a chat message scrolling its inline map out of the tree,
+        // a workspace sub-view toggle) used to unbind the page's own
+        // ingest listener along with this one.
+        const unsubscribe = listenPrivate(channelName, '.workspace.data_updated', (raw) => {
             if (!isMounted) return;
             const event = raw as SilverTileInvalidationEvent;
             if (event.project_id !== projectId) return;
@@ -98,7 +104,7 @@ export function useSilverTileInvalidation(
                 clearTimeout(debounceTimer);
                 debounceTimer = null;
             }
-            window.Echo?.leave(channelName);
+            unsubscribe();
         };
     }, [projectId]);
 }

@@ -10,6 +10,8 @@ use App\Http\Resources\CollarResource;
 use App\Models\Collar;
 use App\Models\Project;
 use App\Support\AuthorizationAuditLogger;
+use App\Support\PaginationLimit;
+use App\Support\SafeErrorMessage;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -59,7 +61,7 @@ class CollarController extends Controller
 
             $collars = $query
                 ->orderBy('hole_id')
-                ->paginate($request->integer('per_page', 50));
+                ->paginate(PaginationLimit::clamp($request, 50));
 
             return CollarResource::collection($collars);
         } catch (ModelNotFoundException) {
@@ -69,7 +71,7 @@ class CollarController extends Controller
 
             return response()->json([
                 'message' => 'Failed to retrieve collars.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }
@@ -115,7 +117,7 @@ class CollarController extends Controller
 
             return response()->json([
                 'message' => 'Failed to create collar.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }
@@ -167,7 +169,7 @@ class CollarController extends Controller
 
             return response()->json([
                 'message' => 'Failed to retrieve collar.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }
@@ -209,7 +211,7 @@ class CollarController extends Controller
 
             return response()->json([
                 'message' => 'Failed to delete collar.',
-                'error' => $e->getMessage(),
+                'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
     }

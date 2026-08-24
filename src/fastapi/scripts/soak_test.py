@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -61,11 +62,10 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
-
 
 HERE = Path(__file__).parent
 LOAD_TEST = HERE / "load_test.py"
@@ -102,10 +102,8 @@ async def _fetch_metric(client: httpx.AsyncClient, url: str, key_prefix: str) ->
                 continue
             if line.startswith(key_prefix):
                 name, _, value = line.partition(" ")
-                try:
+                with contextlib.suppress(ValueError):
                     out[name] = int(float(value.strip()))
-                except ValueError:
-                    pass
     except Exception:
         pass
     return out
@@ -161,7 +159,7 @@ async def _sample(base: str, project_id: str, service_key: str, cycle: int) -> S
     p95 = _run_load_test(base, project_id, service_key) if up else {}
 
     return Sample(
-        ts_utc=datetime.now(timezone.utc).isoformat(),
+        ts_utc=datetime.now(UTC).isoformat(),
         cycle=cycle,
         fastapi_up=up,
         p95_seconds_by_class=p95,

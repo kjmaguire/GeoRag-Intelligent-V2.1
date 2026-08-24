@@ -129,11 +129,17 @@ async def trigger_ingest_pdf(
         try:
             _pool = await ingest_progress.get_pool()
             async with _pool.acquire() as _c:
+                # The terminal set comes from _progress, not from a copy of
+                # it. Spelled out by hand, this guard omitted 'partial' —
+                # so the one run a geologist most wants to retry ("N rows
+                # reference a hole_id with no collar; upload the collar
+                # file, then re-run this one") was the one run this dedupe
+                # refused to re-dispatch, silently, with a 200.
                 _existing = await _c.fetchrow(
                     "SELECT run_id::text AS run_id, workflow_run_id "
                     "FROM silver.ingest_progress "
                     "WHERE workspace_id = $1::uuid AND minio_key = $2 "
-                    "  AND status NOT IN ('completed','failed','cancelled','timed_out') "
+                    f"  AND status NOT IN ({ingest_progress.TERMINAL_STATUS_SQL}) "
                     "LIMIT 1",
                     str(payload.workspace_id), payload.minio_key,
                 )
@@ -301,6 +307,7 @@ async def trigger_ingest_zip_archive(
                 )
 
     ref = await ingest_zip_archive.aio_run_no_wait(payload)
+    await _record_dispatch(payload, ref)
     return TriggerZipArchiveResponse(
         workflow_run_id=ref.workflow_run_id,
         run_id=payload.run_id,
@@ -324,6 +331,37 @@ class TriggerIngestSpatialResponse(BaseModel):
 class TriggerIngestTabularResponse(BaseModel):
     workflow_run_id: str
     run_id: str | None
+
+
+async def _record_dispatch(payload, ref) -> None:
+    """Insert the ingest_progress row at DISPATCH time, status=queued.
+
+    Queue-saturation CANCELLED events fire BEFORE any task body runs, so
+    a row created inside the workflow does not exist yet when the run is
+    killed — the upload simply vanishes from the Ingestion Runs UI, and
+    the workflow's on_failure hook has nothing to resolve and close.
+    That is the Cameco failure mode (—41% of failures left no row); see
+    [[cameco-recovery-2026-06-02]].
+
+    ingest_pdf and tiff_normalize have done this since 2026-06-02 and
+    2026-08-11 respectively. The four geology triggers below did not,
+    which is also why the nightly bronze sweep could not tell a
+    cancelled geology upload from one that was never dispatched.
+
+    ``run_id`` is passed through when the caller minted one, so the row
+    lands under the SAME id the workflow will later upsert against
+    rather than creating a second, orphaned row.
+    """
+    if not (payload.workspace_id and payload.project_id):
+        return
+    await ingest_progress.start_run(
+        workspace_id=str(payload.workspace_id),
+        project_id=str(payload.project_id),
+        minio_key=payload.minio_key,
+        triggered_by="upload",
+        workflow_run_id=ref.workflow_run_id,
+        run_id=getattr(payload, "run_id", None),
+    )
 
 
 async def _guard_active_project(request: Request, payload) -> None:
@@ -369,6 +407,7 @@ async def trigger_ingest_spatial(
     await _guard_active_project(request, payload)
 
     ref = await ingest_spatial.aio_run_no_wait(payload)
+    await _record_dispatch(payload, ref)
     return TriggerIngestSpatialResponse(
         workflow_run_id=ref.workflow_run_id,
         run_id=payload.run_id,
@@ -399,6 +438,7 @@ async def trigger_ingest_tabular(
     await _guard_active_project(request, payload)
 
     ref = await ingest_tabular.aio_run_no_wait(payload)
+    await _record_dispatch(payload, ref)
     return TriggerIngestTabularResponse(
         workflow_run_id=ref.workflow_run_id,
         run_id=payload.run_id,
@@ -434,6 +474,7 @@ async def trigger_ingest_well_logs(
     await _guard_active_project(request, payload)
 
     ref = await ingest_well_logs.aio_run_no_wait(payload)
+    await _record_dispatch(payload, ref)
     return TriggerIngestWellLogsResponse(
         workflow_run_id=ref.workflow_run_id,
         run_id=payload.run_id,

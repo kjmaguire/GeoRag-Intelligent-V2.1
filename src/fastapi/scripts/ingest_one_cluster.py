@@ -20,7 +20,6 @@ import argparse
 import asyncio
 import logging
 import os
-import sys
 
 import asyncpg
 
@@ -40,6 +39,7 @@ async def _main(
     company: str,
     region: str,
     workspace_id: str,
+    commodity: str | None = None,
 ) -> int:
     summary = await ingest_cluster(
         cluster_dir,
@@ -49,6 +49,7 @@ async def _main(
         project_slug=project_slug,
         project_company=company,
         project_region=region,
+        project_commodity=commodity,
     )
     log.info("cluster_runner.summary %s", summary)
 
@@ -89,6 +90,11 @@ def _cli() -> int:
     p.add_argument("--project-slug", required=True)
     p.add_argument("--company", default="Unknown Operator")
     p.add_argument("--region", default="Wyoming")
+    # No default. cluster_runner used to hardcode 'uranium' into every stub
+    # project row; LAS 2.0 has no commodity field, so an unpassed flag means
+    # NULL ("not stated") rather than a guess inherited from the Cameco
+    # archive this script was first written for.
+    p.add_argument("--commodity", default=None)
     p.add_argument("--workspace-id", default="a0000000-0000-0000-0000-000000000001")
     args = p.parse_args()
     return asyncio.run(_main(
@@ -99,6 +105,7 @@ def _cli() -> int:
         company=args.company,
         region=args.region,
         workspace_id=args.workspace_id,
+        commodity=args.commodity,
     ))
 
 

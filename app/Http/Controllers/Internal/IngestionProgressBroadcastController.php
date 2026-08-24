@@ -21,11 +21,17 @@ use Throwable;
  *   - ingest_pdf.on_failure_task (status = failed | cancelled)
  *   - ingest_pdf.embed_verify    (status = completed)
  *   - stale_run_detector cron    (status = timed_out)
+ *   - ingest_tabular / ingest_spatial / ingest_well_logs, on reaching a
+ *     terminal state (status = completed | partial). Added 2026-08-22:
+ *     those three never called here at all, so drill CSVs, shapefiles and
+ *     LAS files finished into silence — the run went terminal in Postgres
+ *     and no product surface heard about it.
  *
  * Phase 1 — always dispatch IngestionProgressBroadcast so IngestionRuns
  * UI flips immediately.
  *
- * Phase 2 — on `status='completed'` ONLY, additionally:
+ * Phase 2 — on a terminal status that WROTE something (`completed` or
+ * `partial`), additionally:
  *   1. Bump silver.workspaces.data_version + silver.projects.data_version
  *      via {@see WorkspaceDataVersionBumper} (Redis SETNX-guarded, so
  *      Hatchet retries can't double-bump).
@@ -40,6 +46,15 @@ use Throwable;
  */
 class IngestionProgressBroadcastController extends Controller
 {
+    /**
+     * Terminal statuses that mean rows reached Silver, so the read side is
+     * now stale: bump data_version and queue the MV refresh.
+     *
+     * Deliberately not "every terminal status" — failed / cancelled /
+     * timed_out wrote nothing worth invalidating a tile cache for.
+     */
+    public const DATA_LANDED_STATUSES = ['completed', 'partial'];
+
     public function broadcast(Request $request, WorkspaceDataVersionBumper $bumper): JsonResponse
     {
         $payload = $request->validate([
@@ -47,7 +62,12 @@ class IngestionProgressBroadcastController extends Controller
             'project_id' => ['required', 'uuid'],
             'pipeline_run_id' => ['required', 'uuid'],
             'stage' => ['required', 'string', 'max:60'],
-            'status' => ['required', 'string', 'in:queued,started,completed,failed,cancelled,timed_out'],
+            // 'partial' is a real terminal status in silver.ingest_progress
+            // (the CHECK constraint has carried it since 2026_08_21) — a run
+            // that reached the end, wrote rows, and also had something to
+            // say. It was missing here, so the workflows that produce it
+            // could not report themselves finished at all.
+            'status' => ['required', 'string', 'in:queued,started,completed,partial,failed,cancelled,timed_out'],
             'message' => ['nullable', 'string', 'max:500'],
             'pct' => ['nullable', 'integer', 'min:0', 'max:100'],
         ]);
@@ -64,7 +84,12 @@ class IngestionProgressBroadcastController extends Controller
 
         $sideEffects = ['data_version_bumped' => false, 'mv_refresh_dispatched' => false];
 
-        if ($payload['status'] === 'completed') {
+        // 'partial' gets the same side effects as 'completed'. A partial run
+        // is a run that WROTE something and also had a complaint — the rows
+        // are in Silver either way, so the tiles are stale either way, and
+        // refusing to bump would leave exactly the ingests with problems as
+        // the ones the map never shows.
+        if (in_array($payload['status'], self::DATA_LANDED_STATUSES, true)) {
             $bump = $bumper->bump(
                 $payload['workspace_id'],
                 $payload['project_id'],

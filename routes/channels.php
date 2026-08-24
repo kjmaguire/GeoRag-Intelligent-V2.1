@@ -90,8 +90,26 @@ Broadcast::channel('workspace.{workspaceId}.activity', function ($user, string $
 /**
  * Dashboard — document ingestion stage transitions (spec §6).
  * User must have access to the project.
+ *
+ * The UUID guard is not cosmetic symmetry with the channels above.
+ * hasProjectAccess() compares against silver.projects.project_id, a uuid
+ * column, so a malformed channel name reached Postgres as
+ * `invalid input syntax for type uuid`, and that QueryException is not the
+ * missing-pivot case the method catches — it propagated, and
+ * POST /broadcasting/auth answered an unauthorised subscribe with a 500
+ * instead of a 403.
  */
 Broadcast::channel('project.{projectId}.ingestion', function ($user, string $projectId) {
+    if ($user === null) {
+        return false;
+    }
+    if (! preg_match(
+        '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i',
+        $projectId,
+    )) {
+        return false;
+    }
+
     return $user->hasProjectAccess($projectId);
 });
 

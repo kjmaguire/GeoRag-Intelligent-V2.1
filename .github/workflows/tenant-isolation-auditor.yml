@@ -1,21 +1,41 @@
 name: Tenant Isolation Auditor (§11.5)
 
-# Doc-phase 104 — skeleton CI workflow that runs the Tenant Isolation
-# Auditor against the PR's database state. The auditor verifies that
-# RLS policies are wired correctly on all workspace-scoped tables:
-# no row leaks across workspace_id boundaries.
+# Asserts the platform's core security property on every PR that could
+# break it: a row belonging to one workspace must never be visible to
+# another.
 #
-# Per master-plan §11.5 + §29.3 deliverable. Skeleton stage — the
-# actual auditor command lives in `tests/tenant_isolation/` (to be
-# created when the §11.5 implementation lands).
+# History worth keeping. From doc-phase 104 until 2026-08-21 this workflow
+# was a skeleton whose only step echoed a description of what it would one
+# day do and then `exit 0`. It reported a green check named "Tenant
+# Isolation Auditor" on every PR touching migrations, app/ or the FastAPI
+# tree — a check that could never fail, under the name of the property the
+# product is sold on. It is the most expensive kind of CI to have: it does
+# not merely fail to catch regressions, it actively signals that someone
+# looked.
+#
+# Meanwhile tests/Feature/Tenancy/ had accumulated 23 real tests doing
+# exactly the work the skeleton described — WorkspaceRlsCoverageTest walks
+# every table carrying a workspace_id and asserts RLS is enabled with a
+# policy; GuardSchemaRlsTest and BrokenChrZeroRlsPoliciesRoleTest cover the
+# policy shapes; NoLegacyGucSetConfigInPhpTest keeps the legacy GUC from
+# creeping back. They ran under the general Laravel job, where a tenancy
+# regression looked like any other test failure. This workflow now runs
+# that suite under its own name, so the check that says "tenant isolation"
+# is the check that tests tenant isolation.
+#
+# RLS is a Postgres feature, so this needs a real Postgres — the tenancy
+# tests skip themselves on SQLite, which is another way this could have
+# gone quietly green.
 
 on:
   pull_request:
     branches: [main]
     paths:
       - 'database/migrations/**'
+      - 'database/raw/**'
       - 'src/fastapi/app/**'
       - 'app/**'
+      - 'tests/Feature/Tenancy/**'
       - '.github/workflows/tenant-isolation-auditor.yml'
   workflow_dispatch: {}
 
@@ -24,61 +44,90 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PYTHON_VERSION: "3.13"
+  PHP_VERSION: "8.5"
+
+# Least-privilege default for every job in this file. CodeQL's
+# actions/missing-workflow-permissions flags a workflow with no explicit
+# block because it then inherits the repository default, which can be
+# read-write for the whole repo. Jobs that genuinely need more (SARIF
+# upload, OIDC, package push) keep their own `permissions:` block, which
+# overrides this one rather than adding to it.
+permissions:
+  contents: read
 
 jobs:
   tenant-isolation:
     name: Tenant Isolation Auditor
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Skeleton — does not run real checks yet; logs and exits 0.
-    # Live behavior lands when the auditor command exists and the
-    # postgres-with-rls service container shape is locked.
 
     services:
       postgres:
-        image: postgis/postgis:18-3.6
+        image: postgis/postgis:18-3.6@sha256:f81dd52da147ac849428d777f30efa8d51ff6aea879fc020edde76b20d53f7b2
         env:
           POSTGRES_USER: georag
-          POSTGRES_PASSWORD: georag
-          POSTGRES_DB: georag
-        ports:
-          - 5432:5432
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: georag_test
+        ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd="pg_isready -U georag"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    env:
+      DB_CONNECTION: pgsql
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_DATABASE: georag_test
+      DB_USERNAME: georag
+      DB_PASSWORD: test_password
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: pdo_pgsql, redis, swoole
+          coverage: none
 
-      - name: Skeleton announcement
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Prepare environment
         run: |
-          echo "Tenant Isolation Auditor — doc-phase 104 skeleton."
-          echo ""
-          echo "Real implementation will:"
-          echo " 1. Apply all migrations to a fresh postgres-with-rls service."
-          echo " 2. Seed 3 synthetic workspaces with cross-cutting data."
-          echo " 3. For each workspace-scoped table, set app.workspace_id="
-          echo "    'ws-A' and assert that SELECT only returns ws-A rows."
-          echo " 4. Repeat for ws-B and ws-C; assert no cross-row leakage."
-          echo " 5. Test UPDATE/DELETE with WITH CHECK guards block "
-          echo "    cross-workspace mutations."
-          echo ""
-          echo "Currently exits 0 to keep CI green until the auditor lands."
-          exit 0
+          cp .env.example .env 2>/dev/null || true
+          php artisan key:generate --force
 
-      # TODO (§11.5 graduation):
-      # - name: Apply migrations
-      #   run: php artisan migrate --force
-      # - name: Seed isolation fixtures
-      #   run: python tests/tenant_isolation/seed.py
-      # - name: Run isolation auditor
-      #   run: python tests/tenant_isolation/audit.py --strict
+      - name: Run migrations
+        run: php artisan migrate --force
+
+      # --testdox so a failure names the invariant that broke rather than
+      # a test-method identifier.
+      # -c phpunit.pgsql.xml is load-bearing, not tidiness. The default
+      # phpunit.xml pins `DB_CONNECTION=sqlite` with force="true", which
+      # OVERRIDES the DB_CONNECTION=pgsql this job sets in `env:` -- so
+      # without it every RLS test in here self-skips against SQLite while
+      # the suite still reports OK. That is what the first run of this
+      # workflow did: 45 tests, 32 skipped, green.
+      - name: Tenancy suite
+        run: php vendor/bin/phpunit -c phpunit.pgsql.xml --no-coverage --testdox tests/Feature/Tenancy
+
+      # A suite that skips itself is the skeleton again in a better costume.
+      # WorkspaceRlsCoverageTest is the load-bearing one -- it walks every
+      # table carrying a workspace_id and asserts RLS is enabled with a
+      # policy -- and it declares `Skipped on SQLite`, because RLS is a
+      # Postgres feature. Run it locally against the default SQLite config
+      # and 19 of the 29 tenancy tests skip while the suite still reports
+      # OK. So: assert this one ran.
+      - name: Assert the RLS coverage test actually ran
+        run: |
+          TEST=tests/Feature/Tenancy/WorkspaceRlsCoverageTest.php
+          php vendor/bin/phpunit -c phpunit.pgsql.xml --no-coverage "$TEST" > /tmp/rls.txt 2>&1 || { cat /tmp/rls.txt; exit 1; }
+          cat /tmp/rls.txt
+          if grep -qE "Skipped:|Incomplete:|No tests executed|OK \(0 tests" /tmp/rls.txt; then
+            echo "::error::WorkspaceRlsCoverageTest did not execute. It skips itself when the connection is not Postgres, which means this job proved nothing about tenant isolation."
+            exit 1
+          fi

@@ -1004,9 +1004,9 @@ Applied by: backend-fastapi agent (Claude Sonnet 4.6)
 
 | Path | Line count | Scope |
 |---|---|---|
-| `ops/runbooks/retrieval-pipeline.md` | 175 | Full retrieval flow, per-store timeouts, 5-step triage, replay procedure, version-bump side effects |
-| `ops/runbooks/hybrid-retrieval.md` | 189 | Model pins, bump procedure, identifier-boost regex table, workspace override stub, fallback behavior |
-| `ops/runbooks/retrieval-cache.md` | 161 | v4 key structure, component rationale, TTL, all invalidation paths, inspection commands, hit-rate expectations |
+| `ops/runbooks/_archived/retrieval-pipeline.md` | 175 | Full retrieval flow, per-store timeouts, 5-step triage, replay procedure, version-bump side effects |
+| `ops/runbooks/_archived/hybrid-retrieval.md` | 189 | Model pins, bump procedure, identifier-boost regex table, workspace override stub, fallback behavior |
+| `ops/runbooks/_archived/retrieval-cache.md` | 161 | v4 key structure, component rationale, TTL, all invalidation paths, inspection commands, hit-rate expectations |
 | `docs/query-class-routing.md` | 193 | 6-class definitions with precedence, add-new-class 6-step procedure, workspace override stub, testing commands |
 
 ### Sections not fully fleshed out (source unavailable)
@@ -1034,7 +1034,7 @@ Scope: Module 4 Phase B addendum — cache boundary reshaped per arch §05c and 
 
 ### Before
 
-Full `GeoRAGResponse` (synthesized answer + citations + viz payloads) was stored in Redis under key prefix `v4`. Cache hits returned the full answer without running synthesis — answer-level caching, spec violation. The "What is NOT cached here" section of `ops/runbooks/retrieval-cache.md` explicitly flagged this as a known gap since Phase D.
+Full `GeoRAGResponse` (synthesized answer + citations + viz payloads) was stored in Redis under key prefix `v4`. Cache hits returned the full answer without running synthesis — answer-level caching, spec violation. The "What is NOT cached here" section of `ops/runbooks/_archived/retrieval-cache.md` explicitly flagged this as a known gap since Phase D.
 
 ### After
 
@@ -1052,7 +1052,7 @@ Only `CachedRetrievalContext` (retrieval candidates after RRF + reranking) is st
 | `database/migrations/2026_04_21_130000_add_cache_hit_of_run_id_to_answer_runs.php` | Migration batch 18 — additive `cache_hit_of_run_id UUID NULL` + partial index |
 | `src/fastapi/tests/test_cache_scope.py` | New — 14 tests covering: model shape, no answer fields, v5 prefix, stale v4 handling, round-trip, candidate shape |
 | `src/fastapi/tests/test_cache_key_versioning.py` | Updated — v3 prefix test replaced with v5; DOCUMENT_SCOPE_VERSION test replaced with workspace_data_version test |
-| `ops/runbooks/retrieval-cache.md` | Rewritten — v5 prefix, retrieval-only scope, why retrieval-only, cache hit bookkeeping, updated inspection commands |
+| `ops/runbooks/_archived/retrieval-cache.md` | Rewritten — v5 prefix, retrieval-only scope, why retrieval-only, cache hit bookkeeping, updated inspection commands |
 | `ops/backlog/module-5-intake.md` | New — Module 5 synthesis context for retrieval-only caching |
 
 ### Key prefix

@@ -126,3 +126,58 @@ def test_upsert_refreshes_quality_signals() -> None:
             f"{required!r} is not refreshed on re-ingest; a re-parse would keep "
             f"the value from the first parse"
         )
+
+
+def test_text_page_coverage_reaches_the_insert() -> None:
+    """The extraction number must be written, not just logged.
+
+    parse_quality_pct is NI 43-101 section-heading coverage. It sat alone
+    on silver.reports for months while the number people read it as --
+    what fraction of pages produced any text -- was computed in
+    pdf_report.py and thrown away after one log line. A report whose table
+    of contents yielded 17 headings while 300 pages OCR'd to nothing
+    therefore stored 1.0 and nothing to contradict it.
+
+    Same failure shape as is_scanned and extraction_confidence above:
+    computed, never persisted, silent.
+    """
+    sql = _insert_report_sql()
+
+    assert "text_page_coverage_pct" in sql, (
+        "text_page_coverage_pct is missing from INSERT_REPORT_SQL"
+    )
+    # And on the UPDATE side -- a re-parse that improves extraction has to
+    # be able to correct the number, or the first parse wins forever.
+    conflict = sql.split("DO UPDATE SET", 1)[1]
+    assert "text_page_coverage_pct = EXCLUDED.text_page_coverage_pct" in conflict
+
+
+def test_the_two_coverage_numbers_are_both_written() -> None:
+    # Pinned together deliberately: either one alone is misleading, and the
+    # whole point of storing the second was that the first was being read
+    # as an answer to a question it does not answer.
+    sql = _insert_report_sql()
+
+    assert "parse_quality_pct" in sql
+    assert "text_page_coverage_pct" in sql
+
+
+def test_page_coverage_counts_pages_that_produced_text() -> None:
+    from app.services.ingest.pdf_report import _text_page_coverage
+
+    pages = [(1, "granodiorite"), (2, "   "), (3, ""), (4, "assay"), (5, None)]
+
+    total, with_text, fraction = _text_page_coverage(pages)  # type: ignore[arg-type]
+
+    assert (total, with_text) == (5, 2)
+    assert fraction == 0.4
+
+
+def test_page_coverage_of_nothing_is_zero_not_a_crash() -> None:
+    from app.services.ingest.pdf_report import _text_page_coverage
+
+    # The empty-text early return in parse_pdf_report calls this, and a
+    # ZeroDivisionError there would turn "we extracted nothing" into a
+    # failed workflow rather than a report that says so.
+    assert _text_page_coverage([]) == (0, 0, 0.0)
+    assert _text_page_coverage(None) == (0, 0, 0.0)

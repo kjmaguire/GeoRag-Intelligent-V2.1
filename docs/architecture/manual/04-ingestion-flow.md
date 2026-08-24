@@ -110,7 +110,7 @@ Located under [src/fastapi/app/hatchet_workflows/](../../../src/fastapi/app/hatc
 | `score_targets` | `score_targets.py` | Re-runs target scoring; broadcasts `workspace-data-updated` |
 | `backup_postgres / backup_neo4j / backup_qdrant / backup_redis / backup_seaweedfs` | one each | Daily backups, write to SeaweedFS `georag-backups/*` |
 | `cold_tier_archive_workflow` | `cold_tier_archive.py` | Storage Tiering Agent — moves old bronze objects between `tier-hot/warm/cold` |
-| `evaluate_workspace` | `evaluate_workspace.py` | On-demand workspace eval against golden queries |
+| ~~`evaluate_workspace`~~ | — | **REMOVED 09d1d35 (2026-07-27)** |
 | `external_notification` | `external_notification.py` | HMAC-signed external-notification fan-out |
 | `flow_jwt_key_reaper` | `flow_jwt_key_reaper.py` | Per-flow JWT key rotation |
 | `generate_report` | `generate_report.py` | NI 43-101-style report generation |
@@ -122,7 +122,7 @@ Located under [src/fastapi/app/hatchet_workflows/](../../../src/fastapi/app/hatc
 | `support_replay` | `support_replay.py` | Support Cockpit replay |
 | `continuous_learning_loop` | `continuous_learning_loop.py` | Closes the loop on field-outcome → re-rank feedback |
 | `field_outcome_learning` | `field_outcome_learning.py` | Field outcome ingestion |
-| `eval_real_rag_nightly` | `eval_real_rag_nightly.py` | Nightly RAG quality eval |
+| ~~`eval_real_rag_nightly`~~ | — | **REMOVED 09d1d35 (2026-07-27)** — no scheduled RAG quality eval exists |
 | `phase0_agents` | `phase0_agents.py` | Phase 0 agent registry (Index Health, Storage Tiering, …) |
 | `workspace_export` | `workspace_export.py` | Workspace data export |
 | `tiff_normalize` | `tiff_normalize.py` | ADR-0005 — normalise multi-page TIFFs to PDF, then dispatch `ingest_pdf` |

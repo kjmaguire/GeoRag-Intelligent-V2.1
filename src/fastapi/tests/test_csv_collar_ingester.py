@@ -202,17 +202,55 @@ def test_sample_fixture_exists_and_has_expected_shape():
 # Dispatcher wiring — pure source-inspection, no DB. Mirrors the existing
 # tests/test_ingest_zip_archive_observability.py style.
 # ---------------------------------------------------------------------------
-def test_ingest_zip_archive_dispatches_csv_extension():
+def test_ingest_zip_archive_routes_every_tabular_extension_to_ingest_tabular():
+    """The .csv branch no longer stops at collars.
+
+    It used to call ingest_csv_collar_file unconditionally, and that
+    ingester handles COLLARS ONLY -- it requires hole_id/easting/northing.
+    Zip a hole's full dataset (collars.csv, survey.csv, lithology.csv,
+    assays.csv) and only collars.csv landed; the other three returned
+    skipped_reason="missing_required_columns", which increments
+    counts["skipped"] rather than counts["errors"], so the archive was still
+    marked completed and the summary reported four files succeeded. The user
+    got collars with no surveys, no lithology and no assays, and nothing
+    said so.
+
+    ingest_tabular classifies the header and routes to silver.collars,
+    silver.surveys, silver.lithology_logs or silver.samples, and for a
+    workbook classifies every sheet rather than assuming the first is the
+    data.
+    """
     path = (
         pathlib.Path(__file__).parents[1] / "app" / "hatchet_workflows" / "ingest_zip_archive.py"
     )
     src = path.read_text(encoding="utf-8")
-    assert 'ext == "csv"' in src, (
-        "ingest_zip_archive._ingest_one must route .csv files to the new "
-        "csv_collar_ingester branch."
+
+    assert 'elif ext in ("csv", "tsv", "xlsx", "xls", "xlsm"):' in src, (
+        "ingest_zip_archive._ingest_one must route every tabular extension "
+        "through one branch, not just .csv"
     )
-    assert "ingest_csv_collar_file" in src
+    assert "ingest_tabular.aio_run_no_wait" in src
     assert '"csv": 0' in src, "counts dict must track the csv branch like las/log/xlsx/pdf"
+
+
+def test_the_collar_only_ingester_is_no_longer_wired_in():
+    """Guards the regression, not the removal.
+
+    Re-wiring ingest_csv_collar_file into the archive dispatcher would
+    restore the silent three-quarters data loss described above. If the
+    direct-upload path (`category=collar`, currently 422 in Laravel's
+    UploadController) is ever restored, wire it there instead and delete
+    this test with a note.
+    """
+    path = (
+        pathlib.Path(__file__).parents[1] / "app" / "hatchet_workflows" / "ingest_zip_archive.py"
+    )
+    src = path.read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in src.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    assert "ingest_csv_collar_file" not in code
 
 
 # Live-Postgres integration coverage (rows actually landing in

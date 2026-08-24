@@ -103,12 +103,19 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
             return;
         }
 
-        $url = rtrim(
-            config('services.fastapi.url') ?: env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
-            '/',
-        ).'/internal/v1/mv-refresh/run';
+        // `services.fastapi.url` never existed -- the keys are
+        // `internal_url` and `base_url` -- so this always fell through to the
+        // bare env() read that config/services.php's own comment says the
+        // indirection is there to avoid. Under a cached config that read
+        // returns the literal default, and `http://fastapi:8000` is a
+        // docker-compose service name that resolves to nothing on Container
+        // Apps. The MV refresh is the only thing that emits
+        // WorkspaceDataUpdated after an ingest, so the failure mode is a
+        // workspace whose pages never notice new data.
+        $url = rtrim((string) config('services.fastapi.internal_url'), '/')
+            .'/internal/v1/mv-refresh/run';
 
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             throw new RuntimeException('FASTAPI_SERVICE_KEY not configured');
         }
@@ -144,10 +151,17 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
             'any_failed' => $anyFailed,
         ]);
 
-        // Only emit workspace.data_updated when at least one view actually
-        // refreshed (or was already fresh) AND nothing failed. A failed
-        // refresh means the data is not in a queryable state — emitting
-        // the event would tell the frontend to re-fetch stale data.
+        // Emit workspace.data_updated unless a view FAILED to refresh. A
+        // failed refresh means the data is not in a queryable state, and
+        // telling the frontend to re-fetch would surface stale rows as
+        // fresh ones.
+        //
+        // `$anyCompleted` is logged, not gated on, and the comment here used
+        // to claim otherwise ("at least one view actually refreshed ... AND
+        // nothing failed"). The distinction only bites on an empty results
+        // array, where the honest reading is "nothing to refresh" and one
+        // redundant partial reload costs less than suppressing a real
+        // update — but the code should say which of the two it does.
         if (! $anyFailed) {
             // Phase 4 — read the post-bump silver.projects.data_version
             // so the broadcast carries the version MapView's MVT tile URL
@@ -222,14 +236,12 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
 
     private function recordEmissionLatency(int $latencySeconds): void
     {
-        $serviceKey = env('FASTAPI_SERVICE_KEY');
+        $serviceKey = config('services.fastapi.service_key');
         if (! $serviceKey) {
             return;
         }
-        $url = rtrim(
-            config('services.fastapi.url') ?: env('FASTAPI_INTERNAL_URL', 'http://fastapi:8000'),
-            '/',
-        ).'/internal/v1/metrics/ingestion-event';
+        $url = rtrim((string) config('services.fastapi.internal_url'), '/')
+            .'/internal/v1/metrics/ingestion-event';
         try {
             Http::withHeaders([
                 'X-Service-Key' => $serviceKey,
@@ -311,6 +323,16 @@ class DebounceWorkspaceMvRefresh implements ShouldBeUnique, ShouldQueue
         $types[] = 'reports';
         $types[] = 'quality';
         $types[] = 'review_queue';
+        // 2026-08-22 — the two data shapes that had no type at all.
+        // ingest_spatial writes silver.spatial_features (structures, faults,
+        // contacts) and ingest_well_logs writes curves; neither is derived
+        // from silver.mv_collar_summary, so neither appeared in this list.
+        // Foundry/DrillholeDetail filtered on collars|assays and therefore
+        // sat on a stale strip log after a LAS upload and a stale structure
+        // set after a shapefile upload — the two uploads whose whole point
+        // is that page.
+        $types[] = 'structures';
+        $types[] = 'curves';
         // Phase 5 additions — symmetry with the existing superset. The
         // `hypotheses` type fires `Foundry/Reasoning` reloads; `what_changed`
         // fires `Foundry/WhatChangedFeed`. Receivers filter on these keys
