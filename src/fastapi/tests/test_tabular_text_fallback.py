@@ -383,6 +383,33 @@ class TestTheFallbackReportsWhatItDid:
         assert "will not appear in the drillhole" in warning["detail"]
 
     @pytest.mark.asyncio
+    async def test_the_passage_count_is_reported_as_a_number_too(
+        self, tmp_path,
+    ) -> None:
+        """The caller adds this to ``rows_written``.
+
+        Counting only typed silver rows made a text-only ingest report
+        zero, and IngestionRuns.tsx:79 renders zero as "Finished — no
+        data written" — over a run whose own warning says it indexed two
+        searchable passages. The count is in the prose as well, but a
+        caller re-reading it out of the English is how that number goes
+        wrong.
+        """
+        from app.hatchet_workflows import ingest_tabular as it
+
+        path = tmp_path / "drill.xlsx"
+        _workbook(path)
+
+        warning = await it._land_unclassified_as_text(
+            _FakeConn(), path=str(path), suffix=".xlsx",
+            unclassified=["Dispatch Log", "QAQC"],
+            workspace_id=_WS, project_id=_PJ,
+        )
+
+        assert warning["passages"] == 2
+        assert "2 searchable passage(s)" in warning["detail"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_fallback_is_reported_not_raised(
         self, tmp_path, monkeypatch,
     ) -> None:
