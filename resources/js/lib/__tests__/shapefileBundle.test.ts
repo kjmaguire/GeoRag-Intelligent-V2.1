@@ -929,11 +929,17 @@ describe('groupShapefiles - NATIVE TABs that are not map layers', () => {
         // The regression guard for the two branches above: an ordinary NATIVE
         // .tab with no Discover metadata is a vector table missing its
         // sidecars, and that advice IS followable.
-        const { unusable } = await groupShapefiles([
+        //
+        // An incomplete set stays a BUNDLE carrying a verdict — it is still
+        // uploaded, and the verdict is what the "Files needing attention"
+        // list renders. Only a file with nothing worth uploading becomes
+        // `unusable`, which is where the two Discover kinds above now go.
+        const { bundles, unusable } = await groupShapefiles([
             makeFile('Veins.TAB', '', NATIVE_TAB_HEADER),
         ]);
 
-        expect(unusable).toHaveLength(1);
-        expect(unusable[0].reason).toContain('Incomplete MapInfo TAB set');
+        expect(unusable).toHaveLength(0);
+        expect(bundles).toHaveLength(1);
+        expect(bundles[0].verdict).toContain('Incomplete MapInfo TAB set');
     });
 });
