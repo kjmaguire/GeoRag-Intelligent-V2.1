@@ -73,8 +73,15 @@ const STEP_LABELS: Record<string, string> = {
  * A run that finished but produced nothing is not a success, and saying
  * "Completed" over it is how a lost upload stays lost. The label leads with
  * the outcome the user can act on.
+ *
+ * A clean 'completed' gets a label too — without one, prettyStage() renders
+ * "Completed (step 6 of 6)", a stage report on a run that has no stage any
+ * more. These rows are the non-PDF successes (shapefile, drill CSV, LAS)
+ * the snapshot now keeps for 24 h; a PDF success lives in the completed
+ * card instead and never reaches this list.
  */
 function outcomeLabel(row: InFlightRow): string | null {
+    if (row.status === 'completed') return 'Completed';
     if (row.status !== 'partial') return null;
     if (row.rows_written === 0) return 'Finished — no data written';
     return 'Finished with warnings';
@@ -297,7 +304,11 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
         };
     }, [project.project_id, project.slug]);
 
-    const empty = runs.totals.in_flight === 0 && runs.totals.completed === 0;
+    // The list, not the total: totals.in_flight counts only rows still
+    // moving, while settled rows (a green shapefile completion, a partial)
+    // stay listed for 24 h — a page showing those is not empty, and the
+    // empty-state banner must not render above them.
+    const empty = runs.in_flight.length === 0 && runs.totals.completed === 0;
 
     return (
         <AppLayout>
@@ -388,7 +399,12 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
 
                 {runs.in_flight.length > 0 && (
                     <section className="px-8 py-5">
-                        <Card eyebrow={`IN FLIGHT · ${runs.in_flight.length}`} title="Currently ingesting" padded={false}>
+                        {/* Not "currently ingesting": settled runs — a green
+                            shapefile completion, a partial with its warnings,
+                            a failure — stay in this card for 24 h so success
+                            is visible and problems keep their explanations.
+                            The IN FLIGHT stat above counts only moving rows. */}
+                        <Card eyebrow={`RUNS · ${runs.in_flight.length}`} title="Active and recent runs" padded={false}>
                             {/* Fixed-px columns don't collapse below `lg:` — scroll
                                 horizontally instead of clipping/overlapping on narrow
                                 viewports. */}
@@ -433,11 +449,13 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                                                 <Pill tone={(f.failed || f.status === 'partial') ? 'warn' : 'accent'} dot>
                                                     {outcomeLabel(f) ?? prettyStage(f)}
                                                 </Pill>
-                                                {f.status === 'partial' && f.rows_written !== null && f.rows_written > 0 && (
-                                                    <span className="ml-2 font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
-                                                        {f.rows_written.toLocaleString()} rows
-                                                    </span>
-                                                )}
+                                                {(f.status === 'partial' || f.status === 'completed') &&
+                                                    f.rows_written !== null &&
+                                                    f.rows_written > 0 && (
+                                                        <span className="ml-2 font-mono text-[10px] tabular-nums" style={{ color: 'var(--fg-2)' }}>
+                                                            {f.rows_written.toLocaleString()} rows
+                                                        </span>
+                                                    )}
                                             </div>
                                             <div className="flex items-center gap-3 min-w-0">
                                                 <div className="flex-1 min-w-0">
