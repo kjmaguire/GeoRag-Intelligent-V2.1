@@ -6,7 +6,7 @@
 # at startup (Enterprise-only). This is the supported workaround per
 # our backlog item v1.5-07.
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 LABEL org.opencontainers.image.title="GeoRAG Neo4j Exporter"
 LABEL org.opencontainers.image.description="JMX → Prometheus bridge for Neo4j Community Edition (V1.5-07)"
