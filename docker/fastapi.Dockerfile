@@ -217,6 +217,14 @@ RUN uv pip install --system --no-cache /georag_geoparsers
 # ARG TORCH_VERSION below still matches the version in uv.lock, which is the
 # only remaining link between the two now that the export omits it.
 #
+# 2026-08-24: excluding torch ALONE turned out to be insufficient — its
+# CUDA-only children (cuda-toolkit, nvidia-*, triton) stayed in the export
+# as first-class pins and installed anyway, one layer after this one. The
+# whole subtree is now excluded (TORCH_CUDA_SUBTREE in the same checker,
+# which also rejects any future nvidia-*/cuda-*/triton line by name), and
+# the assert_cpu_only_torch.py gate below fails the build if any of it
+# ever reaches site-packages again.
+#
 # Verified in a clean python:3.13-slim container: after both steps torch
 # reports 2.13.0+cpu with zero nvidia/triton/cuda- packages.
 #
@@ -293,6 +301,25 @@ COPY fastapi/ .
 # but had no console scripts. --no-deps keeps it from touching the locked
 # set installed above.
 RUN uv pip install --system --no-cache --no-deps .
+
+# ---------------------------------------------------------------------------
+# CPU-only gate (2026-08-24). Every dependency-installing layer is above
+# this line, so this checks the exact site-packages the runtime stage will
+# copy. It fails the build if any nvidia-*/cuda-*/triton package or
+# directory is present, and confirms torch imports as a +cpu build.
+#
+# It exists because the CPU-only work above was defeated twice without a
+# single build or CI failure: requirements.lock.txt excluded `torch` but
+# kept torch's CUDA children as pinned lines (installed one layer after
+# the +cpu wheel), and a stale uv.lock resolved plain `xgboost`, whose
+# linux metadata pulls nvidia-nccl-cu12. Measured live 2026-08-24: 3.6 GB
+# of nvidia/ + triton/ in a 7.5 GB image on a tier with no GPU, plus a CD
+# abort when the Trivy scan hit its deadline on libcusparseLt.so.0. The
+# lock-side fixes live in scripts/check_fastapi_lock_export.py; this is
+# the backstop that turns any future route to the same state into a loud
+# build failure.
+# ---------------------------------------------------------------------------
+RUN python3 scripts/assert_cpu_only_torch.py
 
 # ---------------------------------------------------------------------------
 # Bake the SPLADE++ sparse-encoder weights into the image (2026-08-04).
