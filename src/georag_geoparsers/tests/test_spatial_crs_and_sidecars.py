@@ -289,6 +289,28 @@ class TestSourceEpsgOverride:
         assert float(lon) == pytest.approx(UNGA_LON, abs=0.01)
         assert float(lat) == pytest.approx(UNGA_LAT, abs=0.01)
 
+    def test_dxf_honours_the_override_like_every_other_format(self):
+        """The DXF arm used to return before the source_epsg check — the
+        wizard rendered an EPSG field on DXF rows, the API accepted the
+        code, and the parser ignored it. A supplied override now takes the
+        same declares-nothing path as a .prj-less shapefile: applied, with
+        a measured fit, and no 'stored as assumed' warning."""
+        # Unga Island (~UTM zone 4N metres), so the fit measures as real.
+        frame = gpd.GeoDataFrame(
+            {"n": ["a"]}, geometry=[Point(438000, 6120000)], crs=None,
+        )
+        warnings_out: list[dict] = []
+
+        _, decision = _resolve_crs(
+            frame, ".dxf", "plan.dxf", UNGA_EPSG, warnings_out,
+        )
+
+        assert decision.missing is False
+        assert decision.source_crs == f"EPSG:{UNGA_EPSG}"
+        assert decision.override_applied is True
+        assert decision.override_epsg == UNGA_EPSG
+        assert "dxf_no_crs" not in [w["code"] for w in warnings_out]
+
     def test_override_confidence_is_measured_not_asserted(self, tmp_path):
         """The human's claim is checked against the data, not trusted.
 

@@ -800,6 +800,28 @@ def _score_and_warn(gdf, path: str, warnings_out: list[dict]) -> tuple[float | N
     return crs_score, crs_reason
 
 
+def epsg_from_wkt_text(wkt: str) -> tuple[int | None, str | None]:
+    """Resolve `.prj` text to (EPSG code, CRS name) with pyproj.
+
+    Default identify confidence ONLY. At ``min_confidence=25`` pyproj
+    matched a custom grid (the RedStar donor WKT with its central meridian
+    moved to -158.123) to EPSG:26929 — a confident answer whose parameters
+    differ from the file's. A custom mine grid must come back unresolved
+    (``(None, its name)``) and be typed by a human, not rounded to the
+    nearest UTM zone. The real donor shape — ESRI-style WKT with no
+    AUTHORITY clause, ``"NAD_1983_UTM_Zone_4N"`` — resolves at default
+    confidence through proj.db's alias tables; measured: 26904.
+
+    Raises whatever pyproj raises on text it cannot read at all — the
+    caller decides what a refusal means (ingest_spatial logs it and
+    carries on unplaced).
+    """
+    from pyproj import CRS  # noqa: PLC0415
+
+    crs = CRS.from_wkt(wkt)
+    return crs.to_epsg(), crs.name
+
+
 def _resolve_crs(gdf, ext: str, path: str, source_epsg: int | None,
                  warnings_out: list[dict]):
     """Decide a frame's CRS, before any reprojection. Returns (gdf, decision).
@@ -832,22 +854,34 @@ def _resolve_crs(gdf, ext: str, path: str, source_epsg: int | None,
 
     if ext == ".dxf":
         # pyogrio may populate a synthetic CRS for DXF; clear it explicitly.
+        # Cleared and then allowed to FALL THROUGH: this arm used to return
+        # here unconditionally, which made DXF the one format whose
+        # source_epsg override was silently ignored — the wizard rendered an
+        # EPSG field on DXF rows, the API accepted the code, and nothing
+        # read it. The declares-nothing logic below applies the override
+        # with a measured fit, exactly as it does for a .prj-less shapefile.
         gdf = gdf.set_crs(None, allow_override=True)
-        warnings_out.append({
-            "code": "dxf_no_crs",
-            "message": "DXF files have no CRS; caller must georeference.",
-            "detail": (
-                f"{basename} is a CAD drawing in model units — the format has "
-                "no coordinate system to read. Its features are stored as "
-                "'assumed' so the map shows their position as uncertain."
-            ),
-            "context": {"path": path},
-        })
-        return gdf, _CrsDecision(
-            source_crs=_NO_CRS_DEFAULT,
-            confidence=0.0,
-            reason="DXF carries no CRS; the caller must georeference",
-        )
+        if source_epsg is None:
+            warnings_out.append({
+                "code": "dxf_no_crs",
+                "message": "DXF files have no CRS; caller must georeference.",
+                "detail": (
+                    f"{basename} is a CAD drawing in model units — the format "
+                    "has no coordinate system to read. Its features are "
+                    "stored as 'assumed' so the map shows their position as "
+                    "uncertain. Supply an EPSG code at upload time to place "
+                    "them properly; dropping the file loose on the upload "
+                    "screen beside a .prj also carries the coordinate system "
+                    "over, but a .prj zipped in next to a CAD file is not "
+                    "read."
+                ),
+                "context": {"path": path},
+            })
+            return gdf, _CrsDecision(
+                source_crs=_NO_CRS_DEFAULT,
+                confidence=0.0,
+                reason="DXF carries no CRS; the caller must georeference",
+            )
 
     declared = gdf.crs
     if declared is not None:
@@ -1449,8 +1483,10 @@ def parse_spatial_file(
                 "detail": (
                     f"{os.path.basename(path)} arrived without its .dbf file. "
                     "The shapes were imported but every attribute — names, "
-                    "codes, descriptions — is missing. Re-upload the shapefile "
-                    "with all of its sidecars to get them."
+                    "codes, descriptions — is missing. If the delivery "
+                    "includes the .dbf, re-upload the shapefile with all of "
+                    "its sidecars to get them; some archives genuinely ship "
+                    "geometry-only, and then the shapes are all there is."
                 ),
                 "context": {"shapefile": path, "expected_dbf": dbf_path},
             })

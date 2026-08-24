@@ -649,6 +649,8 @@ def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
 def _wrote_nothing_warning(
     *, label: str, classified_as: str, reason: str | None,
     from_category: bool = False,
+    headers_matched: str | None = None,
+    retry_reason: str | None = None,
 ) -> dict[str, Any]:
     """Say which sheet was refused, what it was taken for, and why.
 
@@ -666,6 +668,17 @@ def _wrote_nothing_warning(
     writer only because it was uploaded under `collars`. Being told the
     file matched a layout it does not match sends the geologist off to
     rename columns that were never the problem.
+
+    ``headers_matched`` and ``retry_reason`` carry the outcome of the
+    header re-check that now runs after every category-forced refusal
+    (see the retry block in run_ingest_tabular): by the time this warning
+    is emitted for a forced sheet, the classifier HAS looked at the
+    headers, and the advice can be specific instead of speculative. The
+    first version of the forced message said "leave the category off and
+    let the headers decide" — advice that cannot be followed:
+    UploadController requires a category on every upload and the wizard
+    fills one in from the extension, so there has never been a way to
+    leave it off.
     """
     because = reason or (
         "the writer required columns this sheet does not have"
@@ -676,11 +689,39 @@ def _wrote_nothing_warning(
             f"was sent to the {classified_as} writer without its headers "
             f"being checked first"
         )
-        fix = (
-            f"If this is not {classified_as} data, re-upload it under the "
-            f"category that matches — or leave the category off and let the "
-            f"headers decide."
-        )
+        if headers_matched is None:
+            fix = (
+                f"Its headers were then checked against every drill layout "
+                f"and matched none, so this looks like a non-drill table "
+                f"and the data-table copy is the intended landing for it. "
+                f"If it really is {classified_as} data, rename its columns "
+                f"to ones the {classified_as} parser recognises and "
+                f"re-upload."
+            )
+        elif headers_matched == classified_as:
+            # Only point "above" at column names when the refusal actually
+            # named columns. A file whose headers all map but whose rows
+            # were refused one by one has no file-level reason, and telling
+            # the user to add columns they already have is the class of
+            # advice this function exists to kill.
+            fix = (
+                f"Its headers do match the {classified_as} layout, so the "
+                f"missing column(s) named above are the specific gap — add "
+                f"them and re-upload."
+            ) if reason is not None else (
+                f"Its headers do match the {classified_as} layout — the "
+                f"rows themselves were refused, and the parser notes "
+                f"beside this one report the row-level problems."
+            )
+        else:
+            second = retry_reason or (
+                "the writer required columns this sheet does not have"
+            )
+            fix = (
+                f"Its headers match the {headers_matched} layout instead, "
+                f"but re-read as {headers_matched} it was refused again: "
+                f"{second}."
+            )
     else:
         how = (
             f"'{label}' matched the {classified_as} layout, so it was sent "
@@ -702,6 +743,43 @@ def _wrote_nothing_warning(
             f"{classified_as} rows were written. The sheet was kept as "
             f"searchable text and, where its columns allow, as a data "
             f"table; the warnings beside this one report what landed. {fix}"
+        ),
+    }
+
+
+def _category_corrected_warning(
+    *, label: str, forced_as: str, matched: str,
+    written: int, orphaned: int,
+) -> dict[str, Any]:
+    """Say the category was wrong, what the headers said, and what landed.
+
+    Emitted INSTEAD of _wrote_nothing_warning when the post-refusal header
+    re-check found a different drill layout and that writer accepted the
+    rows. The category is a hint, not a verdict: a survey file dropped into
+    `collars` — or left on the wizard's `.csv` default, which IS `collars` —
+    used to land as prose and a generic table. Now it lands as survey rows,
+    and this warning is how the geologist learns the category on the next
+    upload of the same file.
+    """
+    landed = f"{written} {matched} row(s) were written"
+    if orphaned:
+        landed += (
+            f" and {orphaned} row(s) are waiting for their collars to be "
+            f"uploaded"
+        )
+    return {
+        "code": "category_corrected",
+        "message": (
+            f"'{label}' was uploaded as {forced_as} but its headers match "
+            f"the {matched} layout — written as {matched} instead"
+        ),
+        "detail": (
+            f"'{label}' was uploaded to the {forced_as} category, but the "
+            f"{forced_as} writer could accept none of its rows, and its "
+            f"headers match the {matched} layout. It was read as {matched} "
+            f"data instead: {landed}. If it really is {forced_as} data, "
+            f"rename its columns to ones the {forced_as} parser recognises "
+            f"and re-upload."
         ),
     }
 
@@ -985,10 +1063,15 @@ async def run_ingest_tabular(
     unclassified: list[str] = []
     warnings: list[dict[str, Any]] = []
     #: Sheets that DID classify and then wrote nothing — (label, type,
-    #: reason). Collected per sheet, not per type: one workbook can hold a
-    #: collar tab that lands and a second that is refused, and the
-    #: per-type accumulator cannot tell them apart.
-    wrote_nothing: list[tuple[str, str, str | None, bool]] = []
+    #: reason, forced, headers_matched, retry_reason). Collected per sheet,
+    #: not per type: one workbook can hold a collar tab that lands and a
+    #: second that is refused, and the per-type accumulator cannot tell
+    #: them apart. The last two carry the post-refusal header re-check for
+    #: category-forced sheets, so the warning can advise from what the
+    #: headers actually say rather than speculate.
+    wrote_nothing: list[
+        tuple[str, str, str | None, bool, str | None, str | None]
+    ] = []
     #: Searchable passages the text fallback landed. Part of what the run
     #: wrote — see the rows_written comment at the terminal write.
     text_passages = 0
@@ -1084,8 +1167,17 @@ async def run_ingest_tabular(
                 warnings.append({
                     "code": "nothing_classified",
                     "detail": (
-                        "No sheet matched collar / survey / lithology / sample. "
-                        "Pass sheet_type explicitly if the headers are unusual."
+                        "No sheet matched the collar / survey / lithology / "
+                        "sample layouts, so nothing landed in the drillhole "
+                        "tables — the notes beside this one report how the "
+                        "data was kept instead. If one of these sheets IS "
+                        "drill data, its headers were not recognised: rename "
+                        "the key columns to standard names (hole_id, plus "
+                        "easting/northing for collars or from/to depths for "
+                        "intervals) and re-upload. The New Project screen's "
+                        "file list can also upload a single-table file under "
+                        "its matching category to force the type; the import "
+                        "wizard picks the category from the extension."
                     ),
                 })
 
@@ -1109,14 +1201,25 @@ async def run_ingest_tabular(
                     is_local=False,
                 )
 
-                for sheet_type, sheet_name in work:
+                async def _parse_and_write(
+                    write_type: str, target_sheet: str | None,
+                ) -> tuple[Any, dict[str, int]]:
+                    """Parse `local` as `write_type` and persist the records.
+
+                    Inner on purpose: it closes over the connection, the CRS
+                    decision and the per-type accumulator, all of which live
+                    only inside this block. The category-retry below is the
+                    second caller — without this it would duplicate the
+                    collar/interval split and the accumulator arithmetic,
+                    and the two copies would drift.
+                    """
                     result = await asyncio.to_thread(
-                        _parse_one, local, sheet_type, sheet_name,
+                        _parse_one, local, write_type, target_sheet,
                     )
                     records = getattr(result, "records", None) or []
                     warnings.extend(getattr(result, "warnings", None) or [])
 
-                    if sheet_type == "collar":
+                    if write_type == "collar":
                         stats = await _write_collars(
                             conn,
                             workspace_id=input.workspace_id,
@@ -1131,40 +1234,129 @@ async def run_ingest_tabular(
                         stats = await _write_intervals(
                             conn,
                             workspace_id=input.workspace_id,
-                            sheet_type=sheet_type,
+                            sheet_type=write_type,
                             records=records, index=index,
                         )
 
-                    if not stats.get("written") and not stats.get("orphaned"):
-                        # Classified, then refused. Recorded here, where
-                        # the parse result is still in scope and can say
-                        # why; acted on after the write pass, so
-                        # WRITE_ORDER and the collars-first sort above are
-                        # untouched.
-                        #
-                        # ORPHANED IS EXCLUDED DELIBERATELY. An interval
-                        # sheet whose rows all orphaned parsed perfectly
-                        # well -- its collars simply are not uploaded yet,
-                        # and its own orphaned_intervals warning already
-                        # says to upload them and re-run. Text-indexing it
-                        # now would leave that copy behind when the typed
-                        # rows land on the second run, competing with them
-                        # in the recall set. That is the exact duplication
-                        # the only_sheets scoping exists to prevent, one
-                        # case over.
-                        wrote_nothing.append((
-                            sheet_name or filename,
-                            sheet_type,
-                            _refusal_reason(result),
-                            sheet_type == input.sheet_type,
-                        ))
-
                     prior = written.setdefault(
-                        sheet_type,
+                        write_type,
                         {"written": 0, "skipped": 0, "orphaned": 0, "replaced": 0},
                     )
                     for k, v in stats.items():
                         prior[k] = prior.get(k, 0) + v
+                    return result, stats
+
+                for sheet_type, sheet_name in work:
+                    # Where this attempt's parser warnings begin and end in
+                    # the run's list. Both retry outcomes need the span:
+                    # correction drops it (those notes describe a reading of
+                    # the file the correction says was wrong), and a failed
+                    # retry dedupes against it (both attempts re-detect the
+                    # same encoding/delimiter facts and would report each
+                    # twice).
+                    forced_warn_start = len(warnings)
+                    result, stats = await _parse_and_write(
+                        sheet_type, sheet_name,
+                    )
+                    forced_warn_end = len(warnings)
+                    if stats.get("written") or stats.get("orphaned"):
+                        # ORPHANED COUNTS AS LANDED DELIBERATELY. An
+                        # interval sheet whose rows all orphaned parsed
+                        # perfectly well -- its collars simply are not
+                        # uploaded yet, and its own orphaned_intervals
+                        # warning already says to upload them and re-run.
+                        # Text-indexing it now would leave that copy behind
+                        # when the typed rows land on the second run,
+                        # competing with them in the recall set. That is
+                        # the exact duplication the only_sheets scoping
+                        # exists to prevent, one case over.
+                        continue
+
+                    # Classified (or category-forced), then refused.
+                    # Recorded here, where the parse result is still in
+                    # scope and can say why; acted on after the write pass,
+                    # so WRITE_ORDER and the collars-first sort above are
+                    # untouched.
+                    #
+                    # `forced` excludes workbooks: their sheets are always
+                    # classified per sheet, so a stray sheet_type on the
+                    # input that happens to equal a sheet's classified type
+                    # must not read as "the category forced this".
+                    forced = (
+                        sheet_type == input.sheet_type
+                        and suffix not in EXCEL_EXTENSIONS
+                    )
+                    headers_matched: str | None = None
+                    retry_reason: str | None = None
+                    if forced:
+                        # ── The category was wrong; ask the headers ──────
+                        # The forced route skipped the classifier on the way
+                        # in — that is what "forced" means — so run it now,
+                        # after the refusal, when it costs nothing: the
+                        # forced writer has already accepted zero rows, so a
+                        # different verdict can only add data, never replace
+                        # any. A survey file left on the wizard's `.csv`
+                        # default (which is `collars`) lands as survey rows
+                        # instead of as prose plus a generic table.
+                        from georag_geoparsers._sheet_classifier import (  # noqa: PLC0415
+                            classify_sheet_type,
+                        )
+                        try:
+                            reclass, _reconf = classify_sheet_type(
+                                _csv_headers(local),
+                            )
+                        except Exception as exc:  # noqa: BLE001 — the retry is best-effort; the text/table fallback must still land
+                            log.warning(
+                                "ingest_tabular: post-refusal header re-check "
+                                "failed for %s: %s", filename, exc,
+                            )
+                            reclass = "unknown"
+                        headers_matched = (
+                            reclass if reclass in WRITE_ORDER else None
+                        )
+                        if (
+                            headers_matched is not None
+                            and headers_matched != sheet_type
+                        ):
+                            retry_result, retry_stats = await _parse_and_write(
+                                headers_matched, None,
+                            )
+                            if retry_stats.get("written") or retry_stats.get(
+                                "orphaned",
+                            ):
+                                # Drop the forced attempt's parser notes:
+                                # they describe the file read as a type this
+                                # correction says it never was, and the
+                                # retry's own parse re-detected and re-said
+                                # the file-level facts (encoding, delimiter)
+                                # in the entries after the span.
+                                del warnings[forced_warn_start:forced_warn_end]
+                                warnings.append(_category_corrected_warning(
+                                    label=sheet_name or filename,
+                                    forced_as=sheet_type,
+                                    matched=headers_matched,
+                                    written=retry_stats.get("written", 0),
+                                    orphaned=retry_stats.get("orphaned", 0),
+                                ))
+                                continue
+                            # Both attempts parsed the same bytes, so the
+                            # file-level notes arrive twice; keep the
+                            # retry's only where it says something new.
+                            already = warnings[:forced_warn_end]
+                            warnings[forced_warn_end:] = [
+                                w for w in warnings[forced_warn_end:]
+                                if w not in already
+                            ]
+                            retry_reason = _refusal_reason(retry_result)
+
+                    wrote_nothing.append((
+                        sheet_name or filename,
+                        sheet_type,
+                        _refusal_reason(result),
+                        forced,
+                        headers_matched,
+                        retry_reason,
+                    ))
 
                 if attribute_rows:
                     written["attribute_table"] = await _write_attribute_rows(
@@ -1194,7 +1386,9 @@ async def run_ingest_tabular(
                 # least answerable in chat. The warning is the rest of
                 # it — the refusal has a reason and the geologist should
                 # not have to read a worker log to find it.
-                for label, classified_as, reason, forced in wrote_nothing:
+                for (
+                    label, classified_as, reason, forced, matched, second,
+                ) in wrote_nothing:
                     if label not in unclassified:
                         unclassified.append(label)
                     warnings.append(_wrote_nothing_warning(
@@ -1202,6 +1396,8 @@ async def run_ingest_tabular(
                         classified_as=classified_as,
                         reason=reason,
                         from_category=forced,
+                        headers_matched=matched,
+                        retry_reason=second,
                     ))
 
                 # ── Whatever did not classify ───────────────────────────
@@ -1213,10 +1409,11 @@ async def run_ingest_tabular(
                 # workbook arriving inside a ZIP that is a regression on
                 # the old archive branch, which at least landed it as text.
                 #
-                # The advice in that warning ("pass sheet_type explicitly")
-                # is also unactionable for a zipped file: the archive
-                # branch deliberately passes no hint, because inside an
-                # archive there is no user-chosen category to pass.
+                # The advice in that warning (rename the headers, or force
+                # the type via the upload category) is header-side on
+                # purpose: a file inside an archive has no user-chosen
+                # category — the archive branch deliberately passes no
+                # hint — so category-side advice cannot be followed there.
                 #
                 # Scoped to the unclassified sheets only. Sending the whole
                 # workbook would duplicate every drill row as a second,

@@ -145,8 +145,22 @@ export interface CrsProvenance {
     sourceName: string;
     /** Human label parsed out of the WKT, e.g. `NAD 1983 UTM Zone 4N`. */
     label: string;
-    /** The exact entry written into this bundle, e.g. `geology_poly.prj`. */
-    memberName: string;
+    /**
+     * The exact entry written into this bundle, e.g. `geology_poly.prj`.
+     *
+     * Set ONLY for member-carriage recipients (shapefile bundles). Its
+     * presence is what gates the "rebuild the ZIP without the copy" path —
+     * a WKT-carriage recipient has no archive to rebuild.
+     */
+    memberName?: string;
+    /**
+     * The donor's raw WKT, set ONLY for recipients that cannot take a
+     * member — a lone `.dxf`/`.dgn` is one file, not a ZIP — and upload the
+     * donation as the `source_crs_wkt` field instead. The server resolves
+     * it to an EPSG code with pyproj; nothing in the browser does (see
+     * crsLabel below for why not).
+     */
+    wkt?: string;
 }
 
 export interface SpatialBundle {
@@ -232,6 +246,16 @@ export interface GroupResult {
      * or nothing that needed it.
      */
     crsDonation: CrsDonation | null;
+    /**
+     * Passthrough files that took the donation as TEXT rather than as a ZIP
+     * member - the formats with no CRS concept and no sidecar convention
+     * (`.dxf`, `.dgn`), which the RedStar delivery demonstrated: the same
+     * `.prj` that rescued seven shapefiles named the CRS the lone DXF
+     * needed, and nothing could carry it there. Each entry's `crs.wkt` is
+     * uploaded as `source_crs_wkt`; the files themselves are still in
+     * `passthrough`, byte-identical.
+     */
+    wktRecipients: { file: File; crs: CrsProvenance }[];
 }
 
 function extOf(name: string): string {
@@ -312,6 +336,17 @@ function normaliseWkt(text: string): string {
  * coordinate system contradicting the one it actually declares.
  */
 const CRS_SIDECARS = new Set(['prj', 'qpj']);
+
+/**
+ * Passthrough formats the donation reaches as TEXT (`source_crs_wkt`).
+ *
+ * Only the two with no CRS concept at all AND no sidecar convention GDAL
+ * would read: a `.dxf`/`.dgn` is drawn in model units and travels as one
+ * file, so a copied `.prj` has nowhere to live. GeoJSON is deliberately
+ * absent - RFC 7946 §4 makes WGS84 a specification default, which is a
+ * declaration, not a gap for a donation to fill.
+ */
+export const WKT_DONATABLE_EXTS = new Set(['dxf', 'dgn']);
 
 /**
  * The WKT keywords that actually name a coordinate reference system: WKT1's
@@ -533,6 +568,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
     const passthrough: File[] = [];
     const unusable: UnusableFile[] = [];
     const nonVectorTabs: UnusableFile[] = [];
+    const wktRecipients: { file: File; crs: CrsProvenance }[] = [];
 
     // ---- Raster TABs, before anything can mistake one for a vector set ----
     //
@@ -722,6 +758,21 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
                         `${stemOf(f)}.mif was selected - there is nothing for it to attach to.`,
                 });
             } else {
+                // A CAD file beside the delivery's one agreed `.prj` takes
+                // the donation as text: there is no archive to zip the copy
+                // into, so it rides the upload as `source_crs_wkt` instead.
+                // The file itself still goes up byte-identical.
+                if (donor && WKT_DONATABLE_EXTS.has(ext)) {
+                    wktRecipients.push({
+                        file: f,
+                        crs: {
+                            sourceName: donor.file.name,
+                            label: donorLabel,
+                            wkt: donor.text,
+                        },
+                    });
+                    appliedTo.push(stemOf(f));
+                }
                 passthrough.push(f);
             }
         }
@@ -755,6 +806,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
         passthrough,
         unusable: [...unusable.filter((u) => !donatedPrjFiles.has(u.file)), ...nonVectorTabs],
         crsDonation,
+        wktRecipients,
     };
 }
 
