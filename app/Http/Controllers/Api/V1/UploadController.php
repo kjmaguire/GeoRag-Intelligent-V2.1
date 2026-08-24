@@ -256,6 +256,15 @@ class UploadController extends Controller
             // eventually lands in. The parser applies it ONLY when the file
             // declares no CRS of its own — a declared CRS always wins.
             'source_epsg' => ['nullable', 'integer', 'min:'.self::EPSG_MIN, 'max:'.self::EPSG_MAX],
+            // The `.prj` text the wizard's CRS donation found in the same
+            // drop, for a spatial file that cannot carry a `.prj` member of
+            // its own (a lone .dxf/.dgn is one file, not a ZIP the copy
+            // could be zipped into). Raw WKT, resolved to an EPSG integer
+            // server-side by ingest_spatial via pyproj — the browser
+            // deliberately does no WKT→EPSG of its own (shapefileBundle.ts,
+            // crsLabel). Ignored by the workflow whenever source_epsg is
+            // also present: a typed code outranks a found copy.
+            'source_crs_wkt' => ['nullable', 'string', 'max:65536'],
         ], [
             // store() validates inline rather than through a FormRequest, so
             // there is no messages() to hang these on. Without them an
@@ -270,6 +279,7 @@ class UploadController extends Controller
         $category = $validated['category'];
         $vendorProfileId = $validated['vendor_profile_id'] ?? null;
         $sourceEpsg = $validated['source_epsg'] ?? null;
+        $sourceCrsWkt = $validated['source_crs_wkt'] ?? null;
 
         // Validate file extension against category
         $ext = strtolower($file->getClientOriginalExtension());
@@ -488,6 +498,16 @@ class UploadController extends Controller
                     minioKey: $minioKey,
                     responseData: $responseData,
                     sourceEpsg: $sourceEpsg,
+                    // CAD formats only — the two with no CRS concept and no
+                    // sidecar GDAL would read, which is the entire reason
+                    // the donation has to travel as text. For every other
+                    // spatial format a WKT here can only mislead: the
+                    // parser would ignore it for a CRS-declaring file while
+                    // the workflow had already trusted it, and the wizard
+                    // never sends it for those anyway.
+                    sourceCrsWkt: in_array($ext, ['dxf', 'dgn'], true)
+                        ? $sourceCrsWkt
+                        : null,
                 );
             }
 
@@ -831,6 +851,13 @@ class UploadController extends Controller
      *                             `source_epsg` on their input model, and
      *                             withheld from ingest_well_logs, which does
      *                             not.
+     * @param string|null $sourceCrsWkt Donated `.prj` text for a spatial
+     *                                  file that cannot carry the copy as a
+     *                                  ZIP member. Forwarded to
+     *                                  ingest_spatial only — the only input
+     *                                  model that declares it — and only
+     *                                  when no source_epsg was typed, since
+     *                                  the workflow ignores it then anyway.
      */
     private function dispatchGeologyIngest(
         $user,
@@ -839,6 +866,7 @@ class UploadController extends Controller
         string $minioKey,
         array &$responseData,
         ?int $sourceEpsg = null,
+        ?string $sourceCrsWkt = null,
     ): void {
         try {
             $workflow = self::GEOLOGY_WORKFLOWS[$category] ?? null;
@@ -941,6 +969,18 @@ class UploadController extends Controller
                 && in_array($workflow, ['ingest_tabular', 'ingest_spatial'], true)
             ) {
                 $payload['source_epsg'] = $sourceEpsg;
+            }
+
+            // The donated `.prj` text, for ingest_spatial only — the one
+            // input model that declares `source_crs_wkt` — and only when no
+            // EPSG integer was typed: the workflow prefers the typed code
+            // regardless, so sending both would be dead weight in every log
+            // line that quotes the payload.
+            if ($sourceCrsWkt !== null
+                && $sourceEpsg === null
+                && $workflow === 'ingest_spatial'
+            ) {
+                $payload['source_crs_wkt'] = $sourceCrsWkt;
             }
 
             $this->dispatchThrottle->wait($workspaceId);

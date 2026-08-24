@@ -943,3 +943,87 @@ describe('groupShapefiles - NATIVE TABs that are not map layers', () => {
         expect(bundles[0].verdict).toContain('Incomplete MapInfo TAB set');
     });
 });
+
+describe('groupShapefiles — WKT-carriage donation (.dxf/.dgn)', () => {
+    // The RedStar shape of the problem: the same GeoPoints_2005.prj that
+    // rescued seven .prj-less shapefiles named the CRS the lone DXF needed,
+    // and nothing could carry it there — a .dxf is one file, not a ZIP a
+    // copy could be zipped into. It takes the donation as text instead
+    // (uploaded as `source_crs_wkt`; the server resolves it with pyproj).
+
+    it('hands a lone .dxf the agreed WKT as text, not as a member', async () => {
+        const dxf = makeFile('NEW_HYD.BX_Central_Clean.dxf');
+        const { passthrough, wktRecipients, crsDonation, unusable } =
+            await groupShapefiles([
+                dxf,
+                makeFile('GeoPoints_2005.prj', '', UTM4N_WKT),
+            ]);
+
+        // The file itself still goes up byte-identical, as itself.
+        expect(passthrough).toContain(dxf);
+        expect(wktRecipients).toHaveLength(1);
+        expect(wktRecipients[0].file).toBe(dxf);
+        expect(wktRecipients[0].crs.sourceName).toBe('GeoPoints_2005.prj');
+        expect(wktRecipients[0].crs.label).toBe('NAD 1983 UTM Zone 4N');
+        expect(wktRecipients[0].crs.wkt).toBe(UTM4N_WKT);
+        // Text carriage, never a ZIP entry: memberName gates the
+        // "rebuild the archive without the copy" path and must be absent.
+        expect(wktRecipients[0].crs.memberName).toBeUndefined();
+        // The recipient makes the donation real, so the banner exists and
+        // the orphaned donor is no longer reported as unusable.
+        expect(crsDonation?.appliedTo).toContain('NEW_HYD.BX_Central_Clean');
+        expect(unusable).toHaveLength(0);
+    });
+
+    it('serves a bundle and a .dxf from the same donor', async () => {
+        const { bundles, wktRecipients, crsDonation } = await groupShapefiles([
+            makeFile('veins.shp'),
+            makeFile('veins.shx'),
+            makeFile('plan.dxf'),
+            makeFile('GeoPoints_2005.prj', '', UTM4N_WKT),
+        ]);
+
+        expect(bundles).toHaveLength(1);
+        expect(bundles[0].crsFrom?.memberName).toBe('veins.prj');
+        expect(wktRecipients).toHaveLength(1);
+        expect(crsDonation?.appliedTo).toEqual(
+            expect.arrayContaining(['veins', 'plan']),
+        );
+    });
+
+    it('a .dgn takes the donation the same way', async () => {
+        const { wktRecipients } = await groupShapefiles([
+            makeFile('site.dgn'),
+            makeFile('donor.prj', '', UTM4N_WKT),
+        ]);
+
+        expect(wktRecipients).toHaveLength(1);
+        expect(wktRecipients[0].crs.wkt).toBe(UTM4N_WKT);
+    });
+
+    it('two distinct coordinate systems donate to nothing, .dxf included', async () => {
+        const { wktRecipients, crsDonation } = await groupShapefiles([
+            makeFile('plan.dxf'),
+            makeFile('a.prj', '', UTM4N_WKT),
+            makeFile('b.prj', '', WGS84_WKT),
+        ]);
+
+        expect(wktRecipients).toHaveLength(0);
+        expect(crsDonation).toBeNull();
+    });
+
+    it('GeoJSON is never a recipient — RFC 7946 is a declaration', async () => {
+        const { wktRecipients } = await groupShapefiles([
+            makeFile('sites.geojson'),
+            makeFile('donor.prj', '', UTM4N_WKT),
+        ]);
+
+        expect(wktRecipients).toHaveLength(0);
+    });
+
+    it('no donor, no recipients', async () => {
+        const { wktRecipients } = await groupShapefiles([makeFile('plan.dxf')]);
+
+        expect(wktRecipients).toHaveLength(0);
+    });
+});

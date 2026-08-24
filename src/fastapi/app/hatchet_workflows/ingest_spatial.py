@@ -160,6 +160,20 @@ class IngestSpatialInput(BaseModel):
     #: with three fields, and a required field would break them at
     #: validation time.
     source_epsg: int | None = Field(default=None)
+    #: The `.prj` text the wizard's CRS donation found in the same drop, for
+    #: a recipient that cannot carry a `.prj` member of its own -- a `.dxf`
+    #: or `.dgn` travels as a single file, not a ZIP, so the donation cannot
+    #: be zipped in beside it the way it is for a shapefile bundle.
+    #:
+    #: Raw WKT, resolved to an EPSG integer HERE (see _epsg_from_wkt) and
+    #: then fed through the same source_epsg path as every other override.
+    #: The browser deliberately does no WKT->EPSG resolution -- see
+    #: shapefileBundle.ts's crsLabel(), which calls a second, weaker
+    #: resolver "a new way to be confidently wrong about a coordinate
+    #: system" -- so the string must arrive whole and pyproj must be the one
+    #: to read it. Ignored whenever source_epsg is supplied: a code the user
+    #: typed outranks a copy the wizard found.
+    source_crs_wkt: str | None = Field(default=None, max_length=65536)
 
     @field_validator("source_epsg")
     @classmethod
@@ -184,6 +198,40 @@ class IngestSpatialInput(BaseModel):
 
         uuid.UUID(v)  # raises on malformed input, at the trigger boundary
         return v
+
+
+def _epsg_from_wkt(wkt: str) -> tuple[int | None, str | None]:
+    """Resolve donated `.prj` text to (EPSG int, CRS name), or (None, why).
+
+    pyproj is the resolver on purpose: it is what reads every other `.prj`
+    in this pipeline, and real donor files are ESRI-style WKT with no
+    AUTHORITY clause (the RedStar GeoPoints_2005.prj names
+    "NAD_1983_UTM_Zone_4N" and nothing else), which pyproj matches against
+    proj.db's alias tables at its DEFAULT confidence — measured, that WKT
+    answers 26904 with no fallback needed.
+
+    No min_confidence fallback, deliberately: at min_confidence=25 pyproj
+    matched a custom grid (the same WKT with its central meridian moved to
+    -158.123) to EPSG:26929 — a confident answer whose parameters differ
+    from the file's. A custom mine grid must come back unresolved and be
+    typed by a human, not rounded to the nearest UTM zone.
+
+    The result is bounds-checked against the same 1024..32767 window as
+    source_epsg itself -- silver.spatial_features.crs_epsg_native carries a
+    CHECK, and a resolution outside it must read as "unresolved", not as an
+    INSERT failure an hour later.
+    """
+    try:
+        from pyproj import CRS  # noqa: PLC0415
+
+        crs = CRS.from_wkt(wkt)
+    except Exception as exc:  # noqa: BLE001 — donated text is uploader-supplied; unreadable is an answer, not an error
+        log.warning("ingest_spatial: donated WKT unreadable: %s", exc)
+        return None, None
+    epsg = crs.to_epsg()
+    if epsg is None or not (1024 <= epsg <= 32767):
+        return None, crs.name
+    return int(epsg), crs.name
 
 
 class IngestSpatialOut(BaseModel):
@@ -718,6 +766,55 @@ async def run_ingest_spatial(
     #: and "an entry without a .prj" as different things.
     sidecars_by_layer: dict[str, list[str]] = {}
 
+    # ── The CRS override this run will parse under ──────────────────────
+    # One resolution, up front, so every parse site below and the
+    # _crs_quality call at persist all see the same answer. A typed
+    # source_epsg outranks the donated WKT: the code the user typed is a
+    # decision, the copy the wizard found is a guess with provenance. The
+    # parser's own precedence still applies on top -- a CRS the file itself
+    # declares beats both.
+    #
+    # A SUCCESSFUL resolution is deliberately not a warning. The same
+    # donation carried as a `.prj` member into a shapefile bundle produces
+    # no workflow warning at all -- the provenance lands in
+    # georef_method/crs_confidence on the rows -- and terminal_status turns
+    # any warning into 'partial', so warning here would paint every clean
+    # WKT-donated ingest amber while the identical member-carriage ingest
+    # completes green. It also must not claim anything about the file
+    # ("declares no CRS", "was applied"): nothing has been parsed yet, and
+    # the parser may yet ignore the override for a file that declares its
+    # own. A FAILED resolution is a warning -- the file will land as
+    # 'assumed' and only the uploader can supply the missing code.
+    effective_epsg = input.source_epsg
+    epsg_via_wkt = False
+    if effective_epsg is None and input.source_crs_wkt:
+        import asyncio  # noqa: PLC0415
+
+        # to_thread, hard rule 2: pyproj's from_wkt/to_epsg do synchronous
+        # sqlite reads of proj.db, measured at ~75-200 ms.
+        resolved, crs_name = await asyncio.to_thread(
+            _epsg_from_wkt, input.source_crs_wkt,
+        )
+        if resolved is not None:
+            effective_epsg = resolved
+            epsg_via_wkt = True
+            log.info(
+                "ingest_spatial: donated WKT for %s resolved to EPSG:%s (%s)",
+                filename, resolved, crs_name,
+            )
+        else:
+            warnings.append({
+                "code": "donated_wkt_unresolved",
+                "detail": (
+                    f"A coordinate system was found beside {filename} in "
+                    f"the upload"
+                    + (f" ({crs_name})" if crs_name else "")
+                    + ", but it could not be resolved to an EPSG code, so "
+                    "it was not applied. Type the EPSG code on this file "
+                    "and re-upload to place its features properly."
+                ),
+            })
+
     # A lone ".shp" used to be refused right here, before the download. The
     # reason was real: pyogrio opened it, went looking for the ".shx" index
     # beside it, and failed with "Unable to open <name>.shx ... Set
@@ -789,7 +886,7 @@ async def run_ingest_spatial(
                                 lyr.resolved_path,
                                 feature_type=input.feature_type,
                                 layer=lyr.sublayer,
-                                source_epsg=input.source_epsg,
+                                source_epsg=effective_epsg,
                             ),
                         ))
                     except Exception as exc:  # noqa: BLE001 — one layer must not sink the project
@@ -872,7 +969,7 @@ async def run_ingest_spatial(
                                             lyr.resolved_path,
                                             feature_type=input.feature_type,
                                             layer=lyr.sublayer,
-                                            source_epsg=input.source_epsg,
+                                            source_epsg=effective_epsg,
                                         ),
                                     ))
                             continue
@@ -883,7 +980,7 @@ async def run_ingest_spatial(
                                 parse_spatial_file,
                                 str(member),
                                 feature_type=input.feature_type,
-                                source_epsg=input.source_epsg,
+                                source_epsg=effective_epsg,
                             ),
                         ))
                     except Exception as exc:  # noqa: BLE001 — one bad member must not sink the archive
@@ -897,7 +994,7 @@ async def run_ingest_spatial(
                     parse_spatial_file,
                     str(local),
                     feature_type=input.feature_type,
-                    source_epsg=input.source_epsg,
+                    source_epsg=effective_epsg,
                 ))]
 
             # One hash per delivery, computed after every parse and before
@@ -1013,14 +1110,26 @@ async def run_ingest_spatial(
                                 "code": "z_dropped",
                                 "detail": (
                                     f"'{layer_name or filename}' carries 3D "
-                                    "coordinates. The map stores 2D geometry, so "
-                                    "the Z value was dropped -- if it is an "
-                                    "elevation you need, it has to come in as an "
-                                    "attribute column."
+                                    "coordinates. The map stores 2D geometry, "
+                                    "so the Z values were dropped. If the "
+                                    "elevations matter, export them from the "
+                                    "source software as an attribute column, "
+                                    "or as a point layer with an elevation "
+                                    "field — vertex elevations on lines and "
+                                    "polygons cannot be kept here."
                                 ),
                             })
                         crs_conf, georef = _crs_quality(
-                            result, requested_epsg=input.source_epsg,
+                            result, requested_epsg=effective_epsg,
+                            # A code the user typed is a human assertion
+                            # ('manual'); one resolved from a donated .prj
+                            # the wizard found is the platform working it
+                            # out ('detected'). Stamping the latter 'manual'
+                            # would fabricate a human claim -- see
+                            # _crs_quality's docstring.
+                            override_method=(
+                                "detected" if epsg_via_wkt else "manual"
+                            ),
                         )
                         n = await _write_features(
                             conn,
@@ -1123,6 +1232,7 @@ async def run_ingest_spatial(
 
 def _crs_quality(
     result: Any, *, requested_epsg: int | None = None,
+    override_method: str = "manual",
 ) -> tuple[float | None, str]:
     """Map the parser's CRS finding onto the CC-01 georef columns.
 
@@ -1143,10 +1253,18 @@ def _crs_quality(
     parser's own findings would be fabricating a human claim. Taking the
     request as an argument is what keeps that branch unreachable unless a
     human really made one.
+
+    ``override_method`` exists for the same reason, from the other side:
+    an override RESOLVED from a donated `.prj` the wizard found in the
+    drop is not a human assertion either, and stamping it 'manual' would
+    fabricate one. The caller passes 'detected' for that case — the
+    constraint's word for a CRS the platform worked out rather than one a
+    person typed or the file declared.
     """
     if _override_was_applied(result, requested_epsg):
-        # A person supplied the CRS for a file that stated none. 'manual'
-        # is the constraint's own word for exactly that.
+        # The CRS was supplied for a file that stated none. 'manual' when
+        # a person typed the code; 'detected' when it was resolved from a
+        # sidecar found beside the file.
         #
         # The confidence is the parser's MEASURED score of the geometry
         # against the CRS that was claimed -- not a flat 1.0. The claim is
@@ -1157,7 +1275,7 @@ def _crs_quality(
         confidence = getattr(result, "crs_confidence", None)
         return (
             (float(confidence) if confidence is not None else None),
-            "manual",
+            override_method,
         )
 
     if getattr(result, "is_qfield", False):

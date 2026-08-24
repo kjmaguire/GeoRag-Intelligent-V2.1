@@ -284,6 +284,20 @@ class TestTheOverrideIsCheckedAgainstTheFileNotTrusted:
         )
         assert _crs_quality(result, requested_epsg=26904) == (0.2, "manual")
 
+    def test_a_donated_wkt_override_is_detected_not_manual(self) -> None:
+        """A code resolved from a `.prj` the wizard found in the drop is
+        the platform working it out, not a person asserting it. Stamping
+        it 'manual' would fabricate a human claim — the exact thing
+        requested_epsg-as-a-parameter exists to prevent, from the other
+        side. 'detected' is the CHECK constraint's word for it."""
+        result = SimpleNamespace(
+            source_crs="EPSG:26904", crs_confidence=0.92,
+            crs_override_applied=True,
+        )
+        assert _crs_quality(
+            result, requested_epsg=26904, override_method="detected",
+        ) == (0.92, "detected")
+
     def test_a_declared_crs_beats_the_override(self) -> None:
         """The file said 26905; the uploader guessed 26904. The row must
         still read 'declared', on the CRS the file stated."""
@@ -493,3 +507,79 @@ class TestWarningsReachThePageTheyAreRenderedOn:
         original = {"code": "x", "message": "m"}
         sp._renderable([original])
         assert "detail" not in original
+
+
+class TestDonatedWktResolution:
+    """The wizard's CRS donation, arriving as text for a non-ZIP recipient.
+
+    A `.dxf` cannot take a donated `.prj` member the way a shapefile bundle
+    does -- it is one file, not an archive -- so the donation rides the
+    upload as `source_crs_wkt` and is resolved to an EPSG integer here,
+    where pyproj lives. The browser deliberately does no WKT->EPSG of its
+    own (shapefileBundle.ts, crsLabel).
+    """
+
+    #: The actual donor in the RedStar delivery: ESRI-style, no AUTHORITY
+    #: clause anywhere, so resolution has to come from proj.db's aliases.
+    REDSTAR_PRJ = (
+        'PROJCS["NAD_1983_UTM_Zone_4N",GEOGCS["GCS_North_American_1983",'
+        'DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,'
+        '298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",'
+        '0.0174532925199433]],PROJECTION["Transverse_Mercator"],'
+        'PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],'
+        'PARAMETER["Central_Meridian",-159.0],PARAMETER["Scale_Factor",'
+        '0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]'
+    )
+
+    def test_the_redstar_prj_resolves_to_utm_4n(self) -> None:
+        pytest.importorskip("pyproj", reason="pyproj not installed")
+
+        epsg, name = sp._epsg_from_wkt(self.REDSTAR_PRJ)
+
+        assert epsg == 26904
+        assert name is not None and "UTM zone 4N" in name
+
+    def test_junk_is_an_answer_not_an_error(self) -> None:
+        pytest.importorskip("pyproj", reason="pyproj not installed")
+
+        assert sp._epsg_from_wkt("no coordinate system here") == (None, None)
+
+    def test_a_custom_projection_reports_its_name_but_no_code(self) -> None:
+        """A one-off local grid resolves to nothing in proj.db. The name
+        still comes back so the warning can say WHAT could not be
+        resolved."""
+        pytest.importorskip("pyproj", reason="pyproj not installed")
+
+        custom = self.REDSTAR_PRJ.replace(
+            '"Central_Meridian",-159.0', '"Central_Meridian",-158.123',
+        ).replace("NAD_1983_UTM_Zone_4N", "Mine_Grid_Local")
+
+        epsg, name = sp._epsg_from_wkt(custom)
+
+        assert epsg is None
+        assert name == "Mine Grid Local" or name  # pyproj may reformat
+
+    def test_the_input_model_defaults_and_accepts_it(self) -> None:
+        three_field = sp.IngestSpatialInput(
+            workspace_id="a0000000-0000-0000-0000-00000000feed",
+            project_id="b1000000-0000-0000-0000-0000000000a0",
+            minio_key="bronze/x/y.dxf",
+        )
+        assert three_field.source_crs_wkt is None
+
+        carried = sp.IngestSpatialInput(
+            workspace_id="a0000000-0000-0000-0000-00000000feed",
+            project_id="b1000000-0000-0000-0000-0000000000a0",
+            minio_key="bronze/x/y.dxf",
+            source_crs_wkt=self.REDSTAR_PRJ,
+        )
+        assert carried.source_crs_wkt == self.REDSTAR_PRJ
+
+    def test_an_absurdly_long_wkt_is_refused_at_the_boundary(self) -> None:
+        with pytest.raises(ValidationError):
+            sp.IngestSpatialInput(
+                workspace_id="a0000000-0000-0000-0000-00000000feed",
+                project_id="b1000000-0000-0000-0000-0000000000a0",
+                minio_key="bronze/x/y.dxf",
+                source_crs_wkt="x" * 70000,
+            )

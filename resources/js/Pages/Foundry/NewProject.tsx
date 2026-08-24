@@ -145,11 +145,18 @@ interface DonationSummary {
  * @param donations One entry per bundle that received a copy.
  * @param overridden How many of those rows carry an EPSG code the user typed,
  *   which replaces the copy for that row.
+ * @param wktUsing How many of the rows the donation actually reaches take it
+ *   as TEXT (a lone .dxf/.dgn) rather than as a ZIP member. Declining the
+ *   donation has a different consequence for those: the ingest does not
+ *   refuse a CAD file, it stores the features as 'assumed' — and a banner
+ *   threatening a refusal that will not happen is the unfollowable-advice
+ *   bug this whole feature exists to remove.
  */
 function donationSummary(
     donations: DonatedCrs[],
     overridden: number,
     enabled: boolean,
+    wktUsing: number = 0,
 ): DonationSummary {
     const sources = [...new Set(donations.map((d) => d.sourceName))];
     const labels = [...new Set(donations.map((d) => d.label))];
@@ -163,6 +170,13 @@ function donationSummary(
             : '';
 
     if (!enabled) {
+        const memberUsing = using - wktUsing;
+        const consequence =
+            memberUsing > 0 && wktUsing > 0
+                ? "a shapefile without one is refused, and a CAD drawing is stored as 'assumed' with its position uncertain"
+                : wktUsing > 0
+                  ? `${wktUsing === 1 ? 'its' : 'their'} features are stored as 'assumed' with ${wktUsing === 1 ? 'its' : 'their'} position uncertain`
+                  : `the ingest will refuse ${using === 1 ? 'it' : 'them'}`;
         return {
             headline: 'Coordinate system NOT applied',
             detail:
@@ -171,7 +185,7 @@ function donationSummary(
                     : `${label} from ${source} is not being copied. ` +
                       `${using === 1 ? 'One dataset' : `${using} datasets`} will upload declaring no ` +
                       `coordinate system — set an EPSG code on ${using === 1 ? 'it' : 'each of them'}, ` +
-                      `or the ingest will refuse ${using === 1 ? 'it' : 'them'}.${overrideNote}`,
+                      `or ${consequence}.${overrideNote}`,
             toggleLabel: using === 0 ? 'Apply it' : `Apply it to ${using} dataset${using === 1 ? '' : 's'}`,
         };
     }
@@ -297,9 +311,15 @@ export default function FoundryNewProject() {
         // Falling back to the raw list keeps a zip failure (out of memory on a
         // very large .dbf, say) from swallowing the whole selection.
         const all = Array.from(files);
-        const { bundles, passthrough, unusable } = await groupShapefiles(all).catch(
-            () => ({ bundles: [], passthrough: all, unusable: [], crsDonation: null }),
-        );
+        const { bundles, passthrough, unusable, wktRecipients } = await groupShapefiles(
+            all,
+        ).catch(() => ({
+            bundles: [],
+            passthrough: all,
+            unusable: [],
+            crsDonation: null,
+            wktRecipients: [],
+        }));
         const notes: string[] = [];
         for (const b of bundles) {
             // Read off the bundle, never matched by stem. Stems are not
@@ -346,6 +366,7 @@ export default function FoundryNewProject() {
         // here — it is an attribute table and comes back in `passthrough`.
         for (const u of unusable) notes.push(`${u.file.name}: ${u.reason}`);
 
+        const wktCrsByFile = new Map(wktRecipients.map((r) => [r.file, r.crs]));
         for (const f of passthrough) {
             const ext = extensionOf(f.name);
             // Drop files we can't categorise (unknown extension, raster images,
@@ -394,6 +415,11 @@ export default function FoundryNewProject() {
                 ext,
                 category: categoryForExtension(ext),
                 status: 'queued',
+                // Matched by File identity, never by name — same rule as the
+                // bundles above. Set for a lone .dxf/.dgn beside the
+                // delivery's one agreed .prj: the donation rides the upload
+                // as `source_crs_wkt`, since there is no ZIP to copy it into.
+                crsDonation: wktCrsByFile.get(f),
             });
         }
         setQueue((q) => [...q, ...arr]);
@@ -513,12 +539,19 @@ export default function FoundryNewProject() {
 
     const donationRows = queue.filter((q) => q.crsDonation !== undefined);
     const donationOverrides = donationRows.filter(hasExplicitEpsg).length;
+    // WKT-carriage recipients (lone .dxf/.dgn) among the rows the donation
+    // actually reaches: the banner's toggle-off consequence differs — a CAD
+    // file is never refused, it lands as 'assumed'.
+    const donationWktUsing = donationRows.filter(
+        (q) => !hasExplicitEpsg(q) && q.crsDonation?.memberName === undefined,
+    ).length;
     const donation =
         donationRows.length > 0
             ? donationSummary(
                   donationRows.map((q) => q.crsDonation as DonatedCrs),
                   donationOverrides,
                   donateCrs,
+                  donationWktUsing,
               )
             : null;
 
@@ -597,7 +630,7 @@ export default function FoundryNewProject() {
                 // override would look accepted while doing nothing.
                 const donated = qf.crsDonation;
                 let payload = qf.file;
-                if (donated && (!donateCrs || explicitEpsg)) {
+                if (donated?.memberName && (!donateCrs || explicitEpsg)) {
                     try {
                         payload = await withoutDonatedPrj(qf.file, donated.memberName);
                     } catch (err) {
@@ -627,6 +660,13 @@ export default function FoundryNewProject() {
                 fd.append('category', qf.category as string);
                 if (explicitEpsg && epsg.epsg !== undefined) {
                     fd.append('source_epsg', String(epsg.epsg));
+                }
+                // A WKT-carriage recipient (a lone .dxf/.dgn — no ZIP to
+                // hold a copied .prj) sends the donation as text; the server
+                // resolves it with pyproj. Declining it or typing a code
+                // means simply not sending it.
+                if (donated?.wkt && donateCrs && !explicitEpsg) {
+                    fd.append('source_crs_wkt', donated.wkt);
                 }
                 try {
                     const upRes = await fetch(`/api/v1/projects/${projectId}/upload`, {
@@ -1019,7 +1059,9 @@ export default function FoundryNewProject() {
                                                                               `Coordinate system ${donated.label}, copied from ${donated.sourceName}.`)
                                                                             : hasExplicitEpsg(q)
                                                                               ? `EPSG ${epsg.epsg} replaces the coordinate system copied from ${donated.sourceName}: the copy is dropped from this upload, so the code you typed is the one that lands.`
-                                                                              : `Not using the coordinate system from ${donated.sourceName}. This dataset has no .prj of its own — set an EPSG code on this row, or the ingest will refuse it.`}
+                                                                              : donated.memberName
+                                                                                ? `Not using the coordinate system from ${donated.sourceName}. This dataset has no .prj of its own — set an EPSG code on this row, or the ingest will refuse it.`
+                                                                                : `Not using the coordinate system from ${donated.sourceName}. This format carries none of its own — set an EPSG code on this row, or its features are stored as 'assumed' with their position uncertain.`}
                                                                     </div>
                                                                     {/* The bundler's verdict is
                                                                         not only about the CRS:

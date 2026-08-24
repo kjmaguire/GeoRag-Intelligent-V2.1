@@ -832,22 +832,34 @@ def _resolve_crs(gdf, ext: str, path: str, source_epsg: int | None,
 
     if ext == ".dxf":
         # pyogrio may populate a synthetic CRS for DXF; clear it explicitly.
+        # Cleared and then allowed to FALL THROUGH: this arm used to return
+        # here unconditionally, which made DXF the one format whose
+        # source_epsg override was silently ignored — the wizard rendered an
+        # EPSG field on DXF rows, the API accepted the code, and nothing
+        # read it. The declares-nothing logic below applies the override
+        # with a measured fit, exactly as it does for a .prj-less shapefile.
         gdf = gdf.set_crs(None, allow_override=True)
-        warnings_out.append({
-            "code": "dxf_no_crs",
-            "message": "DXF files have no CRS; caller must georeference.",
-            "detail": (
-                f"{basename} is a CAD drawing in model units — the format has "
-                "no coordinate system to read. Its features are stored as "
-                "'assumed' so the map shows their position as uncertain."
-            ),
-            "context": {"path": path},
-        })
-        return gdf, _CrsDecision(
-            source_crs=_NO_CRS_DEFAULT,
-            confidence=0.0,
-            reason="DXF carries no CRS; the caller must georeference",
-        )
+        if source_epsg is None:
+            warnings_out.append({
+                "code": "dxf_no_crs",
+                "message": "DXF files have no CRS; caller must georeference.",
+                "detail": (
+                    f"{basename} is a CAD drawing in model units — the format "
+                    "has no coordinate system to read. Its features are "
+                    "stored as 'assumed' so the map shows their position as "
+                    "uncertain. Supply an EPSG code at upload time to place "
+                    "them properly; dropping the file loose on the upload "
+                    "screen beside a .prj also carries the coordinate system "
+                    "over, but a .prj zipped in next to a CAD file is not "
+                    "read."
+                ),
+                "context": {"path": path},
+            })
+            return gdf, _CrsDecision(
+                source_crs=_NO_CRS_DEFAULT,
+                confidence=0.0,
+                reason="DXF carries no CRS; the caller must georeference",
+            )
 
     declared = gdf.crs
     if declared is not None:
@@ -1449,8 +1461,10 @@ def parse_spatial_file(
                 "detail": (
                     f"{os.path.basename(path)} arrived without its .dbf file. "
                     "The shapes were imported but every attribute — names, "
-                    "codes, descriptions — is missing. Re-upload the shapefile "
-                    "with all of its sidecars to get them."
+                    "codes, descriptions — is missing. If the delivery "
+                    "includes the .dbf, re-upload the shapefile with all of "
+                    "its sidecars to get them; some archives genuinely ship "
+                    "geometry-only, and then the shapes are all there is."
                 ),
                 "context": {"shapefile": path, "expected_dbf": dbf_path},
             })
