@@ -103,6 +103,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects/{slug}/ingestion-runs.json', [IngestionRunsController::class, 'progress'])
         ->where('slug', '[a-z0-9\-]+')
         ->name('foundry.ingestion-runs.json');
+    // Re-run a refused tabular ingest with a column mapping the user
+    // confirmed. The bytes are already in bronze, so nothing is re-uploaded.
+    Route::post('/projects/{slug}/ingestion-runs/remap', [IngestionRunsController::class, 'remap'])
+        ->where('slug', '[a-z0-9\-]+')
+        ->name('foundry.ingestion-runs.remap');
 
     // Project index. The horizontal sub-bar + left rail are rendered by FoundryShell
     // because the URL starts with /projects/{slug}.

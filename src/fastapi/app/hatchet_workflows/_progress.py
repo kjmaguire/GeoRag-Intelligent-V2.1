@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 
 import asyncpg
@@ -128,8 +129,36 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+#: The prefix Laravel prepends to every uploaded object's name.
+#:
+#: UploadController builds ``{category}/{project}/{Ymd_His}_{name}`` and
+#: DrillUploadController ``{prefix}/{workspace}/{Ymd_His}_{sha8}_{name}``, so
+#: the timestamp — and sometimes eight hex characters of digest — sit inside
+#: the FILENAME rather than in a path segment of their own. Everything that
+#: shows a user which file they uploaded reads the last path segment, so the
+#: Ingestion Runs page listed
+#: ``20260824_204605_NEW_HYD.BX_Central_Clean.dxf``.
+#:
+#: Anchored, and both groups are fixed-width, so it only matches the shape
+#: that is actually generated. A file the geologist themselves named
+#: ``20260824_survey.csv`` keeps its name — the seconds field is required,
+#: and their own prefix has none.
+_GENERATED_PREFIX = re.compile(r"^\d{8}_\d{6}_(?:[0-9a-f]{8}_)?")
+
+
 def _filename_from_key(minio_key: str) -> str:
-    return minio_key.rsplit("/", 1)[-1] if "/" in minio_key else minio_key
+    """The name the user recognises, not the name storage gave it.
+
+    The storage key stays authoritative — it is what ``minio_key`` holds and
+    what every lookup joins on. This is the display name only, so a prefix
+    stripped here cannot make two objects collide.
+
+    Falls back to the un-stripped segment whenever stripping would leave
+    nothing, so a key that is somehow only a prefix still shows something.
+    """
+    segment = minio_key.rsplit("/", 1)[-1] if "/" in minio_key else minio_key
+    stripped = _GENERATED_PREFIX.sub("", segment)
+    return stripped or segment
 
 
 def _step_index(stage: str) -> int:

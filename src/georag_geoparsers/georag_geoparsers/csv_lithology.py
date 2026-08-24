@@ -22,30 +22,23 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._drill_schema import LITHOLOGY_ALIASES, LITHOLOGY_REQUIRED
+from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Column name alias maps — keys are canonical names, values are accepted aliases
+# Column name alias maps — keys are canonical names, values are accepted
+# aliases. Defined in _drill_schema so the sheet classifier and the FastAPI
+# writers read the same vocabulary; re-exported here because tests and
+# _sheet_classifier import them from this module.
 # ---------------------------------------------------------------------------
-COLUMN_ALIASES: dict = {
-    "hole_id":              ["HoleID", "Hole_ID", "hole_id"],
-    "from_depth":           ["From", "FromDepth", "From_m", "from_depth"],
-    "to_depth":             ["To", "ToDepth", "To_m", "to_depth"],
-    "lithology_code":       ["Lithology", "LithCode", "RockCode", "lithology_code"],
-    "lithology_description":["Description", "LithDesc", "Lithology_Description", "lithology_description"],
-    "grain_size":           ["GrainSize", "Grain", "grain_size"],
-    "color":                ["Color", "Colour", "color"],
-    "hardness":             ["Hardness", "hardness"],
-    "rqd":                  ["RQD", "RockQualityDesignation", "rqd"],
-    "recovery":             ["Recovery", "CoreRecovery", "recovery"],
-    "weathering":           ["Weathering", "Weathered", "weathering"],
-}
+COLUMN_ALIASES: dict = LITHOLOGY_ALIASES
 
 # Required fields — rows missing any of these are rejected
-REQUIRED_FIELDS: frozenset = frozenset({"hole_id", "from_depth", "to_depth", "lithology_code"})
+REQUIRED_FIELDS: frozenset = LITHOLOGY_REQUIRED
 
 # Numeric fields that must be castable to float
 NUMERIC_FIELDS: frozenset = frozenset({"from_depth", "to_depth", "rqd", "recovery"})
@@ -121,20 +114,16 @@ def _build_column_map(
         Optional alias dict to use instead of the module-level
         COLUMN_ALIASES. Used by parse_csv_lithology to inject a
         vendor-profile-merged dict (CC-02 Item 6).
+
+    Case, separators and unit suffixes are folded by ``_header_match``, so
+    ``From (m)`` and ``from_m`` reach the same field as ``From``. Vendor
+    aliases go through the identical rule — a profile written with one
+    spelling now matches every equivalent one.
     """
-    csv_col_set = set(csv_columns)
-    column_map: dict = {}
-    alias_source = aliases if aliases is not None else COLUMN_ALIASES
-
-    for canonical, alias_list in alias_source.items():
-        for alias in alias_list:
-            if alias in csv_col_set:
-                column_map[canonical] = alias
-                break
-
-    matched_csv_cols = set(column_map.values())
-    unmapped = [c for c in csv_columns if c not in matched_csv_cols]
-    return column_map, unmapped
+    return build_column_map(
+        csv_columns,
+        aliases if aliases is not None else COLUMN_ALIASES,
+    )
 
 
 def _cast_float(value) -> float:

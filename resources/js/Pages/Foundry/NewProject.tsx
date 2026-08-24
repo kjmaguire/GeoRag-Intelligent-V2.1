@@ -14,7 +14,13 @@ import {
     supportsCrsOverride,
     type Category,
 } from '@/lib/uploadCategories';
-import { groupShapefiles, type CrsProvenance } from '@/lib/shapefileBundle';
+import {
+    bundleKey,
+    dedupeFiles,
+    fileKey,
+    groupShapefiles,
+    type CrsProvenance,
+} from '@/lib/shapefileBundle';
 
 const STEPS = ['Identity', 'Jurisdiction', 'Corpus', 'Review'] as const;
 type Step = typeof STEPS[number];
@@ -209,6 +215,21 @@ interface QueuedFile {
     name: string;
     size: number;
     ext: string;
+    /**
+     * Identity that survives re-grouping — `bundleKey`/`fileKey`.
+     *
+     * Every added batch re-groups the whole selection, which rebuilds each
+     * bundle's ZIP and so gives it a new `File`. This is what carries a
+     * row's category and EPSG edits across that rebuild, and what stops an
+     * already-uploaded row being queued a second time.
+     */
+    selectionKey?: string;
+    /**
+     * The selected files behind this row — a bundle's members, or the file
+     * itself. Read when the row is removed, so its sources leave the
+     * accumulated selection with it.
+     */
+    sources?: File[];
     category: Category | null; // null = unsupported
     status: 'queued' | 'uploading' | 'done' | 'error';
     error?: string;
@@ -262,6 +283,17 @@ export default function FoundryNewProject() {
         setForm((f) => ({ ...f, country: code, state: '' }));
 
     const [queue, setQueue] = useState<QueuedFile[]>([]);
+    /**
+     * Every file the user has selected so far, across every drop and pick.
+     *
+     * A ref, not state: `addFiles` reads AND writes it within one call, and
+     * a state value captured by the callback would be a batch behind — the
+     * exact staleness that makes a second drop group in isolation.
+     */
+    const selectedFilesRef = useRef<File[]>([]);
+    /** The live queue, for reading per-row edits during a regroup. */
+    const queueRef = useRef<QueuedFile[]>([]);
+    queueRef.current = queue;
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     // Use a ref callback to set webkitdirectory directly on the DOM node —
     // React JSX doesn't reliably pass non-standard attributes through to the
@@ -310,7 +342,16 @@ export default function FoundryNewProject() {
         // together first; the spatial workflow already reads that shape.
         // Falling back to the raw list keeps a zip failure (out of memory on a
         // very large .dbf, say) from swallowing the whole selection.
-        const all = Array.from(files);
+        //
+        // Grouping runs over the WHOLE accumulated selection, not just this
+        // batch. Per-batch grouping is what stranded seven shapefiles'
+        // attribute tables on 2026-08-24: a `.dbf` picked up in a second
+        // drop has no `.shp` in ITS batch, so it was treated as a standalone
+        // dBASE table and uploaded on its own. The bundles reaching storage
+        // held `.shp` + `.prj` and nothing else, and the ingest reported
+        // them as imported.
+        const all = dedupeFiles([...selectedFilesRef.current, ...Array.from(files)]);
+        selectedFilesRef.current = all;
         const { bundles, passthrough, unusable, wktRecipients } = await groupShapefiles(
             all,
         ).catch(() => ({
@@ -320,6 +361,24 @@ export default function FoundryNewProject() {
             crsDonation: null,
             wktRecipients: [],
         }));
+
+        // Per-row edits, carried across the rebuild by a key that survives
+        // re-zipping. Without this, adding one file after setting eight
+        // categories would reset all eight.
+        const edits = new Map<string, { category?: Category | null; sourceEpsgText?: string }>();
+        // Rows that have left the queue — uploading, uploaded, or failed.
+        // They keep their existing entry and must NOT be rebuilt from the
+        // regroup as well, or a finished upload appears twice and is sent
+        // again.
+        const settled = new Set<string>();
+        for (const item of queueRef.current) {
+            if (item.selectionKey === undefined) continue;
+            edits.set(item.selectionKey, {
+                category: item.category,
+                sourceEpsgText: item.sourceEpsgText,
+            });
+            if (item.status !== 'queued') settled.add(item.selectionKey);
+        }
         const notes: string[] = [];
         for (const b of bundles) {
             // Read off the bundle, never matched by stem. Stems are not
@@ -330,13 +389,19 @@ export default function FoundryNewProject() {
             // in this archive. `crsFrom` carries the exact entry the grouper
             // wrote, which is the only name safe to remove again.
             const donated: DonatedCrs | undefined = b.crsFrom ?? undefined;
+            const key = bundleKey(b);
+            if (settled.has(key)) continue;
+            const prior = edits.get(key);
             arr.push({
                 id: newId(),
                 file: b.file,
                 name: b.file.name,
                 size: b.file.size,
                 ext: 'zip',
-                category: 'spatial',
+                selectionKey: key,
+                sources: b.sources,
+                category: prior?.category ?? 'spatial',
+                sourceEpsgText: prior?.sourceEpsgText,
                 status: 'queued',
                 crsDonation: donated,
                 // `hint`, NOT `error`. This used to be written to `error`,
@@ -371,6 +436,7 @@ export default function FoundryNewProject() {
         );
         for (const f of passthrough) {
             const ext = extensionOf(f.name);
+            if (settled.has(fileKey(f))) continue;
             // Drop files we can't categorise (unknown extension, raster images,
             // or 0-byte folder shells dragged in instead of using Select Folder).
             // Keep ZIPs — they're handled below with their own error message.
@@ -400,7 +466,9 @@ export default function FoundryNewProject() {
                     name: f.name,
                     size: f.size,
                     ext,
-                    category: 'archive',
+                    selectionKey: fileKey(f),
+                    category: edits.get(fileKey(f))?.category ?? 'archive',
+                    sourceEpsgText: edits.get(fileKey(f))?.sourceEpsgText,
                     // 'queued', not 'error': this file IS uploaded and IS
                     // processed. Extracting first still gives better
                     // per-file progress, which is what the hint is for.
@@ -409,13 +477,17 @@ export default function FoundryNewProject() {
                 });
                 continue;
             }
+            const key = fileKey(f);
+            const prior = edits.get(key);
             arr.push({
                 id: newId(),
                 file: f,
                 name: f.name,
                 size: f.size,
                 ext,
-                category: categoryForExtension(ext),
+                selectionKey: key,
+                category: prior?.category ?? categoryForExtension(ext),
+                sourceEpsgText: prior?.sourceEpsgText,
                 status: 'queued',
                 // Matched by File identity, never by name — same rule as the
                 // bundles above. Set for a lone .dxf/.dgn beside the
@@ -424,16 +496,32 @@ export default function FoundryNewProject() {
                 crsDonation: wktCrsByFile.get(f),
             });
         }
-        setQueue((q) => [...q, ...arr]);
-        if (skippedNames.length > 0) {
-            setSkipped({ names: skippedNames });
-        }
-        if (notes.length > 0) {
-            setBundleNotes((prev) => [...prev, ...notes]);
-        }
+        // Replaced, not appended: `arr` is the whole selection re-grouped,
+        // so appending would queue every earlier file a second time. Rows
+        // that already uploaded are kept — re-zipping a finished upload
+        // would send it again.
+        setQueue((q) => [...q.filter((x) => x.status !== 'queued'), ...arr]);
+        // Both of these are REPLACED rather than accumulated: `notes` and
+        // `skippedNames` are regenerated for the whole selection on every
+        // regroup, so appending would repeat every earlier line and keep
+        // showing verdicts for sets that a later drop has since completed.
+        setSkipped(skippedNames.length > 0 ? { names: skippedNames } : null);
+        setBundleNotes(notes);
     }, []);
 
-    const removeFile = (id: string) => setQueue((q) => q.filter((x) => x.id !== id));
+    const removeFile = (id: string) => {
+        // Un-select the row's SOURCE files too. Dropping only the queue row
+        // leaves them in `selectedFilesRef`, and the next added file
+        // re-groups the whole selection and brings the removed row back.
+        const target = queueRef.current.find((x) => x.id === id);
+        if (target) {
+            const gone = new Set((target.sources ?? [target.file]).map(fileKey));
+            selectedFilesRef.current = selectedFilesRef.current.filter(
+                (f) => !gone.has(fileKey(f)),
+            );
+        }
+        setQueue((q) => q.filter((x) => x.id !== id));
+    };
     const setCategory = (id: string, cat: Category) =>
         setQueue((q) => q.map((x) => (x.id === id ? { ...x, category: cat } : x)));
     const setSourceEpsg = (id: string, text: string) =>

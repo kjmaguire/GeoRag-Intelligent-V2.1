@@ -21,6 +21,11 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from georag_geoparsers._drill_schema import (
+    coordinate_bounds,
+    coordinate_family_conflict,
+    detect_coordinate_mode,
+)
 
 from app.services.ingest.csv_collar_ingester import (
     COLUMN_ALIASES,
@@ -37,6 +42,11 @@ from app.services.ingest.csv_collar_ingester import (
 
 _FIXTURE_DIR = pathlib.Path(__file__).parent / "fixtures" / "csv_collar"
 _SAMPLE_CSV = _FIXTURE_DIR / "collars_sample.csv"
+
+#: Coordinate bounds for the UTM fixtures below. The parser picks these
+#: per file from the values; the row-level tests pass them explicitly so
+#: each case states the ruler it is being measured against.
+_UTM_BOUNDS = coordinate_bounds("projected")
 
 
 # ---------------------------------------------------------------------------
@@ -145,15 +155,121 @@ def test_build_column_map_reports_all_columns_unmapped_for_unrecognized_headers(
 def test_required_fields_and_aliases_match_documented_shape():
     # Pin the documented CSV shape in the module docstring against the
     # actual constants, so a drift here fails loudly.
-    assert frozenset({"hole_id", "easting", "northing", "elevation"}) == REQUIRED_FIELDS
+    #
+    # elevation is deliberately NOT required (changed 2026-08-24):
+    # silver.collars.elevation is nullable, the writer reads it with
+    # .get(), and collar tables that leave elevation to a DEM are ordinary.
+    # Requiring it rejected every row of such a file.
+    assert frozenset({"hole_id", "easting", "northing"}) == REQUIRED_FIELDS
     assert "HoleID" in COLUMN_ALIASES["hole_id"]
     assert "Easting" in COLUMN_ALIASES["easting"]
+
+
+def test_elevation_is_optional_and_survives_when_present():
+    """A collar with no elevation column is valid; one with it keeps it."""
+    without = {"hole_id": "HoleID", "easting": "Easting", "northing": "Northing"}
+    record, err = _validate_row(
+        2,
+        {"HoleID": "A-1", "Easting": "471000", "Northing": "4657000"},
+        without,
+        "down_negative",
+        _UTM_BOUNDS,
+    )
+    assert err is None
+    assert record["hole_id_canonical"] == "A1"
+    assert record.get("elevation") is None
+
+    with_elev = {**without, "elevation": "Elevation"}
+    record, err = _validate_row(
+        2,
+        {"HoleID": "A-1", "Easting": "471000", "Northing": "4657000", "Elevation": "1800"},
+        with_elev,
+        "down_negative",
+        _UTM_BOUNDS,
+    )
+    assert err is None
+    assert record["elevation"] == pytest.approx(1800.0)
+
+
+def test_headers_match_regardless_of_case_separators_and_units():
+    """The spelling a geologist actually types reaches the right field.
+
+    Matching was exact and case-sensitive until 2026-08-24, so a file
+    headed `Hole ID` was rejected in full with advice to go and rename it.
+    """
+    column_map, unmapped = _build_column_map(
+        ["Hole ID", "East (m)", "North (m)", "Collar RL", "EOH Depth"]
+    )
+    assert column_map == {
+        "hole_id": "Hole ID",
+        "easting": "East (m)",
+        "northing": "North (m)",
+        "elevation": "Collar RL",
+        "total_depth": "EOH Depth",
+    }
+    assert unmapped == []
+    assert REQUIRED_FIELDS - set(column_map) == frozenset()
+
+
+def test_one_column_is_never_claimed_by_two_fields():
+    """`{v: k for k, v in column_map}` silently drops a duplicated value."""
+    column_map, _ = _build_column_map(["HoleID", "Easting", "Northing", "Type"])
+    assert len(set(column_map.values())) == len(column_map)
+
+
+def test_a_local_mine_grid_is_not_rejected_as_out_of_range():
+    """Easting 5,000 is a real local grid, not a bad value.
+
+    The bounds used to be UTM-in-metres (easting 100,000..900,000), which
+    refused local grids, State Plane feet and southern-hemisphere systems
+    alike — one projection family encoded as a definition of validity.
+    """
+    column_map = {"hole_id": "HoleID", "easting": "Easting", "northing": "Northing"}
+    record, err = _validate_row(
+        2,
+        {"HoleID": "LG-1", "Easting": "5000.0", "Northing": "2500.0"},
+        column_map,
+        "down_negative",
+        coordinate_bounds(detect_coordinate_mode([5000.0], [2500.0])),
+    )
+    assert err is None
+    assert record["easting"] == pytest.approx(5000.0)
+
+
+def test_decimal_degrees_are_accepted_under_geographic_bounds():
+    column_map = {"hole_id": "HoleID", "easting": "Longitude", "northing": "Latitude"}
+    bounds = coordinate_bounds(detect_coordinate_mode([-134.52], [55.91]))
+    record, err = _validate_row(
+        2,
+        {"HoleID": "GEO-1", "Longitude": "-134.52", "Latitude": "55.91"},
+        column_map,
+        "down_negative",
+        bounds,
+    )
+    assert err is None
+    assert record["easting"] == pytest.approx(-134.52)
+
+
+def test_a_projected_easting_paired_with_a_degree_northing_is_refused():
+    """'Easting' beside 'LATITUDE' passes every per-field check.
+
+    (495000.0, 57.123) sits inside projected bounds, so nothing downstream
+    objects — and the hole lands 57 metres north of the equator. Neither
+    header can be assumed correct, so the pairing is refused.
+    """
+    assert coordinate_family_conflict("Easting", "LATITUDE") == (
+        "projected",
+        "geographic",
+    )
+    # An axis name that says nothing about its units is not a conflict.
+    assert coordinate_family_conflict("X", "Latitude") is None
+    assert coordinate_family_conflict("Easting", "Northing") is None
 
 
 def test_validate_row_rejects_missing_required_field():
     column_map = {"hole_id": "HoleID", "easting": "Easting", "northing": "Northing", "elevation": "Elevation"}
     raw = {"HoleID": "A-1", "Easting": "", "Northing": "4657000", "Elevation": "1800"}
-    record, err = _validate_row(2, raw, column_map, "down_negative")
+    record, err = _validate_row(2, raw, column_map, "down_negative", _UTM_BOUNDS)
     assert record is None
     assert err["code"] == "missing_required"
     assert "easting" in err["reason"]
@@ -168,7 +284,7 @@ def test_validate_row_rejects_out_of_range_value():
         "HoleID": "A-1", "Easting": "471000", "Northing": "4657000",
         "Elevation": "1800", "Dip": "-999",
     }
-    record, err = _validate_row(2, raw, column_map, "down_negative")
+    record, err = _validate_row(2, raw, column_map, "down_negative", _UTM_BOUNDS)
     assert record is None
     assert err["code"] == "range_check_failed"
 
@@ -182,7 +298,7 @@ def test_validate_row_accepts_valid_row_and_canonicalizes_hole_id():
         "HoleID": "CSVT-001", "Easting": "471250.5", "Northing": "4657100.0",
         "Elevation": "1830.2", "TotalDepth": "152.4",
     }
-    record, err = _validate_row(2, raw, column_map, "down_negative")
+    record, err = _validate_row(2, raw, column_map, "down_negative", _UTM_BOUNDS)
     assert err is None
     assert record["hole_id"] == "CSVT-001"
     assert record["hole_id_canonical"] == "CSVT001"

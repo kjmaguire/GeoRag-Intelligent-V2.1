@@ -39,6 +39,9 @@ import uuid
 import asyncpg
 
 from app.db.dsn import build_dsn
+from app.hatchet_workflows._progress import (
+    _filename_from_key as _progress_filename_from_key,
+)
 
 log = logging.getLogger("georag.hatchet.archive_progress")
 
@@ -70,8 +73,15 @@ async def get_pool() -> asyncpg.Pool:
 
 
 def _filename_from_key(minio_key: str) -> str:
-    """Extract a human-readable filename from a MinIO/SeaweedFS key."""
-    return minio_key.rsplit("/", 1)[-1] if "/" in minio_key else minio_key
+    """Extract a human-readable filename from a MinIO/SeaweedFS key.
+
+    Re-exported from ``_progress`` rather than reimplemented: this file had
+    its own copy, and a display name that strips the generated upload prefix
+    in one workflow and not the other is worse than one that never strips it
+    — the same file would be named two different things depending on whether
+    it arrived loose or inside an archive.
+    """
+    return _progress_filename_from_key(minio_key)
 
 
 # ---------------------------------------------------------------------------

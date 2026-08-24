@@ -47,10 +47,31 @@ class TestIdentityField:
         assert (sheet_type, confidence) == (expected, 1.0)
 
     def test_partial_collar_still_classifies(self):
-        # Three of four required, and the missing one is not the identity.
+        # hole_id + both coordinates is now FULL collar coverage, not 3-of-4:
+        # elevation stopped being required on 2026-08-24 because
+        # silver.collars.elevation is nullable and plenty of collar tables
+        # leave the value to a DEM.
         assert classify_sheet_type(
             ["hole_id", "easting", "northing"],
-        ) == ("collar", 0.75)
+        ) == ("collar", 1.0)
+
+    def test_a_collar_missing_one_coordinate_still_classifies(self):
+        # The real 2-of-3 case, which MIN_REQUIRED_COVERAGE=0.66 exists to
+        # admit. At the old 0.75 this would have been "unknown" — a
+        # regression that would have ridden along with the change above.
+        sheet_type, confidence = classify_sheet_type(["hole_id", "easting", "elevation"])
+        assert sheet_type == "collar"
+        assert confidence == pytest.approx(2 / 3)
+
+    def test_headers_classify_however_they_are_spelled(self):
+        # The spellings a geologist types, none of which the alias lists
+        # carried verbatim before 2026-08-24.
+        assert classify_sheet_type(
+            ["Hole ID", "East (m)", "North (m)", "Collar RL"],
+        ) == ("collar", 1.0)
+        assert classify_sheet_type(
+            ["HOLE-ID", "Depth_m", "Bearing", "Inclination"],
+        ) == ("survey", 1.0)
 
     def test_discriminator_cannot_override_a_missing_hole_id(self):
         # `sample_type` is a hard discriminator, but a sample with no hole

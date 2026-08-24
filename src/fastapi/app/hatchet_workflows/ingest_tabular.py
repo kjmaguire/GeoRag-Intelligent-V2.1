@@ -122,6 +122,16 @@ class IngestTabularInput(BaseModel):
     sheet_type: str | None = None
     #: EPSG of easting/northing. See DEFAULT_SOURCE_EPSG.
     source_epsg: int | None = None
+    #: A column mapping the user confirmed, ``{sheet_type: {field: column}}``.
+    #:
+    #: Keyed by drill type, not by sheet name, so one workbook can map its
+    #: collar sheet and its lithology sheet differently while a loose .csv
+    #: and the same table inside an .xlsx are described identically.
+    #:
+    #: Applied AHEAD of the built-in spellings rather than instead of them:
+    #: a user who names the one column we could not find should not have to
+    #: re-state the six we did. Fields left unmapped keep alias matching.
+    column_map: dict[str, dict[str, str]] | None = None
 
     @field_validator("workspace_id", "project_id")
     @classmethod
@@ -646,11 +656,53 @@ def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
     }
 
 
+def _remap_facts(result: Any, sheet_type: str) -> dict[str, Any] | None:
+    """What the UI needs to offer a column mapping for a refused sheet.
+
+    Read off the parse result rather than out of the refusal message: every
+    parser's result dataclass carries ``column_map`` and
+    ``unmapped_columns``, so one shape covers all four, and the UI is
+    offering the columns the parser ACTUALLY saw rather than a list
+    reconstructed from prose.
+
+    Returns None when nothing is missing — there is then no mapping to
+    offer, and a control that appears over a sheet with no gap is noise.
+
+    ``columns`` deliberately includes the ones that DID map. A user
+    correcting a mis-match ("that is not the easting, this is") needs the
+    whole column list, not only the leftovers.
+    """
+    from georag_geoparsers._drill_schema import schemas  # noqa: PLC0415
+
+    entry = schemas().get(sheet_type)
+    if entry is None:
+        return None
+    _aliases, required = entry
+
+    mapped: dict[str, str] = dict(getattr(result, "column_map", None) or {})
+    unmapped: list[str] = list(getattr(result, "unmapped_columns", None) or [])
+    missing = sorted(set(required) - set(mapped))
+    if not missing:
+        return None
+
+    columns = sorted({*mapped.values(), *unmapped})
+    if not columns:
+        return None
+
+    return {
+        "sheet_type": sheet_type,
+        "missing": missing,
+        "mapped": dict(sorted(mapped.items())),
+        "columns": columns,
+    }
+
+
 def _wrote_nothing_warning(
     *, label: str, classified_as: str, reason: str | None,
     from_category: bool = False,
     headers_matched: str | None = None,
     retry_reason: str | None = None,
+    remap: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Say which sheet was refused, what it was taken for, and why.
 
@@ -732,7 +784,7 @@ def _wrote_nothing_warning(
             f"right type or rename its columns to ones the "
             f"{classified_as} parser recognises."
         )
-    return {
+    warning: dict[str, Any] = {
         "code": "classified_but_nothing_written",
         "message": (
             f"'{label}' was treated as a {classified_as} sheet, but no "
@@ -745,6 +797,13 @@ def _wrote_nothing_warning(
             f"table; the warnings beside this one report what landed. {fix}"
         ),
     }
+    if remap is not None:
+        # Structured, so the Ingestion Runs page can offer the columns this
+        # sheet actually has instead of repeating the prose above. `label`
+        # rides along because a workbook's warnings all land in one array
+        # and the control has to know which sheet it is correcting.
+        warning["remap"] = {"label": label, **remap}
+    return warning
 
 
 def _category_corrected_warning(
@@ -988,7 +1047,38 @@ async def _land_unclassified_as_text(
     }
 
 
-def _parse_one(path: str, sheet_type: str, sheet_name: str | None) -> Any:
+def _vendor_aliases_for(
+    column_map: dict[str, dict[str, str]] | None, sheet_type: str,
+) -> dict[str, list[str]] | None:
+    """Turn a user's confirmed mapping into the parsers' alias shape.
+
+    ``column_map`` is ``{sheet_type: {canonical_field: source column}}`` —
+    keyed by drill type rather than by sheet name so one workbook can carry
+    a different mapping for its collar sheet and its lithology sheet, and so
+    a loose ``.csv`` and the same table inside an ``.xlsx`` are described
+    identically.
+
+    Each entry becomes a single-element alias list, which
+    ``merge_vendor_aliases`` puts AHEAD of the built-in spellings. That is
+    the whole enforcement mechanism: the user's choice wins because it is
+    matched first, not because anything special-cases it.
+    """
+    fields = (column_map or {}).get(sheet_type)
+    if not fields:
+        return None
+    return {
+        canonical: [source]
+        for canonical, source in fields.items()
+        if isinstance(source, str) and source.strip()
+    }
+
+
+def _parse_one(
+    path: str,
+    sheet_type: str,
+    sheet_name: str | None,
+    column_map: dict[str, dict[str, str]] | None = None,
+) -> Any:
     """Run the parser matching *sheet_type*."""
     from georag_geoparsers import (  # noqa: PLC0415
         parse_csv_collars,
@@ -1004,8 +1094,10 @@ def _parse_one(path: str, sheet_type: str, sheet_name: str | None) -> Any:
         "sample": parse_csv_samples,
     }[sheet_type]
 
+    vendor_aliases = _vendor_aliases_for(column_map, sheet_type)
+
     if sheet_name is None:
-        return parser(path)
+        return parser(path, vendor_aliases=vendor_aliases)
 
     # A workbook sheet is materialised to CSV first so the CSV parsers —
     # which carry the delimiter, encoding, decimal-comma, hole-ID and
@@ -1013,7 +1105,12 @@ def _parse_one(path: str, sheet_type: str, sheet_name: str | None) -> Any:
     # sheet would fork the most heavily audited logic in the pipeline.
     from georag_geoparsers.xlsx_parser import parse_xlsx_sheet  # noqa: PLC0415
 
-    return parse_xlsx_sheet(path, sheet_name=sheet_name, sheet_type=sheet_type)
+    return parse_xlsx_sheet(
+        path,
+        sheet_name=sheet_name,
+        sheet_type=sheet_type,
+        vendor_aliases=vendor_aliases,
+    )
 
 
 ingest_tabular = hatchet.workflow(
@@ -1070,7 +1167,10 @@ async def run_ingest_tabular(
     #: category-forced sheets, so the warning can advise from what the
     #: headers actually say rather than speculate.
     wrote_nothing: list[
-        tuple[str, str, str | None, bool, str | None, str | None]
+        tuple[
+            str, str, str | None, bool, str | None, str | None,
+            dict[str, Any] | None,
+        ]
     ] = []
     #: Searchable passages the text fallback landed. Part of what the run
     #: wrote — see the rows_written comment at the terminal write.
@@ -1127,7 +1227,7 @@ async def run_ingest_tabular(
             elif suffix in EXCEL_EXTENSIONS:
                 from georag_geoparsers.xlsx_parser import enumerate_sheets  # noqa: PLC0415
 
-                for meta in enumerate_sheets(local):
+                for meta in enumerate_sheets(local, column_map=input.column_map):
                     # SheetMeta.name, not .sheet_name — the dataclass names it
                     # `name` while carrying `sheet_type` beside it, which is an
                     # easy pair to mistype.
@@ -1150,7 +1250,9 @@ async def run_ingest_tabular(
                     )
 
                     headers = _csv_headers(local)
-                    sheet_type, confidence = classify_sheet_type(headers)
+                    sheet_type, confidence = classify_sheet_type(
+                        headers, column_map=input.column_map,
+                    )
                     sheets.append({
                         "sheet": filename, "type": sheet_type,
                         "confidence": confidence,
@@ -1215,6 +1317,7 @@ async def run_ingest_tabular(
                     """
                     result = await asyncio.to_thread(
                         _parse_one, local, write_type, target_sheet,
+                        input.column_map,
                     )
                     records = getattr(result, "records", None) or []
                     warnings.extend(getattr(result, "warnings", None) or [])
@@ -1303,7 +1406,7 @@ async def run_ingest_tabular(
                         )
                         try:
                             reclass, _reconf = classify_sheet_type(
-                                _csv_headers(local),
+                                _csv_headers(local), column_map=input.column_map,
                             )
                         except Exception as exc:  # noqa: BLE001 — the retry is best-effort; the text/table fallback must still land
                             log.warning(
@@ -1356,6 +1459,10 @@ async def run_ingest_tabular(
                         forced,
                         headers_matched,
                         retry_reason,
+                        # The columns this sheet actually has, so the page
+                        # can offer a mapping instead of only explaining
+                        # the refusal.
+                        _remap_facts(result, sheet_type),
                     ))
 
                 if attribute_rows:
@@ -1388,6 +1495,7 @@ async def run_ingest_tabular(
                 # not have to read a worker log to find it.
                 for (
                     label, classified_as, reason, forced, matched, second,
+                    remap,
                 ) in wrote_nothing:
                     if label not in unclassified:
                         unclassified.append(label)
@@ -1398,6 +1506,7 @@ async def run_ingest_tabular(
                         from_category=forced,
                         headers_matched=matched,
                         retry_reason=second,
+                        remap=remap,
                     ))
 
                 # ── Whatever did not classify ───────────────────────────

@@ -172,6 +172,16 @@ export interface SpatialBundle {
     kind: BundleKind;
     /** Member file names in the ZIP, master first. */
     members: string[];
+    /**
+     * The selected files this bundle was built from, master first.
+     *
+     * Needed to un-select a bundle: removing its row has to drop its
+     * SOURCE files from the accumulated selection, or the next added file
+     * re-groups them and the row the user just removed comes back. The
+     * donated `.prj` is deliberately absent — it belongs to another
+     * dataset and removing this row must not un-select it.
+     */
+    sources: File[];
     /** Sidecars GDAL wants that were not in the selection. */
     missing: string[];
     /**
@@ -688,6 +698,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
                 members: donated
                     ? [...members.map((m) => m.name), donated.name]
                     : members.map((m) => m.name),
+                sources: members,
                 missing: reported,
                 // The recipient marker. Two bundles can share `stem`; only
                 // the one that actually took a copy carries this.
@@ -723,6 +734,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
                 stem,
                 kind: 'mapinfo',
                 members: members.map((m) => m.name),
+                sources: members,
                 missing,
                 // A TAB's coordinate system lives in its .map; GDAL never
                 // reads a .prj beside one, so a MapInfo bundle is never a
@@ -808,6 +820,60 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
         crsDonation,
         wktRecipients,
     };
+}
+
+/**
+ * A stable identity for one grouped upload, across re-grouping.
+ *
+ * Both upload screens re-run `groupShapefiles` over the WHOLE accumulated
+ * selection every time files are added, because grouping a single batch in
+ * isolation is what stranded seven shapefiles' attribute tables: a `.dbf`
+ * added in a later batch than its `.shp` has no master in ITS batch, so it
+ * fell through to `passthrough` and went up as a standalone dBASE table.
+ * Measured on the 2026-08-24 delivery — seven of eight bundles reached
+ * blob storage holding only `.shp` + `.prj`, while four unrelated `.dbf`
+ * files sat beside them under `tables/`.
+ *
+ * Re-grouping rebuilds every bundle, so the `File` objects change identity
+ * and anything keyed on them is lost. These keys are what carry a user's
+ * per-row category and EPSG edits across the rebuild.
+ *
+ * Bundles key on their MEMBER LIST, not their stem: stems are not unique
+ * across folders (see `groupKey`), and a delivery really does contain
+ * `geology/faults.shp` beside `claims/faults.shp`.
+ */
+export function bundleKey(bundle: SpatialBundle): string {
+    return `bundle:${bundle.kind}:${bundle.stem}:${bundle.members.join('|')}`;
+}
+
+/**
+ * Identity for a passthrough file.
+ *
+ * Name, size and mtime rather than the `File` object: the same file
+ * re-selected through the picker is a different object, and a user who
+ * re-drops a folder to add one more file should not lose the categories
+ * they already set on everything else in it.
+ */
+export function fileKey(file: File): string {
+    const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+    return `file:${rel || file.name}:${file.size}:${file.lastModified}`;
+}
+
+/**
+ * Drop files already represented in the queue, by `fileKey`.
+ *
+ * The picker hands back everything selected each time, and a user who
+ * re-drops the same folder to add one file would otherwise queue the whole
+ * folder twice.
+ */
+export function dedupeFiles(files: File[]): File[] {
+    const seen = new Set<string>();
+    return files.filter((f) => {
+        const key = fileKey(f);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 /** True if `ext` is a shapefile sidecar - used to explain why one was skipped. */

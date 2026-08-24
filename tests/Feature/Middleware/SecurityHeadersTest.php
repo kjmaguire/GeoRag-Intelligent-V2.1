@@ -72,6 +72,53 @@ final class SecurityHeadersTest extends TestCase
         $this->assertStringContainsString("worker-src 'self' blob:", $csp);
     }
 
+    /**
+     * The Reports "Original" tab embeds the source PDF from a presigned
+     * object-storage URL. Without an explicit frame-src the browser falls
+     * back to `default-src 'self'` and refuses it — the tab rendered
+     * Chrome's "This content is blocked" panel in every deployment.
+     */
+    public function test_csp_frame_src_allows_the_configured_object_store(): void
+    {
+        config(['filesystems.disks.s3-bronze.endpoint' => 'https://acct.blob.core.windows.net']);
+
+        $csp = $this->get('/_test/security-headers/probe')
+            ->headers->get('Content-Security-Policy');
+
+        $this->assertMatchesRegularExpression('/(^|; )frame-src /', (string) $csp);
+        $this->assertStringContainsString('https://acct.blob.core.windows.net', (string) $csp);
+    }
+
+    /**
+     * frame-src is what the app may EMBED; frame-ancestors is who may embed
+     * the app. Allowing the first must not loosen the second — the two read
+     * similarly enough to be conflated in review.
+     */
+    public function test_allowing_embedded_documents_does_not_allow_framing_the_app(): void
+    {
+        $resp = $this->get('/_test/security-headers/probe');
+
+        $this->assertStringContainsString(
+            "frame-ancestors 'none'",
+            (string) $resp->headers->get('Content-Security-Policy'),
+        );
+        $resp->assertHeader('X-Frame-Options', 'DENY');
+    }
+
+    /**
+     * An operator pointing storage at their own endpoint must not have to
+     * find and edit a CSP allowlist for the document viewer to work.
+     */
+    public function test_csp_frame_src_follows_a_repointed_storage_endpoint(): void
+    {
+        config(['filesystems.disks.s3-bronze.endpoint' => 'https://minio.internal:9000']);
+
+        $csp = (string) $this->get('/_test/security-headers/probe')
+            ->headers->get('Content-Security-Policy');
+
+        $this->assertStringContainsString('https://minio.internal:9000', $csp);
+    }
+
     public function test_hsts_absent_on_http_request(): void
     {
         $resp = $this->get('/_test/security-headers/probe');

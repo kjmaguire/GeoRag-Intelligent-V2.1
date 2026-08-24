@@ -73,31 +73,30 @@ tab, or pipe. Encoding is auto-detected via ``charset-normalizer``
 auto-transformed to ``"1.5"`` on a per-column basis when every sampled
 value in that column matches the pattern.
 
-Column name matching is case-sensitive against the alias lists below
-(same alias set the Dagster parser used) — e.g. any of ``HoleID`` /
-``Hole_ID`` / ``HOLEID`` / ``DrillHole`` / ``DH_ID`` / ``BH_ID`` maps
-to the canonical ``hole_id`` field.
+Column names are matched through ``georag_geoparsers._header_match``,
+which folds case, separators and unit suffixes — ``Hole ID``,
+``Hole_ID``, ``HOLEID`` and ``holeId`` are one name, as are ``Depth``
+and ``Depth (m)``. The vocabulary itself is
+``georag_geoparsers._drill_schema.COLLAR_ALIASES``, shared with the
+polars parsers and the sheet classifier.
 
-    canonical      accepted header aliases                  required
-    -----------    ---------------------------------------  --------
-    hole_id        HoleID, Hole_ID, HOLEID, DrillHole,          yes
-                   DH_ID, BH_ID
-    easting        Easting, EAST, X, UTM_E                      yes
-    northing       Northing, NORTH, Y, UTM_N                     yes
-    elevation      Elevation, ELEV, RL, Z                        yes
-    total_depth    TotalDepth, Total_Depth, DEPTH, TD,           no
-                   MaxDepth
-    azimuth        Azimuth, AZI, AZ                              no
-    dip            Dip, DIP, Inclination                         no
-    hole_type      HoleType, Type, DrillType                     no
-    drill_date     Date, DrillDate, StartDate                    no
-    status         Status                                        no
+Matching here was exact and case-sensitive until 2026-08-24, and this
+is the path taken when a user picks the ``collars`` category by hand,
+which SKIPS classification. Choosing the right category deliberately
+was therefore the surest way to have a whole file rejected — the one
+workaround the error message recommended.
+
+Required: ``hole_id``, ``easting``, ``northing``. Elevation is NOT
+required: ``silver.collars.elevation`` is nullable, the writer reads it
+with ``.get()``, and many collar tables carry no elevation column
+because the value is draped from a DEM later.
 
 easting/northing are interpreted in the owning project's CRS
 (``silver.projects.crs_epsg``, defaulting to EPSG:32613 / UTM Zone 13N
 when unset) and transformed to EPSG:32613 for ``silver.collars.geom``
 — mirrors how ``las_ingester`` / ``cameco_log_ingester`` populate the
-same column. elevation must be in metres, range [-500, 8900]. dip sign
+same column. Coordinate range checks are chosen per file from the
+values (degrees vs a projected grid) rather than assuming UTM. dip sign
 convention (down-positive vs down-negative) is auto-detected across
 the file and normalised to the DB's down-negative convention
 (``dip BETWEEN -90 AND 0``). total_depth is technically optional in
@@ -129,6 +128,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 import asyncpg
+from georag_geoparsers._drill_schema import (
+    COLLAR_ALIASES,
+    COLLAR_REQUIRED,
+    ELEVATION_BOUNDS,
+    coordinate_bounds,
+    coordinate_family_conflict,
+    detect_coordinate_mode,
+)
+from georag_geoparsers._header_match import build_column_map
+from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 log = logging.getLogger("georag.ingest.csv_collar")
 
@@ -138,28 +147,18 @@ PARSER_VERSION = "1.0.0"
 # ---------------------------------------------------------------------------
 # Column aliasing (ported from georag_dagster.parsers.csv_collar)
 # ---------------------------------------------------------------------------
-COLUMN_ALIASES: dict[str, list[str]] = {
-    "hole_id":     ["HoleID", "Hole_ID", "HOLEID", "hole_id", "DrillHole", "DH_ID", "BH_ID"],
-    "easting":     ["Easting", "EAST", "X", "UTM_E", "easting"],
-    "northing":    ["Northing", "NORTH", "Y", "UTM_N", "northing"],
-    "elevation":   ["Elevation", "ELEV", "RL", "Z", "elevation"],
-    "total_depth": ["TotalDepth", "Total_Depth", "DEPTH", "TD", "MaxDepth", "total_depth"],
-    "azimuth":     ["Azimuth", "AZI", "AZ", "azimuth"],
-    "dip":         ["Dip", "DIP", "Inclination", "dip"],
-    "hole_type":   ["HoleType", "Type", "DrillType", "hole_type"],
-    "drill_date":  ["Date", "DrillDate", "StartDate", "drill_date"],
-    "status":      ["Status", "status"],
-}
-
-REQUIRED_FIELDS: frozenset[str] = frozenset({"hole_id", "easting", "northing", "elevation"})
+COLUMN_ALIASES: dict[str, list[str]] = COLLAR_ALIASES
+REQUIRED_FIELDS: frozenset[str] = COLLAR_REQUIRED
 NUMERIC_FIELDS: frozenset[str] = frozenset(
     {"easting", "northing", "elevation", "total_depth", "azimuth", "dip"}
 )
 
+# Easting and northing are absent on purpose: their bounds are chosen per
+# file from the values (see _drill_schema.detect_coordinate_mode), because
+# the fixed northern-hemisphere-UTM-in-metres window that used to sit here
+# rejected decimal degrees, local mine grids and State Plane feet alike.
 RANGE_CHECKS: dict[str, tuple[float, float]] = {
-    "easting":     (100_000.0,  900_000.0),
-    "northing":    (0.0,        10_000_000.0),
-    "elevation":   (-500.0,     8_900.0),
+    "elevation":   ELEVATION_BOUNDS,
     "total_depth": (0.0,        10_000.0),
     "azimuth":     (0.0,        360.0),
     "dip":         (-90.0,      90.0),
@@ -176,6 +175,7 @@ _NULL_TOKENS: frozenset[str] = frozenset(
 _CODE_MISSING_REQUIRED = "missing_required"
 _CODE_NUMERIC_CAST = "numeric_cast_failed"
 _CODE_RANGE = "range_check_failed"
+_CODE_COORD_FAMILY_CONFLICT = "coordinate_family_conflict"
 
 _DEFAULT_CRS_EPSG = 32613  # UTM Zone 13N — same project default as las_ingester.
 # Mirrors cameco_log_ingester.upsert_collar_from_log's 0.01 m floor: better
@@ -373,19 +373,22 @@ def canonicalize(hole_id: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 # Column mapping + row validation
 # ---------------------------------------------------------------------------
-def _build_column_map(csv_columns: list[str]) -> tuple[dict[str, str], list[str]]:
-    csv_col_set = set(csv_columns)
-    column_map: dict[str, str] = {}
+def _build_column_map(
+    csv_columns: list[str],
+    *,
+    aliases: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Map canonical field names to this file's columns.
 
-    for canonical, aliases in COLUMN_ALIASES.items():
-        for alias in aliases:
-            if alias in csv_col_set:
-                column_map[canonical] = alias
-                break
-
-    matched_csv_cols = set(column_map.values())
-    unmapped = [c for c in csv_columns if c not in matched_csv_cols]
-    return column_map, unmapped
+    Shares ``_header_match`` with the polars parsers and the sheet
+    classifier. This is the path a file takes when the user picks the
+    ``collars`` category explicitly, which SKIPS classification — so while
+    matching here was exact and case-sensitive, choosing the right category
+    by hand was the surest way to have every row rejected.
+    """
+    return build_column_map(
+        csv_columns, aliases if aliases is not None else COLUMN_ALIASES,
+    )
 
 
 def _cast_float(value: Any) -> float | None:
@@ -418,8 +421,12 @@ def _validate_row(
     raw: dict[str, str | None],
     column_map: dict[str, str],
     dip_convention: DipConvention,
+    coord_bounds: dict[str, tuple[float, float]],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Validate one raw row (keyed by CSV column names).
+
+    ``coord_bounds`` carries the easting/northing limits chosen for the
+    whole file, so every row is judged against one ruler.
 
     Returns (record, None) on success, keyed by canonical field names,
     or (None, error_entry) on failure.
@@ -459,7 +466,7 @@ def _validate_row(
     if record.get("dip") is not None and dip_convention == "down_positive":
         record["dip"] = normalize_dip(record["dip"], dip_convention)
 
-    for field_name, (lo, hi) in RANGE_CHECKS.items():
+    for field_name, (lo, hi) in {**RANGE_CHECKS, **coord_bounds}.items():
         val = record.get(field_name)
         if val is not None and not (lo <= val <= hi):
             return None, {
@@ -584,6 +591,7 @@ async def ingest_csv_collar_file(
     workspace_id: str,
     project_id: str,
     ingest_run_id: str | None = None,
+    user_column_map: dict[str, str] | None = None,
 ) -> CSVCollarIngestResult:
     """Ingest one CSV collar file into `silver.collars` + `bronze.provenance`.
 
@@ -605,6 +613,11 @@ async def ingest_csv_collar_file(
             .log/.tif/.xlsx/.pdf branches in ``_ingest_one`` already use
             ``input.project_id`` directly.
         ingest_run_id: optional bronze.provenance.ingest_run_id link.
+        column_map: a mapping the user confirmed, ``{canonical_field:
+            source column}``. Applied AHEAD of the built-in spellings
+            rather than instead of them, so naming the one column we could
+            not find does not oblige the user to re-state the six we did.
+            Unmapped fields keep ordinary alias matching.
 
     Returns:
         CSVCollarIngestResult. ``skipped=True`` means the file produced
@@ -650,7 +663,18 @@ async def ingest_csv_collar_file(
         rows_raw.append(normalized)
     total_rows = len(rows_raw)
 
-    column_map, unmapped = _build_column_map(csv_columns)
+    # Named `user_column_map` in the signature, not `column_map`: the local
+    # below holds the RESOLVED map (canonical -> the column actually found),
+    # which is a different thing from the user's instruction, and one name
+    # for both invites reading the wrong one.
+    user_aliases = {
+        canonical: [source]
+        for canonical, source in (user_column_map or {}).items()
+        if isinstance(source, str) and source.strip()
+    }
+    column_map, unmapped = _build_column_map(
+        csv_columns, aliases=merge_vendor_aliases(COLUMN_ALIASES, user_aliases),
+    )
     missing_required = REQUIRED_FIELDS - set(column_map.keys())
     if missing_required:
         log.warning(
@@ -668,6 +692,44 @@ async def ingest_csv_collar_file(
                 "row": None,
                 "code": _CODE_MISSING_REQUIRED,
                 "reason": f"missing required column mapping(s): {sorted(missing_required)}",
+                # What DID map, and what was left over. Without these two
+                # lists the message cannot distinguish "your file has no
+                # such column" from "your file spells it differently",
+                # which are opposite problems with opposite fixes.
+                "mapped": dict(sorted(column_map.items())),
+                "unmatched_columns": unmapped,
+            }],
+        )
+
+    # Coordinate columns that disagree about what they measure — 'Easting'
+    # beside 'LATITUDE'. Every per-field check passes and the result is a
+    # hole 57 metres north of the equator, so this is refused rather than
+    # guessed at.
+    family_conflict = coordinate_family_conflict(
+        column_map.get("easting"), column_map.get("northing")
+    )
+    if family_conflict is not None:
+        east_family, north_family = family_conflict
+        log.warning(
+            "csv_collar_ingester: %s pairs a %s easting column (%s) with a "
+            "%s northing column (%s)",
+            csv_path, east_family, column_map["easting"],
+            north_family, column_map["northing"],
+        )
+        return CSVCollarIngestResult(
+            file_path=csv_path, total_rows=total_rows, valid_rows=0,
+            skipped_rows=total_rows, skipped=True,
+            skipped_reason="coordinate_family_conflict",
+            unmapped_columns=unmapped,
+            detected_delimiter=delimiter, detected_encoding=encoding,
+            row_errors=[{
+                "row": None,
+                "code": _CODE_COORD_FAMILY_CONFLICT,
+                "reason": (
+                    f"'{column_map['easting']}' names a {east_family} coordinate "
+                    f"but '{column_map['northing']}' names a {north_family} one; "
+                    "degrees and metres cannot be paired"
+                ),
             }],
         )
 
@@ -702,13 +764,23 @@ async def ingest_csv_collar_file(
 
     crs_epsg = await _get_project_crs_epsg(conn, project_id)
 
+    # Coordinate bounds, decided once across every row (see the equivalent
+    # comment in georag_geoparsers.csv_collar).
+    east_col, north_col = column_map["easting"], column_map["northing"]
+    coord_bounds = coordinate_bounds(
+        detect_coordinate_mode(
+            [_cast_float(r.get(east_col)) for r in rows_raw],
+            [_cast_float(r.get(north_col)) for r in rows_raw],
+        )
+    )
+
     collar_ids: list[str] = []
     row_errors: list[dict[str, Any]] = []
     valid_rows = 0
     skipped_rows = 0
 
     for i, raw_row in enumerate(rows_raw, start=2):  # row 1 = header
-        record, err = _validate_row(i, raw_row, column_map, dip_convention)
+        record, err = _validate_row(i, raw_row, column_map, dip_convention, coord_bounds)
         if record is None:
             skipped_rows += 1
             row_errors.append(err)

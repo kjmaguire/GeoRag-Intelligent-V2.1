@@ -243,7 +243,12 @@ def env(monkeypatch):
     # imports enumerate_sheets from it at call time. Stubbed rather than
     # skipped: the classification is an INPUT to what is under test.
     parser_mod = types.ModuleType("georag_geoparsers.xlsx_parser")
-    parser_mod.enumerate_sheets = lambda _path: list(fixture.sheets)
+    # `column_map` is accepted and ignored: a user's confirmed mapping
+    # reaches classification (a sheet nobody can classify is never
+    # dispatched to a parser, so a mapping written for it could not
+    # otherwise take effect), but the classification VERDICT is an input
+    # to these tests, fixed by the fixture.
+    parser_mod.enumerate_sheets = lambda _path, **_kw: list(fixture.sheets)
     package = sys.modules.get("georag_geoparsers")
     if package is None:
         package = types.ModuleType("georag_geoparsers")
@@ -258,7 +263,7 @@ def env(monkeypatch):
     # is an INPUT here, not the thing under test.
     classifier_mod = types.ModuleType("georag_geoparsers._sheet_classifier")
     classifier_mod.classify_sheet_type = (
-        lambda _headers: tuple(fixture.reclassified)
+        lambda _headers, **_kw: tuple(fixture.reclassified)
     )
     monkeypatch.setitem(
         sys.modules, "georag_geoparsers._sheet_classifier", classifier_mod,
@@ -267,7 +272,12 @@ def env(monkeypatch):
     # _FakeStore happened to write into the temp file.
     monkeypatch.setattr(it, "_csv_headers", lambda _path: ["stubbed"])
 
-    def _parse_one(path: str, sheet_type: str, sheet_name: str | None) -> Any:
+    def _parse_one(
+        path: str,
+        sheet_type: str,
+        sheet_name: str | None,
+        column_map: Any = None,
+    ) -> Any:
         label = sheet_name or Path(path).name
         fixture.parse_calls.append((sheet_type, label))
         typed = fixture.parsed_by_type.get((label, sheet_type))
@@ -476,7 +486,12 @@ class TestAClassifiedSheetThatWroteNothing:
         ]
         order: list[str] = []
 
-        def _parse_one(path: str, sheet_type: str, sheet_name: str | None):
+        def _parse_one(
+            path: str,
+            sheet_type: str,
+            sheet_name: str | None,
+            column_map: Any = None,
+        ):
             order.append(sheet_type)
             return _ParseResult(skipped_details=_missing_required("'hole_id'"))
 

@@ -10,7 +10,14 @@ import {
     supportsCrsOverride,
     type Category,
 } from '@/lib/uploadCategories';
-import { BUNDLE_MEMBER_EXTS, groupShapefiles, type CrsProvenance } from '@/lib/shapefileBundle';
+import {
+    BUNDLE_MEMBER_EXTS,
+    bundleKey,
+    dedupeFiles,
+    fileKey,
+    groupShapefiles,
+    type CrsProvenance,
+} from '@/lib/shapefileBundle';
 
 /**
  * Foundry / DataImportWizard
@@ -175,6 +182,21 @@ interface QueuedFile {
     id: string;
     file: File;
     /**
+     * Identity that survives re-grouping — `bundleKey`/`fileKey`.
+     *
+     * Every added batch re-groups the whole selection, which re-zips each
+     * bundle and so replaces its `File`. This carries a row's category and
+     * EPSG edits across that rebuild, and stops an uploaded row being
+     * queued a second time.
+     */
+    selectionKey?: string;
+    /**
+     * The selected files behind this row — a bundle's members, or the file
+     * itself. Read when the row is removed, so its sources leave the
+     * accumulated selection with it rather than reappearing on the next add.
+     */
+    sources?: File[];
+    /**
      * Category to upload under, when the extension alone would get it wrong.
      *
      * A shapefile bundle is the case that matters: groupShapefiles() names it
@@ -284,6 +306,19 @@ export default function FoundryDataImportWizard() {
     const [submitting, setSubmitting] = useState(false);
     const [outcomes, setOutcomes] = useState<UploadOutcome[]>([]);
     const [finished, setFinished] = useState(false);
+    /**
+     * Every file selected so far, across every drop and pick.
+     *
+     * A ref, not state: `addFiles` reads AND writes it within one call, so
+     * a state value captured by the closure would be a batch behind — the
+     * staleness that makes a second drop group in isolation.
+     */
+    const selectedFilesRef = useRef<File[]>([]);
+    /** Live queue and outcomes, for reading during a regroup. */
+    const filesRef = useRef<QueuedFile[]>([]);
+    filesRef.current = files;
+    const outcomesRef = useRef<UploadOutcome[]>([]);
+    outcomesRef.current = outcomes;
     const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     const selectedProject = projects?.find((p) => p.project_id === selectedProjectId) ?? null;
@@ -330,10 +365,34 @@ export default function FoundryDataImportWizard() {
     // inline message instead of letting the server 422 it later.
     async function addFiles(incoming: FileList | File[] | null) {
         if (!incoming) return;
-        const arr = Array.from(incoming);
-        if (arr.length === 0) return;
+        const incomingArr = Array.from(incoming);
+        if (incomingArr.length === 0) return;
         const accepted: QueuedFile[] = [];
         const rejected: string[] = [];
+
+        // Group the WHOLE accumulated selection, not just this batch. A
+        // `.dbf` added in a second drop has no `.shp` in ITS batch, so
+        // per-batch grouping treated it as a standalone dBASE table and
+        // uploaded it alone — measured on the 2026-08-24 delivery, where
+        // seven of eight bundles reached storage holding only `.shp` +
+        // `.prj` while four loose `.dbf` files went up beside them.
+        const arr = dedupeFiles([...selectedFilesRef.current, ...incomingArr]);
+        selectedFilesRef.current = arr;
+
+        // Per-row edits and already-settled rows, carried across the
+        // rebuild — re-grouping re-zips every bundle, so `File` identity
+        // does not survive it.
+        const edits = new Map<string, { category?: Category; sourceEpsgText?: string }>();
+        const settled = new Set<string>();
+        const settledIds = new Set(outcomesRef.current.filter((o) => o.ok).map((o) => o.id));
+        for (const qf of filesRef.current) {
+            if (qf.selectionKey === undefined) continue;
+            edits.set(qf.selectionKey, {
+                category: qf.category,
+                sourceEpsgText: qf.sourceEpsgText,
+            });
+            if (settledIds.has(qf.id)) settled.add(qf.selectionKey);
+        }
 
         // Zip each .shp back together with its .shx/.dbf/.prj siblings before
         // anything else looks at the list. Uploaded alone, a .shp cannot be
@@ -362,10 +421,16 @@ export default function FoundryDataImportWizard() {
             // in this archive. `crsFrom` carries the exact entry the grouper
             // wrote, which is the only name safe to remove again.
             const donated: DonatedCrs | undefined = b.crsFrom ?? undefined;
+            const key = bundleKey(b);
+            if (settled.has(key)) continue;
+            const prior = edits.get(key);
             accepted.push({
                 id: newQueueId(),
                 file: b.file,
-                category: 'spatial',
+                selectionKey: key,
+                sources: b.sources,
+                category: prior?.category ?? 'spatial',
+                sourceEpsgText: prior?.sourceEpsgText,
                 bundleNote: b.verdict ?? undefined,
                 crsDonation: donated,
             });
@@ -392,19 +457,32 @@ export default function FoundryDataImportWizard() {
             wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]),
         );
         for (const f of passthrough) {
+            const key = fileKey(f);
+            if (settled.has(key)) continue;
             if (ACCEPTED_EXTENSIONS.includes(fileExtension(f.name))) {
+                const prior = edits.get(key);
                 accepted.push({
                     id: newQueueId(),
                     file: f,
+                    selectionKey: key,
+                    sources: [f],
+                    category: prior?.category,
+                    sourceEpsgText: prior?.sourceEpsgText,
                     crsDonation: wktCrsByFile.get(f),
                 });
             } else {
                 rejected.push(f.name);
             }
         }
-        if (accepted.length > 0) {
-            setFiles((prev) => [...prev, ...accepted]);
-        }
+        // Replaced, not appended: `accepted` is the whole selection
+        // re-grouped, so appending would queue every earlier file again.
+        // Rows that already uploaded successfully keep their existing entry
+        // (`settled` above skipped rebuilding them) so the no-re-upload
+        // guard in handleSubmit still recognises them.
+        setFiles((prev) => [
+            ...prev.filter((qf) => settledIds.has(qf.id)),
+            ...accepted,
+        ]);
         setRejectedNote(
             rejected.length > 0
                 ? `Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${rejected
@@ -421,6 +499,15 @@ export default function FoundryDataImportWizard() {
     }
 
     function removeFile(id: string) {
+        // Un-select the row's SOURCE files too, or the next added file
+        // re-groups the whole selection and the removed row comes back.
+        const target = filesRef.current.find((qf) => qf.id === id);
+        if (target) {
+            const gone = new Set((target.sources ?? [target.file]).map(fileKey));
+            selectedFilesRef.current = selectedFilesRef.current.filter(
+                (f) => !gone.has(fileKey(f)),
+            );
+        }
         setFiles((prev) => prev.filter((qf) => qf.id !== id));
         setOutcomes((prev) => prev.filter((o) => o.id !== id && o.ok));
         setFinished(false);

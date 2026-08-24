@@ -70,7 +70,7 @@ class SheetMeta:
     hidden: bool               # True if the sheet is hidden / very_hidden
 
 
-def enumerate_sheets(path: str) -> list[SheetMeta]:
+def enumerate_sheets(path: str, *, column_map=None) -> list[SheetMeta]:
     """Return one :class:`SheetMeta` per sheet in the workbook.
 
     Hidden sheets are reported with ``hidden=True`` so the caller can
@@ -82,6 +82,11 @@ def enumerate_sheets(path: str) -> list[SheetMeta]:
     via their respective backends. Sheet classification reuses the
     project's :func:`_sheet_classifier.classify_sheet_type` so the same
     header → type rules apply everywhere.
+
+    ``column_map`` is a mapping the user confirmed, passed straight to the
+    classifier. A sheet whose headers we do not recognise classifies as
+    ``unknown`` and is never dispatched to a parser, so without this a
+    mapping written FOR that sheet could never take effect on it.
     """
     # Deferred import — keeps the parser module lightweight at load.
     from georag_geoparsers._sheet_classifier import classify_sheet_type
@@ -116,7 +121,9 @@ def enumerate_sheets(path: str) -> list[SheetMeta]:
                         continue
                     if any(c is not None and str(c).strip() for c in row):
                         row_count += 1
-                sheet_type, confidence = classify_sheet_type(headers)
+                sheet_type, confidence = classify_sheet_type(
+                    headers, column_map=column_map,
+                )
                 out.append(SheetMeta(
                     name=sheet_name,
                     headers=headers,
@@ -150,7 +157,9 @@ def enumerate_sheets(path: str) -> list[SheetMeta]:
                     for v in sheet.row_values(0)
                 ]
                 row_count = max(0, sheet.nrows - 1)
-            sheet_type, confidence = classify_sheet_type(headers)
+            sheet_type, confidence = classify_sheet_type(
+                headers, column_map=column_map,
+            )
             out.append(SheetMeta(
                 name=sheet_name,
                 headers=headers,
@@ -435,6 +444,8 @@ def parse_xlsx_sheet(
     path: str,
     sheet_name: str,
     sheet_type: SheetType,
+    *,
+    vendor_aliases: dict[str, list[str]] | None = None,
 ) -> ExcelParseResult:
     """Parse a single sheet of an Excel file (.xlsx, .xlsm, or .xls) as the given sheet_type.
 
@@ -455,6 +466,11 @@ def parse_xlsx_sheet(
     sheet_type:
         One of "collar", "survey", "lithology", "sample".  Controls which CSV
         parser is invoked.
+    vendor_aliases:
+        Extra column spellings, passed straight through to that CSV parser.
+        A workbook sheet resolves its columns in the CSV parser, so a user's
+        confirmed mapping has to travel the same way or it would apply to a
+        loose .csv and be ignored for the identical table inside an .xlsx.
 
     Returns
     -------
@@ -550,19 +566,19 @@ def parse_xlsx_sheet(
     # --- Delegate to the matching CSV parser ---
     if sheet_type == "collar":
         from georag_geoparsers.csv_collar import parse_csv_collars
-        result = parse_csv_collars(csv_buffer)
+        result = parse_csv_collars(csv_buffer, vendor_aliases=vendor_aliases)
         assay_columns: list = []
     elif sheet_type == "survey":
         from georag_geoparsers.csv_survey import parse_csv_surveys
-        result = parse_csv_surveys(csv_buffer)
+        result = parse_csv_surveys(csv_buffer, vendor_aliases=vendor_aliases)
         assay_columns = []
     elif sheet_type == "lithology":
         from georag_geoparsers.csv_lithology import parse_csv_lithology
-        result = parse_csv_lithology(csv_buffer)
+        result = parse_csv_lithology(csv_buffer, vendor_aliases=vendor_aliases)
         assay_columns = []
     elif sheet_type == "sample":
         from georag_geoparsers.csv_sample import parse_csv_samples
-        result = parse_csv_samples(csv_buffer)
+        result = parse_csv_samples(csv_buffer, vendor_aliases=vendor_aliases)
         assay_columns = getattr(result, "assay_columns", [])
     else:
         raise ValueError(f"xlsx_parser: unknown sheet_type '{sheet_type}'")
