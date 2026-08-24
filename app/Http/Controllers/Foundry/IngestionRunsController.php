@@ -124,7 +124,9 @@ class IngestionRunsController extends Controller
         }
 
         $result = app(UploadController::class)->dispatchTabularRemap(
-            user: $request->user(),
+            // loadProject() has already dereferenced the user, and the route
+            // is behind auth — the fallback is for the type, not a real case.
+            userId: (string) ($request->user()?->getAuthIdentifier() ?? 'unknown'),
             workspaceId: (string) $project->workspace_id,
             projectId: (string) $project->project_id,
             minioKey: $validated['minio_key'],

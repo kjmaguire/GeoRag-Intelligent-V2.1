@@ -730,7 +730,7 @@ class UploadController extends Controller
      * @return array<string, mixed>
      */
     public function dispatchTabularRemap(
-        $user,
+        string $userId,
         string $workspaceId,
         string $projectId,
         string $minioKey,
@@ -755,11 +755,10 @@ class UploadController extends Controller
         ];
 
         try {
-            $jwt = app(FastApiJwtMinter::class)->mint(
-                (string) ($user->id ?? 'unknown'),
-                $projectId,
-                [],
-            );
+            // The identifier, not the user object: minting a JWT is all this
+            // needs, and taking a whole model to read one field invites a
+            // caller to believe more of it is used than is.
+            $jwt = app(FastApiJwtMinter::class)->mint($userId, $projectId, []);
 
             $this->dispatchThrottle->wait($workspaceId);
 

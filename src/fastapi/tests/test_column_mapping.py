@@ -15,10 +15,10 @@ from __future__ import annotations
 import io
 
 import pytest
-
-from app.hatchet_workflows.ingest_tabular import _vendor_aliases_for
 from georag_geoparsers._sheet_classifier import classify_sheet_type
 from georag_geoparsers.csv_collar import parse_csv_collars
+
+from app.hatchet_workflows.ingest_tabular import _vendor_aliases_for
 
 
 def _csv(text: str) -> io.StringIO:
