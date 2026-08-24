@@ -93,6 +93,46 @@ const NATIVE_TAB_HEADER = [
     '',
 ].join('\n');
 
+/**
+ * A real Discover ground-control-point header — `tr006.4-geology_gcp.TAB`.
+ * `Type NATIVE`, so the RASTER check does not see it, but its columns are the
+ * warp schema and it carries the delivery's coordinate system in metadata.
+ */
+const GCP_TAB_HEADER = [
+    '!table',
+    '!version 300',
+    'Definition Table',
+    '  Type NATIVE Charset "Neutral"',
+    '  Fields 10',
+    '    ID Integer ;',
+    '    Image_X Integer ;',
+    '    Image_Y Integer ;',
+    '    Map_X Float ;',
+    '    Map_Y Float ;',
+    '    RMS Float ;',
+    'begin_metadata',
+    '"\\Discover\\Warp" = ""',
+    '"\\Discover\\Warp\\ProjectionName" = "UTM Zone 4 (NAD 83)"',
+    'end_metadata',
+    '',
+].join('\n');
+
+/** A real Discover cross-section header — `Sitka_trA.tab`, metadata included. */
+const XSECT_TAB_HEADER = [
+    '!table',
+    'Definition Table',
+    '  Type NATIVE Charset "WindowsLatin1"',
+    '  Fields 3',
+    '    ID Integer ;',
+    '    NumVal Float ;',
+    '    StrVal Char (50) ;',
+    'begin_metadata',
+    '"\\Discover\\xsects" = ""',
+    '"\\Discover\\xsects\\project" = "Sitka_tr"',
+    'end_metadata',
+    '',
+].join('\n');
+
 describe('groupShapefiles', () => {
     it('zips a shapefile with its sidecars instead of uploading the .shp alone', async () => {
         const { bundles, passthrough, unusable } = await groupShapefiles([
@@ -831,5 +871,75 @@ describe('groupShapefiles - raster TAB', () => {
                 'coordinate system - both live in the .map - so GDAL cannot open this one. Add ' +
                 'the missing files and drop the folder again.',
         );
+    });
+});
+
+describe('groupShapefiles - NATIVE TABs that are not map layers', () => {
+    it('names a ground-control-point table instead of demanding its sidecars', async () => {
+        // `*_gcp.TAB` is the warp table for a scanned trench map: pixel
+        // positions and their map coordinates. It is Type NATIVE, so it used
+        // to fall through to the sidecar check and be reported as
+        // "Incomplete MapInfo TAB set: no .dat, .map, .id" — files that were
+        // never part of it, and that would not make it vector data.
+        const { bundles, passthrough, unusable } = await groupShapefiles([
+            makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER),
+        ]);
+
+        expect(bundles).toHaveLength(0);
+        expect(passthrough).toHaveLength(0);
+        expect(unusable).toHaveLength(1);
+
+        const reason = unusable[0].reason;
+        expect(reason).toContain('control-point table');
+        expect(reason).not.toContain('Incomplete');
+        expect(reason).not.toContain('drop the folder again');
+    });
+
+    it('reports the coordinate system a GCP header declares', async () => {
+        // The one genuinely useful thing in the file: these headers name the
+        // CRS the .prj-less shapefiles in the same delivery needed.
+        const { unusable } = await groupShapefiles([
+            makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER),
+        ]);
+
+        expect(unusable[0].reason).toContain('UTM Zone 4 (NAD 83)');
+    });
+
+    it('names a Discover cross-section table for what it is', async () => {
+        const { unusable } = await groupShapefiles([
+            makeFile('Sitka_trA.tab', '', XSECT_TAB_HEADER),
+        ]);
+
+        expect(unusable).toHaveLength(1);
+        const reason = unusable[0].reason;
+        expect(reason).toContain('cross-section definition');
+        expect(reason).toContain('collar and interval tables');
+        expect(reason).not.toContain('Incomplete');
+    });
+
+    it('does not repeat the file name, which the row already renders', async () => {
+        const { unusable } = await groupShapefiles([
+            makeFile('tr006.4-geology_gcp.TAB', '', GCP_TAB_HEADER),
+        ]);
+
+        expect(unusable[0].reason.startsWith('tr006.4-geology_gcp.TAB')).toBe(false);
+    });
+
+    it('still asks for sidecars when the NATIVE table really is a map layer', async () => {
+        // The regression guard for the two branches above: an ordinary NATIVE
+        // .tab with no Discover metadata is a vector table missing its
+        // sidecars, and that advice IS followable.
+        //
+        // An incomplete set stays a BUNDLE carrying a verdict — it is still
+        // uploaded, and the verdict is what the "Files needing attention"
+        // list renders. Only a file with nothing worth uploading becomes
+        // `unusable`, which is where the two Discover kinds above now go.
+        const { bundles, unusable } = await groupShapefiles([
+            makeFile('Veins.TAB', '', NATIVE_TAB_HEADER),
+        ]);
+
+        expect(unusable).toHaveLength(0);
+        expect(bundles).toHaveLength(1);
+        expect(bundles[0].verdict).toContain('Incomplete MapInfo TAB set');
     });
 });

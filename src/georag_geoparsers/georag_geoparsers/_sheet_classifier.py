@@ -55,6 +55,20 @@ _HARD_DISCRIMINATORS: dict[str, set[str]] = {
     # required-coverage scoring for collar.
 }
 
+# Every drill table is keyed by the hole it was logged in. ``hole_id`` is a
+# REQUIRED field of all four schemas, and the three interval types resolve
+# to a collar through it, so a sheet without it cannot be written as any of
+# them however many of the OTHER required fields it happens to share.
+#
+# Measured on the customer's export_UTM.xls: 24 rows of IP station
+# coordinates (Grids_Name, LineNumber, X, Y, Z) scored 3/4 on collar --
+# X/Y/Z alias to easting/northing/elevation -- cleared the 0.75 threshold,
+# and the collar writer then refused every row for having no hole_id.
+# Coverage alone cannot separate those cases, because the one field the
+# sheet is missing is the identity. Geophysics station lists, soil grids and
+# assay certificates all carry coordinates and no hole.
+_IDENTITY_FIELD: str = "hole_id"
+
 
 def _load_schemas() -> dict[str, tuple[dict[str, list[str]], frozenset[str]]]:
     """Lazy-import the four CSV parsers to grab their alias + required sets.
@@ -161,6 +175,12 @@ def classify_sheet_type(
         required_matched = matched_canonicals & set(required)
         coverage = len(required_matched) / max(1, len(required))
         total = len(matched_canonicals)
+
+        # Checked before the discriminator branch below on purpose: a
+        # sheet carrying `sample_type` but no hole is still not a sample
+        # sheet, so the lock must not be able to override this.
+        if _IDENTITY_FIELD in required and _IDENTITY_FIELD not in matched_canonicals:
+            continue
 
         # Hard discriminator override — if a unique-to-this-type field
         # matched, lock the classification regardless of coverage. This

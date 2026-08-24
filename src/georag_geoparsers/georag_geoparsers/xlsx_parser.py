@@ -203,6 +203,37 @@ XlsxParseResult = ExcelParseResult
 # SHA-256 provenance helper
 # ---------------------------------------------------------------------------
 
+def read_sheet_rows(path: str, sheet_name: str = "") -> list[dict[str, Any]]:
+    """One sheet's rows as dicts keyed by its header row.
+
+    The four typed drill parsers reject a sheet whose columns none of their
+    aliases match, and until now the only thing left to do with it was
+    render it to prose. A geochemical certificate, an IP station list or a
+    radiometric-age table is not prose: it is a table whose columns simply
+    are not collar/survey/lithology/sample. This is the shape that lets the
+    workflow keep those values AS values.
+
+    Deliberately the same two loaders :func:`parse_xlsx_sheet` uses, so a
+    sheet that parses there reads here -- including the xlrd legacy path,
+    which is the only reader for .xls and lives in this package because
+    check_pyproject_covers_imports will not let the FastAPI side import it.
+    """
+    ext = Path(path).suffix.lower()
+    if ext == ".xls":
+        df, _resolved, _warnings = _xls_to_polars_df(path, sheet_name)
+    elif ext in _XLSX_EXTS:
+        df = (
+            pl.read_excel(path, sheet_name=sheet_name)
+            if sheet_name else pl.read_excel(path)
+        )
+    else:
+        raise ValueError(
+            f"read_sheet_rows: unsupported extension '{ext}' for '{path}'. "
+            f"Expected one of: .xlsx, .xlsm, .xls"
+        )
+    return df.to_dicts()
+
+
 def read_xls_sheets(path: str) -> list[tuple[str, str]]:
     """Every non-empty sheet of a legacy .xls as (name, tab-separated text).
 

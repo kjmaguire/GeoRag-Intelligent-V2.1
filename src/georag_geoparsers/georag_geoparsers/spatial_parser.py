@@ -375,6 +375,52 @@ def _materialise_case_variant_sidecars(path: str, ext: str) -> list[str]:
 #: georeferencing header for a .tif, not a vector table.
 _MAPINFO_RASTER_RE = re.compile(r'^\s*type\s+"?raster"?', re.IGNORECASE | re.MULTILINE)
 
+#: A Discover georeferencing (ground-control-point) table. Its Definition
+#: Table is a fixed set of warp columns -- pixel positions, their map
+#: coordinates, and the residuals of the fit -- and it is `Type NATIVE`, so
+#: the RASTER check above never sees it. It holds the control points used to
+#: rectify a scanned map, never geology, and no combination of sidecars
+#: turns it into a vector layer. Three arrived in the RedStar delivery
+#: (`*_gcp.TAB`), each reported to the geologist as a missing-sidecar error
+#: telling them to re-upload files that do not exist.
+_MAPINFO_GCP_FIELDS = ("image_x", "image_y", "map_x", "map_y")
+
+#: Discover's cross-section module writes its section definitions as a
+#: NATIVE table too (`Sitka_trA.tab`: ID / NumVal / StrVal, with the
+#: section's project, name, collar table and depth units in metadata).
+#: A literal, not a regex: the metadata key is backslash-delimited
+#: and \x is not a legal escape inside a pattern.
+_MAPINFO_XSECT_KEY = "\\discover\\xsects"
+
+#: What CoordSys the header declares, if it declares one. A NATIVE .tab
+#: keeps its projection in the .map, but Discover writes the warp projection
+#: into the .tab's own metadata -- so these headers are readable coordinate
+#: systems even when the table they describe is unreadable. The RedStar GCP
+#: tables all carry "UTM Zone 4 (NAD 83)", the very CRS the .prj-less
+#: shapefiles beside them needed.
+_MAPINFO_PROJ_NAME_RE = re.compile(r'ProjectionName"?\s*=\s*"([^"]+)"', re.IGNORECASE)
+_MAPINFO_COORDSYS_RE = re.compile(r'(CoordSys\s+Earth[^"\r\n]*)', re.IGNORECASE)
+
+
+def _mapinfo_declared_crs(header: str) -> str | None:
+    """The coordinate system a MapInfo header names, in its own words.
+
+    Returned for the message only. It is deliberately NOT converted to an
+    EPSG code here: the caller is refusing the file either way, and a wrong
+    conversion asserted confidently is worse than naming what the file says.
+    """
+    name = _MAPINFO_PROJ_NAME_RE.search(header)
+    if name:
+        return name.group(1).strip()
+    clause = _MAPINFO_COORDSYS_RE.search(header)
+    return clause.group(1).strip() if clause else None
+
+
+def _mapinfo_is_gcp_table(header: str) -> bool:
+    """Whether the Definition Table is a warp control-point schema."""
+    lowered = header.lower()
+    return all(field in lowered for field in _MAPINFO_GCP_FIELDS)
+
 
 def _inspect_mapinfo_tab(path: str) -> None:
     """Refuse a .tab this parser cannot read, with a message that says why.
@@ -416,16 +462,55 @@ def _inspect_mapinfo_tab(path: str) -> None:
             "instead; this .tab carries only its corner points and CoordSys."
         )
 
+    name = os.path.basename(path)
+    declared = _mapinfo_declared_crs(header)
+    crs_note = (
+        f" It does declare a coordinate system ({declared}) — the one to use "
+        f"for the files beside it that declare none."
+        if declared else ""
+    )
+
+    # Both of these are checked BEFORE the sidecar test below, and the order
+    # is the whole point: they are missing their .map and .dat as well, so
+    # the sidecar message fires first and sends the geologist looking for
+    # files that were never part of the table. Neither becomes vector data
+    # once those files are found, so that advice cannot succeed.
+    if _mapinfo_is_gcp_table(header):
+        raise NotImplementedError(
+            f"'{name}' is a georeferencing control-point table, not a map "
+            f"layer. Its columns are pixel positions and their map "
+            f"coordinates (Image_X / Image_Y / Map_X / Map_Y) plus the "
+            f"residuals of the fit — the numbers MapInfo used to rectify a "
+            f"scanned image. There is no geology in it to import, with or "
+            f"without its sidecars. Upload the scanned map it rectifies (the "
+            f".tif) through the raster path instead.{crs_note}"
+        )
+
+    if _MAPINFO_XSECT_KEY in header.lower():
+        raise NotImplementedError(
+            f"'{name}' is a Discover cross-section definition, not a map "
+            f"layer — it records how a section was drawn (its project, the "
+            f"collar table it was built from, its depth units), not features "
+            f"with positions on the ground. Upload the collar and interval "
+            f"tables it was built from and the section can be drawn from "
+            f"those.{crs_note}"
+        )
+
     stem = os.path.splitext(path)[0]
     missing = [e for e in (".map", ".dat") if not os.path.isfile(stem + e)]
     if missing:
         raise FileNotFoundError(
             f"MapInfo table '{os.path.basename(path)}' is "
             f"missing {', '.join(missing)}. A NATIVE .tab is only a header: "
-            "the geometry lives in the .map and the attributes in the .dat, "
-            "and the coordinate system is in the .map too. Re-upload the "
-            "table with every sidecar (.tab, .dat, .map, .id and .ind if "
-            "present)."
+            "the geometry lives in the .map and the attributes in the .dat. "
+            "Re-upload the table with every sidecar (.tab, .dat, .map, .id "
+            "and .ind if present)." + (
+                f" Its coordinate system is readable from this header "
+                f"({declared}), but the geometry it describes is not."
+                if declared else
+                " The coordinate system is in the .map too, so this is a CRS "
+                "loss as well as a data loss."
+            )
         )
 
 

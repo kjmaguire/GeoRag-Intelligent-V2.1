@@ -437,6 +437,70 @@ function rasterTabReason(image: string | null, imageSelected: boolean): string {
     return `${head}${tail} The coordinate system in this file is not read yet.`;
 }
 
+/**
+ * A Discover ground-control-point table. It is `Type NATIVE`, so RASTER_TAB_RE
+ * never sees it, but its Definition Table is the fixed warp schema: pixel
+ * positions, their map coordinates, and the residuals of the fit. It holds the
+ * control points used to rectify a scanned map, never geology, and no
+ * combination of sidecars turns it into a vector layer.
+ *
+ * Three arrived in the RedStar delivery (`*_gcp.TAB`). Two have no `.map` or
+ * `.dat` anywhere in it because they never had any, and both were reported as
+ * "Incomplete MapInfo TAB set ... add the missing files and drop the folder
+ * again" - advice that cannot be followed and would not help if it could.
+ */
+const GCP_TAB_FIELDS = ['image_x', 'image_y', 'map_x', 'map_y'];
+
+/**
+ * Discover's cross-section module writes its section definitions as a NATIVE
+ * table too (`Sitka_trA.tab`: ID / NumVal / StrVal, with the section's project,
+ * collar table and depth units in metadata).
+ */
+const XSECT_TAB_KEY = '\\discover\\xsects';
+
+/**
+ * `"\Discover\Warp\ProjectionName" = "UTM Zone 4 (NAD 83)"`.
+ *
+ * A NATIVE .tab keeps its projection in the .map, but Discover writes the warp
+ * projection into the .tab's own metadata - so these headers are readable
+ * coordinate systems even when the table they describe is unreadable. In the
+ * RedStar delivery they name the very CRS the .prj-less shapefiles needed.
+ */
+const TAB_PROJ_NAME_RE = /ProjectionName"?\s*=\s*"([^"]+)"/i;
+
+/**
+ * Why this .tab is not a vector table, or null if it looks like one.
+ *
+ * The file name is deliberately not repeated: both screens render an unusable
+ * row as `<file name>: <reason>`.
+ */
+function nonVectorTabReason(header: string): string | null {
+    const lower = header.toLowerCase();
+    const declared = TAB_PROJ_NAME_RE.exec(header)?.[1]?.trim() ?? null;
+    const crsNote = declared
+        ? ` It does declare a coordinate system (${declared}) - the one to use for the files ` +
+          'beside it that declare none.'
+        : '';
+
+    if (GCP_TAB_FIELDS.every((f) => lower.includes(f))) {
+        return (
+            'A georeferencing control-point table, not a map layer: its columns are pixel ' +
+            'positions and their map coordinates (Image_X / Image_Y / Map_X / Map_Y) plus the ' +
+            'residuals of the fit. There is no geology in it to import, with or without its ' +
+            `sidecars - upload the scanned map it rectifies instead.${crsNote}`
+        );
+    }
+    if (lower.includes(XSECT_TAB_KEY)) {
+        return (
+            'A Discover cross-section definition, not a map layer: it records how a section was ' +
+            'drawn - its project, the collar table it was built from, its depth units - not ' +
+            `features with positions on the ground. Upload the collar and interval tables it ` +
+            `was built from instead.${crsNote}`
+        );
+    }
+    return null;
+}
+
 function mapinfoVerdict(masterExt: string, missing: string[]): string | null {
     const absent = MAPINFO_SIDECARS[masterExt].required.filter((e) => missing.includes(e));
     if (absent.length === 0) return null;
@@ -468,7 +532,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
     const bundles: SpatialBundle[] = [];
     const passthrough: File[] = [];
     const unusable: UnusableFile[] = [];
-    const rasterTabs: UnusableFile[] = [];
+    const nonVectorTabs: UnusableFile[] = [];
 
     // ---- Raster TABs, before anything can mistake one for a vector set ----
     //
@@ -490,12 +554,21 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
         }
         const header = await f.slice(0, 8192).text();
         if (!RASTER_TAB_RE.test(header)) {
+            // Not a raster header, but still possibly not a map layer: a
+            // Discover warp or cross-section table is `Type NATIVE` and
+            // reaches the sidecar check below, which then asks for files
+            // that were never part of it.
+            const reason = nonVectorTabReason(header);
+            if (reason !== null) {
+                nonVectorTabs.push({ file: f, reason });
+                continue;
+            }
             vectorFiles.push(f);
             continue;
         }
         const match = TAB_IMAGE_RE.exec(header);
         const image = match ? baseName(match[1]) : null;
-        rasterTabs.push({
+        nonVectorTabs.push({
             file: f,
             reason: rasterTabReason(
                 image,
@@ -680,7 +753,7 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
     return {
         bundles,
         passthrough,
-        unusable: [...unusable.filter((u) => !donatedPrjFiles.has(u.file)), ...rasterTabs],
+        unusable: [...unusable.filter((u) => !donatedPrjFiles.has(u.file)), ...nonVectorTabs],
         crsDonation,
     };
 }
