@@ -410,7 +410,7 @@ def _inspect_mapinfo_tab(path: str) -> None:
 
     if _MAPINFO_RASTER_RE.search(header):
         raise NotImplementedError(
-            f"spatial_parser: '{os.path.basename(path)}' is a MapInfo RASTER "
+            f"'{os.path.basename(path)}' is a MapInfo RASTER "
             "table — a georeferencing header for an image, not vector data. "
             "Upload the image it references (.tif) through the raster path "
             "instead; this .tab carries only its corner points and CoordSys."
@@ -420,7 +420,7 @@ def _inspect_mapinfo_tab(path: str) -> None:
     missing = [e for e in (".map", ".dat") if not os.path.isfile(stem + e)]
     if missing:
         raise FileNotFoundError(
-            f"spatial_parser: MapInfo table '{os.path.basename(path)}' is "
+            f"MapInfo table '{os.path.basename(path)}' is "
             f"missing {', '.join(missing)}. A NATIVE .tab is only a header: "
             "the geometry lives in the .map and the attributes in the .dat, "
             "and the coordinate system is in the .map too. Re-upload the "
@@ -662,13 +662,13 @@ def _validate_source_epsg(source_epsg) -> int | None:
     # bool is an int subclass; True would otherwise read as EPSG 1.
     if isinstance(source_epsg, bool) or not isinstance(source_epsg, int):
         raise ValueError(
-            "spatial_parser: source_epsg must be an integer EPSG code, got "
+            "source_epsg must be an integer EPSG code, got "
             f"{source_epsg!r} ({type(source_epsg).__name__}). Coordinate "
             "reference systems are passed as codes, never as strings."
         )
     if not _MIN_EPSG <= source_epsg <= _MAX_EPSG:
         raise ValueError(
-            f"spatial_parser: source_epsg {source_epsg} is outside the "
+            f"source_epsg {source_epsg} is outside the "
             f"{_MIN_EPSG}-{_MAX_EPSG} range that "
             "silver.spatial_features.crs_epsg_native accepts."
         )
@@ -1300,7 +1300,7 @@ def parse_spatial_file(
 
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"spatial_parser: path not found at '{path}'")
+        raise FileNotFoundError(f"Path not found at '{path}'")
 
     # --- Provenance ---
     sha256_hex = _sha256_path(path)
@@ -1398,7 +1398,7 @@ def parse_spatial_file(
             # silver_xyz). Refuse with a clear-message error pointing
             # the user at the canonical workaround.
             raise NotImplementedError(
-                f"spatial_parser: '{p.name}' looks like a Geosoft GDB "
+                f"'{p.name}' looks like a Geosoft GDB "
                 "(binary file with .gdb extension). Geosoft GDB is not "
                 "openly parseable; export to XYZ from Oasis montaj and "
                 "upload via the geophysics/ MinIO prefix (silver_xyz) "

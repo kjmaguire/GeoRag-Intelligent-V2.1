@@ -59,6 +59,7 @@ import datetime as _dt
 import json
 import logging
 import math
+import re
 import tempfile
 import time as _t
 from pathlib import Path
@@ -137,6 +138,9 @@ class IngestTabularOut(BaseModel):
     #: Per-type counts, e.g. {"collar": {"written": 42, "orphaned": 0}}.
     written: dict[str, dict[str, int]] = Field(default_factory=dict)
     sheets: list[dict[str, Any]] = Field(default_factory=list)
+    #: Sheets sent to the text fallback: those that matched no drill type
+    #: AND those that matched one and then wrote nothing. It is the set
+    #: that got no typed rows, not only the set the classifier gave up on.
     unclassified: list[str] = Field(default_factory=list)
     source_epsg: int = DEFAULT_SOURCE_EPSG
     epsg_assumed: bool = True
@@ -578,6 +582,82 @@ def _csv_headers(path: str) -> list[str]:
     return []
 
 
+#: How the four CSV parsers report a FILE-level refusal: one
+#: ``skipped_details`` entry with ``row`` unset, ``code`` ==
+#: ``"missing_required"``, and a ``reason`` naming the column set no alias
+#: matched (csv_collar.py:369, csv_survey.py:348, csv_lithology.py:426,
+#: csv_sample.py:889). ``parse_xlsx_sheet`` serialises the sheet and hands
+#: it to those same parsers, so a workbook sheet carries the identical
+#: shape. The same code ALSO tags per-row skips ("row 12 is missing
+#: hole_id"), which is why ``row`` must be checked as well: those are not
+#: the file-level refusal and there can be thousands of them.
+_FILE_LEVEL_REFUSAL_CODE = "missing_required"
+
+#: ``frozenset({'hole_id'})`` is a repr, not English. The column names
+#: inside it are the whole point of the message and are kept verbatim.
+_FROZENSET_REPR = re.compile(r"frozenset\(\{(.*?)\}\)")
+
+
+def _readable_reason(reason: str) -> str:
+    """The parser's own words with the Python-only shapes taken out.
+
+    The refusal arrives as ``file-level: missing required column
+    mapping(s): frozenset({'hole_id'})``. ``file-level:`` is internal
+    bookkeeping and the frozenset wrapper is noise; what a geologist
+    needs is the column names.
+    """
+    cleaned = _FROZENSET_REPR.sub(r"\1", reason).strip()
+    return cleaned.removeprefix("file-level:").strip()
+
+
+def _refusal_reason(result: Any) -> str | None:
+    """Why a writer got no records, in the parser's own words.
+
+    Returns None when the parse reported no file-level refusal — the
+    caller then says only that the writer required columns the sheet does
+    not have, rather than inventing a specific reason it cannot source.
+    """
+    for detail in getattr(result, "skipped_details", None) or []:
+        if not isinstance(detail, dict):
+            continue
+        if detail.get("row") is not None:
+            continue    # a per-row skip, not the file-level refusal
+        if detail.get("code") == _FILE_LEVEL_REFUSAL_CODE and detail.get("reason"):
+            return _readable_reason(str(detail["reason"]))
+    return None
+
+
+def _wrote_nothing_warning(
+    *, label: str, classified_as: str, reason: str | None,
+) -> dict[str, Any]:
+    """Say which sheet was refused, what it was taken for, and why.
+
+    ``message`` AND ``detail``: the Ingestion Runs page renders
+    ``detail``, falling back to ``code`` — a warning with neither shows
+    the geologist a bare token like ``classified_but_nothing_written``.
+    """
+    because = reason or (
+        "the writer required columns this sheet does not have"
+    )
+    return {
+        "code": "classified_but_nothing_written",
+        "message": (
+            f"'{label}' looked like a {classified_as} sheet, but no "
+            f"{classified_as} rows could be written"
+        ),
+        "detail": (
+            f"'{label}' matched the {classified_as} layout, so it was sent "
+            f"to the {classified_as} writer — which accepted none of its "
+            f"rows: {because}. No {classified_as} rows were written. The "
+            f"sheet was handed to the text fallback instead so its contents "
+            f"stay searchable; the indexing warning beside this one reports "
+            f"what landed. If this is not {classified_as} data, re-upload it "
+            f"with the right type or rename its columns to ones the "
+            f"{classified_as} parser recognises."
+        ),
+    }
+
+
 async def _land_unclassified_as_text(
     conn: Any,
     *,
@@ -592,6 +672,13 @@ async def _land_unclassified_as_text(
     Returns the warning to attach, or None when nothing landed. Never
     raises: a text fallback failing must not turn a run that DID write
     typed drill rows into a failure.
+
+    The success warning carries ``passages`` beside its prose. The count
+    is already in the sentence; it is repeated as an integer because the
+    caller has to add it to ``rows_written``, and re-reading it out of
+    the English is how that number goes wrong. Extra keys are inert on
+    the Ingestion Runs page, which reads ``detail`` and falls back to
+    ``code``.
     """
     from app.services.ingest.xlsx_ingester import (  # noqa: PLC0415
         ingest_delimited_as_text,
@@ -628,6 +715,22 @@ async def _land_unclassified_as_text(
             ),
         }
 
+    if not result.skipped and result.document_id and not result.passages_inserted:
+        # Already indexed. land_sheets_as_text dedupes on the file sha within
+        # the project, so a re-upload of the same workbook finds the existing
+        # report and inserts nothing new. Saying "produced no searchable text"
+        # there reads as a failure when the content is in fact already
+        # answerable -- the same false-negative as the "no data written"
+        # headline this change set exists to fix.
+        return {
+            "code": "unclassified_already_indexed",
+            "detail": (
+                f"{len(unclassified)} sheet(s) matched no drill type "
+                f"({names}{more}). This file was already indexed, so no new "
+                "passages were added; its contents are still answerable in chat."
+            ),
+        }
+
     if result.skipped or not result.passages_inserted:
         return {
             "code": "unclassified_not_indexed",
@@ -640,6 +743,7 @@ async def _land_unclassified_as_text(
 
     return {
         "code": "unclassified_indexed_as_text",
+        "passages": int(result.passages_inserted),
         "detail": (
             f"{len(unclassified)} sheet(s) matched no collar / survey / "
             f"lithology / sample layout ({names}{more}) and were indexed as "
@@ -724,6 +828,14 @@ async def run_ingest_tabular(
     sheets: list[dict[str, Any]] = []
     unclassified: list[str] = []
     warnings: list[dict[str, Any]] = []
+    #: Sheets that DID classify and then wrote nothing — (label, type,
+    #: reason). Collected per sheet, not per type: one workbook can hold a
+    #: collar tab that lands and a second that is refused, and the
+    #: per-type accumulator cannot tell them apart.
+    wrote_nothing: list[tuple[str, str, str | None]] = []
+    #: Searchable passages the text fallback landed. Part of what the run
+    #: wrote — see the rows_written comment at the terminal write.
+    text_passages = 0
 
     try:
         if run_id:
@@ -863,6 +975,29 @@ async def run_ingest_tabular(
                             records=records, index=index,
                         )
 
+                    if not stats.get("written") and not stats.get("orphaned"):
+                        # Classified, then refused. Recorded here, where
+                        # the parse result is still in scope and can say
+                        # why; acted on after the write pass, so
+                        # WRITE_ORDER and the collars-first sort above are
+                        # untouched.
+                        #
+                        # ORPHANED IS EXCLUDED DELIBERATELY. An interval
+                        # sheet whose rows all orphaned parsed perfectly
+                        # well -- its collars simply are not uploaded yet,
+                        # and its own orphaned_intervals warning already
+                        # says to upload them and re-run. Text-indexing it
+                        # now would leave that copy behind when the typed
+                        # rows land on the second run, competing with them
+                        # in the recall set. That is the exact duplication
+                        # the only_sheets scoping exists to prevent, one
+                        # case over.
+                        wrote_nothing.append((
+                            sheet_name or filename,
+                            sheet_type,
+                            _refusal_reason(result),
+                        ))
+
                     prior = written.setdefault(
                         sheet_type,
                         {"written": 0, "skipped": 0, "orphaned": 0, "replaced": 0},
@@ -880,6 +1015,32 @@ async def run_ingest_tabular(
                         source_layer=attribute_layer,
                         rows=attribute_rows,
                     )
+
+                # ── Classified, and then wrote nothing ──────────────────
+                # The fallback below used to run only for sheets that
+                # matched NO drill type, so a sheet that classified and
+                # was then refused by its writer got neither typed rows
+                # nor searchable text — and the run said so with an
+                # unrelated warning, if any. Measured on the customer's
+                # export_UTM.xls: 24 rows of IP station coordinates
+                # (Grids_Name, LineNumber, X, Y, Z) classified as
+                # 'collar' at 0.75 confidence because X/Y/Z matched
+                # easting/northing/elevation, the collar writer refused
+                # every row for having no hole_id, and the only thing the
+                # UI showed was 'xls_legacy_format_detected'.
+                #
+                # Joining the fallback set is the floor: the sheet is at
+                # least answerable in chat. The warning is the rest of
+                # it — the refusal has a reason and the geologist should
+                # not have to read a worker log to find it.
+                for label, classified_as, reason in wrote_nothing:
+                    if label not in unclassified:
+                        unclassified.append(label)
+                    warnings.append(_wrote_nothing_warning(
+                        label=label,
+                        classified_as=classified_as,
+                        reason=reason,
+                    ))
 
                 # ── Whatever did not classify ───────────────────────────
                 # A sheet that matches no drill type is not necessarily
@@ -909,6 +1070,7 @@ async def run_ingest_tabular(
                     )
                     if text_landed:
                         warnings.append(text_landed)
+                        text_passages += int(text_landed.get("passages") or 0)
             finally:
                 await conn.close()
 
@@ -936,10 +1098,21 @@ async def run_ingest_tabular(
         # dying inside the Hatchet run object.
         if run_id:
             # written is per-sheet-type; the run wrote what all the
-            # sheets wrote between them.
+            # sheets wrote between them — PLUS the passages the text
+            # fallback landed. Counting only typed silver rows made a
+            # successful text-only ingest report zero, which the
+            # Ingestion Runs page renders as "Finished — no data
+            # written" (IngestionRuns.tsx:79) directly beside this run's
+            # own warning saying it indexed N searchable passages. Both
+            # cannot be true; the passages are on disk.
+            #
+            # The status is unchanged by this: terminal_status() returns
+            # 'partial' when rows_written == 0 OR warnings exist, and a
+            # text-only run always has warnings. What changes is the
+            # headline, which stops contradicting the warning under it.
             rows_written = sum(
                 stats.get("written", 0) for stats in written.values()
-            )
+            ) + text_passages
             transitioned = await _progress.mark_completed_by_run(
                 run_id=run_id,
                 rows_written=rows_written,
