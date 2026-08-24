@@ -99,6 +99,47 @@ final class SecurityHeadersMiddleware
     }
 
     /**
+     * scheme://host[:port] for every object-storage disk that can mint a
+     * presigned URL the browser is asked to load.
+     *
+     * Reads the same disk config `StorageService` resolves through, so the
+     * allowlist cannot drift from the endpoint actually in use. A disk with
+     * no configured endpoint (AWS's own hosts, where the SDK derives the
+     * URL) contributes nothing here; `s3.amazonaws.com` is covered by
+     * STATIC_CONNECT_ORIGINS for connect-src and is added below for frames.
+     *
+     * @return list<string>
+     */
+    private static function objectStorageOrigins(): array
+    {
+        $origins = [];
+
+        foreach (['s3', 's3-bronze', 's3-exports'] as $disk) {
+            foreach (['endpoint', 'url'] as $key) {
+                $value = config("filesystems.disks.{$disk}.{$key}");
+                if (! is_string($value) || $value === '') {
+                    continue;
+                }
+                $parts = parse_url($value);
+                $scheme = $parts['scheme'] ?? null;
+                $host = $parts['host'] ?? null;
+                if ($scheme === null || $host === null) {
+                    continue;
+                }
+                $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+                $origins[] = "{$scheme}://{$host}{$port}";
+            }
+        }
+
+        // Presigned S3 downloads resolve to the bucket's own host even when
+        // no endpoint is configured — the same origin connect-src already
+        // allows for the export download path.
+        $origins[] = 'https://s3.amazonaws.com';
+
+        return array_values(array_unique($origins));
+    }
+
+    /**
      * Build the CSP string. Kept as a method (not constant) so the
      * `upgrade-insecure-requests` directive can be conditional on the
      * runtime environment.
@@ -141,6 +182,24 @@ final class SecurityHeadersMiddleware
             "font-src 'self' data: https://fonts.bunny.net",
             // MapLibre uses worker scripts from blob: URLs.
             "worker-src 'self' blob:",
+            // The Reports "Original" tab embeds the source PDF in an
+            // <iframe> pointed at a PRESIGNED object-storage URL, which is
+            // a different origin from the app. With no frame-src directive
+            // the browser falls back to `default-src 'self'` and refuses
+            // it — Chrome renders "This content is blocked. Contact the
+            // site owner to fix the issue.", which reads as a broken page
+            // rather than as a policy decision, and the tab has therefore
+            // never worked in deployment.
+            //
+            // Derived from the disk config for the same reason connect-src
+            // derives its basemap origins: an air-gapped deployment points
+            // its storage at its own endpoint (CLAUDE.md hard rule #8), and
+            // a hard-coded `*.blob.core.windows.net` would break there
+            // while looking correct here.
+            'frame-src '.implode(' ', array_merge(
+                ["'self'", 'blob:'],
+                self::objectStorageOrigins(),
+            )),
             "frame-ancestors 'none'",
             "base-uri 'self'",
             "form-action 'self'",
