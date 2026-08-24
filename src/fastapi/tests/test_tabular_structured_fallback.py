@@ -120,3 +120,41 @@ class TestWroteNothingWording:
             )
             assert w["detail"] and w["message"]
             assert w["code"] == "classified_but_nothing_written"
+
+
+class TestAssumedCrsIsVisible:
+    """Collars placed by guess must say so.
+
+    DEFAULT_SOURCE_EPSG is WGS 84 / UTM zone 13N. Nothing has ever sent
+    ingest_tabular a source_epsg -- the wizard's CRS donation injects a .prj
+    into a zipped bundle, and a .csv or .xls cannot carry one -- so every
+    collar ingested without a typed override was placed in zone 13 whatever
+    zone it was surveyed in. For the Alaska Peninsula that is ~2,500 km
+    east. `georef_method` recorded 'assumed' on the row; nothing rendered it.
+    """
+
+    def test_the_default_is_the_zone_the_warning_is_about(self):
+        from app.hatchet_workflows.ingest_tabular import DEFAULT_SOURCE_EPSG
+
+        # If this ever changes, the warning text goes with it.
+        assert DEFAULT_SOURCE_EPSG == 32613
+
+    def test_it_names_the_epsg_and_the_count(self):
+        from app.hatchet_workflows.ingest_tabular import _assumed_crs_warning
+
+        w = _assumed_crs_warning(32613, 24)
+
+        assert w["code"] == "collar_crs_assumed"
+        assert "24 collar(s)" in w["message"]
+        assert "EPSG:32613" in w["message"]
+        assert "EPSG:32613" in w["detail"]
+        # Actionable, and honest about why we cannot work it out ourselves.
+        assert "re-upload with the correct EPSG code" in w["detail"]
+        assert "Nothing in a CSV or spreadsheet declares a projection" in w["detail"]
+
+    def test_it_always_carries_a_detail(self):
+        from app.hatchet_workflows.ingest_tabular import _assumed_crs_warning
+
+        w = _assumed_crs_warning(26904, 1)
+        assert w["detail"] and w["message"]
+        assert "EPSG:26904" in w["detail"]

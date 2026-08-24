@@ -627,6 +627,25 @@ def _refusal_reason(result: Any) -> str | None:
     return None
 
 
+def _assumed_crs_warning(epsg: int, collars_written: int) -> dict[str, Any]:
+    """Say that these collars were placed by guess, and name the guess."""
+    return {
+        "code": "collar_crs_assumed",
+        "message": (
+            f"{collars_written} collar(s) placed using an assumed "
+            f"coordinate system (EPSG:{epsg})"
+        ),
+        "detail": (
+            f"No coordinate system was supplied with this upload, so its "
+            f"easting/northing were read as EPSG:{epsg}. If the holes were "
+            f"surveyed in a different projection they are now in the wrong "
+            f"place on the map — re-upload with the correct EPSG code to fix "
+            f"it. Nothing in a CSV or spreadsheet declares a projection, so "
+            f"this cannot be detected from the file."
+        ),
+    }
+
+
 def _wrote_nothing_warning(
     *, label: str, classified_as: str, reason: str | None,
     from_category: bool = False,
@@ -1241,6 +1260,30 @@ async def run_ingest_tabular(
         # what the Ingestion Runs page reads — which is precisely the
         # failure mark_completed_by_run's docstring cites as its reason for
         # existing, quoting THIS warning's text as the example.
+        # Coordinates written under a GUESSED coordinate system.
+        #
+        # DEFAULT_SOURCE_EPSG is 32613 -- WGS 84 / UTM zone 13N, which runs
+        # through Colorado. Nothing has ever sent ingest_tabular a
+        # source_epsg (the wizard's CRS donation works by injecting a .prj
+        # into a zipped bundle, and a .csv or .xls cannot carry one), so
+        # every collar the platform has ingested without a typed override
+        # was placed in zone 13 whatever zone it was surveyed in. For the
+        # Alaska Peninsula -- zone 4N -- that is about 2,500 km east, in
+        # open country a thousand miles from the hole.
+        #
+        # `georef_method` already records 'assumed' on the row, but nothing
+        # renders it, so the geologist had no way to know. This is the same
+        # failure the spatial parser's CRS refusal exists to stop, one
+        # workflow over; the difference is that a collar file is refused by
+        # this workflow only if it has no coordinates at all, so warning
+        # loudly is the honest move rather than dropping the rows.
+        #
+        # Fires only when collars were actually written: an interval-only
+        # upload has no coordinates for the assumption to damage.
+        collars_written = written.get("collar", {}).get("written", 0)
+        if epsg_assumed and collars_written:
+            warnings.append(_assumed_crs_warning(epsg, collars_written))
+
         orphans = sum(v.get("orphaned", 0) for v in written.values())
         if orphans:
             warnings.append({
