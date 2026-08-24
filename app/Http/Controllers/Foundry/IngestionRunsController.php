@@ -143,10 +143,23 @@ class IngestionRunsController extends Controller
             // "completed, zero rows written" render as an unqualified green
             // row with the explanation nowhere on the page.
             $isPartial = ($p['status'] ?? '') === 'partial';
-            if ($p['current_step'] === 'completed' && ! $isPartial) {
+            // A clean completion WITH a report row is rendered by the
+            // completed card below (built from silver.reports), so it is
+            // dropped here rather than said twice. A clean completion
+            // WITHOUT one — a shapefile, a drill CSV, a LAS file — used to
+            // be dropped by this same test, which erased the run from the
+            // page at the moment it succeeded: the completed card is
+            // reports-only, so success was the one outcome with no row
+            // anywhere. It now stays, rendered green, for the same 24 h
+            // window partial and failed rows already get.
+            if ($p['current_step'] === 'completed' && ! $isPartial
+                && ($p['report_id'] ?? null) !== null) {
                 continue;
             }
-            if (($isPartial || in_array((string) $p['current_step'], $terminalSteps, true))
+            $settled = $isPartial
+                || $p['current_step'] === 'completed'
+                || in_array((string) $p['current_step'], $terminalSteps, true);
+            if ($settled
                 && $p['started_at'] !== null
                 && strtotime((string) $p['started_at']) < time() - 86400) {
                 continue;
@@ -165,12 +178,19 @@ class IngestionRunsController extends Controller
                 // the current step (stage_pct 0..1 written by the worker's
                 // page-level relay). Falls back to the old step quantization
                 // when the worker hasn't reported sub-step progress.
-                'progress_pct' => $p['total_steps'] > 0
-                    ? (int) round(
-                        ((max(0, $p['step_index'] - 1) + (float) ($p['stage_pct'] ?? 0.0))
-                            / $p['total_steps']) * 100,
-                    )
-                    : 0,
+                //
+                // A run whose current_step IS 'completed' has no current
+                // step to be fractionally inside of — the formula rendered
+                // every finished row at (n-1)/n, so "Finished with
+                // warnings · 80%" sat on runs that had run to the end.
+                'progress_pct' => $p['current_step'] === 'completed'
+                    ? 100
+                    : ($p['total_steps'] > 0
+                        ? (int) round(
+                            ((max(0, $p['step_index'] - 1) + (float) ($p['stage_pct'] ?? 0.0))
+                                / $p['total_steps']) * 100,
+                        )
+                        : 0),
                 'has_real_progress' => true,
                 'failed' => $p['failed_at'] !== null,
                 'error_text' => $p['error_text'],
@@ -266,11 +286,30 @@ class IngestionRunsController extends Controller
             return strcmp($b['uploaded_at'] ?? '', $a['uploaded_at'] ?? '');
         });
 
+        // Settled rows (completed / partial / failed…) ride in the same list
+        // for their 24 h grace window, but they are not IN FLIGHT: the header
+        // count, the stat tile and — importantly — the page's poll cadence
+        // all read this total, and counting settled rows kept the 5 s fast
+        // poll running for a day after everything had finished.
+        //
+        // Both fields are consulted because rows from before the status
+        // column existed (2026-08-21) carry current_step='completed' with a
+        // NULL status — read by the mapper as 'queued', which would count a
+        // long-finished run as moving forever.
+        $settledStatuses = ['completed', 'partial', 'failed', 'cancelled', 'timed_out'];
+        $settledSteps = ['completed', 'failed', 'cancelled', 'timed_out'];
+        $stillMoving = count(array_filter(
+            $inFlight,
+            static fn (array $r): bool => ! in_array((string) $r['status'], $settledStatuses, true)
+                && ! in_array((string) $r['stage'], $settledSteps, true)
+                && ! (bool) $r['failed'],
+        ));
+
         return [
             'in_flight' => $inFlight,
             'completed' => $completedRows,
             'totals' => [
-                'in_flight' => count($inFlight),
+                'in_flight' => $stillMoving,
                 'completed' => count($completedRows),
             ],
         ];

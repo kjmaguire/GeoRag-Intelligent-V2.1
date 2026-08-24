@@ -222,14 +222,84 @@ final class IngestionRunsControllerTest extends TestCase
             ->assertJsonPath('runs.in_flight.0.progress_pct', 32);
     }
 
-    public function test_progress_row_marked_completed_drops_out_of_in_flight(): void
+    public function test_a_clean_non_report_completion_stays_visible_but_uncounted(): void
     {
+        // A shapefile / drill CSV / LAS completion has no silver.reports row,
+        // so the "completed" card cannot show it. It used to be dropped from
+        // in_flight too — success was the one outcome with no row anywhere on
+        // the page. It now stays listed (rendered green) for the 24 h grace
+        // window, while the IN FLIGHT total — which drives the stat tile and
+        // the page's poll cadence — counts only rows still moving.
+        $key = "spatial/{$this->project->project_id}/20260824_990000_geology.zip";
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $this->project->project_id,
+            'minio_key' => $key,
+            'filename' => 'geology.zip',
+            'current_step' => 'completed',
+            'step_index' => 5,
+            'total_steps' => 5,
+            'status' => 'completed',
+            'rows_written' => 170,
+            'started_at' => now(),
+            'updated_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk()
+            ->assertJsonPath('runs.totals.in_flight', 0)
+            ->assertJsonPath('runs.in_flight.0.stage', 'completed')
+            ->assertJsonPath('runs.in_flight.0.status', 'completed')
+            ->assertJsonPath('runs.in_flight.0.rows_written', 170)
+            // Not (n-1)/n: a finished run has no current step to be
+            // fractionally inside of. "Completed · 80%" reads as stuck.
+            ->assertJsonPath('runs.in_flight.0.progress_pct', 100);
+    }
+
+    public function test_a_clean_pdf_completion_is_not_listed_twice(): void
+    {
+        // A PDF completion carries its report_id on the progress row and is
+        // rendered by the completed card (silver.reports). Listing it in the
+        // runs card too would say everything twice.
+        $reportId = $this->insertReport('Done Report', passages: 1, embedded: 1);
         $key = "reports/{$this->project->project_id}/20260524_990000_Done.pdf";
         DB::table('silver.ingest_progress')->insert([
             'workspace_id' => $this->workspaceId,
             'project_id' => $this->project->project_id,
             'minio_key' => $key,
             'filename' => 'Done.pdf',
+            'current_step' => 'completed',
+            'step_index' => 5,
+            'total_steps' => 5,
+            'status' => 'completed',
+            'report_id' => $reportId,
+            'started_at' => now(),
+            'updated_at' => now(),
+            'completed_at' => now(),
+        ]);
+
+        $this->actingAs($this->user)
+            ->getJson("/projects/{$this->project->slug}/ingestion-runs.json")
+            ->assertOk()
+            ->assertJsonPath('runs.totals.in_flight', 0)
+            ->assertJsonCount(0, 'runs.in_flight')
+            ->assertJsonPath('runs.totals.completed', 1);
+    }
+
+    public function test_a_legacy_completed_row_with_null_status_is_not_counted_as_moving(): void
+    {
+        // Rows from before the status column existed (2026-08-21) carry
+        // current_step='completed' with a NULL status, which the mapper
+        // reads as 'queued'. Counting those as in flight would pin the
+        // 5-second fast poll on projects whose runs finished months ago.
+        $key = "spatial/{$this->project->project_id}/20260524_990000_old.zip";
+        DB::table('silver.ingest_progress')->insert([
+            'workspace_id' => $this->workspaceId,
+            'project_id' => $this->project->project_id,
+            'minio_key' => $key,
+            'filename' => 'old.zip',
             'current_step' => 'completed',
             'step_index' => 5,
             'total_steps' => 5,
