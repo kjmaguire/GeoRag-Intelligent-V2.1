@@ -15,6 +15,7 @@ import pytest
 from georag_geoparsers._sheet_classifier import classify_sheet_type
 
 from app.hatchet_workflows.ingest_tabular import (
+    _category_corrected_warning,
     _read_delimited_rows,
     _wrote_nothing_warning,
 )
@@ -97,8 +98,52 @@ class TestWroteNothingWording:
         )
         assert "matched the collar layout" not in w["detail"]
         assert "uploaded to the collar category" in w["detail"]
-        # The actionable half: change the category, not the column names.
-        assert "re-upload it under the category that matches" in w["detail"]
+        # The headers HAVE been re-checked by the time this is emitted, so
+        # the message reports that verdict instead of speculating.
+        assert "matched none" in w["detail"]
+        # UploadController requires a category on every upload, so this
+        # advice was never followable and must never come back.
+        assert "leave the category off" not in w["detail"]
+
+    def test_forced_and_headers_agree_names_the_gap(self):
+        # Three of four collar columns present: the classifier agrees this
+        # IS a collar sheet, so the missing column is the whole problem.
+        w = _wrote_nothing_warning(
+            label="collars_no_elev.csv",
+            classified_as="collar",
+            reason="missing required column mapping(s): 'elevation'",
+            from_category=True,
+            headers_matched="collar",
+        )
+        assert "do match the collar layout" in w["detail"]
+        assert "add them and re-upload" in w["detail"]
+
+    def test_headers_agree_but_no_columns_named_does_not_point_upward(self):
+        # All headers map and every row was refused individually: there is
+        # no file-level reason, so "the missing column(s) named above" would
+        # point at a sentence that names none. The message must not tell
+        # the user to add columns they already have.
+        w = _wrote_nothing_warning(
+            label="collars_blank_ids.csv",
+            classified_as="collar",
+            reason=None,
+            from_category=True,
+            headers_matched="collar",
+        )
+        assert "named above" not in w["detail"]
+        assert "rows themselves were refused" in w["detail"]
+
+    def test_forced_but_retry_also_refused_reports_both(self):
+        w = _wrote_nothing_warning(
+            label="mystery.csv",
+            classified_as="collar",
+            reason="missing required column mapping(s): 'hole_id'",
+            from_category=True,
+            headers_matched="survey",
+            retry_reason="every row's azimuth was unparseable",
+        )
+        assert "match the survey layout instead" in w["detail"]
+        assert "refused again: every row's azimuth was unparseable" in w["detail"]
 
     def test_classifier_match_still_says_so(self):
         w = _wrote_nothing_warning(
@@ -120,6 +165,36 @@ class TestWroteNothingWording:
             )
             assert w["detail"] and w["message"]
             assert w["code"] == "classified_but_nothing_written"
+
+
+class TestCategoryCorrected:
+    """A wrong category becomes landed rows, and the message says so."""
+
+    def test_names_both_types_and_the_count(self):
+        w = _category_corrected_warning(
+            label="downhole_surveys.csv",
+            forced_as="collar",
+            matched="survey",
+            written=240,
+            orphaned=0,
+        )
+        assert w["code"] == "category_corrected"
+        assert "uploaded to the collar category" in w["detail"]
+        assert "match the survey layout" in w["detail"]
+        assert "240 survey row(s) were written" in w["detail"]
+        assert w["message"] and w["detail"]
+
+    def test_orphans_are_reported_not_hidden(self):
+        # Rows waiting on their collars still count as landed — the
+        # orphaned_intervals warning beside this one says how to finish.
+        w = _category_corrected_warning(
+            label="lith.csv",
+            forced_as="samples",
+            matched="lithology",
+            written=0,
+            orphaned=88,
+        )
+        assert "88 row(s) are waiting for their collars" in w["detail"]
 
 
 class TestAssumedCrsIsVisible:

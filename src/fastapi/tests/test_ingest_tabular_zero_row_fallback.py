@@ -149,6 +149,18 @@ class _Env:
         self.it = module
         self.sheets: list[_SheetMeta] = []
         self.parsed: dict[str, _ParseResult] = {}
+        #: Keyed (label, sheet_type) and consulted FIRST. The category
+        #: retry parses the same file twice under two types, so a stub
+        #: keyed by label alone cannot give the two attempts different
+        #: results.
+        self.parsed_by_type: dict[tuple[str, str], _ParseResult] = {}
+        #: What the post-refusal header re-check will be told the headers
+        #: classify as. Injected, like everything else here: the classifier
+        #: itself is georag_geoparsers' contract, measured there against
+        #: the real files.
+        self.reclassified: tuple[str, float] = ("unknown", 0.0)
+        #: Every (sheet_type, label) pair _parse_one was asked for.
+        self.parse_calls: list[tuple[str, str]] = []
         self.completed: list[dict] = []
         self.broadcast: list[dict] = []
         self.failed: list[dict] = []
@@ -241,8 +253,26 @@ def env(monkeypatch):
         sys.modules, "georag_geoparsers.xlsx_parser", parser_mod,
     )
 
+    # The retry imports classify_sheet_type at call time, exactly as the
+    # workbook branch imports enumerate_sheets. Same treatment: the verdict
+    # is an INPUT here, not the thing under test.
+    classifier_mod = types.ModuleType("georag_geoparsers._sheet_classifier")
+    classifier_mod.classify_sheet_type = (
+        lambda _headers: tuple(fixture.reclassified)
+    )
+    monkeypatch.setitem(
+        sys.modules, "georag_geoparsers._sheet_classifier", classifier_mod,
+    )
+    # ...and the header read the retry feeds it, so no test depends on what
+    # _FakeStore happened to write into the temp file.
+    monkeypatch.setattr(it, "_csv_headers", lambda _path: ["stubbed"])
+
     def _parse_one(path: str, sheet_type: str, sheet_name: str | None) -> Any:
         label = sheet_name or Path(path).name
+        fixture.parse_calls.append((sheet_type, label))
+        typed = fixture.parsed_by_type.get((label, sheet_type))
+        if typed is not None:
+            return typed
         assert label in fixture.parsed, (
             f"the workflow parsed {label!r} as {sheet_type!r}, which this "
             f"test did not set up"
@@ -703,3 +733,242 @@ class TestOrphanedIntervalsAreNotTextIndexed:
             "the zero-write condition must also exclude orphaned sheets, or an "
             f"interval file awaiting its collars gets text-indexed. Found: {found}"
         )
+
+
+# ---------------------------------------------------------------------------
+# F3 — a category-forced refusal asks the headers before giving up
+# ---------------------------------------------------------------------------
+
+class TestCategoryForcedRetry:
+    """The wizard's `.csv` default is `collars`, so a survey file dropped
+    into the wizard reaches the collar writer TOLD it is collars, with the
+    classifier skipped. When that writer refuses every row, the workflow now
+    runs the classifier it skipped and, on a different verdict, writes the
+    file as what its headers say it is — instead of landing a drill table as
+    prose plus a generic attribute table.
+    """
+
+    pytestmark = pytest.mark.asyncio
+
+    @staticmethod
+    def _stub_writers(monkeypatch, module, calls: list) -> None:
+        """Both writers report exactly what they were handed.
+
+        The real writers validate record shapes the parsers produce;
+        fabricating those here would test the fabrication. What is under
+        test is which writer the workflow calls, with which records.
+        """
+        async def _collars(_conn, **kw):
+            calls.append(("collar", list(kw["records"])))
+            return {
+                "written": len(kw["records"]), "skipped": 0,
+                "orphaned": 0, "replaced": 0,
+            }
+
+        async def _intervals(_conn, **kw):
+            calls.append((kw["sheet_type"], list(kw["records"])))
+            return {
+                "written": len(kw["records"]), "skipped": 0,
+                "orphaned": 0, "replaced": 0,
+            }
+
+        monkeypatch.setattr(module, "_write_collars", _collars)
+        monkeypatch.setattr(module, "_write_intervals", _intervals)
+
+    async def test_a_wrong_category_is_corrected_by_the_headers(
+        self, env, monkeypatch,
+    ) -> None:
+        calls: list = []
+        self._stub_writers(monkeypatch, env.it, calls)
+        env.parsed_by_type[("downhole.csv", "collar")] = _ParseResult(
+            skipped_details=_missing_required(
+                "'northing', 'easting', 'elevation'",
+            ),
+        )
+        env.parsed_by_type[("downhole.csv", "survey")] = _ParseResult(
+            records=[{"hole_id": "36-1085", "depth": d} for d in (0, 50, 100)],
+        )
+        env.reclassified = ("survey", 1.0)
+
+        out = await env.run("downhole.csv", sheet_type="collar")
+
+        corrected = env.warning("category_corrected")
+        assert "uploaded to the collar category" in corrected["detail"]
+        assert "3 survey row(s) were written" in corrected["detail"]
+        # Landed as typed rows means NOT landed as prose beside them.
+        assert out.unclassified == []
+        assert not any(
+            w.get("code") == "classified_but_nothing_written"
+            for w in env.warnings
+        )
+        assert ("survey", 3) in [(t, len(r)) for t, r in calls]
+        assert env.rows_written == 3
+
+    async def test_an_unmatchable_file_reports_the_recheck(
+        self, env, monkeypatch,
+    ) -> None:
+        """FA16099231_edit.csv: a 66-column assay certificate on the
+        wizard's collar default. No drill layout matches it, so the
+        table+text landing stands — and the warning now says the headers
+        were checked, instead of advising a category change that cannot
+        help or a category omission the API does not accept."""
+        env.parsed_by_type[("FA16099231_edit.csv", "collar")] = _ParseResult(
+            skipped_details=_missing_required(
+                "'northing', 'easting', 'hole_id', 'elevation'",
+            ),
+        )
+        env.reclassified = ("unknown", 0.0)
+        _text_fallback(monkeypatch, env.it, passages=7)
+
+        async def _rows_landed(*_a, **_kw):
+            return {"code": "unclassified_kept_as_table", "rows": 100,
+                    "detail": "kept"}
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_rows", _rows_landed)
+
+        out = await env.run("FA16099231_edit.csv", sheet_type="collar")
+
+        warning = env.warning("classified_but_nothing_written")
+        assert "matched none" in warning["detail"]
+        assert "leave the category off" not in warning["detail"]
+        assert out.unclassified == ["FA16099231_edit.csv"]
+
+    async def test_headers_agreeing_with_the_category_skip_the_retry(
+        self, env, monkeypatch,
+    ) -> None:
+        """Three of four collar columns: the classifier agrees this IS a
+        collar sheet, so re-running the same writer would refuse the same
+        way. The message names the gap instead."""
+        env.parsed_by_type[("collars_no_elev.csv", "collar")] = _ParseResult(
+            skipped_details=_missing_required("'elevation'"),
+        )
+        env.reclassified = ("collar", 0.75)
+        _text_fallback(monkeypatch, env.it, passages=1)
+
+        async def _rows_landed(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_rows", _rows_landed)
+
+        await env.run("collars_no_elev.csv", sheet_type="collar")
+
+        warning = env.warning("classified_but_nothing_written")
+        assert "do match the collar layout" in warning["detail"]
+        # One parse only — the retry must not re-run the refused type.
+        assert env.parse_calls == [("collar", "collars_no_elev.csv")]
+
+    async def test_a_failed_retry_reports_both_refusals(
+        self, env, monkeypatch,
+    ) -> None:
+        env.parsed_by_type[("mystery.csv", "collar")] = _ParseResult(
+            skipped_details=_missing_required("'hole_id'"),
+        )
+        env.parsed_by_type[("mystery.csv", "survey")] = _ParseResult(
+            skipped_details=_missing_required("'azimuth'"),
+        )
+        env.reclassified = ("survey", 0.8)
+        _text_fallback(monkeypatch, env.it, passages=2)
+
+        async def _rows_landed(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_rows", _rows_landed)
+
+        out = await env.run("mystery.csv", sheet_type="collar")
+
+        warning = env.warning("classified_but_nothing_written")
+        assert "match the survey layout instead" in warning["detail"]
+        assert "refused again" in warning["detail"]
+        assert "'azimuth'" in warning["detail"]
+        # The failed retry does not un-land the fallback.
+        assert out.unclassified == ["mystery.csv"]
+
+    async def test_a_correction_drops_the_wrong_readings_notes(
+        self, env, monkeypatch,
+    ) -> None:
+        """The forced attempt's parser notes describe the file read as a
+        type the correction says it never was, and both attempts re-detect
+        the same file-level facts (encoding, delimiter). Keeping both spans
+        would show every note twice and collar-flavoured notes about a
+        survey file."""
+        calls: list = []
+        self._stub_writers(monkeypatch, env.it, calls)
+        env.parsed_by_type[("downhole.csv", "collar")] = _ParseResult(
+            warnings=[
+                {"code": "encoding_non_utf8", "detail": "read as latin-1"},
+                {"code": "collar_dip_convention", "detail": "collar-only note"},
+            ],
+            skipped_details=_missing_required("'hole_id'"),
+        )
+        env.parsed_by_type[("downhole.csv", "survey")] = _ParseResult(
+            records=[{"hole_id": "36-1085", "depth": 0}],
+            warnings=[
+                {"code": "encoding_non_utf8", "detail": "read as latin-1"},
+            ],
+        )
+        env.reclassified = ("survey", 1.0)
+
+        await env.run("downhole.csv", sheet_type="collar")
+
+        codes = [w.get("code") for w in env.warnings]
+        assert codes.count("encoding_non_utf8") == 1
+        assert "collar_dip_convention" not in codes
+        assert "category_corrected" in codes
+
+    async def test_a_failed_retry_does_not_double_report_file_facts(
+        self, env, monkeypatch,
+    ) -> None:
+        """Both attempts parsed the same bytes; the encoding note must
+        appear once however many writers refused the file."""
+        env.parsed_by_type[("mystery.csv", "collar")] = _ParseResult(
+            warnings=[
+                {"code": "encoding_non_utf8", "detail": "read as latin-1"},
+            ],
+            skipped_details=_missing_required("'hole_id'"),
+        )
+        env.parsed_by_type[("mystery.csv", "survey")] = _ParseResult(
+            warnings=[
+                {"code": "encoding_non_utf8", "detail": "read as latin-1"},
+                {"code": "survey_only_note", "detail": "new information"},
+            ],
+            skipped_details=_missing_required("'azimuth'"),
+        )
+        env.reclassified = ("survey", 0.8)
+        _text_fallback(monkeypatch, env.it, passages=2)
+
+        async def _rows_landed(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_rows", _rows_landed)
+
+        await env.run("mystery.csv", sheet_type="collar")
+
+        codes = [w.get("code") for w in env.warnings]
+        assert codes.count("encoding_non_utf8") == 1
+        # Dedup keeps what the retry newly said.
+        assert "survey_only_note" in codes
+
+    async def test_a_workbook_sheet_is_never_treated_as_forced(
+        self, env, monkeypatch,
+    ) -> None:
+        """A stray sheet_type on a workbook input must not turn a
+        classified sheet's refusal into a "category" story: workbook
+        sheets are always classified per sheet."""
+        env.sheets = [_SheetMeta("Sheet1", "collar", rows=24)]
+        env.parsed["Sheet1"] = _ParseResult(
+            skipped_details=_missing_required("'hole_id'"),
+        )
+        env.reclassified = ("survey", 1.0)
+        _text_fallback(monkeypatch, env.it, passages=24)
+
+        async def _rows_landed(*_a, **_kw):
+            return None
+
+        monkeypatch.setattr(env.it, "_land_unclassified_as_rows", _rows_landed)
+
+        await env.run("stray_hint.xls", sheet_type="collar")
+
+        warning = env.warning("classified_but_nothing_written")
+        # The classified wording, not the category wording — and no retry.
+        assert "matched the collar layout" in warning["detail"]
+        assert env.parse_calls == [("collar", "Sheet1")]
