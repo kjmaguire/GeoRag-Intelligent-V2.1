@@ -292,11 +292,13 @@ jobs:
     # (See the 2026-08-11 note this
     # replaced, which was sized for the pre-split single job.)
     #
-    # 2026-08-24: 40 -> 45 to absorb the Postgres gate's bounded wait (it
-    # can ride out a Starting/Updating server for up to 600s before the
-    # migrate chain begins; the gate step carries its own timeout so a
-    # wedged control plane fails that step, not this budget).
-    timeout-minutes: 45
+    # 2026-08-24: 40 -> 55. The Postgres gate carries its own 12-minute
+    # step timeout (it can ride out a Starting/Updating server for up to
+    # 600s before the migrate chain begins), and this budget has to fund
+    # that cap ON TOP of the ~40 the pre-gate chain was already sized
+    # for — funding it at less would push a slow-gate deploy into a
+    # job-level timeout mid-rollout instead of a step-level failure.
+    timeout-minutes: 55
     environment:
       name: production
       url: https://laravel-octane-cc.lemonmushroom-67c93108.canadacentral.azurecontainerapps.io
@@ -347,7 +349,19 @@ jobs:
           GATE_RESOURCE_GROUP: ${{ env.AZURE_RG }}
           GATE_PG_SERVER: ${{ env.PG_SERVER }}
           GATE_RUN_ID: ${{ github.run_id }}
-        run: bash deploy/azure/containerapps/scripts/cd-pg-gate.sh
+        run: |
+          # The checkout above is the DEPLOYED sha, not main — a hotfix
+          # or rollback redeploy of an older sha (workflow_dispatch -f
+          # sha=...) checks out a tree that predates this script. Skip
+          # the gate there rather than blocking an emergency redeploy on
+          # a missing file: the old behaviour (an in-window deploy dies
+          # at the migrate step) is the worst that restores.
+          GATE=deploy/azure/containerapps/scripts/cd-pg-gate.sh
+          if [ ! -f "$GATE" ]; then
+            echo "::warning::$GATE not present in this sha (pre-gate tree) — skipping the Postgres gate"
+            exit 0
+          fi
+          bash "$GATE"
 
       # ── Scan the images that are actually about to ship ────────────────
       # docker-build.yml already runs a blocking Trivy CRITICAL scan and
@@ -438,6 +452,15 @@ jobs:
           echo "pending" > /tmp/rollback/migrate-exec-id
           EXEC_ID=$(az containerapp job start -g "$AZURE_RG" -n laravel-migrate-job \
             --query "name" -o tsv)
+          # A zero exit with EMPTY output (throttled --query render) must
+          # not overwrite "pending" with "": an execution likely exists
+          # that we cannot name, and the rollback guard keys its refusal
+          # off the marker. Fail here rather than polling a nameless
+          # execution for 660s.
+          if [ -z "$EXEC_ID" ]; then
+            echo "::error::job start returned no execution name — a migration may be running that this run cannot identify"
+            exit 1
+          fi
           echo "$EXEC_ID" > /tmp/rollback/migrate-exec-id
 
           # Read the deadline off the job instead of hardcoding one. The poll
@@ -685,7 +708,7 @@ jobs:
             # we cannot query by name — same refusal as Running, for the
             # same reason: apps are still on their pre-deploy images, so
             # doing nothing is the safe state.
-            if [ "$EXEC_ID" = "pending" ]; then
+            if [ "$EXEC_ID" = "pending" ] || [ -z "$EXEC_ID" ]; then
               echo "::error::a migration start was issued but its execution id was lost — refusing to roll back images while a migration may be running"
               echo "Check the latest execution by hand, then decide:"
               echo "  az containerapp job execution list -g $AZURE_RG -n laravel-migrate-job -o table"

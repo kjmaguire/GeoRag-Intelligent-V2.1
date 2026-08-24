@@ -351,6 +351,42 @@ check_gate_stopped_in_window_pst() {
 }
 check check_gate_stopped_in_window_pst
 
+check_gate_disabled_in_window() {
+  # Disabled is a normal post-stop state — shutdown-sweep.sh accepts it
+  # as "the sweep got what it came for" — so it must get the window
+  # story, not the generic cannot-deploy arm.
+  run gate_disabled_in_window "$GATE" "GATE_NOW_EPOCH=$GATE_IN_PDT" \
+      FAKE_AZ_PG_STATE=Disabled
+  assert_rc 1
+  assert_says "nightly cost window"
+  assert_silent_about "cannot deploy against it"
+}
+check check_gate_disabled_in_window
+
+check_gate_stopped_during_startup_grace() {
+  # 13:10Z in August is 06:10 US-Pacific: the startup sweep fired at
+  # 06:00 and budgets ~20 min of tiered waits, so a still-Stopped server
+  # here is the sweep mid-run — window story, not an incident page.
+  run gate_stopped_during_startup_grace "$GATE" \
+      "GATE_NOW_EPOCH=$(date -u -d "2026-08-21T13:10:00Z" +%s)" \
+      FAKE_AZ_PG_STATE=Stopped
+  assert_rc 1
+  assert_says "nightly cost window"
+  assert_silent_about "real incident"
+}
+check check_gate_stopped_during_startup_grace
+
+check_gate_stopped_after_startup_grace() {
+  # 13:40Z is 06:40 US-Pacific — past the sweep's budget. Stopped here
+  # is a startup failure and must page as one.
+  run gate_stopped_after_startup_grace "$GATE" \
+      "GATE_NOW_EPOCH=$(date -u -d "2026-08-21T13:40:00Z" +%s)" \
+      FAKE_AZ_PG_STATE=Stopped
+  assert_rc 1
+  assert_says "OUTSIDE the nightly cost window"
+}
+check check_gate_stopped_after_startup_grace
+
 check_gate_stopped_outside_window() {
   run gate_stopped_outside_window "$GATE" "GATE_NOW_EPOCH=$GATE_OUT" \
       FAKE_AZ_PG_STATE=Stopped GATE_RUN_ID=424242

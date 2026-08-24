@@ -89,9 +89,17 @@ else
   OFFSET_HOURS=-8   # PST
 fi
 
-LOCAL_HOUR=$((10#$(date -u -d "@$(( NOW + OFFSET_HOURS * 3600 ))" +%H)))
+LOCAL_EPOCH=$(( NOW + OFFSET_HOURS * 3600 ))
+LOCAL_HOUR=$((10#$(date -u -d "@${LOCAL_EPOCH}" +%H)))
+LOCAL_MIN=$((10#$(date -u -d "@${LOCAL_EPOCH}" +%M)))
+# 06:00-06:30 local still counts as the window: the startup sweep
+# budgets up to ~20 minutes of tiered waits after its 06:00 firing
+# (deploy/azure/alerts/create-alerts.sh pads its suppression to :30 for
+# the same reason), so a server still Stopped at 06:05 is the sweep
+# mid-run, not an incident.
 IN_WINDOW=no
-if [ "$LOCAL_HOUR" -ge 23 ] || [ "$LOCAL_HOUR" -lt 6 ]; then
+if [ "$LOCAL_HOUR" -ge 23 ] || [ "$LOCAL_HOUR" -lt 6 ] \
+   || { [ "$LOCAL_HOUR" -eq 6 ] && [ "$LOCAL_MIN" -lt 30 ]; }; then
   IN_WINDOW=yes
 fi
 
@@ -132,9 +140,12 @@ case "$STATE" in
     exit 1
     ;;
 
-  Stopped|Stopping)
+  Stopped|Stopping|Disabled)
+    # Disabled is a normal post-stop state (shutdown-sweep.sh accepts
+    # Stopped|Stopping|Disabled as "the sweep got what it came for"), so
+    # it gets the same window-vs-incident story, not the generic arm.
     if [ "$IN_WINDOW" = "yes" ]; then
-      echo "::error::${PG_SERVER} is ${STATE}: the platform is inside its nightly cost window (23:00-06:00 US-Pacific). Nothing is wrong -- re-run this deploy after the startup sweep has fired (06:00 US-Pacific = 13:00 UTC in PDT, 14:00 UTC in PST)${RUN_ID:+:  gh run rerun ${RUN_ID}}"
+      echo "::error::${PG_SERVER} is ${STATE}: the platform is inside its nightly cost window (23:00-06:00 US-Pacific). Nothing is wrong -- re-run this deploy after the startup sweep has finished (it fires at 06:00 US-Pacific = 13:00 UTC in PDT, 14:00 UTC in PST, and budgets ~20 min of waits)${RUN_ID:+:  gh run rerun ${RUN_ID}}"
       log "The shutdown sweep also scales the HTTP tier to zero, so deploying"
       log "mid-window cannot pass the post-deploy smoke even with the database"
       log "up -- which is why this gate stops here instead of starting the"
