@@ -388,7 +388,9 @@ export default function FoundryDataImportWizard() {
         // Matched by File identity, never by name: two folders in one drop
         // can each hold a `plan.dxf`, and only the object the grouper saw
         // beside the donor is the recipient.
-        const wktCrsByFile = new Map(wktRecipients.map((r) => [r.file, r.crs]));
+        const wktCrsByFile = new Map<File, DonatedCrs>(
+            wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]),
+        );
         for (const f of passthrough) {
             if (ACCEPTED_EXTENSIONS.includes(fileExtension(f.name))) {
                 accepted.push({

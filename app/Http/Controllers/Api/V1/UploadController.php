@@ -46,6 +46,17 @@ class UploadController extends Controller
 
     private const EPSG_MAX = 32767;
 
+    /**
+     * Ceiling for `source_crs_wkt`, in CHARACTERS — a string rule, not a
+     * file rule. Named for the same reason as the EPSG bounds above: the
+     * size-cap guard greps this file for literal `'max:<5+ digits>'` and a
+     * character ceiling should not have to weaken it. Mirrors the
+     * max_length on IngestSpatialInput.source_crs_wkt; real `.prj` files
+     * are under 4 KB, WKT2 with axis metadata can run long, and 64 KiB is
+     * far above both while still refusing a pasted novel.
+     */
+    private const SOURCE_CRS_WKT_MAX_CHARS = 65536;
+
     public function __construct(
         private readonly ShadowRouter $shadowRouter,
         private readonly HatchetDispatchThrottle $dispatchThrottle,
@@ -264,7 +275,13 @@ class UploadController extends Controller
             // deliberately does no WKT→EPSG of its own (shapefileBundle.ts,
             // crsLabel). Ignored by the workflow whenever source_epsg is
             // also present: a typed code outranks a found copy.
-            'source_crs_wkt' => ['nullable', 'string', 'max:65536'],
+            //
+            // Concatenated, not a literal: UploadSizeCapConsistencyTest
+            // forbids any literal five-plus-digit `max:` in this file. That
+            // trap exists for FILE rules, where Laravel measures `max` in
+            // kilobytes — this is a string rule measured in characters, but
+            // the regex cannot tell, and the named constant reads better.
+            'source_crs_wkt' => ['nullable', 'string', 'max:'.self::SOURCE_CRS_WKT_MAX_CHARS],
         ], [
             // store() validates inline rather than through a FormRequest, so
             // there is no messages() to hang these on. Without them an

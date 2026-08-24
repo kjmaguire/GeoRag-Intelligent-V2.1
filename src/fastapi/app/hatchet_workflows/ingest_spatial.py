@@ -203,35 +203,31 @@ class IngestSpatialInput(BaseModel):
 def _epsg_from_wkt(wkt: str) -> tuple[int | None, str | None]:
     """Resolve donated `.prj` text to (EPSG int, CRS name), or (None, why).
 
-    pyproj is the resolver on purpose: it is what reads every other `.prj`
-    in this pipeline, and real donor files are ESRI-style WKT with no
-    AUTHORITY clause (the RedStar GeoPoints_2005.prj names
-    "NAD_1983_UTM_Zone_4N" and nothing else), which pyproj matches against
-    proj.db's alias tables at its DEFAULT confidence — measured, that WKT
-    answers 26904 with no fallback needed.
+    The pyproj work lives in georag_geoparsers.spatial_parser
+    (epsg_from_wkt_text) — pyproj is that package's declared dependency,
+    it is what reads every other `.prj` in this pipeline, and the
+    default-confidence-only rule (min_confidence=25 measurably mis-matched
+    a custom grid to EPSG:26929) is documented there.
 
-    No min_confidence fallback, deliberately: at min_confidence=25 pyproj
-    matched a custom grid (the same WKT with its central meridian moved to
-    -158.123) to EPSG:26929 — a confident answer whose parameters differ
-    from the file's. A custom mine grid must come back unresolved and be
-    typed by a human, not rounded to the nearest UTM zone.
-
-    The result is bounds-checked against the same 1024..32767 window as
-    source_epsg itself -- silver.spatial_features.crs_epsg_native carries a
-    CHECK, and a resolution outside it must read as "unresolved", not as an
-    INSERT failure an hour later.
+    This wrapper owns the platform halves: unreadable uploader-supplied
+    text is an answer, not an error; and the result is bounds-checked
+    against the same 1024..32767 window as source_epsg itself --
+    silver.spatial_features.crs_epsg_native carries a CHECK, and a
+    resolution outside it must read as "unresolved", not as an INSERT
+    failure an hour later.
     """
     try:
-        from pyproj import CRS  # noqa: PLC0415
+        from georag_geoparsers.spatial_parser import (  # noqa: PLC0415
+            epsg_from_wkt_text,
+        )
 
-        crs = CRS.from_wkt(wkt)
+        epsg, name = epsg_from_wkt_text(wkt)
     except Exception as exc:  # noqa: BLE001 — donated text is uploader-supplied; unreadable is an answer, not an error
         log.warning("ingest_spatial: donated WKT unreadable: %s", exc)
         return None, None
-    epsg = crs.to_epsg()
     if epsg is None or not (1024 <= epsg <= 32767):
-        return None, crs.name
-    return int(epsg), crs.name
+        return None, name
+    return int(epsg), name
 
 
 class IngestSpatialOut(BaseModel):

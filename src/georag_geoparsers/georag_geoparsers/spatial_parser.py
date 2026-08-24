@@ -800,6 +800,28 @@ def _score_and_warn(gdf, path: str, warnings_out: list[dict]) -> tuple[float | N
     return crs_score, crs_reason
 
 
+def epsg_from_wkt_text(wkt: str) -> tuple[int | None, str | None]:
+    """Resolve `.prj` text to (EPSG code, CRS name) with pyproj.
+
+    Default identify confidence ONLY. At ``min_confidence=25`` pyproj
+    matched a custom grid (the RedStar donor WKT with its central meridian
+    moved to -158.123) to EPSG:26929 — a confident answer whose parameters
+    differ from the file's. A custom mine grid must come back unresolved
+    (``(None, its name)``) and be typed by a human, not rounded to the
+    nearest UTM zone. The real donor shape — ESRI-style WKT with no
+    AUTHORITY clause, ``"NAD_1983_UTM_Zone_4N"`` — resolves at default
+    confidence through proj.db's alias tables; measured: 26904.
+
+    Raises whatever pyproj raises on text it cannot read at all — the
+    caller decides what a refusal means (ingest_spatial logs it and
+    carries on unplaced).
+    """
+    from pyproj import CRS  # noqa: PLC0415
+
+    crs = CRS.from_wkt(wkt)
+    return crs.to_epsg(), crs.name
+
+
 def _resolve_crs(gdf, ext: str, path: str, source_epsg: int | None,
                  warnings_out: list[dict]):
     """Decide a frame's CRS, before any reprojection. Returns (gdf, decision).

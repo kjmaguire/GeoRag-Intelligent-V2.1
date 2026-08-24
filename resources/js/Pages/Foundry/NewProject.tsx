@@ -366,7 +366,9 @@ export default function FoundryNewProject() {
         // here — it is an attribute table and comes back in `passthrough`.
         for (const u of unusable) notes.push(`${u.file.name}: ${u.reason}`);
 
-        const wktCrsByFile = new Map(wktRecipients.map((r) => [r.file, r.crs]));
+        const wktCrsByFile = new Map<File, DonatedCrs>(
+            wktRecipients.map((r): [File, DonatedCrs] => [r.file, r.crs]),
+        );
         for (const f of passthrough) {
             const ext = extensionOf(f.name);
             // Drop files we can't categorise (unknown extension, raster images,
