@@ -14,6 +14,12 @@
 #                                other seven
 #   dst_*                        the transition-day hour, which the
 #                                previous 00:00-UTC arithmetic got wrong
+#   gate_*                       the CD deploy gate (cd-pg-gate.sh): an
+#                                in-window merge must fail fast with the
+#                                right story, not die at the migrate step
+#                                — and must not call the window a
+#                                fixed-UTC range (run 32701044183 and the
+#                                PST hour a UTC-hardcoded check misses)
 #
 # Usage: bash deploy/azure/containerapps/scripts/tests/run.sh
 set -uo pipefail
@@ -291,6 +297,89 @@ check_dst_startup_skips_other_hour() {
   assert_az_calls "." 0
 }
 check check_dst_startup_skips_other_hour
+
+echo "cd-pg-gate.sh"
+
+GATE="${SCRIPTS}/cd-pg-gate.sh"
+
+# Instants the gate cases stand on. The two in-window epochs bracket the
+# DST split deliberately: 08:00Z is 01:00 PDT in August, and 13:30Z is
+# 05:30 PST in January — the second is inside the real window but
+# OUTSIDE a hardcoded "06:00-13:00 UTC" projection of it, which is
+# exactly the misclassification the gate must not make.
+GATE_IN_PDT=$(date -u -d "2026-08-21T08:00:00Z" +%s)
+GATE_IN_PDT_LATE=$(date -u -d "2026-08-21T06:30:00Z" +%s)   # 23:30 PDT
+GATE_IN_PST=$(date -u -d "2026-01-15T13:30:00Z" +%s)
+GATE_OUT=$(date -u -d "2026-08-21T20:00:00Z" +%s)           # 13:00 PDT
+
+check_gate_ready() {
+  run gate_ready "$GATE" "GATE_NOW_EPOCH=$GATE_OUT" FAKE_AZ_PG_STATE=Ready
+  assert_rc 0
+  assert_says "georag-pg-cc is Ready -- proceeding"
+}
+check check_gate_ready
+
+check_gate_stopped_in_window() {
+  run gate_stopped_in_window "$GATE" "GATE_NOW_EPOCH=$GATE_IN_PDT" \
+      FAKE_AZ_PG_STATE=Stopped GATE_RUN_ID=424242
+  assert_rc 1
+  assert_says "nightly cost window"
+  assert_says "gh run rerun 424242"
+  assert_silent_about "real incident"
+}
+check check_gate_stopped_in_window
+
+check_gate_stopped_in_window_late_evening() {
+  # The >= 23 half of the window predicate.
+  run gate_stopped_in_window_late_evening "$GATE" \
+      "GATE_NOW_EPOCH=$GATE_IN_PDT_LATE" FAKE_AZ_PG_STATE=Stopped
+  assert_rc 1
+  assert_says "nightly cost window"
+  assert_silent_about "real incident"
+}
+check check_gate_stopped_in_window_late_evening
+
+check_gate_stopped_in_window_pst() {
+  # 13:30 UTC in January is 05:30 US-Pacific: still the scheduler's
+  # window. A UTC-hardcoded 06:00-13:00 check calls this an operator
+  # incident and blocks the deploy with a false accusation.
+  run gate_stopped_in_window_pst "$GATE" "GATE_NOW_EPOCH=$GATE_IN_PST" \
+      FAKE_AZ_PG_STATE=Stopped
+  assert_rc 1
+  assert_says "nightly cost window"
+  assert_silent_about "real incident"
+}
+check check_gate_stopped_in_window_pst
+
+check_gate_stopped_outside_window() {
+  run gate_stopped_outside_window "$GATE" "GATE_NOW_EPOCH=$GATE_OUT" \
+      FAKE_AZ_PG_STATE=Stopped GATE_RUN_ID=424242
+  assert_rc 1
+  assert_says "OUTSIDE the nightly cost window"
+  assert_says "azure-oncall.md"
+  # An incident is not fixed by rerunning the deploy.
+  assert_silent_about "gh run rerun"
+}
+check check_gate_stopped_outside_window
+
+check_gate_starting_times_out() {
+  run gate_starting_times_out "$GATE" "GATE_NOW_EPOCH=$GATE_OUT" \
+      FAKE_AZ_PG_STATE=Starting GATE_WAIT_TIMEOUT=1 GATE_WAIT_INTERVAL=1
+  assert_rc 1
+  assert_says "did not reach Ready within 1s"
+}
+check check_gate_starting_times_out
+
+check_gate_state_unreadable() {
+  # Three read attempts before believing "unreadable" — one ARM blip must
+  # not fail a deploy with a wrong diagnosis.
+  run gate_state_unreadable "$GATE" "GATE_NOW_EPOCH=$GATE_OUT" \
+      FAKE_AZ_PG_STATE= GATE_WAIT_INTERVAL=1
+  assert_rc 1
+  assert_says "could not read georag-pg-cc state"
+  assert_az_calls "^postgres flexible-server show" 3
+}
+check check_gate_state_unreadable
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
