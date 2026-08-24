@@ -629,31 +629,168 @@ def _refusal_reason(result: Any) -> str | None:
 
 def _wrote_nothing_warning(
     *, label: str, classified_as: str, reason: str | None,
+    from_category: bool = False,
 ) -> dict[str, Any]:
     """Say which sheet was refused, what it was taken for, and why.
 
     ``message`` AND ``detail``: the Ingestion Runs page renders
     ``detail``, falling back to ``code`` — a warning with neither shows
     the geologist a bare token like ``classified_but_nothing_written``.
+
+    ``from_category`` separates the two ways a sheet arrives at a writer,
+    which the first version of this message conflated. A workbook sheet is
+    CLASSIFIED by its headers; a single-table upload is TOLD what it is by
+    the category it was dropped into, and the classifier never runs. Saying
+    "matched the collar layout" about the second case is simply false --
+    the customer's FA16099231_edit.csv is a 66-column assay certificate
+    whose headers match no drill table at all, and it reached the collar
+    writer only because it was uploaded under `collars`. Being told the
+    file matched a layout it does not match sends the geologist off to
+    rename columns that were never the problem.
     """
     because = reason or (
         "the writer required columns this sheet does not have"
     )
+    if from_category:
+        how = (
+            f"'{label}' was uploaded to the {classified_as} category, so it "
+            f"was sent to the {classified_as} writer without its headers "
+            f"being checked first"
+        )
+        fix = (
+            f"If this is not {classified_as} data, re-upload it under the "
+            f"category that matches — or leave the category off and let the "
+            f"headers decide."
+        )
+    else:
+        how = (
+            f"'{label}' matched the {classified_as} layout, so it was sent "
+            f"to the {classified_as} writer"
+        )
+        fix = (
+            f"If this is not {classified_as} data, re-upload it with the "
+            f"right type or rename its columns to ones the "
+            f"{classified_as} parser recognises."
+        )
     return {
         "code": "classified_but_nothing_written",
         "message": (
-            f"'{label}' looked like a {classified_as} sheet, but no "
+            f"'{label}' was treated as a {classified_as} sheet, but no "
             f"{classified_as} rows could be written"
         ),
         "detail": (
-            f"'{label}' matched the {classified_as} layout, so it was sent "
-            f"to the {classified_as} writer — which accepted none of its "
-            f"rows: {because}. No {classified_as} rows were written. The "
-            f"sheet was handed to the text fallback instead so its contents "
-            f"stay searchable; the indexing warning beside this one reports "
-            f"what landed. If this is not {classified_as} data, re-upload it "
-            f"with the right type or rename its columns to ones the "
-            f"{classified_as} parser recognises."
+            f"{how} — which accepted none of its rows: {because}. No "
+            f"{classified_as} rows were written. The sheet was kept as "
+            f"searchable text and, where its columns allow, as a data "
+            f"table; the warnings beside this one report what landed. {fix}"
+        ),
+    }
+
+
+def _read_delimited_rows(path: str) -> list[dict[str, Any]]:
+    """A delimited file's data rows as dicts, keyed by its header row.
+
+    Goes through the same ``_csv_io`` helpers ``_csv_headers`` uses, for the
+    same reason: these files arrive Latin-1 from Windows survey software and
+    semicolon-delimited from European labs, and a table split on the wrong
+    delimiter lands as one column of garbage.
+    """
+    import csv  # noqa: PLC0415
+
+    from georag_geoparsers._csv_io import (  # noqa: PLC0415
+        detect_delimiter,
+        open_csv_with_encoding,
+    )
+
+    stream, _encoding, _sha, _size = open_csv_with_encoding(path)
+    content = stream.read()
+    reader = csv.DictReader(
+        content.splitlines(), delimiter=detect_delimiter(content),
+    )
+    return [dict(row) for row in reader]
+
+
+async def _land_unclassified_as_rows(
+    conn: Any,
+    *,
+    path: str,
+    suffix: str,
+    filename: str,
+    unclassified: list[str],
+    workspace_id: str,
+    project_id: str,
+) -> dict | None:
+    """Keep a non-drill table's VALUES, not just its prose.
+
+    The text fallback beside this one makes an unrecognised sheet
+    answerable in chat, which is the floor. It is not the same as having
+    the data: a geochemical certificate rendered to passages cannot be
+    filtered by Au_ppm, and 100 samples of 66 elements read back as a wall
+    of numbers. silver.attribute_tables already stores exactly this shape
+    for a standalone .dbf -- one JSON object per row, keyed by the source
+    file and layer -- so a sheet that matches no drill type lands there
+    rather than nowhere.
+
+    Never raises. The typed rows and the text passages have already landed
+    by this point, and losing the structured copy must not turn a run that
+    wrote them into a failure.
+    """
+    if suffix in DBF_EXTENSIONS:
+        # A standalone .dbf already lands in this exact table through the
+        # preflight branch, and never reaches `unclassified`. Guarded anyway
+        # because the alternative failure is silent: the delimited reader
+        # below would happily read a binary dBASE file as text and write a
+        # table of mojibake next to the real one.
+        return None
+
+    total = 0
+    layers = 0
+    try:
+        sha = await asyncio.to_thread(_sha256_file, path)
+        # A delimited file is one table however many labels the caller
+        # collected for it, so it is read once. Looping would write the same
+        # rows under each label -- the row_index upsert key would not catch
+        # it, because `source_layer` is part of that key.
+        labels = unclassified if suffix in EXCEL_EXTENSIONS else unclassified[:1]
+        for label in labels:
+            if suffix in EXCEL_EXTENSIONS:
+                from georag_geoparsers.xlsx_parser import (  # noqa: PLC0415
+                    read_sheet_rows,
+                )
+
+                rows = await asyncio.to_thread(read_sheet_rows, path, label)
+            else:
+                rows = await asyncio.to_thread(_read_delimited_rows, path)
+            if not rows:
+                continue
+            stats = await _write_attribute_rows(
+                conn,
+                workspace_id=workspace_id, project_id=project_id,
+                source_file=filename, source_file_sha256=sha,
+                source_layer=label, rows=rows,
+            )
+            total += stats.get("written", 0)
+            layers += 1
+    except Exception as exc:  # noqa: BLE001 — typed rows and text already landed
+        log.warning(
+            "ingest_tabular: attribute-row fallback failed for %s (%s)",
+            path, exc,
+        )
+        return None
+
+    if not total:
+        return None
+
+    where = f"{layers} sheet(s)" if layers > 1 else "it"
+    return {
+        "code": "unclassified_kept_as_table",
+        "rows": total,
+        "message": f"{total} row(s) kept as a data table",
+        "detail": (
+            f"{total} row(s) from {where} were also kept as a data table, "
+            f"with every column preserved, so the values stay queryable "
+            f"even though they are not collar / survey / lithology / "
+            f"sample rows and will not appear in the drillhole views."
         ),
     }
 
@@ -832,10 +969,14 @@ async def run_ingest_tabular(
     #: reason). Collected per sheet, not per type: one workbook can hold a
     #: collar tab that lands and a second that is refused, and the
     #: per-type accumulator cannot tell them apart.
-    wrote_nothing: list[tuple[str, str, str | None]] = []
+    wrote_nothing: list[tuple[str, str, str | None, bool]] = []
     #: Searchable passages the text fallback landed. Part of what the run
     #: wrote — see the rows_written comment at the terminal write.
     text_passages = 0
+    #: Structured rows the attribute-table fallback landed. Counted
+    #: separately from `written` because that dict is keyed by drill sheet
+    #: type and these rows are, by definition, none of those types.
+    table_rows = 0
 
     try:
         if run_id:
@@ -996,6 +1137,7 @@ async def run_ingest_tabular(
                             sheet_name or filename,
                             sheet_type,
                             _refusal_reason(result),
+                            sheet_type == input.sheet_type,
                         ))
 
                     prior = written.setdefault(
@@ -1033,13 +1175,14 @@ async def run_ingest_tabular(
                 # least answerable in chat. The warning is the rest of
                 # it — the refusal has a reason and the geologist should
                 # not have to read a worker log to find it.
-                for label, classified_as, reason in wrote_nothing:
+                for label, classified_as, reason, forced in wrote_nothing:
                     if label not in unclassified:
                         unclassified.append(label)
                     warnings.append(_wrote_nothing_warning(
                         label=label,
                         classified_as=classified_as,
                         reason=reason,
+                        from_category=forced,
                     ))
 
                 # ── Whatever did not classify ───────────────────────────
@@ -1071,6 +1214,23 @@ async def run_ingest_tabular(
                     if text_landed:
                         warnings.append(text_landed)
                         text_passages += int(text_landed.get("passages") or 0)
+
+                    # Beside the text fallback, not instead of it: the two
+                    # answer different questions ("what does this say?" vs
+                    # "what are its values?") and land in different places,
+                    # so neither competes with the other in the recall set.
+                    rows_landed = await _land_unclassified_as_rows(
+                        conn,
+                        path=local,
+                        suffix=suffix,
+                        filename=filename,
+                        unclassified=unclassified,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                    )
+                    if rows_landed:
+                        warnings.append(rows_landed)
+                        table_rows += int(rows_landed.get("rows") or 0)
             finally:
                 await conn.close()
 
@@ -1112,7 +1272,7 @@ async def run_ingest_tabular(
             # headline, which stops contradicting the warning under it.
             rows_written = sum(
                 stats.get("written", 0) for stats in written.values()
-            ) + text_passages
+            ) + text_passages + table_rows
             transitioned = await _progress.mark_completed_by_run(
                 run_id=run_id,
                 rows_written=rows_written,
