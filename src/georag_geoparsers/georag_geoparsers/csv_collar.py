@@ -29,38 +29,42 @@ from georag_geoparsers._csv_io import (
     transform_decimal_comma,
 )
 from georag_geoparsers._dip_convention import DipConvention, detect_dip_convention, normalize_dip
+from georag_geoparsers._drill_schema import (
+    COLLAR_ALIASES,
+    COLLAR_REQUIRED,
+    ELEVATION_BOUNDS,
+    coordinate_bounds,
+    coordinate_family_conflict,
+    detect_coordinate_mode,
+)
+from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Column name alias maps — keys are canonical names, values are accepted aliases
-# Order within each list reflects preference when multiple aliases are present.
+# Column name alias maps — keys are canonical names, values are accepted
+# aliases. Order within each list reflects preference when multiple aliases
+# are present.
+#
+# The vocabulary itself lives in _drill_schema, which the FastAPI writer and
+# the sheet classifier read from the same module: three drifting copies of
+# this dict is what let the classifier accept a sheet the writer then
+# rejected in full. Re-exported under the historical names because
+# _sheet_classifier and several tests import them from here.
 # ---------------------------------------------------------------------------
-COLUMN_ALIASES: dict[str, list[str]] = {
-    "hole_id":     ["HoleID", "Hole_ID", "HOLEID", "hole_id", "DrillHole", "DH_ID", "BH_ID"],
-    "easting":     ["Easting", "EAST", "X", "UTM_E", "easting"],
-    "northing":    ["Northing", "NORTH", "Y", "UTM_N", "northing"],
-    "elevation":   ["Elevation", "ELEV", "RL", "Z", "elevation"],
-    "total_depth": ["TotalDepth", "Total_Depth", "DEPTH", "TD", "MaxDepth", "total_depth"],
-    "azimuth":     ["Azimuth", "AZI", "AZ", "azimuth"],
-    "dip":         ["Dip", "DIP", "Inclination", "dip"],
-    "hole_type":   ["HoleType", "Type", "DrillType", "hole_type"],
-    "drill_date":  ["Date", "DrillDate", "StartDate", "drill_date"],
-    "status":      ["Status", "status"],
-}
-
-# Required fields — rows missing any of these are rejected
-REQUIRED_FIELDS: frozenset[str] = frozenset({"hole_id", "easting", "northing", "elevation"})
+COLUMN_ALIASES: dict[str, list[str]] = COLLAR_ALIASES
+REQUIRED_FIELDS: frozenset[str] = COLLAR_REQUIRED
 
 # Numeric fields that must be castable to float
 NUMERIC_FIELDS: frozenset[str] = frozenset({"easting", "northing", "elevation", "total_depth", "azimuth", "dip"})
 
-# Reasonable range checks (coordinate sanity — not project-bbox; that is CRS step 3)
+# Sanity ranges for the fields whose bounds do not depend on the coordinate
+# system. Easting and northing are NOT here: their bounds are chosen per
+# file by _drill_schema.detect_coordinate_mode, because a fixed UTM window
+# rejected decimal degrees, local mine grids and State Plane feet alike.
 RANGE_CHECKS: dict[str, tuple[float, float]] = {
-    "easting":     (100_000.0,  900_000.0),   # UTM easting bounds
-    "northing":    (0.0,        10_000_000.0), # UTM northing bounds (N hemisphere)
-    "elevation":   (-500.0,     8_900.0),      # Below sea level mines to Everest
+    "elevation":   ELEVATION_BOUNDS,
     "total_depth": (0.0,        10_000.0),     # Deepest drill hole sanity check
     "azimuth":     (0.0,        360.0),
     "dip":         (-90.0,      90.0),
@@ -74,6 +78,7 @@ _CODE_MISSING_REQUIRED = "missing_required"
 _CODE_NUMERIC_CAST = "numeric_cast_failed"
 _CODE_RANGE = "range_check_failed"
 _CODE_DECIMAL_COMMA = "decimal_comma_detected"
+_CODE_COORD_FAMILY_CONFLICT = "coordinate_family_conflict"
 
 
 # ---------------------------------------------------------------------------
@@ -112,22 +117,17 @@ class CollarParseResult:
 def _build_column_map(csv_columns: list[str]) -> tuple[dict[str, str], list[str]]:
     """Map canonical field names to the first matching CSV column alias found.
 
+    Matching is delegated to ``_header_match``, which folds case, separators
+    and unit suffixes, so ``Hole ID`` / ``Hole_ID`` / ``HOLEID`` and
+    ``Depth_m`` / ``Depth (m)`` all land on the same field. It used to be an
+    exact case-sensitive test here, which is why a file was rejected in full
+    for spelling a header with a space.
+
     Returns:
         column_map   — {canonical_name: csv_column_name}
         unmapped     — CSV columns that matched no canonical alias
     """
-    csv_col_set = set(csv_columns)
-    column_map: dict[str, str] = {}
-
-    for canonical, aliases in COLUMN_ALIASES.items():
-        for alias in aliases:
-            if alias in csv_col_set:
-                column_map[canonical] = alias
-                break  # first match wins
-
-    matched_csv_cols = set(column_map.values())
-    unmapped = [c for c in csv_columns if c not in matched_csv_cols]
-    return column_map, unmapped
+    return build_column_map(csv_columns, COLUMN_ALIASES)
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -159,8 +159,13 @@ def _validate_row(
     raw: dict,
     column_map: dict[str, str],
     dip_convention: DipConvention,
+    coord_bounds: dict[str, tuple[float, float]],
 ) -> tuple[dict | None, dict | None]:
     """Validate a single raw row dict (keyed by canonical names).
+
+    ``coord_bounds`` carries the easting/northing limits chosen for this
+    file as a whole (see :func:`_drill_schema.detect_coordinate_mode`) — a
+    per-row decision would let one file be judged against two rulers.
 
     Returns (record, None) on success or (None, skip_entry) on failure.
     skip_entry includes extended diagnostic fields per Sprint 2 contract:
@@ -216,7 +221,7 @@ def _validate_row(
         record["dip"] = normalize_dip(record["dip"], dip_convention)
 
     # --- Range checks ---
-    for field_name, (lo, hi) in RANGE_CHECKS.items():
+    for field_name, (lo, hi) in {**RANGE_CHECKS, **coord_bounds}.items():
         val = record.get(field_name)
         if val is not None and not (lo <= val <= hi):
             return None, {
@@ -230,8 +235,10 @@ def _validate_row(
                 "expected": f"{field_name} in [{lo}, {hi}]",
                 "actual": {field_name: val},
                 "suggestion": (
-                    f"Check that '{field_name}' is in the expected unit and CRS. "
-                    f"Coordinate range [{lo}, {hi}] reflects UTM/sanity bounds."
+                    f"Check that '{field_name}' is in the expected unit. These "
+                    f"are absurdity bounds, not a coordinate-system check — a "
+                    f"value outside [{lo}, {hi}] is usually a depth, a text "
+                    f"cell, or a column that mapped to the wrong field."
                 ),
             }
 
@@ -383,11 +390,65 @@ def parse_csv_collars(
                 "code": _CODE_MISSING_REQUIRED,
                 "reason": f"file-level: missing required column mapping(s): {missing_required}",
                 "raw": {},
-                "expected": f"columns matching {missing_required} in COLUMN_ALIASES",
-                "actual": None,
+                "expected": f"columns matching {sorted(missing_required)}",
+                # What DID map, and what was left over. A user told only
+                # "elevation is missing" cannot tell whether the column is
+                # absent or merely spelled unusually; the two lists together
+                # answer that at a glance, and they are the same lists the
+                # column-mapping step offers to correct.
+                "actual": {
+                    "mapped": dict(sorted(column_map.items())),
+                    "unmatched_columns": unmapped,
+                },
                 "suggestion": (
-                    "Add aliases for the missing columns to COLUMN_ALIASES or rename "
-                    "the CSV headers to a recognised alias."
+                    "Map the missing field(s) to one of this file's own columns, "
+                    "or rename the header to a recognised spelling. Header "
+                    "matching ignores case, spaces, underscores and unit "
+                    "suffixes, so 'Hole ID', 'hole_id' and 'HOLEID' are all "
+                    "understood — a field listed here has no column resembling "
+                    "it at all."
+                ),
+            }],
+            warnings=global_warnings,
+            detected_encoding=detected_encoding,
+        )
+
+    # --- Coordinate columns that disagree about what they measure ---
+    #
+    # Refused rather than resolved. 'Easting' beside 'LATITUDE' passes every
+    # per-field check — each value is in range for its own column — and
+    # produces a hole 57 metres north of the equator. Nothing here can tell
+    # which of the two headers is the mistake, so neither is assumed.
+    conflict = coordinate_family_conflict(
+        column_map.get("easting"), column_map.get("northing")
+    )
+    if conflict is not None:
+        east_family, north_family = conflict
+        return CollarParseResult(
+            records=[],
+            total_rows=total_rows,
+            valid_rows=0,
+            skipped_rows=total_rows,
+            unmapped_columns=unmapped,
+            column_map=column_map,
+            skipped_details=[{
+                "row": None,
+                "code": _CODE_COORD_FAMILY_CONFLICT,
+                "reason": (
+                    f"file-level: '{column_map['easting']}' names a "
+                    f"{east_family} coordinate but '{column_map['northing']}' "
+                    f"names a {north_family} one"
+                ),
+                "raw": {},
+                "expected": "both coordinate columns in the same system",
+                "actual": {
+                    "easting": {"column": column_map["easting"], "family": east_family},
+                    "northing": {"column": column_map["northing"], "family": north_family},
+                },
+                "suggestion": (
+                    "One of these two headers is wrong. Degrees and metres "
+                    "cannot be paired: rename the mislabelled column, or map "
+                    "each field to the column that really holds it."
                 ),
             }],
             warnings=global_warnings,
@@ -450,8 +511,30 @@ def parse_csv_collars(
     skipped: list[dict] = []
 
     rows_as_dicts = df_trimmed.to_dicts()
+
+    # --- Coordinate bounds, chosen once for the whole file ---
+    #
+    # Decided across every row before any row is judged, so one file is
+    # measured against one ruler. Doing it per row would let the first
+    # decimal-degree row set geographic bounds and the next UTM row fail
+    # against them.
+    coord_mode = detect_coordinate_mode(
+        [_cast_float(r.get("easting")) for r in rows_as_dicts],
+        [_cast_float(r.get("northing")) for r in rows_as_dicts],
+    )
+    coord_bounds = coordinate_bounds(coord_mode)
+    global_warnings.append({
+        "row": None,
+        "code": "coordinate_mode_detected",
+        "message": (
+            f"coordinates read as {coord_mode} for range checking "
+            f"(easting {coord_bounds['easting']}, northing {coord_bounds['northing']})"
+        ),
+        "context": {"mode": coord_mode},
+    })
+
     for i, raw in enumerate(rows_as_dicts, start=2):  # row 1 = header, data starts at 2
-        record, skip_entry = _validate_row(i, raw, column_map, dip_convention)
+        record, skip_entry = _validate_row(i, raw, column_map, dip_convention, coord_bounds)
         if record is not None:
             records.append(record)
         else:

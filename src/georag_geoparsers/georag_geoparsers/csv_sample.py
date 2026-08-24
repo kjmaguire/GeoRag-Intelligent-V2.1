@@ -30,6 +30,8 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
+from georag_geoparsers._drill_schema import SAMPLE_ALIASES, SAMPLE_REQUIRED
+from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._unit_ambiguity import (
     detect_long_format_units,
@@ -40,20 +42,14 @@ from georag_geoparsers._unit_ambiguity import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Column name alias maps
+# Column name alias maps — defined in _drill_schema so the sheet classifier
+# and the FastAPI writers read the same vocabulary; re-exported here because
+# tests and _sheet_classifier import them from this module.
 # ---------------------------------------------------------------------------
-COLUMN_ALIASES: dict = {
-    "hole_id":    ["HoleID", "Hole_ID", "hole_id"],
-    "from_depth": ["From", "FromDepth", "from_depth"],
-    "to_depth":   ["To", "ToDepth", "to_depth"],
-    "sample_type":["SampleType", "Type", "sample_type"],
-    "lab_id":     ["LabID", "Lab", "LabNumber", "lab_id"],
-    "qaqc_type":  ["QAQC", "QC", "qaqc_type"],
-    "sample_id":  ["SampleID", "Sample_ID", "sample_id", "Sample Number", "SampleNum"],
-}
+COLUMN_ALIASES: dict = SAMPLE_ALIASES
 
 # Required fields — rows missing any of these are rejected
-REQUIRED_FIELDS: frozenset = frozenset({"hole_id", "from_depth", "to_depth", "sample_type"})
+REQUIRED_FIELDS: frozenset = SAMPLE_REQUIRED
 
 # Numeric fields
 NUMERIC_FIELDS: frozenset = frozenset({"from_depth", "to_depth"})
@@ -389,27 +385,22 @@ def _build_column_map(csv_columns: list) -> tuple:
     Also identifies assay columns (those matching ASSAY_COLUMN_RE) and returns
     them separately for commodity_assays dict assembly.
 
+    Case, separators and unit suffixes are folded by ``_header_match``, so
+    ``Sample ID`` and ``sample_id`` reach the same field. Assay detection
+    still runs against the column's ORIGINAL spelling: ASSAY_COLUMN_RE reads
+    element symbols and unit suffixes (``Au_ppm``, ``Ag_gpt``), and the two
+    things normalisation discards are exactly the two things it needs.
+
     Returns:
         column_map   — {canonical_name: csv_column_name}
         assay_cols   — list of CSV column names that are commodity assay columns
         unmapped     — CSV columns that matched no canonical alias and no assay pattern
     """
-    csv_col_set = set(csv_columns)
-    column_map: dict = {}
-
-    for canonical, aliases in COLUMN_ALIASES.items():
-        for alias in aliases:
-            if alias in csv_col_set:
-                column_map[canonical] = alias
-                break
-
+    column_map, unmatched = build_column_map(csv_columns, COLUMN_ALIASES)
     matched_csv_cols = set(column_map.values())
 
     # Identify assay columns
-    assay_cols = []
-    for col in csv_columns:
-        if col not in matched_csv_cols and ASSAY_COLUMN_RE.match(col):
-            assay_cols.append(col)
+    assay_cols = [c for c in unmatched if ASSAY_COLUMN_RE.match(c)]
 
     all_accounted = matched_csv_cols | set(assay_cols)
     unmapped = [c for c in csv_columns if c not in all_accounted]

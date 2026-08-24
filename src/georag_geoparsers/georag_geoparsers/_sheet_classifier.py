@@ -36,9 +36,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Coverage threshold — a sheet classifies as a known type only when at
-# least this fraction of the type's REQUIRED_FIELDS appear in the
-# headers. Default 0.75 means 3/4 of required fields must match.
-MIN_REQUIRED_COVERAGE: float = 0.75
+# least this fraction of the type's REQUIRED_FIELDS appear in the headers.
+#
+# 0.66 admits 2 of 3 and 3 of 4. It was 0.75 while every schema had four
+# required fields; collar dropped to three when `elevation` stopped being
+# required (see _drill_schema.COLLAR_REQUIRED), and leaving the threshold
+# at 0.75 would have QUIETLY TIGHTENED collar detection from 3-of-4 to
+# 3-of-3 — a stricter classifier shipped inside a change whose whole
+# purpose was to accept more real files.
+#
+# The floor under this is _IDENTITY_FIELD below: hole_id must match
+# whatever the coverage, so 2-of-3 on collar means hole_id plus one
+# coordinate, never two coordinates and no hole.
+MIN_REQUIRED_COVERAGE: float = 0.66
 
 # Discriminator fields that, when present, lock the classification
 # regardless of overall coverage. Lets us correctly classify a sheet
@@ -71,54 +81,44 @@ _IDENTITY_FIELD: str = "hole_id"
 
 
 def _load_schemas() -> dict[str, tuple[dict[str, list[str]], frozenset[str]]]:
-    """Lazy-import the four CSV parsers to grab their alias + required sets.
+    """The four drill layouts' alias + required sets.
 
-    Done lazily inside the function so any single parser's import failure
-    doesn't crash the classifier at module-load time.
+    Read from ``_drill_schema``, which is pure stdlib. This used to import
+    all four CSV parsers purely to reach their module-level dicts, which
+    dragged polars, geopandas and rasterio into every process that wanted
+    to guess a sheet type — and meant one parser failing to import took
+    classification down with it.
+
+    Still called rather than inlined so the lazy-import contract the
+    callers rely on is unchanged.
     """
-    from georag_geoparsers.csv_collar import (
-        COLUMN_ALIASES as COLLAR_ALIASES,
-    )
-    from georag_geoparsers.csv_collar import (
-        REQUIRED_FIELDS as COLLAR_REQUIRED,
-    )
-    from georag_geoparsers.csv_lithology import (
-        COLUMN_ALIASES as LITH_ALIASES,
-    )
-    from georag_geoparsers.csv_lithology import (
-        REQUIRED_FIELDS as LITH_REQUIRED,
-    )
-    from georag_geoparsers.csv_sample import (
-        COLUMN_ALIASES as SAMPLE_ALIASES,
-    )
-    from georag_geoparsers.csv_sample import (
-        REQUIRED_FIELDS as SAMPLE_REQUIRED,
-    )
-    from georag_geoparsers.csv_survey import (
-        COLUMN_ALIASES as SURVEY_ALIASES,
-    )
-    from georag_geoparsers.csv_survey import (
-        REQUIRED_FIELDS as SURVEY_REQUIRED,
-    )
+    from georag_geoparsers._drill_schema import schemas
 
-    return {
-        "collar":    (COLLAR_ALIASES, COLLAR_REQUIRED),
-        "survey":    (SURVEY_ALIASES, SURVEY_REQUIRED),
-        "lithology": (LITH_ALIASES, LITH_REQUIRED),
-        "sample":    (SAMPLE_ALIASES, SAMPLE_REQUIRED),
-    }
+    return schemas()
 
 
 def _normalize_header(h: str) -> str:
-    """Normalise a header for case-insensitive alias matching.
+    """Normalise a header for alias matching.
 
-    Strips whitespace and lowercases. We intentionally do NOT strip
-    underscores or non-alpha chars — the alias lists are exhaustive
-    enough that exact-lowercase match is sufficient, and over-stripping
-    creates false positives ('hole id' vs 'hole_id' is a real distinction
-    the parser handles via the alias list).
+    Delegates to ``_header_match.normalize_header`` — the SAME function the
+    parsers use. It previously only stripped and lower-cased, on the
+    reasoning that "the alias lists are exhaustive enough" and that
+    'hole id' vs 'hole_id' was a real distinction. Measured on a customer
+    delivery on 2026-08-24, neither held: the alias lists carried no
+    spaced spellings at all, and the parser's own matching was stricter
+    still, so a sheet the classifier accepted could have every row
+    rejected by the writer it was dispatched to.
     """
-    return (h or "").strip().lower()
+    from georag_geoparsers._header_match import normalize_header
+
+    return normalize_header(h)
+
+
+def _alias_skeletons(canonical: str, alias_list: list[str]) -> set[str]:
+    """Normalised spellings of one field — the same set the parsers map on."""
+    from georag_geoparsers._header_match import alias_skeletons
+
+    return alias_skeletons(canonical, alias_list)
 
 
 def classify_sheet_type(
@@ -168,8 +168,7 @@ def classify_sheet_type(
         # Track which canonical fields matched any alias in the headers.
         matched_canonicals: set[str] = set()
         for canonical, alias_list in aliases.items():
-            alias_set_lower = {_normalize_header(a) for a in alias_list}
-            if headers_lower & alias_set_lower:
+            if headers_lower & _alias_skeletons(canonical, alias_list):
                 matched_canonicals.add(canonical)
 
         required_matched = matched_canonicals & set(required)
