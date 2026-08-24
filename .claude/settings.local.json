@@ -234,17 +234,7 @@
       "Bash(du -sh ops/validation/reports/)",
       "Bash(powershell.exe -NoProfile -Command \"Get-Process git -ErrorAction SilentlyContinue | Select-Object Id,StartTime,Path | Format-Table -AutoSize\")",
       "Bash(taskkill //F //IM git.exe)",
-      "Bash(rm -f .git/index.lock)",
-      "Bash(git -C \"C:/Users/GeoRAG/Herd/georag/.claude/worktrees/suspicious-hypatia-be5cc4\" show HEAD:.github/workflows/cd.yml)",
-      "Bash(git -C \"C:/Users/GeoRAG/Herd/georag/.claude/worktrees/suspicious-hypatia-be5cc4\" status --short --branch)",
-      "Bash(git -C \"C:/Users/GeoRAG/Herd/georag/.claude/worktrees/suspicious-hypatia-be5cc4\" log --oneline -5)",
-      "Bash(git -C \"C:/Users/GeoRAG/Herd/georag/.claude/worktrees/suspicious-hypatia-be5cc4\" diff main...HEAD --stat)",
-      "Bash(git -C \"C:/Users/GeoRAG/Herd/georag/.claude/worktrees/suspicious-hypatia-be5cc4\" diff main...HEAD -- .github/workflows/cd.yml)",
-      "Bash(git -C \"C:/Users/GeoRAG/Herd/georag/.claude/worktrees/suspicious-hypatia-be5cc4\" diff main...HEAD -- deploy/azure/containerapps/scripts/tests/run.sh)",
-      "Bash(grep -n \"actions/checkout@v7\\\\|ref: \\\\${{ needs.check-ci\\\\|run: bash deploy/azure\\\\|Postgres gate \\(nightly\\\\|timeout-minutes: 12\\\\|timeout-minutes: 45\\\\|echo \\\\\"pending\\\\\"\\\\|EXEC_ID=\\\\$\\(az containerapp job start\\\\|= \\\\\"pending\\\\\"\\\\|mutation-started\")",
-      "Bash(bash deploy/azure/containerapps/scripts/tests/run.sh)",
-      "Bash(bash -n deploy/azure/containerapps/scripts/cd-pg-gate.sh)",
-      "Bash(python -)"
+      "Bash(rm -f .git/index.lock)"
     ]
   }
 }
