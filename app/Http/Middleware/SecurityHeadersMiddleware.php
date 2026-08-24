@@ -103,10 +103,23 @@ final class SecurityHeadersMiddleware
      * presigned URL the browser is asked to load.
      *
      * Reads the same disk config `StorageService` resolves through, so the
-     * allowlist cannot drift from the endpoint actually in use. A disk with
-     * no configured endpoint (AWS's own hosts, where the SDK derives the
-     * URL) contributes nothing here; `s3.amazonaws.com` is covered by
-     * STATIC_CONNECT_ORIGINS for connect-src and is added below for frames.
+     * allowlist cannot drift from the endpoint actually in use.
+     *
+     * BOTH drivers have to be read, not just one. `config/filesystems.php`
+     * resolves each of these disks to `driver => 'azure'` when
+     * STORAGE_BACKEND=azure_blob and to `'s3'` otherwise, and the two name
+     * their host in different keys: the S3 side in `endpoint`/`url`, the
+     * Azure side in `account_name` (or a `BlobEndpoint` inside the connection
+     * string). Reading only the S3 keys is how this first shipped a
+     * `frame-src` holding no real origin at all on the Azure deployment — the
+     * directive was present, so the header looked fixed, while the Reports
+     * "Original" iframe stayed blocked because the host it actually loads was
+     * never in the list.
+     *
+     * A disk with no configured endpoint (AWS's own hosts, where the SDK
+     * derives the URL) contributes nothing here; `s3.amazonaws.com` is
+     * covered by STATIC_CONNECT_ORIGINS for connect-src and is added below
+     * for frames.
      *
      * @return list<string>
      */
@@ -116,19 +129,13 @@ final class SecurityHeadersMiddleware
 
         foreach (['s3', 's3-bronze', 's3-exports'] as $disk) {
             foreach (['endpoint', 'url'] as $key) {
-                $value = config("filesystems.disks.{$disk}.{$key}");
-                if (! is_string($value) || $value === '') {
-                    continue;
-                }
-                $parts = parse_url($value);
-                $scheme = $parts['scheme'] ?? null;
-                $host = $parts['host'] ?? null;
-                if ($scheme === null || $host === null) {
-                    continue;
-                }
-                $port = isset($parts['port']) ? ':'.$parts['port'] : '';
-                $origins[] = "{$scheme}://{$host}{$port}";
+                $origins[] = self::originFromUrl(config("filesystems.disks.{$disk}.{$key}"));
             }
+
+            $origins[] = self::azureBlobOrigin(
+                config("filesystems.disks.{$disk}.account_name"),
+                config("filesystems.disks.{$disk}.connection_string"),
+            );
         }
 
         // Presigned S3 downloads resolve to the bucket's own host even when
@@ -136,7 +143,72 @@ final class SecurityHeadersMiddleware
         // allows for the export download path.
         $origins[] = 'https://s3.amazonaws.com';
 
-        return array_values(array_unique($origins));
+        return array_values(array_unique(array_filter($origins)));
+    }
+
+    /**
+     * scheme://host[:port] of a configured URL, or null when it names no host.
+     *
+     * A relative URL — which a same-origin deployment is entitled to
+     * configure — yields null rather than a broken "://" token that would
+     * invalidate the directive it lands in.
+     */
+    private static function originFromUrl(mixed $value): ?string
+    {
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        $parts = parse_url($value);
+        $scheme = $parts['scheme'] ?? null;
+        $host = $parts['host'] ?? null;
+        if ($scheme === null || $host === null) {
+            return null;
+        }
+
+        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+
+        return "{$scheme}://{$host}{$port}";
+    }
+
+    /**
+     * The blob host an Azure-driver disk presigns against.
+     *
+     * `AppServiceProvider`'s SAS callback returns
+     * `https://{account}.blob.core.windows.net/{container}/{path}?{token}`,
+     * so that origin — not the container, not the path — is what the iframe
+     * loads and what `frame-src` has to allow.
+     *
+     * Two overrides are honoured because both are real deployments rather
+     * than hypotheticals: `BlobEndpoint` in the connection string replaces
+     * the host outright (Azurite, and private-endpoint deployments that
+     * resolve to a privatelink host), and `EndpointSuffix` moves it to a
+     * sovereign cloud. Managed-identity deployments set neither and carry no
+     * connection string at all, so `account_name` is then the only source —
+     * which is exactly the configuration this method was first written
+     * without, leaving production with an empty allowlist.
+     */
+    private static function azureBlobOrigin(mixed $accountName, mixed $connectionString): ?string
+    {
+        $connection = is_string($connectionString) ? $connectionString : '';
+
+        if (preg_match('/BlobEndpoint=([^;]+)/i', $connection, $matches) === 1) {
+            return self::originFromUrl(trim($matches[1]));
+        }
+
+        $account = is_string($accountName) && trim($accountName) !== '' ? trim($accountName) : null;
+        if ($account === null && preg_match('/AccountName=([^;]+)/i', $connection, $matches) === 1) {
+            $account = trim($matches[1]);
+        }
+        if ($account === null || $account === '') {
+            return null;
+        }
+
+        $suffix = preg_match('/EndpointSuffix=([^;]+)/i', $connection, $matches) === 1
+            ? trim($matches[1])
+            : 'core.windows.net';
+
+        return "https://{$account}.blob.{$suffix}";
     }
 
     /**
