@@ -1841,6 +1841,50 @@ async def run_ingest_tabular(
                     is_local=False,
                 )
 
+                # The PROJECT's coordinate system, when the upload did not
+                # declare one.
+                #
+                # Nothing in a CSV or a spreadsheet says what projection its
+                # easting/northing are in, so the only two sources are the
+                # per-file override the wizard collects and the project the
+                # file was uploaded into. Until now only the first existed,
+                # and its absence fell straight through to
+                # DEFAULT_SOURCE_EPSG — 32613, WGS 84 / UTM zone 13N, which
+                # runs through Colorado. A project created as EPSG:26904
+                # (Alaska, zone 4N) still had every collar CSV read as zone
+                # 13 and written ~2,500 km east of the hole, while the
+                # correct answer sat on silver.projects.crs_epsg, unread.
+                #
+                # Precedence, most-specific first:
+                #   1. input.source_epsg  — this file, typed by the user
+                #   2. projects.crs_epsg  — this project, set at creation
+                #   3. DEFAULT_SOURCE_EPSG — a guess, and warned about as one
+                #
+                # Only (3) still counts as `assumed`: a project CRS is a
+                # declaration, so georef_method reads 'declared' and the
+                # scary warning stays off a file that is in fact placed
+                # correctly. Wrapped because a missing column or an
+                # unreadable row must not fail an ingest that would
+                # otherwise succeed — it falls back to the old behaviour,
+                # warning included.
+                if input.source_epsg is None:
+                    try:
+                        project_epsg = await conn.fetchval(
+                            "SELECT crs_epsg FROM silver.projects "
+                            "WHERE project_id = $1::uuid",
+                            input.project_id,
+                        )
+                    except Exception as crs_exc:  # noqa: BLE001
+                        project_epsg = None
+                        log.warning(
+                            "ingest_tabular: could not read project CRS for %s — %s",
+                            input.project_id, crs_exc,
+                        )
+                    if project_epsg is not None:
+                        epsg = int(project_epsg)
+                        epsg_assumed = False
+                        georef_method = "declared"
+
                 async def _parse_and_write(
                     write_type: str, target_sheet: str | None,
                 ) -> tuple[Any, dict[str, int]]:
@@ -2349,6 +2393,37 @@ async def run_ingest_tabular(
                         rows_written=rows_written, warnings=warnings,
                     ),
                 )
+
+                # Silver is not what the Workspace draws. SECTION, 3D, LOGS
+                # and COMPARE read gold.drillhole_intervals_visual and
+                # silver.drill_traces, and between the Dagster retirement
+                # (2026-07-28) and 2026-08-25 nothing wrote either — so a
+                # collar file could ingest cleanly, appear on the map, and
+                # leave every downhole view blank. Promoting here is what
+                # makes an upload visible in the views built to show it.
+                #
+                # Fire-and-forget, and deliberately outside the run's own
+                # success: the file HAS landed in silver by this point, and
+                # a promotion that fails must not relabel a good ingest as
+                # failed. The nightly sweep re-runs it either way.
+                try:
+                    from app.hatchet_workflows.promote_silver_to_gold import (  # noqa: PLC0415
+                        PromoteSilverToGoldInput,
+                        promote_silver_to_gold,
+                    )
+                    await promote_silver_to_gold.aio_run_no_wait(
+                        PromoteSilverToGoldInput(
+                            workspace_id=input.workspace_id,
+                            project_id=input.project_id,
+                        )
+                    )
+                except Exception as promo_exc:  # noqa: BLE001
+                    log.warning(
+                        "ingest_tabular: could not dispatch promote_silver_to_gold "
+                        "for project %s — %s (silver is written; the nightly "
+                        "sweep will promote it)",
+                        input.project_id, promo_exc,
+                    )
 
     except Exception as exc:
         if run_id:

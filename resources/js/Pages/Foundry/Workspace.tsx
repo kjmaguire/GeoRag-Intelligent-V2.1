@@ -12,6 +12,7 @@ import { StereonetMini, RoseMini, DownholeMultiLog, ChronoColumn, LithologyStrip
 import { WorkspaceMap, type MapProjectInfo, type MapProjectSummary, type MapCollar, type BasemapId } from '@/Components/Foundry/WorkspaceMap';
 import { CompareHolesModal, CompareHolesPanel } from '@/Components/Foundry/CompareHolesModal';
 import { SectionView } from '@/Components/Foundry/SectionView';
+import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
 import { Borehole3DView } from '@/Components/Foundry/Borehole3DView';
 import { useFullscreenToggle } from '@/Hooks/useFullscreenToggle';
 import { structurePoles, structureStrikes } from '@/lib/structureProjection';
@@ -268,7 +269,22 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
     );
 
     const [mode, setMode] = useState<Mode>(initialMode);
-    const [view3d, setView3d] = useState<View3D>('lithology');
+    // 3D opens on a sub-view that HAS something in it.
+    //
+    // It used to always open on 'lithology', which draws
+    // gold.drillhole_intervals_visual. A project with drill holes but no
+    // logged lithology — a historic delivery of collars, surveys and scans,
+    // which is what most first uploads are — therefore opened 3D on an
+    // empty canvas while TRAJECTORIES sat one segment away with every hole
+    // in it. The mode looked broken at exactly the moment it had data to
+    // show. Order below is "richest first": whichever is populated wins,
+    // and lithology stays the preference when it is.
+    const [view3d, setView3d] = useState<View3D>(() => {
+        if (intervals_count > 0) return 'lithology';
+        if (surveys_3d.length > 0 || collars.length > 0) return 'trajectories';
+        if (structures_3d.length > 0 || structures_visual_3d.length > 0) return 'stereosphere';
+        return 'lithology';
+    });
     const [tool, setTool] = useState<Tool>('pan');
     const [projectLayersOn, setProjectLayersOn] = useState<Record<string, boolean>>(
         () => Object.fromEntries(project_layers.map((l) => [l.id, l.on])),
@@ -404,17 +420,13 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                 {!isCanvasFullscreen && (
                     <div className="flex items-center gap-3 px-8 py-2 border-b shrink-0" style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}>
                         <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: 'var(--fg-3)' }}>Mode</span>
-                        <Segmented<Mode>
-                            value={mode}
-                            onChange={setMode}
-                            options={[
-                                { value: 'map', label: 'Map' },
-                                { value: 'section', label: 'Section' },
-                                { value: '3d', label: '3D' },
-                                { value: 'structure', label: 'Structure' },
-                                { value: 'logs', label: 'Logs' },
-                                { value: 'compare', label: 'Compare' },
-                            ]}
+                        {/* Shared with the Rasters page so both render one
+                            row of modes. RASTERS is a URL, not a panel here —
+                            see Components/Foundry/WorkspaceModeBar. */}
+                        <WorkspaceModeBar
+                            slug={project.slug}
+                            active={mode}
+                            onSelectInPage={(next) => setMode(next as Mode)}
                         />
                         <div className="flex-1" />
                         <button

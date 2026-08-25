@@ -367,12 +367,60 @@ class IngestionRunsController extends Controller
                 && ! (bool) $r['failed'],
         ));
 
+        // Where every uploaded file ended up.
+        //
+        // The two totals above answer different questions and neither is
+        // "how many of the files I dropped got processed":
+        //
+        //   in_flight  counts rows still MOVING — 0 once a delivery settles.
+        //   completed  counts silver.reports rows, i.e. DOCUMENTS. A drill
+        //              CSV, a shapefile and a .dbf produce no report at all,
+        //              and one TIFF produces one (its normalised PDF).
+        //
+        // So a 72-file delivery could finish with the page reading "0 in
+        // flight · 41 completed" and no number anywhere that added up to 72.
+        // A real delivery did exactly that on 2026-08-25 and read as ~30
+        // files silently lost. They were not: the run rows are keyed on
+        // minio_key, and $progress is already DISTINCT ON (minio_key), so it
+        // is one row per uploaded object and the honest denominator.
+        //
+        // Two reasons the file count still will not equal what the user
+        // selected in the picker, both worth saying on the page rather than
+        // leaving the user to discover:
+        //   * a shapefile's .shp/.shx/.dbf/.prj are zipped into ONE upload;
+        //   * a TIFF/RRD/JPEG ingests once as itself and once as the PDF it
+        //     is normalised into, so it holds two keys.
+        $byStatus = [
+            'completed' => 0, 'partial' => 0, 'failed' => 0,
+            'timed_out' => 0, 'cancelled' => 0, 'running' => 0,
+        ];
+        foreach ($progress as $p) {
+            $status = (string) ($p['status'] ?? '');
+            if ($status === '' || $status === 'queued' || $status === 'started') {
+                $status = in_array((string) $p['current_step'], $settledSteps, true)
+                    ? (string) $p['current_step']
+                    : 'running';
+            }
+            if (! array_key_exists($status, $byStatus)) {
+                $status = 'running';
+            }
+            $byStatus[$status]++;
+        }
+
         return [
             'in_flight' => $inFlight,
             'completed' => $completedRows,
             'totals' => [
                 'in_flight' => $stillMoving,
                 'completed' => count($completedRows),
+                // Files, not documents. `files` is the denominator the
+                // per-status counts below add up to.
+                'files' => count($progress),
+                'files_completed' => $byStatus['completed'],
+                'files_partial' => $byStatus['partial'],
+                'files_failed' => $byStatus['failed'] + $byStatus['cancelled'],
+                'files_timed_out' => $byStatus['timed_out'],
+                'files_running' => $byStatus['running'],
             ],
         ];
     }

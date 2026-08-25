@@ -107,6 +107,11 @@
             <file>tests/Feature/Admin/IntegrationsControllerTest.php</file>
             <file>tests/Feature/DecisionIntelligence/RecordDecisionTest.php</file>
             <file>tests/Feature/Foundry/IngestionRunsControllerTest.php</file>
+            <!-- The file ledger. Postgres-only for the same reason as the
+                 file above (silver.ingest_progress + DISTINCT ON), and it
+                 pins the invariant that the per-status counts partition
+                 totals.files exactly. -->
+            <file>tests/Feature/Foundry/IngestionRunsFileLedgerTest.php</file>
             <file>tests/Feature/Internal/WorkspaceDataUpdatedBridgeControllerTest.php</file>
             <file>tests/Feature/Jobs/DebounceWorkspaceMvRefreshDataVersionTest.php</file>
             <file>tests/Feature/Services/AuditEmitterAlertBroadcastTest.php</file>

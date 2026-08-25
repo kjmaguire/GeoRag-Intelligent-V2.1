@@ -34,28 +34,44 @@ const ORG_NAV: Array<{ id: string; href: string; label: string }> = [
     { id: 'public-geoscience', href: '/public-geoscience', label: 'Public Geo' },
 ];
 
+/**
+ * Ordered so the two places a geologist actually looks at DATA sit at the
+ * top, and the ingest machinery sits below them.
+ *
+ * Workspace is second, directly under Overview (2026-08-25). It is the
+ * product — map, sections, 3D, logs, compare — and it was last in a list of
+ * eight, under four ingest-plumbing entries. Reordering costs nothing and
+ * stops the map reading like an afterthought.
+ *
+ * Two entries were folded away on the same day rather than deleted, because
+ * both pages still exist and still hold the only reader for a silver table:
+ *
+ *   - 'Tables' (/attribute-tables) is now a view INSIDE Reports. An
+ *     attribute table is a document's tabular half — the same provenance,
+ *     the same source file — so it belongs beside the documents, not in a
+ *     nav entry of its own. /attribute-tables still resolves; it redirects.
+ *   - 'Rasters' (/rasters) is now a MODE inside Workspace, next to Map. A
+ *     raster's footprint is a map layer; listing it two nav entries away
+ *     from the map it overlays was the wrong shape. /rasters redirects to
+ *     ?mode=rasters.
+ */
 const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: string }> = [
     { id: 'overview', suffix: '', label: 'Overview', icon: 'home' },
-    { id: 'chat', suffix: '/chat', label: 'Chat', icon: 'chat' },
-    { id: 'data', suffix: '/sources', label: 'Data', icon: 'db' },
-    { id: 'ingestion-runs', suffix: '/ingestion-runs', label: 'Ingestion Runs', icon: 'pulse' },
-    // Added 2026-08-25. silver.attribute_tables and silver.raster_layers each
-    // had a writer and NO reader — a delivery landed 229 attribute rows and 4
-    // rasters that nothing in the product would ever show. A page nobody can
-    // navigate to is the same gap one step further on, so both get an entry
-    // rather than only a route.
-    { id: 'attribute-tables', suffix: '/attribute-tables', label: 'Tables', icon: 'db' },
-    { id: 'rasters', suffix: '/rasters', label: 'Rasters', icon: 'cube' },
-    // Merged 2026-08-18: 'Quality' (/imports/quality) and 'Reader' (/corpus)
-    // were both views of the same silver.reports + document_passages pair as
-    // 'Reports'. One entry now, master-detail; both old paths redirect here.
-    { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
     // Merged 2026-08-19: 'Map' (/map) and 'Compare' (/compare) were both
     // narrower views of what Workspace already renders — Map's page was a
     // second MapView over the same collars, Compare's a weaker version of
     // the hole-vs-hole panel. One entry now, mode-switched inside; both old
     // paths redirect here. Restored 2026-08-17 (reader-core trim reversal).
+    // 'Rasters' joined them 2026-08-25 as ?mode=rasters.
     { id: 'workspace', suffix: '/workspace', label: 'Workspace', icon: 'cube' },
+    { id: 'chat', suffix: '/chat', label: 'Chat', icon: 'chat' },
+    // Merged 2026-08-18: 'Quality' (/imports/quality) and 'Reader' (/corpus)
+    // were both views of the same silver.reports + document_passages pair as
+    // 'Reports'. One entry now, master-detail; both old paths redirect here.
+    // 'Tables' joined them 2026-08-25 as ?view=tables.
+    { id: 'reports', suffix: '/reports', label: 'Reports', icon: 'report' },
+    { id: 'data', suffix: '/sources', label: 'Data', icon: 'db' },
+    { id: 'ingestion-runs', suffix: '/ingestion-runs', label: 'Ingestion Runs', icon: 'pulse' },
 ];
 
 interface SharedRailData {

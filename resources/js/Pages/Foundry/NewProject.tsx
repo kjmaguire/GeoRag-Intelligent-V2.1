@@ -274,6 +274,14 @@ export default function FoundryNewProject() {
         operator: '',
         country: '',
         state: '',
+        // The project's coordinate system, as an EPSG code.
+        //
+        // Nothing in a CSV or a spreadsheet declares a projection, so
+        // without this every drill table uploaded into the project is read
+        // as EPSG:32613 (UTM zone 13N, Colorado) unless the user types an
+        // override on each individual file. Asking once, here, is what
+        // stops an Alaskan project writing its holes 2,500 km east.
+        crsEpsg: '',
     });
     const setField = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
         setForm((f) => ({ ...f, [k]: v }));
@@ -282,6 +290,10 @@ export default function FoundryNewProject() {
     // is now selected) can't be submitted.
     const setCountry = (code: string) =>
         setForm((f) => ({ ...f, country: code, state: '' }));
+
+    // Same parser the per-file CRS override uses, so "what is a valid EPSG
+    // code" has one answer on this screen rather than two.
+    const projectEpsg = parseEpsg(form.crsEpsg);
 
     const [queue, setQueue] = useState<QueuedFile[]>([]);
     /**
@@ -633,6 +645,13 @@ export default function FoundryNewProject() {
                     // picker but isn't a separate column on silver.projects.
                     region: form.state,
                     orientation_reference: 'BOH',
+                    // Omitted entirely when blank rather than sent as null:
+                    // the column stays NULL either way, and a body that
+                    // carries the key only when it has a value is what the
+                    // validator's `nullable` rule reads most predictably.
+                    ...(projectEpsg.epsg !== undefined
+                        ? { crs_epsg: projectEpsg.epsg }
+                        : {}),
                 }),
             });
             const createJson = await createRes.json().catch(() => ({}));
@@ -823,6 +842,33 @@ export default function FoundryNewProject() {
                                             <option key={s.code} value={s.code}>{s.name}</option>
                                         ))}
                                     </select>
+                                </Field>
+                                {/* The one field that decides where this
+                                    project's drill holes land on the map.
+                                    See `crsEpsg` in the form state. */}
+                                <Field label="Coordinate system (EPSG code)">
+                                    <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={form.crsEpsg}
+                                        onChange={(e) => setField('crsEpsg', e.target.value)}
+                                        placeholder="e.g. 26904"
+                                        className="w-full text-sm px-3 py-2 rounded border"
+                                        style={inputStyle}
+                                    />
+                                    <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--fg-3)' }}>
+                                        The projection this project&rsquo;s eastings and northings are
+                                        surveyed in. Nothing inside a CSV or spreadsheet declares one,
+                                        so without this every drill table uploaded here is read as{' '}
+                                        <strong>EPSG:32613</strong> (UTM zone 13N) and holes surveyed
+                                        in another zone land in the wrong place. Number only — a
+                                        per-file override on the import screen still wins over it.
+                                    </p>
+                                    {projectEpsg.error !== undefined && (
+                                        <p className="mt-1 text-[11px]" style={{ color: 'var(--warn, #d97706)' }}>
+                                            {projectEpsg.error}
+                                        </p>
+                                    )}
                                 </Field>
                             </div>
                         )}
@@ -1246,6 +1292,11 @@ export default function FoundryNewProject() {
                                                 {queueSummary.badEpsg.length === 1 ? '' : 's'} — fix in Corpus before creating
                                             </span>
                                         )}
+                                        {projectEpsg.error !== undefined && (
+                                            <span style={{ color: 'var(--danger, oklch(0.65 0.2 30))' }}>
+                                                {' · '}project EPSG code is not valid — fix in Jurisdiction before creating
+                                            </span>
+                                        )}
                                     </span>
                                 </div>
                                 {submitProgress && (
@@ -1279,7 +1330,16 @@ export default function FoundryNewProject() {
                             <button
                                 type="button"
                                 onClick={submit}
-                                disabled={submitting || !form.name || queueSummary.badEpsg.length > 0}
+                                disabled={
+                                    submitting
+                                    || !form.name
+                                    || queueSummary.badEpsg.length > 0
+                                    // A project EPSG the API would refuse blocks
+                                    // the button rather than being dropped in
+                                    // transit — the same rule the per-file
+                                    // override already follows.
+                                    || projectEpsg.error !== undefined
+                                }
                                 className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border disabled:opacity-40"
                                 style={{ color: 'var(--bg-0)', background: 'var(--accent)', borderColor: 'var(--accent-dim)' }}
                             >
