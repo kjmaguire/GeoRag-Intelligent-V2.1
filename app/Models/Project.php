@@ -52,6 +52,18 @@ class Project extends Model
     protected $fillable = [
         'project_name',
         'crs_datum',
+        // Added 2026-08-25. The column has existed since the schema was
+        // written and FOUR readers consult it (Overview, Workspace, Chat's
+        // context envelope, the projects index) — but nothing had ever been
+        // able to WRITE it, so it was NULL on every project ever created and
+        // every reader fell through to its default.
+        //
+        // The cost was not cosmetic. ingest_tabular now resolves a CSV's
+        // coordinate system as: the file's own override, else THIS, else
+        // EPSG:32613. With this permanently NULL the middle rung did not
+        // exist, so a project in Alaska read its collar CSVs as UTM zone 13N
+        // and wrote the holes ~2,500 km east of where they were drilled.
+        'crs_epsg',
         'company',
         'magnetic_declination',
         'orientation_reference',
