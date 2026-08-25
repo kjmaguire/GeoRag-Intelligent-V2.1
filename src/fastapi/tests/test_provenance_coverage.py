@@ -124,6 +124,23 @@ NOT_FILE_DERIVED: dict[str, str] = {
         "without a provenance row. Note this inherits the gap above: a "
         "passage derived from an ingest_tabular collar traces back to a "
         "row that itself has no lineage",
+    "hatchet_workflows/promote_silver_to_gold.py":
+        "silver.drill_traces -- a desurveyed hole path, computed from "
+        "silver.collars + silver.surveys. No file is opened: the geometry "
+        "is minimum-curvature arithmetic over rows that are already in "
+        "silver, so there is no source_file to record and a provenance "
+        "row would name the wrong thing. The lineage IS the collar -- "
+        "collar_id is UNIQUE on the table and a FK, so every trace "
+        "resolves to exactly one collar and inherits whatever lineage "
+        "that collar carries. survey_hash makes the OTHER input "
+        "recoverable too: it is a SHA-256 over the ordered stations the "
+        "trace was built from, so a trace can be proved stale against the "
+        "surveys as they stand now. Inherits the ingest_tabular gap below "
+        "for exactly the same reason nl_summaries does -- a trace off a "
+        "directly-uploaded collar CSV traces back to a row with no "
+        "lineage of its own. The gold.* writes in this module are not "
+        "silver and are outside this table's remit; they hang off "
+        "collar_id the same way",
 }
 
 #: The known gap, recorded rather than hidden. Closing it means adding
