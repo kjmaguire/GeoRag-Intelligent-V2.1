@@ -271,10 +271,17 @@ class CollarRecord:
     All numeric fields are sourced directly from the database; the agent must
     not alter or round these values (Layer 3: numerical claim verification).
 
-    longitude / latitude are computed by PostGIS via ST_Transform(geom, 4326)
-    so the orchestrator can build GeoJSON map payloads without duplicating
-    projection logic. They are nullable because pre-M2 rows may not have
-    valid geometries.
+    longitude / latitude are read from the stored ``geom_4326`` column so the
+    orchestrator can build GeoJSON map payloads without duplicating projection
+    logic. They are nullable because pre-M2 rows may not have valid geometries.
+
+    easting / northing are the source-grid columns, NOT ``ST_X/ST_Y(geom)``.
+    ``geom`` is declared ``geometry(POINT, 32613)`` and every collar is
+    transformed into that SRID at insert so a non-Athabasca project can be
+    written at all, which means ``ST_X(geom)`` is not the easting the file
+    supplied unless the project happens to be UTM 13N. The columns hold the
+    untouched values, and the agent is instructed to cite these numerics
+    verbatim.
     """
 
     hole_id: str
@@ -683,13 +690,32 @@ async def query_spatial_collars(
         param_idx += 1
 
     if center_easting is not None and center_northing is not None and radius_m is not None:
-        # ST_DWithin operates on the geometry column; the CRS must match the
-        # project's SRID.  Using the point geometry constructor directly with
-        # the stored SRID avoids a unit mismatch between geographic and
-        # projected CRS.
+        # Compared against the easting/northing COLUMNS, not against `geom`.
+        #
+        # `geom` is declared geometry(POINT, 32613) and, since 2026-08-25,
+        # every collar is ST_Transform-ed into that SRID at insert so a
+        # non-Athabasca project can be written at all. `Find_SRID` reads the
+        # column's declared SRID, so it returns 32613 whatever the project's
+        # real CRS is — and the caller's center_easting/center_northing are
+        # in the PROJECT's grid. For an EPSG:26904 project that builds the
+        # search point roughly 3,400 km from where the collars actually sit,
+        # and ST_DWithin returns nothing for a query that should match.
+        #
+        # The easting/northing columns hold the untouched source values, so
+        # both sides of this comparison are in the same grid and no SRID is
+        # involved. UTM units are metres, which is what radius_m already
+        # assumes. Squared distance to keep it to one sqrt-free expression;
+        # this gives up the GIST index, which is the right trade for a table
+        # holding thousands of collars per project rather than millions.
+        # The radius is cast explicitly: `$n * $n` on two untyped parameters
+        # is `unknown * unknown`, which Postgres rejects with
+        # "operator is not unique". The easting/northing terms need no cast —
+        # the column on the left of each subtraction types them.
         spatial_filter = (
-            f" AND ST_DWithin(geom, ST_SetSRID(ST_MakePoint(${param_idx}, ${param_idx + 1}), "
-            f"Find_SRID('silver', 'collars', 'geom')), ${param_idx + 2})"
+            f" AND (easting - ${param_idx}) * (easting - ${param_idx})"
+            f" + (northing - ${param_idx + 1}) * (northing - ${param_idx + 1})"
+            f" <= ${param_idx + 2}::double precision"
+            f" * ${param_idx + 2}::double precision"
         )
         bind_args.extend([center_easting, center_northing, radius_m])
         param_idx += 3
@@ -711,11 +737,16 @@ async def query_spatial_collars(
 
     sql = (
         "SELECT collar_id::text, hole_id, project_id::text, "
-        "ST_X(geom) AS easting, ST_Y(geom) AS northing, elevation, "
+        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
+        # declared 32613 and every collar is transformed into it at insert,
+        # so for a non-Athabasca project ST_X(geom) is not the easting the
+        # file supplied. The columns hold the untouched source values, and
+        # the agent is instructed to cite returned numerics verbatim.
+        "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, "
         "drill_date::text, "
-        "ST_X(ST_Transform(geom, 4326)) AS longitude, "
-        "ST_Y(ST_Transform(geom, 4326)) AS latitude "
+        "ST_X(geom_4326) AS longitude, "
+        "ST_Y(geom_4326) AS latitude "
         "FROM silver.collars "
         f"WHERE project_id = $1{workspace_filter}{spatial_filter}{type_filter}{status_clause}"
         f" ORDER BY hole_id{limit_clause}"
@@ -959,10 +990,15 @@ async def query_downhole_logs(
     # pinned to this single hole.
     collar_sql = (
         "SELECT collar_id::text, hole_id, project_id::text, "
-        "ST_X(geom) AS easting, ST_Y(geom) AS northing, elevation, "
+        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
+        # declared 32613 and every collar is transformed into it at insert,
+        # so for a non-Athabasca project ST_X(geom) is not the easting the
+        # file supplied. The columns hold the untouched source values, and
+        # the agent is instructed to cite returned numerics verbatim.
+        "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, drill_date::text, "
-        "ST_X(ST_Transform(geom, 4326)) AS longitude, "
-        "ST_Y(ST_Transform(geom, 4326)) AS latitude "
+        "ST_X(geom_4326) AS longitude, "
+        "ST_Y(geom_4326) AS latitude "
         "FROM silver.collars "
         f"WHERE project_id = $1 AND UPPER(hole_id) = UPPER($2){workspace_clause} "
         "LIMIT 1"
@@ -1130,7 +1166,12 @@ async def query_collar_details(
     # best match. workspace_id + project_id are ALWAYS in the WHERE.
     collar_sql = (
         "SELECT collar_id::text, hole_id, hole_id_canonical, project_id::text, "
-        "ST_X(geom) AS easting, ST_Y(geom) AS northing, elevation, "
+        # easting/northing from the COLUMNS, not ST_X/ST_Y(geom): `geom` is
+        # declared 32613 and every collar is transformed into it at insert,
+        # so for a non-Athabasca project ST_X(geom) is not the easting the
+        # file supplied. The columns hold the untouched source values, and
+        # the agent is instructed to cite returned numerics verbatim.
+        "easting, northing, elevation, "
         "total_depth, drill_type, hole_type, azimuth, dip, "
         "drill_date::text, geologist, match_priority "
         "FROM ("

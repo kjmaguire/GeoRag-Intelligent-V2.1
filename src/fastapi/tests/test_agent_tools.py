@@ -168,14 +168,30 @@ class TestQuerySpatialCollars:
         assert collar.status == "Completed"
 
     @pytest.mark.asyncio
-    async def test_spatial_filter_adds_st_dwithin(self) -> None:
-        """When center coords + radius provided, SQL includes ST_DWithin."""
+    async def test_spatial_filter_searches_the_source_grid(self) -> None:
+        """A radius search compares against the easting/northing COLUMNS.
+
+        This used to assert `"ST_DWithin" in sql`, which pinned the
+        implementation rather than the behaviour — and the implementation was
+        wrong. `geom` is declared geometry(POINT, 32613) and every collar is
+        transformed into that SRID at insert, so `Find_SRID` returns 32613
+        whatever the project's real CRS is, while the caller's easting and
+        northing are in the PROJECT's grid.
+
+        Measured against a live Postgres with RedStar's Sitka collars
+        (EPSG:26904): a 500 m search around their true coordinates returned
+        0 rows via ST_DWithin on `geom`, and all 5 against the columns. The
+        columns hold the untouched source values, so both sides of the
+        comparison are in one grid and no SRID is involved.
+        """
         captured_sql: list[str] = []
+        captured_args: list[tuple[object, ...]] = []
 
         mock_conn = AsyncMock()
 
         async def _capture_fetch(sql: str, *args: object) -> list:
             captured_sql.append(sql)
+            captured_args.append(args)
             return []
 
         mock_conn.fetch = _capture_fetch
@@ -196,7 +212,66 @@ class TestQuerySpatialCollars:
         )
 
         assert captured_sql, "fetch was never called"
-        assert "ST_DWithin" in captured_sql[0]
+        sql = captured_sql[0]
+
+        # A radius filter is applied, over the source-grid columns.
+        assert "easting -" in sql and "northing -" in sql
+        assert "ST_DWithin" not in sql, (
+            "ST_DWithin on `geom` searches SRID 32613, not the project's grid"
+        )
+        assert "Find_SRID" not in sql, (
+            "Find_SRID reads the COLUMN's declared SRID (32613), which is not "
+            "the CRS the caller's easting/northing are expressed in"
+        )
+        # The radius must be cast: `$n * $n` on two untyped parameters is
+        # `unknown * unknown`, which Postgres rejects outright.
+        assert "::double precision" in sql
+
+        # The caller's own numbers reach the query unmodified — no reprojection
+        # is applied to them, because none is needed.
+        assert 512000.0 in captured_args[0]
+        assert 6120000.0 in captured_args[0]
+        assert 500.0 in captured_args[0]
+
+    @pytest.mark.asyncio
+    async def test_collar_coordinates_come_from_the_columns_not_the_geometry(
+        self,
+    ) -> None:
+        """`ST_X(geom)` is not the easting the file supplied.
+
+        Since every collar is transformed into the column's declared SRID at
+        insert, ST_X(geom) equals the source easting only for a UTM 13N
+        project. Measured on Sitka: the columns hold (400807, 6117291) and
+        ST_X/ST_Y(geom) return (-2765464.8, 7604657.1). The agent is told to
+        cite returned numerics verbatim, so it would report the second pair.
+        """
+        captured_sql: list[str] = []
+
+        mock_conn = AsyncMock()
+
+        async def _capture_fetch(sql: str, *args: object) -> list:
+            captured_sql.append(sql)
+            return []
+
+        mock_conn.fetch = _capture_fetch
+        _wire_scoped_conn(mock_conn)
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        deps = _make_deps(pg_pool=mock_pool)
+        ctx = _MockRunContext(deps=deps)
+
+        await query_spatial_collars(ctx, project_id="proj-test-uuid")  # type: ignore[arg-type]
+
+        assert captured_sql, "fetch was never called"
+        sql = captured_sql[0]
+        assert "ST_X(geom) AS easting" not in sql
+        assert "ST_Y(geom) AS northing" not in sql
+        assert "easting, northing" in sql
+        # lon/lat come from the stored geom_4326, which is transformed from the
+        # SOURCE srid and is therefore exact.
+        assert "ST_X(geom_4326) AS longitude" in sql
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_timeout(self) -> None:
