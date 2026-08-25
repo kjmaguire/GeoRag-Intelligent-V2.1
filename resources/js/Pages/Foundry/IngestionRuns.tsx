@@ -325,10 +325,102 @@ interface CompletedRow {
     filename: string | null;
 }
 
+interface RunTotals {
+    in_flight: number;
+    /** silver.reports rows — DOCUMENTS, not files. */
+    completed: number;
+    /**
+     * One per uploaded object. The five `files_*` counts below partition
+     * it exactly, so the ledger always adds up.
+     *
+     * Optional because a cached `.json` poll response served from before
+     * this shipped has neither. The ledger renders nothing rather than
+     * "undefined files".
+     */
+    files?: number;
+    files_completed?: number;
+    files_partial?: number;
+    files_failed?: number;
+    files_timed_out?: number;
+    files_running?: number;
+}
+
 interface RunsSnapshot {
     in_flight: InFlightRow[];
     completed: CompletedRow[];
-    totals: { in_flight: number; completed: number };
+    totals: RunTotals;
+}
+
+/**
+ * Where every uploaded file ended up — the number that reconciles.
+ *
+ * Added 2026-08-25 after a 72-file delivery finished with the page reading
+ * "0 in flight · 41 completed" and no number on it that added up to what
+ * was dropped, which reads as thirty files silently lost. They were not
+ * lost: 41 was the DOCUMENT count, drill tables and shapefiles produce no
+ * document, and the two notes below account for the rest of the gap.
+ */
+function FileLedger({ totals }: { totals: RunTotals }) {
+    if (totals.files === undefined || totals.files === 0) return null;
+
+    type Cell = { label: string; value: number; tone?: 'accent' | 'warn' };
+    const cells: Cell[] = ([
+        { label: 'Completed', value: totals.files_completed ?? 0 },
+        { label: 'Partial', value: totals.files_partial ?? 0, tone: 'warn' },
+        { label: 'Failed', value: totals.files_failed ?? 0, tone: 'warn' },
+        { label: 'Timed out', value: totals.files_timed_out ?? 0, tone: 'warn' },
+        { label: 'Running', value: totals.files_running ?? 0, tone: 'accent' },
+    ] satisfies Cell[]).filter((c) => c.value > 0);
+
+    return (
+        <section className="px-8 pb-5">
+            <div
+                className="rounded-md border px-4 py-3"
+                style={{ borderColor: 'var(--line-2)', background: 'var(--bg-1)' }}
+            >
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                    <span
+                        className="text-[10px] font-mono uppercase tracking-widest"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
+                        Files ingested
+                    </span>
+                    <span
+                        className="text-sm font-mono"
+                        style={{ color: 'var(--fg-0)', fontVariantNumeric: 'tabular-nums' }}
+                    >
+                        {totals.files}
+                    </span>
+                    {cells.map((c) => (
+                        <span
+                            key={c.label}
+                            className="text-xs"
+                            style={{
+                                color:
+                                    c.tone === 'warn'
+                                        ? 'var(--warn, #d97706)'
+                                        : c.tone === 'accent'
+                                          ? 'var(--accent)'
+                                          : 'var(--fg-2)',
+                                fontVariantNumeric: 'tabular-nums',
+                            }}
+                        >
+                            {c.value} {c.label.toLowerCase()}
+                        </span>
+                    ))}
+                </div>
+                <p className="mt-2 text-[11px] leading-relaxed" style={{ color: 'var(--fg-3)' }}>
+                    This counts uploaded objects, which is not always the number of files you
+                    picked. A shapefile&rsquo;s <code>.shp</code>/<code>.shx</code>/
+                    <code>.dbf</code>/<code>.prj</code> are zipped into one upload, and a
+                    TIFF, RRD or JPEG appears twice — once as itself and once as the PDF it is
+                    normalised into. Sidecars whose master file was not in the selection
+                    (a lone <code>.shx</code>, an orphan <code>.prj</code>) are reported at
+                    the import screen and never uploaded.
+                </p>
+            </div>
+        </section>
+    );
 }
 
 interface IngestionRunsProps {
@@ -571,7 +663,11 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                         tone={runs.totals.in_flight > 0 ? 'accent' : undefined}
                         sub={runs.totals.in_flight > 0 ? 'processing now' : 'idle'}
                     />
-                    <Stat label="COMPLETED" value={String(runs.totals.completed)} sub="this project" />
+                    {/* DOCUMENTS, not files. This counts silver.reports rows,
+                        so a drill CSV or a shapefile is absent from it by
+                        design — they produce no document. The file ledger
+                        below is what reconciles against an upload. */}
+                    <Stat label="DOCUMENTS" value={String(runs.totals.completed)} sub="reports in silver" />
                     <Stat
                         label="PASSAGES"
                         value={String(runs.completed.reduce((sum, r) => sum + r.passages, 0))}
@@ -583,6 +679,8 @@ export default function FoundryIngestionRuns({ project, runs: initial }: Ingesti
                         sub="vectors in Qdrant"
                     />
                 </section>
+
+                <FileLedger totals={runs.totals} />
 
                 {empty && (
                     <div className="px-8 py-12">
