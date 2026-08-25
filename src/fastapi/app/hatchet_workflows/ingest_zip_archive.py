@@ -69,6 +69,26 @@ _SPATIAL_EXTS = frozenset(
     e.lstrip(".") for e in (VECTOR_EXTENSIONS | QGIS_PROJECT_EXTENSIONS)
 )
 
+#: Raster members, routed to the bronze `tiff/` prefix and tiff_normalize.
+#:
+#: THE FOURTH COPY of "is this a raster". UploadController collapsed its three
+#: into RASTER_REPORT_EXTS when `.rrd` was added; this one was missed, so an
+#: `.rrd` inside a ZIP fell through to `unknown` — and `unknown` never
+#: contributes to the terminal status, so the archive was marked `completed`
+#: having silently skipped it. Measured by dispatching the real RedStar
+#: filenames through _ingest_one: both .rrd files returned {'unknown': 1}.
+#:
+#: Kept as a local frozenset rather than imported from the PHP-side list
+#: because there is no shared source between the two languages; the comment
+#: on UploadController::RASTER_REPORT_EXTS names this file as its twin.
+_RASTER_EXTS = frozenset({"tif", "tiff", "rrd"})
+
+#: Standalone dBASE tables. NOT shapefile sidecars when no same-stem .shp is
+#: present in the archive — a bare .dbf or MapInfo .dat is a whole attribute
+#: table that ingest_tabular reads directly. Being in the sidecar bucket meant
+#: they were counted as handled and then nothing opened them.
+_DBASE_EXTS = frozenset({"dbf", "dat"})
+
 #: Shapefile companions. pyogrio reads these THROUGH the .shp, so opening one
 #: directly is wrong — but they are not "unknown" either: the .shp branch
 #: below re-zips them alongside their .shp. Counting them separately keeps
@@ -534,7 +554,7 @@ async def _ingest_one(
         await asyncio.sleep(0.25)
         counts["csv" if ext in ("csv", "tsv") else "xlsx"] += 1
 
-    elif ext in ("tif", "tiff"):
+    elif ext in _RASTER_EXTS:
         # TIFF scans → upload to bronze tiff/ prefix + trigger tiff_normalize
         ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         safe_name = _safe_filename(file_path.name)
@@ -617,6 +637,26 @@ async def _ingest_one(
         await asyncio.sleep(0.25)
         counts["spatial"] += 1
 
+    elif ext in _DBASE_EXTS and not _has_sibling(file_path, ".shp"):
+        # A dBASE table with NO same-stem .shp beside it is not a sidecar — it
+        # is a standalone attribute table, and ingest_tabular reads one
+        # directly. It reached the sidecar branch below and was counted as
+        # handled, so a ZIP of attribute tables completed having written
+        # nothing. Same distinction the import wizard's bundler already makes
+        # for a loose .dbf/.dat.
+        ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S_%f")
+        table_key = f"tables/{input.project_id}/{ts}_{safe_name}"
+        await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, table_key, file_bytes)
+        await ingest_tabular.aio_run_no_wait(
+            IngestTabularInput(
+                workspace_id=input.workspace_id,
+                project_id=input.project_id,
+                minio_key=table_key,
+            )
+        )
+        await asyncio.sleep(0.25)
+        counts["tabular"] += 1
+
     elif ext in _SHAPEFILE_SIDECAR_EXTS:
         # Absorbed by the .shp branch above. Counted, not "unknown".
         counts["sidecar"] += 1
@@ -624,6 +664,23 @@ async def _ingest_one(
     else:
         counts["unknown"] += 1
         log.debug("ingest_zip_archive: unknown ext .%s for %s — skipping", ext, file_path.name)
+
+
+def _has_sibling(path: Path, suffix: str) -> bool:
+    """Whether a same-stem file with *suffix* sits beside *path*.
+
+    Case-insensitive on BOTH halves. A delivery routinely mixes cases —
+    ``Veins.SHP`` beside ``veins.dbf`` — and this decides whether a dBASE file
+    is a shapefile's attribute half or a standalone table, so getting it wrong
+    either drops a real table or opens a sidecar that pyogrio should have read
+    through its .shp.
+    """
+    stem = path.stem.lower()
+    want = suffix.lower()
+    return any(
+        sib.is_file() and sib.stem.lower() == stem and sib.suffix.lower() == want
+        for sib in path.parent.iterdir()
+    )
 
 
 def _safe_filename(name: str) -> str:

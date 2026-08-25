@@ -69,13 +69,34 @@ class UploadController extends Controller
      * Only categories with a live downstream consumer belong here. Both of
      * these dispatch a Hatchet workflow from store() below.
      */
+    /**
+     * `reports` extensions that are RASTERS, not PDFs.
+     *
+     * One definition because three places need the same answer — the storage
+     * prefix, the dispatch target, and the category list — and they were three
+     * separate `in_array($ext, ['tif', 'tiff'])` literals. Adding a format to
+     * two of the three routes the upload to the wrong workflow, or files it
+     * under `reports/` where the PDF sensor picks it up and fails on bytes
+     * that are not a PDF.
+     *
+     * @var list<string>
+     */
+    private const RASTER_REPORT_EXTS = ['tif', 'tiff', 'rrd'];
+
     private const CATEGORIES = [
         // ADR-0005 (2026-05-23): TIFF scans normalize to PDF at the bronze
         // edge via tiff_normalize, then route through the §04p PDF stack
         // unchanged. Both extensions land under the same `reports/{project_id}/...`
         // prefix; dispatchShadowIfPdf() inspects the extension and calls
         // the right trigger endpoint.
-        'reports' => ['pdf', 'tif', 'tiff'],
+        // 'rrd' added 2026-08-25 — an ERDAS reduced-resolution pyramid.
+        // Normally a derived companion of a raster and safely ignorable, but
+        // NOT when its parent is absent: in a real delivery both .rrd files
+        // held the only surviving copy of their image (a 1504x2007 colour
+        // geological map and an underground mine plan). tiff_normalize
+        // extracts the finest level and the rest of the raster path runs
+        // unchanged.
+        'reports' => ['pdf', 'tif', 'tiff', 'rrd'],
         // ZIP archives containing hundreds of small files (TIF, LAS, LOG,
         // XLSX, PDF ≤10 MB each). The Hatchet ingest_zip_archive workflow
         // extracts each entry and fans it out to the appropriate ingester.
@@ -123,7 +144,11 @@ class UploadController extends Controller
         // the retired `xyz` entry for .dat has never gated anything. `txt` has
         // sat in both retired `xyz` and live `collars` for months and uploads
         // fine, which is the standing proof.
-        'tables' => ['dbf', 'dat'],
+        // 'mdb'/'accdb' added 2026-08-25 — Microsoft Access. Read via
+        // mdbtools in the fastapi runtime image; one Access table becomes one
+        // attribute_tables layer, so a 19-table survey database lands as 19
+        // named tables rather than one opaque blob.
+        'tables' => ['dbf', 'dat', 'mdb', 'accdb'],
         // Vector data + QGIS projects → ingest_spatial →
         // silver.spatial_features. `.zip` is here because a shapefile is
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone
@@ -389,7 +414,7 @@ class UploadController extends Controller
         // ingest_pdf. The category remains `reports` for UX so the user
         // doesn't have to know about the format-routing detail.
         $keyPrefix = $category;
-        if ($category === 'reports' && in_array($ext, ['tif', 'tiff'], true)) {
+        if ($category === 'reports' && in_array($ext, self::RASTER_REPORT_EXTS, true)) {
             $keyPrefix = 'tiff';
         }
         $minioKey = sprintf(
@@ -517,7 +542,7 @@ class UploadController extends Controller
                     fileSize: (int) $file->getSize(),
                     vendorProfileId: $vendorProfileId,
                     responseData: $responseData,
-                    isTiff: in_array($ext, ['tif', 'tiff'], true),
+                    isTiff: in_array($ext, self::RASTER_REPORT_EXTS, true),
                 );
             }
 

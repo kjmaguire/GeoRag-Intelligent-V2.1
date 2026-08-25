@@ -1635,6 +1635,12 @@ jobs:
           dockerfile: docker/dagster.Dockerfile
           failure-threshold: error
 
+      - name: Lint docker/martin.Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: docker/martin.Dockerfile
+          failure-threshold: error
+
   # ─── Docker build + Trivy + SBOM: MOVED (2026-08-14) ────────────────────
   # The ~24-minute docker-build/Trivy/SBOM/Cosign job now lives in its own
   # workflow, .github/workflows/docker-build.yml (identical triggers and job

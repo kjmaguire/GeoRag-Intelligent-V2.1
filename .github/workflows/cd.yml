@@ -268,6 +268,56 @@ jobs:
           cache-to: type=registry,ref=${{ env.ACR_NAME }}.azurecr.io/georag/laravel:buildcache,mode=max
 
   # ==========================================================================
+  # Martin — the upstream tile server with THIS deployment's source list baked
+  # in. Seconds to build (a COPY over a pinned base) so it needs no layer
+  # cache and is never the critical path, but it is a separate job so a
+  # martin.yaml typo fails on its own rather than inside the Laravel build.
+  #
+  # martin.yaml has to travel WITH the commit: it names the tile functions
+  # explicitly (auto_publish is false), so a migration adding a function and
+  # the config publishing it must deploy together or the new layer 404s.
+  # ==========================================================================
+  build-martin:
+    name: Build martin image
+    needs: check-ci
+    if: needs.check-ci.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SHORT_SHA: ${{ needs.check-ci.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check-ci.outputs.sha }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: ACR login
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build + push martin image
+        uses: docker/build-push-action@v6
+        with:
+          # `docker/` — the Dockerfile COPYs martin/martin.yaml relative to it.
+          context: docker
+          file: docker/martin.Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/georag/martin:${{ env.SHORT_SHA }}
+            ${{ env.ACR_NAME }}.azurecr.io/georag/martin:latest
+
+  # ==========================================================================
   # Deploy — migrate, roll over each Container App, health-check, roll back
   # on failure. Single stage: there is one live environment, not a
   # dev/staging/production chain (see the file header for why). Runs after
@@ -276,8 +326,8 @@ jobs:
   # ==========================================================================
   deploy:
     name: Deploy to Azure Container Apps
-    needs: [check-ci, build-fastapi, build-laravel]
-    if: needs.check-ci.result == 'success' && needs.build-fastapi.result == 'success' && needs.build-laravel.result == 'success'
+    needs: [check-ci, build-fastapi, build-laravel, build-martin]
+    if: needs.check-ci.result == 'success' && needs.build-fastapi.result == 'success' && needs.build-laravel.result == 'success' && needs.build-martin.result == 'success'
     runs-on: ubuntu-latest
     # 2026-08-15: the two ACR builds (fastapi ~20 min, laravel ~12-15 min)
     # moved out to their own parallel jobs (build-fastapi, build-laravel)
@@ -515,6 +565,26 @@ jobs:
               --image "${ACR_LOGIN_SERVER}/georag/fastapi:${SHORT_SHA}" \
               --set-env-vars "LARAVEL_INTERNAL_URL=http://laravel-octane-cc"
           done
+
+      # Martin is deployed only if the app already exists. It is created
+      # out-of-band because it needs a DATABASE_URL secret, and this workflow
+      # has no business minting one.
+      #
+      # SKIPPING IS DELIBERATE, and this is the one place a silent skip is
+      # right: the tile layer is additive — every other app deploys and works
+      # without it, and the Laravel proxy answers 502 on a tile request rather
+      # than breaking a page. Failing the whole deploy because an optional
+      # component has not been provisioned would block every unrelated change.
+      # The skip is LOUD in the log so it cannot be mistaken for a deploy.
+      - name: Deploy martin image (martin-cc, if provisioned)
+        run: |
+          if ! az containerapp show -g "$AZURE_RG" -n martin-cc >/dev/null 2>&1; then
+            echo "::notice::martin-cc does not exist — skipping the tile-server rollout."
+            echo "Tiles will 502 at the proxy until it is created. See docker/martin.Dockerfile."
+            exit 0
+          fi
+          az containerapp update -g "$AZURE_RG" -n martin-cc \
+            --image "${ACR_LOGIN_SERVER}/georag/martin:${SHORT_SHA}"
 
       # Order matters: queue CONSUMERS before the producer. These three are
       # updated sequentially with no barrier (~30s end to end, measured on

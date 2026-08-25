@@ -21,9 +21,12 @@ every backend so the S3/MinIO path rejects them identically.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from uuid import UUID
 
@@ -191,6 +194,35 @@ async def normalize(
         store.get_bytes, Bucket.BRONZE, input.minio_key,
     )
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+
+    # An ERDAS .rrd joins the raster path here rather than getting a workflow
+    # of its own: the finest pyramid level is extracted to TIFF bytes and
+    # everything downstream proceeds unchanged.
+    #
+    # These are NOT throwaway previews in practice. In the delivery this was
+    # written for, neither .rrd's parent raster was present, so the pyramid
+    # holds the ONLY copy of the image — a legible 1504x2007 colour geological
+    # map and a 364x371 underground mine plan. Refusing them as "rendering
+    # companions" loses both.
+    #
+    # The sha is taken on the ORIGINAL bytes above, so provenance and the
+    # idempotency key still identify the file the user actually uploaded.
+    if Path(input.minio_key).suffix.lower() == ".rrd":
+        from georag_geoparsers.erdas_rrd import rrd_to_tiff_bytes  # noqa: PLC0415
+
+        with tempfile.NamedTemporaryFile(suffix=".rrd", delete=False) as handle:
+            handle.write(source_bytes)
+            rrd_path = handle.name
+        try:
+            source_bytes = await asyncio.to_thread(rrd_to_tiff_bytes, rrd_path)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(rrd_path)
+
+        log.info(
+            "tiff_normalize.rrd_extracted key=%s tiff_bytes=%d",
+            input.minio_key, len(source_bytes),
+        )
 
     derived_key = derived_pdf_key(input.project_id, input.minio_key, source_sha256)
 

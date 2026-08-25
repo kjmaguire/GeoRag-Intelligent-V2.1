@@ -67,6 +67,7 @@ guess here does not fail loudly, it returns a plausible-looking black or
 speckled image that a reviewer accepts.
 """
 
+import io
 import logging
 import os
 import re
@@ -174,6 +175,55 @@ class RrdFile:
 
     levels: list[RrdLevel]     # finest (largest) level first
     parent_name: str | None    # the .img/.tif the header names, if any
+
+
+def rrd_to_tiff_bytes(path: str | os.PathLike[str]) -> bytes:
+    """The finest pyramid level of *path*, encoded as a TIFF.
+
+    Exists so an ``.rrd`` can join the ordinary raster path instead of needing
+    one of its own: the caller hands these bytes to the same TIFF handling
+    every other image goes through.
+
+    Why the FINEST level rather than a mid one: in the delivery this was
+    written against, neither ``.rrd``'s parent raster was present, so the
+    pyramid is not a set of previews — it is the only surviving copy of the
+    image. Taking anything but the largest level would discard resolution that
+    exists nowhere else. (Measured: a legible 1504x2007 colour geological map,
+    and a 364x371 mine plan.)
+
+    Raises the same errors ``extract_level`` does — a file with no pixel
+    blocks, or a compression this module cannot decode. Both are loud on
+    purpose: a silently black image is worse than a refusal.
+    """
+    from PIL import Image  # noqa: PLC0415  — deferred; Pillow is heavy
+
+    rrd = read_rrd_levels(path)
+    if not rrd.levels:
+        raise ValueError(f"{os.fspath(path)!r} contains no pyramid levels to extract")
+
+    finest = max(rrd.levels, key=lambda lv: lv.width * lv.height)
+    array = extract_level(path, finest.name)
+
+    # Pillow infers mode from shape: (h, w) -> greyscale, (h, w, 3) -> RGB.
+    # A band count it cannot map is an error rather than a guess, because
+    # guessing here is how channels end up transposed.
+    if array.ndim == 2:
+        image = Image.fromarray(array, mode="L")
+    elif array.ndim == 3 and array.shape[2] == 3:
+        image = Image.fromarray(array, mode="RGB")
+    elif array.ndim == 3 and array.shape[2] == 4:
+        image = Image.fromarray(array, mode="RGBA")
+    else:
+        raise ValueError(
+            f"level {finest.name!r} has an unsupported shape {array.shape}; "
+            "expected (h, w), (h, w, 3) or (h, w, 4)",
+        )
+
+    buffer = io.BytesIO()
+    # LZW rather than raw: these are large scans and the bytes go straight
+    # into object storage.
+    image.save(buffer, format="TIFF", compression="tiff_lzw")
+    return buffer.getvalue()
 
 
 @dataclass(frozen=True)

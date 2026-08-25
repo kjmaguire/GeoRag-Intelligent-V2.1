@@ -31,7 +31,11 @@ export type Category =
 
 /** Extensions each category accepts. Mirrors UploadController::CATEGORIES. */
 export const CATEGORY_EXTS: Record<Category, string[]> = {
-  reports: ['pdf', 'tif', 'tiff'],
+  // `.rrd` is an ERDAS pyramid — normally a derived companion of a raster,
+  // but the only surviving copy of the image when its parent is missing,
+  // which is how it arrived in a real delivery. tiff_normalize extracts the
+  // finest level.
+  reports: ['pdf', 'tif', 'tiff', 'rrd'],
   archive: ['zip'],
   collars: ['csv', 'txt', 'tsv'],
   surveys: ['csv', 'txt', 'tsv'],
@@ -54,7 +58,9 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   // RETIRED_CATEGORIES by category NAME only, never by extension. The proof
   // already ships: `txt` sits in retired `xyz` AND in live `collars`, and
   // .txt uploads work today.
-  tables: ['dbf', 'dat'],
+  // `.mdb`/`.accdb` are here too: an Access database is a container of
+  // TABLES, and it fans out to one attribute table per Access table.
+  tables: ['dbf', 'dat', 'mdb', 'accdb'],
   // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
   // travel together and a lone .shp cannot be read without them.
   // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their
@@ -76,14 +82,14 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
 };
 
 export const CATEGORY_LABEL: Record<Category, string> = {
-  reports: 'NI 43-101 / reports (PDF, TIFF)',
+  reports: 'NI 43-101 / reports (PDF, TIFF, ERDAS RRD)',
   archive: 'Archive of mixed files (ZIP)',
   collars: 'Drill collars (CSV)',
   surveys: 'Down-hole surveys (CSV)',
   lithology: 'Lithology logs (CSV)',
   samples: 'Assay samples (CSV)',
   excel: 'Excel workbooks (XLSX)',
-  tables: 'Attribute table (DBF, MapInfo DAT)',
+  tables: 'Attribute table (DBF, MapInfo DAT, Access MDB)',
   spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, Surpac, ZIP)',
   well_logs: 'Well logs (LAS)',
   seismic: 'Seismic (SEG-Y)',

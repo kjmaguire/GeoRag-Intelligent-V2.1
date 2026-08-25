@@ -186,6 +186,21 @@ class ReportController extends Controller
         }
 
         $segment = str_contains($key, '/') ? substr($key, strrpos($key, '/') + 1) : $key;
+
+        // A TIFF/RRD is normalised to a PDF that lands under its OWN key,
+        // `tiff-derived-{sha8}-{stem}.pdf` — and that PDF is what
+        // silver.reports points at. Without this the Reports list showed
+        // "tiff-derived-a1b2c3d4-20260824_204518_Geologic_Map..." as the
+        // document's name, which is the same machine string the filename work
+        // set out to remove, reached by a longer route.
+        //
+        // The stem underneath still carries the upload prefix, so this runs
+        // FIRST and the generated-prefix strip below then does its usual job.
+        // Note the original name is only recoverable as far as the derivation
+        // preserved it: unsafe characters were replaced with underscores when
+        // the key was minted, so spaces do not come back.
+        $segment = preg_replace('/^tiff-derived-[0-9a-f]{8}-/', '', $segment) ?? $segment;
+
         $stripped = preg_replace('/^\d{8}_\d{6}_(?:[0-9a-f]{8}_|\d{6}_)?/', '', $segment);
 
         // Never return "" — a key that is nothing but a prefix keeps the

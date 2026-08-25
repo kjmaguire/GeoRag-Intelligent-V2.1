@@ -152,6 +152,11 @@ async def get_pool() -> asyncpg.Pool:
 #: filename fix that still showed the user a machine string.
 _GENERATED_PREFIX = re.compile(r"^\d{8}_\d{6}_(?:[0-9a-f]{8}_|\d{6}_)?")
 
+#: tiff_normalize's derived-PDF key, `tiff-derived-{sha8}-{stem}.pdf`. The
+#: sha8 disambiguates two different rasters that share a filename, and is
+#: storage bookkeeping the user has no use for.
+_DERIVED_PREFIX = re.compile(r"^tiff-derived-[0-9a-f]{8}-")
+
 
 def _filename_from_key(minio_key: str) -> str:
     """The name the user recognises, not the name storage gave it.
@@ -164,6 +169,10 @@ def _filename_from_key(minio_key: str) -> str:
     nothing, so a key that is somehow only a prefix still shows something.
     """
     segment = minio_key.rsplit("/", 1)[-1] if "/" in minio_key else minio_key
+    # A TIFF/RRD normalises to a PDF at its own `tiff-derived-{sha8}-{stem}`
+    # key, and that derived key is what downstream rows point at. Stripped
+    # first so the upload-prefix rule below still applies to the stem beneath.
+    segment = _DERIVED_PREFIX.sub("", segment)
     stripped = _GENERATED_PREFIX.sub("", segment)
     return stripped or segment
 

@@ -287,7 +287,6 @@ function fileExtension(name: string): string {
  * they picked the wrong button.
  */
 const REJECTION_REASONS: Record<string, string> = {
-    rrd: 'ERDAS pyramid/overview file — a rendering companion of the .tif, not data',
     aux: 'raster auxiliary file — companion of the .tif, not data',
     ovr: 'raster overview file — companion of the .tif, not data',
     mdb: 'Access database — no reader yet; export the tables to CSV to import them',

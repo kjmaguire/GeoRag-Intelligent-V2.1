@@ -104,7 +104,16 @@ DBF_EXTENSIONS = frozenset({".dbf"})
 MAPINFO_DAT_EXTENSIONS = frozenset({".dat"})
 
 DBASE_EXTENSIONS = DBF_EXTENSIONS | MAPINFO_DAT_EXTENSIONS
-SUPPORTED_EXTENSIONS = CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBASE_EXTENSIONS
+
+#: Microsoft Access. Unlike every other extension here it holds MANY tables in
+#: one file — a Geosoft IP survey ships 19 — so it fans out to one
+#: attribute_tables layer per Access table rather than landing as a single one.
+#: Read through mdbtools, which the fastapi runtime image installs.
+ACCESS_EXTENSIONS = frozenset({".mdb", ".accdb"})
+
+SUPPORTED_EXTENSIONS = (
+    CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBASE_EXTENSIONS | ACCESS_EXTENSIONS
+)
 
 #: UTM zone 13N — the Athabasca Basin, where this platform's corpus is
 #: centred. A default, not a detection: see the module docstring.
@@ -247,6 +256,46 @@ INSERT INTO silver.samples (
 #: and a corrected export of the same table cannot double itself. A
 #: genuinely different file has a different hash and lands beside the old
 #: one rather than silently overwriting it.
+#: Surface geochemistry — a sample with a location and no drill hole.
+#:
+#: collar_id, from_depth and to_depth are omitted entirely rather than passed
+#: as NULL, so this statement documents on its face that a surface sample has
+#: none of them. They became nullable in
+#: 2026_08_25_010000_allow_surface_samples_in_silver_geochemistry; before that
+#: migration this INSERT could not run at all.
+#:
+#: geom is built with ST_Transform from the source CRS, NOT stored in native
+#: coordinates: the column is geometry(Point,4326) and every map layer reads
+#: it as such. A UTM easting written straight in would place the sample at
+#: longitude 394,240.
+_GEOCHEM_SQL = """
+INSERT INTO silver.geochemistry (
+    geochem_id, workspace_id, project_id,
+    sample_id, sample_type, geom,
+    assay_element_codes, assay_values_ppm,
+    created_at, updated_at
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid,
+    $3, $4,
+    ST_Transform(ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), $7::int), 4326),
+    $8::text[], $9::jsonb,
+    NOW(), NOW()
+)
+-- The WHERE is REQUIRED, not decoration. uq_geochemistry_project_sample is a
+-- PARTIAL index (WHERE sample_id IS NOT NULL), and Postgres will not infer a
+-- partial index from the column list alone — without a matching predicate
+-- every insert fails with 42P10 "there is no unique or exclusion constraint
+-- matching the ON CONFLICT specification". Reproduced on a real server: the
+-- writer wrote ZERO rows, every time, while looking correct on review.
+ON CONFLICT (project_id, sample_id) WHERE sample_id IS NOT NULL
+DO UPDATE SET
+    sample_type         = EXCLUDED.sample_type,
+    geom                = EXCLUDED.geom,
+    assay_element_codes = EXCLUDED.assay_element_codes,
+    assay_values_ppm    = EXCLUDED.assay_values_ppm,
+    updated_at          = NOW()
+"""
+
 _ATTRIBUTE_TABLE_SQL = """
 INSERT INTO silver.attribute_tables (
     attribute_row_id, workspace_id, project_id,
@@ -428,6 +477,309 @@ async def _write_attribute_rows(
         await conn.executemany(_ATTRIBUTE_TABLE_SQL, chunk)
         written += len(chunk)
     return {"written": written, "skipped": 0, "orphaned": 0}
+
+
+#: Element columns a surface geochemistry table is recognised by.
+#:
+#: Deliberately the ECONOMIC + PATHFINDER suite rather than every element an
+#: ICP package reports. A table is only geochemistry if it carries assays
+#: someone would map, and matching on, say, `si` alone would promote any
+#: table with a two-letter column. Matched after normalize_header, so
+#: `Au_ppm`, `au_ppm`, `AU (ppm)` and `au` all reach the same key.
+_GEOCHEM_ELEMENTS: frozenset[str] = frozenset({
+    "au", "ag", "cu", "pb", "zn", "as", "sb", "hg", "mo", "ni", "co",
+    "bi", "cd", "sn", "te", "tl", "u", "w", "ba", "mn", "cr", "li", "re",
+})
+
+#: Unit suffixes an assay column carries. `au_ppm` and `au_ppb` are DIFFERENT
+#: columns holding different numbers, so the unit is part of the identity and
+#: is preserved in assay_values_ppm's keys rather than folded away.
+_ASSAY_UNITS: frozenset[str] = frozenset({"ppm", "ppb", "pct", "per", "gpt", "oz"})
+
+def _is_below_detection(value: float) -> bool:
+    """Whether an assay value means "below the detection limit".
+
+    A NEGATED DETECTION LIMIT, not a single sentinel. This started as an
+    equality test against -9.0, which was wrong: measured across
+    all_historical_soils_clean.DAT there are TWELVE distinct negative values
+    over 5,062 cells — -0.04, -0.1, -0.2, -1, -2, -5, -9, -10, -20, -40, -100,
+    -200. Each is the negation of that batch's detection limit, so -0.2 means
+    "below 0.2 ppm", and the -9 that inspired the constant was simply the
+    commonest limit rather than a magic number.
+
+    Testing only for -9 left 1,326 cells of the other eleven values intact, so
+    a gold column would carry real negative grades — a mean pulled below zero
+    by samples that in fact contain no measurable gold, and a colour ramp with
+    a floor nothing can reach.
+
+    A concentration cannot be negative, so the sign alone is the signal and no
+    list of limits has to be maintained. The value is recorded as ABSENT
+    rather than substituted: half-detection-limit is a common convention but
+    it invents a number nobody measured, and the verbatim original is already
+    preserved in silver.attribute_tables.
+    """
+    return value < 0
+
+
+def _assay_columns(columns: list[str]) -> dict[str, str]:
+    """Assay columns in *columns*, as ``{normalised key: original column}``.
+
+    An assay column is an element symbol optionally followed by a unit and
+    optionally more qualifiers: ``au_ppm``, ``au_fa_grav``, ``ag_icp_aqr``.
+    The element must come FIRST — ``sample_type`` starts with no element and
+    ``grainsize`` merely contains one.
+    """
+    from georag_geoparsers._header_match import normalize_header  # noqa: PLC0415
+
+    found: dict[str, str] = {}
+    for original in columns:
+        skeleton = normalize_header(original)
+        if not skeleton:
+            continue
+        # Longest element first so 'as' does not shadow nothing and 'ag' does
+        # not match the leading letters of a longer symbol.
+        for element in sorted(_GEOCHEM_ELEMENTS, key=len, reverse=True):
+            if not skeleton.startswith(element):
+                continue
+            rest = skeleton[len(element):]
+            # Bare symbol, or symbol + a unit/qualifier that starts on a token
+            # boundary. `australia` must not read as gold.
+            if rest and not any(rest.startswith(u) for u in _ASSAY_UNITS):
+                continue
+            found.setdefault(skeleton, original)
+            break
+    return found
+
+
+def _surface_geochem_columns(columns: list[str]) -> dict[str, Any] | None:
+    """Map *columns* to a surface-geochemistry shape, or None if it is not one.
+
+    Requires all three of: a sample identifier, BOTH coordinates, and at
+    least three assay columns. Three rather than one because a collar table
+    carrying a single `au_ppm` is a drill table, not a soil survey, and the
+    cost of a false positive here is rows written into the wrong table.
+
+    Returns None for anything else, which leaves the file as the attribute
+    table it already lands as — this path only ever ADDS a destination.
+    """
+    from georag_geoparsers._header_match import build_column_map  # noqa: PLC0415
+
+    located, _ = build_column_map(columns, {
+        "sample_id": ["sample", "sample_no", "sample_number", "sampleid", "station"],
+        "easting": ["easting", "east", "utm_e", "x", "xcoord"],
+        "northing": ["northing", "north", "utm_n", "y", "ycoord"],
+        "sample_type": ["sample_typ", "sample_type", "samptype", "type"],
+    })
+
+    if not {"sample_id", "easting", "northing"} <= set(located):
+        return None
+
+    # A DEPTH INTERVAL means down-hole, whatever else the columns look like.
+    # A drill sample table carries sample/from_depth/to_depth plus assays, and
+    # sometimes collar coordinates too — every test above passes for it. Those
+    # rows belong to a collar and route through the `sample` sheet type; this
+    # writer would strip their interval and file them as surface samples, which
+    # is silent, plausible-looking data loss.
+    downhole, _ = build_column_map(columns, {
+        "from_depth": ["from_depth", "from", "depth_from", "from_m"],
+        "to_depth": ["to_depth", "to", "depth_to", "to_m"],
+    })
+    if downhole:
+        return None
+
+    assays = _assay_columns(columns)
+    if len(assays) < 3:
+        return None
+
+    return {"located": located, "assays": assays}
+
+
+#: silver.geochemistry accepts these; anything else violates the CHECK.
+_SAMPLE_TYPES: frozenset[str] = frozenset({
+    "soil", "rock_chip", "grab", "channel", "stream_sediment",
+    "till", "drillhole_pulp", "drillhole_reject", "other",
+})
+
+#: One-letter codes MapInfo/Discover exports use in a `sample_typ` column.
+#: Measured: all_historical_soils_clean.DAT uses 'S' throughout.
+_SAMPLE_TYPE_CODES: dict[str, str] = {
+    "s": "soil", "soil": "soil",
+    "r": "rock_chip", "rock": "rock_chip", "rc": "rock_chip",
+    "g": "grab", "grab": "grab",
+    "c": "channel", "chan": "channel",
+    "ss": "stream_sediment", "stream": "stream_sediment", "sed": "stream_sediment",
+    "t": "till", "till": "till",
+}
+
+
+def _sample_type_of(raw: Any) -> str:
+    """Normalise a sample-type code to the CHECK's vocabulary.
+
+    Falls back to 'other' rather than NULL: the column is what a geologist
+    filters the map on, and an unrecognised code is still a statement that
+    the sample HAS a type. NULL would read as "not recorded".
+    """
+    text = str(raw or "").strip().lower()
+    if not text:
+        return "other"
+    if text in _SAMPLE_TYPES:
+        return text
+    return _SAMPLE_TYPE_CODES.get(text, "other")
+
+
+def _discover_trace_columns(columns: list[str]) -> dict[str, str] | None:
+    """Map a Discover/MapInfo drillhole-TRACE export, or None if not one.
+
+    This is not a collar table and must not be confused with one. A Discover
+    trace export writes one row per SEGMENT of a desurveyed hole, so a
+    straight hole arrives as TWO rows: the collar at depth 0, and the segment
+    midpoint at SegmentLen = Depth/2. Both carry the same CollarID.
+
+    Recognised by SegmentLen together with MidX/MidY — a plain collar table
+    has easting/northing and no notion of a segment, so it cannot match.
+    """
+    from georag_geoparsers._header_match import build_column_map  # noqa: PLC0415
+
+    mapped, _ = build_column_map(columns, {
+        "hole_id": ["collarid_d", "collarid", "collar_id", "hole_id", "holeid"],
+        "depth": ["depth_db", "depth"],
+        "azimuth": ["azimuth_db", "azimuth", "bearing"],
+        "dip": ["dip_db", "dip", "inclination"],
+        "mid_x": ["midx_db", "midx", "mid_x"],
+        "mid_y": ["midy_db", "midy", "mid_y"],
+        "mid_z": ["midz_db", "midz", "mid_z"],
+        "segment_len": ["segmentlen", "segment_len", "seglen"],
+    })
+
+    required = {"hole_id", "depth", "mid_x", "mid_y", "segment_len"}
+    return mapped if required <= set(mapped) else None
+
+
+def _collapse_discover_traces(
+    rows: list[dict[str, Any]], mapped: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Collapse trace segments into one collar per hole.
+
+    THE BUG THIS EXISTS TO PREVENT. _COLLAR_SQL is ON CONFLICT DO UPDATE and
+    the segments arrive in key order, so feeding this file row by row writes
+    the collar, then OVERWRITES it with the midpoint. Every hole lands 10-40 m
+    from where it was drilled, with no error and no warning — the map just
+    quietly disagrees with the survey.
+
+    The collar is the row at depth 0; the hole's length is the greatest depth
+    on any of its segments. Verified against the real file: for all five
+    trenches, start + (Depth/2) x (sin azimuth, cos azimuth) reproduces the
+    midpoint row's MidX/MidY to 0.0000 m, which is what confirms the depth-0
+    row is the collar rather than another segment.
+    """
+    by_hole: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        hole = str(row.get(mapped["hole_id"], "") or "").strip()
+        if hole:
+            by_hole.setdefault(hole, []).append(row)
+
+    collars: list[dict[str, Any]] = []
+    for hole, segments in by_hole.items():
+        # A MISSING depth is not depth zero. `or 0.0` turned every unparseable
+        # or blank depth into a perfect match for the depth-0 collar test
+        # below, so a hole whose collar row was absent would take an arbitrary
+        # midpoint as its collar — the exact failure this function exists to
+        # prevent, arriving through the coercion instead of the data.
+        depths = [
+            (depth, s)
+            for s, depth in ((s, _num(s.get(mapped["depth"]))) for s in segments)
+            if depth is not None
+        ]
+        if not depths:
+            log.warning(
+                "ingest_tabular: trace for %r has no readable depth on any "
+                "segment — cannot tell the collar from a midpoint", hole,
+            )
+            continue
+        # Sorting rather than trusting file order: a re-export can interleave
+        # holes, and "the first row I saw" would then be an arbitrary segment.
+        depths.sort(key=lambda pair: pair[0])
+        shallowest_depth, collar_row = depths[0]
+
+        if shallowest_depth > 0:
+            # No depth-0 segment: the collar position was never exported, and
+            # the shallowest midpoint is NOT the collar. Guessing here is the
+            # exact error this function exists to avoid, so skip the hole and
+            # let the caller report it.
+            log.warning(
+                "ingest_tabular: trace for %r has no depth-0 segment "
+                "(shallowest %.2f m) — cannot locate its collar",
+                hole, shallowest_depth,
+            )
+            continue
+
+        collars.append({
+            "hole_id": hole,
+            "easting": _num(collar_row.get(mapped["mid_x"])),
+            "northing": _num(collar_row.get(mapped["mid_y"])),
+            "elevation": _num(collar_row.get(mapped["mid_z"])) if "mid_z" in mapped else None,
+            "total_depth": max(depth for depth, _ in depths),
+            "azimuth": _num(collar_row.get(mapped["azimuth"])) if "azimuth" in mapped else None,
+            "dip": _num(collar_row.get(mapped["dip"])) if "dip" in mapped else None,
+        })
+    return collars
+
+
+async def _write_surface_geochem(
+    conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
+    shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
+) -> dict[str, int]:
+    """Land surface samples in silver.geochemistry.
+
+    ADDITIVE. The same rows already went to silver.attribute_tables, which
+    stays the verbatim record of the file; this gives the assays a typed home
+    the map and the agent can read. A failure here must therefore not lose the
+    attribute copy, which is why the caller treats it as best-effort.
+
+    A row is skipped, not failed, when it has no sample id or no usable
+    coordinate pair — a survey file routinely carries a trailing blank row or
+    a legend line, and refusing the other 853 samples over it would be
+    absurd. The count comes back so the caller can report it.
+    """
+    located = shape["located"]
+    assays: dict[str, str] = shape["assays"]
+
+    params = []
+    skipped = 0
+    for row in rows:
+        sample_id = str(row.get(located["sample_id"], "") or "").strip()
+        easting = _num(row.get(located["easting"]))
+        northing = _num(row.get(located["northing"]))
+        if not sample_id or easting is None or northing is None:
+            skipped += 1
+            continue
+
+        # Below-detection is recorded as absent, not as a negative grade. A
+        # -9 stored as a number drags every mean and every colour ramp with
+        # it, and the sample genuinely has no measured value.
+        values = {}
+        for key, column in assays.items():
+            value = _num(row.get(column))
+            if value is None or _is_below_detection(value):
+                continue
+            values[key] = value
+
+        sample_type = _sample_type_of(
+            row.get(located["sample_type"]) if "sample_type" in located else None,
+        )
+
+        params.append((
+            workspace_id, project_id, sample_id, sample_type,
+            easting, northing, source_epsg,
+            sorted(values), json.dumps(values),
+        ))
+
+    written = 0
+    for start in range(0, len(params), _INSERT_BATCH):
+        chunk = params[start:start + _INSERT_BATCH]
+        await conn.executemany(_GEOCHEM_SQL, chunk)
+        written += len(chunk)
+    return {"written": written, "skipped": skipped, "orphaned": 0}
 
 
 def _num(value: Any) -> float | None:
@@ -1244,8 +1596,64 @@ async def run_ingest_tabular(
             attribute_rows: list[dict[str, Any]] = []
             attribute_layer = ""
             attribute_sha256 = ""
+            #: Access branch state: one (table_name, rows) per Access table.
+            access_layers: list[tuple[str, list[dict[str, Any]]]] = []
 
-            if suffix in DBASE_EXTENSIONS:
+            if suffix in ACCESS_EXTENSIONS:
+                # An Access database is MANY tables in one file — measured: 19
+                # in a Geosoft IP survey. Each becomes its own
+                # attribute_tables layer, keyed by the Access table name, so a
+                # user sees 19 named tables rather than one opaque blob.
+                #
+                # Only READ here; the write happens in the connection block
+                # below alongside every other branch's, so one failure rolls
+                # back with the rest rather than leaving a half-written file.
+                #
+                # A table that fails to read is skipped with a warning rather
+                # than failing the file: a legacy .mdb routinely carries a
+                # system or corrupt table beside 18 good ones, and losing all
+                # of them to one bad one is the wrong trade.
+                from georag_geoparsers.access_mdb import list_tables, read_table  # noqa: PLC0415
+
+                attribute_sha256 = await asyncio.to_thread(_sha256_file, local)
+                access_names = await asyncio.to_thread(list_tables, local)
+                for table_name in access_names:
+                    try:
+                        rows = await asyncio.to_thread(read_table, local, table_name)
+                    except Exception as exc:
+                        log.warning(
+                            "ingest_tabular: Access table %r in %s failed to read: %s",
+                            table_name, filename, exc, exc_info=True,
+                        )
+                        warnings.append({
+                            "code": "access_table_unreadable",
+                            "message": f"table {table_name!r} could not be read",
+                            "detail": (
+                                f"{filename} holds {len(access_names)} tables and "
+                                f"{table_name!r} could not be read: {exc}. The other "
+                                f"tables were unaffected."
+                            ),
+                        })
+                        continue
+                    if rows:
+                        access_layers.append((table_name, rows))
+                        sheets.append({
+                            "sheet": f"{filename}:{table_name}",
+                            "type": "attribute_table",
+                            "rows": len(rows),
+                        })
+                if not access_layers:
+                    warnings.append({
+                        "code": "access_no_tables",
+                        "message": "the Access database held no readable tables",
+                        "detail": (
+                            f"{filename} opened but every table was empty or "
+                            f"unreadable, so nothing was landed. The file is in "
+                            f"bronze and can be re-ingested."
+                        ),
+                    })
+
+            elif suffix in DBASE_EXTENSIONS:
                 # None of the sheet machinery below applies: a dBASE table
                 # has one layer, no geometry and no drill schema. The
                 # sibling check runs before the read for the reason given
@@ -1525,6 +1933,145 @@ async def run_ingest_tabular(
                         source_layer=attribute_layer,
                         rows=attribute_rows,
                     )
+
+                # One Access table -> one attribute_tables layer. source_layer
+                # is the ACCESS TABLE NAME, not the file stem: that is what
+                # makes 19 tables distinguishable on the Tables page instead
+                # of 19 identically-named blobs.
+                for access_name, access_rows in access_layers:
+                    stats = await _write_attribute_rows(
+                        conn,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                        source_file=filename,
+                        source_file_sha256=attribute_sha256,
+                        source_layer=access_name,
+                        rows=access_rows,
+                    )
+                    prior = written.get("attribute_table", {})
+                    written["attribute_table"] = {
+                        key: prior.get(key, 0) + value for key, value in stats.items()
+                    }
+
+                    # A dBASE table that is a SURFACE GEOCHEMISTRY survey also
+                    # lands as typed samples. Additive: the attribute copy
+                    # above stays the verbatim record of the file, and this
+                    # gives the assays a home the map and the agent can read.
+                    #
+                    # Best-effort on purpose. The attribute rows are already
+                    # committed by the time this runs, and losing the typed
+                    # copy is a smaller failure than turning a successful
+                    # ingest into a failed one — the file is in bronze and can
+                    # be re-ingested. The warning says what happened.
+                    dbase_columns = list(attribute_rows[0]) if attribute_rows else []
+
+                    # A Discover/MapInfo drillhole TRACE export also lands as
+                    # collars. Same additive, best-effort contract as the
+                    # geochem branch below: the attribute copy is already
+                    # committed and must not be lost to a typed-write failure.
+                    trace_shape = _discover_trace_columns(dbase_columns)
+                    if trace_shape is not None:
+                        try:
+                            collar_rows = _collapse_discover_traces(
+                                attribute_rows, trace_shape,
+                            )
+                            if collar_rows:
+                                written["collar"] = await _write_collars(
+                                    conn,
+                                    workspace_id=input.workspace_id,
+                                    project_id=input.project_id,
+                                    records=collar_rows,
+                                    epsg=epsg,
+                                    # The coordinates came from the export, not
+                                    # from a human typing an EPSG — 'declared'
+                                    # would overstate it, since the file itself
+                                    # names no CRS. 'assumed' matches what the
+                                    # tabular path already records elsewhere.
+                                    georef_method="assumed" if epsg_assumed else "manual",
+                                )
+                                sheets.append({
+                                    "sheet": filename,
+                                    "type": "collar",
+                                    "rows": written["collar"]["written"],
+                                })
+                                if epsg_assumed:
+                                    warnings.append(_assumed_crs_warning(
+                                        epsg, written["collar"]["written"],
+                                    ))
+                            skipped_holes = len({
+                                str(r.get(trace_shape["hole_id"], "") or "").strip()
+                                for r in attribute_rows
+                                if str(r.get(trace_shape["hole_id"], "") or "").strip()
+                            }) - len(collar_rows)
+                            if skipped_holes > 0:
+                                warnings.append({
+                                    "code": "trace_collar_unlocatable",
+                                    "message": (
+                                        f"{skipped_holes} hole(s) in the trace export "
+                                        f"have no depth-0 segment"
+                                    ),
+                                    "detail": (
+                                        f"{filename} is a drillhole trace export, which "
+                                        f"records one row per segment. The collar is the "
+                                        f"segment at depth 0, and {skipped_holes} hole(s) "
+                                        f"do not have one — their shallowest row is a "
+                                        f"MIDPOINT, tens of metres from the collar. Those "
+                                        f"holes were left out rather than placed wrongly. "
+                                        f"Re-export including the collar segment."
+                                    ),
+                                })
+                        except Exception as exc:
+                            log.warning(
+                                "ingest_tabular: trace collar write failed for %s: %s",
+                                filename, exc, exc_info=True,
+                            )
+                            warnings.append({
+                                "code": "trace_collar_write_failed",
+                                "message": "the trace landed as a table but not as collars",
+                                "detail": (
+                                    f"{filename} looks like a drillhole trace export and "
+                                    f"its rows were stored, but writing them as collars "
+                                    f"failed: {exc}. The data is not lost — it is in the "
+                                    f"attribute table and in bronze."
+                                ),
+                            })
+
+                    geochem_shape = _surface_geochem_columns(dbase_columns)
+                    if geochem_shape is not None:
+                        try:
+                            written["geochemistry"] = await _write_surface_geochem(
+                                conn,
+                                workspace_id=input.workspace_id,
+                                project_id=input.project_id,
+                                shape=geochem_shape,
+                                rows=attribute_rows,
+                                source_epsg=epsg,
+                            )
+                            sheets.append({
+                                "sheet": filename,
+                                "type": "geochemistry",
+                                "rows": written["geochemistry"]["written"],
+                            })
+                            if epsg_assumed:
+                                warnings.append(_assumed_crs_warning(
+                                    epsg, written["geochemistry"]["written"],
+                                ))
+                        except Exception as exc:
+                            log.warning(
+                                "ingest_tabular: surface geochem write failed for %s: %s",
+                                filename, exc, exc_info=True,
+                            )
+                            warnings.append({
+                                "code": "geochem_write_failed",
+                                "message": "the samples landed as a table but not as geochemistry",
+                                "detail": (
+                                    f"{filename} looks like a surface geochemistry "
+                                    f"survey and its rows were stored, but writing "
+                                    f"them as typed samples failed: {exc}. The data "
+                                    f"is not lost — it is in the attribute table and "
+                                    f"in bronze, and re-ingesting will retry."
+                                ),
+                            })
 
                 # ── Classified, and then wrote nothing ──────────────────
                 # The fallback below used to run only for sheets that
