@@ -182,15 +182,40 @@ describe('categoryForExtension', () => {
     expect(categoryForExtension('zip')).toBe('archive');
   });
 
-  it('refuses raster images outright', () => {
-    for (const ext of ['jpg', 'png', 'gif', 'bmp']) {
+  it('refuses images no category accepts', () => {
+    // These three genuinely have nowhere to go, and saying so at the picker
+    // beats a 422 after the upload.
+    for (const ext of ['png', 'gif', 'bmp']) {
       expect(categoryForExtension(ext), `'${ext}'`).toBeNull();
     }
   });
 
-  it('does not treat TIFF as an unsupported image', () => {
-    // TIFF scans route through `reports` and normalise to PDF (ADR-0005).
+  it('does not treat TIFF or JPEG as an unsupported image', () => {
+    // Both route through `reports` and normalise to PDF (ADR-0005). JPEG
+    // joined on 2026-08-25: a JPEG in an exploration delivery is a scanned
+    // sheet — RedStar's is a geological map legend, which is only text.
     expect(categoryForExtension('tif')).toBe('reports');
+    expect(categoryForExtension('jpg')).toBe('reports');
+    expect(categoryForExtension('jpeg')).toBe('reports');
+  });
+
+  it('resolves every extension the API accepts to a category', () => {
+    // THE GUARD THAT WAS MISSING. UNSUPPORTED_EXTS is consulted BEFORE the
+    // category map, so an extension in both places is accepted by the API
+    // and refused by every UI — which is precisely what happened when
+    // jpg/jpeg were added to `reports` and left in UNSUPPORTED_EXTS. The
+    // existing PHP-parsing guard compares CATEGORY_EXTS to CATEGORIES and
+    // never asks whether an accepted extension is actually reachable.
+    for (const cat of LIVE_CATEGORIES) {
+      for (const ext of CATEGORY_EXTS[cat]) {
+        expect(
+          categoryForExtension(ext),
+          `'.${ext}' is accepted by '${cat}' but categoryForExtension returns null — `
+            + 'every upload screen derives its category from that function, so the '
+            + 'file cannot be uploaded through the UI at all',
+        ).not.toBeNull();
+      }
+    }
   });
 
   it('returns null for something nobody accepts', () => {

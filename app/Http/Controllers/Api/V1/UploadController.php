@@ -79,6 +79,23 @@ class UploadController extends Controller
      * under `reports/` where the PDF sensor picks it up and fails on bytes
      * that are not a PDF.
      *
+     * THERE ARE TWO MORE COPIES OUTSIDE THIS FILE, and both have been missed
+     * at least once:
+     *
+     *   - `_RASTER_EXTS` in src/fastapi/app/hatchet_workflows/ingest_zip_archive.py
+     *     decides the same thing for a member INSIDE a ZIP. It was missed for
+     *     `.rrd` and again for `.jpg`, and its failure is silent: an
+     *     unrecognised member is counted `unknown`, which never affects the
+     *     terminal status, so the archive reports `completed` having skipped
+     *     the file.
+     *   - `CATEGORY_EXTS` in resources/js/lib/uploadCategories.ts decides
+     *     whether any UI will even offer the upload.
+     *
+     * Both are pinned to this constant by tests that parse this file —
+     * src/fastapi/tests/test_zip_raster_exts_match_php.py and
+     * resources/js/lib/__tests__/uploadCategories.test.ts. Adding a format
+     * here and nowhere else now fails the build rather than half-working.
+     *
      * @var list<string>
      */
     private const RASTER_REPORT_EXTS = ['tif', 'tiff', 'rrd', 'jpg', 'jpeg'];

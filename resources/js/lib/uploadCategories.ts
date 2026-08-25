@@ -115,9 +115,24 @@ export const LIVE_CATEGORIES = (Object.keys(CATEGORY_LABEL) as Category[]).filte
   (c) => !RETIRED_CATEGORIES.has(c),
 );
 
-/** Image formats the backend rejects outright. TIFF is NOT one of them — it
- *  routes through `reports` and is normalised to PDF (ADR-0005). */
-export const UNSUPPORTED_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp']);
+/**
+ * Image formats the backend rejects outright.
+ *
+ * TIFF is NOT one of them — it routes through `reports` and is normalised to
+ * PDF (ADR-0005). Neither is JPEG, as of 2026-08-25: a JPEG in an exploration
+ * delivery is a scanned sheet (RedStar's is a geological map legend, which is
+ * nothing but text), and it takes the same Pillow wrap as a TIFF.
+ *
+ * This set is consulted BEFORE the category map in categoryForExtension, so
+ * leaving an extension here silently overrides CATEGORY_EXTS. That is exactly
+ * what happened when jpg/jpeg were added to `reports` and left here: the API
+ * accepted them and every UI still refused them. `everyAcceptedExtensionResolves`
+ * in the test file now pins the two against each other.
+ *
+ * PNG/GIF/BMP stay: no category lists them, so they genuinely have nowhere to
+ * go, and saying so at the picker beats a 422 after the upload.
+ */
+export const UNSUPPORTED_EXTS = new Set(['png', 'gif', 'bmp']);
 
 export function extensionOf(filename: string): string {
   return filename.split('.').pop()?.toLowerCase() ?? '';

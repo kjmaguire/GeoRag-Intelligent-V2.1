@@ -64,14 +64,55 @@ if [ "$state" != "Ready" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------
+# BOOTSTRAP: the app may not exist yet, and that is not an error
+# ---------------------------------------------------------------------
+# This used to ABORT and tell the operator to run apply-martin.sh first.
+# Since 2026-08-25 apply-martin.sh refuses to create without a credential
+# already in hand (creating with a placeholder makes an app that crashloops
+# and can then never be updated), and it points back here to mint one. Two
+# scripts each telling the operator to run the other is a deadlock, and it
+# is the state martin-cc was left in after being deleted.
+#
+# The two halves are separable: minting the password needs Postgres, NOT the
+# container app. Only STORING it needs the app. So when the app is absent
+# this script mints the credential and hands it to apply-martin.sh through
+# the environment of a child process — the value never lands on a command
+# line, in a file, or on the terminal, which is the invariant this whole
+# script exists to preserve.
+BOOTSTRAP=0
 if ! az containerapp show -g "$RG" -n "$APP" >/dev/null 2>&1; then
-  echo "ABORT: ${APP} does not exist yet." >&2
-  echo "Create it first:  bash deploy/azure/containerapps/apply-martin.sh --apply" >&2
+  BOOTSTRAP=1
+fi
+
+APPLY_MARTIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/apply-martin.sh"
+if [ "$BOOTSTRAP" -eq 1 ] && [ ! -f "$APPLY_MARTIN" ]; then
+  echo "ABORT: ${APP} does not exist and apply-martin.sh was not found at" >&2
+  echo "  ${APPLY_MARTIN}" >&2
+  echo "Cannot bootstrap without it." >&2
   exit 1
 fi
 
 if [ "$APPLY" -eq 0 ]; then
-  cat >&2 <<'PLAN'
+  if [ "$BOOTSTRAP" -eq 1 ]; then
+    cat >&2 <<'PLAN'
+# dry run — BOOTSTRAP mode: martin-cc does not exist.
+#
+# It will:
+#   1. generate a 32-byte URL-safe password (openssl rand)
+#   2. ALTER ROLE martin_readonly PASSWORD '<generated>'   (psql, as admin)
+#   3. run apply-martin.sh --apply with MARTIN_DATABASE_URL set in the child
+#      process's environment, which CREATES martin-cc with a working
+#      credential from the very first revision
+#   4. verify the secret exists and Martin answers /health
+#
+# Step 3 is why the app is created with a real credential rather than a
+# placeholder: an app whose first revision cannot start locks itself in
+# provisioningState=InProgress and then refuses every update, including the
+# secret set. Delete is the only exit. Measured 2026-08-25.
+PLAN
+  else
+    cat >&2 <<'PLAN'
 # dry run. Re-run with --apply.
 #
 # It will:
@@ -80,6 +121,9 @@ if [ "$APPLY" -eq 0 ]; then
 #   3. az containerapp secret set -n martin-cc --secrets martin-database-url=...
 #   4. restart the martin-cc revision so it picks the secret up
 #   5. verify the secret exists and Martin answers /health
+PLAN
+  fi
+  cat >&2 <<'PLAN'
 #
 # The password is never printed, never written to disk, and never enters
 # shell history. psql will prompt for the ADMIN password; that one is yours
@@ -107,26 +151,49 @@ if ! PGPASSWORD="" psql \
       --quiet \
       --command "ALTER ROLE ${ROLE} WITH PASSWORD :'pw';" ; then
   echo "FAILED: could not set the ${ROLE} password." >&2
+  echo "If the role does not exist, creating it here would be worse than" >&2
+  echo "failing: Martin would connect and then 403 on every tile, because" >&2
+  echo "the EXECUTE grants on the tile functions come from init-roles.sql." >&2
   exit 1
 fi
 
 CONN="postgresql://${ROLE}:${PASSWORD}@${PG_HOST}:5432/${PG_DB}?sslmode=require"
 
-echo "# storing it as the martin-cc secret..." >&2
-if ! az containerapp secret set -g "$RG" -n "$APP" \
-      --secrets "martin-database-url=${CONN}" --output none; then
-  echo "FAILED: az containerapp secret set returned non-zero." >&2
-  exit 1
+if [ "$BOOTSTRAP" -eq 1 ]; then
+  # Create the app WITH the credential. Passed through the child's
+  # environment rather than an argument so it never reaches the process
+  # table, and scoped to this one invocation via `env` rather than exported
+  # into the rest of this shell.
+  echo "# martin-cc does not exist — creating it with this credential..." >&2
+  if ! MARTIN_DATABASE_URL="$CONN" bash "$APPLY_MARTIN" --apply; then
+    unset PASSWORD CONN
+    echo "FAILED: apply-martin.sh could not create ${APP}." >&2
+    echo "The ${ROLE} password WAS rotated, so re-running this script is safe" >&2
+    echo "and will mint a fresh one." >&2
+    exit 1
+  fi
+else
+  echo "# storing it as the martin-cc secret..." >&2
+  if ! az containerapp secret set -g "$RG" -n "$APP" \
+        --secrets "martin-database-url=${CONN}" --output none; then
+    unset PASSWORD CONN
+    echo "FAILED: az containerapp secret set returned non-zero." >&2
+    exit 1
+  fi
 fi
 unset PASSWORD CONN
 
 # A secret change does not restart running replicas, so Martin would keep
-# using the old value until something else rolled it.
-echo "# restarting martin-cc so it reads the new secret..." >&2
-REV=$(az containerapp revision list -g "$RG" -n "$APP" \
-        --query "[?properties.active]|[0].name" -o tsv 2>/dev/null | tr -d '\r')
-if [ -n "$REV" ]; then
-  az containerapp revision restart -g "$RG" -n "$APP" --revision "$REV" --output none || true
+# using the old value until something else rolled it. Not needed after a
+# bootstrap: the app was just created and its first revision already booted
+# with this credential.
+if [ "$BOOTSTRAP" -eq 0 ]; then
+  echo "# restarting martin-cc so it reads the new secret..." >&2
+  REV=$(az containerapp revision list -g "$RG" -n "$APP" \
+          --query "[?properties.active]|[0].name" -o tsv 2>/dev/null | tr -d '\r')
+  if [ -n "$REV" ]; then
+    az containerapp revision restart -g "$RG" -n "$APP" --revision "$REV" --output none || true
+  fi
 fi
 
 # --- verify, rather than assume --------------------------------------

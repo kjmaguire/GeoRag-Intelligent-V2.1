@@ -78,10 +78,20 @@ _SPATIAL_EXTS = frozenset(
 #: having silently skipped it. Measured by dispatching the real RedStar
 #: filenames through _ingest_one: both .rrd files returned {'unknown': 1}.
 #:
-#: Kept as a local frozenset rather than imported from the PHP-side list
-#: because there is no shared source between the two languages; the comment
-#: on UploadController::RASTER_REPORT_EXTS names this file as its twin.
-_RASTER_EXTS = frozenset({"tif", "tiff", "rrd"})
+#: It was missed AGAIN on 2026-08-25 when `.jpg`/`.jpeg` were added, with the
+#: identical outcome: a scanned legend uploaded on its own ingests, and the
+#: same file inside a ZIP is silently counted `unknown` on a run that reports
+#: `completed`. Twice is a pattern, so the two lists are now pinned by
+#: tests/test_zip_raster_exts_match_php.py, which parses
+#: UploadController::RASTER_REPORT_EXTS and fails when they disagree — the
+#: same trick resources/js/lib/__tests__/uploadCategories.test.ts uses to hold
+#: the TypeScript side against the PHP.
+#:
+#: Kept as a local frozenset rather than imported because there is no shared
+#: source between the two languages — but a comment is not a mechanism, and
+#: the previous version of this note pointed at a PHP docblock that did not
+#: in fact name this file.
+_RASTER_EXTS = frozenset({"tif", "tiff", "rrd", "jpg", "jpeg"})
 
 #: Standalone dBASE tables. NOT shapefile sidecars when no same-stem .shp is
 #: present in the archive — a bare .dbf or MapInfo .dat is a whole attribute

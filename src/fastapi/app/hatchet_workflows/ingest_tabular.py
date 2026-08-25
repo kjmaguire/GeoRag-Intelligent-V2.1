@@ -1997,151 +1997,151 @@ async def run_ingest_tabular(
                         key: prior.get(key, 0) + value for key, value in stats.items()
                     }
 
-                    # A dBASE table that is a SURFACE GEOCHEMISTRY survey also
-                    # lands as typed samples. Additive: the attribute copy
-                    # above stays the verbatim record of the file, and this
-                    # gives the assays a home the map and the agent can read.
-                    #
-                    # Best-effort on purpose. The attribute rows are already
-                    # committed by the time this runs, and losing the typed
-                    # copy is a smaller failure than turning a successful
-                    # ingest into a failed one — the file is in bronze and can
-                    # be re-ingested. The warning says what happened.
-                    dbase_columns = list(attribute_rows[0]) if attribute_rows else []
+                # A dBASE table that is a SURFACE GEOCHEMISTRY survey also
+                # lands as typed samples. Additive: the attribute copy
+                # above stays the verbatim record of the file, and this
+                # gives the assays a home the map and the agent can read.
+                #
+                # Best-effort on purpose. The attribute rows are already
+                # committed by the time this runs, and losing the typed
+                # copy is a smaller failure than turning a successful
+                # ingest into a failed one — the file is in bronze and can
+                # be re-ingested. The warning says what happened.
+                dbase_columns = list(attribute_rows[0]) if attribute_rows else []
 
-                    # A Discover/MapInfo drillhole TRACE export also lands as
-                    # collars. Same additive, best-effort contract as the
-                    # geochem branch below: the attribute copy is already
-                    # committed and must not be lost to a typed-write failure.
-                    trace_shape = _discover_trace_columns(dbase_columns)
-                    if trace_shape is not None:
-                        try:
-                            collar_rows = _collapse_discover_traces(
-                                attribute_rows, trace_shape,
-                            )
-                            if collar_rows:
-                                written["collar"] = await _write_collars(
-                                    conn,
-                                    workspace_id=input.workspace_id,
-                                    project_id=input.project_id,
-                                    records=collar_rows,
-                                    epsg=epsg,
-                                    # The coordinates came from the export, not
-                                    # from a human typing an EPSG — 'declared'
-                                    # would overstate it, since the file itself
-                                    # names no CRS. 'assumed' matches what the
-                                    # tabular path already records elsewhere.
-                                    georef_method="assumed" if epsg_assumed else "manual",
-                                )
-                                sheets.append({
-                                    "sheet": filename,
-                                    "type": "collar",
-                                    "rows": written["collar"]["written"],
-                                })
-
-                                # The same rows are also a downhole survey.
-                                # Written AFTER the collars because a station
-                                # resolves hole_id -> collar_id against them,
-                                # and the index has to be rebuilt here rather
-                                # than reused: these collars did not exist
-                                # when any earlier index was taken.
-                                stations = _trace_survey_stations(
-                                    attribute_rows, trace_shape,
-                                )
-                                if stations:
-                                    survey_index = await _collar_index(
-                                        conn, input.project_id,
-                                    )
-                                    written["survey"] = await _write_intervals(
-                                        conn,
-                                        workspace_id=input.workspace_id,
-                                        sheet_type="survey",
-                                        records=stations,
-                                        index=survey_index,
-                                    )
-                                    sheets.append({
-                                        "sheet": filename,
-                                        "type": "survey",
-                                        "rows": written["survey"]["written"],
-                                    })
-                                if epsg_assumed:
-                                    warnings.append(_assumed_crs_warning(
-                                        epsg, written["collar"]["written"],
-                                    ))
-                            skipped_holes = len({
-                                str(r.get(trace_shape["hole_id"], "") or "").strip()
-                                for r in attribute_rows
-                                if str(r.get(trace_shape["hole_id"], "") or "").strip()
-                            }) - len(collar_rows)
-                            if skipped_holes > 0:
-                                warnings.append({
-                                    "code": "trace_collar_unlocatable",
-                                    "message": (
-                                        f"{skipped_holes} hole(s) in the trace export "
-                                        f"have no depth-0 segment"
-                                    ),
-                                    "detail": (
-                                        f"{filename} is a drillhole trace export, which "
-                                        f"records one row per segment. The collar is the "
-                                        f"segment at depth 0, and {skipped_holes} hole(s) "
-                                        f"do not have one — their shallowest row is a "
-                                        f"MIDPOINT, tens of metres from the collar. Those "
-                                        f"holes were left out rather than placed wrongly. "
-                                        f"Re-export including the collar segment."
-                                    ),
-                                })
-                        except Exception as exc:
-                            log.warning(
-                                "ingest_tabular: trace collar write failed for %s: %s",
-                                filename, exc, exc_info=True,
-                            )
-                            warnings.append({
-                                "code": "trace_collar_write_failed",
-                                "message": "the trace landed as a table but not as collars",
-                                "detail": (
-                                    f"{filename} looks like a drillhole trace export and "
-                                    f"its rows were stored, but writing them as collars "
-                                    f"failed: {exc}. The data is not lost — it is in the "
-                                    f"attribute table and in bronze."
-                                ),
-                            })
-
-                    geochem_shape = _surface_geochem_columns(dbase_columns)
-                    if geochem_shape is not None:
-                        try:
-                            written["geochemistry"] = await _write_surface_geochem(
+                # A Discover/MapInfo drillhole TRACE export also lands as
+                # collars. Same additive, best-effort contract as the
+                # geochem branch below: the attribute copy is already
+                # committed and must not be lost to a typed-write failure.
+                trace_shape = _discover_trace_columns(dbase_columns)
+                if trace_shape is not None:
+                    try:
+                        collar_rows = _collapse_discover_traces(
+                            attribute_rows, trace_shape,
+                        )
+                        if collar_rows:
+                            written["collar"] = await _write_collars(
                                 conn,
                                 workspace_id=input.workspace_id,
                                 project_id=input.project_id,
-                                shape=geochem_shape,
-                                rows=attribute_rows,
-                                source_epsg=epsg,
+                                records=collar_rows,
+                                epsg=epsg,
+                                # The coordinates came from the export, not
+                                # from a human typing an EPSG — 'declared'
+                                # would overstate it, since the file itself
+                                # names no CRS. 'assumed' matches what the
+                                # tabular path already records elsewhere.
+                                georef_method="assumed" if epsg_assumed else "manual",
                             )
                             sheets.append({
                                 "sheet": filename,
-                                "type": "geochemistry",
-                                "rows": written["geochemistry"]["written"],
+                                "type": "collar",
+                                "rows": written["collar"]["written"],
                             })
+
+                            # The same rows are also a downhole survey.
+                            # Written AFTER the collars because a station
+                            # resolves hole_id -> collar_id against them,
+                            # and the index has to be rebuilt here rather
+                            # than reused: these collars did not exist
+                            # when any earlier index was taken.
+                            stations = _trace_survey_stations(
+                                attribute_rows, trace_shape,
+                            )
+                            if stations:
+                                survey_index = await _collar_index(
+                                    conn, input.project_id,
+                                )
+                                written["survey"] = await _write_intervals(
+                                    conn,
+                                    workspace_id=input.workspace_id,
+                                    sheet_type="survey",
+                                    records=stations,
+                                    index=survey_index,
+                                )
+                                sheets.append({
+                                    "sheet": filename,
+                                    "type": "survey",
+                                    "rows": written["survey"]["written"],
+                                })
                             if epsg_assumed:
                                 warnings.append(_assumed_crs_warning(
-                                    epsg, written["geochemistry"]["written"],
+                                    epsg, written["collar"]["written"],
                                 ))
-                        except Exception as exc:
-                            log.warning(
-                                "ingest_tabular: surface geochem write failed for %s: %s",
-                                filename, exc, exc_info=True,
-                            )
+                        skipped_holes = len({
+                            str(r.get(trace_shape["hole_id"], "") or "").strip()
+                            for r in attribute_rows
+                            if str(r.get(trace_shape["hole_id"], "") or "").strip()
+                        }) - len(collar_rows)
+                        if skipped_holes > 0:
                             warnings.append({
-                                "code": "geochem_write_failed",
-                                "message": "the samples landed as a table but not as geochemistry",
+                                "code": "trace_collar_unlocatable",
+                                "message": (
+                                    f"{skipped_holes} hole(s) in the trace export "
+                                    f"have no depth-0 segment"
+                                ),
                                 "detail": (
-                                    f"{filename} looks like a surface geochemistry "
-                                    f"survey and its rows were stored, but writing "
-                                    f"them as typed samples failed: {exc}. The data "
-                                    f"is not lost — it is in the attribute table and "
-                                    f"in bronze, and re-ingesting will retry."
+                                    f"{filename} is a drillhole trace export, which "
+                                    f"records one row per segment. The collar is the "
+                                    f"segment at depth 0, and {skipped_holes} hole(s) "
+                                    f"do not have one — their shallowest row is a "
+                                    f"MIDPOINT, tens of metres from the collar. Those "
+                                    f"holes were left out rather than placed wrongly. "
+                                    f"Re-export including the collar segment."
                                 ),
                             })
+                    except Exception as exc:
+                        log.warning(
+                            "ingest_tabular: trace collar write failed for %s: %s",
+                            filename, exc, exc_info=True,
+                        )
+                        warnings.append({
+                            "code": "trace_collar_write_failed",
+                            "message": "the trace landed as a table but not as collars",
+                            "detail": (
+                                f"{filename} looks like a drillhole trace export and "
+                                f"its rows were stored, but writing them as collars "
+                                f"failed: {exc}. The data is not lost — it is in the "
+                                f"attribute table and in bronze."
+                            ),
+                        })
+
+                geochem_shape = _surface_geochem_columns(dbase_columns)
+                if geochem_shape is not None:
+                    try:
+                        written["geochemistry"] = await _write_surface_geochem(
+                            conn,
+                            workspace_id=input.workspace_id,
+                            project_id=input.project_id,
+                            shape=geochem_shape,
+                            rows=attribute_rows,
+                            source_epsg=epsg,
+                        )
+                        sheets.append({
+                            "sheet": filename,
+                            "type": "geochemistry",
+                            "rows": written["geochemistry"]["written"],
+                        })
+                        if epsg_assumed:
+                            warnings.append(_assumed_crs_warning(
+                                epsg, written["geochemistry"]["written"],
+                            ))
+                    except Exception as exc:
+                        log.warning(
+                            "ingest_tabular: surface geochem write failed for %s: %s",
+                            filename, exc, exc_info=True,
+                        )
+                        warnings.append({
+                            "code": "geochem_write_failed",
+                            "message": "the samples landed as a table but not as geochemistry",
+                            "detail": (
+                                f"{filename} looks like a surface geochemistry "
+                                f"survey and its rows were stored, but writing "
+                                f"them as typed samples failed: {exc}. The data "
+                                f"is not lost — it is in the attribute table and "
+                                f"in bronze, and re-ingesting will retry."
+                            ),
+                        })
 
                 # ── Classified, and then wrote nothing ──────────────────
                 # The fallback below used to run only for sheets that

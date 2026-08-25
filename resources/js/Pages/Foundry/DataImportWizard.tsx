@@ -296,8 +296,10 @@ const REJECTION_REASONS: Record<string, string> = {
     rdtmd: 'UBC-GIF / RDTM inversion output — no reader yet',
     inp: 'inversion input deck — no reader yet',
     chg: 'inversion control file — no reader yet',
-    jpg: 'photo — images are not ingested as documents',
-    jpeg: 'photo — images are not ingested as documents',
+    // jpg/jpeg are NOT here: since 2026-08-25 they route through `reports`
+    // as scanned sheets. A stale entry would be dead text today and a
+    // misleading explanation the moment anything consults this map by
+    // extension rather than after a null category.
     png: 'image — not ingested as a document',
 };
 
