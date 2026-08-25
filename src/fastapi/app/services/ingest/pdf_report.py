@@ -375,6 +375,67 @@ def _parse_date_string(raw: str) -> str | None:
 # Metadata extraction from leading document text
 # ---------------------------------------------------------------------------
 
+#: A derived title has to look like a name before it is allowed to BE the name.
+#:
+#: Markup and layout artefacts are what the first-line fallback actually
+#: returns on a scanned or figure-heavy document: a bare ``<figure>`` from an
+#: OCR layout tag, a page number, a single stray character left by a dropped
+#: cap. Each of those then became the document's identity everywhere in the UI.
+_TITLE_MIN_CHARS = 8
+
+#: Markup-ish or structural tokens that are never a document title, matched
+#: whole. ``<figure>`` is the one that shipped; the rest are its siblings from
+#: the same layout vocabulary.
+_TITLE_JUNK_RE = re.compile(
+    r"""^(?:
+          <[^>]{0,40}>            # <figure>, <table>, <page_header> ...
+        | \[[^\]]{0,40}\]         # [image], [table]
+        | (?:page\s*)?\d+         # "3", "Page 12"
+        | [ivxlcdm]+              # roman numerals: a front-matter page number
+        | (?:figure|table|plate|appendix|contents|untitled)\b.{0,20}
+      )$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _looks_like_a_title(candidate: str) -> bool:
+    """Whether *candidate* is plausible as a human-facing document name.
+
+    Deliberately permissive about content and strict only about SHAPE: it must
+    be long enough to be a name, contain a word character, and not be one of
+    the structural tokens above. A real title we reject falls back to the
+    filename, which is recoverable and recognisable; a junk title we accept
+    becomes the document's identity in every list and citation.
+    """
+    text = candidate.strip()
+    if len(text) < _TITLE_MIN_CHARS:
+        return False
+    if not re.search(r"\w", text):
+        return False
+    return not _TITLE_JUNK_RE.match(text)
+
+
+def _derive_title(raw_title: str, full_text: str, path: str) -> str:
+    """The document's display name.
+
+    Order of preference: the PDF's own metadata Title, then the first line of
+    extracted text, then the FILENAME — which is the one thing the person who
+    uploaded it will recognise, and which was previously not consulted here at
+    all. Measured on a real delivery, the first-line fallback returned
+    ``<figure>`` and single letters, and those reached the Reports list as the
+    document's name.
+
+    A parsed title is a hint about a document. The filename is its identity.
+    """
+    for candidate in (raw_title, full_text[:200].splitlines()[0] if full_text else ""):
+        text = (candidate or "").strip()
+        if _looks_like_a_title(text):
+            return text
+    # Path(...).stem, not the whole name: the extension is noise in a heading,
+    # and the storage key's generated prefix has already been stripped upstream.
+    return Path(path).stem or "(untitled)"
+
+
 def _extract_company(text: str) -> str | None:
     for pattern in COMPANY_PATTERNS:
         m = pattern.search(text)
@@ -4218,7 +4279,9 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         if _budget_warning is not None:
             extraction_warnings.append(_budget_warning)
         return ReportParseResult(
-            title=raw_title or Path(path).stem,
+            # Same rule as the populated-text path: a metadata Title of
+            # "<figure>" is no more usable here than it is there.
+            title=_derive_title(raw_title, "", path),
             authors=[],
             company=None,
             filing_date=None,
@@ -4239,7 +4302,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # --- Use first ~2000 chars for metadata extraction (title page) ---
     with _tracer.start_as_current_span("pdf_report.metadata") as _span:
         lead_text = full_text[:2000]
-        title = raw_title.strip() or full_text[:100].splitlines()[0].strip()
+        title = _derive_title(raw_title, full_text, path)
         authors = _extract_authors(lead_text)
         company = _extract_company(lead_text)
         filing_date = _extract_filing_date(lead_text)

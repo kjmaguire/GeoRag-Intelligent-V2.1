@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
+import DocumentBody from '@/Components/Foundry/DocumentBody';
 import {
     PageHeader,
     Card,
@@ -53,6 +54,16 @@ interface Passage {
 export interface ReportListRow {
     report_id: string;
     title: string;
+    /**
+     * The uploaded file's own name.
+     *
+     * `title` is parsed out of the document and is a HINT — measured on a real
+     * delivery it arrived as `<figure>` and as single letters, and that became
+     * the document's identity in this list. The filename is what the person
+     * who uploaded it recognises, so it leads. Null only for rows whose
+     * storage key predates this being recorded.
+     */
+    source_filename: string | null;
     company: string;
     filing_date: string;
     commodity: string;
@@ -524,11 +535,24 @@ function DocumentList({
                         }}
                     >
                         <div
-                            className="text-[12px] leading-snug mb-1.5"
+                            className="text-[12px] leading-snug"
                             style={{ color: active ? 'var(--accent)' : 'var(--fg-0)' }}
                         >
-                            {r.title}
+                            {r.source_filename ?? r.title}
                         </div>
+                        {/* The parsed title is kept, demoted: it is often the
+                            real report name and worth seeing, but it is a
+                            guess and must not stand in for the filename. */}
+                        {r.source_filename && r.title && r.title !== r.source_filename && (
+                            <div
+                                className="text-[11px] leading-snug truncate"
+                                style={{ color: 'var(--fg-2)' }}
+                                title={r.title}
+                            >
+                                {r.title}
+                            </div>
+                        )}
+                        <div className="mb-1.5" />
                         <div className="flex items-center gap-1.5 flex-wrap">
                             <Pill tone={statusToneFor(r.status)} dot>
                                 {r.status === 'ok'
@@ -909,16 +933,12 @@ function SectionsTab({
                             eyebrow={`§ ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
                             title={s.heading || 'Untitled section'}
                         >
-                            <div
-                                className="text-[13px] whitespace-pre-wrap leading-relaxed"
-                                style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-sans)' }}
-                            >
-                                {s.body || (
-                                    <span className="italic" style={{ color: 'var(--fg-3)' }}>
-                                        (empty body)
-                                    </span>
-                                )}
-                            </div>
+                            {/* Not `whitespace-pre-wrap` on the raw string:
+                                the PDF stack recovers tables and emits them as
+                                HTML or markdown inside the body, and printing
+                                that verbatim showed a table the pipeline got
+                                RIGHT as a wall of escaped <tr>/<td> markup. */}
+                            <DocumentBody body={s.body} />
                         </Card>
                     </div>
                 );
@@ -1160,12 +1180,10 @@ function PassagesTab({
                                 {p.id.slice(0, 8)}
                             </span>
                         </div>
-                        <div
-                            className="text-[12px] whitespace-pre-wrap leading-relaxed"
-                            style={{ color: 'var(--fg-1)' }}
-                        >
-                            {p.text}
-                        </div>
+                        {/* A `table` chunk_kind passage IS a recovered table —
+                            it is the single most common thing in this list
+                            that printing verbatim made unreadable. */}
+                        <DocumentBody body={p.text} />
                     </div>
                 ))}
             </div>

@@ -288,11 +288,6 @@ parameters:
 			count: 1
 			path: app/Http/Controllers/Foundry/ProjectsIndexController.php
 
-		-
-			message: '#^Method App\\Http\\Controllers\\Foundry\\ReportController\:\:reportRows\(\) should return Illuminate\\Support\\Collection\<int, array\<string, mixed\>\> but returns Illuminate\\Support\\Collection\<int, array\{report_id\: string, title\: string, company\: string, filing_date\: string, commodity\: string, version\: int, is_scanned\: bool, parse_quality_pct\: float\|null, \.\.\.\}\>\.$#'
-			identifier: return.type
-			count: 1
-			path: app/Http/Controllers/Foundry/ReportController.php
 
 		-
 			message: '#^Method App\\Http\\Controllers\\Foundry\\SourcesController\:\:loadRecentRuns\(\) should return Illuminate\\Support\\Collection\<int, array\<string, mixed\>\> but returns Illuminate\\Support\\Collection\<int, array\{id\: string, source_path\: string, started_at\: string, completed_at\: string, status\: string, files_seen\: int, files_indexed\: int, files_skipped\: int, \.\.\.\}\>\.$#'

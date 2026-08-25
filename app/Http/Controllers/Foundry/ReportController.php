@@ -164,6 +164,36 @@ class ReportController extends Controller
     }
 
     /**
+     * The uploaded file's own name, recovered from its storage key.
+     *
+     * Upload keys carry a generated prefix so two files of the same name
+     * cannot collide in the bucket. Three writers mint them and they do NOT
+     * agree on shape — UploadController uses `{Ymd_His}_{name}`,
+     * DrillUploadController inserts an 8-hex digest, and the ZIP fan-out uses
+     * `strftime('%Y%m%d_%H%M%S_%f')`, whose third component is six DECIMAL
+     * digits. A pattern written for only the first two leaves
+     * `20260824_204518_123456_` glued to the front of every file extracted
+     * from an archive, which is how a filename fix can still show the user a
+     * machine string. All three shapes are handled here.
+     *
+     * Mirrors `_progress.py::_filename_from_key` on the Python side. If that
+     * rule changes, this changes with it.
+     */
+    public static function filenameFromKey(?string $key): ?string
+    {
+        if (! is_string($key) || $key === '') {
+            return null;
+        }
+
+        $segment = str_contains($key, '/') ? substr($key, strrpos($key, '/') + 1) : $key;
+        $stripped = preg_replace('/^\d{8}_\d{6}_(?:[0-9a-f]{8}_|\d{6}_)?/', '', $segment);
+
+        // Never return "" — a key that is nothing but a prefix keeps the
+        // segment, which is at least a thing the operator can search for.
+        return ($stripped === null || $stripped === '') ? $segment : $stripped;
+    }
+
+    /**
      * One row per ingested document, carrying its own ingest status.
      *
      * The passages/embedded counts and the status derivation come from the
@@ -180,6 +210,13 @@ class ReportController extends Controller
      *      table extract scores low on it while having parsed and embedded
      *      perfectly. Gating status on it reported healthy ingests as
      *      failures.
+     *
+     * The generic below is load-bearing, not decoration: `Collection` is
+     * INVARIANT in TValue, so the exact array shape PHPStan infers from the
+     * literal is NOT a subtype of `Collection<int, array<string, mixed>>`.
+     * That mismatch sat in the baseline until `source_filename` was added and
+     * the recorded shape stopped matching; the callback is annotated instead,
+     * so adding a field here no longer breaks the return type.
      *
      * @return Collection<int, array<string, mixed>>
      */
@@ -211,47 +248,68 @@ class ReportController extends Controller
                     'r.parse_quality_pct',
                     'r.text_page_coverage_pct',
                     'r.sections_text',
+                    // The document's real name. `title` is parsed out of the
+                    // PDF and is a hint, not an identity — it has arrived as
+                    // "<figure>" and as single letters.
+                    'r.source_object_key',
                     DB::raw('COALESCE(p.passages, 0) AS passages'),
                     DB::raw('COALESCE(p.embedded, 0) AS embedded'),
                 )
                 ->get(),
         );
 
-        return $rows->map(function ($r) {
-            $sectionsRaw = $r->sections_text ?? null;
-            $sections = is_string($sectionsRaw) ? json_decode($sectionsRaw, true) : $sectionsRaw;
-            $sectionsCount = is_array($sections)
-                ? count($sections)
-                : (is_object($sections) ? count(get_object_vars($sections)) : 0);
+        return $rows->map(fn ($r) => $this->reportListRow($r))->values();
+    }
 
-            $passages = (int) $r->passages;
-            $embedded = (int) $r->embedded;
+    /**
+     * One entry in the master list.
+     *
+     * A named method rather than an inline closure, and not for tidiness:
+     * `Collection` is INVARIANT in TValue, so PHPStan infers the exact array
+     * shape from the literal below and that shape is NOT a subtype of
+     * `Collection<int, array<string, mixed>>`. A docblock on an inline
+     * closure does not pin it — measured — but a DECLARED return type on a
+     * named method does. Without this, every field added to the list payload
+     * breaks reportRows() return type and lands in the baseline.
+     *
+     * @return array<string, mixed>
+     */
+    private function reportListRow(object $r): array
+    {
+        $sectionsRaw = $r->sections_text ?? null;
+        $sections = is_string($sectionsRaw) ? json_decode($sectionsRaw, true) : $sectionsRaw;
+        $sectionsCount = is_array($sections)
+            ? count($sections)
+            : (is_object($sections) ? count(get_object_vars($sections)) : 0);
 
-            return [
-                'report_id' => (string) ($r->report_id ?? ''),
-                'title' => (string) ($r->title ?? 'Untitled report'),
-                'company' => (string) ($r->company ?? ''),
-                'filing_date' => (string) ($r->filing_date ?? ''),
-                'commodity' => (string) ($r->commodity ?? ''),
-                'version' => (int) ($r->version ?? 1),
-                'is_scanned' => (bool) ($r->is_scanned ?? false),
-                'parse_quality_pct' => isset($r->parse_quality_pct) ? (float) $r->parse_quality_pct : null,
-                'text_page_coverage_pct' => isset($r->text_page_coverage_pct) ? (float) $r->text_page_coverage_pct : null,
-                'sections_count' => $sectionsCount,
-                'has_content' => $sectionsCount > 0,
-                'passages' => $passages,
-                'embedded' => $embedded,
-                // unassessed = nothing extracted yet; error = extracted but
-                // nothing embedded (so chat cannot retrieve it at all);
-                // warn = partially embedded, the sweep is mid-flight or stuck.
-                'status' => match (true) {
-                    $passages === 0 => 'unassessed',
-                    $embedded === 0 => 'error',
-                    $embedded < $passages => 'warn',
-                    default => 'ok',
-                },
-            ];
-        })->values();
+        $passages = (int) $r->passages;
+        $embedded = (int) $r->embedded;
+
+        return [
+            'report_id' => (string) ($r->report_id ?? ''),
+            'title' => (string) ($r->title ?? 'Untitled report'),
+            'source_filename' => self::filenameFromKey($r->source_object_key ?? null),
+            'company' => (string) ($r->company ?? ''),
+            'filing_date' => (string) ($r->filing_date ?? ''),
+            'commodity' => (string) ($r->commodity ?? ''),
+            'version' => (int) ($r->version ?? 1),
+            'is_scanned' => (bool) ($r->is_scanned ?? false),
+            'parse_quality_pct' => isset($r->parse_quality_pct) ? (float) $r->parse_quality_pct : null,
+            'text_page_coverage_pct' => isset($r->text_page_coverage_pct) ? (float) $r->text_page_coverage_pct : null,
+            'sections_count' => $sectionsCount,
+            'has_content' => $sectionsCount > 0,
+            'passages' => $passages,
+            'embedded' => $embedded,
+            // unassessed = nothing extracted yet; error = extracted but
+            // nothing embedded (so chat cannot retrieve it at all);
+            // warn = partially embedded, the sweep is mid-flight or stuck.
+            'status' => match (true) {
+                $passages === 0 => 'unassessed',
+                $embedded === 0 => 'error',
+                $embedded < $passages => 'warn',
+                default => 'ok',
+            },
+        ];
     }
 
     /**
@@ -271,10 +329,10 @@ class ReportController extends Controller
         $review = DB::table('silver.review_queue')
             ->where('project_id', $project->project_id)
             ->selectRaw("
-                COUNT(*) FILTER (WHERE lifecycle NOT IN ('committed', 'archived')) AS flagged,
-                COUNT(*) FILTER (WHERE decision_kind = 'reject') AS rejected,
-                COUNT(*) FILTER (WHERE routing_decision = 'review_required' AND lifecycle = 'pending') AS awaiting_ocr
-            ")
+                    COUNT(*) FILTER (WHERE lifecycle NOT IN ('committed', 'archived')) AS flagged,
+                    COUNT(*) FILTER (WHERE decision_kind = 'reject') AS rejected,
+                    COUNT(*) FILTER (WHERE routing_decision = 'review_required' AND lifecycle = 'pending') AS awaiting_ocr
+                ")
             ->first();
 
         $passagesTotal = (int) $rows->sum('passages');
@@ -670,7 +728,8 @@ class ReportController extends Controller
                 'open_total' => array_sum($counts),
                 'flags' => $flags,
             ];
-        });
+        },
+        );
     }
 
     /**
