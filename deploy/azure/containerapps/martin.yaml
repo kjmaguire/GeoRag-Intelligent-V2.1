@@ -1,0 +1,100 @@
+# Azure Container Apps manifest for the Martin vector-tile server.
+#
+# APPLY WITH:  bash deploy/azure/containerapps/apply-martin.sh --apply
+#
+# DO NOT apply this file directly with `az containerapp update --yaml`.
+# The `secrets:` block has to be present for Container Apps to accept the
+# shape, and its value is the placeholder REPLACE_AT_DEPLOY_TIME because the
+# real connection string is not in git. Sending it verbatim sets the live
+# `martin-database-url` secret to that literal string and Martin fails to
+# start against a database that is perfectly healthy. apply-martin.sh strips
+# the block (omitting it leaves the existing secret alone), refuses to send
+# anything still containing the placeholder, and verifies the secret survived.
+# Same contract as apply-redis.sh — see redis.yaml's header.
+#
+# WHY THIS APP EXISTS AT ALL
+#
+# Martin was removed on 2026-07-27 by 0eada56c, "remove demo-external
+# services", as collateral in a demo-core simplification that also dropped
+# Grafana and the load tests. The DATABASE side was never removed: 18 tile
+# functions and the `martin_readonly` role with EXECUTE on 24 of them are live
+# on georag-pg-cc today, and migrations kept ADDING to them after the service
+# went — silver.pg_spatial_features_by_project was created 2026-08-23, a month
+# later. Production never had a martin-cc; compose covered local dev only.
+#
+# NO EXTERNAL INGRESS. Laravel's TileProxyController is the only client. It
+# runs the project-access check and the ETag derivation, so a browser reaching
+# Martin directly would bypass both — every silver tile is workspace-scoped
+# data. `external: false` is the enforcement, not a preference.
+#
+# CONNECT DIRECTLY TO POSTGRES, NOT PGBOUNCER. Martin holds a pool of 20 and
+# issues prepared statements; a transaction-pooling PgBouncer in front of that
+# breaks them. The upstream martin.yaml has carried this note since it was
+# written.
+#
+# WHICH ROLE. `martin_readonly` exists on the server with EXECUTE on the tile
+# functions and nothing else — no INSERT, no UPDATE, no table SELECT beyond
+# what those functions need. Point the connection string at that role rather
+# than georag_app: a tile server that can only call tile functions cannot be
+# turned into a data-exfiltration path by a bug in a tile function's argument
+# handling.
+#
+# SCALE 1..1. Martin is stateless and could scale out, but its cache is
+# in-process: two replicas double the memory and halve the hit rate for tiles
+# that are already cheap to regenerate. Fixed at one until measurement says
+# otherwise. minReplicas 1 rather than 0 because a cold start reads and
+# validates all 19 PostGIS sources, which a user waiting on a map pan should
+# never pay for.
+#
+# (name/environment carry the `-cc` canadacentral-migration suffix — see
+# deploy/azure/containerapps/shutdown-job.yaml's header for why.)
+properties:
+  configuration:
+    ingress:
+      external: false
+      targetPort: 3000
+      transport: http
+    secrets:
+      - name: martin-database-url
+        value: REPLACE_AT_DEPLOY_TIME
+  template:
+    containers:
+      - image: georagacrcc.azurecr.io/georag/martin:latest
+        name: martin
+        env:
+          # martin.yaml interpolates ${DATABASE_URL} into its connection
+          # string. The value is a secretRef so the password appears neither
+          # in this file nor in `az containerapp show` output.
+          - name: DATABASE_URL
+            secretRef: martin-database-url
+        resources:
+          # Matches the compose limits: cache_size_mb is 512 in martin.yaml
+          # and Martin divides that across three internal caches (tile 256,
+          # sprite 64, font 64 = ~384 MB), leaving headroom for the process
+          # and a 20-connection pool. Raising memory without raising
+          # cache_size_mb buys nothing; raising cache_size_mb without raising
+          # this gets the container OOM-killed mid-pan.
+          cpu: 0.5
+          memory: 1.0Gi
+        probes:
+          # /health answers once Martin has resolved and validated every
+          # source, so it is a genuine readiness signal rather than a liveness
+          # ping. initialDelay is generous for the same reason: 19 function
+          # lookups against a cold Postgres is not instant.
+          - type: readiness
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          - type: liveness
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 40
+            periodSeconds: 30
+            failureThreshold: 3
+    scale:
+      minReplicas: 1
+      maxReplicas: 1
