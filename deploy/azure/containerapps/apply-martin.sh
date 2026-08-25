@@ -39,6 +39,14 @@ set -uo pipefail
 RG=georag
 APP=martin-cc
 ENVIRONMENT=georag-env-cc
+SUBSCRIPTION=d314ab40-b5b7-4e3e-8308-86023fb7638a
+ACR_SERVER=georagacrcc.azurecr.io
+ACR_SCOPE="/subscriptions/${SUBSCRIPTION}/resourceGroups/${RG}/providers/Microsoft.ContainerRegistry/registries/georagacrcc"
+
+#: Upstream Martin, used ONLY to mint the app's identity on first create —
+#: see the three-step comment below. It carries no martin.yaml, so a container
+#: left on this image will not serve tiles; step 3 replaces it immediately.
+PUBLIC_IMAGE="ghcr.io/maplibre/martin:1.11.0"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="${HERE}/martin.yaml"
 
@@ -131,16 +139,75 @@ if [ "$EXISTS" -eq 1 ]; then
     exit 1
   fi
 else
-  # On create the secrets block cannot be omitted — there is no existing
+  # CREATE IS THREE STEPS, NOT ONE, and the order is forced by a
+  # chicken-and-egg: the app pulls from a private ACR using its own
+  # system-assigned identity, and that identity does not exist until the app
+  # does. Creating straight from the ACR image fails with
+  #   UNAUTHORIZED: authentication required
+  # and leaves the app in ProvisioningState=Failed, which cannot then be
+  # modified — `identity assign` answers ResourceNotProvisioned and the only
+  # way out is to delete it. Measured on 2026-08-25.
+  #
+  # So: create from the PUBLIC upstream image to mint the identity, grant it
+  # AcrPull, then switch to our image.
+  #
+  # The secrets block cannot be omitted on create — there is no existing
   # secret to leave alone, and a secretRef to a secret that does not exist is
-  # rejected. Create with a placeholder value, then the operator sets the real
-  # one; the app stays unhealthy in between, which is the honest state.
+  # rejected. It gets the placeholder; rotate-martin-credential.sh sets the
+  # real value. The app stays unhealthy in between, which is the honest state.
+  echo "# 1/3 creating from the public upstream image to mint an identity..." >&2
   if ! az containerapp create -g "$RG" -n "$APP" \
       --environment "$ENVIRONMENT" \
-      --image "georagacrcc.azurecr.io/georag/martin:latest" \
+      --image "$PUBLIC_IMAGE" \
+      --system-assigned \
+      --min-replicas 0 --max-replicas 1 \
       --secrets "martin-database-url=REPLACE_AT_DEPLOY_TIME" \
       --output none; then
     echo "FAILED: az containerapp create returned non-zero." >&2
+    exit 1
+  fi
+
+  PRINCIPAL=$(az containerapp show -g "$RG" -n "$APP" \
+    --query "identity.principalId" -o tsv 2>/dev/null | strip_cr)
+  if [ -z "$PRINCIPAL" ]; then
+    echo "FAILED: the app was created but has no system-assigned principal." >&2
+    exit 1
+  fi
+
+  echo "# 2/3 granting AcrPull to ${PRINCIPAL}..." >&2
+  if ! az role assignment create \
+      --assignee-object-id "$PRINCIPAL" \
+      --assignee-principal-type ServicePrincipal \
+      --role AcrPull \
+      --scope "$ACR_SCOPE" \
+      --output none 2>/dev/null; then
+    # This is the step most likely to be refused, and the failure mode is
+    # confusing if it is not called out: creating a role assignment needs
+    # User Access Administrator or Owner, which a deploy service principal
+    # usually does NOT have. Everything up to here has succeeded, so the app
+    # exists and only needs the grant.
+    cat >&2 <<GRANT
+FAILED: could not grant AcrPull — this identity cannot create role assignments.
+
+martin-cc EXISTS and has principal ${PRINCIPAL}. It just cannot pull from
+the registry yet. Someone with User Access Administrator or Owner on the
+subscription needs to run:
+
+  az role assignment create \\
+    --assignee-object-id ${PRINCIPAL} \\
+    --assignee-principal-type ServicePrincipal \\
+    --role AcrPull \\
+    --scope ${ACR_SCOPE}
+
+Then re-run this script with --apply to switch to the real image.
+GRANT
+    exit 1
+  fi
+
+  echo "# 3/3 switching to the ACR image..." >&2
+  if ! az containerapp registry set -g "$RG" -n "$APP" \
+      --server "$ACR_SERVER" --identity system --output none; then
+    echo "FAILED: could not point the app's registry at the system identity." >&2
     exit 1
   fi
   # Now apply the real shape over the bare app.
