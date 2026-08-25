@@ -182,7 +182,21 @@ echo "# setting the role password (psql will prompt for the ADMIN password)..." 
 #
 # psql still prompts for the ADMIN password on /dev/tty, not stdin, so feeding
 # SQL through the pipe does not interfere with it.
-if ! printf "ALTER ROLE %s WITH PASSWORD '%s';\n" "$ROLE" "$PASSWORD" \
+# WITH LOGIN, not just PASSWORD.
+#
+# The role was created `CREATE ROLE martin_readonly NOLOGIN ...` by
+# 2026_04_22_130000_create_silver_mvt_functions.php, whose comment says a
+# later chunk would finish configuring it. That never happened, because
+# Martin was never actually deployed until 2026-08-25 — so the role has held
+# EXECUTE on all 18 tile functions and been unable to open a session the
+# whole time. Martin got as far as authenticating and then:
+#
+#     FATAL: role "martin_readonly" is not permitted to log in   (SQLSTATE 28000)
+#
+# Setting a password on a NOLOGIN role is provisioning half a credential, and
+# this script exists to provision a WORKING one. Idempotent: re-running on a
+# role that already has LOGIN is a no-op for that attribute.
+if ! printf "ALTER ROLE %s WITH LOGIN PASSWORD '%s';\n" "$ROLE" "$PASSWORD" \
     | PGPASSWORD="" psql \
       --host "$PG_HOST" --username "$PG_ADMIN" --dbname "$PG_DB" \
       --set=ON_ERROR_STOP=1 \
