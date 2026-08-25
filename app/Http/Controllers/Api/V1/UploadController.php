@@ -144,7 +144,11 @@ class UploadController extends Controller
         // the retired `xyz` entry for .dat has never gated anything. `txt` has
         // sat in both retired `xyz` and live `collars` for months and uploads
         // fine, which is the standing proof.
-        'tables' => ['dbf', 'dat'],
+        // 'mdb'/'accdb' added 2026-08-25 — Microsoft Access. Read via
+        // mdbtools in the fastapi runtime image; one Access table becomes one
+        // attribute_tables layer, so a 19-table survey database lands as 19
+        // named tables rather than one opaque blob.
+        'tables' => ['dbf', 'dat', 'mdb', 'accdb'],
         // Vector data + QGIS projects → ingest_spatial →
         // silver.spatial_features. `.zip` is here because a shapefile is
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone

@@ -104,7 +104,16 @@ DBF_EXTENSIONS = frozenset({".dbf"})
 MAPINFO_DAT_EXTENSIONS = frozenset({".dat"})
 
 DBASE_EXTENSIONS = DBF_EXTENSIONS | MAPINFO_DAT_EXTENSIONS
-SUPPORTED_EXTENSIONS = CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBASE_EXTENSIONS
+
+#: Microsoft Access. Unlike every other extension here it holds MANY tables in
+#: one file — a Geosoft IP survey ships 19 — so it fans out to one
+#: attribute_tables layer per Access table rather than landing as a single one.
+#: Read through mdbtools, which the fastapi runtime image installs.
+ACCESS_EXTENSIONS = frozenset({".mdb", ".accdb"})
+
+SUPPORTED_EXTENSIONS = (
+    CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBASE_EXTENSIONS | ACCESS_EXTENSIONS
+)
 
 #: UTM zone 13N — the Athabasca Basin, where this platform's corpus is
 #: centred. A default, not a detection: see the module docstring.
@@ -1587,8 +1596,64 @@ async def run_ingest_tabular(
             attribute_rows: list[dict[str, Any]] = []
             attribute_layer = ""
             attribute_sha256 = ""
+            #: Access branch state: one (table_name, rows) per Access table.
+            access_layers: list[tuple[str, list[dict[str, Any]]]] = []
 
-            if suffix in DBASE_EXTENSIONS:
+            if suffix in ACCESS_EXTENSIONS:
+                # An Access database is MANY tables in one file — measured: 19
+                # in a Geosoft IP survey. Each becomes its own
+                # attribute_tables layer, keyed by the Access table name, so a
+                # user sees 19 named tables rather than one opaque blob.
+                #
+                # Only READ here; the write happens in the connection block
+                # below alongside every other branch's, so one failure rolls
+                # back with the rest rather than leaving a half-written file.
+                #
+                # A table that fails to read is skipped with a warning rather
+                # than failing the file: a legacy .mdb routinely carries a
+                # system or corrupt table beside 18 good ones, and losing all
+                # of them to one bad one is the wrong trade.
+                from georag_geoparsers.access_mdb import list_tables, read_table  # noqa: PLC0415
+
+                attribute_sha256 = await asyncio.to_thread(_sha256_file, local)
+                access_names = await asyncio.to_thread(list_tables, local)
+                for table_name in access_names:
+                    try:
+                        rows = await asyncio.to_thread(read_table, local, table_name)
+                    except Exception as exc:
+                        log.warning(
+                            "ingest_tabular: Access table %r in %s failed to read: %s",
+                            table_name, filename, exc, exc_info=True,
+                        )
+                        warnings.append({
+                            "code": "access_table_unreadable",
+                            "message": f"table {table_name!r} could not be read",
+                            "detail": (
+                                f"{filename} holds {len(access_names)} tables and "
+                                f"{table_name!r} could not be read: {exc}. The other "
+                                f"tables were unaffected."
+                            ),
+                        })
+                        continue
+                    if rows:
+                        access_layers.append((table_name, rows))
+                        sheets.append({
+                            "sheet": f"{filename}:{table_name}",
+                            "type": "attribute_table",
+                            "rows": len(rows),
+                        })
+                if not access_layers:
+                    warnings.append({
+                        "code": "access_no_tables",
+                        "message": "the Access database held no readable tables",
+                        "detail": (
+                            f"{filename} opened but every table was empty or "
+                            f"unreadable, so nothing was landed. The file is in "
+                            f"bronze and can be re-ingested."
+                        ),
+                    })
+
+            elif suffix in DBASE_EXTENSIONS:
                 # None of the sheet machinery below applies: a dBASE table
                 # has one layer, no geometry and no drill schema. The
                 # sibling check runs before the read for the reason given
@@ -1868,6 +1933,25 @@ async def run_ingest_tabular(
                         source_layer=attribute_layer,
                         rows=attribute_rows,
                     )
+
+                # One Access table -> one attribute_tables layer. source_layer
+                # is the ACCESS TABLE NAME, not the file stem: that is what
+                # makes 19 tables distinguishable on the Tables page instead
+                # of 19 identically-named blobs.
+                for access_name, access_rows in access_layers:
+                    stats = await _write_attribute_rows(
+                        conn,
+                        workspace_id=input.workspace_id,
+                        project_id=input.project_id,
+                        source_file=filename,
+                        source_file_sha256=attribute_sha256,
+                        source_layer=access_name,
+                        rows=access_rows,
+                    )
+                    prior = written.get("attribute_table", {})
+                    written["attribute_table"] = {
+                        key: prior.get(key, 0) + value for key, value in stats.items()
+                    }
 
                     # A dBASE table that is a SURFACE GEOCHEMISTRY survey also
                     # lands as typed samples. Additive: the attribute copy

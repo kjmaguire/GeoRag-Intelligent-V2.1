@@ -58,7 +58,9 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   // RETIRED_CATEGORIES by category NAME only, never by extension. The proof
   // already ships: `txt` sits in retired `xyz` AND in live `collars`, and
   // .txt uploads work today.
-  tables: ['dbf', 'dat'],
+  // `.mdb`/`.accdb` are here too: an Access database is a container of
+  // TABLES, and it fans out to one attribute table per Access table.
+  tables: ['dbf', 'dat', 'mdb', 'accdb'],
   // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
   // travel together and a lone .shp cannot be read without them.
   // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their
@@ -87,7 +89,7 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   lithology: 'Lithology logs (CSV)',
   samples: 'Assay samples (CSV)',
   excel: 'Excel workbooks (XLSX)',
-  tables: 'Attribute table (DBF, MapInfo DAT)',
+  tables: 'Attribute table (DBF, MapInfo DAT, Access MDB)',
   spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, Surpac, ZIP)',
   well_logs: 'Well logs (LAS)',
   seismic: 'Seismic (SEG-Y)',

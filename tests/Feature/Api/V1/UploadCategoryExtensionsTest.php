@@ -156,9 +156,12 @@ class UploadCategoryExtensionsTest extends TestCase
         $categories = $this->publishedCategories();
         $this->assertArrayHasKey('tables', $categories);
         // `.dat` joined `.dbf` on 2026-08-25: a MapInfo attribute half IS a
-        // dBASE file and reads standalone once its master is absent. Both go
-        // to ingest_tabular, which is what this test is really guarding.
-        $this->assertSame(['dbf', 'dat'], $categories['tables']);
+        // dBASE file and reads standalone once its master is absent.
+        // `.mdb`/`.accdb` followed the same day — an Access database is a
+        // CONTAINER of tables and fans out to one attribute_tables layer per
+        // Access table. All four go to ingest_tabular, which is what this test
+        // is really guarding.
+        $this->assertSame(['dbf', 'dat', 'mdb', 'accdb'], $categories['tables']);
         $this->assertNotContains(
             'dbf',
             $categories['excel'],

@@ -56,6 +56,31 @@ final class ReportFilenameFromKeyTest extends TestCase
         );
     }
 
+    public function test_strips_the_tiff_derived_prefix_and_then_the_upload_prefix(): void
+    {
+        // A TIFF/RRD is normalised to a PDF under its own key, and THAT is
+        // what silver.reports points at. Both layers of machine string have to
+        // come off or the Reports list shows the derivation bookkeeping as the
+        // document's name.
+        $this->assertSame(
+            'Geologic_Map_Unga_1982_color_utm.pdf',
+            ReportController::filenameFromKey(
+                'reports/p/tiff-derived-a1b2c3d4-20260824_204518_Geologic_Map_Unga_1982_color_utm.pdf',
+            ),
+        );
+    }
+
+    public function test_a_real_name_beginning_with_tiff_is_not_mistaken_for_a_derivation(): void
+    {
+        // The pattern requires the literal 'tiff-derived-' plus exactly eight
+        // hex characters, so a genuine file called 'tiff-derived-notes.pdf'
+        // keeps its name.
+        $this->assertSame(
+            'tiff-derived-notes.pdf',
+            ReportController::filenameFromKey('reports/p/20260824_204518_tiff-derived-notes.pdf'),
+        );
+    }
+
     public function test_handles_a_key_with_no_directory(): void
     {
         $this->assertSame('a.pdf', ReportController::filenameFromKey('20260824_204518_a.pdf'));
