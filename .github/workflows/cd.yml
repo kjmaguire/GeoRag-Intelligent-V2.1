@@ -583,8 +583,29 @@ jobs:
             echo "Tiles will 502 at the proxy until it is created. See docker/martin.Dockerfile."
             exit 0
           fi
-          az containerapp update -g "$AZURE_RG" -n martin-cc \
-            --image "${ACR_LOGIN_SERVER}/georag/martin:${SHORT_SHA}"
+          # EXISTS is not the only way this step can be unable to deploy, and
+          # the reasoning above applies to all of them. On 2026-08-25 a freshly
+          # created martin-cc sat crashlooping on a placeholder DATABASE_URL,
+          # which held the app in provisioningState=InProgress; every
+          # `containerapp update` against it answered
+          # ContainerAppOperationInProgress. That failed this step, which
+          # SKIPPED the Laravel rollout, the health check and the smoke test,
+          # and fired the rollback — so an optional tile server that had never
+          # served a single tile reverted a good FastAPI deploy.
+          #
+          # The tile server is off the app's critical path by design: Laravel
+          # proxies tiles and answers 502 when Martin is down, which degrades
+          # one map layer rather than breaking a page. So a failure here is a
+          # WARNING and the deploy continues. It is deliberately loud — a
+          # silent pass would let Martin serve stale tiles indefinitely.
+          if az containerapp update -g "$AZURE_RG" -n martin-cc \
+               --image "${ACR_LOGIN_SERVER}/georag/martin:${SHORT_SHA}"; then
+            echo "martin-cc rolled to ${SHORT_SHA}."
+            exit 0
+          fi
+          state=$(az containerapp show -g "$AZURE_RG" -n martin-cc \
+            --query "properties.provisioningState" -o tsv 2>/dev/null | tr -d '\r')
+          echo "::warning::martin-cc did not take ${SHORT_SHA} (provisioningState=${state:-unknown}) and stays on its current image. Tiles serve stale content or 502; the rest of the deploy continues."
 
       # Order matters: queue CONSUMERS before the producer. These three are
       # updated sequentially with no barrier (~30s end to end, measured on

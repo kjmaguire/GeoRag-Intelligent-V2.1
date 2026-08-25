@@ -122,9 +122,16 @@ if [ "$APPLY" -eq 0 ]; then
   else
     echo "#   az containerapp create -g $RG -n $APP --environment $ENVIRONMENT --yaml <copy>" >&2
     echo "#" >&2
-    echo "# NOTE: on FIRST create the secret must exist or Martin cannot start." >&2
-    echo "# Set it yourself (this script never handles the password):" >&2
-    echo "#   az containerapp secret set -g $RG -n $APP --secrets martin-database-url=\"postgresql://martin_readonly:...@georag-pg-cc.postgres.database.azure.com:5432/georag?sslmode=require\"" >&2
+    echo "# NOTE: the credential must be in the environment BEFORE the create." >&2
+    echo "# Setting it afterwards is not possible: an app created with a bad" >&2
+    echo "# connection string crashloops, locks itself in InProgress, and then" >&2
+    echo "# refuses every update — including the secret set. Measured 2026-08-25." >&2
+    if [ -n "${MARTIN_DATABASE_URL:-}" ]; then
+      echo "#   MARTIN_DATABASE_URL is set — the create would use it." >&2
+    else
+      echo "#   MARTIN_DATABASE_URL is NOT set — --apply would refuse. Export it:" >&2
+      echo "#     export MARTIN_DATABASE_URL='postgresql://martin_readonly:PASSWORD@georag-pg-cc.postgres.database.azure.com:5432/georag?sslmode=require'" >&2
+    fi
   fi
   exit 0
 fi
@@ -153,15 +160,57 @@ else
   #
   # The secrets block cannot be omitted on create — there is no existing
   # secret to leave alone, and a secretRef to a secret that does not exist is
-  # rejected. It gets the placeholder; rotate-martin-credential.sh sets the
-  # real value. The app stays unhealthy in between, which is the honest state.
+  # rejected. So the real connection string has to be in hand BEFORE the
+  # create, and it is read from the environment so it never passes through a
+  # command line, this file, or git.
+  #
+  # WHY THIS IS NOT OPTIONAL, measured on 2026-08-25. Creating with a
+  # placeholder produces an app that can never be repaired: Martin exits 1 on
+  # a connection string it cannot parse, Container Apps restarts it (19 times
+  # in ten minutes), and the app sits in provisioningState=InProgress for the
+  # ~30 minutes it takes to give up. Every `containerapp update` against it —
+  # the image switch, the manifest apply, CD's own rollout step — answers
+  # ContainerAppOperationInProgress and fails. The app is not merely
+  # unhealthy; it is UNMODIFIABLE, and the only exit is to delete it.
+  #
+  # It also does collateral damage: CD's martin step failed, which skipped the
+  # Laravel rollout and the smoke test and fired the rollback, so a tile
+  # server that had never served a tile reverted a good FastAPI deploy. That
+  # step is now non-fatal (see .github/workflows/cd.yml), but the create is
+  # still refused here — an app nobody can update is not a useful thing to
+  # leave behind.
+  if [ -z "${MARTIN_DATABASE_URL:-}" ]; then
+    cat >&2 <<'NEEDSECRET'
+REFUSING TO CREATE: martin-cc needs its database credential AT CREATE TIME.
+
+Creating with a placeholder makes an app that crashloops, locks itself in
+provisioningState=InProgress, and can then never be updated — only deleted.
+
+Export the connection string and re-run. It is read from the environment so
+it never lands in a command line, this script, or git:
+
+  export MARTIN_DATABASE_URL='postgresql://martin_readonly:PASSWORD@georag-pg-cc.postgres.database.azure.com:5432/georag?sslmode=require'
+  bash deploy/azure/containerapps/apply-martin.sh --apply
+
+Use the martin_readonly role, not georag_app: it holds EXECUTE on the tile
+functions and nothing else, so a bug in a tile function's argument handling
+cannot become a data-exfiltration path. Connect DIRECTLY, not through
+PgBouncer — Martin keeps a pool of 20 and issues prepared statements, which
+transaction pooling breaks.
+
+If that role has no password yet, mint one with
+deploy/azure/containerapps/rotate-martin-credential.sh.
+NEEDSECRET
+    exit 1
+  fi
+
   echo "# 1/3 creating from the public upstream image to mint an identity..." >&2
   if ! az containerapp create -g "$RG" -n "$APP" \
       --environment "$ENVIRONMENT" \
       --image "$PUBLIC_IMAGE" \
       --system-assigned \
       --min-replicas 0 --max-replicas 1 \
-      --secrets "martin-database-url=REPLACE_AT_DEPLOY_TIME" \
+      --secrets "martin-database-url=${MARTIN_DATABASE_URL}" \
       --output none; then
     echo "FAILED: az containerapp create returned non-zero." >&2
     exit 1
