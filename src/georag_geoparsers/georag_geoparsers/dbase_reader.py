@@ -374,19 +374,30 @@ def _classify_ascii_numeric(cells: list[bytes], decimals: int, encoding: str) ->
     if not populated:
         return DECODED_TEXT
 
+    # Both handlers below are TYPE PROBES, not swallowed failures: the
+    # exception IS the answer, and the column is demoted a step. They still
+    # log, because "why did this column come back as text?" is the first
+    # question anyone debugging a legacy export asks, and the offending value
+    # is the answer. Runs once per FIELD, not per cell.
     if decimals == 0:
         try:
             for text in populated:
                 int(text)
             return DECODED_INT32
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug(
+                "dbase: column is not int32 (%s) — trying float", exc, exc_info=True,
+            )
 
     try:
         for text in populated:
             float(text)
         return DECODED_DOUBLE
-    except ValueError:
+    except ValueError as exc:
+        logger.debug(
+            "dbase: column is not numeric (%s) — keeping the text verbatim",
+            exc, exc_info=True,
+        )
         return DECODED_TEXT
 
 

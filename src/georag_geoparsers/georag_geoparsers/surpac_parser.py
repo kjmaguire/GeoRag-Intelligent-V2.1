@@ -205,11 +205,19 @@ def _clean_title(line: str) -> str:
 
 
 def _parse_string_number(line: str) -> int | None:
-    """The record's string number, or None when the first field is not one."""
+    """The record's string number, or None when the first field is not one.
+
+    The exception is the answer, not a failure: a Surpac file's title line and
+    its trailing ``END`` record both have a non-numeric first field, and the
+    caller uses None to tell a record apart from a header. Logged anyway,
+    because a file whose DATA rows land here is malformed in a way the caller
+    counts but cannot explain, and the offending text is the explanation.
+    """
     field = line.split(",", 1)[0].strip()
     try:
         return int(field)
     except ValueError:
+        logger.debug("Surpac: non-numeric string number %r — treated as a header", field)
         return None
 
 

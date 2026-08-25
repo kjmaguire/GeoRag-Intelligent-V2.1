@@ -79,6 +79,11 @@ VECTOR_EXTENSIONS = frozenset({
     # ingest a MIF/MID pair twice -- the same trap the shapefile sidecars are
     # kept out of this set to avoid.
     ".tab", ".mif",
+    # Surpac string file, 2026-08-25. No OGR driver exists; spatial_parser
+    # returns early to a hand-written reader. Listed here so a .str inside a
+    # ZIP is recognised as a readable member rather than reported as "archive
+    # contains no readable vector file".
+    ".str",
 })
 QGIS_PROJECT_EXTENSIONS = frozenset({".qgs", ".qgz"})
 

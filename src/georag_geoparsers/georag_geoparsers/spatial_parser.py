@@ -1352,6 +1352,106 @@ def _extract_dxf_blocks(path: str | Path) -> list[dict]:
 # Parser
 # ---------------------------------------------------------------------------
 
+def _parse_surpac_strings(path: str, *, source_epsg: int | None) -> SpatialParseResult:
+    """Parse a Surpac string file into spatial features.
+
+    Separate from the GeoPandas path because there is no OGR driver for the
+    format — ``gpd.read_file`` cannot open a ``.str`` at all — so the features
+    are built directly rather than read out of a GeoDataFrame.
+
+    Two decisions the caller cannot make later, so they are made here:
+
+    * **The level elevation goes into properties, not the geometry.**
+      ``silver.spatial_features.geom`` is 2D and every insert is wrapped in
+      ``ST_Force2D``. Measured on a real file, the strings sit at 73 distinct
+      elevations from -235 m to +125 m in exact 5 m steps — the level IS the
+      dataset, and flattening it collapses 73 level plans into one plane of
+      unreadable spaghetti.
+    * **A closed string is only a ring if it encloses area.** ``closed`` from
+      the reader means "the vertex list repeats its first point", which a
+      two-vertex string A,A also satisfies. Those become LineStrings, and the
+      genuinely open strings stay open — closing them would invent vein
+      outline nobody digitised (measured gaps of 0.73 m and 0.40 m).
+
+    The format declares no CRS, so an EPSG must be supplied or the caller is
+    told not to persist — the same contract as a .prj-less shapefile, and for
+    the same reason: assuming 4326 for projected coordinates is what put a
+    previous delivery at longitude 400,797.
+    """
+    from georag_geoparsers.surpac_parser import read_surpac_strings  # noqa: PLC0415
+
+    parsed = read_surpac_strings(path)
+    basename = os.path.basename(path)
+
+    features: list[SpatialFeature] = []
+    for s in parsed.strings:
+        # Distinct vertices, because a ring needs three of them to have area.
+        distinct = {(round(x, 6), round(y, 6)) for x, y, _ in s.points}
+        as_ring = s.closed and len(distinct) >= 3
+
+        coords = ", ".join(f"{x} {y}" for x, y, _ in s.points)
+        if as_ring:
+            wkt, geom_type = f"POLYGON(({coords}))", "Polygon"
+        else:
+            wkt, geom_type = f"LINESTRING({coords})", "LineString"
+
+        features.append(SpatialFeature(
+            name=f"string {s.string_number}",
+            feature_type="vein_outline",
+            geometry_wkt=wkt,
+            geometry_type=geom_type,
+            properties={
+                "surpac_string_number": s.string_number,
+                "level_z": s.level_z,
+                "point_count": len(s.points),
+                "closed": s.closed,
+            },
+        ))
+
+    warnings_out: list[dict] = []
+    if source_epsg is None:
+        warnings_out.append({
+            "code": "surpac_no_crs",
+            "message": "Surpac string files declare no coordinate system.",
+            "detail": (
+                f"{basename} is a Surpac string file, a format that stores "
+                "coordinates in a mine grid with nothing to say which one. "
+                "Supply an EPSG code at upload time to place it on the map; "
+                "without one the features cannot be positioned and are not "
+                "written."
+            ),
+        })
+
+    return SpatialParseResult(
+        source_format="surpac",
+        source_crs=f"EPSG:{source_epsg}" if source_epsg else "",
+        feature_count=len(features),
+        empty_geom_skipped=0,
+        features=features,
+        source_file=path,
+        driver=None,
+        layer_count=1,
+        layer_names=[Path(path).stem],
+        warnings=warnings_out,
+        provenance={
+            "source_file": path,
+            "source_file_sha256": _sha256_path(path),
+            "parser_name": "surpac_parser",
+            "parser_version": PARSER_VERSION,
+            "source_col_map": {},
+        },
+        crs_missing=source_epsg is None,
+        crs_override_applied=source_epsg is not None,
+        # The coordinates are what the operator asserted, unverified against
+        # any declaration in the file — there is none to check against.
+        crs_confidence=0.5 if source_epsg else None,
+        crs_confidence_reason=(
+            "Surpac declares no CRS; the EPSG was supplied by the operator"
+            if source_epsg else None
+        ),
+    )
+
+
 def parse_spatial_file(
     path: str,
     feature_type: str | None = None,
@@ -1420,6 +1520,13 @@ def parse_spatial_file(
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Path not found at '{path}'")
+
+    # Surpac strings return before GeoPandas is used at all: there is no OGR
+    # driver for the format, so gpd.read_file below cannot open one. Placed
+    # after the EPSG validation and the existence check so a bad override or a
+    # missing file still fails the same way it does for every other format.
+    if p.suffix.lower() == ".str":
+        return _parse_surpac_strings(path, source_epsg=source_epsg)
 
     # --- Provenance ---
     sha256_hex = _sha256_path(path)

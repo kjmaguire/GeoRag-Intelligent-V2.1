@@ -356,7 +356,7 @@ const CRS_SIDECARS = new Set(['prj', 'qpj']);
  * absent - RFC 7946 §4 makes WGS84 a specification default, which is a
  * declaration, not a gap for a donation to fill.
  */
-export const WKT_DONATABLE_EXTS = new Set(['dxf', 'dgn']);
+export const WKT_DONATABLE_EXTS = new Set(['dxf', 'dgn', 'str']);
 
 /**
  * The WKT keywords that actually name a coordinate reference system: WKT1's
