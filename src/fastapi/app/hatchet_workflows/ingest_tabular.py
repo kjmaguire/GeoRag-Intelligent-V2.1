@@ -594,6 +594,89 @@ def _sample_type_of(raw: Any) -> str:
     return _SAMPLE_TYPE_CODES.get(text, "other")
 
 
+def _discover_trace_columns(columns: list[str]) -> dict[str, str] | None:
+    """Map a Discover/MapInfo drillhole-TRACE export, or None if not one.
+
+    This is not a collar table and must not be confused with one. A Discover
+    trace export writes one row per SEGMENT of a desurveyed hole, so a
+    straight hole arrives as TWO rows: the collar at depth 0, and the segment
+    midpoint at SegmentLen = Depth/2. Both carry the same CollarID.
+
+    Recognised by SegmentLen together with MidX/MidY — a plain collar table
+    has easting/northing and no notion of a segment, so it cannot match.
+    """
+    from georag_geoparsers._header_match import build_column_map  # noqa: PLC0415
+
+    mapped, _ = build_column_map(columns, {
+        "hole_id": ["collarid_d", "collarid", "collar_id", "hole_id", "holeid"],
+        "depth": ["depth_db", "depth"],
+        "azimuth": ["azimuth_db", "azimuth", "bearing"],
+        "dip": ["dip_db", "dip", "inclination"],
+        "mid_x": ["midx_db", "midx", "mid_x"],
+        "mid_y": ["midy_db", "midy", "mid_y"],
+        "mid_z": ["midz_db", "midz", "mid_z"],
+        "segment_len": ["segmentlen", "segment_len", "seglen"],
+    })
+
+    required = {"hole_id", "depth", "mid_x", "mid_y", "segment_len"}
+    return mapped if required <= set(mapped) else None
+
+
+def _collapse_discover_traces(
+    rows: list[dict[str, Any]], mapped: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Collapse trace segments into one collar per hole.
+
+    THE BUG THIS EXISTS TO PREVENT. _COLLAR_SQL is ON CONFLICT DO UPDATE and
+    the segments arrive in key order, so feeding this file row by row writes
+    the collar, then OVERWRITES it with the midpoint. Every hole lands 10-40 m
+    from where it was drilled, with no error and no warning — the map just
+    quietly disagrees with the survey.
+
+    The collar is the row at depth 0; the hole's length is the greatest depth
+    on any of its segments. Verified against the real file: for all five
+    trenches, start + (Depth/2) x (sin azimuth, cos azimuth) reproduces the
+    midpoint row's MidX/MidY to 0.0000 m, which is what confirms the depth-0
+    row is the collar rather than another segment.
+    """
+    by_hole: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        hole = str(row.get(mapped["hole_id"], "") or "").strip()
+        if hole:
+            by_hole.setdefault(hole, []).append(row)
+
+    collars: list[dict[str, Any]] = []
+    for hole, segments in by_hole.items():
+        depths = [(_num(s.get(mapped["depth"])) or 0.0, s) for s in segments]
+        # Sorting rather than trusting file order: a re-export can interleave
+        # holes, and "the first row I saw" would then be an arbitrary segment.
+        depths.sort(key=lambda pair: pair[0])
+        shallowest_depth, collar_row = depths[0]
+
+        if shallowest_depth > 0:
+            # No depth-0 segment: the collar position was never exported, and
+            # the shallowest midpoint is NOT the collar. Guessing here is the
+            # exact error this function exists to avoid, so skip the hole and
+            # let the caller report it.
+            log.warning(
+                "ingest_tabular: trace for %r has no depth-0 segment "
+                "(shallowest %.2f m) — cannot locate its collar",
+                hole, shallowest_depth,
+            )
+            continue
+
+        collars.append({
+            "hole_id": hole,
+            "easting": _num(collar_row.get(mapped["mid_x"])),
+            "northing": _num(collar_row.get(mapped["mid_y"])),
+            "elevation": _num(collar_row.get(mapped["mid_z"])) if "mid_z" in mapped else None,
+            "total_depth": max(depth for depth, _ in depths),
+            "azimuth": _num(collar_row.get(mapped["azimuth"])) if "azimuth" in mapped else None,
+            "dip": _num(collar_row.get(mapped["dip"])) if "dip" in mapped else None,
+        })
+    return collars
+
+
 async def _write_surface_geochem(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
@@ -1757,9 +1840,80 @@ async def run_ingest_tabular(
                     # copy is a smaller failure than turning a successful
                     # ingest into a failed one — the file is in bronze and can
                     # be re-ingested. The warning says what happened.
-                    geochem_shape = _surface_geochem_columns(
-                        list(attribute_rows[0]) if attribute_rows else [],
-                    )
+                    dbase_columns = list(attribute_rows[0]) if attribute_rows else []
+
+                    # A Discover/MapInfo drillhole TRACE export also lands as
+                    # collars. Same additive, best-effort contract as the
+                    # geochem branch below: the attribute copy is already
+                    # committed and must not be lost to a typed-write failure.
+                    trace_shape = _discover_trace_columns(dbase_columns)
+                    if trace_shape is not None:
+                        try:
+                            collar_rows = _collapse_discover_traces(
+                                attribute_rows, trace_shape,
+                            )
+                            if collar_rows:
+                                written["collar"] = await _write_collars(
+                                    conn,
+                                    workspace_id=input.workspace_id,
+                                    project_id=input.project_id,
+                                    records=collar_rows,
+                                    epsg=epsg,
+                                    # The coordinates came from the export, not
+                                    # from a human typing an EPSG — 'declared'
+                                    # would overstate it, since the file itself
+                                    # names no CRS. 'assumed' matches what the
+                                    # tabular path already records elsewhere.
+                                    georef_method="assumed" if epsg_assumed else "manual",
+                                )
+                                sheets.append({
+                                    "sheet": filename,
+                                    "type": "collar",
+                                    "rows": written["collar"]["written"],
+                                })
+                                if epsg_assumed:
+                                    warnings.append(_assumed_crs_warning(
+                                        epsg, written["collar"]["written"],
+                                    ))
+                            skipped_holes = len({
+                                str(r.get(trace_shape["hole_id"], "") or "").strip()
+                                for r in attribute_rows
+                                if str(r.get(trace_shape["hole_id"], "") or "").strip()
+                            }) - len(collar_rows)
+                            if skipped_holes > 0:
+                                warnings.append({
+                                    "code": "trace_collar_unlocatable",
+                                    "message": (
+                                        f"{skipped_holes} hole(s) in the trace export "
+                                        f"have no depth-0 segment"
+                                    ),
+                                    "detail": (
+                                        f"{filename} is a drillhole trace export, which "
+                                        f"records one row per segment. The collar is the "
+                                        f"segment at depth 0, and {skipped_holes} hole(s) "
+                                        f"do not have one — their shallowest row is a "
+                                        f"MIDPOINT, tens of metres from the collar. Those "
+                                        f"holes were left out rather than placed wrongly. "
+                                        f"Re-export including the collar segment."
+                                    ),
+                                })
+                        except Exception as exc:
+                            log.warning(
+                                "ingest_tabular: trace collar write failed for %s: %s",
+                                filename, exc, exc_info=True,
+                            )
+                            warnings.append({
+                                "code": "trace_collar_write_failed",
+                                "message": "the trace landed as a table but not as collars",
+                                "detail": (
+                                    f"{filename} looks like a drillhole trace export and "
+                                    f"its rows were stored, but writing them as collars "
+                                    f"failed: {exc}. The data is not lost — it is in the "
+                                    f"attribute table and in bronze."
+                                ),
+                            })
+
+                    geochem_shape = _surface_geochem_columns(dbase_columns)
                     if geochem_shape is not None:
                         try:
                             written["geochemistry"] = await _write_surface_geochem(
