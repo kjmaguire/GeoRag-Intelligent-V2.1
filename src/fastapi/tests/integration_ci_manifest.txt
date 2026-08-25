@@ -80,3 +80,17 @@ tests/test_sme_seeders.py
 tests/test_whatchanged_report_integration.py
 tests/test_langfuse_link.py
 tests/test_usage_events_write_integration.py
+
+# ── Ingestion writes that only a real database can check ──────────────
+# Added 2026-08-25 after a bug a fake connection cannot see:
+# silver.collars.geom is declared geometry(POINT, 32613), and _COLLAR_SQL
+# handed PostGIS the project's SOURCE srid, so the tabular collar write had
+# never worked for ANY project outside UTM zone 13N. Every unit test passed
+# throughout, because a recording fake accepts any SQL. It surfaced only
+# when the chain was run against Postgres with RedStar's EPSG:26904.
+#
+# This module covers the three claims that need a live database: the geom
+# SRID conforms, a survey station resolves to the collar written moments
+# earlier (an orphan is COUNTED, not raised), and a re-ingest REPLACES
+# stations rather than doubling them.
+tests/test_discover_trace_write_integration.py
