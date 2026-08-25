@@ -320,16 +320,32 @@ describe('supportsCrsOverride', () => {
       'samples',
       'excel',
       'tables',
+      // `archive` joined on 2026-08-25. It belongs here for exactly the
+      // stated reason: IngestZipArchiveInput now declares source_epsg and
+      // _ingest_one forwards it to every tabular and spatial member it fans
+      // out, so the value is no longer dropped in transit.
+      //
+      // Withholding it was the more damaging half of the bug. A ZIP is the
+      // only way to upload a large delivery, ingest_tabular falls back to
+      // DEFAULT_SOURCE_EPSG (32613, Athabasca) when told nothing, and the
+      // resulting warning advised "re-upload with the correct EPSG code" —
+      // advice that could not be followed, because no control existed.
+      // RedStar's Sitka collars landed 3,430 km east of Unga Island.
+      'archive',
     ] as Category[]) {
       expect(supportsCrsOverride(cat), cat).toBe(true);
     }
   });
 
   it('withholds it where the value would be dropped in transit', () => {
-    // reports -> ingest_pdf/tiff_normalize, archive -> ingest_zip_archive,
-    // well_logs -> ingest_well_logs. None of the three has the field, and a
-    // control whose value is silently discarded is worse than no control.
-    for (const cat of ['reports', 'archive', 'well_logs'] as Category[]) {
+    // reports -> ingest_pdf/tiff_normalize, well_logs -> ingest_well_logs.
+    // Neither input model has the field, and a control whose value is
+    // silently discarded is worse than no control.
+    //
+    // The principle is unchanged; `archive` moved because the transit was
+    // fixed, not because the rule was relaxed. Anything added here must be
+    // checked the same way: follow the value to the workflow input model.
+    for (const cat of ['reports', 'well_logs'] as Category[]) {
       expect(supportsCrsOverride(cat), cat).toBe(false);
     }
     expect(supportsCrsOverride(null)).toBe(false);

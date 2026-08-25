@@ -134,6 +134,38 @@ class IngestZipArchiveInput(BaseModel):
     project_id: str = Field(..., description="UUID of the owning project.")
     run_id: str = Field(..., description="Caller-supplied correlation ID (uuid4 string).")
 
+    #: The CRS the operator declared for the archive's contents, forwarded to
+    #: every member this workflow fans out.
+    #:
+    #: Without it a zipped delivery had NO WAY to declare its coordinate
+    #: system. ingest_tabular resolves `epsg = input.source_epsg or
+    #: DEFAULT_SOURCE_EPSG` and never consults the project, so every collar
+    #: and surface sample inside a ZIP was written as EPSG:32613 — the
+    #: Athabasca default. For RedStar's Sitka collars (EPSG:26904, easting
+    #: 400807, northing 6117291) that puts them at POINT(-106.5582 55.1922),
+    #: northern Saskatchewan, 3,430 km from Unga Island. The run's only
+    #: signal was the generic `collar_crs_assumed` warning, whose advice —
+    #: "re-upload with the correct EPSG code" — could not be followed,
+    #: because the wizard rendered no CRS control for the `archive` category.
+    #:
+    #: Same name, type and 1024..32767 range as IngestTabularInput and
+    #: IngestSpatialInput, deliberately: one concept, one spelling.
+    #:
+    #: Defaulted, and it must stay defaulted — Laravel omits the key entirely
+    #: when the operator typed nothing, and stale_run_detector reconstructs
+    #: this model from a stored run without it.
+    source_epsg: int | None = Field(default=None)
+
+    @field_validator("source_epsg")
+    @classmethod
+    def _epsg_in_range(cls, v: int | None) -> int | None:
+        """Reject at the boundary what the database would reject at persist."""
+        if v is None:
+            return v
+        if not (1024 <= v <= 32767):
+            raise ValueError("EPSG codes must be in the range 1024-32767.")
+        return v
+
     @field_validator("workspace_id", "project_id", "run_id")
     @classmethod
     def _must_be_uuid(cls, v: str) -> str:
@@ -557,6 +589,9 @@ async def _ingest_one(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=tabular_key,
+                # Forwarded, not defaulted: without this the member is
+                # written as EPSG:32613 wherever it actually came from.
+                source_epsg=input.source_epsg,
             )
         )
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch below
@@ -640,6 +675,7 @@ async def _ingest_one(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=spatial_key,
+                source_epsg=input.source_epsg,
             )
         )
         # F7 (2026-08-11) — throttle the fan-out; see the TIFF branch above
@@ -673,6 +709,7 @@ async def _ingest_one(
                 workspace_id=input.workspace_id,
                 project_id=input.project_id,
                 minio_key=table_key,
+                source_epsg=input.source_epsg,
             )
         )
         await asyncio.sleep(0.25)

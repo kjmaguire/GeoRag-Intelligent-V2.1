@@ -613,6 +613,11 @@ class UploadController extends Controller
                     projectId: $projectId,
                     minioKey: $minioKey,
                     responseData: $responseData,
+                    // Without this the archive's members are written as
+                    // EPSG:32613 wherever they actually came from, and the
+                    // wizard's CRS field for a ZIP would be collected and
+                    // then silently dropped.
+                    sourceEpsg: $sourceEpsg,
                 );
             }
 
@@ -898,6 +903,7 @@ class UploadController extends Controller
         string $projectId,
         string $minioKey,
         array &$responseData,
+        ?int $sourceEpsg = null,
     ): void {
         try {
             $row = DB::selectOne(
@@ -945,6 +951,20 @@ class UploadController extends Controller
                 'minio_key' => $minioKey,
                 'run_id' => $runId,
             ];
+
+            // Omitted rather than sent as null when the operator typed
+            // nothing: IngestZipArchiveInput defaults the field, and the
+            // absence is what tells ingest_tabular to fall back.
+            //
+            // Before this key existed a zipped delivery could not declare
+            // a CRS at all. ingest_tabular resolves
+            // `epsg = source_epsg or DEFAULT_SOURCE_EPSG` and never
+            // consults the project, so RedStar's Sitka collars
+            // (EPSG:26904) landed in northern Saskatchewan, 3,430 km from
+            // Unga Island.
+            if ($sourceEpsg !== null) {
+                $payload['source_epsg'] = $sourceEpsg;
+            }
 
             // ZIP archives extract internally and fan out individual
             // ingest_pdf triggers, so a single zip upload can easily

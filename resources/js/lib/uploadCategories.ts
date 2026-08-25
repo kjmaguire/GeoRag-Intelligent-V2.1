@@ -257,6 +257,14 @@ export function supportsCrsOverride(category: Category | null): boolean {
     category === 'lithology' ||
     category === 'samples' ||
     category === 'excel' ||
-    category === 'tables'
+    category === 'tables' ||
+    // `archive` joined on 2026-08-25. A ZIP is the ONLY way to upload a
+    // large delivery, and its members go to exactly the ingesters listed
+    // above — so excluding it here meant a zipped collar table had no way
+    // to declare its CRS and was written as the Athabasca default,
+    // EPSG:32613. RedStar's Sitka collars landed 3,430 km east of Unga
+    // Island, and the run's advice ("re-upload with the correct EPSG
+    // code") could not be followed for a file inside an archive.
+    category === 'archive'
   );
 }
