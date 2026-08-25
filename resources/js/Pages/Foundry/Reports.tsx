@@ -53,6 +53,16 @@ interface Passage {
 export interface ReportListRow {
     report_id: string;
     title: string;
+    /**
+     * The uploaded file's own name.
+     *
+     * `title` is parsed out of the document and is a HINT — measured on a real
+     * delivery it arrived as `<figure>` and as single letters, and that became
+     * the document's identity in this list. The filename is what the person
+     * who uploaded it recognises, so it leads. Null only for rows whose
+     * storage key predates this being recorded.
+     */
+    source_filename: string | null;
     company: string;
     filing_date: string;
     commodity: string;
@@ -524,11 +534,24 @@ function DocumentList({
                         }}
                     >
                         <div
-                            className="text-[12px] leading-snug mb-1.5"
+                            className="text-[12px] leading-snug"
                             style={{ color: active ? 'var(--accent)' : 'var(--fg-0)' }}
                         >
-                            {r.title}
+                            {r.source_filename ?? r.title}
                         </div>
+                        {/* The parsed title is kept, demoted: it is often the
+                            real report name and worth seeing, but it is a
+                            guess and must not stand in for the filename. */}
+                        {r.source_filename && r.title && r.title !== r.source_filename && (
+                            <div
+                                className="text-[11px] leading-snug truncate"
+                                style={{ color: 'var(--fg-2)' }}
+                                title={r.title}
+                            >
+                                {r.title}
+                            </div>
+                        )}
+                        <div className="mb-1.5" />
                         <div className="flex items-center gap-1.5 flex-wrap">
                             <Pill tone={statusToneFor(r.status)} dot>
                                 {r.status === 'ok'

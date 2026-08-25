@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Head } from '@inertiajs/react';
 import JSZip from 'jszip';
 import AppLayout from '@/Layouts/AppLayout';
+import { filesFromDataTransfer } from '@/lib/dropFiles';
 import { PageHeader, Card } from '@/Components/Foundry/primitives';
 import {
     CATEGORY_EXTS,
@@ -527,69 +528,21 @@ export default function FoundryNewProject() {
     const setSourceEpsg = (id: string, text: string) =>
         setQueue((q) => q.map((x) => (x.id === id ? { ...x, sourceEpsgText: text } : x)));
 
-    // Recursively walk a dropped directory entry, returning every File inside.
-    // Browser drag-drop exposes folders as 0-byte File objects in
-    // `dataTransfer.files`; the real contents only come out via the
-    // DataTransferItem `webkitGetAsEntry()` API + `directoryReader.readEntries`.
-    // Note: readEntries returns at most 100 entries per call, so we loop until
-    // it returns empty (otherwise large folders silently truncate).
-    const walkEntry = useCallback(async (entry: any): Promise<File[]> => {
-        if (!entry) return [];
-        if (entry.isFile) {
-            return new Promise<File[]>((resolve) => {
-                entry.file(
-                    (f: File) => resolve([f]),
-                    () => resolve([]),
-                );
-            });
-        }
-        if (entry.isDirectory) {
-            const reader = entry.createReader();
-            const out: File[] = [];
-            while (true) {
-                const batch: any[] = await new Promise((resolve) => {
-                    reader.readEntries(
-                        (entries: any[]) => resolve(entries),
-                        () => resolve([]),
-                    );
-                });
-                if (!batch.length) break;
-                for (const child of batch) {
-                    const files = await walkEntry(child);
-                    out.push(...files);
-                }
-            }
-            return out;
-        }
-        return [];
-    }, []);
-
     const onDrop = useCallback(
         async (e: React.DragEvent<HTMLDivElement>) => {
             e.preventDefault();
             setDragging(false);
-            const items = e.dataTransfer?.items;
-            // Prefer the items API when available — it lets us recurse into
-            // dropped folders. Fall back to dataTransfer.files when not.
-            if (items && items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
-                const collected: File[] = [];
-                const entries: any[] = [];
-                for (let i = 0; i < items.length; i++) {
-                    const entry = items[i].webkitGetAsEntry?.();
-                    if (entry) entries.push(entry);
-                }
-                for (const entry of entries) {
-                    const files = await walkEntry(entry);
-                    collected.push(...files);
-                }
-                if (collected.length > 0) {
-                    addFiles(collected);
-                    return;
-                }
+            // Snapshot before awaiting: `e.dataTransfer` may be detached by the
+            // time the walk resolves.
+            const plain = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+            const collected = await filesFromDataTransfer(e.dataTransfer);
+            if (collected.length > 0) {
+                addFiles(collected);
+                return;
             }
-            if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+            if (plain.length) addFiles(plain);
         },
-        [addFiles, walkEntry],
+        [addFiles],
     );
 
     const queueSummary = useMemo(() => {

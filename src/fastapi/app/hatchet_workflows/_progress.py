@@ -143,7 +143,14 @@ async def get_pool() -> asyncpg.Pool:
 #: that is actually generated. A file the geologist themselves named
 #: ``20260824_survey.csv`` keeps its name — the seconds field is required,
 #: and their own prefix has none.
-_GENERATED_PREFIX = re.compile(r"^\d{8}_\d{6}_(?:[0-9a-f]{8}_)?")
+#: Three writers mint these keys and they do NOT agree on shape:
+#: UploadController uses ``{Ymd_His}_{name}``, DrillUploadController inserts an
+#: 8-hex digest, and ingest_zip_archive uses ``strftime('%Y%m%d_%H%M%S_%f')``,
+#: whose third component is six DECIMAL digits. The pattern was written for the
+#: first two only, so every file extracted from a ZIP kept
+#: ``20260824_204518_123456_`` glued to the front of its display name — a
+#: filename fix that still showed the user a machine string.
+_GENERATED_PREFIX = re.compile(r"^\d{8}_\d{6}_(?:[0-9a-f]{8}_|\d{6}_)?")
 
 
 def _filename_from_key(minio_key: str) -> str:

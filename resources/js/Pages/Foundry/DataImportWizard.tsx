@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { filesFromDataTransfer } from '@/lib/dropFiles';
 import { Head, Link, router } from '@inertiajs/react';
 import JSZip from 'jszip';
 import AppLayout from '@/Layouts/AppLayout';
@@ -276,12 +277,73 @@ function fileExtension(name: string): string {
     return (name.split('.').pop() ?? '').toLowerCase();
 }
 
+/**
+ * Why a given format was not imported, in the user's terms.
+ *
+ * "Unsupported file type" is true and useless — it does not distinguish a
+ * format nobody has written a parser for from a file that is simply a
+ * companion of one already queued. A geologist looking at a refused
+ * `.rdtmm` needs to know it is an inversion output with no reader, not that
+ * they picked the wrong button.
+ */
+const REJECTION_REASONS: Record<string, string> = {
+    rrd: 'ERDAS pyramid/overview file — a rendering companion of the .tif, not data',
+    aux: 'raster auxiliary file — companion of the .tif, not data',
+    ovr: 'raster overview file — companion of the .tif, not data',
+    mdb: 'Access database — no reader yet; export the tables to CSV to import them',
+    str: 'Surpac string file — no reader yet',
+    rdtmm: 'UBC-GIF / RDTM inversion output — no reader yet',
+    rdtmp: 'UBC-GIF / RDTM inversion output — no reader yet',
+    rdtmd: 'UBC-GIF / RDTM inversion output — no reader yet',
+    inp: 'inversion input deck — no reader yet',
+    chg: 'inversion control file — no reader yet',
+    jpg: 'photo — images are not ingested as documents',
+    jpeg: 'photo — images are not ingested as documents',
+    png: 'image — not ingested as a document',
+};
+
+function rejectionReason(ext: string): string {
+    if (REJECTION_REASONS[ext]) return REJECTION_REASONS[ext];
+    // dcinv2d.011 / ipinv2d.016 and friends: the "extension" is an iteration
+    // number, which is the tell that this is a solver's numbered output.
+    if (/^\d+$/.test(ext)) return 'numbered solver output — no reader yet';
+    return 'no reader for this format yet';
+}
+
+/** Refused files grouped by extension, each group carrying its reason. */
+function groupByExtension(names: string[]): { ext: string; names: string[]; reason: string }[] {
+    const byExt = new Map<string, string[]>();
+    for (const n of names) {
+        const ext = fileExtension(n) || '(none)';
+        const list = byExt.get(ext);
+        if (list) {
+            list.push(n);
+        } else {
+            byExt.set(ext, [n]);
+        }
+    }
+    return [...byExt.entries()]
+        .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+        .map(([ext, group]) => ({ ext, names: group, reason: rejectionReason(ext) }));
+}
+
 export default function FoundryDataImportWizard() {
     const [projects, setProjects] = useState<ProjectPick[] | null>(null);
     const [projectsError, setProjectsError] = useState<string | null>(null);
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
     const [files, setFiles] = useState<QueuedFile[]>([]);
-    const [rejectedNote, setRejectedNote] = useState<string | null>(null);
+    /**
+     * Every file the intake refused, in full.
+     *
+     * Was a single pre-formatted string that named `rejected.slice(0, 3)`. On
+     * the delivery this was written against that meant 18 refusals rendered as
+     * three filenames and a count — the whole Centennial geophysics folder
+     * (an Access database plus seven inversion outputs) was represented by one
+     * name the user could not act on. A refusal you cannot enumerate is a
+     * refusal you cannot fix, so the list is kept whole and grouped for
+     * reading rather than truncated for tidiness.
+     */
+    const [rejected, setRejected] = useState<string[]>([]);
     /** Incomplete-set verdicts from the bundler, and orphaned members kept
      *  with the reason they could not be attached to anything. */
     const [bundleNotes, setBundleNotes] = useState<string[]>([]);
@@ -320,6 +382,7 @@ export default function FoundryDataImportWizard() {
     const outcomesRef = useRef<UploadOutcome[]>([]);
     outcomesRef.current = outcomes;
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const folderInputRef = useRef<HTMLInputElement | null>(null);
 
     const selectedProject = projects?.find((p) => p.project_id === selectedProjectId) ?? null;
 
@@ -483,13 +546,7 @@ export default function FoundryDataImportWizard() {
             ...prev.filter((qf) => settledIds.has(qf.id)),
             ...accepted,
         ]);
-        setRejectedNote(
-            rejected.length > 0
-                ? `Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${rejected
-                      .slice(0, 3)
-                      .join(', ')}${rejected.length > 3 ? ', …' : ''}) — accepted types: ${ACCEPTED_EXTENSIONS.join(', ')}.`
-                : null,
-        );
+        setRejected(rejected);
         setBundleNotes(notes);
         // Keep successful outcomes (their pills + the no-re-upload guard in
         // handleSubmit depend on them); clear stale failures so the new
@@ -568,11 +625,27 @@ export default function FoundryDataImportWizard() {
               )
             : null;
 
-    function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    /**
+     * A dropped folder must yield the files inside it, at any depth.
+     *
+     * This used to read `e.dataTransfer.files` alone. A browser puts a dropped
+     * FOLDER into that list as one 0-byte File named after the directory, so
+     * dropping five folders produced five rows that failed the extension check
+     * and were reported as "unsupported files" — while every real file stayed
+     * on disk. Measured against a 72-file delivery: zero uploads.
+     */
+    async function onDrop(e: React.DragEvent<HTMLDivElement>) {
         e.preventDefault();
         setDragging(false);
         if (submitting) return;
-        addFiles(e.dataTransfer?.files ?? null);
+        // Snapshot the plain file list NOW. `filesFromDataTransfer` reads the
+        // entry list synchronously before it awaits, but this fallback runs
+        // after that await, by which point `e.dataTransfer` may already be
+        // detached — reading it there would turn a recoverable drop into an
+        // empty one.
+        const plain = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+        const collected = await filesFromDataTransfer(e.dataTransfer);
+        addFiles(collected.length > 0 ? collected : plain);
     }
 
     function csrfHeader(): Record<string, string> {
@@ -847,6 +920,47 @@ export default function FoundryDataImportWizard() {
                                     e.target.value = '';
                                 }}
                             />
+                            {/* Folder picking needs its own input. `webkitdirectory`
+                                cannot be toggled on one input alongside `accept` —
+                                the attribute is set through a ref callback because
+                                React does not render it — and a directory pick
+                                deliberately carries NO `accept`: the OS dialog
+                                greys out whole folders when it is present, which
+                                is the same trap that once hid every sidecar. Files
+                                are filtered after selection instead, so the picker
+                                shows the folder and the manifest explains what was
+                                skipped. */}
+                            <input
+                                ref={(node) => {
+                                    folderInputRef.current = node;
+                                    if (node) {
+                                        node.setAttribute('webkitdirectory', '');
+                                        node.setAttribute('directory', '');
+                                    }
+                                }}
+                                type="file"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => {
+                                    addFiles(e.target.files);
+                                    e.target.value = '';
+                                }}
+                            />
+                            <button
+                                type="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    folderInputRef.current?.click();
+                                }}
+                                className="text-[10px] font-mono uppercase tracking-wider px-3 py-1.5 rounded border mr-2"
+                                style={{
+                                    color: 'var(--fg-1)',
+                                    background: 'var(--bg-2)',
+                                    borderColor: 'var(--line-2)',
+                                }}
+                            >
+                                Pick folder →
+                            </button>
                             <button
                                 type="button"
                                 onClick={(e) => {
@@ -864,7 +978,7 @@ export default function FoundryDataImportWizard() {
                             </button>
                         </div>
 
-                        {rejectedNote && (
+                        {rejected.length > 0 && (
                             <div
                                 className="mt-3 text-xs px-3 py-2 rounded border"
                                 style={{
@@ -873,7 +987,28 @@ export default function FoundryDataImportWizard() {
                                     background: 'color-mix(in oklch, var(--warn) 10%, transparent)',
                                 }}
                             >
-                                {rejectedNote}
+                                <div className="font-mono uppercase tracking-wider text-[10px] mb-1">
+                                    Not imported — {rejected.length} file
+                                    {rejected.length === 1 ? '' : 's'}
+                                </div>
+                                {groupByExtension(rejected).map((g) => (
+                                    <div key={g.ext} className="mt-1">
+                                        <span className="font-mono">.{g.ext}</span>{' '}
+                                        <span style={{ color: 'var(--fg-2)' }}>
+                                            ({g.names.length}) — {g.reason}
+                                        </span>
+                                        <ul className="ml-4 mt-0.5" style={{ color: 'var(--fg-2)' }}>
+                                            {g.names.map((n) => (
+                                                <li key={n} className="font-mono text-[11px]">
+                                                    {n}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                ))}
+                                <div className="mt-2" style={{ color: 'var(--fg-2)' }}>
+                                    Accepted types: {ACCEPTED_EXTENSIONS.join(', ')}.
+                                </div>
                             </div>
                         )}
 
