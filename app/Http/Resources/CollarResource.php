@@ -52,14 +52,21 @@ class CollarResource extends JsonResource
                 'depth' => $s->depth,
                 'azimuth' => $s->azimuth,
                 'dip' => $s->dip,
-                // The cast yields null for anything outside the §04e
-                // vocabulary — which is most ingested rows, since the
-                // ingestion writes 'unknown' when a sheet names no
-                // instrument. Fall back to the stored string so the payload
-                // stays a string and the geologist still sees what the file
-                // said, rather than a blank where 'desurveyed_trace' was.
-                'survey_method' => $s->survey_method?->value
-                    ?? $s->getRawOriginal('survey_method'),
+                // The STORED string, deliberately, not the cast enum.
+                //
+                // Most ingested rows are outside the §04e vocabulary — the
+                // ingestion writes 'unknown' whenever a sheet names no
+                // instrument, and 'desurveyed_trace' for a Discover trace —
+                // and TolerantSurveyMethod yields null for those rather than
+                // throwing the ValueError that used to 500 this endpoint.
+                //
+                // Reading the raw value is not a workaround for that; it is
+                // the more direct expression of what this field is for. The
+                // payload is JSON, so an in-vocabulary enum would serialise
+                // to exactly this same string, and taking it raw additionally
+                // shows the geologist what the file actually said instead of
+                // a blank where 'desurveyed_trace' was.
+                'survey_method' => $s->getRawOriginal('survey_method'),
             ]),
             ),
             'lithology_logs' => $this->whenLoaded('lithologyLogs', fn () => $this->lithologyLogs->map(fn ($l) => [
