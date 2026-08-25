@@ -196,6 +196,20 @@ echo "# setting the role password (psql will prompt for the ADMIN password)..." 
 # Setting a password on a NOLOGIN role is provisioning half a credential, and
 # this script exists to provision a WORKING one. Idempotent: re-running on a
 # role that already has LOGIN is a no-op for that attribute.
+#
+# AND IT BELONGS HERE, NOT IN A MIGRATION. That was tried on 2026-08-25 and
+# broke CD on two consecutive deploys: the migration job connects as
+# `georag_app`, which has rolcreaterole=false, so `ALTER ROLE` is refused
+# outright — only `georag_admin` may issue it, and that is the credential
+# YOU type into this script's psql prompt.
+#
+# The deeper reason is that LOGIN and PASSWORD are one fact — "this role can
+# authenticate" — and splitting them across a migration and a script leaves
+# neither sufficient on its own. LOGIN without a password cannot connect
+# (Azure Postgres has activeDirectoryAuth Disabled here), and a password on a
+# NOLOGIN role cannot either. A fresh cluster has to run this script anyway to
+# get a password, so doing both in one statement is the whole provisioning
+# step rather than half of it in a file that CD cannot execute.
 if ! printf "ALTER ROLE %s WITH LOGIN PASSWORD '%s';\n" "$ROLE" "$PASSWORD" \
     | PGPASSWORD="" psql \
       --host "$PG_HOST" --username "$PG_ADMIN" --dbname "$PG_DB" \
