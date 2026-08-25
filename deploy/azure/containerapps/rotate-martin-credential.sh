@@ -240,11 +240,32 @@ unset PASSWORD CONN
 # bootstrap: the app was just created and its first revision already booted
 # with this credential.
 if [ "$BOOTSTRAP" -eq 0 ]; then
-  echo "# restarting martin-cc so it reads the new secret..." >&2
-  REV=$(az containerapp revision list -g "$RG" -n "$APP" \
-          --query "[?properties.active]|[0].name" -o tsv 2>/dev/null | tr -d '\r')
-  if [ -n "$REV" ]; then
-    az containerapp revision restart -g "$RG" -n "$APP" --revision "$REV" --output none || true
+  # A NEW REVISION, not a restart of the old one.
+  #
+  # Two things made `revision restart` the wrong tool, and both bit on
+  # 2026-08-25:
+  #
+  # 1. It restarted the WRONG revision. More than one revision can carry
+  #    active=true — a failed bootstrap revision stays active alongside the
+  #    real one — so `[?properties.active]|[0]` returned `martin-cc--8gbj8lt`,
+  #    the throwaway public-image revision from the create, rather than the
+  #    current one. The live revision never restarted and kept the old
+  #    credential, so Martin answered `28P01 password authentication failed`
+  #    against a role whose password had just been rotated correctly.
+  # 2. A revision already in ActivationFailed does not reliably come back
+  #    from a restart. Container Apps has given up on it.
+  #
+  # Forcing a new revision sidesteps both: secrets are injected when a
+  # replica starts, and a brand-new revision starts fresh with the current
+  # secret whatever state its predecessors are in. The suffix must be unique,
+  # lowercase alphanumeric, and is what makes each rotation its own revision.
+  echo "# rolling a new revision so it starts with the new secret..." >&2
+  SUFFIX="rot$(date -u +%y%m%d%H%M%S)"
+  if ! az containerapp update -g "$RG" -n "$APP" \
+        --revision-suffix "$SUFFIX" --output none; then
+    echo "FAILED: could not roll a new revision to pick up the secret." >&2
+    echo "The ${ROLE} password WAS rotated; re-running is safe." >&2
+    exit 1
   fi
 fi
 
@@ -257,15 +278,31 @@ if ! az containerapp secret list -g "$RG" -n "$APP" --query "[].name" -o tsv 2>/
 fi
 
 echo "# waiting for Martin to report healthy..." >&2
+# THE LATEST revision, by name, not `[?properties.active]|[0]`.
+#
+# The same flaw that made the restart target the wrong revision made this
+# report on it too: with a stale failed bootstrap revision still marked
+# active, the health of `martin-cc--8gbj8lt` was what got waited on and
+# reported, while the revision actually carrying the new secret was ignored.
+# `latestRevisionName` is unambiguous.
+LATEST=$(az containerapp show -g "$RG" -n "$APP" \
+           --query "properties.latestRevisionName" -o tsv 2>/dev/null | tr -d '\r')
 for _ in $(seq 1 20); do
-  health=$(az containerapp revision list -g "$RG" -n "$APP" \
-             --query "[?properties.active]|[0].properties.healthState" -o tsv 2>/dev/null | tr -d '\r')
+  health=$(az containerapp revision show -g "$RG" -n "$APP" --revision "$LATEST" \
+             --query "properties.healthState" -o tsv 2>/dev/null | tr -d '\r')
+  running=$(az containerapp revision show -g "$RG" -n "$APP" --revision "$LATEST" \
+              --query "properties.runningState" -o tsv 2>/dev/null | tr -d '\r')
   [ "$health" = "Healthy" ] && break
+  # Fail FAST on a revision Container Apps has given up on rather than
+  # burning the full 200 s: ActivationFailed is terminal, and what the
+  # operator needs then is the logs, not another three minutes of polling.
+  [ "$running" = "ActivationFailed" ] && break
   sleep 10
 done
 if [ "${health:-}" != "Healthy" ]; then
-  echo "FAILED: martin-cc healthState is '${health:-unknown}' after ~200s." >&2
+  echo "FAILED: ${LATEST} healthState='${health:-unknown}' runningState='${running:-unknown}'." >&2
   echo "Check the logs:  az containerapp logs show -g $RG -n $APP --tail 50" >&2
+  echo "A database error appears as the 'message:' field of the last ERROR line." >&2
   FAILURES=$((FAILURES + 1))
 fi
 
