@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Head, Link, router } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
+import DocumentBody from '@/Components/Foundry/DocumentBody';
 import {
     PageHeader,
     Card,
@@ -932,16 +933,12 @@ function SectionsTab({
                             eyebrow={`§ ${s.index + 1}${s.kind && s.kind !== 'para' ? ' · ' + s.kind : ''}`}
                             title={s.heading || 'Untitled section'}
                         >
-                            <div
-                                className="text-[13px] whitespace-pre-wrap leading-relaxed"
-                                style={{ color: 'var(--fg-1)', fontFamily: 'var(--font-sans)' }}
-                            >
-                                {s.body || (
-                                    <span className="italic" style={{ color: 'var(--fg-3)' }}>
-                                        (empty body)
-                                    </span>
-                                )}
-                            </div>
+                            {/* Not `whitespace-pre-wrap` on the raw string:
+                                the PDF stack recovers tables and emits them as
+                                HTML or markdown inside the body, and printing
+                                that verbatim showed a table the pipeline got
+                                RIGHT as a wall of escaped <tr>/<td> markup. */}
+                            <DocumentBody body={s.body} />
                         </Card>
                     </div>
                 );
@@ -1183,12 +1180,10 @@ function PassagesTab({
                                 {p.id.slice(0, 8)}
                             </span>
                         </div>
-                        <div
-                            className="text-[12px] whitespace-pre-wrap leading-relaxed"
-                            style={{ color: 'var(--fg-1)' }}
-                        >
-                            {p.text}
-                        </div>
+                        {/* A `table` chunk_kind passage IS a recovered table —
+                            it is the single most common thing in this list
+                            that printing verbatim made unreadable. */}
+                        <DocumentBody body={p.text} />
                     </div>
                 ))}
             </div>
