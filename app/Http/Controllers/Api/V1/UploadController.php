@@ -116,7 +116,14 @@ class UploadController extends Controller
         // not an entry here: groupShapefiles() zips it into the bundle
         // before upload. The two cases are discriminated by that sibling,
         // never by the extension alone.
-        'tables' => ['dbf'],
+        // `.dat` joins `.dbf`: a MapInfo attribute half IS a dBASE file and
+        // reads standalone when its master is absent. Adding it here collides
+        // with nothing — RETIRED_CATEGORIES is consulted by category NAME
+        // (array_key_exists on the requested category), never by extension, so
+        // the retired `xyz` entry for .dat has never gated anything. `txt` has
+        // sat in both retired `xyz` and live `collars` for months and uploads
+        // fine, which is the standing proof.
+        'tables' => ['dbf', 'dat'],
         // Vector data + QGIS projects → ingest_spatial →
         // silver.spatial_features. `.zip` is here because a shapefile is
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone
@@ -132,13 +139,22 @@ class UploadController extends Controller
         // two ENTRY POINTS are listed. MapInfo's sidecars (.dat/.map/.id/
         // .ind for TAB, .mid for MIF) are deliberately absent: a .mid opens
         // directly as a dataset, so accepting it as its own upload would
-        // ingest a MIF/MID pair twice, and '.dat' is already claimed by the
-        // retired `xyz` category below — adding it here would start routing
-        // stray XYZ grids to the spatial parser. Sidecars reach the parser
-        // inside the bundle `zip`, exactly as a shapefile's do.
+        // ingest a MIF/MID pair twice, and .map/.id/.ind carry geometry or an
+        // index and mean nothing without their master. '.dat' is NOT in that
+        // group — it is the attribute half, a whole dBASE table, and it lives
+        // in `tables` above. (The comment that used to sit here said .dat was
+        // "already claimed by the retired xyz category"; RETIRED_CATEGORIES is
+        // consulted by category NAME, never by extension, so that constraint
+        // never existed.) Sidecars reach the parser inside the bundle `zip`,
+        // exactly as a shapefile's do.
+        //
+        // 'str' added 2026-08-25 — Surpac string files (mine-design strings:
+        // vein outlines, level plans). No OGR driver exists, so spatial_parser
+        // returns early to a hand-written reader. Like a .dxf it declares no
+        // coordinate system and needs an EPSG at upload time.
         'spatial' => [
             'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
-            'fgb', 'gdb', 'zip', 'qgs', 'qgz', 'tab', 'mif',
+            'fgb', 'gdb', 'zip', 'qgs', 'qgz', 'tab', 'mif', 'str',
         ],
         // LAS downhole curves -> ingest_well_logs -> silver.well_log_curves.
         // One row per CURVE with depth/value arrays, not a row per sample:

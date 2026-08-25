@@ -1905,3 +1905,67 @@ services:
   # unrouted since the Integrations.tsx page they rendered was deleted in
   # the reader-core trim).
   # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # Martin — MVT tile server over the PostGIS tile functions.
+  # Restored 2026-08-25. Removed in 0eada56c ("remove demo-external services")
+  # together with Grafana, the Prometheus rules and the tile proxy. The
+  # DATABASE side was never removed: 18 tile functions and the martin_readonly
+  # role are live on Azure, and migrations kept adding to them after the
+  # service went. Laravel proxies /tiles/... so Martin needs no ingress.
+  # Config: docker/martin/martin.yaml
+  # ---------------------------------------------------------------------------
+  martin:
+    # Pinned to Martin 1.x stable. Config (martin.yaml) already on the 1.x
+    # schema (`functions:` / `tables:` instead of *_sources). Latest as of
+    # 2026-04: 1.5.0. Note: 1.x dropped the `v` prefix from image tags.
+    # B8 — digest pinned 2026-04-19
+    # V1.5-06 — bumped 1.5.0 → 1.7.0 for native /metrics endpoint
+    # (martin_tile_cache_requests_total, martin_cache_requests_total + standard
+    # process_*, http_requests_total). Unlocks the 4 alert rules in
+    # docker/prometheus/rules/martin-alerts.yml previously DORMANT per
+    # feedback_martin_tile_gotchas.md gotcha 3.
+    # 2026-06-23 sweep: 1.7.0 -> 1.11.0. Brings PMTiles improvements +
+    # query plan caching + composite source enhancements. The 1.x line
+    # has been API-stable through this range; martin.yaml schema is
+    # unchanged. PostGIS 3.6 fully supported.
+    image: ghcr.io/maplibre/martin:1.11.0@sha256:0650e9025f5fcffdc686358114679421b5e6b0ca37b374ad8a66f14709d59d2b
+    container_name: georag-martin
+    restart: unless-stopped
+    command: --config /config/martin.yaml
+    ports:
+      - "${MARTIN_PORT:-3002}:3000"
+    environment:
+      DATABASE_URL: "postgresql://${GEORAG_APP_USER:-georag_app}:${GEORAG_APP_PASSWORD}@postgresql:5432/${POSTGRES_DB:-georag}"
+    volumes:
+      - ./docker/martin/martin.yaml:/config/martin.yaml:ro
+    networks:
+      - georag
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    # B1 — HC-03 fix: Martin has wget at /usr/bin/wget (verified 2026-04-19).
+    # wget --spider issues a HEAD request; exits 0 on HTTP 200, non-zero otherwise.
+    # /health is Martin's built-in readiness endpoint (responds when tile sources are loaded).
+    # start_period raised to 60s as Martin reads and validates all PostGIS sources on boot.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    # SG-01 fix: explicit grace period for discoverability (Martin processes tile requests)
+    stop_grace_period: 10s
+    # ── Network performance tuning ────────────────────────────────────────
+    # Commented out — net.ipv4.tcp_nodelay is not an overridable sysctl in
+    # WSL2's Docker runtime (fails with "unsafe procfs detected" on create).
+    # It's already the kernel default, and net.core.somaxconn=128 is fine
+    # for dev. Tune at the host level in production if needed.
+    # sysctls:
+    #   net.core.somaxconn: 1024
+    #   net.ipv4.tcp_nodelay: 1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M

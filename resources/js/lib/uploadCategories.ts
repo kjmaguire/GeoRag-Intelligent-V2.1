@@ -47,17 +47,28 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   // file. A `.dbf` beside a same-stem `.shp` never reaches here —
   // groupShapefiles() zips it into the shapefile bundle first, and that
   // sibling is the only thing that discriminates the two cases.
-  tables: ['dbf'],
+  // `.dat` is here for the same reason: a MapInfo attribute half IS a dBASE
+  // file and reads standalone once its master is absent. The long-standing
+  // comment that ".dat is already claimed by the retired xyz category"
+  // describes a constraint that does not exist — UploadController consults
+  // RETIRED_CATEGORIES by category NAME only, never by extension. The proof
+  // already ships: `txt` sits in retired `xyz` AND in live `collars`, and
+  // .txt uploads work today.
+  tables: ['dbf', 'dat'],
   // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
   // travel together and a lone .shp cannot be read without them.
   // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their
-  // companions (.dat/.map/.id/.ind/.mid) are sidecars and are deliberately
-  // absent — `.dat` is already claimed by the retired `xyz` category, and a
-  // `.mid` opens on its own, so accepting one would ingest a MIF/MID pair
-  // twice. shapefileBundle.ts zips the whole set under this category.
+  // geometry/index companions (.map/.id/.ind) are absent because they cannot
+  // be read alone, and `.mid` because it opens on its own — accepting it
+  // would ingest a MIF/MID pair twice. `.dat` is NOT in that group: it is the
+  // attribute half, a whole dBASE table, and it lives in `tables` above.
+  // shapefileBundle.ts zips the complete set under this category.
   spatial: [
     'geojson', 'json', 'shp', 'gpkg', 'gml', 'gpx', 'dxf', 'dgn',
     'fgb', 'gdb', 'zip', 'qgs', 'qgz', 'tab', 'mif',
+    // Surpac string file — mine-design strings (vein outlines, level plans).
+    // No CRS of its own, so it needs an EPSG the same way a .dxf does.
+    'str',
   ],
   well_logs: ['las'],
   seismic: ['sgy', 'segy'],
@@ -72,8 +83,8 @@ export const CATEGORY_LABEL: Record<Category, string> = {
   lithology: 'Lithology logs (CSV)',
   samples: 'Assay samples (CSV)',
   excel: 'Excel workbooks (XLSX)',
-  tables: 'Attribute table (DBF)',
-  spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, ZIP)',
+  tables: 'Attribute table (DBF, MapInfo DAT)',
+  spatial: 'Spatial / GIS (SHP, MapInfo, GeoPackage, GeoJSON, QGIS, Surpac, ZIP)',
   well_logs: 'Well logs (LAS)',
   seismic: 'Seismic (SEG-Y)',
   xyz: 'XYZ grids / point data',

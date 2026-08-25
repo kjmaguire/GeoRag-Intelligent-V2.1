@@ -7,6 +7,8 @@ namespace App\Support\Http;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Handler\CurlMultiHandler;
 use GuzzleHttp\HandlerStack;
+use Illuminate\Container\Container;
+use Illuminate\Foundation\Application;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Http\Client\PendingRequest;
 
@@ -59,12 +61,52 @@ final class PooledHttpClient
      */
     public function forBaseUrl(string $baseUrl, int $timeoutSeconds = 15): PendingRequest
     {
+        // UNDER TESTS, DO NOT POOL — and this is a correctness rule, not a
+        // preference. Laravel's PendingRequest::buildClient() returns
+        // `$this->client` verbatim once setClient() has been called, so a
+        // pooled Guzzle client carries NO stub-handler middleware:
+        // `Http::fake()` is silently bypassed and a REAL SOCKET opens.
+        //
+        // The symptom is a test that passes or fails for reasons unrelated to
+        // the code under test — an 18-second "unit" test dialling live Martin,
+        // and a 204 from the real server where the fake said 200. Some of
+        // those tests then pass COINCIDENTALLY, because the real service
+        // happens to answer the same way at the test coordinates, which is
+        // worse than failing.
+        //
+        // Pooling is a production-only performance optimisation — a shared
+        // curl handle across requests — so skipping it here changes no
+        // observable behaviour, only speed.
+        if (self::runningTests()) {
+            return $this->factory
+                ->baseUrl($baseUrl)
+                ->timeout($timeoutSeconds);
+        }
+
         $client = $this->clientFor($baseUrl);
 
         return $this->factory
             ->setClient($client)
             ->baseUrl($baseUrl)
             ->timeout($timeoutSeconds);
+    }
+
+    /**
+     * Whether a Laravel test run is in progress.
+     *
+     * Deliberately NOT `app()->runningUnitTests()`. This class has unit tests
+     * that construct it directly against a plain PHPUnit TestCase, where no
+     * application has been bootstrapped — `app()` there returns a bare
+     * Container (or lazily creates one) that has no `runningUnitTests()`
+     * method, and the helper fatals. Resolving the container by hand and
+     * type-checking it keeps the pool usable outside a booted framework,
+     * which is what those tests exercise.
+     */
+    private static function runningTests(): bool
+    {
+        $container = Container::getInstance();
+
+        return $container instanceof Application && $container->runningUnitTests();
     }
 
     private function clientFor(string $baseUrl): GuzzleClient

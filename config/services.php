@@ -315,4 +315,28 @@ return [
         'workers' => (int) env('OCTANE_WORKERS', 4),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Martin Vector Tile Server
+    |--------------------------------------------------------------------------
+    |
+    | Martin serves MVT tiles from PostGIS functions. Laravel proxies
+    | /tiles/... requests so tile fetches go through session auth and the
+    | project-access check; clients never hit Martin directly, and Martin has
+    | no ingress of its own.
+    |
+    | Removed with the rest of the demo-external services in 0eada56c
+    | (2026-07-27) and restored here. The DATABASE side was never removed:
+    | 18 tile functions (silver.pg_*_by_project, public_geo.pg_*_tiles) and
+    | the `martin_readonly` role with EXECUTE on 24 of them are live on the
+    | Azure server today, and migrations kept ADDING to them after the
+    | service went — silver.pg_spatial_features_by_project was created
+    | 2026-08-23, a month later. Only the service and this proxy were missing.
+    |
+    */
+    'martin' => [
+        'internal_url' => env('MARTIN_INTERNAL_URL', 'http://martin:3000'),
+        'request_timeout' => (int) env('MARTIN_REQUEST_TIMEOUT', 15),
+    ],
+
 ];

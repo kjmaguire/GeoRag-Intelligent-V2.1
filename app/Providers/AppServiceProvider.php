@@ -191,6 +191,26 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(30)->by((string) $key);
         });
 
+        // public-geoscience-tiles: 600 req/min per authenticated user.
+        // MapLibre pan+zoom fires bursts of 40-80 tile GETs; 600/min absorbs
+        // ~10 bursts/min sustained without letting a malicious or
+        // misconfigured client drown Martin. Unauthenticated fallback uses the
+        // client IP so a broken SPA cannot starve everyone else via a shared
+        // session cookie. 429 bubbles back to MapLibre, which degrades
+        // gracefully — it reuses stale cache and skips missing tiles.
+        RateLimiter::for('public-geoscience-tiles', function (Request $request): Limit {
+            // Written as an explicit null check rather than `user()?->id ?? ip()`:
+            // PHPStan types Request::user() as non-null here, so the nullsafe
+            // form reads as dead code to the analyser while still being the
+            // behaviour we want for an unauthenticated request.
+            $user = $request->user();
+            $key = $user !== null
+                ? (string) $user->id
+                : ($request->ip() ?? 'anonymous-unknown');
+
+            return Limit::perMinute(600)->by($key);
+        });
+
         // Phase H4 §7 — bridge:report-progress rate limit.
         // FastAPI POSTs to /api/internal/admin/reports/{build_id}/progress
         // from generate_report; even a runaway worker shouldn't be able to

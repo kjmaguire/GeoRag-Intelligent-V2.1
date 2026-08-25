@@ -155,7 +155,10 @@ class UploadCategoryExtensionsTest extends TestCase
         // upload and check something was actually triggered.
         $categories = $this->publishedCategories();
         $this->assertArrayHasKey('tables', $categories);
-        $this->assertSame(['dbf'], $categories['tables']);
+        // `.dat` joined `.dbf` on 2026-08-25: a MapInfo attribute half IS a
+        // dBASE file and reads standalone once its master is absent. Both go
+        // to ingest_tabular, which is what this test is really guarding.
+        $this->assertSame(['dbf', 'dat'], $categories['tables']);
         $this->assertNotContains(
             'dbf',
             $categories['excel'],
