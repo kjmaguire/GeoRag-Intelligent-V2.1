@@ -131,10 +131,18 @@ class TileProxyControllerTest extends TestCase
 
         $response->assertOk();
         // Symfony's ResponseHeaderBag normalises Cache-Control to the canonical
-        // RFC 7234 order: directives appear as "max-age=N, public". Assert on
-        // the actual normalised form rather than assuming directive order.
+        // RFC 7234 order, so assert the normalised form rather than assuming
+        // directive order.
+        //
+        // 3600, not 300: `pg_mines` has no entry in SOURCE_MAX_AGE, so it
+        // takes PGEO_DEFAULT_MAX_AGE. This assertion was written against an
+        // older flat 300 s policy and never updated when the per-source cache
+        // tiering and `must-revalidate` landed — it was already stale when the
+        // suite was deleted with Martin in 0eada56c, which is why nothing
+        // caught it for a month. The controller is right; the expectation was
+        // not.
         $this->assertSame(
-            'max-age=300, public',
+            'max-age=3600, must-revalidate, public',
             $response->headers->get('Cache-Control'),
         );
     }
