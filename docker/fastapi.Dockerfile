@@ -424,6 +424,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libproj25 \
     curl \
     poppler-utils \
+    # Microsoft Access (.mdb/.accdb). A Geosoft IP survey ships its database
+    # as one, and the alternative — GDAL's ODBC/PGeo drivers, which ARE
+    # compiled into this image — needs unixODBC plus an Access driver, i.e.
+    # mdbtools anyway with a driver manager and an odbcinst.ini on top.
+    #
+    # Measured incremental cost here: 460 KB. mdbtools itself is 268 KB and
+    # its libs 192 KB; libglib2.0 and libreadline, which would otherwise make
+    # this a 4.5 MB add on bare python:3.13-slim, are already installed by
+    # this same stage. No Python package, so neither
+    # check_pyproject_covers_imports nor check_fastapi_lock_export applies.
+    mdbtools \
     libleptonica6 \
     libpng16-16 \
     libjpeg62-turbo \

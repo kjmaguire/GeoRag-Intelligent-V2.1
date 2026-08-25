@@ -39,6 +39,13 @@ const PROJECT_NAV: Array<{ id: string; suffix: string; label: string; icon: stri
     { id: 'chat', suffix: '/chat', label: 'Chat', icon: 'chat' },
     { id: 'data', suffix: '/sources', label: 'Data', icon: 'db' },
     { id: 'ingestion-runs', suffix: '/ingestion-runs', label: 'Ingestion Runs', icon: 'pulse' },
+    // Added 2026-08-25. silver.attribute_tables and silver.raster_layers each
+    // had a writer and NO reader — a delivery landed 229 attribute rows and 4
+    // rasters that nothing in the product would ever show. A page nobody can
+    // navigate to is the same gap one step further on, so both get an entry
+    // rather than only a route.
+    { id: 'attribute-tables', suffix: '/attribute-tables', label: 'Tables', icon: 'db' },
+    { id: 'rasters', suffix: '/rasters', label: 'Rasters', icon: 'cube' },
     // Merged 2026-08-18: 'Quality' (/imports/quality) and 'Reader' (/corpus)
     // were both views of the same silver.reports + document_passages pair as
     // 'Reports'. One entry now, master-detail; both old paths redirect here.

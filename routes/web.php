@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Admin\IntegrationsController;
 use App\Http\Controllers\CitationFeedbackController;
+use App\Http\Controllers\Foundry\AttributeTablesController;
 use App\Http\Controllers\Foundry\ChatController;
 use App\Http\Controllers\Foundry\DrillholeDetailController;
 use App\Http\Controllers\Foundry\IngestionRunsController;
 use App\Http\Controllers\Foundry\OverviewController;
 use App\Http\Controllers\Foundry\ProjectsIndexController;
 use App\Http\Controllers\Foundry\PublicGeoscienceController;
+use App\Http\Controllers\Foundry\RasterLayersController;
 use App\Http\Controllers\Foundry\ReportController;
 use App\Http\Controllers\Foundry\SourcesController;
 use App\Http\Controllers\Foundry\WorkspaceController;
@@ -61,6 +63,17 @@ Route::get('/reset-password/{token}', function (Request $request, string $token)
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects', [ProjectsIndexController::class, 'show'])
         ->name('foundry.projects');
+
+    // Two tables that had writers and no readers. Data landed in both and
+    // nothing in the product ever mentioned it again — a real delivery wrote
+    // 229 attribute rows and 4 raster rows that a geologist could not see.
+    Route::get('/projects/{slug}/attribute-tables', [AttributeTablesController::class, 'index'])
+        ->where('slug', '[a-z0-9\-]+')
+        ->name('foundry.attribute_tables');
+
+    Route::get('/projects/{slug}/rasters', [RasterLayersController::class, 'index'])
+        ->where('slug', '[a-z0-9\-]+')
+        ->name('foundry.rasters');
 
     // MVT tile proxy to Martin. On web.php rather than api.php so the same
     // route serves SPA session-authenticated map tiles without a Bearer token
