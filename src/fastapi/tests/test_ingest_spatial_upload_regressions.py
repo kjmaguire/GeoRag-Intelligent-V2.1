@@ -16,6 +16,7 @@ Each test below fails on the code as deployed.
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,12 +122,68 @@ class TestLegacyXlsReachesTheTextFallback:
         assert ".xls" in _XLS_SUFFIXES
 
     def test_xlrd_still_supports_xls(self):
-        """xlrd 2.x dropped .xls. If a bump lands, fail here, not in production."""
+        """xlrd must READ a .xls — asserted by reading one, not by version.
+
+        This used to assert `major < 2`, on the premise that "xlrd 2.x
+        dropped .xls". That is backwards, and the pin it defended had the
+        same inverted comment. **xlrd 2.0 dropped .xlsx**, keeping .xls as
+        the only format it reads.
+
+        Measured inside georag-fastapi on RedStar's export_UTM.xls, calling
+        xlrd directly at both versions:
+
+            xlrd 1.2.0: open_workbook OK, rows=25 cols=12
+            xlrd 2.0.2: open_workbook OK, rows=25 cols=12
+
+        Identical. What actually broke at 1.2.0 was **pandas**, which
+        refuses xlrd below 2.0.1 outright:
+
+            ImportError: Pandas requires version '2.0.1' or newer of 'xlrd'
+                         (version '1.2.0' currently installed)
+
+        So the old assertion pinned the codebase to the one version range in
+        which pandas cannot open a legacy workbook at all — in a product
+        built for decades-old drill archives. Both of RedStar's .xls files
+        were unreadable because of it.
+
+        Asserting the BEHAVIOUR rather than the version is what keeps this
+        honest: if a future xlrd genuinely drops .xls, open_workbook fails
+        and so does this test, without anyone having to predict which
+        version number does it.
+        """
         xlrd = pytest.importorskip("xlrd")
-        major = int(xlrd.__version__.split(".")[0])
-        assert major < 2, (
-            f"xlrd {xlrd.__version__} cannot read .xls; the ingester needs 1.x "
-            "or a different reader"
+        xlwt = pytest.importorskip("xlwt")
+
+        book = xlwt.Workbook()
+        sheet = book.add_sheet("collars")
+        for col, name in enumerate(("hole_id", "easting", "northing")):
+            sheet.write(0, col, name)
+        sheet.write(1, 0, "TR002")
+        sheet.write(1, 1, 400807.0)
+        sheet.write(1, 2, 6117291.0)
+
+        target = Path(tempfile.mkdtemp()) / "legacy.xls"
+        book.save(str(target))
+
+        opened = xlrd.open_workbook(str(target))
+        read = opened.sheet_by_index(0)
+        assert read.nrows == 2, f"xlrd {xlrd.__version__} did not read the rows"
+        assert read.cell_value(0, 0) == "hole_id"
+        assert read.cell_value(1, 1) == 400807.0
+
+    def test_xlrd_satisfies_the_floor_pandas_demands(self):
+        """The version fact that IS real, and the one that bit.
+
+        xlrd reads .xls at any version; pandas refuses to USE it below
+        2.0.1. Several ingest paths go through pandas.read_excel, so the
+        floor is a genuine requirement even though the reader itself is not
+        the limitation.
+        """
+        xlrd = pytest.importorskip("xlrd")
+        major, minor, patch = (int(p) for p in xlrd.__version__.split(".")[:3])
+        assert (major, minor, patch) >= (2, 0, 1), (
+            f"xlrd {xlrd.__version__} is below the 2.0.1 floor pandas requires; "
+            "pandas.read_excel will refuse every .xls with an ImportError"
         )
 
     def test_an_xls_never_reaches_openpyxl(self, tmp_path: Path):
