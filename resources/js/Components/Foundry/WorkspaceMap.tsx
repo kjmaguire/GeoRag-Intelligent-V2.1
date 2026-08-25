@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { router } from '@inertiajs/react';
 import { useBasemapGlyphsUrl, useBasemapStyleUrl, useSatelliteTiles } from '@/lib/basemap';
 import { formatU3O8Pct } from '@/lib/grade';
+import { addMvtLayers, setMvtVisibility, type MvtCapableMap } from '@/lib/mvtSources';
 
 // CC-01 Item 2 — closed vocabulary for the georef_method column. Mirrors the
 // chk_*_georef_method DB constraint. Kept in sync with the same type in
@@ -64,6 +65,7 @@ export type MapTool = 'pan' | 'draw' | 'measure' | 'select';
 export function WorkspaceMap({
     collars,
     projectSlug,
+    projectId,
     projectInfo,
     projectSummary,
     visibleLayers,
@@ -85,6 +87,16 @@ export function WorkspaceMap({
 }: {
     collars: MapCollar[];
     projectSlug: string;
+    /**
+     * Project UUID, for the silver MVT tile URLs.
+     *
+     * Distinct from `projectSlug`: the tile proxy keys on the UUID
+     * (`?project_id={uuid}`) because it runs the project-access check against
+     * silver.projects.project_id. Optional so the component still renders
+     * without tiles — MVT layers are additive over the existing GeoJSON
+     * collar layer, never a replacement for it.
+     */
+    projectId?: string;
     projectInfo: MapProjectInfo;
     projectSummary: MapProjectSummary;
     visibleLayers: Record<string, boolean>;
@@ -249,6 +261,33 @@ export function WorkspaceMap({
 
             map.on('load', () => {
                 if (cancelled) return;
+
+                // Silver MVT layers — imported spatial features, drill traces,
+                // geochem, historic workings and the rest, served by Martin
+                // through the Laravel tile proxy.
+                //
+                // Added FIRST so every GeoJSON layer below draws on top: the
+                // collar markers are the thing a geologist clicks, and an
+                // imported polygon fill must never sit over them.
+                //
+                // Guarded on projectId because the tile URL is meaningless
+                // without it; the map then renders exactly as it did before.
+                if (projectId) {
+                    try {
+                        addMvtLayers(map as unknown as MvtCapableMap, {
+                            projectId,
+                            // Server-side ETag derives from
+                            // silver.projects.data_version and is authoritative;
+                            // this is only a client cache key.
+                            dataVersion: 0,
+                            visibleLayers,
+                        });
+                    } catch (err) {
+                        // A tile source that fails to attach must not take the
+                        // basemap and collars down with it.
+                        console.warn('WorkspaceMap: MVT layers unavailable', err);
+                    }
+                }
 
                 // Terrain DEM source — AWS Open Terrain Tiles (USGS 3DEP /
                 // NASA SRTM, public-domain underlying data). Source is
@@ -870,6 +909,11 @@ export function WorkspaceMap({
                 map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
             }
         };
+
+        // MVT layers toggle through their own helper: it must NOT re-add the
+        // sources, which would drop MapLibre's tile cache and refetch every
+        // tile on each click.
+        setMvtVisibility(map as unknown as MvtCapableMap, visibleLayers);
 
         const showCollars = visibleLayers.collars ?? true;
         const oreOnly = visibleLayers.samples ?? false;

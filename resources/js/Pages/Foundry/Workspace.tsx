@@ -495,6 +495,10 @@ export default function FoundryWorkspace({ project, project_summary, project_aoi
                                         <WorkspaceMap
                                             collars={collars}
                                             projectSlug={project.slug}
+                                            // The MVT tile URL keys on the UUID,
+                                            // not the slug: /tiles/silver/{fn}/
+                                            // {z}/{x}/{y}.pbf?project_id={uuid}
+                                            projectId={project.project_id}
                                             projectInfo={{
                                                 project_name: project.project_name,
                                                 company: project.company,

@@ -125,6 +125,28 @@ postgres:
       maxzoom: 22
       bounds: [-180, -90, 180, 90]
 
+    # Added on restore, 2026-08-25. The function was created 2026-08-23
+    # (migration create_silver_spatial_features_mvt_function), a month AFTER
+    # Martin was removed, so it was never declared here.
+    #
+    # `auto_publish: false` above means a function that is not listed in this
+    # file is not served, whatever the Laravel proxy whitelists — so omitting
+    # this entry would 404 the layer while every other check looked healthy.
+    #
+    # This is the layer most of an uploaded delivery becomes: every shapefile,
+    # GeoPackage, GeoJSON, DXF and Surpac string lands in
+    # silver.spatial_features. The function emits THREE MVT layers in one tile
+    # — imported_points / imported_lines / imported_polygons — split on
+    # ST_Dimension, because one MapLibre layer cannot paint points, lines and
+    # polygons together. A client must add three style layers, not one.
+    pg_spatial_features_by_project:
+      schema: silver
+      function: pg_spatial_features_by_project
+      id_column: feature_id
+      minzoom: 0
+      maxzoom: 22
+      bounds: [-180, -90, 180, 90]
+
     # ── Public Geoscience function wrappers (§05d etag_hash contract) ────
     # Parallel to the existing tables: sources below. Chunk 8.4 will migrate
     # the Laravel proxy to prefer these function endpoints. Until then, both
