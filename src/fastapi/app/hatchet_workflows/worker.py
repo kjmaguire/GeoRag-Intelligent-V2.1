@@ -55,6 +55,7 @@ from app.hatchet_workflows.phase0_agents import (
     INGESTION_AGENT_WORKFLOWS,
 )
 from app.hatchet_workflows.phase2_smoke import phase2_smoke
+from app.hatchet_workflows.promote_silver_to_gold import promote_silver_to_gold  # silver → visual tables
 from app.hatchet_workflows.public_geo_sync import public_geo_sync  # weekly ArcGIS refresh
 from app.hatchet_workflows.public_geoscience_pull import public_geoscience_pull
 from app.hatchet_workflows.qdrant_payload_audit import qdrant_payload_audit_wf  # 2026-06-01 Guard 2
@@ -132,6 +133,14 @@ POOLS = {
         # for the agent's silver fact-source MVs. Keeps the agent
         # from drifting back into Phase 14 R-P13-1 refusal state.
         mv_refresh_silver,
+        # 2026-08-25 — the silver → gold promotion the Dagster retirement
+        # (2026-07-28) removed without replacing. Without it
+        # gold.drillhole_intervals_visual, gold.structure_measurements_visual
+        # and silver.drill_traces have NO writer, so the Workspace's SECTION,
+        # 3D, STRUCTURE, LOGS and COMPARE modes are blank for every project
+        # no matter what ingests. Dispatched per-project by ingest_tabular
+        # and swept nightly by nightly_ingestion_integrity.
+        promote_silver_to_gold,
         # Doc-phase 83 / Master-plan §7.10 — generate_report wraps the
         # §15.1 Report Builder Graph in a durable Hatchet workflow.
         # Runs the report-builder planning pipeline.

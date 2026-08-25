@@ -521,6 +521,44 @@ async def _tier_3_gold(pool: asyncpg.Pool) -> TierReport:
         report.notes.append(f"mv_refresh_threw: {exc}")
         log.warning("tier3.gold.mv_refresh failed: %s", exc)
 
+    # Step 3b — promote silver into the VISUAL gold tables.
+    #
+    # The mv_refresh registry above holds exactly one entry
+    # (silver.mv_collar_summary) and has never touched a gold table, so
+    # calling this tier "gold_audit" was true only of a table this sweep
+    # does not write. gold.drillhole_intervals_visual,
+    # gold.structure_measurements_visual and silver.drill_traces were
+    # written by Dagster assets, and when Dagster was retired on
+    # 2026-07-28 they were left with no writer at all — measured empty on
+    # the live database 2026-08-25 beside collars and surveys that had
+    # ingested cleanly.
+    #
+    # One dispatch per workspace: promote_silver_to_gold binds
+    # app.workspace_id for its whole session, and the tables it reads are
+    # fail-CLOSED under RLS, so a single sweep with an unset GUC would
+    # read nothing and report a clean run.
+    try:
+        from app.hatchet_workflows.promote_silver_to_gold import (  # noqa: PLC0415
+            PromoteSilverToGoldInput,
+            promote_silver_to_gold,
+        )
+        async with pool.acquire() as conn:
+            workspace_ids = [
+                str(r["workspace_id"])
+                for r in await conn.fetch(
+                    "SELECT DISTINCT workspace_id FROM silver.projects "
+                    "WHERE workspace_id IS NOT NULL",
+                )
+            ]
+        for workspace_id in workspace_ids:
+            await promote_silver_to_gold.aio_run_no_wait(
+                PromoteSilverToGoldInput(workspace_id=workspace_id),
+            )
+        report.extras["promotions_dispatched"] = len(workspace_ids)
+    except Exception as exc:
+        report.notes.append(f"promote_silver_to_gold_dispatch_failed: {exc}")
+        log.warning("tier3.gold.promote dispatch failed: %s", exc)
+
     # Step 4 — ANALYZE hot tables. Cheap; keeps the planner accurate after
     # bulk ingest.
     async with pool.acquire() as conn:
