@@ -99,17 +99,34 @@ describe('categoryForExtension', () => {
     expect(categoryForExtension('las')).toBe('well_logs');
   });
 
-  it('routes MapInfo entry points to spatial and its sidecars nowhere', () => {
-    // .tab and .mif are what GDAL opens. Everything else in a MapInfo set
-    // travels inside the ZIP shapefileBundle builds and must NOT resolve to a
-    // category of its own — .dat in particular is claimed by the retired
-    // `xyz` category, and a .mid opens directly, so accepting one as an
-    // upload would ingest a MIF/MID pair twice.
+  it('routes MapInfo entry points to spatial, and geometry-only sidecars nowhere', () => {
+    // .tab and .mif are what GDAL opens. .map/.id/.ind carry geometry and
+    // index and are meaningless without their master, so they must NOT
+    // resolve to a category. .mid is excluded for a different reason: it
+    // opens directly, so accepting it would ingest a MIF/MID pair twice.
     expect(categoryForExtension('tab')).toBe('spatial');
     expect(categoryForExtension('mif')).toBe('spatial');
-    for (const ext of ['dat', 'map', 'id', 'ind', 'mid']) {
+    for (const ext of ['map', 'id', 'ind', 'mid']) {
       expect(categoryForExtension(ext), `'${ext}' resolved to a category`).toBeNull();
     }
+  });
+
+  it('routes a MapInfo .dat to the tabular category, exactly like a .dbf', () => {
+    // Changed 2026-08-25. A MapInfo .dat IS a dBASE file and reads standalone
+    // once its master is absent — the same case as .dbf, which has resolved
+    // to `tables` since the standalone-attribute-table work landed.
+    //
+    // The old expectation (null) rested on a comment claiming .dat was
+    // "claimed by the retired xyz category". That constraint does not exist:
+    // UploadController consults RETIRED_CATEGORIES by category NAME, never by
+    // extension. `txt` sits in retired `xyz` AND in live `collars` and
+    // uploads fine — the standing proof.
+    //
+    // Measured cost of the old behaviour on one delivery: Sitka_trD.DAT
+    // (5 trench collars with azimuths, depths and UTM coordinates) and
+    // all_historical_soils_clean.DAT (854 soil samples with easting/northing
+    // and Au/Ag/As assays) were both discarded as orphaned sidecars.
+    expect(categoryForExtension('dat')).toBe('tables');
   });
 
   it('routes a standalone .dbf to the tabular category, not to spatial', () => {
@@ -181,14 +198,29 @@ describe('acceptedExtensions', () => {
     expect(accepted).not.toContain('sgy');
   });
 
-  it('does not offer bundle-only members as standalone uploads', () => {
+  it('does not offer geometry-only bundle members as standalone uploads', () => {
     // These reach the server inside a ZIP or not at all. Offering one as its
     // own upload gets a 422 at the door, which is how the drop zone taught
     // people to delete their sidecars before importing.
+    //
+    // `.dat` left this list on 2026-08-25 — see the companion test below.
+    // The distinction is whether the file OPENS ALONE: a .dat and a .dbf are
+    // whole dBASE tables, while a .shx/.prj/.map/.id is a fragment of another
+    // file and means nothing without it.
     const accepted = acceptedExtensions();
-    for (const ext of ['shx', 'prj', 'cpg', 'dat', 'map', 'id', 'ind', 'mid']) {
+    for (const ext of ['shx', 'prj', 'cpg', 'map', 'id', 'ind', 'mid']) {
       expect(accepted, `.${ext}`).not.toContain(ext);
     }
+  });
+
+  it('offers the bundle members that are whole tables on their own', () => {
+    // Both are dBASE files that open standalone. They are ALSO bundle members
+    // — a .dbf beside its .shp, a .dat beside its .tab — and groupShapefiles
+    // claims those before this list is ever consulted, so being here does not
+    // pull a sidecar out of a complete set.
+    const accepted = acceptedExtensions();
+    expect(accepted).toContain('dbf');
+    expect(accepted).toContain('dat');
   });
 });
 

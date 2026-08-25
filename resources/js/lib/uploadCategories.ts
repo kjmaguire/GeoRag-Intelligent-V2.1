@@ -47,7 +47,14 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   // file. A `.dbf` beside a same-stem `.shp` never reaches here —
   // groupShapefiles() zips it into the shapefile bundle first, and that
   // sibling is the only thing that discriminates the two cases.
-  tables: ['dbf'],
+  // `.dat` is here for the same reason: a MapInfo attribute half IS a dBASE
+  // file and reads standalone once its master is absent. The long-standing
+  // comment that ".dat is already claimed by the retired xyz category"
+  // describes a constraint that does not exist — UploadController consults
+  // RETIRED_CATEGORIES by category NAME only, never by extension. The proof
+  // already ships: `txt` sits in retired `xyz` AND in live `collars`, and
+  // .txt uploads work today.
+  tables: ['dbf', 'dat'],
   // ZIP is here because a shapefile is never one file — .shp/.shx/.dbf/.prj
   // travel together and a lone .shp cannot be read without them.
   // MapInfo: `.tab` and `.mif` are the ENTRY POINTS GDAL opens. Their

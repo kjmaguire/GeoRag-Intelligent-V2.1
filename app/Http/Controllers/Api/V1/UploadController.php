@@ -116,7 +116,14 @@ class UploadController extends Controller
         // not an entry here: groupShapefiles() zips it into the bundle
         // before upload. The two cases are discriminated by that sibling,
         // never by the extension alone.
-        'tables' => ['dbf'],
+        // `.dat` joins `.dbf`: a MapInfo attribute half IS a dBASE file and
+        // reads standalone when its master is absent. Adding it here collides
+        // with nothing — RETIRED_CATEGORIES is consulted by category NAME
+        // (array_key_exists on the requested category), never by extension, so
+        // the retired `xyz` entry for .dat has never gated anything. `txt` has
+        // sat in both retired `xyz` and live `collars` for months and uploads
+        // fine, which is the standing proof.
+        'tables' => ['dbf', 'dat'],
         // Vector data + QGIS projects → ingest_spatial →
         // silver.spatial_features. `.zip` is here because a shapefile is
         // never one file: .shp/.shx/.dbf/.prj travel together, and a lone

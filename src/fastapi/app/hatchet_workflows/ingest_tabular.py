@@ -83,7 +83,28 @@ EXCEL_EXTENSIONS = frozenset({".xlsx", ".xls", ".xlsm"})
 #: unlisted extension means no progress row and nothing but the on_failure
 #: hook to close the run.
 DBF_EXTENSIONS = frozenset({".dbf"})
-SUPPORTED_EXTENSIONS = CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBF_EXTENSIONS
+
+#: MapInfo's attribute half. A dBASE file in every structural respect, but it
+#: cannot go through the pyogrio path with the ``.dbf`` files:
+#:
+#:   * GDAL's shapefile driver is EXTENSION-GATED and refuses a ``.dat`` path
+#:     outright ("not recognized as being in a supported file format").
+#:   * Copied to ``.dbf`` it opens and returns 91.9% nulls on a real 854-row
+#:     file — INCLUDING easting and northing in every row — because MapInfo
+#:     writes numerics as raw little-endian doubles inside 'C'-typed fields
+#:     and GDAL truncates a character value at its first NUL. Every round
+#:     coordinate starts with one. Nothing raises; it looks like a
+#:     mostly-empty table, which is the worst possible failure mode.
+#:
+#: ``georag_geoparsers.dbase_reader`` decodes the bytes directly. Kept
+#: separate from DBF_EXTENSIONS rather than switching both: the ``.dbf`` path
+#: is measured and tested on real ArcGIS files, and there is no evidence it
+#: needs changing. If a ``.dbf`` ever shows the null-truncation symptom, the
+#: same reader handles it — it is verified against MiscPoints_2005.dbf.
+MAPINFO_DAT_EXTENSIONS = frozenset({".dat"})
+
+DBASE_EXTENSIONS = DBF_EXTENSIONS | MAPINFO_DAT_EXTENSIONS
+SUPPORTED_EXTENSIONS = CSV_EXTENSIONS | EXCEL_EXTENSIONS | DBASE_EXTENSIONS
 
 #: UTM zone 13N — the Athabasca Basin, where this platform's corpus is
 #: centred. A default, not a detection: see the module docstring.
@@ -355,6 +376,30 @@ def _read_dbf_table(path: str) -> list[dict[str, Any]]:
             for name, column in zip(fields, field_data, strict=True)
         }
         for index in range(len(field_data[0]))
+    ]
+
+
+def _read_mapinfo_dat_table(path: str) -> list[dict[str, Any]]:
+    """Read a MapInfo ``.DAT`` into plain, JSON-safe row dicts.
+
+    Uses ``georag_geoparsers.dbase_reader`` rather than the pyogrio path
+    above, for the reasons on MAPINFO_DAT_EXTENSIONS: GDAL cannot open a
+    ``.dat`` at all, and renaming it produces silent nulls rather than an
+    error.
+
+    The reader decides per FIELD whether a 'C'-typed column actually holds
+    binary doubles, because a per-cell test cannot work in either direction —
+    ``14.0`` encodes as eight printable-or-NUL bytes, and the real 8-character
+    text ``'SOIL'`` has trailing NULs that land in a double's exponent. Rows
+    flagged deleted are skipped, which is why a table can return fewer rows
+    than its header declares.
+    """
+    from georag_geoparsers.dbase_reader import read_dbase  # noqa: PLC0415
+
+    table = read_dbase(path)
+    return [
+        {name: _jsonable(value) for name, value in row.items()}
+        for row in table.rows
     ]
 
 
@@ -891,8 +936,8 @@ async def _land_unclassified_as_rows(
     by this point, and losing the structured copy must not turn a run that
     wrote them into a failure.
     """
-    if suffix in DBF_EXTENSIONS:
-        # A standalone .dbf already lands in this exact table through the
+    if suffix in DBASE_EXTENSIONS:
+        # A standalone .dbf/.dat already lands in this exact table through the
         # preflight branch, and never reaches `unclassified`. Guarded anyway
         # because the alternative failure is silent: the delimited reader
         # below would happily read a binary dBASE file as text and write a
@@ -1200,7 +1245,7 @@ async def run_ingest_tabular(
             attribute_layer = ""
             attribute_sha256 = ""
 
-            if suffix in DBF_EXTENSIONS:
+            if suffix in DBASE_EXTENSIONS:
                 # None of the sheet machinery below applies: a dBASE table
                 # has one layer, no geometry and no drill schema. The
                 # sibling check runs before the read for the reason given
@@ -1208,7 +1253,12 @@ async def run_ingest_tabular(
                 _assert_standalone_dbf(local)
                 attribute_layer = Path(local).stem
                 attribute_sha256 = await asyncio.to_thread(_sha256_file, local)
-                attribute_rows = await asyncio.to_thread(_read_dbf_table, local)
+                reader = (
+                    _read_mapinfo_dat_table
+                    if suffix in MAPINFO_DAT_EXTENSIONS
+                    else _read_dbf_table
+                )
+                attribute_rows = await asyncio.to_thread(reader, local)
                 sheets.append({
                     "sheet": filename,
                     "type": "attribute_table",
@@ -1262,10 +1312,10 @@ async def run_ingest_tabular(
                 else:
                     unclassified.append(filename)
 
-            # A .dbf classifies to exactly one thing and never enters
+            # A .dbf/.dat classifies to exactly one thing and never enters
             # `work`, so the drill-sheet advice below would be both wrong
             # and unactionable for it.
-            if not work and suffix not in DBF_EXTENSIONS:
+            if not work and suffix not in DBASE_EXTENSIONS:
                 warnings.append({
                     "code": "nothing_classified",
                     "detail": (
@@ -1706,9 +1756,11 @@ async def on_failure(input: IngestTabularInput, ctx: Context) -> dict[str, Any]:
 
 __all__ = [
     "CSV_EXTENSIONS",
+    "DBASE_EXTENSIONS",
     "DBF_EXTENSIONS",
     "DEFAULT_SOURCE_EPSG",
     "EXCEL_EXTENSIONS",
+    "MAPINFO_DAT_EXTENSIONS",
     "SUPPORTED_EXTENSIONS",
     "IngestTabularInput",
     "IngestTabularOut",

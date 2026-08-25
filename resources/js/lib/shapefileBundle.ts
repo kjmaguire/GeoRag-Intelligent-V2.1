@@ -753,7 +753,19 @@ export async function groupShapefiles(files: File[]): Promise<GroupResult> {
             // reads one directly through the ESRI Shapefile driver. Dropping
             // it here is why a delivery of attribute tables could not be
             // imported at all.
-            if (ext === 'dbf') {
+            // A MapInfo `.dat` with no master is the same case: MapInfo's
+            // attribute half IS a dBASE file and opens standalone. "Sidecar"
+            // is a property of WHETHER THE MASTER IS PRESENT, not of the
+            // extension — and this loop runs after both master loops, so
+            // reaching here already proves no master claimed it.
+            //
+            // Measured on a real delivery: Sitka_trD.DAT held 5 trench
+            // collars with azimuths, depths and UTM coordinates, and
+            // all_historical_soils_clean.DAT held 854 soil samples with
+            // easting/northing and gold, silver and arsenic assays. Both were
+            // discarded here as orphaned sidecars because the folder's only
+            // `.tab` was Sitka_trA — one letter off the stem.
+            if (ext === 'dbf' || ext === 'dat') {
                 passthrough.push(f);
             } else if (SIDECARS.has(ext)) {
                 unusable.push({

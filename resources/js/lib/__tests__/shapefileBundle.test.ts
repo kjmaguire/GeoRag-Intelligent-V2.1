@@ -383,12 +383,12 @@ describe('groupShapefiles — MapInfo', () => {
         expect(unusable.map((u) => u.file.name)).toEqual(['alteration.mid']);
     });
 
-    it('keeps orphaned MapInfo members with the reason instead of dropping them', async () => {
-        // The real folder holds seven .DAT, three .MAP, an .ID and an .IND
-        // whose masters were never delivered. A bundler that answers "no
-        // master, therefore drop" loses every one of them without a word.
+    it('keeps orphaned geometry-only MapInfo members with the reason instead of dropping them', async () => {
+        // The real folder holds three .MAP, an .ID and an .IND whose masters
+        // were never delivered. A bundler that answers "no master, therefore
+        // drop" loses every one of them without a word. These carry geometry
+        // or an index and genuinely cannot be read alone.
         const { bundles, passthrough, unusable } = await groupShapefiles([
-            makeFile('Unga_Geology.DAT'),
             makeFile('Unga_Geology.MAP'),
             makeFile('Shumagin.ID'),
             makeFile('Shumagin.IND'),
@@ -399,12 +399,46 @@ describe('groupShapefiles — MapInfo', () => {
         expect(unusable.map((u) => u.file.name).sort()).toEqual([
             'Shumagin.ID',
             'Shumagin.IND',
-            'Unga_Geology.DAT',
             'Unga_Geology.MAP',
         ]);
         for (const u of unusable) {
             expect(u.reason, u.file.name).toContain('MapInfo');
         }
+    });
+
+    it('sends an orphaned .DAT to upload rather than calling it unusable', async () => {
+        // Changed 2026-08-25. A MapInfo .DAT is the ATTRIBUTE half and is a
+        // dBASE file: it opens standalone, exactly like the .dbf one branch
+        // above. Treating "sidecar" as a property of the extension rather
+        // than of whether the master is present is what discarded real data.
+        //
+        // Measured on the delivery this was written against: Sitka_trD.DAT
+        // held 5 trench collars with azimuths, depths and UTM coordinates,
+        // and all_historical_soils_clean.DAT held 854 soil samples with
+        // easting/northing and Au/Ag/As assays. The folder's only .tab was
+        // Sitka_trA — one letter off the stem — so both were dropped.
+        const { bundles, passthrough, unusable } = await groupShapefiles([
+            makeFile('Sitka_trD.DAT'),
+        ]);
+
+        expect(bundles).toHaveLength(0);
+        expect(unusable).toHaveLength(0);
+        expect(passthrough.map((f) => f.name)).toEqual(['Sitka_trD.DAT']);
+    });
+
+    it('still zips a .DAT that DOES have its master', async () => {
+        // The widened branch must not pull a sidecar out of a complete set:
+        // the MapInfo master loop claims it first, so it never reaches the
+        // leftover branch at all.
+        const { bundles, passthrough } = await groupShapefiles([
+            makeFile('Sitka_trA.tab'),
+            makeFile('Sitka_trA.dat'),
+            makeFile('Sitka_trA.map'),
+            makeFile('Sitka_trA.id'),
+        ]);
+
+        expect(bundles).toHaveLength(1);
+        expect(passthrough).toHaveLength(0);
     });
 
     it('produces two bundles when a .shp and a .tab share a stem', async () => {
