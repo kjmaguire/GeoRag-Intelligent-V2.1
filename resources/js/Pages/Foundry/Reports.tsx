@@ -10,6 +10,7 @@ import {
     ProgressBar,
     EmptyState,
 } from '@/Components/Foundry/primitives';
+import ReportsViewBar from '@/Components/Foundry/ReportsViewBar';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import DataQualityFlagsBadge, {
     type DataQualityFlagsBadgeData,
@@ -247,6 +248,22 @@ export default function FoundryReports({
                     }
                     actions={<DataQualityFlagsBadge data={data_quality_flags} />}
                 />
+
+                {/* Documents | Tables. The tabular half of the same delivery
+                    lives one segment away instead of in its own nav entry —
+                    see Components/Foundry/ReportsViewBar. */}
+                <div
+                    className="flex items-center gap-3 px-8 py-2 border-b shrink-0"
+                    style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                >
+                    <span
+                        className="text-[10px] font-mono uppercase tracking-widest"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
+                        View
+                    </span>
+                    <ReportsViewBar slug={project.slug} active="documents" />
+                </div>
 
                 {empty ? (
                     <div className="px-8 py-12">

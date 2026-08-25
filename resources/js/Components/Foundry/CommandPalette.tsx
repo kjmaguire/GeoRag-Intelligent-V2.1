@@ -67,6 +67,13 @@ export default function CommandPalette({ projectSlug = null }: { projectSlug?: s
             // is what a user types when they want it; it is not discoverable
             // by searching for "workspace".
             { kind: 'nav', title: 'Compare holes', sub: 'Side-by-side hole comparison', href: `${base}/workspace?mode=compare`, group: 'This project' },
+            // Folded out of the project nav 2026-08-25 — Rasters is a
+            // Workspace mode and Tables a Reports view. Both keep a palette
+            // entry for the same reason Compare does: "rasters" is what a
+            // user types when they want the raster catalogue, and it is not
+            // discoverable by searching for "workspace".
+            { kind: 'nav', title: 'Rasters', sub: 'Raster catalogue (Workspace mode)', href: `${base}/rasters`, group: 'This project' },
+            { kind: 'nav', title: 'Tables', sub: 'Attribute tables (Reports view)', href: `${base}/attribute-tables`, group: 'This project' },
         ];
     }, [projectSlug]);
 

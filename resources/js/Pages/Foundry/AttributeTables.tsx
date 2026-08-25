@@ -1,6 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
+import ReportsViewBar from '@/Components/Foundry/ReportsViewBar';
 import { formatWhen } from '@/lib/time';
 
 /**
@@ -122,7 +123,7 @@ export default function FoundryAttributeTables({
                 style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}
             >
                 <PageHeader
-                    eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · ATTRIBUTE TABLES`}
+                    eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · REPORTS · TABLES`}
                     title="Attribute tables"
                     sub={
                         empty
@@ -131,6 +132,21 @@ export default function FoundryAttributeTables({
                               `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'}`
                     }
                 />
+
+                {/* The same View row Reports renders — this page is the
+                    tabular half of the same delivery, not a separate place. */}
+                <div
+                    className="flex items-center gap-3 px-8 py-2 border-b shrink-0"
+                    style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                >
+                    <span
+                        className="text-[10px] font-mono uppercase tracking-widest"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
+                        View
+                    </span>
+                    <ReportsViewBar slug={project.slug} active="tables" />
+                </div>
 
                 {empty ? (
                     <div className="px-8 py-12">

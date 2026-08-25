@@ -2,6 +2,7 @@ import { Head, Link } from '@inertiajs/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { Card, EmptyState, PageHeader, Pill, Stat } from '@/Components/Foundry/primitives';
+import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
 import { useBasemapStyleUrl } from '@/lib/basemap';
 
 /**
@@ -449,7 +450,7 @@ export default function FoundryRasterLayers({
 
             <div className="flex-1 overflow-y-auto" style={{ background: 'var(--bg-0)', color: 'var(--fg-1)' }}>
                 <PageHeader
-                    eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · RASTERS`}
+                    eyebrow={`PROJECT · ${project.project_name.toUpperCase()} · WORKSPACE · RASTERS`}
                     title="Raster layers"
                     sub={
                         <span>
@@ -468,6 +469,24 @@ export default function FoundryRasterLayers({
                         </Link>
                     }
                 />
+
+                {/* The same mode row Workspace renders. Rasters IS a workspace
+                    mode — it just happens to live at its own URL, because the
+                    catalogue has its own controller and RLS-scoped query.
+                    Rendering the shared bar is what makes that invisible to
+                    the geologist: one row of modes, this one lit. */}
+                <div
+                    className="flex items-center gap-3 px-8 py-2 border-b"
+                    style={{ background: 'var(--bg-1)', borderColor: 'var(--line-1)' }}
+                >
+                    <span
+                        className="text-[10px] font-mono uppercase tracking-widest"
+                        style={{ color: 'var(--fg-3)' }}
+                    >
+                        Mode
+                    </span>
+                    <WorkspaceModeBar slug={project.slug} active="rasters" />
+                </div>
 
                 {/* The honesty banner. It is above the map on purpose: the
                     footprint rectangles are the part of this page most likely
