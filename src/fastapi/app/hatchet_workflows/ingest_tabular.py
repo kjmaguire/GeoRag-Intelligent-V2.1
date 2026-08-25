@@ -725,6 +725,50 @@ def _collapse_discover_traces(
     return collars
 
 
+def _trace_survey_stations(
+    rows: list[dict[str, Any]], mapped: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Downhole survey stations from a Discover trace export.
+
+    The same rows that yield collars are also a SURVEY: each segment records
+    the depth it ends at, plus the azimuth and dip the hole was running at.
+    That is exactly a station, and without it the Workspace 3D view has hole
+    positions and no trajectories — a stereosphere with nothing in it, which
+    reads as broken rather than as absent data.
+
+    Every segment becomes a station, including the depth-0 one: a survey that
+    starts below the collar leaves the first stretch of the hole
+    unconstrained, and for a 61.5 m trench that is the whole thing.
+
+    Azimuth and dip are required — a station without them constrains nothing.
+    Depth is required for the same reason and must be readable, not coerced:
+    the collar collapse above learned that lesson, and a station silently
+    placed at 0 m would bend the trajectory back to the collar.
+    """
+    stations: list[dict[str, Any]] = []
+    for row in rows:
+        hole = str(row.get(mapped["hole_id"], "") or "").strip()
+        depth = _num(row.get(mapped["depth"]))
+        azimuth = _num(row.get(mapped["azimuth"])) if "azimuth" in mapped else None
+        dip = _num(row.get(mapped["dip"])) if "dip" in mapped else None
+
+        if not hole or depth is None or azimuth is None:
+            continue
+
+        stations.append({
+            "hole_id": hole,
+            "depth": depth,
+            "azimuth": azimuth,
+            # A Discover trace writes 0 for a horizontal trench rather than
+            # leaving it blank, so an absent dip really does mean 0 here —
+            # but only when the column exists at all. `or 0.0` would hide a
+            # missing column, so the distinction is kept.
+            "dip": dip if dip is not None else (0.0 if "dip" in mapped else None),
+            "survey_method": "desurveyed_trace",
+        })
+    return stations
+
+
 async def _write_surface_geochem(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
@@ -1994,6 +2038,32 @@ async def run_ingest_tabular(
                                     "type": "collar",
                                     "rows": written["collar"]["written"],
                                 })
+
+                                # The same rows are also a downhole survey.
+                                # Written AFTER the collars because a station
+                                # resolves hole_id -> collar_id against them,
+                                # and the index has to be rebuilt here rather
+                                # than reused: these collars did not exist
+                                # when any earlier index was taken.
+                                stations = _trace_survey_stations(
+                                    attribute_rows, trace_shape,
+                                )
+                                if stations:
+                                    survey_index = await _collar_index(
+                                        conn, input.project_id,
+                                    )
+                                    written["survey"] = await _write_intervals(
+                                        conn,
+                                        workspace_id=input.workspace_id,
+                                        sheet_type="survey",
+                                        records=stations,
+                                        index=survey_index,
+                                    )
+                                    sheets.append({
+                                        "sheet": filename,
+                                        "type": "survey",
+                                        "rows": written["survey"]["written"],
+                                    })
                                 if epsg_assumed:
                                     warnings.append(_assumed_crs_warning(
                                         epsg, written["collar"]["written"],
