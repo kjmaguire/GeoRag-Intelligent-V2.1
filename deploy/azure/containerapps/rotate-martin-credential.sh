@@ -152,15 +152,42 @@ if [ -z "$PASSWORD" ] || [ "${#PASSWORD}" -lt 24 ]; then
   exit 1
 fi
 
+# Belt and braces before the password is interpolated into SQL below. The
+# generator above yields base64 with '=+/' stripped, so it is strictly
+# alphanumeric and cannot carry a quote or a backslash — but relying on that
+# from a distance is how an injection gets introduced by a later "improvement"
+# to the generator. Assert it here, next to the use.
+case "$PASSWORD" in
+  *[!A-Za-z0-9]*)
+    echo "ABORT: generated password is not strictly alphanumeric; refusing" >&2
+    echo "to interpolate it into SQL. Fix the generator above." >&2
+    exit 1
+    ;;
+esac
+
 echo "# setting the role password (psql will prompt for the ADMIN password)..." >&2
-# The password reaches psql through a variable, not the command line, so it
-# does not appear in the process table for other users on this machine.
-if ! PGPASSWORD="" psql \
+# ON STDIN, not --command and not --set, for two separate reasons.
+#
+# 1. CORRECTNESS. `psql --command` hands the string to the server verbatim;
+#    psql only expands `:'var'` in the lexer it uses for stdin and -f input.
+#    So `--set=pw=... --command "... PASSWORD :'pw';"` sent a literal colon and
+#    the server answered `syntax error at or near ":"`. Measured 2026-08-25 in
+#    Azure Cloud Shell.
+#
+# 2. SECRECY. `--set=pw="$PASSWORD"` is a COMMAND-LINE ARGUMENT — the password
+#    was in argv and visible to `ps` for every other user on the host, which is
+#    the exact opposite of what the comment here used to claim. stdin is
+#    neither argv nor the environment, so a pipe leaks nothing to the process
+#    table.
+#
+# psql still prompts for the ADMIN password on /dev/tty, not stdin, so feeding
+# SQL through the pipe does not interfere with it.
+if ! printf "ALTER ROLE %s WITH PASSWORD '%s';\n" "$ROLE" "$PASSWORD" \
+    | PGPASSWORD="" psql \
       --host "$PG_HOST" --username "$PG_ADMIN" --dbname "$PG_DB" \
       --set=ON_ERROR_STOP=1 \
-      --set=pw="$PASSWORD" \
       --quiet \
-      --command "ALTER ROLE ${ROLE} WITH PASSWORD :'pw';" ; then
+      --file - ; then
   echo "FAILED: could not set the ${ROLE} password." >&2
   echo "If the role does not exist, creating it here would be worse than" >&2
   echo "failing: Martin would connect and then 403 on every tile, because" >&2
