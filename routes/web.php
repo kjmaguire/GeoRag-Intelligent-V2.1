@@ -15,6 +15,7 @@ use App\Http\Controllers\Foundry\SourcesController;
 use App\Http\Controllers\Foundry\WorkspaceController;
 use App\Http\Controllers\Internal\MetricsController;
 use App\Http\Controllers\OAuthIngestController;
+use App\Http\Controllers\PublicGeoscience\TileProxyController as PublicGeoscienceTileProxy;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -60,6 +61,33 @@ Route::get('/reset-password/{token}', function (Request $request, string $token)
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/projects', [ProjectsIndexController::class, 'show'])
         ->name('foundry.projects');
+
+    // MVT tile proxy to Martin. On web.php rather than api.php so the same
+    // route serves SPA session-authenticated map tiles without a Bearer token
+    // round-trip per request — MapLibre fires hundreds of tile GETs on a
+    // single pan/zoom.
+    //
+    // Restored 2026-08-25. Removed in 0eada56c ("remove demo-external
+    // services") along with Martin itself; the 18 PostGIS tile functions it
+    // proxies were never removed and are live on the Azure server.
+    Route::middleware(['throttle:public-geoscience-tiles'])->group(function () {
+        Route::get(
+            '/tiles/public-geoscience/{source}/{z}/{x}/{y}.pbf',
+            [PublicGeoscienceTileProxy::class, 'tile'],
+        )
+            ->where(['z' => '[0-9]+', 'x' => '[0-9]+', 'y' => '[0-9]+'])
+            ->name('public-geoscience.tile');
+
+        // Silver workspace-scoped tiles. Requires ?project_id={uuid} and
+        // enforces the project-access check; ETag derives from
+        // silver.projects.data_version.
+        Route::get(
+            '/tiles/silver/{source}/{z}/{x}/{y}.pbf',
+            [PublicGeoscienceTileProxy::class, 'silverTile'],
+        )
+            ->where(['z' => '[0-9]+', 'x' => '[0-9]+', 'y' => '[0-9]+'])
+            ->name('silver.tile');
+    });
 
     // Not project-scoped — public_geo data isn't tenant data. Linked from
     // the top ORG nav bar. See PublicGeoscienceController docblock.

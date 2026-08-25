@@ -82,10 +82,30 @@ class PublicApiController extends Controller
             return response()->json(['error' => 'not_found'], 404);
         }
 
-        // Vector-tile serving is not part of the demo-core deployment.
+        // Layers available for this project: workspace silver + public-geo.
+        //
+        // Emptied by 0eada56c when Martin was removed with the demo-external
+        // services; restored 2026-08-25 together with the tile proxy. Every
+        // source below is whitelisted in TileProxyController and backed by a
+        // PostGIS function verified live on the server.
         return response()->json([
             'project_id' => $projectId,
-            'layers' => [],
+            'layers' => [
+                // spatial_features is where shapefiles, GeoPackages, DXF and
+                // Surpac strings land — for most uploaded deliveries it is the
+                // layer that actually holds their data. First because it is
+                // the one a geologist is most often looking for.
+                ['kind' => 'silver_spatial_features', 'tile_url' => "/tiles/silver/pg_spatial_features_by_project/{z}/{x}/{y}.pbf?project_id={$projectId}"],
+                ['kind' => 'silver_collars', 'tile_url' => "/tiles/silver/pg_collars_by_project/{z}/{x}/{y}.pbf?project_id={$projectId}"],
+                ['kind' => 'silver_drill_traces', 'tile_url' => "/tiles/silver/pg_drill_traces_by_project/{z}/{x}/{y}.pbf?project_id={$projectId}"],
+                ['kind' => 'silver_geochem', 'tile_url' => "/tiles/silver/pg_geochem_by_project/{z}/{x}/{y}.pbf?project_id={$projectId}"],
+                ['kind' => 'silver_historic_workings', 'tile_url' => "/tiles/silver/pg_historic_workings_by_project/{z}/{x}/{y}.pbf?project_id={$projectId}"],
+                ['kind' => 'silver_boundaries', 'tile_url' => "/tiles/silver/pg_boundaries_by_project/{z}/{x}/{y}.pbf?project_id={$projectId}"],
+                ['kind' => 'pg_mineral_occurrence', 'tile_url' => '/tiles/public-geoscience/pg_mineral_occurrences/{z}/{x}/{y}.pbf'],
+                ['kind' => 'pg_drillhole_collar', 'tile_url' => '/tiles/public-geoscience/pg_drillhole_collars/{z}/{x}/{y}.pbf'],
+                ['kind' => 'pg_mine', 'tile_url' => '/tiles/public-geoscience/pg_mines/{z}/{x}/{y}.pbf'],
+                ['kind' => 'pg_bedrock_geology', 'tile_url' => '/tiles/public-geoscience/pg_bedrock_geology/{z}/{x}/{y}.pbf'],
+            ],
         ]);
     }
 

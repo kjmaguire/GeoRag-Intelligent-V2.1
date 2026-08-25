@@ -153,6 +153,10 @@
                  comment for the full story on how they went undetected). -->
             <file>tests/Feature/Api/V1/ProjectControllerDeleteOrderingTest.php</file>
             <file>tests/Feature/Api/V1/PublicGeoscience/PublicGeoscienceMapControllerTest.php</file>
+            <!-- Restored 2026-08-25 with Martin. The ETag path uses
+                 EXTRACT(EPOCH FROM ...)::bigint, which SQLite cannot parse. -->
+            <file>tests/Feature/Api/V1/PublicGeoscience/TileProxyControllerTest.php</file>
+            <file>tests/Feature/TileProxyTest.php</file>
             <file>tests/Feature/Foundry/DrillholeDetailControllerTest.php</file>
             <file>tests/Feature/Foundry/WorkspaceCompareMergeTest.php</file>
             <file>tests/Feature/Foundry/IngestQualityControllerTest.php</file>
