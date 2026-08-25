@@ -288,11 +288,18 @@ fi
 if [ "$FAILURES" -eq 0 ]; then
   echo "martin-cc applied; secret present; ingress is internal-only." >&2
   echo >&2
-  echo "If this was the first create, the secret still holds the placeholder." >&2
-  echo "Martin will not start until you set the real connection string:" >&2
-  echo "  az containerapp secret set -g $RG -n $APP --secrets martin-database-url=\"postgresql://martin_readonly:...@georag-pg-cc.postgres.database.azure.com:5432/georag?sslmode=require\"" >&2
+  # The old text here told the operator the secret still held the
+  # placeholder and to set it afterwards. That advice is now both wrong and
+  # actively harmful: the create refuses without MARTIN_DATABASE_URL, so a
+  # created app always has a real credential — and following the old
+  # instruction on an app that DID crashloop was impossible anyway, because
+  # an app stuck in InProgress refuses `secret set` along with every other
+  # update.
+  echo "The martin-database-url secret holds the credential supplied at create." >&2
   echo >&2
-  echo "Then confirm: curl -s -o /dev/null -w '%{http_code}' <octane>/tiles/silver/pg_collars_by_project/0/0/0.pbf?project_id=<uuid>" >&2
+  echo "Confirm tiles end to end (through Laravel, which runs the project" >&2
+  echo "access check — Martin itself has no external ingress):" >&2
+  echo "  curl -s -o /dev/null -w '%{http_code}' <octane>/tiles/silver/pg_collars_by_project/0/0/0.pbf?project_id=<uuid>" >&2
   exit 0
 fi
 echo "martin-cc apply completed with ${FAILURES} verification failure(s)." >&2

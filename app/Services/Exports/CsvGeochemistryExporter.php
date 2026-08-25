@@ -82,9 +82,21 @@ class CsvGeochemistryExporter
                 $selectCols[] = 'g.ree_json';
             }
 
+            // LEFT join, and scope on the GEOCHEMISTRY row's own project.
+            //
+            // An inner join here silently dropped every surface sample. Since
+            // 2026-08-25 silver.geochemistry accepts rows with collar_id NULL
+            // — a soil or stream-sediment survey has coordinates and no hole,
+            // which is why the NOT NULL was removed from collar_id and the
+            // geochemistry_locatable_check added. Joining through the collar
+            // eliminated exactly those rows, and taking the project from
+            // `c.project_id` meant they could not have been scoped anyway.
+            //
+            // The failure was invisible: an 854-sample soil survey exported as
+            // a header row and nothing else, with no error and no warning.
             $query = DB::table('silver.geochemistry as g')
-                ->join('silver.collars as c', 'g.collar_id', '=', 'c.collar_id')
-                ->where('c.project_id', $projectId)
+                ->leftJoin('silver.collars as c', 'g.collar_id', '=', 'c.collar_id')
+                ->where('g.project_id', $projectId)
                 ->select($selectCols);
 
             if (! empty($filters['hole_id'])) {
@@ -94,8 +106,13 @@ class CsvGeochemistryExporter
                 $query->where('g.sample_type', $filters['sample_type']);
             }
 
+            // sample_id breaks the tie for surface rows: they carry neither
+            // hole_id nor from_depth, so without it their order is whatever
+            // the planner returns and two exports of the same data can
+            // disagree — which looks like the data changed.
             $query->orderBy('c.hole_id')
                 ->orderBy('g.from_depth')
+                ->orderBy('g.sample_id')
                 ->chunk(2000, function ($rows) use ($handle, $includeRee) {
                     foreach ($rows as $row) {
                         $line = [

@@ -654,7 +654,18 @@ async def _ingest_one(
         # handled, so a ZIP of attribute tables completed having written
         # nothing. Same distinction the import wizard's bundler already makes
         # for a loose .dbf/.dat.
+        #
+        # safe_name and file_bytes are bound HERE, not reused. Every other
+        # branch assigns its own because the branches are mutually exclusive
+        # `elif`s — reaching this one proves none of the earlier assignments
+        # ran, so referencing theirs raised UnboundLocalError. The per-file
+        # try/except swallowed it into counts['errors'], so a delivery ZIP
+        # holding a standalone Sitka_trD.DAT produced no bronze object, no
+        # ingest_tabular dispatch and no ingest_progress row: the file simply
+        # was not there, on the exact format this branch was added for.
         ts = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S_%f")
+        safe_name = _safe_filename(file_path.name)
+        file_bytes = await asyncio.to_thread(file_path.read_bytes)
         table_key = f"tables/{input.project_id}/{ts}_{safe_name}"
         await asyncio.to_thread(store.put_bytes, Bucket.BRONZE, table_key, file_bytes)
         await ingest_tabular.aio_run_no_wait(

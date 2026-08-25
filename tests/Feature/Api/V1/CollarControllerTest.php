@@ -7,6 +7,8 @@ use App\Models\Project;
 use App\Models\Survey;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -238,6 +240,50 @@ class CollarControllerTest extends TestCase
                     'geochemistry',
                 ],
             ]);
+    }
+
+    public function test_show_survives_a_survey_method_outside_the_vocabulary(): void
+    {
+        // THE BUG THIS PINS. §04e's SurveyMethod is a closed vocabulary of
+        // three instrument families, but the ingestion writes provenance into
+        // that column: `_SURVEY_METHOD_DEFAULT = 'unknown'` for any sheet that
+        // names no instrument, and 'desurveyed_trace' for a Discover trace.
+        // Cast straight to the enum, reading such a row threw a ValueError,
+        // and CollarController::show catches Throwable — so ONE ingested
+        // survey row answered 500 for every collar in the project.
+        //
+        // Inserted raw rather than through the factory because that is how it
+        // actually happens: the ingestion writes to Postgres from Python and
+        // never passes through Eloquent, so the `set` cast that would reject
+        // this value is not in the path. Going through the factory here would
+        // test the guard instead of the bug.
+        $collar = Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+        ]);
+
+        foreach (['unknown', 'desurveyed_trace'] as $i => $method) {
+            DB::table(Survey::getModel()->getTable())->insert([
+                'survey_id' => (string) Str::uuid(),
+                'collar_id' => $collar->collar_id,
+                'depth' => 10.0 * ($i + 1),
+                'azimuth' => 322.8,
+                'dip' => 0.0,
+                'survey_method' => $method,
+            ]);
+        }
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}",
+        );
+
+        $response->assertOk();
+
+        // Degrading must not lose what the file said. The payload stays a
+        // string and still carries the stored value, so a geologist looking
+        // at a trench sees 'desurveyed_trace' rather than a blank.
+        $methods = array_column($response->json('data.surveys'), 'survey_method');
+        sort($methods);
+        $this->assertSame(['desurveyed_trace', 'unknown'], $methods);
     }
 
     public function test_show_returns_404_for_collar_in_wrong_project(): void

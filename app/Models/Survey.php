@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
-use App\Enums\SurveyMethod;
+use App\Casts\TolerantSurveyMethod;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -38,7 +38,13 @@ class Survey extends Model
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         // §04e Downhole Survey — closed-vocabulary instrument family.
-        'survey_method' => SurveyMethod::class,
+        // Cast through TolerantSurveyMethod, not the enum directly: the
+        // ingestion writes 'unknown' for any sheet that names no
+        // instrument, and SurveyMethod::from() on that throws a
+        // ValueError that CollarController::show turns into a 500 for
+        // every collar in the project. See that class for why the
+        // vocabulary is not simply widened.
+        'survey_method' => TolerantSurveyMethod::class,
     ];
 
     /**

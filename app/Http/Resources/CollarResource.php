@@ -52,7 +52,14 @@ class CollarResource extends JsonResource
                 'depth' => $s->depth,
                 'azimuth' => $s->azimuth,
                 'dip' => $s->dip,
-                'survey_method' => $s->survey_method,
+                // The cast yields null for anything outside the §04e
+                // vocabulary — which is most ingested rows, since the
+                // ingestion writes 'unknown' when a sheet names no
+                // instrument. Fall back to the stored string so the payload
+                // stays a string and the geologist still sees what the file
+                // said, rather than a blank where 'desurveyed_trace' was.
+                'survey_method' => $s->survey_method?->value
+                    ?? $s->getRawOriginal('survey_method'),
             ]),
             ),
             'lithology_logs' => $this->whenLoaded('lithologyLogs', fn () => $this->lithologyLogs->map(fn ($l) => [
