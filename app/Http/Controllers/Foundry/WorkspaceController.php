@@ -10,6 +10,7 @@ use App\Support\SetsWorkspaceRlsContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -711,6 +712,40 @@ class WorkspaceController extends Controller
             }
 
             $aoiAvailable = $projectAoi !== null ? 1 : 0;
+
+            // Counts for the Martin-served MVT layers.
+            //
+            // These IDS ARE LOAD-BEARING: WorkspaceMap toggles an MVT layer by
+            // looking up `visibleLayers[def.id]` using the id from
+            // resources/js/lib/mvtLayers.ts, and an id with no entry here
+            // resolves to undefined -> false -> layout.visibility 'none'
+            // forever. Before this block only `collars` and `traces` overlapped,
+            // so EIGHT of the ten MVT layers could never be shown — including
+            // every imported shapefile, DXF and Surpac string
+            // (imported-points/lines/polygons) and all surface geochemistry.
+            // The map looked empty and nothing said why.
+            //
+            // Each is wrapped because the table may not exist in every
+            // environment; a missing count must not take the whole page down.
+            $mvtCounts = ['spatial_features' => 0, 'geochem' => 0, 'workings' => 0, 'formations' => 0, 'boundaries' => 0, 'seismic' => 0];
+            foreach ([
+                'spatial_features' => 'silver.spatial_features',
+                'geochem' => 'silver.geochemistry',
+                'workings' => 'silver.historic_workings',
+                'formations' => 'silver.geological_formations',
+                'boundaries' => 'silver.project_boundaries',
+                'seismic' => 'silver.seismic_surveys',
+            ] as $key => $table) {
+                try {
+                    $mvtCounts[$key] = (int) DB::table($table)
+                        ->where('project_id', $project->project_id)->count();
+                } catch (\Throwable $e) {
+                    Log::debug('workspace: MVT count unavailable', [
+                        'table' => $table, 'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             $projectLayers = [
                 ['id' => 'collars', 'label' => 'Collars', 'count' => $collars->count(), 'on' => true],
                 ['id' => 'samples', 'label' => 'Ore-bearing holes only', 'count' => $oreHoleCount, 'on' => false],
@@ -723,6 +758,27 @@ class WorkspaceController extends Controller
                 ['id' => 'lithology', 'label' => 'Lithology bands (logs only)', 'count' => $lithologyCount, 'on' => false],
                 ['id' => 'sections', 'label' => 'Cross sections', 'count' => $sectionsCount, 'on' => false],
                 ['id' => 'saved_views', 'label' => 'Saved views', 'count' => $savedViewsCount, 'on' => false],
+
+                // ── Martin MVT layers ───────────────────────────────────────
+                // ids must match resources/js/lib/mvtLayers.ts EXACTLY; see the
+                // comment above $mvtCounts for what breaks when they do not.
+                //
+                // The three imported-* entries share one tile source
+                // (pg_spatial_features_by_project emits points, lines and
+                // polygons as separate ST_AsMVT layers because one MapLibre
+                // layer has one type), so they share one count.
+                //
+                // `on => true` for imported features and geochem: they are what
+                // a geologist has just uploaded, and defaulting them off means
+                // a successful import still shows an empty map.
+                ['id' => 'imported-points', 'label' => 'Imported points', 'count' => $mvtCounts['spatial_features'], 'on' => true],
+                ['id' => 'imported-lines', 'label' => 'Imported lines', 'count' => $mvtCounts['spatial_features'], 'on' => true],
+                ['id' => 'imported-polygons', 'label' => 'Imported areas', 'count' => $mvtCounts['spatial_features'], 'on' => true],
+                ['id' => 'geochem', 'label' => 'Geochemistry samples', 'count' => $mvtCounts['geochem'], 'on' => true],
+                ['id' => 'historic-workings', 'label' => 'Historic workings', 'count' => $mvtCounts['workings'], 'on' => false],
+                ['id' => 'formations', 'label' => 'Mapped geology', 'count' => $mvtCounts['formations'], 'on' => false],
+                ['id' => 'boundaries', 'label' => 'Claim boundaries', 'count' => $mvtCounts['boundaries'], 'on' => false],
+                ['id' => 'seismic', 'label' => 'Seismic surveys', 'count' => $mvtCounts['seismic'], 'on' => false],
             ];
 
             // Chronostratigraphic column. Prefer project-specific formations from

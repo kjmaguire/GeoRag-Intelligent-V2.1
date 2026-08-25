@@ -1383,13 +1383,37 @@ def _parse_surpac_strings(path: str, *, source_epsg: int | None) -> SpatialParse
     parsed = read_surpac_strings(path)
     basename = os.path.basename(path)
 
+    # REPROJECT. silver.spatial_features.geom is geometry(Geometry,4326) and
+    # the insert does NOT transform — the GeoPandas path reprojects before WKT
+    # is taken, and returning early skipped that. Writing a UTM easting under
+    # SRID 4326 stores longitude 399,183, which is the exact failure the
+    # crs_missing refusal exists to prevent, arriving by a different door.
+    transform = None
+    if source_epsg is not None and source_epsg != 4326:
+        from pyproj import Transformer  # noqa: PLC0415
+
+        transform = Transformer.from_crs(
+            f"EPSG:{source_epsg}", "EPSG:4326", always_xy=True,
+        ).transform
+
     features: list[SpatialFeature] = []
     for s in parsed.strings:
+        points = [(x, y) for x, y, _ in s.points]
+        if transform is not None:
+            points = [transform(x, y) for x, y in points]
+
         # Distinct vertices, because a ring needs three of them to have area.
-        distinct = {(round(x, 6), round(y, 6)) for x, y, _ in s.points}
+        # Measured AFTER reprojection: two vertices that differ in metres can
+        # round to the same degree pair, and a ring of two identical points is
+        # not a polygon.
+        distinct = {(round(x, 9), round(y, 9)) for x, y in points}
         as_ring = s.closed and len(distinct) >= 3
 
-        coords = ", ".join(f"{x} {y}" for x, y, _ in s.points)
+        # repr() rather than an f-string: a coordinate that formats as
+        # scientific notation ("1e-05") is not valid WKT, and after
+        # reprojection small longitudes are reachable. repr on a float always
+        # gives a decimal form PostGIS accepts.
+        coords = ", ".join(f"{x!r} {y!r}" for x, y in points)
         if as_ring:
             wkt, geom_type = f"POLYGON(({coords}))", "Polygon"
         else:
@@ -1397,7 +1421,15 @@ def _parse_surpac_strings(path: str, *, source_epsg: int | None) -> SpatialParse
 
         features.append(SpatialFeature(
             name=f"string {s.string_number}",
-            feature_type="vein_outline",
+            # 'mineralization_zone', not 'vein_outline'. The latter reads
+            # better but is not in chk_spatial_features_type, and NOT VALID
+            # exempts only pre-existing rows — every insert would have been
+            # rejected, losing the whole file at the last step. The allowed
+            # vocabulary is alteration_halo / boundary / contact / dyke /
+            # fault / lineament / mineralization_zone / occurrence / other /
+            # outcrop / sample_point / shear_zone; a Surpac level plan of an
+            # orebody is a mineralization zone.
+            feature_type="mineralization_zone",
             geometry_wkt=wkt,
             geometry_type=geom_type,
             properties={

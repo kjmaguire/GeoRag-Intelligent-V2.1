@@ -64,13 +64,39 @@ def test_the_level_elevation_survives_in_properties(parsed):
     assert levels[-1] == 125.0
 
 
-def test_coordinates_are_easting_first(parsed):
-    # The FILE stores Y,X,Z. Emitting them in file order mirrors the orebody
-    # about the diagonal and puts it in the Indian Ocean.
+def test_coordinates_are_reprojected_to_wgs84(parsed):
+    # spatial_features.geom is geometry(Geometry,4326) and the INSERT does not
+    # transform — the GeoPandas path reprojects before WKT is taken, and the
+    # early return for .str skipped that. A UTM easting stored under SRID 4326
+    # is longitude 399,183, which is the same class of failure as the
+    # .prj-less shapefile that landed at longitude 400,797.
+    #
+    # Shumagin Island sits at roughly 160.6 W, 55.2 N.
     first = parsed.features[0].geometry_wkt
-    x_text, y_text = first.split("((")[1].split(",")[0].split()
-    assert 399_000 < float(x_text) < 400_000, "first ordinate should be an easting"
-    assert 6_120_000 < float(y_text) < 6_121_000, "second should be a northing"
+    lon_text, lat_text = first.split("((")[1].split(",")[0].split()
+    lon, lat = float(lon_text), float(lat_text)
+    assert -161.0 < lon < -160.0, f"longitude out of range for Shumagin: {lon}"
+    assert 55.0 < lat < 55.5, f"latitude out of range for Shumagin: {lat}"
+
+
+def test_the_axes_are_not_swapped(parsed):
+    # The FILE stores Y,X,Z. Emitting them in file order mirrors the orebody
+    # about the diagonal — which after reprojection lands it in the Indian
+    # Ocean rather than merely somewhere odd, so the sign check is the tell.
+    for f in parsed.features[:20]:
+        body = f.geometry_wkt.split("((")[-1].split("(")[-1].rstrip(")")
+        lon, lat = (float(v) for v in body.split(",")[0].split())
+        assert lon < 0, "longitude should be negative in Alaska"
+        assert lat > 0, "latitude should be positive in Alaska"
+
+
+def test_wkt_carries_no_scientific_notation(parsed):
+    # PostGIS rejects "1e-05" in WKT. Reprojected longitudes are small enough
+    # that an f-string could produce it, which would lose the whole file at
+    # the insert rather than at the parse.
+    for f in parsed.features:
+        assert "e-" not in f.geometry_wkt.lower()
+        assert "e+" not in f.geometry_wkt.lower()
 
 
 def test_properties_carry_what_the_map_needs_to_label_a_string(parsed):

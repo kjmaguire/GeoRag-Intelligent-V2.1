@@ -272,7 +272,13 @@ INSERT INTO silver.geochemistry (
     $8::text[], $9::jsonb,
     NOW(), NOW()
 )
-ON CONFLICT (project_id, sample_id)
+-- The WHERE is REQUIRED, not decoration. uq_geochemistry_project_sample is a
+-- PARTIAL index (WHERE sample_id IS NOT NULL), and Postgres will not infer a
+-- partial index from the column list alone — without a matching predicate
+-- every insert fails with 42P10 "there is no unique or exclusion constraint
+-- matching the ON CONFLICT specification". Reproduced on a real server: the
+-- writer wrote ZERO rows, every time, while looking correct on review.
+ON CONFLICT (project_id, sample_id) WHERE sample_id IS NOT NULL
 DO UPDATE SET
     sample_type         = EXCLUDED.sample_type,
     geom                = EXCLUDED.geom,
@@ -481,11 +487,29 @@ _GEOCHEM_ELEMENTS: frozenset[str] = frozenset({
 #: is preserved in assay_values_ppm's keys rather than folded away.
 _ASSAY_UNITS: frozenset[str] = frozenset({"ppm", "ppb", "pct", "per", "gpt", "oz"})
 
-#: Below-detection sentinel. Measured in all_historical_soils_clean.DAT:
-#: au_ppm ranges -9..1.589, and -9 is the legacy "not detected" marker, not a
-#: negative concentration. Storing it as a number would make every summary
-#: statistic wrong — a mean grade pulled below zero by absent samples.
-_BELOW_DETECTION = -9.0
+def _is_below_detection(value: float) -> bool:
+    """Whether an assay value means "below the detection limit".
+
+    A NEGATED DETECTION LIMIT, not a single sentinel. This started as an
+    equality test against -9.0, which was wrong: measured across
+    all_historical_soils_clean.DAT there are TWELVE distinct negative values
+    over 5,062 cells — -0.04, -0.1, -0.2, -1, -2, -5, -9, -10, -20, -40, -100,
+    -200. Each is the negation of that batch's detection limit, so -0.2 means
+    "below 0.2 ppm", and the -9 that inspired the constant was simply the
+    commonest limit rather than a magic number.
+
+    Testing only for -9 left 1,326 cells of the other eleven values intact, so
+    a gold column would carry real negative grades — a mean pulled below zero
+    by samples that in fact contain no measurable gold, and a colour ramp with
+    a floor nothing can reach.
+
+    A concentration cannot be negative, so the sign alone is the signal and no
+    list of limits has to be maintained. The value is recorded as ABSENT
+    rather than substituted: half-detection-limit is a common convention but
+    it invents a number nobody measured, and the verbatim original is already
+    preserved in silver.attribute_tables.
+    """
+    return value < 0
 
 
 def _assay_columns(columns: list[str]) -> dict[str, str]:
@@ -647,7 +671,22 @@ def _collapse_discover_traces(
 
     collars: list[dict[str, Any]] = []
     for hole, segments in by_hole.items():
-        depths = [(_num(s.get(mapped["depth"])) or 0.0, s) for s in segments]
+        # A MISSING depth is not depth zero. `or 0.0` turned every unparseable
+        # or blank depth into a perfect match for the depth-0 collar test
+        # below, so a hole whose collar row was absent would take an arbitrary
+        # midpoint as its collar — the exact failure this function exists to
+        # prevent, arriving through the coercion instead of the data.
+        depths = [
+            (depth, s)
+            for s, depth in ((s, _num(s.get(mapped["depth"]))) for s in segments)
+            if depth is not None
+        ]
+        if not depths:
+            log.warning(
+                "ingest_tabular: trace for %r has no readable depth on any "
+                "segment — cannot tell the collar from a midpoint", hole,
+            )
+            continue
         # Sorting rather than trusting file order: a re-export can interleave
         # holes, and "the first row I saw" would then be an arbitrary segment.
         depths.sort(key=lambda pair: pair[0])
@@ -712,7 +751,7 @@ async def _write_surface_geochem(
         values = {}
         for key, column in assays.items():
             value = _num(row.get(column))
-            if value is None or value == _BELOW_DETECTION:
+            if value is None or _is_below_detection(value):
                 continue
             values[key] = value
 
