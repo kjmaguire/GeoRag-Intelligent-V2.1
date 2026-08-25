@@ -740,7 +740,7 @@ xgboost==3.3.0 ; sys_platform != 'linux'
     # via georag-fastapi
 xgboost-cpu==3.4.1 ; sys_platform == 'linux'
     # via georag-fastapi
-xlrd==1.2.0
+xlrd==2.0.2
     # via georag-geoparsers
 xxhash==3.8.1
     # via

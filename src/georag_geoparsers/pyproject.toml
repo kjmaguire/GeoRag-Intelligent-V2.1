@@ -27,9 +27,27 @@ dependencies = [
     # XLSX. polars reads xlsx THROUGH openpyxl, so it is a real runtime
     # requirement rather than an optional accelerator.
     "openpyxl>=3.1,<4.0",
-    # Legacy .xls (BIFF OLE). xlrd >= 2 dropped .xls support, hence the pin —
-    # and .xls is exactly what a decades-old drill archive arrives as.
-    "xlrd>=1.2,<2.0",
+    # Legacy .xls (BIFF OLE) — exactly what a decades-old drill archive
+    # arrives as.
+    #
+    # The pin used to be `>=1.2,<2.0`, justified by "xlrd >= 2 dropped .xls
+    # support". That is BACKWARDS. xlrd 2.0 dropped **.xlsx**, keeping .xls as
+    # the only thing it reads — which is why pandas requires xlrd>=2.0.1 for
+    # .xls and refuses 1.x outright:
+    #
+    #   ImportError: Pandas requires version '2.0.1' or newer of 'xlrd'
+    #                (version '1.2.0' currently installed)
+    #
+    # So the pin guaranteed the opposite of its stated intent: no legacy .xls
+    # could be read at all. openpyxl (above) is what handles .xlsx, so nothing
+    # depended on xlrd's dropped path.
+    #
+    # Measured on RedStar's export_UTM.xls inside the fastapi image: with
+    # 1.2.0 every engine fails (auto/xlrd ImportError, openpyxl BadZipFile
+    # because .xls is not a zip, calamine absent); with 2.0.2 it reads 24 rows
+    # x 12 columns — the IP station register, carrying Grids_Name, LineNumber,
+    # StationNumber, Projections_Name and X/Y/Z.
+    "xlrd>=2.0.1,<3.0",
 
     # Hole-ID collision detection. csv_collar calls
     # _hole_id.suggest_collisions on EVERY parse to catch "EL-1" vs "EL-01"
