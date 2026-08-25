@@ -51,7 +51,11 @@ need() {
   }
 }
 need az "Install the Azure CLI."
-need psql "Install the PostgreSQL client (psql) — this script sets the role password."
+# psql is NOT checked here. It is needed only by --apply, and checking it up
+# front meant a dry run could not even print its plan on a machine without
+# the client installed — which is exactly the machine an operator is reading
+# the plan on before deciding to install anything. Checked below, immediately
+# after the dry-run branch exits.
 
 # Refuse while the server is stopped rather than failing with a connection
 # timeout that looks like a network problem. georag-pg-cc is deliberately
@@ -129,8 +133,15 @@ PLAN
 # shell history. psql will prompt for the ADMIN password; that one is yours
 # and this script does not touch it.
 PLAN
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "#" >&2
+    echo "# NOTE: psql is not on PATH. --apply will need it; the plan above" >&2
+    echo "#       is accurate either way." >&2
+  fi
   exit 0
 fi
+
+need psql "Install the PostgreSQL client (psql) — this script sets the role password."
 
 # URL-safe by construction: the password goes into a postgresql:// URI, and a
 # '/' or '@' or '#' in it would silently truncate the connection string into
