@@ -134,15 +134,36 @@ promote_silver_to_gold = hatchet.workflow(
 _TRACE_BUILDER_VERSION = 2
 
 
-def _survey_hash(stations: list[tuple[float, float | None, float | None]]) -> str:
-    """Stable digest of a hole's survey set AND the builder that drew it.
+def _survey_hash(
+    stations: list[tuple[float, float | None, float | None]],
+    *,
+    origin: tuple[float | None, float | None, float | None] = (None, None, None),
+) -> str:
+    """Digest of everything the trace geometry is built from.
 
-    Sorted by depth and rendered through ``json.dumps`` with fixed
-    separators so the same stations always produce the same bytes
-    regardless of row order out of the database.
+    Three inputs, because a trace is a function of all three and the digest
+    is the only thing standing between a stale trace and a skipped re-run:
+
+      * the SURVEY STATIONS, sorted by depth and rendered with fixed
+        separators so row order out of the database cannot change the digest;
+      * the BUILDER VERSION, so a corrected builder invalidates its own
+        output (see ``_TRACE_BUILDER_VERSION``);
+      * the COLLAR ORIGIN — lon, lat and elevation.
+
+    The origin is not decoration. A collar MOVES in two ordinary situations:
+    it was ingested under an assumed CRS and is re-uploaded with the right
+    one, or it is re-surveyed. In both the stations are untouched, so a
+    digest over stations alone still matches and the trace is skipped as
+    "unchanged" while sitting at the old position — the hole moves on the map
+    and its trace stays behind.
+
+    This is not hypothetical. RedStar's five collars are stored
+    ``georef_method='assumed'`` at EPSG:32613 with their true position 2,500
+    km west; the moment the project's CRS is set and the file re-uploaded,
+    every one of them moves and every trace would have been left behind.
     """
     payload = json.dumps(
-        {"v": _TRACE_BUILDER_VERSION, "s": sorted(stations)},
+        {"v": _TRACE_BUILDER_VERSION, "o": list(origin), "s": sorted(stations)},
         separators=(",", ":"), sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -356,12 +377,20 @@ async def _promote_traces(
             stations = fallback
             quality = "single_survey_vertical"
 
-        digest = _survey_hash([(d, a, p) for d, a, p in stations])
+        lon = float(c["lon"])
+        lat = float(c["lat"])
+        collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
+
+        # Hashed BEFORE the skip test, and over the collar origin as well as
+        # the stations — a collar that moves must invalidate its own trace.
+        digest = _survey_hash(
+            [(d, a, p) for d, a, p in stations],
+            origin=(lon, lat, collar_elev),
+        )
         if c["existing_hash"] == digest:
             out.traces_unchanged += 1
             continue
 
-        collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
         # Origin (0, 0): the interpolator returns collar + offset for east and
         # north, so zeroing the collar makes it return the OFFSETS directly.
         # That is what the SQL translates onto the collar's real position, and
@@ -407,8 +436,6 @@ async def _promote_traces(
             f"{p.east_m} {p.north_m} {collar_elev + p.elev_m}" for _, p in positions
         ) + ")"
 
-        lon = float(c["lon"])
-        lat = float(c["lat"])
         await conn.execute(
             _TRACE_UPSERT,
             c["collar_id"], workspace_id, project_id,
