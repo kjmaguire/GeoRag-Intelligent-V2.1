@@ -47,6 +47,17 @@ class TileProxyTest extends TestCase
     /** A valid Silver source from the whitelist. */
     private const SILVER_SOURCE = 'pg_collars_by_project';
 
+    /**
+     * A silver source on the STATIC cache tier.
+     *
+     * SILVER_SOURCE above is deliberately NOT one: TileProxyController's
+     * SOURCE_MAX_AGE overrides pg_collars_by_project to 900 s because collars
+     * change while a drill program is running. A cache-tier test pointed at it
+     * asserts a number the controller is designed to contradict — it can only
+     * pass if the override is broken. Claim boundaries genuinely sit at 24 h.
+     */
+    private const SILVER_STATIC_SOURCE = 'pg_boundaries_by_project';
+
     /** Fake project UUID used across silver tests. */
     private const PROJECT_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
@@ -378,7 +389,7 @@ class TileProxyTest extends TestCase
         $this->seedSilverProject(self::PROJECT_ID, 1);
 
         $response = $this->actingAs($this->user)
-            ->get('/tiles/silver/'.self::SILVER_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID);
+            ->get('/tiles/silver/'.self::SILVER_STATIC_SOURCE.'/10/100/200.pbf?project_id='.self::PROJECT_ID);
 
         $response->assertOk();
         $cc = (string) $response->headers->get('Cache-Control');
