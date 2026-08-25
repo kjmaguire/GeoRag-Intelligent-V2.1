@@ -31,7 +31,11 @@ export type Category =
 
 /** Extensions each category accepts. Mirrors UploadController::CATEGORIES. */
 export const CATEGORY_EXTS: Record<Category, string[]> = {
-  reports: ['pdf', 'tif', 'tiff'],
+  // `.rrd` is an ERDAS pyramid — normally a derived companion of a raster,
+  // but the only surviving copy of the image when its parent is missing,
+  // which is how it arrived in a real delivery. tiff_normalize extracts the
+  // finest level.
+  reports: ['pdf', 'tif', 'tiff', 'rrd'],
   archive: ['zip'],
   collars: ['csv', 'txt', 'tsv'],
   surveys: ['csv', 'txt', 'tsv'],
@@ -76,7 +80,7 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
 };
 
 export const CATEGORY_LABEL: Record<Category, string> = {
-  reports: 'NI 43-101 / reports (PDF, TIFF)',
+  reports: 'NI 43-101 / reports (PDF, TIFF, ERDAS RRD)',
   archive: 'Archive of mixed files (ZIP)',
   collars: 'Drill collars (CSV)',
   surveys: 'Down-hole surveys (CSV)',
