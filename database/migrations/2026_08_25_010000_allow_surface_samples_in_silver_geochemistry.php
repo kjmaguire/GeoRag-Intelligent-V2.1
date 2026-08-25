@@ -79,6 +79,20 @@ return new class extends Migration
         ');
         DB::statement('ALTER TABLE silver.geochemistry VALIDATE CONSTRAINT geochemistry_locatable_check;');
 
+        // Re-ingesting a delivery must UPDATE its samples, not duplicate
+        // them, so the surface-sample writer needs an ON CONFLICT target.
+        // There was none: the table's only indexes are non-unique.
+        //
+        // PARTIAL, on sample_id IS NOT NULL. A down-hole assay has no
+        // sample_id — it is identified by collar plus interval — so a plain
+        // unique index would collide every one of them on (project_id, NULL)
+        // under any future NULLS NOT DISTINCT change, and constrains rows
+        // this writer never touches. The partial index applies to exactly the
+        // rows that have the identity it is asserting.
+        DB::statement('CREATE UNIQUE INDEX IF NOT EXISTS uq_geochemistry_project_sample
+            ON silver.geochemistry (project_id, sample_id)
+            WHERE sample_id IS NOT NULL;');
+
         DB::statement("COMMENT ON COLUMN silver.geochemistry.collar_id IS
             'Down-hole samples only. NULL for a surface sample (soil, stream sediment, rock chip), which is located by geom instead. Enforced by geochemistry_locatable_check.';");
         DB::statement("COMMENT ON COLUMN silver.geochemistry.from_depth IS
@@ -98,6 +112,7 @@ return new class extends Migration
             return;
         }
 
+        DB::statement('DROP INDEX IF EXISTS silver.uq_geochemistry_project_sample;');
         DB::statement('ALTER TABLE silver.geochemistry DROP CONSTRAINT IF EXISTS geochemistry_locatable_check;');
         DB::statement('ALTER TABLE silver.geochemistry DROP CONSTRAINT IF EXISTS geochemistry_depth_pair_check;');
 

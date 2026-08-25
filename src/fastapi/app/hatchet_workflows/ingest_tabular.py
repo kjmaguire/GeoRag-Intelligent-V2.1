@@ -247,6 +247,40 @@ INSERT INTO silver.samples (
 #: and a corrected export of the same table cannot double itself. A
 #: genuinely different file has a different hash and lands beside the old
 #: one rather than silently overwriting it.
+#: Surface geochemistry — a sample with a location and no drill hole.
+#:
+#: collar_id, from_depth and to_depth are omitted entirely rather than passed
+#: as NULL, so this statement documents on its face that a surface sample has
+#: none of them. They became nullable in
+#: 2026_08_25_010000_allow_surface_samples_in_silver_geochemistry; before that
+#: migration this INSERT could not run at all.
+#:
+#: geom is built with ST_Transform from the source CRS, NOT stored in native
+#: coordinates: the column is geometry(Point,4326) and every map layer reads
+#: it as such. A UTM easting written straight in would place the sample at
+#: longitude 394,240.
+_GEOCHEM_SQL = """
+INSERT INTO silver.geochemistry (
+    geochem_id, workspace_id, project_id,
+    sample_id, sample_type, geom,
+    assay_element_codes, assay_values_ppm,
+    created_at, updated_at
+) VALUES (
+    gen_random_uuid(), $1::uuid, $2::uuid,
+    $3, $4,
+    ST_Transform(ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), $7::int), 4326),
+    $8::text[], $9::jsonb,
+    NOW(), NOW()
+)
+ON CONFLICT (project_id, sample_id)
+DO UPDATE SET
+    sample_type         = EXCLUDED.sample_type,
+    geom                = EXCLUDED.geom,
+    assay_element_codes = EXCLUDED.assay_element_codes,
+    assay_values_ppm    = EXCLUDED.assay_values_ppm,
+    updated_at          = NOW()
+"""
+
 _ATTRIBUTE_TABLE_SQL = """
 INSERT INTO silver.attribute_tables (
     attribute_row_id, workspace_id, project_id,
@@ -428,6 +462,193 @@ async def _write_attribute_rows(
         await conn.executemany(_ATTRIBUTE_TABLE_SQL, chunk)
         written += len(chunk)
     return {"written": written, "skipped": 0, "orphaned": 0}
+
+
+#: Element columns a surface geochemistry table is recognised by.
+#:
+#: Deliberately the ECONOMIC + PATHFINDER suite rather than every element an
+#: ICP package reports. A table is only geochemistry if it carries assays
+#: someone would map, and matching on, say, `si` alone would promote any
+#: table with a two-letter column. Matched after normalize_header, so
+#: `Au_ppm`, `au_ppm`, `AU (ppm)` and `au` all reach the same key.
+_GEOCHEM_ELEMENTS: frozenset[str] = frozenset({
+    "au", "ag", "cu", "pb", "zn", "as", "sb", "hg", "mo", "ni", "co",
+    "bi", "cd", "sn", "te", "tl", "u", "w", "ba", "mn", "cr", "li", "re",
+})
+
+#: Unit suffixes an assay column carries. `au_ppm` and `au_ppb` are DIFFERENT
+#: columns holding different numbers, so the unit is part of the identity and
+#: is preserved in assay_values_ppm's keys rather than folded away.
+_ASSAY_UNITS: frozenset[str] = frozenset({"ppm", "ppb", "pct", "per", "gpt", "oz"})
+
+#: Below-detection sentinel. Measured in all_historical_soils_clean.DAT:
+#: au_ppm ranges -9..1.589, and -9 is the legacy "not detected" marker, not a
+#: negative concentration. Storing it as a number would make every summary
+#: statistic wrong — a mean grade pulled below zero by absent samples.
+_BELOW_DETECTION = -9.0
+
+
+def _assay_columns(columns: list[str]) -> dict[str, str]:
+    """Assay columns in *columns*, as ``{normalised key: original column}``.
+
+    An assay column is an element symbol optionally followed by a unit and
+    optionally more qualifiers: ``au_ppm``, ``au_fa_grav``, ``ag_icp_aqr``.
+    The element must come FIRST — ``sample_type`` starts with no element and
+    ``grainsize`` merely contains one.
+    """
+    from georag_geoparsers._header_match import normalize_header  # noqa: PLC0415
+
+    found: dict[str, str] = {}
+    for original in columns:
+        skeleton = normalize_header(original)
+        if not skeleton:
+            continue
+        # Longest element first so 'as' does not shadow nothing and 'ag' does
+        # not match the leading letters of a longer symbol.
+        for element in sorted(_GEOCHEM_ELEMENTS, key=len, reverse=True):
+            if not skeleton.startswith(element):
+                continue
+            rest = skeleton[len(element):]
+            # Bare symbol, or symbol + a unit/qualifier that starts on a token
+            # boundary. `australia` must not read as gold.
+            if rest and not any(rest.startswith(u) for u in _ASSAY_UNITS):
+                continue
+            found.setdefault(skeleton, original)
+            break
+    return found
+
+
+def _surface_geochem_columns(columns: list[str]) -> dict[str, Any] | None:
+    """Map *columns* to a surface-geochemistry shape, or None if it is not one.
+
+    Requires all three of: a sample identifier, BOTH coordinates, and at
+    least three assay columns. Three rather than one because a collar table
+    carrying a single `au_ppm` is a drill table, not a soil survey, and the
+    cost of a false positive here is rows written into the wrong table.
+
+    Returns None for anything else, which leaves the file as the attribute
+    table it already lands as — this path only ever ADDS a destination.
+    """
+    from georag_geoparsers._header_match import build_column_map  # noqa: PLC0415
+
+    located, _ = build_column_map(columns, {
+        "sample_id": ["sample", "sample_no", "sample_number", "sampleid", "station"],
+        "easting": ["easting", "east", "utm_e", "x", "xcoord"],
+        "northing": ["northing", "north", "utm_n", "y", "ycoord"],
+        "sample_type": ["sample_typ", "sample_type", "samptype", "type"],
+    })
+
+    if not {"sample_id", "easting", "northing"} <= set(located):
+        return None
+
+    # A DEPTH INTERVAL means down-hole, whatever else the columns look like.
+    # A drill sample table carries sample/from_depth/to_depth plus assays, and
+    # sometimes collar coordinates too — every test above passes for it. Those
+    # rows belong to a collar and route through the `sample` sheet type; this
+    # writer would strip their interval and file them as surface samples, which
+    # is silent, plausible-looking data loss.
+    downhole, _ = build_column_map(columns, {
+        "from_depth": ["from_depth", "from", "depth_from", "from_m"],
+        "to_depth": ["to_depth", "to", "depth_to", "to_m"],
+    })
+    if downhole:
+        return None
+
+    assays = _assay_columns(columns)
+    if len(assays) < 3:
+        return None
+
+    return {"located": located, "assays": assays}
+
+
+#: silver.geochemistry accepts these; anything else violates the CHECK.
+_SAMPLE_TYPES: frozenset[str] = frozenset({
+    "soil", "rock_chip", "grab", "channel", "stream_sediment",
+    "till", "drillhole_pulp", "drillhole_reject", "other",
+})
+
+#: One-letter codes MapInfo/Discover exports use in a `sample_typ` column.
+#: Measured: all_historical_soils_clean.DAT uses 'S' throughout.
+_SAMPLE_TYPE_CODES: dict[str, str] = {
+    "s": "soil", "soil": "soil",
+    "r": "rock_chip", "rock": "rock_chip", "rc": "rock_chip",
+    "g": "grab", "grab": "grab",
+    "c": "channel", "chan": "channel",
+    "ss": "stream_sediment", "stream": "stream_sediment", "sed": "stream_sediment",
+    "t": "till", "till": "till",
+}
+
+
+def _sample_type_of(raw: Any) -> str:
+    """Normalise a sample-type code to the CHECK's vocabulary.
+
+    Falls back to 'other' rather than NULL: the column is what a geologist
+    filters the map on, and an unrecognised code is still a statement that
+    the sample HAS a type. NULL would read as "not recorded".
+    """
+    text = str(raw or "").strip().lower()
+    if not text:
+        return "other"
+    if text in _SAMPLE_TYPES:
+        return text
+    return _SAMPLE_TYPE_CODES.get(text, "other")
+
+
+async def _write_surface_geochem(
+    conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
+    shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
+) -> dict[str, int]:
+    """Land surface samples in silver.geochemistry.
+
+    ADDITIVE. The same rows already went to silver.attribute_tables, which
+    stays the verbatim record of the file; this gives the assays a typed home
+    the map and the agent can read. A failure here must therefore not lose the
+    attribute copy, which is why the caller treats it as best-effort.
+
+    A row is skipped, not failed, when it has no sample id or no usable
+    coordinate pair — a survey file routinely carries a trailing blank row or
+    a legend line, and refusing the other 853 samples over it would be
+    absurd. The count comes back so the caller can report it.
+    """
+    located = shape["located"]
+    assays: dict[str, str] = shape["assays"]
+
+    params = []
+    skipped = 0
+    for row in rows:
+        sample_id = str(row.get(located["sample_id"], "") or "").strip()
+        easting = _num(row.get(located["easting"]))
+        northing = _num(row.get(located["northing"]))
+        if not sample_id or easting is None or northing is None:
+            skipped += 1
+            continue
+
+        # Below-detection is recorded as absent, not as a negative grade. A
+        # -9 stored as a number drags every mean and every colour ramp with
+        # it, and the sample genuinely has no measured value.
+        values = {}
+        for key, column in assays.items():
+            value = _num(row.get(column))
+            if value is None or value == _BELOW_DETECTION:
+                continue
+            values[key] = value
+
+        sample_type = _sample_type_of(
+            row.get(located["sample_type"]) if "sample_type" in located else None,
+        )
+
+        params.append((
+            workspace_id, project_id, sample_id, sample_type,
+            easting, northing, source_epsg,
+            sorted(values), json.dumps(values),
+        ))
+
+    written = 0
+    for start in range(0, len(params), _INSERT_BATCH):
+        chunk = params[start:start + _INSERT_BATCH]
+        await conn.executemany(_GEOCHEM_SQL, chunk)
+        written += len(chunk)
+    return {"written": written, "skipped": skipped, "orphaned": 0}
 
 
 def _num(value: Any) -> float | None:
@@ -1525,6 +1746,55 @@ async def run_ingest_tabular(
                         source_layer=attribute_layer,
                         rows=attribute_rows,
                     )
+
+                    # A dBASE table that is a SURFACE GEOCHEMISTRY survey also
+                    # lands as typed samples. Additive: the attribute copy
+                    # above stays the verbatim record of the file, and this
+                    # gives the assays a home the map and the agent can read.
+                    #
+                    # Best-effort on purpose. The attribute rows are already
+                    # committed by the time this runs, and losing the typed
+                    # copy is a smaller failure than turning a successful
+                    # ingest into a failed one — the file is in bronze and can
+                    # be re-ingested. The warning says what happened.
+                    geochem_shape = _surface_geochem_columns(
+                        list(attribute_rows[0]) if attribute_rows else [],
+                    )
+                    if geochem_shape is not None:
+                        try:
+                            written["geochemistry"] = await _write_surface_geochem(
+                                conn,
+                                workspace_id=input.workspace_id,
+                                project_id=input.project_id,
+                                shape=geochem_shape,
+                                rows=attribute_rows,
+                                source_epsg=epsg,
+                            )
+                            sheets.append({
+                                "sheet": filename,
+                                "type": "geochemistry",
+                                "rows": written["geochemistry"]["written"],
+                            })
+                            if epsg_assumed:
+                                warnings.append(_assumed_crs_warning(
+                                    epsg, written["geochemistry"]["written"],
+                                ))
+                        except Exception as exc:
+                            log.warning(
+                                "ingest_tabular: surface geochem write failed for %s: %s",
+                                filename, exc, exc_info=True,
+                            )
+                            warnings.append({
+                                "code": "geochem_write_failed",
+                                "message": "the samples landed as a table but not as geochemistry",
+                                "detail": (
+                                    f"{filename} looks like a surface geochemistry "
+                                    f"survey and its rows were stored, but writing "
+                                    f"them as typed samples failed: {exc}. The data "
+                                    f"is not lost — it is in the attribute table and "
+                                    f"in bronze, and re-ingesting will retry."
+                                ),
+                            })
 
                 # ── Classified, and then wrote nothing ──────────────────
                 # The fallback below used to run only for sheets that
