@@ -38,6 +38,24 @@ import {
  * together.
  */
 
+/**
+ * A flat `private const NAME = ['a', 'b'];` in UploadController.
+ *
+ * Needed because a category list may be BUILT from one rather than spelled
+ * out — `'reports' => ['pdf', ...self::RASTER_REPORT_EXTS]`. That spread
+ * exists so the raster extensions are declared once instead of in the three
+ * places the controller's own docblock warns about; without resolving it
+ * here, this guard reads `reports` as `['pdf']` and fails on a file that is
+ * in fact wired correctly.
+ */
+function phpListConst(constName: string): string[] {
+  const m = new RegExp(`private const ${constName} = \\[([^\\]]*)\\];`).exec(
+    uploadControllerSource,
+  );
+  if (!m) throw new Error(`${constName} not found in UploadController`);
+  return [...m[1].matchAll(/'([a-z0-9]+)'/g)].map((x) => x[1]);
+}
+
 function phpCategoryBlock(constName: string): Record<string, string[]> {
   const php = uploadControllerSource;
   const block = new RegExp(
@@ -50,7 +68,14 @@ function phpCategoryBlock(constName: string): Record<string, string[]> {
   for (const [, cat, exts] of block[1].matchAll(
     /'([a-z_]+)'\s*=>\s*\[([^\]]*)\]/g,
   )) {
-    out[cat] = [...exts.matchAll(/'([a-z0-9]+)'/g)].map((m) => m[1]).sort();
+    const literals = [...exts.matchAll(/'([a-z0-9]+)'/g)].map((m) => m[1]);
+    // `...self::OTHER_CONST` contributes that constant's members. Resolved
+    // rather than ignored: silently dropping it would let the two lists
+    // diverge in exactly the direction this file exists to catch.
+    const spreads = [...exts.matchAll(/\.\.\.self::([A-Z_]+)/g)].flatMap(
+      (m) => phpListConst(m[1]),
+    );
+    out[cat] = [...literals, ...spreads].sort();
   }
   return out;
 }

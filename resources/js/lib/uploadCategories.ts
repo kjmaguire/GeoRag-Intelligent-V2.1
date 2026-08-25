@@ -35,7 +35,11 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
   // but the only surviving copy of the image when its parent is missing,
   // which is how it arrived in a real delivery. tiff_normalize extracts the
   // finest level.
-  reports: ['pdf', 'tif', 'tiff', 'rrd'],
+  // `.jpg`/`.jpeg` are scanned sheets: RedStar's is the legend for a 1990
+  // geological map, i.e. nothing but the unit descriptions that make the map
+  // readable. They wrap to PDF through the same Pillow path as a TIFF and,
+  // carrying no CRS, always reach OCR rather than being filed as a data grid.
+  reports: ['pdf', 'tif', 'tiff', 'rrd', 'jpg', 'jpeg'],
   archive: ['zip'],
   collars: ['csv', 'txt', 'tsv'],
   surveys: ['csv', 'txt', 'tsv'],
@@ -82,7 +86,7 @@ export const CATEGORY_EXTS: Record<Category, string[]> = {
 };
 
 export const CATEGORY_LABEL: Record<Category, string> = {
-  reports: 'NI 43-101 / reports (PDF, TIFF, ERDAS RRD)',
+  reports: 'NI 43-101 / reports & scans (PDF, TIFF, JPEG, ERDAS RRD)',
   archive: 'Archive of mixed files (ZIP)',
   collars: 'Drill collars (CSV)',
   surveys: 'Down-hole surveys (CSV)',

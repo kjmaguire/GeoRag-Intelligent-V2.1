@@ -81,7 +81,7 @@ class UploadController extends Controller
      *
      * @var list<string>
      */
-    private const RASTER_REPORT_EXTS = ['tif', 'tiff', 'rrd'];
+    private const RASTER_REPORT_EXTS = ['tif', 'tiff', 'rrd', 'jpg', 'jpeg'];
 
     private const CATEGORIES = [
         // ADR-0005 (2026-05-23): TIFF scans normalize to PDF at the bronze
@@ -96,7 +96,26 @@ class UploadController extends Controller
         // geological map and an underground mine plan). tiff_normalize
         // extracts the finest level and the rest of the raster path runs
         // unchanged.
-        'reports' => ['pdf', 'tif', 'tiff', 'rrd'],
+        //
+        // 'jpg'/'jpeg' added 2026-08-25. A JPEG in an exploration delivery is
+        // a scanned sheet — RedStar's is `BMG_1990 Legend3.jpg`, the legend
+        // for a 1990 geological map, which is nothing but the unit
+        // descriptions that make the map readable. That is precisely
+        // ADR-0005's target, and it was the one file in the delivery that no
+        // category accepted at all.
+        //
+        // Nothing downstream needed changing: tiff_to_pdf is Pillow's
+        // Image.open + ImageSequence, so a JPEG is a one-frame image and
+        // wraps unchanged (verified on the real file: 850,854 bytes in, a
+        // valid 1-page 144,439-byte PDF out). And a JPEG carries no CRS, so
+        // _is_measurement_raster returns False on its first line and the
+        // sheet always reaches OCR rather than being filed as a data grid.
+        //
+        // Spread rather than a fourth literal: the docblock above warns that
+        // adding a format to two of the three places routes the upload to
+        // the wrong workflow, and this was the third place — a hand-kept
+        // copy that had to agree.
+        'reports' => ['pdf', ...self::RASTER_REPORT_EXTS],
         // ZIP archives containing hundreds of small files (TIF, LAS, LOG,
         // XLSX, PDF ≤10 MB each). The Hatchet ingest_zip_archive workflow
         // extracts each entry and fans it out to the appropriate ingester.
