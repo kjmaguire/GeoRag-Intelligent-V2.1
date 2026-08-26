@@ -539,8 +539,7 @@ async def _tier_3_gold(pool: asyncpg.Pool) -> TierReport:
     # read nothing and report a clean run.
     try:
         from app.hatchet_workflows.promote_silver_to_gold import (  # noqa: PLC0415
-            PromoteSilverToGoldInput,
-            promote_silver_to_gold,
+            dispatch_promotion,
         )
         async with pool.acquire() as conn:
             workspace_ids = [
@@ -550,11 +549,19 @@ async def _tier_3_gold(pool: asyncpg.Pool) -> TierReport:
                     "WHERE workspace_id IS NOT NULL",
                 )
             ]
+        # dispatch_promotion never raises, so one unreachable workspace can
+        # no longer abort the sweep for every workspace after it — which is
+        # what the old single try around this loop did.
+        dispatched = 0
         for workspace_id in workspace_ids:
-            await promote_silver_to_gold.aio_run_no_wait(
-                PromoteSilverToGoldInput(workspace_id=workspace_id),
-            )
-        report.extras["promotions_dispatched"] = len(workspace_ids)
+            if await dispatch_promotion(workspace_id=workspace_id):
+                dispatched += 1
+            else:
+                report.notes.append(
+                    f"promote_silver_to_gold_dispatch_failed: {workspace_id}"
+                )
+        report.extras["promotions_dispatched"] = dispatched
+        report.extras["promotions_failed"] = len(workspace_ids) - dispatched
     except Exception as exc:
         report.notes.append(f"promote_silver_to_gold_dispatch_failed: {exc}")
         log.warning("tier3.gold.promote dispatch failed: %s", exc)

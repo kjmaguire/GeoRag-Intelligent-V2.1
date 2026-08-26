@@ -82,6 +82,7 @@ on the ``(collar_id, depth_from, depth_to, interval_kind)`` unique index.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -96,6 +97,21 @@ from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 
 log = logging.getLogger("georag.promote_silver_to_gold")
+
+#: How long a caller may wait on the DISPATCH of this workflow.
+#:
+#: Defined here, beside the workflow it bounds, so the two dispatchers
+#: (ingest_tabular per project, nightly_ingestion_integrity per workspace)
+#: cannot drift apart.
+#:
+#: ``aio_run_no_wait`` skips waiting for this workflow's RESULT but still
+#: awaits the dispatch RPC, and against an unreachable Hatchet that RPC
+#: retries for ~17s before raising. Awaiting it unbounded makes the
+#: dispatch a hidden dependency of every caller: a Hatchet outage holds a
+#: worker slot per file for as long as the SDK retries. This promotion is
+#: idempotent and the nightly sweep re-runs it, so abandoning a dispatch
+#: costs a delay, never data.
+PROMOTION_DISPATCH_TIMEOUT_S = 5.0
 
 #: Dogleg severity (degrees per 30 m) above which a trace is flagged rather
 #: than trusted. The CHECK on silver.drill_traces.trace_quality accepts
@@ -142,6 +158,50 @@ promote_silver_to_gold = hatchet.workflow(
     name="promote_silver_to_gold",
     input_validator=PromoteSilverToGoldInput,
 )
+
+
+async def dispatch_promotion(
+    *,
+    workspace_id: str,
+    project_id: str | None = None,
+) -> bool:
+    """Ask Hatchet to run this promotion, without waiting on the answer.
+
+    Returns True when the dispatch was accepted. Never raises: a promotion
+    that cannot be dispatched must not fail the caller, because by the time
+    anyone dispatches it the source rows are already committed to silver
+    and the nightly sweep re-runs the promotion regardless.
+
+    Both the wait and the swallow live here rather than at the call sites.
+    They were duplicated at two of them, which is how the bound would have
+    been added to one and forgotten at the other.
+
+    Args:
+        workspace_id: Tenant whose rows to promote. Required — the tables
+            read are fail-CLOSED under RLS, so an unbound scope promotes
+            nothing and reports success.
+        project_id: Narrow the promotion to one project. None sweeps the
+            whole workspace.
+    """
+    try:
+        await asyncio.wait_for(
+            promote_silver_to_gold.aio_run_no_wait(
+                PromoteSilverToGoldInput(
+                    workspace_id=workspace_id,
+                    project_id=project_id,
+                )
+            ),
+            timeout=PROMOTION_DISPATCH_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        log.warning(
+            "promote_silver_to_gold: dispatch failed for workspace %s "
+            "project %s — %s (the source rows are in silver; the nightly "
+            "sweep will promote them)",
+            workspace_id, project_id, exc,
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +888,8 @@ def _affected(status: str) -> int:
 
 
 __all__ = [
+    "PROMOTION_DISPATCH_TIMEOUT_S",
+    "dispatch_promotion",
     "promote_silver_to_gold",
     "PromoteSilverToGoldInput",
     "PromoteSilverToGoldOutput",
