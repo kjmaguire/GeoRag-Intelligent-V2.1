@@ -33,6 +33,26 @@ matter what was uploaded.
 entry (``silver.mv_collar_summary``) and refreshes a materialised view; it
 has never touched a gold table.
 
+CANONICAL SILVER, NOT JUST GOLD
+===============================
+
+One promotion here is silver → silver: ``silver.lithology_logs`` (the
+legacy table the live tabular ingest writes) into ``silver.lithology``
+(the §04e-canonical table — Kyle's 2026-05-20 decision, reaffirmed
+2026-08-25). Everything reader-side already points at the canonical
+table: nl_summaries' lithology synthesizer, the DrillholeDetail quality
+badge, CsvLithologyExporter and the citation resolvers. Its only writer
+was the retired ``bronze_to_silver/lithology.py`` Dagster asset, so from
+2026-07-28 the table sat empty while every one of those readers returned
+nothing. The rock-code resolution (exact, then rapidfuzz ≥ 60 across the
+dual NRCAN/GSC catalogue) is ported from that asset.
+
+``silver.lithology.id`` is the legacy row's ``log_id``, on purpose:
+nl_summaries derives its passage ids from this column, so a re-promotion
+over unchanged legacy rows re-writes the same ids and the corpus does not
+churn. The id only changes when the legacy row itself is rewritten (a
+re-upload), which is exactly when the passage SHOULD re-key.
+
 WHAT THIS DOES NOT DO
 =====================
 
@@ -111,12 +131,169 @@ class PromoteSilverToGoldOutput(BaseModel):
     intervals_written: int = 0
     structures_written: int = 0
     projects_seen: int = 0
+    lithology_rows_promoted: int = 0
+    #: Rows whose lithology_code matched nothing in silver.rock_codes, not
+    #: even fuzzily. They still promote — rock_code NULL is the catalogue-gap
+    #: signal the DataQualityBadge counts — but the number stays visible.
+    lithology_codes_unresolved: int = 0
 
 
 promote_silver_to_gold = hatchet.workflow(
     name="promote_silver_to_gold",
     input_validator=PromoteSilverToGoldInput,
 )
+
+
+# ---------------------------------------------------------------------------
+# Canonical lithology (silver.lithology_logs → silver.lithology)
+# ---------------------------------------------------------------------------
+
+#: Fuzzy-match floor, ported from the retired asset's config default. 60
+#: catches "granitic" → "Granite" and "qtz monz" → "Quartz Monzonite"
+#: without bleeding into unrelated rocks.
+_ROCK_CODE_FUZZY_THRESHOLD = 60
+
+#: Which catalogue system wins when the same string exists in both. NRCAN
+#: was the retired asset's default and nothing has decided otherwise.
+_ROCK_CODE_PREFERRED_SYSTEM = "NRCAN"
+
+
+def build_rock_code_lookup(
+    rows: list[dict],
+    preferred_system: str = _ROCK_CODE_PREFERRED_SYSTEM,
+) -> dict[str, dict]:
+    """Index silver.rock_codes rows for resolution.
+
+    Legacy ``lithology_code`` is sometimes a catalogue CODE ("SST") and
+    sometimes a NAME ("Sandstone"), so both are indexed for exact match.
+    The preferred system wins a collision; iteration order handles that by
+    writing preferred entries last.
+    """
+    by_code: dict[str, tuple[str, str]] = {}
+    by_name: dict[str, tuple[str, str]] = {}
+    ordered = sorted(
+        rows, key=lambda r: (r.get("system") or "") == preferred_system,
+    )
+    for r in ordered:
+        code = (r.get("code") or "").strip()
+        name = (r.get("name") or "").strip()
+        if not code:
+            continue
+        by_code[code.lower()] = (code, name or code)
+        if name:
+            by_name[name.lower()] = (code, name)
+    return {"by_code": by_code, "by_name": by_name}
+
+
+def resolve_rock_code(
+    raw: str | None,
+    lookup: dict[str, dict],
+    fuzzy_threshold: int = _ROCK_CODE_FUZZY_THRESHOLD,
+) -> tuple[str | None, float | None, str | None]:
+    """(rock_code, confidence, rock_name) for a legacy lithology string.
+
+    Exact code or name match → confidence 1.0. Otherwise rapidfuzz
+    token-set ratio across the catalogue names, accepted at ≥ threshold
+    with confidence = score / 100. No match → (None, None, raw) so the
+    canonical row still carries the geologist's own word for the rock
+    rather than losing it.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None, None, None
+    key = text.lower()
+    hit = lookup["by_code"].get(key) or lookup["by_name"].get(key)
+    if hit:
+        return hit[0], 1.0, hit[1]
+
+    by_name = lookup["by_name"]
+    if by_name:
+        from rapidfuzz import fuzz, process  # noqa: PLC0415
+
+        match = process.extractOne(
+            key, list(by_name), scorer=fuzz.token_set_ratio,
+            score_cutoff=fuzzy_threshold,
+        )
+        if match is not None:
+            matched_key, score = match[0], match[1]
+            code, name = by_name[matched_key]
+            return code, round(score / 100.0, 4), name
+    return None, None, text
+
+
+#: workspace_id is taken from the COLLAR, same reasoning as the gold
+#: interval SQL below: a mis-stamped legacy row must not write a canonical
+#: row into another tenant. The interval filter mirrors the canonical
+#: table's CHECK (to_depth > from_depth) so one bad legacy row cannot fail
+#: the batch.
+_LITHOLOGY_LEGACY_FETCH = """
+SELECT l.log_id, c.workspace_id, l.collar_id, l.from_depth, l.to_depth,
+       l.lithology_code, l.lithology_description,
+       l.grain_size, l.color, l.hardness, l.weathering
+  FROM silver.lithology_logs l
+  JOIN silver.collars c ON c.collar_id = l.collar_id
+ WHERE c.project_id = $1::uuid
+   AND l.from_depth IS NOT NULL
+   AND l.to_depth IS NOT NULL
+   AND l.to_depth > l.from_depth
+"""
+
+#: The canonical table is a per-project PROJECTION of the legacy table, so
+#: the promotion deletes the project's canonical rows and re-derives them —
+#: the same replace-not-append semantics the legacy writer itself uses.
+_LITHOLOGY_CANONICAL_DELETE = """
+DELETE FROM silver.lithology l
+ USING silver.collars c
+ WHERE c.collar_id = l.collar_id
+   AND c.project_id = $1::uuid
+"""
+
+#: texture / logged_by / logged_date stay NULL: the legacy table never
+#: recorded them and inventing values would violate §04e. rqd / recovery
+#: stay behind in the legacy table for the same reason — the canonical
+#: schema has no column for them.
+_LITHOLOGY_CANONICAL_INSERT = """
+INSERT INTO silver.lithology (
+    id, workspace_id, collar_id, from_depth, to_depth,
+    rock_code, rock_code_confidence, rock_name, description,
+    colour, grain_size, hardness, weathering, created_at
+) VALUES (
+    $1::uuid, $2::uuid, $3::uuid, $4, $5,
+    $6, $7, $8, $9, $10, $11, $12, $13, NOW()
+)
+"""
+
+
+async def _promote_lithology_canonical(
+    conn: asyncpg.Connection,
+    *,
+    project_id: str,
+    code_lookup: dict[str, dict],
+    out: PromoteSilverToGoldOutput,
+) -> None:
+    """Derive one project's silver.lithology from silver.lithology_logs."""
+    legacy = await conn.fetch(_LITHOLOGY_LEGACY_FETCH, project_id)
+
+    params = []
+    for r in legacy:
+        code, confidence, name = resolve_rock_code(
+            r["lithology_code"], code_lookup,
+        )
+        if code is None and (r["lithology_code"] or "").strip():
+            out.lithology_codes_unresolved += 1
+        params.append((
+            str(r["log_id"]), str(r["workspace_id"]), str(r["collar_id"]),
+            r["from_depth"], r["to_depth"],
+            code, confidence, name,
+            r["lithology_description"],
+            r["color"], r["grain_size"], r["hardness"], r["weathering"],
+        ))
+
+    async with conn.transaction():
+        await conn.execute(_LITHOLOGY_CANONICAL_DELETE, project_id)
+        if params:
+            await conn.executemany(_LITHOLOGY_CANONICAL_INSERT, params)
+    out.lithology_rows_promoted += len(params)
 
 
 # ---------------------------------------------------------------------------
@@ -339,10 +516,16 @@ async def _promote_traces(
 # Visual intervals
 # ---------------------------------------------------------------------------
 
-#: Lithology bands. `silver.lithology_logs` carries no project_id — it hangs
-#: off the collar — so the project scope comes through the join, and
-#: workspace_id is taken from the COLLAR rather than the log row so a
-#: mis-stamped log cannot write a band into another tenant's project.
+#: Lithology bands — read from the CANONICAL silver.lithology, not the
+#: legacy lithology_logs it is derived from. The canonical step above runs
+#: first in the same project iteration, so this always sees the
+#: freshly-promoted rows; reading the legacy table here would fork the
+#: gold layer from every other reader the moment rock-code resolution
+#: rewrites a code. rock_code arrives already resolved, which is why the
+#: old rc join is gone. Neither table carries project_id — it hangs off
+#: the collar — so the project scope comes through the join, and
+#: workspace_id is taken from the COLLAR rather than the row so a
+#: mis-stamped interval cannot write a band into another tenant's project.
 _INTERVALS_LITHOLOGY = """
 INSERT INTO gold.drillhole_intervals_visual (
     visual_id, collar_id, workspace_id, project_id,
@@ -353,16 +536,13 @@ INSERT INTO gold.drillhole_intervals_visual (
 )
 SELECT gen_random_uuid(), l.collar_id, c.workspace_id, c.project_id,
        l.from_depth, l.to_depth, 'lithology',
-       LEFT(COALESCE(l.lithology_code, ''), 32),
-       COALESCE(NULLIF(l.lithology_description, ''), l.lithology_code),
-       LEFT(COALESCE(NULLIF(l.color, ''), rc.code), 32),
+       LEFT(COALESCE(l.rock_code, l.rock_name, ''), 32),
+       COALESCE(NULLIF(l.description, ''), l.rock_name, l.rock_code),
+       LEFT(COALESCE(NULLIF(l.colour, ''), l.rock_code), 32),
        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
        NOW(), NOW()
-  FROM silver.lithology_logs l
+  FROM silver.lithology l
   JOIN silver.collars c ON c.collar_id = l.collar_id
-  LEFT JOIN silver.rock_codes rc
-         ON rc.workspace_id = c.workspace_id
-        AND rc.code = l.lithology_code
  WHERE c.project_id = $1::uuid
    AND l.from_depth IS NOT NULL
    AND l.to_depth IS NOT NULL
@@ -470,8 +650,27 @@ async def promote(
                 )
             ]
 
+        # One catalogue fetch serves every project: rock_codes is
+        # workspace-scoped and small, and the resolver wants it in memory.
+        code_lookup = build_rock_code_lookup([
+            dict(r) for r in await conn.fetch(
+                "SELECT code, name, system FROM silver.rock_codes "
+                "WHERE workspace_id = $1::uuid",
+                input.workspace_id,
+            )
+        ])
+
         for project_id in project_ids:
             out.projects_seen += 1
+            # Canonical silver first: nothing downstream depends on it, but
+            # a run that dies mid-way should have promoted the table every
+            # text-retrieval reader points at before drawing pictures.
+            await _promote_lithology_canonical(
+                conn,
+                project_id=project_id,
+                code_lookup=code_lookup,
+                out=out,
+            )
             await _promote_traces(
                 conn,
                 workspace_id=input.workspace_id,
@@ -488,10 +687,12 @@ async def promote(
 
     log.info(
         "promote_silver_to_gold: %d project(s), %d trace(s) written "
-        "(%d unchanged, %d without geometry), %d interval(s), %d structure(s)",
+        "(%d unchanged, %d without geometry), %d interval(s), %d structure(s), "
+        "%d canonical lithology row(s) (%d unresolved code(s))",
         out.projects_seen, out.traces_written, out.traces_unchanged,
         out.traces_skipped_no_geometry, out.intervals_written,
-        out.structures_written,
+        out.structures_written, out.lithology_rows_promoted,
+        out.lithology_codes_unresolved,
     )
     return out
 

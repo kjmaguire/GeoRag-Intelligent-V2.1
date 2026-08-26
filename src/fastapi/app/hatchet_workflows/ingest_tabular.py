@@ -62,6 +62,7 @@ import math
 import re
 import tempfile
 import time as _t
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -275,10 +276,45 @@ INSERT INTO silver.lithology_logs (
 _SAMPLE_SQL = """
 INSERT INTO silver.samples (
     sample_id, workspace_id, collar_id, from_depth, to_depth,
-    sample_type, lab_id, qaqc_type, created_at, updated_at
+    sample_type, lab_id, qaqc_type,
+    commodity_assays, commodity_assay_flags,
+    created_at, updated_at
 ) VALUES (
-    gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7, NOW(), NOW()
+    gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
+    $8::jsonb, $9::jsonb, NOW(), NOW()
 )
+"""
+
+#: Per-element assay intervals for silver.assays_v2 — the §04e-canonical
+#: assay table (Kyle 2026-05-20, reaffirmed 2026-08-25). Every assay-side
+#: reader (nl_summaries, the agent's assay tools, AssayResolver citations,
+#: the DrillholeDetail assay panel) queries THIS table; until 2026-08-25
+#: nothing wrote it after the Dagster retirement, and this writer dropped
+#: the parser's per-element values on the floor besides.
+#:
+#: The id is supplied, not defaulted: it is a uuid5 over the row's natural
+#: key, so re-uploading the same file writes the same ids and the
+#: nl_summaries passages derived from them do not churn. ON CONFLICT
+#: handles the same natural key appearing twice WITHIN one file (last
+#: row wins, matching the interval tables' replace semantics).
+_ASSAYS_V2_SQL = """
+INSERT INTO silver.assays_v2 (
+    id, workspace_id, collar_id, sample_id, from_depth, to_depth,
+    element, value, unit, value_ppm, detection_limit,
+    over_detection, under_detection, half_dl_substituted, lab_name
+) VALUES (
+    $1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
+    $7, $8, $9, $10, $11, $12, $13, $14, $15
+)
+ON CONFLICT (id) DO UPDATE SET
+    value               = EXCLUDED.value,
+    unit                = EXCLUDED.unit,
+    value_ppm           = EXCLUDED.value_ppm,
+    detection_limit     = EXCLUDED.detection_limit,
+    over_detection      = EXCLUDED.over_detection,
+    under_detection     = EXCLUDED.under_detection,
+    half_dl_substituted = EXCLUDED.half_dl_substituted,
+    lab_name            = EXCLUDED.lab_name
 """
 
 
@@ -663,6 +699,113 @@ def _sample_type_of(raw: Any) -> str:
     return _SAMPLE_TYPE_CODES.get(text, "other")
 
 
+#: Mirrors csv_sample.ASSAY_COLUMN_RE. The parser already restricted
+#: commodity_assays keys to this vocabulary, so a key failing here means the
+#: parser's regex drifted from this one — counted, never raised.
+_ASSAY_KEY_RE = re.compile(
+    r"^(U3O8|Au|Ag|Cu|Pb|Zn|Ni|Fe|Ti|Li)_?(ppm|pct|ppb|pct_|_pct)?$",
+    re.IGNORECASE,
+)
+
+#: Canonical casing for the vocabulary above — headers arrive as the lab
+#: wrote them ("AU_PPM", "u3o8ppm") and silver.assays_v2.element is matched
+#: verbatim by the agent's assay tools.
+_ASSAY_ELEMENT_CASE = {
+    "u3o8": "U3O8", "au": "Au", "ag": "Ag", "cu": "Cu", "pb": "Pb",
+    "zn": "Zn", "ni": "Ni", "fe": "Fe", "ti": "Ti", "li": "Li",
+}
+
+#: Unit → parts-per-million factor. The unit is what the COLUMN SUFFIX
+#: declared; there is no guessing an undeclared unit from the value.
+_UNIT_TO_PPM = {"ppm": 1.0, "ppb": 0.001, "pct": 10000.0}
+
+
+def derive_assay_v2_rows(
+    rec: dict[str, Any],
+    *,
+    workspace_id: str,
+    collar_id: str,
+    element_ref: dict[str, str],
+) -> tuple[list[tuple], int]:
+    """Explode one sample record's commodity_assays into assays_v2 params.
+
+    Returns ``(rows, skipped)``. A row is skipped — counted, never silently
+    dropped — when the record has no lab sample number (the column is NOT
+    NULL and inventing one would break the "same file, same ids" property),
+    when the interval is missing or inverted, or when a value is negative
+    (the table CHECK rejects it and one bad cell must not sink the batch).
+
+    A below-detection cell with an unknown threshold ("BDL") still becomes a
+    row: value NULL + under_detection TRUE is the difference between "below
+    detection" and "never analysed", and the renderer downstream
+    distinguishes exactly that.
+
+    ``element_ref`` maps element symbol → default unit
+    (silver.element_reference) for headers that named only the element.
+    """
+    sample_id = str(rec.get("sample_id") or "").strip()
+    from_depth = _num(rec.get("from_depth"))
+    to_depth = _num(rec.get("to_depth"))
+
+    assays: dict[str, Any] = rec.get("commodity_assays") or {}
+    flags: dict[str, Any] = rec.get("commodity_assay_flags") or {}
+    # Union: BDL-unknown cells carry a flag but no value, and still count as
+    # a measurement. Unparseable cells ("NS", "NR") are excluded — those are
+    # "not reported", not "below detection".
+    keys = set(assays) | {
+        k for k, f in flags.items() if isinstance(f, dict) and f.get("dl_flag")
+    }
+    if not keys:
+        return [], 0
+
+    if (
+        not sample_id
+        or from_depth is None
+        or to_depth is None
+        or to_depth <= from_depth
+    ):
+        return [], len(keys)
+
+    rows: list[tuple] = []
+    skipped = 0
+    for key in sorted(keys):
+        m = _ASSAY_KEY_RE.match(key)
+        if m is None:
+            skipped += 1
+            continue
+        element = _ASSAY_ELEMENT_CASE[m.group(1).lower()]
+        suffix = (m.group(2) or "").strip("_").lower()
+        unit = suffix or element_ref.get(element) or "unspecified"
+
+        value = assays.get(key)
+        if value is not None and value < 0:
+            skipped += 1
+            continue
+        factor = _UNIT_TO_PPM.get(unit)
+        value_ppm = value * factor if value is not None and factor else None
+
+        flag = flags.get(key) if isinstance(flags.get(key), dict) else {}
+        under_detection = bool(flag.get("dl_flag"))
+        detection_limit = flag.get("dl_threshold")
+        half_dl = flag.get("substitution") == "half_dl"
+
+        # uuid5 over the natural key: re-uploading the same file rewrites
+        # the same ids, so nl_summaries passages keyed on them do not churn.
+        row_id = uuid.uuid5(
+            uuid.NAMESPACE_OID,
+            f"silver.assays_v2:{collar_id}:{sample_id}:"
+            f"{from_depth}:{to_depth}:{element}:{unit}",
+        )
+        rows.append((
+            str(row_id), workspace_id, collar_id, sample_id,
+            from_depth, to_depth,
+            element, value, unit, value_ppm, detection_limit,
+            False, under_detection, half_dl,
+            rec.get("lab_id"),
+        ))
+    return rows, skipped
+
+
 def _discover_trace_columns(columns: list[str]) -> dict[str, str] | None:
     """Map a Discover/MapInfo drillhole-TRACE export, or None if not one.
 
@@ -973,8 +1116,27 @@ async def _write_intervals(
     conn: asyncpg.Connection, *, workspace_id: str, sheet_type: str,
     records: list[dict], index: dict[str, str],
 ) -> dict[str, int]:
-    """Write survey / lithology / sample rows against resolved collars."""
+    """Write survey / lithology / sample rows against resolved collars.
+
+    A sample sheet writes TWO tables in one transaction: the interval row
+    into silver.samples (with its commodity_assays payload — dropped on the
+    floor by this writer until 2026-08-25), and one row per element into
+    silver.assays_v2, the §04e-canonical assay table every assay-side
+    reader queries. Both replace, scoped to the collars the file mentions,
+    for the reasons on _INTERVAL_TABLES.
+    """
+    element_ref: dict[str, str] = {}
+    if sheet_type == "sample":
+        element_ref = {
+            r["symbol"]: r["default_unit"]
+            for r in await conn.fetch(
+                "SELECT symbol, default_unit FROM silver.element_reference",
+            )
+        }
+
     rows = []
+    assay_rows: list[tuple] = []
+    assay_skipped = 0
     orphaned = 0
     for rec in records:
         collar_id = _resolve_collar(index, rec.get("hole_id"))
@@ -1005,7 +1167,20 @@ async def _write_intervals(
                 _num(rec.get("from_depth")), _num(rec.get("to_depth")),
                 rec.get("sample_type") or _SAMPLE_TYPE_DEFAULT,
                 rec.get("lab_id"), rec.get("qaqc_type"),
+                json.dumps(rec.get("commodity_assays") or {}),
+                (
+                    json.dumps(rec["commodity_assay_flags"])
+                    if rec.get("commodity_assay_flags") else None
+                ),
             ))
+            exploded, exploded_skipped = derive_assay_v2_rows(
+                rec,
+                workspace_id=workspace_id,
+                collar_id=collar_id,
+                element_ref=element_ref,
+            )
+            assay_rows.extend(exploded)
+            assay_skipped += exploded_skipped
 
     sql = {
         "survey": _SURVEY_SQL,
@@ -1018,6 +1193,7 @@ async def _write_intervals(
     # failure cannot leave the holes emptied.
     touched = sorted({r[1] for r in rows})
     replaced = 0
+    assay_replaced = 0
     written = 0
 
     async with conn.transaction():
@@ -1030,18 +1206,40 @@ async def _write_intervals(
                     touched,
                 ) or 0
             )
+            if sheet_type == "sample":
+                # Same replace semantics for the canonical assay table —
+                # a corrected sample file must replace its holes' element
+                # rows too, or the doubled-composite failure the interval
+                # tables guard against comes back one table over.
+                assay_replaced = int(
+                    await conn.fetchval(
+                        "WITH d AS (DELETE FROM silver.assays_v2 "
+                        "WHERE collar_id = ANY($1::uuid[]) RETURNING 1) "
+                        "SELECT count(*) FROM d",
+                        touched,
+                    ) or 0
+                )
 
         for start in range(0, len(rows), _INSERT_BATCH):
             chunk = rows[start:start + _INSERT_BATCH]
             await conn.executemany(sql, chunk)
             written += len(chunk)
 
-    return {
+        for start in range(0, len(assay_rows), _INSERT_BATCH):
+            chunk = assay_rows[start:start + _INSERT_BATCH]
+            await conn.executemany(_ASSAYS_V2_SQL, chunk)
+
+    stats = {
         "written": written,
         "skipped": 0,
         "orphaned": orphaned,
         "replaced": replaced,
     }
+    if sheet_type == "sample":
+        stats["assay_rows"] = len(assay_rows)
+        stats["assay_rows_skipped"] = assay_skipped
+        stats["assay_replaced"] = assay_replaced
+    return stats
 
 
 def _csv_headers(path: str) -> list[str]:
