@@ -25,7 +25,6 @@ table interpretation.interpretation_target_zones  # raw/phase0/107-section19-3-i
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.claim_ledger  # raw/phase0/110-section7-4-claim-ledger.sql
 table silver.shadow_runs  # raw/phase1/20-shadow-runs-and-feature-flags.sql
-table silver.storage_tier_policy  # raw/phase0/70-layer-g-findings.sql
 table silver.structure_measurements  # raw/phase5/30-structure-measurements-visual.sql
 table workspace.agent_permissions  # raw/phase0/108-section4-tool-gateway-schema.sql
 table workspace.agent_prompt_pins  # raw/phase0/50-layer-e-operational-contract.sql
