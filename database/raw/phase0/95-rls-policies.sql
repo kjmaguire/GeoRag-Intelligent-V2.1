@@ -19,7 +19,8 @@
 --   workflow.workflow_runs, workflow.workflow_run_events
 --   outbox.pending_propagations, outbox.propagation_attempts
 --   usage.usage_events, usage.usage_aggregates_daily, usage.workspace_cost_ceilings
---   silver.store_reconciliation_findings, silver.corpus_health_findings, silver.storage_tier_policy
+--   silver.store_reconciliation_findings, silver.corpus_health_findings
+--   silver.storage_tier_policy (dedicated nullable-aware policy — see below)
 --
 -- Tables that DO NOT get RLS:
 --   public.users (cross-workspace identity)
@@ -47,8 +48,11 @@ DECLARE
         ARRAY['usage',     'usage_aggregates_daily'],
         ARRAY['usage',     'workspace_cost_ceilings'],
         ARRAY['silver',    'store_reconciliation_findings'],
-        ARRAY['silver',    'corpus_health_findings'],
-        ARRAY['silver',    'storage_tier_policy']
+        ARRAY['silver',    'corpus_health_findings']
+        -- silver.storage_tier_policy is NOT in this list: workspace_id NULL
+        -- there means "platform default visible to every tenant", which the
+        -- macro's shape hides from bound sessions. It gets a dedicated
+        -- policy below, same as workspace.workspace_roles.
     ];
     s text;
     t text;
@@ -111,4 +115,25 @@ CREATE POLICY workspace_roles_visibility ON workspace.workspace_roles
             NULLIF(current_setting('app.workspace_id', true), '')::uuid
         OR current_setting('app.workspace_id', true) IS NULL
         OR current_setting('app.workspace_id', true) = ''
+    );
+
+-- ---------------------------------------------------------------------------
+-- storage_tier_policy: rows with workspace_id = NULL are PLATFORM DEFAULTS
+-- (the table comment in 70-layer-g-findings.sql says so, and the Storage
+-- Tiering Agent's query — `workspace_id IS NULL OR workspace_id = $1` — was
+-- written expecting them to be visible from every workspace). Fail-closed for
+-- tenant rows: an unbound GUC sees only the defaults, never another tenant's
+-- overrides. Must match migration 2026_08_25_200000, which installs the same
+-- policy on existing clusters — this block exists so a re-apply of this
+-- re-runnable file after that migration converges instead of layering a
+-- second, fail-open policy on top (permissive policies OR together).
+-- ---------------------------------------------------------------------------
+ALTER TABLE silver.storage_tier_policy ENABLE ROW LEVEL SECURITY;
+ALTER TABLE silver.storage_tier_policy FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON silver.storage_tier_policy;  -- pre-2026_08_25_200000 macro name
+DROP POLICY IF EXISTS silver_storage_tier_policy_workspace_isolation ON silver.storage_tier_policy;
+CREATE POLICY silver_storage_tier_policy_workspace_isolation ON silver.storage_tier_policy
+    USING (
+        workspace_id IS NULL
+        OR workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
     );
