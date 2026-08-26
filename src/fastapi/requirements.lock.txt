@@ -552,7 +552,9 @@ pyyaml==6.0.3
 qdrant-client==1.19.0
     # via georag-fastapi
 rapidfuzz==3.14.5
-    # via georag-geoparsers
+    # via
+    #   georag-fastapi
+    #   georag-geoparsers
 rasterio==1.5.0
     # via
     #   georag-fastapi

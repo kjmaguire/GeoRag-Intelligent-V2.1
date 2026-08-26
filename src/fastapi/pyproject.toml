@@ -325,6 +325,15 @@ dependencies = [
     "mplstereonet>=0.6",
     "matplotlib>=3.11,<4.0",
 
+    # 2026-08-25 — canonical-lithology promotion (promote_silver_to_gold)
+    # fuzzy-matches legacy lithology codes against the silver.rock_codes
+    # catalogue, ported from the retired bronze_to_silver Dagster asset.
+    # Until now rapidfuzz reached the image only transitively via
+    # georag-geoparsers, and the Dockerfile's requirements.lock.txt install
+    # runs AFTER the geoparsers install — declaring it here is what makes
+    # the version deterministic rather than incidental.
+    "rapidfuzz>=3.0",
+
     # Master-plan §7 (doc-phase 122) — Reporting + report bundle generation.
     # weasyprint → PDF rendering from HTML+CSS (§7.9 primary). Needs Pango /
     # Cairo system libs (added in docker/fastapi.Dockerfile).
