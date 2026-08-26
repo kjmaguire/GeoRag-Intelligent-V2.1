@@ -14,25 +14,50 @@
 # deploy-time raw SQL that `php artisan db:apply-raw` should carry.
 #
 # Regenerate with: php scripts/check-raw-migration-parity.php --update-baseline
+#
+# 2026-08-25: detection sharpened from "a migration mentions the name" to "a
+# migration CREATEs the object" (see the gate's docblock). That restored 12
+# entries the substring match had silently closed or never tracked — including
+# silver.storage_tier_policy, whose entry PR #188 was forced to remove when an
+# ALTER-only migration landed. Two of the restored entries are special:
+#   - silver.assays: was masked because "silver.assays" is a substring of
+#     "silver.assays_v2" (which migrations do create). assays_v2 is the
+#     canonical table — closing this entry likely means archiving the legacy
+#     raw DDL, not porting it.
+#   - workflow.activepieces_channels: deliberately DROPPED in production by
+#     2026_05_17_120000, but raw/phase0/101 still creates it locally. Close
+#     by removing/archiving the raw DDL, not by porting it.
 
 function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-function.sql
 function workspace.feature_flags_audit  # raw/phase1/30-feature-flag-history.sql
+table audit.integration_credentials_audit  # raw/phase0/80-layer-h-credentials-audit.sql
 table backups.snapshot_runs  # raw/phase0/103-section11-backups-schema.sql
+table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
 table interpretation.interpretation_comments  # raw/phase0/107-section19-3-interpretation-schema.sql
 table interpretation.interpretation_notes  # raw/phase0/107-section19-3-interpretation-schema.sql
 table interpretation.interpretation_section_lines  # raw/phase0/107-section19-3-interpretation-schema.sql
 table interpretation.interpretation_target_zones  # raw/phase0/107-section19-3-interpretation-schema.sql
+table outbox.pending_propagations  # raw/phase0/40-layer-d-outbox.sql
+table outbox.propagation_attempts  # raw/phase0/40-layer-d-outbox.sql
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
+table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.claim_ledger  # raw/phase0/110-section7-4-claim-ledger.sql
+table silver.corpus_health_findings  # raw/phase0/70-layer-g-findings.sql
 table silver.shadow_runs  # raw/phase1/20-shadow-runs-and-feature-flags.sql
+table silver.storage_tier_policy  # raw/phase0/70-layer-g-findings.sql
+table silver.store_reconciliation_findings  # raw/phase0/70-layer-g-findings.sql
 table silver.structure_measurements  # raw/phase5/30-structure-measurements-visual.sql
+table silver.workspace_settings  # raw/phase0/101-phase-h4-ui-tables.sql
+table workflow.activepieces_channels  # raw/phase0/101-phase-h4-ui-tables.sql
 table workspace.agent_permissions  # raw/phase0/108-section4-tool-gateway-schema.sql
 table workspace.agent_prompt_pins  # raw/phase0/50-layer-e-operational-contract.sql
 table workspace.agent_risk_tiers  # raw/phase0/108-section4-tool-gateway-schema.sql
 table workspace.agent_timeouts  # raw/phase0/50-layer-e-operational-contract.sql
 table workspace.approval_requirements  # raw/phase0/108-section4-tool-gateway-schema.sql
+table workspace.dry_run_outputs  # raw/phase0/50-layer-e-operational-contract.sql
 table workspace.feature_flag_history  # raw/phase1/30-feature-flag-history.sql
 table workspace.feature_flags  # raw/phase1/20-shadow-runs-and-feature-flags.sql
 table workspace.idempotency_keys  # raw/phase0/50-layer-e-operational-contract.sql
 table workspace.prompt_versions  # raw/phase0/50-layer-e-operational-contract.sql
 table workspace.tool_invocations  # raw/phase0/108-section4-tool-gateway-schema.sql
+table workspace.workspace_agent_config  # raw/phase0/50-layer-e-operational-contract.sql
