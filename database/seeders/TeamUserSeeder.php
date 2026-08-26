@@ -70,7 +70,7 @@ class TeamUserSeeder extends Seeder
             }
 
             if (! $projectExists) {
-                $this->command?->warn(
+                $this->command->warn(
                     'Project '.self::PROJECT_ID." not found — {$attributes['email']} created without project access.",
                 );
 
@@ -92,7 +92,7 @@ class TeamUserSeeder extends Seeder
                 ]);
             }
 
-            $this->command?->info(
+            $this->command->info(
                 "Team user seeded: {$attributes['email']} (member of project ".self::PROJECT_ID.')',
             );
         }
