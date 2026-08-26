@@ -30,6 +30,7 @@ WHAT THIS FILE DOES NOT COVER
 from __future__ import annotations
 
 import importlib.util
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -80,10 +81,15 @@ class FakeConn:
     test can say "there were already 7 rows for these holes".
     """
 
-    def __init__(self, fetchval_result: Any = 0) -> None:
+    def __init__(self, fetchval_result: Any = 0,
+                 fetch_result: list | None = None) -> None:
         self.executemany_calls: list[tuple[str, list]] = []
         self.fetchval_calls: list[tuple[str, tuple]] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
         self.fetchval_result = fetchval_result
+        #: What SELECTs return — the sample path reads
+        #: silver.element_reference before writing.
+        self.fetch_result = fetch_result or []
         self.transactions = 0
 
     async def executemany(self, sql: str, rows: list) -> None:
@@ -92,6 +98,10 @@ class FakeConn:
     async def fetchval(self, sql: str, *args: Any) -> Any:
         self.fetchval_calls.append((sql, args))
         return self.fetchval_result
+
+    async def fetch(self, sql: str, *args: Any) -> list:
+        self.fetch_calls.append((sql, args))
+        return self.fetch_result
 
     def transaction(self):  # noqa: ANN201 - mirrors asyncpg's sync factory
         conn = self
@@ -411,3 +421,53 @@ class TestWriteIntervals:
                 {"hole_id": "EL001", "depth": 1, "from_depth": 0, "to_depth": 1},
             ])
             assert result["written"] == 1, sheet_type
+
+    async def test_sample_sheet_lands_assays_v2_in_the_same_transaction(self) -> None:
+        """The canonical assay table is written WITH the sample, not later.
+
+        Until 2026-08-25 the parsed commodity_assays dict was dropped on
+        write and silver.assays_v2 had no live writer at all — every
+        assay-side reader ran against a permanently empty table.
+        """
+        conn = FakeConn(fetchval_result=0)
+        result = await self._write(conn, "sample", [{
+            "hole_id": "EL001", "sample_id": "S-1", "from_depth": 0.0,
+            "to_depth": 1.0, "commodity_assays": {"Au_ppb": 500.0},
+        }])
+
+        assert result["assay_rows"] == 1
+        assay_calls = [
+            (sql, rows) for sql, rows in conn.executemany_calls
+            if "silver.assays_v2" in sql
+        ]
+        assert len(assay_calls) == 1
+        assert assay_calls[0][1][0][6:9] == ("Au", 500.0, "ppb")
+        assert conn.transactions == 1
+
+    async def test_sample_sheet_replaces_its_holes_assays_too(self) -> None:
+        """A corrected file must not double its holes' element rows."""
+        conn = FakeConn(fetchval_result=5)
+        result = await self._write(conn, "sample", [{
+            "hole_id": "EL001", "sample_id": "S-1", "from_depth": 0.0,
+            "to_depth": 1.0, "commodity_assays": {"Au_ppb": 500.0},
+        }])
+
+        assert result["assay_replaced"] == 5
+        deletes = [sql for sql, _ in conn.fetchval_calls]
+        assert any("silver.assays_v2" in sql for sql in deletes)
+
+    async def test_sample_row_carries_the_commodity_assays_payload(self) -> None:
+        """The parser extracts it; the writer must not drop it again."""
+        conn = FakeConn()
+        await self._write(conn, "sample", [{
+            "hole_id": "EL001", "from_depth": 0.0, "to_depth": 1.0,
+            "commodity_assays": {"Au_ppb": 500.0},
+            "commodity_assay_flags": {"Au_ppb": {"dl_flag": True}},
+        }])
+        sample_rows = [
+            rows for sql, rows in conn.executemany_calls
+            if "silver.samples" in sql
+        ]
+        row = sample_rows[0][0]
+        assert json.loads(row[7]) == {"Au_ppb": 500.0}
+        assert json.loads(row[8]) == {"Au_ppb": {"dl_flag": True}}
