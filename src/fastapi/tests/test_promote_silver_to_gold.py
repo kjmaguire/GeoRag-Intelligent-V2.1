@@ -453,6 +453,86 @@ class TestBuilderVersionInvalidatesCachedTraces:
         b = _survey_hash([(30.0, 92.0, -59.0), (0.0, 90.0, -60.0)])
         assert a == b
 
+
+class TestAMovedCollarInvalidatesItsTrace:
+    """The origin is part of the digest, not just the stations.
+
+    A collar moves in two ordinary situations — re-uploaded under a
+    corrected CRS, or re-surveyed — and in both the survey stations are
+    untouched. A digest over stations alone still matches, so the trace is
+    skipped as "unchanged" and stays at the old position: the hole moves on
+    the map and its trace does not follow.
+
+    Live case this was found on: RedStar's five collars are stored
+    georef_method='assumed' at EPSG:32613 with their true position 2,500 km
+    west. The moment the project CRS is set and the file re-uploaded, every
+    collar moves — and before this, every trace would have been left behind.
+    """
+
+    STATIONS = [(0.0, 90.0, -60.0), (30.0, 92.0, -59.0)]
+
+    def test_a_moved_longitude_changes_the_digest(self):
+        from app.hatchet_workflows.promote_silver_to_gold import _survey_hash
+
+        # The exact move RedStar's collars will make: 32613 -> 26904.
+        wrong = _survey_hash(self.STATIONS, origin=(-106.5582, 55.1922, 0.0))
+        right = _survey_hash(self.STATIONS, origin=(-160.5582, 55.1922, 0.0))
+        assert wrong != right
+
+    def test_a_moved_latitude_changes_the_digest(self):
+        from app.hatchet_workflows.promote_silver_to_gold import _survey_hash
+
+        a = _survey_hash(self.STATIONS, origin=(-160.5582, 55.1922, 0.0))
+        b = _survey_hash(self.STATIONS, origin=(-160.5582, 55.9999, 0.0))
+        assert a != b
+
+    def test_a_changed_collar_elevation_changes_the_digest(self):
+        """Elevation is the Z the trace is drawn from, so it counts too."""
+        from app.hatchet_workflows.promote_silver_to_gold import _survey_hash
+
+        a = _survey_hash(self.STATIONS, origin=(-160.5582, 55.1922, 0.0))
+        b = _survey_hash(self.STATIONS, origin=(-160.5582, 55.1922, 412.0))
+        assert a != b
+
+    def test_an_unmoved_collar_still_hashes_the_same(self):
+        """Idempotency must survive: a nightly re-run writes nothing."""
+        from app.hatchet_workflows.promote_silver_to_gold import _survey_hash
+
+        origin = (-160.5582, 55.1922, 412.0)
+        assert _survey_hash(self.STATIONS, origin=origin) == _survey_hash(
+            self.STATIONS, origin=origin,
+        )
+
+    def test_the_origin_is_hashed_before_the_skip_test(self):
+        """Order matters: hashing after the `continue` skips nothing.
+
+        Asserted structurally — the skip test reads `existing_hash`, so the
+        digest has to be computed above it or the comparison is against a
+        stale value.
+        """
+        import inspect
+
+        from app.hatchet_workflows import promote_silver_to_gold as m
+
+        src = inspect.getsource(m._promote_traces)
+        hash_at = src.index("digest = _survey_hash")
+        skip_at = src.index('existing_hash"] == digest')
+        assert hash_at < skip_at
+
+    def test_the_call_site_passes_an_origin(self):
+        """A default-origin call would silently reintroduce the bug.
+
+        `origin` has a (None, None, None) default so the signature stays
+        usable from tests, which means forgetting it at the call site is a
+        silent no-op rather than a TypeError. This is what catches that.
+        """
+        import inspect
+
+        from app.hatchet_workflows import promote_silver_to_gold as m
+
+        src = inspect.getsource(m._promote_traces)
+        assert "origin=(lon, lat, collar_elev)" in src
+
     def test_the_version_is_past_one(self):
         """v1 is the projection bug; anything still on it is unfixed."""
         from app.hatchet_workflows.promote_silver_to_gold import _TRACE_BUILDER_VERSION
