@@ -96,8 +96,13 @@ CREATE TABLE IF NOT EXISTS silver.storage_tier_policy (
     created_at          timestamptz NOT NULL DEFAULT now(),
     updated_at          timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT storage_tier_policy_source_target_distinct CHECK (source_tier <> target_tier),
+    -- NULLS NOT DISTINCT so the platform-default rows (workspace_id NULL)
+    -- actually collide: with the PG default, NULLs never conflict, the seed's
+    -- ON CONFLICT below never fired, and every re-apply of this re-runnable
+    -- file inserted 5 more copies (live Azure reached 10, dev 450 before
+    -- migration 2026_08_25_200000 deduped them).
     CONSTRAINT storage_tier_policy_unique_per_scope
-        UNIQUE (workspace_id, object_class, source_tier, target_tier)
+        UNIQUE NULLS NOT DISTINCT (workspace_id, object_class, source_tier, target_tier)
 );
 
 COMMENT ON TABLE silver.storage_tier_policy IS

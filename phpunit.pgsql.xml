@@ -150,6 +150,12 @@
                  mechanism as BrokenChrZeroRlsPoliciesRoleTest above — it
                  must run here, because under the SQLite suite it skips. -->
             <file>tests/Feature/Tenancy/FailClosedRlsPolicyTest.php</file>
+            <!-- 2026-08-25: storage_tier_policy platform-default visibility
+                 (2026_08_25_200000). Self-skips on migrate-only clusters
+                 like georag_test — the table exists only where the phase0
+                 raw SQL ran — but must be registered here so the manifest
+                 test sees it and raw-SQL-provisioned clusters exercise it. -->
+            <file>tests/Feature/Tenancy/StorageTierPolicyPlatformDefaultsTest.php</file>
             <file>tests/Feature/Foundry/WorkspaceLithologyQueryCountTest.php</file>
             <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
                  but were never added here — grep -rl "RequiresPostgres\|
