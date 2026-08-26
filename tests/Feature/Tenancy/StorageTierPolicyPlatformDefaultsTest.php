@@ -133,6 +133,64 @@ final class StorageTierPolicyPlatformDefaultsTest extends TestCase
     }
 
     /**
+     * Write half: pin polcmd and polwithcheck, which the catalog test above
+     * does not read.
+     *
+     * The policy is created as `CREATE POLICY ... USING (...)` with no FOR and
+     * no WITH CHECK, so Postgres makes it FOR ALL and reuses USING as the
+     * WITH CHECK. That is deliberate — the migration docblock explains that a
+     * session with write grants has to be able to maintain the platform rows,
+     * because the seed INSERT and this migration's own dedupe DELETE run under
+     * FORCE ROW LEVEL SECURITY and would otherwise be unable to touch them.
+     *
+     * It has a cost worth stating out loud. georag_app holds
+     * `GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA ... silver ...`
+     * (database/raw/phase1/10-georag-app-role.sql:49-51) and is NOBYPASSRLS,
+     * and the pre-#188 macro's WITH CHECK *did* reject NULL-workspace writes
+     * from a workspace-bound session. So the write surface on the NULL scope
+     * is genuinely wider now: a bound session that could execute arbitrary SQL
+     * could INSERT or UPDATE a platform-default row, which every tenant reads.
+     * No application code writes this table today — the tiering agent only
+     * SELECTs from it — so this is a defence-in-depth gap, not a live hole.
+     *
+     * This test does not object to that trade-off. It stops it from changing
+     * by accident: if anyone adds a writer to this table, or narrows the
+     * policy, this fails and forces the decision to be made deliberately.
+     */
+    #[Test]
+    public function policy_write_surface_stays_as_deliberately_chosen(): void
+    {
+        $rows = DB::select(
+            <<<'SQL'
+            SELECT pol.polcmd::text                                  AS cmd,
+                   pg_get_expr(pol.polwithcheck, pol.polrelid)       AS with_check
+              FROM pg_policy pol
+             WHERE pol.polrelid = to_regclass(?)
+            SQL,
+            [self::QUALIFIED],
+        );
+
+        $this->assertCount(1, $rows);
+
+        $this->assertSame(
+            '*',
+            $rows[0]->cmd,
+            'Policy '.self::POLICY.' is no longer FOR ALL. If it was split into '
+            .'separate read/write policies, that is very likely an improvement — '
+            .'update this test deliberately rather than deleting it.',
+        );
+
+        $this->assertNull(
+            $rows[0]->with_check,
+            'Policy '.self::POLICY.' now has an explicit WITH CHECK. That changes '
+            .'who may write platform-default (NULL workspace_id) rows, which the '
+            .'seed and the dedupe depend on being able to do under FORCE RLS. '
+            .'Confirm both still work before updating this expectation. Got: '
+            .var_export($rows[0]->with_check, true),
+        );
+    }
+
+    /**
      * Behavioural half: one platform row and two tenant overrides, read back
      * as georag_app under four GUC states. Runs in a rolled-back transaction
      * so the probe rows never outlive the test.
