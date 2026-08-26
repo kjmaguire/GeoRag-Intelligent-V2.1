@@ -28,18 +28,20 @@ use Illuminate\Support\Facades\DB;
  *
  * BUG 1 — the RLS policy hides every row from the application
  * -----------------------------------------------------------
- * Measured against live Azure 2026-08-25: the policy there is the strict
- * fail-closed shape
+ * Measured against live Azure 2026-08-25 (re-verified during PR #188 review):
+ * the live policy is the phase0 `tenant_isolation` macro shape
  *
- *     workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
+ *     NOT (workspace_id IS DISTINCT FROM <scope>) OR <guc> IS NULL OR <guc> = ''
  *
- * under which a NULL workspace_id matches nothing — 10 rows visible with the
- * GUC unset (owner probe), 0 with it bound to a real workspace. The agent has
- * been running against zero rules ("no active storage_tier_policy rows —
- * nothing to do"). The dev database has a different broken shape (the phase0
- * `tenant_isolation` macro with fail-open branches layered on top of it), so
- * this migration drops WHATEVER policies exist on the table rather than
- * assuming a name, then installs the canonical nullable-aware shape:
+ * NULL-safe equality plus fail-open branches. A NULL row matches only while
+ * the GUC is UNSET (`NULL IS NOT DISTINCT FROM NULL`) — which is why an
+ * owner probe with no GUC saw all 10 rows without any RLS bypass — and
+ * vanishes the moment a session binds a real workspace: 0 rows bound. So the
+ * agent has been running against zero rules ("no active storage_tier_policy
+ * rows — nothing to do"). The dev database carried a doubled-up variant of
+ * the same macro shape under the same name, so this migration drops WHATEVER
+ * policies exist on the table rather than assuming a name or shape, then
+ * installs the canonical nullable-aware form:
  *
  *     workspace_id IS NULL OR workspace_id = <scope>
  *
@@ -63,11 +65,14 @@ use Illuminate\Support\Facades\DB;
  * UNIQUE NULLS NOT DISTINCT (PG 15+; this cluster is 18.3), which makes the
  * seed's ON CONFLICT actually fire from now on.
  *
- * ORDERING NOTE: the policy swap must run BEFORE the dedupe. On clusters
- * where the strict shape is live and the table is under FORCE ROW LEVEL
- * SECURITY (it is — phase0 95-rls-policies.sql), the owner cannot see the
- * NULL rows either, so a dedupe run first would silently delete nothing and
- * the constraint rebuild would then fail on the surviving duplicates.
+ * ORDERING NOTE: the policy swap must run BEFORE the dedupe. The live macro
+ * shape happens to show NULL rows to an unbound owner, but the table is
+ * under FORCE ROW LEVEL SECURITY (phase0 95-rls-policies.sql), so on any
+ * cluster carrying a strict fail-closed variant — this migration's own
+ * down() installs exactly one — the owner cannot see the NULL rows either,
+ * and a dedupe run first would silently delete nothing, leaving the
+ * constraint rebuild to fail on the surviving duplicates. Swapping first
+ * makes the migration correct under every shape it can encounter.
  */
 return new class extends Migration
 {
@@ -133,10 +138,10 @@ return new class extends Migration
     }
 
     /**
-     * Dev and Azure carry differently-named, differently-shaped policies on
-     * this table (the strict rewrite on Azure was applied out of band and its
-     * name is not in version control), so drop everything present and create
-     * the one canonical policy.
+     * Dev and Azure both carry macro-derived `tenant_isolation` policies, but
+     * dev's is a doubled-up variant and nothing guarantees other environments
+     * match either, so drop everything present by discovered name and create
+     * the one canonical policy rather than assuming a name or shape.
      */
     private function replaceAllPolicies(string $using): void
     {
