@@ -52,7 +52,11 @@ class TestItIsActuallyReachable:
         """A drill upload must promote itself, not wait for the nightly."""
         source = (WORKFLOWS / "ingest_tabular.py").read_text(encoding="utf-8")
         assert "promote_silver_to_gold" in source
-        assert "aio_run_no_wait" in source
+        # Via the shared helper, which owns the timeout and the swallow.
+        # Reaching past it to aio_run_no_wait gets back the unbounded await
+        # that took the pytest job past its own limit — see
+        # test_promotion_dispatch_is_bounded.py.
+        assert "dispatch_promotion" in source
 
     def test_the_nightly_sweep_dispatches_it(self):
         """Belt and braces: an ingest that predates this still gets promoted."""
@@ -60,24 +64,35 @@ class TestItIsActuallyReachable:
             encoding="utf-8",
         )
         assert "promote_silver_to_gold" in source
+        assert "dispatch_promotion" in source
 
     def test_the_dispatch_cannot_fail_the_ingest(self):
         """Silver is already written by the time we promote.
 
-        A promotion that throws must not relabel a good ingest as failed, so
-        the dispatch is wrapped. Asserted structurally rather than by reading
-        the comment beside it.
+        A promotion that cannot be dispatched must not relabel a good
+        ingest as failed. That guarantee now lives in ``dispatch_promotion``
+        rather than in a try/except at each call site, so it is asserted on
+        the helper — and behaviourally, not structurally, in
+        test_promotion_dispatch_is_bounded.py.
         """
-        source = (WORKFLOWS / "ingest_tabular.py").read_text(encoding="utf-8")
+        source = (WORKFLOWS / "promote_silver_to_gold.py").read_text(
+            encoding="utf-8",
+        )
         tree = ast.parse(source)
-        guarded = False
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Try):
-                continue
-            body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
-            if "promote_silver_to_gold" in body and node.handlers:
-                guarded = True
-        assert guarded, "the promote dispatch must sit inside a try/except"
+        helper = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.AsyncFunctionDef)
+                and node.name == "dispatch_promotion"
+            ),
+            None,
+        )
+        assert helper is not None, "dispatch_promotion is gone"
+        assert any(
+            isinstance(node, ast.Try) and node.handlers
+            for node in ast.walk(helper)
+        ), "dispatch_promotion must swallow a failed dispatch, not raise it"
 
     def test_no_live_writer_lives_under_retired_dagster(self):
         """The regression guard.

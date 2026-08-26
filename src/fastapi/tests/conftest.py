@@ -33,6 +33,7 @@ import os
 import re
 
 import httpx
+import pytest
 import pytest_asyncio
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,57 @@ async def parse_sse_stream(response: httpx.Response) -> dict:
                 raise RuntimeError(f"Query stream emitted failed event: {data}")
 
     raise RuntimeError("SSE stream ended without a 'completed' event")
+
+
+# ---------------------------------------------------------------------------
+# Keep unit tests off the wire
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_real_promotion_dispatch(monkeypatch):
+    """Stop ``promote_silver_to_gold`` dispatches from dialling Hatchet.
+
+    ``ingest_tabular`` and ``nightly_ingestion_integrity`` dispatch the
+    promotion with ``aio_run_no_wait``. That call does not wait for the
+    promotion to RUN, but it does await the dispatch RPC — and with no
+    Hatchet in the test environment the SDK retried for ~17 seconds before
+    raising, which the callers then swallowed by design.
+
+    Nothing failed, so nothing pointed at it: it simply added ~17s to every
+    test that ran one of those workflows to completion. One file paid it 30
+    times (393s), which took the pytest job past its ``timeout-minutes: 10``
+    and cancelled the whole suite.
+
+    The callers' own timeout now bounds this in production. Here we cut it
+    entirely — a unit test of the ingest workflow has no business opening a
+    socket. Tests that want to assert on the dispatch can read
+    ``promotion_dispatch_spy``; a test needing different behaviour just
+    monkeypatches it again, which wins over this fixture.
+    """
+    try:
+        from app.hatchet_workflows import promote_silver_to_gold as mod
+    except Exception:  # pragma: no cover — module unavailable in this env
+        return
+
+    async def _dispatch(*_args, **_kwargs):
+        _PROMOTION_DISPATCHES.append((_args, _kwargs))
+        return None
+
+    monkeypatch.setattr(
+        mod.promote_silver_to_gold, "aio_run_no_wait", _dispatch,
+    )
+    _PROMOTION_DISPATCHES.clear()
+
+
+#: Dispatch calls recorded by the autouse stub, newest run last.
+_PROMOTION_DISPATCHES: list[tuple[tuple, dict]] = []
+
+
+@pytest.fixture
+def promotion_dispatch_spy():
+    """The dispatches recorded by :func:`_no_real_promotion_dispatch`."""
+    return _PROMOTION_DISPATCHES
 
 
 # ---------------------------------------------------------------------------

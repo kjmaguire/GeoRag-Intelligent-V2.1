@@ -2603,25 +2603,15 @@ async def run_ingest_tabular(
                 # Fire-and-forget, and deliberately outside the run's own
                 # success: the file HAS landed in silver by this point, and
                 # a promotion that fails must not relabel a good ingest as
-                # failed. The nightly sweep re-runs it either way.
-                try:
-                    from app.hatchet_workflows.promote_silver_to_gold import (  # noqa: PLC0415
-                        PromoteSilverToGoldInput,
-                        promote_silver_to_gold,
-                    )
-                    await promote_silver_to_gold.aio_run_no_wait(
-                        PromoteSilverToGoldInput(
-                            workspace_id=input.workspace_id,
-                            project_id=input.project_id,
-                        )
-                    )
-                except Exception as promo_exc:  # noqa: BLE001
-                    log.warning(
-                        "ingest_tabular: could not dispatch promote_silver_to_gold "
-                        "for project %s — %s (silver is written; the nightly "
-                        "sweep will promote it)",
-                        input.project_id, promo_exc,
-                    )
+                # failed. dispatch_promotion owns the bound and the swallow
+                # — it never raises, so there is nothing to catch here.
+                from app.hatchet_workflows.promote_silver_to_gold import (  # noqa: PLC0415
+                    dispatch_promotion,
+                )
+                await dispatch_promotion(
+                    workspace_id=input.workspace_id,
+                    project_id=input.project_id,
+                )
 
     except Exception as exc:
         if run_id:
