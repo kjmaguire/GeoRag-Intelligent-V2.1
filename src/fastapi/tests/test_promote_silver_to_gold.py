@@ -322,16 +322,142 @@ class TestPromotionSql:
         for kind in ("lithology", "sample_window"):
             assert kind in allowed
 
-    def test_traces_are_transformed_from_the_collar_crs(self):
-        """The trace is built in metres and stored in 4326.
+    def test_traces_are_translated_onto_the_collar_then_transformed(self):
+        """Offsets about (0,0), translated onto the collar, then to 4326.
 
-        Writing metre offsets into a 4326 column without transforming is
-        the class of bug that puts an Alaskan hole at longitude 400,797.
+        v1 wrote ST_Transform(ST_SetSRID(<absolute easting/northing>,
+        ST_SRID(c.geom)), 4326) — and `silver.collars.geom` is declared
+        geometry(POINT, 32613), so ST_SRID returns 32613 for a hole anywhere
+        on earth. Alaskan zone-4N eastings were read as zone-13N.
         """
         from app.hatchet_workflows import promote_silver_to_gold as m
 
-        assert "ST_Transform(ST_SetSRID(ST_GeomFromText" in m._TRACE_UPSERT
-        assert "), 4326)" in m._TRACE_UPSERT
+        assert "ST_Translate(" in m._TRACE_UPSERT
+        assert "), 4326)" in m._TRACE_UPSERT or "4326\n    )" in m._TRACE_UPSERT
+        assert "ST_SRID(c.geom)" not in m._TRACE_UPSERT, (
+            "the collar geom column is SRID-pinned; it cannot report the CRS "
+            "the easting/northing were surveyed in"
+        )
+
+    def test_the_collar_position_comes_from_geom_4326(self):
+        """Not from easting/northing, whose projection is not recorded.
+
+        Asserted against the module source because the query is inline. A
+        promotion that reads `c.easting` again is the v1 bug returning.
+        """
+        import inspect
+
+        from app.hatchet_workflows import promote_silver_to_gold as m
+
+        src = inspect.getsource(m._promote_traces)
+        assert "ST_X(c.geom_4326)" in src and "ST_Y(c.geom_4326)" in src
+        assert "c.easting" not in src, (
+            "easting/northing carry no CRS; geom_4326 is the only column on "
+            "silver.collars that is correct wherever the hole was surveyed"
+        )
+
+    def test_the_interpolator_is_given_a_zero_origin(self):
+        """So it returns OFFSETS, which is what the SQL translates.
+
+        Passing the real easting/northing here would put absolute
+        zone-unknown coordinates into a linestring that then gets translated
+        onto the collar as well — the collar counted twice.
+        """
+        import inspect
+
+        from app.hatchet_workflows import promote_silver_to_gold as m
+
+        src = inspect.getsource(m._promote_traces)
+        assert "collar_easting=0.0" in src
+        assert "collar_northing=0.0" in src
+
+
+class TestCollarLocalUtm:
+    """Picking the zone the collar actually sits in.
+
+    The whole point is that no column records the CRS the easting/northing
+    were surveyed in, so the zone is derived from the collar's true position
+    instead. These are the two corpora that matter plus the edges.
+    """
+
+    def test_unga_island_alaska_is_zone_4_north(self):
+        from app.hatchet_workflows.promote_silver_to_gold import _collar_local_utm
+
+        # The RedStar delivery: lon -160.558, lat 55.192.
+        assert _collar_local_utm(-160.558, 55.192) == 32604
+
+    def test_athabasca_is_zone_13_north(self):
+        from app.hatchet_workflows.promote_silver_to_gold import _collar_local_utm
+
+        # Every corpus before RedStar. v1 was accidentally right here, which
+        # is exactly why the bug survived to production.
+        assert _collar_local_utm(-106.5, 57.0) == 32613
+
+    @pytest.mark.parametrize(
+        "lon,lat,expected",
+        [
+            (-179.9, 10.0, 32601),   # first zone
+            (179.9, 10.0, 32660),    # last zone
+            (180.0, 10.0, 32660),    # clamped, not wrapped to 61
+            (-180.0, 10.0, 32601),
+            (0.5, 51.5, 32631),      # Greenwich
+            (-70.0, -33.0, 32719),   # southern hemisphere -> 327xx
+            (-70.0, 0.0, 32619),     # the equator counts as north
+        ],
+    )
+    def test_zone_and_hemisphere(self, lon, lat, expected):
+        from app.hatchet_workflows.promote_silver_to_gold import _collar_local_utm
+
+        assert _collar_local_utm(lon, lat) == expected
+
+    def test_no_zone_is_ever_out_of_range(self):
+        from app.hatchet_workflows.promote_silver_to_gold import _collar_local_utm
+
+        for lon in range(-180, 181):
+            for lat in (-80.0, 0.0, 80.0):
+                srid = _collar_local_utm(float(lon), lat)
+                base = 32600 if lat >= 0 else 32700
+                assert 1 <= srid - base <= 60, f"lon={lon} lat={lat} -> {srid}"
+
+
+class TestBuilderVersionInvalidatesCachedTraces:
+    """A corrected builder must not be skipped as "unchanged".
+
+    `survey_hash` is the skip key. When v1's projection bug was fixed the
+    surveys behind every trace were unchanged, so a re-run recognised the
+    stored hashes as current and skipped all of them — the fix would have
+    shipped and changed nothing until someone re-surveyed a hole.
+    """
+
+    def test_the_version_is_part_of_the_digest(self):
+        from app.hatchet_workflows import promote_silver_to_gold as m
+
+        stations = [(0.0, 90.0, -60.0), (30.0, 92.0, -59.0)]
+        before = m._survey_hash(stations)
+
+        original = m._TRACE_BUILDER_VERSION
+        try:
+            m._TRACE_BUILDER_VERSION = original + 1
+            after = m._survey_hash(stations)
+        finally:
+            m._TRACE_BUILDER_VERSION = original
+
+        assert before != after, (
+            "bumping the builder version must invalidate every stored trace"
+        )
+
+    def test_it_is_still_stable_for_a_fixed_version(self):
+        from app.hatchet_workflows.promote_silver_to_gold import _survey_hash
+
+        a = _survey_hash([(0.0, 90.0, -60.0), (30.0, 92.0, -59.0)])
+        b = _survey_hash([(30.0, 92.0, -59.0), (0.0, 90.0, -60.0)])
+        assert a == b
+
+    def test_the_version_is_past_one(self):
+        """v1 is the projection bug; anything still on it is unfixed."""
+        from app.hatchet_workflows.promote_silver_to_gold import _TRACE_BUILDER_VERSION
+
+        assert _TRACE_BUILDER_VERSION >= 2
 
     def test_traces_upsert_on_the_unique_index(self):
         """silver.drill_traces has UNIQUE (collar_id).

@@ -300,15 +300,63 @@ async def _promote_lithology_canonical(
 # Desurvey
 # ---------------------------------------------------------------------------
 
+#: Bumped whenever the GEOMETRY BUILDER changes, not the survey data.
+#:
+#: `survey_hash` is the skip key: a trace whose stored hash still matches is
+#: left alone. That is right for unchanged surveys and wrong for a corrected
+#: builder — v1 wrote every trace in the wrong projection (see
+#: `_collar_local_utm`) and the surveys behind them had not changed, so a
+#: re-run recognised them as current and skipped all of them. Folding this
+#: constant into the digest makes a builder fix invalidate its own output.
+_TRACE_BUILDER_VERSION = 2
+
+
 def _survey_hash(stations: list[tuple[float, float | None, float | None]]) -> str:
-    """Stable digest of a hole's survey set.
+    """Stable digest of a hole's survey set AND the builder that drew it.
 
     Sorted by depth and rendered through ``json.dumps`` with fixed
     separators so the same stations always produce the same bytes
     regardless of row order out of the database.
     """
-    payload = json.dumps(sorted(stations), separators=(",", ":"), sort_keys=True)
+    payload = json.dumps(
+        {"v": _TRACE_BUILDER_VERSION, "s": sorted(stations)},
+        separators=(",", ":"), sort_keys=True,
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _collar_local_utm(lon: float, lat: float) -> int:
+    """The UTM zone the collar actually sits in.
+
+    WHY THIS EXISTS
+        The trace is metre offsets from the collar, so it has to be assembled
+        in a projected CRS — but there is no column recording which one the
+        collar's easting/northing were surveyed in. `silver.collars.geom` is
+        no help: it is declared ``geometry(POINT, 32613)`` and every collar is
+        ST_Transform-ed into that zone on insert, so ``ST_SRID(geom)`` returns
+        32613 for a hole anywhere on earth.
+
+        v1 of this module read ``ST_SRID(c.geom)`` as the SOURCE srid and fed
+        it the raw easting/northing. For Athabasca that is accidentally right.
+        For Alaska it read UTM zone 4N eastings as zone 13N and put the traces
+        at longitude −106.558 for collars whose true position is −160.558 —
+        measured on live Azure 2026-08-25, the same 2,500 km error this
+        session fixed in ingest_tabular, reintroduced one workflow over.
+
+        The fix removes the need to know the source CRS at all. Take the
+        collar's TRUE position from ``geom_4326`` (correct however it was
+        surveyed), pick the UTM zone that position falls in, and assemble the
+        offsets there. Offsets are collar-relative, so the only requirement on
+        the CRS is that it be metric and locally accurate — which its own zone
+        is, by construction.
+
+    Zone from longitude, hemisphere from latitude: EPSG 326xx north, 327xx
+    south. Longitude is clamped rather than wrapped — a collar at exactly
+    +180 would otherwise compute zone 61.
+    """
+    zone = int((lon + 180.0) / 6.0) + 1
+    zone = max(1, min(60, zone))
+    return (32600 if lat >= 0 else 32700) + zone
 
 
 def _dogleg_deg_per_30m(
@@ -386,14 +434,33 @@ def _clean_stations(
     return [by_depth[d] for d in sorted(by_depth)]
 
 
+#: $4 is a LINESTRING Z of metre OFFSETS about an origin of (0, 0) — not
+#: absolute coordinates. $5 is the collar's own UTM zone, $6/$7 its true
+#: lon/lat out of geom_4326.
+#:
+#: ST_Translate moves the offsets onto the collar's real position expressed
+#: in that zone, then one ST_Transform takes the whole line to 4326. The two
+#: argument form of ST_Translate leaves Z alone, which is what we want: Z is
+#: already an absolute elevation and is not a projected quantity.
+#:
+#: Building it this way is what removes the need to know the CRS the collar
+#: was surveyed in — see `_collar_local_utm` for why that is not recoverable
+#: from the row.
 _TRACE_UPSERT = """
 INSERT INTO silver.drill_traces (
     trace_id, collar_id, workspace_id, project_id,
     geom, computed_at, survey_hash, dogleg_max_deg, trace_quality, created_at
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid, $3::uuid,
-    ST_Transform(ST_SetSRID(ST_GeomFromText($4), $5::int), 4326),
-    NOW(), $6, $7, $8, NOW()
+    ST_Transform(
+        ST_Translate(
+            ST_SetSRID(ST_GeomFromText($4), $5::int),
+            ST_X(ST_Transform(ST_SetSRID(ST_MakePoint($6, $7), 4326), $5::int)),
+            ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint($6, $7), 4326), $5::int))
+        ),
+        4326
+    ),
+    NOW(), $8, $9, $10, NOW()
 )
 ON CONFLICT (collar_id) DO UPDATE SET
     geom           = EXCLUDED.geom,
@@ -417,17 +484,27 @@ async def _promote_traces(
         minimum_curvature,
     )
 
+    # lon/lat off geom_4326, NOT easting/northing.
+    #
+    # geom_4326 is transformed from the collar's real source CRS at insert,
+    # so it is correct wherever the hole was surveyed. easting/northing are
+    # raw numbers whose projection is not recorded anywhere on the row —
+    # reading them as though they were in ST_SRID(geom) is what put Alaskan
+    # traces 2,500 km east. See `_collar_local_utm`.
+    #
+    # A collar with no geom_4326 is skipped rather than guessed at: without a
+    # position there is nothing to hang metre offsets on.
     collars = await conn.fetch(
         """
-        SELECT c.collar_id, c.easting, c.northing, c.elevation,
+        SELECT c.collar_id, c.elevation,
                c.total_depth, c.azimuth, c.dip,
-               ST_SRID(c.geom) AS srid,
+               ST_X(c.geom_4326) AS lon,
+               ST_Y(c.geom_4326) AS lat,
                t.survey_hash AS existing_hash
           FROM silver.collars c
           LEFT JOIN silver.drill_traces t ON t.collar_id = c.collar_id
          WHERE c.project_id = $1::uuid
-           AND c.easting IS NOT NULL
-           AND c.northing IS NOT NULL
+           AND c.geom_4326 IS NOT NULL
         """,
         project_id,
     )
@@ -462,9 +539,13 @@ async def _promote_traces(
             continue
 
         collar_elev = float(c["elevation"]) if c["elevation"] is not None else 0.0
+        # Origin (0, 0): the interpolator returns collar + offset for east and
+        # north, so zeroing the collar makes it return the OFFSETS directly.
+        # That is what the SQL translates onto the collar's real position, and
+        # it is why no source CRS is needed.
         positions = minimum_curvature(
-            collar_easting=float(c["easting"]),
-            collar_northing=float(c["northing"]),
+            collar_easting=0.0,
+            collar_northing=0.0,
             collar_elevation=collar_elev,
             stations=[
                 SurveyStation(depth_m=d, azimuth_deg=a, dip_deg=p)
@@ -496,17 +577,19 @@ async def _promote_traces(
         # datum in the 3-D view. Fixing the shared interpolator would change
         # behaviour under callers and tests that are not ours, so the offset
         # is resolved at the one place that needs an absolute elevation.
+        #
+        # X and Y here are metre OFFSETS about (0, 0) — the SQL translates
+        # them onto the collar. Z is already absolute and is not translated.
         wkt = "LINESTRING Z (" + ", ".join(
             f"{p.east_m} {p.north_m} {collar_elev + p.elev_m}" for _, p in positions
         ) + ")"
 
-        # The trace is built in the collar's own CRS (metres), then
-        # transformed. Reading metre offsets as degrees is exactly the class
-        # of bug that put an Alaskan shapefile at longitude 400,797.
+        lon = float(c["lon"])
+        lat = float(c["lat"])
         await conn.execute(
             _TRACE_UPSERT,
             c["collar_id"], workspace_id, project_id,
-            wkt, int(c["srid"] or 4326),
+            wkt, _collar_local_utm(lon, lat), lon, lat,
             digest, dogleg_max, quality,
         )
         out.traces_written += 1
