@@ -1,0 +1,114 @@
+# Run a whitelisted database seeder against the Azure environment.
+#
+# One-off operator action: starts laravel-migrate-job with its command
+# overridden to `php artisan db:seed --class=<seeder> --force`, on the
+# image the job is already configured with (i.e. whatever CD last
+# deployed). The job's env/secret configuration is preserved, so the
+# seeder runs with the same DB credentials as migrations.
+#
+# Uses the same OIDC app registration as cd.yml (federated credential
+# subject repo:...:ref:refs/heads/main), so this workflow can only be
+# dispatched from main.
+#
+# The seeder class is a `choice` input — arbitrary commands cannot be
+# injected through the dispatch UI. Add new seeders to the options list
+# deliberately.
+
+name: Run seeder
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeder:
+        description: "Seeder class to run"
+        required: true
+        default: "TeamUserSeeder"
+        type: choice
+        options:
+          - TeamUserSeeder
+          - DemoUserSeeder
+
+concurrency:
+  group: seed-georag
+  cancel-in-progress: false
+
+env:
+  AZURE_RG: georag
+  PG_SERVER: georag-pg-cc
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    name: Run ${{ inputs.seeder }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Same reasoning as cd.yml's Postgres gate: the flexible server is
+      # stopped nightly for cost. Fail with the real story instead of a
+      # generic connection error from inside the seeder.
+      - name: Postgres gate (nightly stop window)
+        run: |
+          STATE=$(az postgres flexible-server show -g "$AZURE_RG" -n "$PG_SERVER" \
+            --query state -o tsv)
+          echo "postgres state: $STATE"
+          if [ "$STATE" != "Ready" ]; then
+            echo "::error::$PG_SERVER is '$STATE' (nightly stop window is 06:00-13:00 UTC in PDT). Re-run this workflow when the server is Ready."
+            exit 1
+          fi
+
+      - name: Run seeder via laravel-migrate-job
+        run: |
+          set -euo pipefail
+
+          # Export the job's current execution template (image + env with
+          # secretRefs) and swap only the command. Passing the full
+          # template back keeps the DB credentials the job already has.
+          az containerapp job show -g "$AZURE_RG" -n laravel-migrate-job \
+            --query properties.template -o json > template.json
+
+          python3 - "${{ inputs.seeder }}" <<'EOF'
+          import json, sys
+          seeder = sys.argv[1]
+          with open("template.json") as f:
+              t = json.load(f)
+          t["containers"][0]["command"] = [
+              "php", "artisan", "db:seed", f"--class={seeder}", "--force",
+          ]
+          # args would be appended after command; clear any configured ones.
+          t["containers"][0].pop("args", None)
+          with open("template.json", "w") as f:
+              json.dump(t, f)
+          EOF
+
+          EXEC_ID=$(az containerapp job start -g "$AZURE_RG" -n laravel-migrate-job \
+            --yaml template.json --query name -o tsv)
+          if [ -z "$EXEC_ID" ]; then
+            echo "::error::job start returned no execution name"
+            exit 1
+          fi
+          echo "execution: $EXEC_ID"
+
+          for i in $(seq 1 60); do
+            STATUS=$(az containerapp job execution show -g "$AZURE_RG" -n laravel-migrate-job \
+              --job-execution-name "$EXEC_ID" --query "properties.status" -o tsv 2>/dev/null || echo "")
+            echo "seeder job: $STATUS ($i/60)"
+            case "$STATUS" in
+              Succeeded) exit 0 ;;
+              Failed|Stopped) echo "::error::seeder execution $EXEC_ID ended as $STATUS — check Log Analytics for the container output"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::timed out waiting for seeder execution $EXEC_ID"
+          exit 1
