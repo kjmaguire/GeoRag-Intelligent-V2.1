@@ -9,8 +9,10 @@ use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
- * Pins the fifteen operational-core objects ported out of `database/raw/` and
- * into the migration chain on 2026-08-28.
+ * Pins the nineteen objects ported out of `database/raw/` and into the
+ * migration chain on 2026-08-28 — the operational core (outbox, the Layer-E
+ * workspace tables, the tool gateway, feature flags) plus the §19.3
+ * interpretation schema.
  *
  * ## Why a test rather than trusting the migration
  *
@@ -36,7 +38,10 @@ use Tests\TestCase;
  *    `phase0/95-rls-policies.sql` names them under "Tables that DO NOT get
  *    RLS", so their absence from the RLS set is deliberate and worth pinning
  *    against a well-meaning future sweep.
- * 4. The `feature_flags_audit` trigger fires and skips no-op updates.
+ * 4. Every workspace-scoped interpretation table has an index covering
+ *    workspace_id. `interpretation_comments` did not in the raw DDL, which
+ *    would have failed the Tenant Isolation Auditor the moment it existed.
+ * 5. The `feature_flags_audit` trigger fires and skips no-op updates.
  *
  * `test_every_rls_enabled_table_is_forced` in `WorkspaceRlsCoverageTest`
  * already covers FORCE globally, so it is not duplicated here.
@@ -47,7 +52,7 @@ use Tests\TestCase;
  */
 final class OperationalCoreSchemaParityTest extends TestCase
 {
-    /** Every object the 2026_08_28_1003xx migrations create. */
+    /** Every object the 2026_08_28_1000xx–1004xx migrations create. */
     private const PORTED_TABLES = [
         'outbox.pending_propagations',
         'outbox.propagation_attempts',
@@ -63,6 +68,23 @@ final class OperationalCoreSchemaParityTest extends TestCase
         'workspace.tool_invocations',
         'workspace.feature_flags',
         'workspace.feature_flag_history',
+        'interpretation.interpretation_notes',
+        'interpretation.interpretation_section_lines',
+        'interpretation.interpretation_target_zones',
+        'interpretation.interpretation_comments',
+    ];
+
+    /**
+     * Tables whose RLS policy filters on workspace_id and which therefore need
+     * an index covering it. The Tenant Isolation Auditor fails on a
+     * workspace_id column with no covering index; interpretation_comments had
+     * exactly that gap in the raw DDL and is the reason this check exists.
+     */
+    private const NEEDS_WORKSPACE_INDEX = [
+        'interpretation.interpretation_notes',
+        'interpretation.interpretation_section_lines',
+        'interpretation.interpretation_target_zones',
+        'interpretation.interpretation_comments',
     ];
 
     /**
@@ -126,7 +148,7 @@ final class OperationalCoreSchemaParityTest extends TestCase
             [],
             $missing,
             "Ported operational-core objects are missing. These are created by the\n"
-            .'2026_08_28_1000xx–1003xx migrations; if one is absent the migration chain '
+            .'2026_08_28_1000xx–1004xx migrations; if one is absent the migration chain '
             ."did not run to completion.\nMissing:\n  ".implode("\n  ", $missing),
         );
     }
@@ -168,6 +190,36 @@ final class OperationalCoreSchemaParityTest extends TestCase
             ."2026_08_14_030000_close_rls_admin_escape_hatch_verified_subset. An unset\n"
             ."app.workspace_id must admit NO rows, not every row.\n  "
             .implode("\n  ", $offenders),
+        );
+    }
+
+    #[Test]
+    public function workspace_scoped_tables_have_a_covering_index(): void
+    {
+        $missing = [];
+
+        foreach (self::NEEDS_WORKSPACE_INDEX as $qualified) {
+            [$schema, $table] = explode('.', $qualified, 2);
+
+            $row = DB::selectOne(
+                "SELECT count(*) AS n FROM pg_indexes
+                  WHERE schemaname = ? AND tablename = ?
+                    AND indexdef ILIKE '%workspace_id%'",
+                [$schema, $table],
+            );
+
+            if ((int) ($row->n ?? 0) === 0) {
+                $missing[] = $qualified;
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $missing,
+            "Every read of these tables is filtered by workspace_id through their\n"
+            ."RLS policy, so without a covering index each policy evaluation is a\n"
+            ."sequential scan — and the Tenant Isolation Auditor fails the table.\n  "
+            .implode("\n  ", $missing),
         );
     }
 

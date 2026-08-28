@@ -40,10 +40,6 @@ function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-fun
 table audit.integration_credentials_audit  # raw/phase0/80-layer-h-credentials-audit.sql
 table backups.snapshot_runs  # raw/phase0/103-section11-backups-schema.sql
 table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
-table interpretation.interpretation_comments  # raw/phase0/107-section19-3-interpretation-schema.sql
-table interpretation.interpretation_notes  # raw/phase0/107-section19-3-interpretation-schema.sql
-table interpretation.interpretation_section_lines  # raw/phase0/107-section19-3-interpretation-schema.sql
-table interpretation.interpretation_target_zones  # raw/phase0/107-section19-3-interpretation-schema.sql
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.claim_ledger  # raw/phase0/110-section7-4-claim-ledger.sql
