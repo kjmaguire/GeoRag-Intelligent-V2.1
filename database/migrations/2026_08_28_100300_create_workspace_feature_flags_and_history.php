@@ -9,7 +9,8 @@ use Illuminate\Support\Facades\DB;
  * Port `workspace.feature_flags`, `workspace.feature_flag_history` and the
  * `workspace.feature_flags_audit()` trigger function into the migration chain.
  *
- * Declared only in `database/raw/phase1/20-shadow-runs-and-feature-flags.sql`
+ * Declared only in `database/raw/_archive/phase1-20-shadow-runs-and-feature-flags.sql`
+ * (archived 2026-08-28 once both of its halves were superseded)
  * and `phase1/30-feature-flag-history.sql`, neither of which CD runs — entries
  * 29, 31 and 32 of `scripts/raw-parity-baseline.txt` (the third being the
  * function).

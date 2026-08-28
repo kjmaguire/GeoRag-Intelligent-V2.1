@@ -102,9 +102,18 @@
 #     already broken on production. The fix is repointing those at assays_v2
 #     with a column remap, then archiving raw/phase0/109.
 #
-#   workflow.activepieces_channels  -- dropped in production by
-#     2026_05_17_120000; close by archiving raw/phase0/101's block, not porting.
-#   silver.shadow_runs -- dropped by raw/phase4/90; no live writer. Same.
+#   [CLOSED 2026-08-28, batch 6] workflow.activepieces_channels and
+#     silver.shadow_runs were both archived rather than ported. Their whole
+#     declaring files turned out to be fully superseded, so each moved to
+#     database/raw/_archive/ intact:
+#       phase0/101 declared qp_credentials (migration 2026_05_14_140200),
+#         workspace_settings (2026_08_28_100600) and activepieces_channels
+#         (DROPped by 2026_05_17_120000) -- all three covered.
+#       phase1/20 declared shadow_runs (DROPped by raw/phase4/90, no live
+#         reader or writer) and workspace.feature_flags (2026_08_28_100300).
+#     docs/phase_h4_deploy_checklist.md told an operator to
+#     `psql < database/raw/phase0/101-...sql`; that step is now marked obsolete
+#     rather than left pointing at a moved file.
 #
 # This file is a to-do list, not a permission slip. The gate
 # (scripts/check-raw-migration-parity.php) fails on anything NEW, and also
@@ -132,5 +141,3 @@ function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-fun
 table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql
-table silver.shadow_runs  # raw/phase1/20-shadow-runs-and-feature-flags.sql
-table workflow.activepieces_channels  # raw/phase0/101-phase-h4-ui-tables.sql

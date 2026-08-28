@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\DB;
  *
  * Declared only in `database/raw/phase0/110-section7-4-claim-ledger.sql` and
  * `database/raw/phase0/101-phase-h4-ui-tables.sql`, neither of which CD runs.
+ * (The latter was archived to `database/raw/_archive/` once this migration and
+ * 2026_05_17_120000 covered all three of its tables.)
  *
  * ## Both have live consumers, and one of them fails closed today
  *

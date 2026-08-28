@@ -72,10 +72,11 @@ in [2026_05_12_180000…180007](../../../database/migrations/) batch. Live.
 
 ## Other
 
-`silver.shadow_runs` — [phase1/20-shadow-runs-and-feature-flags.sql](../../../database/raw/phase1/20-shadow-runs-and-feature-flags.sql).
-`silver.qp_credentials`, `silver.workspace_settings` — [phase0/101-phase-h4-ui-tables.sql](../../../database/raw/phase0/101-phase-h4-ui-tables.sql).
-`silver.claim_ledger` — [phase0/110-section7-4-claim-ledger.sql](../../../database/raw/phase0/110-section7-4-claim-ledger.sql).
-`silver.store_reconciliation_findings`, `silver.corpus_health_findings`, `silver.storage_tier_policy` — [phase0/70-layer-g-findings.sql](../../../database/raw/phase0/70-layer-g-findings.sql).
+`silver.shadow_runs` — **dropped**. Removed by `database/raw/phase4/90-drop-shadow-runs.sql`; its declaring file was archived 2026-08-28 to [_archive/phase1-20](../../../database/raw/_archive/phase1-20-shadow-runs-and-feature-flags.sql). No live reader or writer remains.
+`silver.qp_credentials` — [2026_05_14_140200](../../../database/migrations/2026_05_14_140200_provision_phase_h4_ui_tables_for_test_db.php).
+`silver.workspace_settings` — [2026_08_28_100600](../../../database/migrations/2026_08_28_100600_create_silver_claim_ledger_and_workspace_settings.php). Fail-closed RLS on both arms; carries the `allow_external_llm` egress flag.
+`silver.claim_ledger` — [2026_08_28_100600](../../../database/migrations/2026_08_28_100600_create_silver_claim_ledger_and_workspace_settings.php).
+`silver.store_reconciliation_findings`, `silver.corpus_health_findings`, `silver.storage_tier_policy` — [2026_08_28_100500](../../../database/migrations/2026_08_28_100500_create_silver_findings_and_storage_tier_tables.php).
 `silver.geological_ontology_terms`, `silver.geological_ontology_synonyms` — [2026_05_13_110000](../../../database/migrations/2026_05_13_110000_create_geological_ontology_schema.php).
 `silver.source_trust_scores`, `silver.source_trust_features` — [2026_05_13_150000](../../../database/migrations/2026_05_13_150000_create_source_trust_schema.php).
 ## Tables that do NOT exist (despite older references)
