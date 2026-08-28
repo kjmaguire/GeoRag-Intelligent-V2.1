@@ -2,9 +2,17 @@
 #
 # CD deploys by running `php artisan migrate` and nothing else, so every line
 # here is an object that has never existed on Azure — while live code queries
-# several of them (ShadowRouter reads workspace.feature_flags on every ingest
-# decision; the tool gateway inserts into workspace.tool_invocations on every
-# tool call; routers/interpretation.py reads all four interpretation.* tables).
+# several of them (routers/interpretation.py reads all four interpretation.*
+# tables; the phase0 ops agents read silver.corpus_health_findings and
+# silver.store_reconciliation_findings; app/agent/egress_gate.py reads
+# silver.workspace_settings).
+#
+# 2026-08-28: 15 entries closed — the operational core (outbox.*, the six
+# Layer-E workspace tables, the four tool-gateway tables, and feature_flags +
+# its history table and audit trigger) was ported into the migration chain by
+# 2026_08_28_100000..100300. The `outbox` SCHEMA went with them: it was created
+# only by docker/postgresql/init/10-phase0-extensions-and-schemas.sql, a Docker
+# image init script that Azure's managed Postgres never runs.
 #
 # This file is a to-do list, not a permission slip. The gate
 # (scripts/check-raw-migration-parity.php) fails on anything NEW, and also
@@ -29,7 +37,6 @@
 #     by removing/archiving the raw DDL, not by porting it.
 
 function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-function.sql
-function workspace.feature_flags_audit  # raw/phase1/30-feature-flag-history.sql
 table audit.integration_credentials_audit  # raw/phase0/80-layer-h-credentials-audit.sql
 table backups.snapshot_runs  # raw/phase0/103-section11-backups-schema.sql
 table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
@@ -37,8 +44,6 @@ table interpretation.interpretation_comments  # raw/phase0/107-section19-3-inter
 table interpretation.interpretation_notes  # raw/phase0/107-section19-3-interpretation-schema.sql
 table interpretation.interpretation_section_lines  # raw/phase0/107-section19-3-interpretation-schema.sql
 table interpretation.interpretation_target_zones  # raw/phase0/107-section19-3-interpretation-schema.sql
-table outbox.pending_propagations  # raw/phase0/40-layer-d-outbox.sql
-table outbox.propagation_attempts  # raw/phase0/40-layer-d-outbox.sql
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.claim_ledger  # raw/phase0/110-section7-4-claim-ledger.sql
@@ -49,15 +54,3 @@ table silver.store_reconciliation_findings  # raw/phase0/70-layer-g-findings.sql
 table silver.structure_measurements  # raw/phase5/30-structure-measurements-visual.sql
 table silver.workspace_settings  # raw/phase0/101-phase-h4-ui-tables.sql
 table workflow.activepieces_channels  # raw/phase0/101-phase-h4-ui-tables.sql
-table workspace.agent_permissions  # raw/phase0/108-section4-tool-gateway-schema.sql
-table workspace.agent_prompt_pins  # raw/phase0/50-layer-e-operational-contract.sql
-table workspace.agent_risk_tiers  # raw/phase0/108-section4-tool-gateway-schema.sql
-table workspace.agent_timeouts  # raw/phase0/50-layer-e-operational-contract.sql
-table workspace.approval_requirements  # raw/phase0/108-section4-tool-gateway-schema.sql
-table workspace.dry_run_outputs  # raw/phase0/50-layer-e-operational-contract.sql
-table workspace.feature_flag_history  # raw/phase1/30-feature-flag-history.sql
-table workspace.feature_flags  # raw/phase1/20-shadow-runs-and-feature-flags.sql
-table workspace.idempotency_keys  # raw/phase0/50-layer-e-operational-contract.sql
-table workspace.prompt_versions  # raw/phase0/50-layer-e-operational-contract.sql
-table workspace.tool_invocations  # raw/phase0/108-section4-tool-gateway-schema.sql
-table workspace.workspace_agent_config  # raw/phase0/50-layer-e-operational-contract.sql
