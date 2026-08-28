@@ -14,10 +14,12 @@ Phase 1.B additions (text+layout):
   - FindTablesResponse   — list[PdfTable] + cache_hit flag
 
 NOTE: Stage 1 (standalone preflight — pdf_preflight.py, PreflightReport) was
-removed 2026-08-28. It never had a caller: the live PDF path is
-app/services/ingest/pdf_report.py, which opens pikepdf directly via
-_get_cached_pikepdf. Encrypted-PDF rejection, structural repair and the
->500-page split plan are capabilities the shipped pipeline does not have.
+removed 2026-08-28, having never had a caller. Preflight itself still
+happens, in hatchet_workflows/ingest_pdf.py: sha256, %PDF- magic bytes,
+pikepdf open, page count, and rejection of genuinely password-protected
+files. What went with the deleted module is structural repair,
+linearization, the >500-page split plan, and the PreflightReport artifact —
+the shipped pipeline does none of those.
 
 NOTE: Stage 4 (Docling layout detection — LayoutRegionType, PdfLayoutRegion,
 FindLegendsResponse, GET /pdf/find_legends) was removed 2026-07-29. Docling

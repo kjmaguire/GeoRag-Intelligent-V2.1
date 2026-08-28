@@ -30,11 +30,17 @@ body_bytes
    │
    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 1 — PREFLIGHT      NOT IMPLEMENTED (removed 2026-08-28)           │
-│   The standalone preflight module never had a caller and was deleted.   │
-│   Structure validation, encrypted-PDF rejection, structural repair and  │
-│   the >500-page split plan are NOT capabilities the shipped pipeline    │
-│   has. The live path opens pikepdf directly in ingest/pdf_report.py.    │
+│ Stage 1 — PREFLIGHT      hatchet_workflows/ingest_pdf.py::preflight     │
+│   sha256 + %PDF- magic bytes + pikepdf open + page count.               │
+│   Rejects only genuinely password-protected PDFs — a permission flag    │
+│   ("no copy") is NOT a rejection; that bare /Encrypt substring test     │
+│   used to fail NI 43-101 reports that extracted fine.                   │
+│                                                                         │
+│   The standalone services/pdf_preflight.py module was deleted           │
+│   2026-08-28, having never had a caller. It is the only place structural│
+│   repair, linearization and the >500-page split plan were implemented — │
+│   the shipped pipeline does none of those, and writes no PreflightReport│
+│   to Bronze.                                                            │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -88,7 +94,7 @@ body_bytes
 
 | Stage | File | Key functions |
 |---|---|---|
-| Preflight | _(none — removed 2026-08-28, never had a caller)_ | — |
+| Preflight | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `preflight()` — sha256, magic bytes, pikepdf open, page count, password-protected rejection |
 | Native text | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) | `extract_native_text_pages()` (PyMuPDF primary; pdfminer fallback) |
 | Tables | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) + [pdf_layout.py](../../../src/fastapi/app/services/pdf_layout.py) | `extract_tables_diverse()` — pdfplumber + camelot strategies |
 | OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [document_intelligence_client.py](../../../src/fastapi/app/services/ingest/document_intelligence_client.py) | Azure Document Intelligence primary, tiled oversized-page reconstruction, Tesseract fallback |
