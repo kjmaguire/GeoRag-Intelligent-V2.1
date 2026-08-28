@@ -48,8 +48,6 @@ from starlette.responses import Response  # for /metrics return-type resolution
 from app.config import settings
 from app.db.dsn import build_dsn, redact_dsn
 from app.logging_config import configure_json_logging
-from app.services.qdrant_conn import qdrant_client_kwargs
-
 from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
 from app.routers import (
     admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
@@ -77,6 +75,7 @@ from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
 # the app emits a structured payload Promtail can ingest with a single

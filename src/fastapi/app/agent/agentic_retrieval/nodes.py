@@ -1168,7 +1168,6 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # Best-effort: any failure inside the prep pipeline logs but does
     # NOT block the answer path — we fall back to the legacy path so
     # the user still gets an answer (degraded, but not broken).
-    prep_audit_for_state: Any = None
     if (
         _settings.CONTEXT_PREP_ENABLED
         and state.evidence_packet is not None
@@ -1191,7 +1190,6 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 ),
             )
             state.evidence_packet = prepared.packet
-            prep_audit_for_state = prepared
             # Plan §3 — stash the audit payload on state so persist_node
             # writes it to silver.query_traces.context_prep_audit JSONB.
             try:
