@@ -43,10 +43,6 @@ services:
     container_name: smoke-minio
   minio-init:
     container_name: smoke-minio-init
-  vllm:
-    container_name: smoke-vllm
-  vllm-warmup:
-    container_name: smoke-vllm-warmup
   hatchet-lite:
     container_name: smoke-hatchet
   hatchet-worker:
