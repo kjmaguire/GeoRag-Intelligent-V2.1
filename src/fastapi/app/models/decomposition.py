@@ -965,9 +965,10 @@ class ClaimVerification(BaseModel):
             "Citation provenance from the binding step.  "
             "Set to Citation.source_chunk_id for 'passed' claims; None for "
             "'revised' / 'refused' (unbound) claims.  "
-            "Consumed by Phase 5 spatial/temporal verifiers to resolve geometry "
-            "and document dates (replaces the old source_chunk_id_hint getattr "
-            "workaround in spatial_temporal_verify.py).  "
+            "Designed for Phase 5 spatial/temporal verifiers to resolve geometry "
+            "and document dates (replacing an older source_chunk_id_hint getattr "
+            "workaround). No consumer remains: spatial_temporal_verify.py was "
+            "deleted 2026-08-28 as unreachable.  "
             "Optional for backward compat — existing JSONB rows without this "
             "field deserialise correctly (None default)."
         ),

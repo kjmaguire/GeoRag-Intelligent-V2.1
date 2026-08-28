@@ -2093,9 +2093,12 @@ async def search_documents(
             # calibrated [0, 1] probability — sigmoiding an already-[0,1]
             # value a second time compresses every foundry score into
             # roughly [0.5, 0.73], silently corrupting every downstream
-            # min_relevance gate (plan_executor.py, decomposer.py — a §04i
-            # Layer-1 retrieval-quality check) since those thresholds
-            # (0.5-0.6) assume a real [0,1] calibration. Caught in a live
+            # min_relevance gate (the §04i Layer-1 retrieval-quality check
+            # in plan_executor.py; decomposer.py was deleted 2026-08-28 as
+            # unreachable, and plan_executor has no production caller) since
+            # those thresholds (0.5-0.6) assume a real [0,1] calibration.
+            # The corruption described here is real for any caller that
+            # reaches those gates; today none does. Caught in a live
             # review session; only sort order was unaffected (sorting
             # happens on the pre-transform score either way).
             import math

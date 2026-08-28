@@ -74,6 +74,15 @@ EXEMPT: dict[str, str] = {
         "documented NOT WIRED; the escalation that exists is the log-marker "
         "route through georag-alerts-ag. Deleting it also deletes its tests"
     ),
+    "app/services/target_recommendation/sme_content/athabasca_uranium.py": (
+        "NOT dead -- a dynamic-import target. sme_content/seed_runner.py "
+        "resolves SME content with importlib.import_module(module_path) and "
+        "its own docstring names this module as the example path; "
+        "sme_content/__main__.py passes it on the command line. This is the "
+        "exact blind spot the module docstring warns about, and it is listed "
+        "here so a future cleanup pass does not delete a reachable module "
+        "because a static scan could not see the call"
+    ),
 }
 
 

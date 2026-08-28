@@ -1226,11 +1226,13 @@ class Settings(BaseSettings):
     # different scale ([0,1] calibrated probability vs. the cross-encoder
     # backends' unbounded logit). 0.2 is a "clearly irrelevant" floor per
     # Cohere's documented score semantics — looser than the 0.5-0.6
-    # min_relevance gates applied further downstream in decomposer.py /
-    # plan_executor.py (§04i Layer 1), which are a second, stricter
-    # per-sub-query gate operating on the SAME post-transform [0,1] scale;
-    # this threshold only needs to reject the obviously-irrelevant tail at
-    # the search_documents stage, not duplicate that later gate. Re-tune
+    # min_relevance gates in the §04i Layer 1 planner path. Read that
+    # comparison with care: it described a second, stricter per-sub-query
+    # gate on the SAME post-transform [0,1] scale, but that gate does not
+    # run. decomposer.py was deleted 2026-08-28 as unreachable, and
+    # plan_executor.py has no production caller either. This threshold is
+    # therefore the ONLY retrieval-quality gate actually applied today, not
+    # a loose first pass backed by a stricter one downstream. Re-tune
     # against golden_queries (scripts/run_eval_120.py) before changing.
     RERANKER_SCORE_THRESHOLD_FOUNDRY: float = 0.2
 
