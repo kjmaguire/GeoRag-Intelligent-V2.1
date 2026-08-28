@@ -241,7 +241,8 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
             # and `georag-alerts-ag` turns it into email — the same shape
             # answer_quality_watch uses, and the only outbound path the
             # platform actually has. (services/dispatchers/pagerduty.py
-            # looks like a second one; it has never been wired.)
+            # looked like a second one; it was never wired, and was
+            # deleted 2026-08-28.)
             #
             # No workspace name, no query text: a workspace id, two
             # dollar figures and a window. Enough to act on, nothing that

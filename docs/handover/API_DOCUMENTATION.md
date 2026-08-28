@@ -383,7 +383,7 @@ Full inventory in `HANDOVER_MANIFEST.md` §1. Grouped by URL family below.
 | `GlobalTimeoutMiddleware` | Returns 504 over `REQUEST_TIMEOUT_S` (30s default) |
 | `StructuredAccessLogMiddleware` | JSON access log + W3C traceparent |
 
-Per-resource timeout budgets (`app/config.py`): `TIMEOUT_POSTGIS_S=5`, `TIMEOUT_NEO4J_S=3`, `TIMEOUT_QDRANT_S=2`, `TIMEOUT_RERANKER_S=8`, `TIMEOUT_REDIS_S=0.5`, `TIMEOUT_GATHER_S=8`, `AGENTIC_TIMEOUT_S=10`, `KESTRA_HTTP_TIMEOUT_S=5`, `PAGERDUTY_HTTP_TIMEOUT_S=5`.
+Per-resource timeout budgets (`app/config.py`): `TIMEOUT_POSTGIS_S=5`, `TIMEOUT_NEO4J_S=3`, `TIMEOUT_QDRANT_S=2`, `TIMEOUT_RERANKER_S=8`, `TIMEOUT_REDIS_S=0.5`, `TIMEOUT_GATHER_S=8`, `AGENTIC_TIMEOUT_S=10`.
 
 ### 5.5 FastAPI slowapi rate limits
 

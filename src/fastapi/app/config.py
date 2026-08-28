@@ -794,19 +794,6 @@ class Settings(BaseSettings):
     # this is the broader ceiling.
     REPAIR_LOOP_MAX_ATTEMPTS: int = 2
 
-    # PagerDuty Events API v2 for escalation_routing. When the integration
-    # key is empty, the agent returns its advisory recommendation only
-    # (no outbound page). When set, the agent POSTs an Events v2 trigger
-    # event keyed on the ticket_id (dedup_key) so re-routing the same ticket
-    # updates the existing incident rather than creating duplicates.
-    #
-    # Integration key is the per-service routing key from PagerDuty's
-    # service settings (Settings → Services → <service> → Integrations).
-    # The default API URL points at PagerDuty's global Events v2 endpoint.
-    PAGERDUTY_INTEGRATION_KEY: str = ""
-    PAGERDUTY_API_URL: str = "https://events.pagerduty.com/v2/enqueue"
-    PAGERDUTY_HTTP_TIMEOUT_S: float = 5.0
-
     # Retrieval cache — Phase H finally lit it up properly.
     #
     # History:

@@ -38,10 +38,11 @@ APP = REPO / "src" / "fastapi" / "app"
 #: Where a PRODUCTION importer can live. Deliberately not tests/.
 #:
 #: A module imported only by its own test file is exactly the case this
-#: report exists for: services/dispatchers/pagerduty.py has a full passing
-#: test suite and no caller, so CI reads as "PagerDuty alerting verified"
-#: while nothing dispatches to it. Counting the test as an importer would
-#: hide the one orphan whose tests make it look alive.
+#: report exists for. The worked example was services/dispatchers/pagerduty.py:
+#: a full passing test suite and no caller, so CI read as "PagerDuty alerting
+#: verified" while nothing dispatched to it. It was deleted 2026-08-28, which
+#: is the outcome this rule exists to produce. Counting a test as an importer
+#: would hide the next orphan whose tests make it look alive.
 APP_ROOTS = [APP, REPO / "src" / "fastapi" / "scripts"]
 
 #: Searched separately, only to annotate an orphan as test-covered.
@@ -69,15 +70,6 @@ EXEMPT: dict[str, str] = {
         "documented NOT WIRED with a stated prerequisite (a GIN trigram "
         "index on silver.document_passages that no migration creates); "
         "wiring it without that turns a Qdrant outage into a Postgres one"
-    ),
-    "app/services/dispatchers/pagerduty.py": (
-        "documented NOT WIRED; the escalation that exists is the log-marker "
-        "route through georag-alerts-ag. Deleting it also deletes its tests. "
-        "Re-confirmed 2026-08-28: the ONLY importer is its own package "
-        "re-export in dispatchers/__init__.py -- no application code calls "
-        "create_pagerduty_incident, PAGERDUTY_INTEGRATION_KEY is empty and "
-        "set on no container app. The stale-exemption check below discounts "
-        "that self-re-export so this entry does not read as resolved"
     ),
     "app/services/target_recommendation/sme_content/athabasca_uranium.py": (
         "NOT dead -- a dynamic-import target. sme_content/seed_runner.py "
@@ -258,13 +250,15 @@ def main() -> int:
 
     # Stale exemptions: an entry that now HAS an importer.
     #
-    # A package re-export does not count. `dispatchers/__init__.py` carries
-    # `from app.services.dispatchers.pagerduty import create_pagerduty_incident`
-    # purely to widen the package surface; that made this check report the
-    # pagerduty exemption stale while the module still had no caller -- the
-    # exact orphan the report exists to surface, marked resolved by the fact
-    # that it sits next to an `__init__.py`. Only importers OUTSIDE the
-    # module's own package are evidence of use.
+    # A package re-export does not count. `dispatchers/__init__.py` used to
+    # carry `from app.services.dispatchers.pagerduty import
+    # create_pagerduty_incident` purely to widen the package surface, and that
+    # made this check report the pagerduty exemption stale while the module
+    # still had no caller -- the exact orphan the report exists to surface,
+    # marked resolved by the fact that it sat next to an `__init__.py`. (Both
+    # are gone as of 2026-08-28; the rule stays, because the next package to
+    # grow an `__init__` re-export would hit it again.) Only importers OUTSIDE
+    # the module's own package are evidence of use.
     #
     # This narrower rule is applied here and NOT to the orphan scan above,
     # where a package `__init__` that imports its siblings is often the real

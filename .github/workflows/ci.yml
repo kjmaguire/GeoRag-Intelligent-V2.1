@@ -436,9 +436,9 @@ jobs:
       # lines across ten modules with no importer, on top of ~1,700 lines of
       # hallucination layers and ~630 lines of prompt modules deleted the
       # same week. Dead code is cheap on its own; what it costs is belief —
-      # services/dispatchers/pagerduty.py has a full passing test file, so
-      # CI reads as "PagerDuty alerting verified" while nothing dispatches
-      # to it.
+      # services/dispatchers/pagerduty.py had a full passing test file, so
+      # CI read as "PagerDuty alerting verified" while nothing dispatched
+      # to it. It was deleted 2026-08-28; the report is what surfaced it.
       #
       # Deleting them has a blast radius (several have tests, and CLAUDE.md
       # puts test removal behind approval). Measuring them does not, and a
