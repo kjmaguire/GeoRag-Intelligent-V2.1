@@ -332,7 +332,7 @@ return new class extends Migration
         }
 
         if ($missing !== []) {
-            throw new \RuntimeException(
+            throw new RuntimeException(
                 'interpretation.* is split across owners: '.implode(', ', $foreign)
                 .' already exist under another role while '.implode(', ', $missing)
                 ." are missing. No supported path produces this. Reassign ownership of\n"
