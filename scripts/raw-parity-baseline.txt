@@ -62,6 +62,50 @@
 #   phase5-20-cross-section-panels.sql already set. Neither was in
 #   manifest.json, so db:apply-raw is unaffected.
 #
+# 2026-08-28 (batch 5): 2 more closed, 8 -> 6, by 2026_08_28_100700.
+#   audit.integration_credentials_audit was NOT dormant work. It is the one
+#   relation raw/phase0/98-rls-tenant-isolation-block3.sql operates on that no
+#   other path creates, and 98 IS manifest entry 4 - so db:apply-raw runs it.
+#   98 is wrapped BEGIN;(36) ... COMMIT;(419) and ApplyRawSql runs it whole,
+#   so the missing table made the WHOLE FILE a no-op, not just the statements
+#   after it: reproduced on PG16, the 42P01 aborts the transaction and the
+#   closing COMMIT executes as a ROLLBACK, taking back the statements that had
+#   already succeeded. All 65 of block 3's ALTER/CREATE POLICY/CREATE INDEX/
+#   UPDATE statements. The manifest's `requires` guard exists to prevent
+#   exactly this and simply had not been told about the table; it is now
+#   listed there too.
+#   backups.snapshot_runs needed the same foreign-ownership stand-down as
+#   interpretation (predicted above, and confirmed: `permission denied for
+#   schema backups` for a naive CREATE TABLE as georag_ci).
+#
+# THE REMAINING 6 ARE NOT A TO-DO LIST. None should be closed by porting:
+#
+#   gold.h3_density_mineral + function silver.density_choropleth_h3
+#     NOT PORTABLE, and porting them would break `php artisan migrate` on
+#     Azure. The table's h3_index column has type `h3index`, supplied by the
+#     `h3` extension, and routers/visualizations.py::_h3_capability_missing
+#     already documents why that is permanent: h3 is absent from Azure
+#     Flexible Server's azure.extensions allowedValues, so CREATE EXTENSION h3
+#     can never succeed there regardless of privileges. A migration creating
+#     either object would fail with `type "h3index" does not exist` and stop
+#     the chain. The heatmap is capability-gated in the router precisely
+#     because of this, and test_target_heatmap_capability_gate.py pins it.
+#     SEPARATE DEFECT, unrelated to deployment: density_choropleth_h3 calls
+#     silver.h3_cell_to_boundary_geometry(d.h3_index) twice, and that function
+#     is not defined anywhere in this repository. It is LANGUAGE plpgsql, so
+#     CREATE succeeds and only invocation fails - which is why nobody has hit
+#     it. The function is incomplete even on a cluster that HAS h3.
+#
+#   silver.assays + silver.assay_samples
+#     App change, not DDL. assays_v2 is the canonical table; the legacy names
+#     are queried by CsvAssaysExporter.php and part of visualizations.py, both
+#     already broken on production. The fix is repointing those at assays_v2
+#     with a column remap, then archiving raw/phase0/109.
+#
+#   workflow.activepieces_channels  -- dropped in production by
+#     2026_05_17_120000; close by archiving raw/phase0/101's block, not porting.
+#   silver.shadow_runs -- dropped by raw/phase4/90; no live writer. Same.
+#
 # This file is a to-do list, not a permission slip. The gate
 # (scripts/check-raw-migration-parity.php) fails on anything NEW, and also
 # fails when a line here is closed but left behind — so the list can only
@@ -85,8 +129,6 @@
 #     by removing/archiving the raw DDL, not by porting it.
 
 function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-function.sql
-table audit.integration_credentials_audit  # raw/phase0/80-layer-h-credentials-audit.sql
-table backups.snapshot_runs  # raw/phase0/103-section11-backups-schema.sql
 table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql

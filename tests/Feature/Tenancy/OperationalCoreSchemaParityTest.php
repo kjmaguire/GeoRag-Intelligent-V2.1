@@ -9,11 +9,12 @@ use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
- * Pins the twenty-four objects ported out of `database/raw/` and into the
+ * Pins the twenty-six objects ported out of `database/raw/` and into the
  * migration chain on 2026-08-28 — the operational core (outbox, the Layer-E
  * workspace tables, the tool gateway, feature flags), the §19.3 interpretation
- * schema, the Layer-G silver findings tables, and the §7.4 claim ledger plus
- * Phase-H4 workspace settings.
+ * schema, the Layer-G silver findings tables, the §7.4 claim ledger plus
+ * Phase-H4 workspace settings, and the Layer-H credentials audit plus the
+ * §11.1 backup registry.
  *
  * ## Why a test rather than trusting the migration
  *
@@ -69,7 +70,7 @@ use Tests\TestCase;
  */
 final class OperationalCoreSchemaParityTest extends TestCase
 {
-    /** Every object the 2026_08_28_1000xx–1006xx migrations create. */
+    /** Every object the 2026_08_28_1000xx–1007xx migrations create. */
     private const PORTED_TABLES = [
         'outbox.pending_propagations',
         'outbox.propagation_attempts',
@@ -94,6 +95,8 @@ final class OperationalCoreSchemaParityTest extends TestCase
         'silver.storage_tier_policy',
         'silver.claim_ledger',
         'silver.workspace_settings',
+        'audit.integration_credentials_audit',
+        'backups.snapshot_runs',
     ];
 
     /**
@@ -120,6 +123,7 @@ final class OperationalCoreSchemaParityTest extends TestCase
         'silver.storage_tier_policy',
         'silver.claim_ledger',
         'silver.workspace_settings',
+        'audit.integration_credentials_audit',
     ];
 
     /**
@@ -183,7 +187,7 @@ final class OperationalCoreSchemaParityTest extends TestCase
             [],
             $missing,
             "Ported operational-core objects are missing. These are created by the\n"
-            .'2026_08_28_1000xx–1006xx migrations; if one is absent the migration chain '
+            .'2026_08_28_1000xx–1007xx migrations; if one is absent the migration chain '
             ."did not run to completion.\nMissing:\n  ".implode("\n  ", $missing),
         );
     }
@@ -503,6 +507,59 @@ final class OperationalCoreSchemaParityTest extends TestCase
             'claim_ledger USING is no longer fail-open. That is very likely an '
             .'improvement, but it changes what an unbound reader sees — update this '
             .'assertion deliberately rather than deleting it.',
+        );
+    }
+
+    /**
+     * audit.integration_credentials_audit must exist, because
+     * raw/phase0/98-rls-tenant-isolation-block3.sql ALTERs it at line 123
+     * while being manifest entry 4 — and that file is one BEGIN…COMMIT that
+     * ApplyRawSql runs whole. With the table absent the 42P01 aborts the
+     * transaction and the COMMIT executes as a ROLLBACK, so ALL 65 of block
+     * 3's statements come back off, including ones that had already
+     * succeeded. Its own creating file (raw/phase0/80) adds no RLS, so the
+     * policy is asserted too: without it this table would fail
+     * WorkspaceRlsCoverageTest, which sweeps the audit schema.
+     */
+    #[Test]
+    public function the_credentials_audit_unblocks_raw_block_three(): void
+    {
+        $manifest = json_decode(
+            (string) file_get_contents(base_path('database/raw/manifest.json')),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+
+        $blockThree = null;
+
+        foreach ($manifest['files'] as $entry) {
+            if ($entry['path'] === 'phase0/98-rls-tenant-isolation-block3.sql') {
+                $blockThree = $entry;
+
+                break;
+            }
+        }
+
+        $this->assertNotNull($blockThree, 'block 3 left the manifest — re-check this test.');
+        $this->assertContains(
+            'audit.integration_credentials_audit',
+            $blockThree['requires'] ?? [],
+            "block 3 ALTERs audit.integration_credentials_audit but no longer declares it as a\n"
+            ."prerequisite. ApplyRawSql only skips a file whose declared requires are absent, so\n"
+            ."dropping this name lets the file run against a cluster without the table — where\n"
+            .'its single transaction aborts and rolls back all 65 of its statements.',
+        );
+
+        $policy = DB::selectOne(
+            'SELECT qual FROM pg_policies
+              WHERE schemaname = ? AND tablename = ? AND policyname = ?',
+            ['audit', 'integration_credentials_audit', 'integration_credentials_audit_workspace_isolation'],
+        );
+
+        $this->assertNotNull(
+            $policy,
+            'The table has a workspace_id column and the audit schema is inside '
+            .'the sweep in WorkspaceRlsCoverageTest, so it needs the policy block 3 installs.',
         );
     }
 }
