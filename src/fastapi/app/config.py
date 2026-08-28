@@ -1229,10 +1229,10 @@ class Settings(BaseSettings):
     # min_relevance gates in the §04i Layer 1 planner path. Read that
     # comparison with care: it described a second, stricter per-sub-query
     # gate on the SAME post-transform [0,1] scale, but that gate does not
-    # run. decomposer.py was deleted 2026-08-28 as unreachable, and
-    # plan_executor.py has no production caller either. This threshold is
-    # therefore the ONLY retrieval-quality gate actually applied today, not
-    # a loose first pass backed by a stricter one downstream. Re-tune
+    # exist: decomposer.py and plan_executor.py were both deleted
+    # 2026-08-28, neither having had a production caller. This threshold is
+    # therefore the ONLY retrieval-quality gate applied today, not a loose
+    # first pass backed by a stricter one downstream. Re-tune
     # against golden_queries (scripts/run_eval_120.py) before changing.
     RERANKER_SCORE_THRESHOLD_FOUNDRY: float = 0.2
 
