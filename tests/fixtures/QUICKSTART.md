@@ -69,16 +69,11 @@ Expected sizes:
 
 ## Copy to Dagster
 
-```bash
-# Automatic
-bash tests/fixtures/copy_to_dagster.sh
-
-# Manual
-mkdir -p src/dagster/tests/fixtures/{excel,seismic,xyz}
-cp tests/fixtures/excel/PLS_collars.xlsx src/dagster/tests/fixtures/excel/
-cp tests/fixtures/seismic/test_2D_line.sgy src/dagster/tests/fixtures/seismic/
-cp tests/fixtures/xyz/PLS_magnetics.xyz src/dagster/tests/fixtures/xyz/
-```
+> **Removed 2026-08-28.** These fixtures used to be copied into
+> `src/dagster/tests/fixtures/` for ingestion-pipeline testing. The Dagster
+> tree was dormant from 2026-07-28 and deleted on 2026-08-28, along with the
+> `copy_to_dagster.sh` helper. Ingestion is exercised through the Hatchet
+> workflows and the FastAPI test suite; nothing needs copying anywhere.
 
 ## What Each Fixture Tests
 
@@ -131,11 +126,6 @@ pip install openpyxl
 **Missing segyio?**
 ```bash
 pip install segyio numpy
-```
-
-**Permission denied on copy_to_dagster.sh?**
-```bash
-chmod +x tests/fixtures/copy_to_dagster.sh
 ```
 
 **Generator says "ERROR"?**

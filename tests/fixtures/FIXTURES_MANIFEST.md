@@ -215,28 +215,11 @@ docker run --rm -v "$(pwd):/work" -w /work/tests/fixtures/xyz \
 
 Fixtures must also be available to the Dagster ingestion pipeline container. Copy to:
 
-```
-src/dagster/tests/fixtures/
-├── excel/
-│   └── PLS_collars.xlsx
-├── seismic/
-│   └── test_2D_line.sgy
-└── xyz/
-    └── PLS_magnetics.xyz
-```
-
-**Copy script:**
-```bash
-bash tests/fixtures/copy_to_dagster.sh
-```
-
-Or manually:
-```bash
-mkdir -p src/dagster/tests/fixtures/{excel,seismic,xyz}
-cp tests/fixtures/excel/PLS_collars.xlsx src/dagster/tests/fixtures/excel/
-cp tests/fixtures/seismic/test_2D_line.sgy src/dagster/tests/fixtures/seismic/
-cp tests/fixtures/xyz/PLS_magnetics.xyz src/dagster/tests/fixtures/xyz/
-```
+> **Removed 2026-08-28.** These fixtures used to be copied into
+> `src/dagster/tests/fixtures/` for ingestion-pipeline testing. The Dagster
+> tree was dormant from 2026-07-28 and deleted on 2026-08-28, along with the
+> `copy_to_dagster.sh` helper. Ingestion is exercised through the Hatchet
+> workflows and the FastAPI test suite; nothing needs copying anywhere.
 
 ---
 
@@ -269,7 +252,6 @@ tests/fixtures/
 ├── FIXTURES_MANIFEST.md            # This file
 ├── FIXTURE_GENERATION.md           # Detailed generation guide
 ├── generate_all_fixtures_v2.py     # Master generator script
-├── copy_to_dagster.sh              # Copy script for Dagster
 │
 ├── excel/
 │   ├── generate_test_xlsx.py       # Excel generator

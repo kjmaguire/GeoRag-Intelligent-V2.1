@@ -83,6 +83,23 @@ EXEMPT: dict[str, str] = {
         "here so a future cleanup pass does not delete a reachable module "
         "because a static scan could not see the call"
     ),
+    "app/services/silver_dq_flag_writer.py": (
+        "documented NOT WIRED, and its own banner records the decision: "
+        "'Kept rather than deleted because the helper itself is complete and "
+        "correct, and the rules are a real roadmap item rather than "
+        "abandoned work.' The five rule families it serves lived in the "
+        "Dagster asset graph, deleted 2026-08-28, so silver.data_quality_flags "
+        "now has no writer on any path"
+    ),
+    "app/services/ingest/csv_collar_ingester.py": (
+        "documented NO PRODUCTION CALLERS, kept pending an owner decision "
+        "its own banner states: Laravel's UploadController still 422s "
+        "category=collar/category=assay uploads, and this is the obvious "
+        "module to wire a restored direct-upload path to. The banner is "
+        "explicit that if that is not the plan, this file and its two test "
+        "modules should be deleted -- that call belongs to the SME, not to a "
+        "cleanup pass"
+    ),
 }
 
 
