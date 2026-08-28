@@ -9,7 +9,7 @@ Counts produced:
   - new_ingestion_count        — ingest_pdf.* audit anchors in window
   - new_public_record_count    — public_geo.pull.complete audits
   - updated_public_record_count — public_geo.pull.updated audits
-  - new_claim_count            — silver.claim_ledger inserts in window
+  - new_claim_count            — silver.claim_ledger inserts in window (live)
                                   (synthetic stub — table may not exist yet)
   - target_score_shift_count   — synthetic stub (deposits when the
                                   §18 scoring workflow graduates with
@@ -187,6 +187,25 @@ async def execute(input: WhatChangedInput, ctx: Context) -> WhatChangedOutput:
                     )
                     or 0
                 )
+                # silver.claim_ledger landed in the migration chain on
+                # 2026-08-28 (migration 2026_08_28_100600). Until then this
+                # count was hardcoded to 0 with a "table not present yet"
+                # comment, which stayed correct only for as long as the
+                # table was missing. No guard around the query: the sibling
+                # counts above do not guard either, and a 42P01 here now
+                # means the migration did not run -- which is worth failing
+                # on rather than reporting a silent zero.
+                claims = (
+                    await conn.fetchval(
+                        """
+                        SELECT count(*) FROM silver.claim_ledger
+                         WHERE workspace_id = $1::uuid
+                           AND created_at >= $2 AND created_at < $3
+                        """,
+                        workspace_str, input.window_start, input.window_end,
+                    )
+                    or 0
+                )
                 total_audits = (
                     await conn.fetchval(
                         """
@@ -216,6 +235,7 @@ async def execute(input: WhatChangedInput, ctx: Context) -> WhatChangedOutput:
                         "new_ingestion_count": ingest,
                         "new_public_record_count": new_public,
                         "updated_public_record_count": updated_public,
+                        "new_claim_count": claims,
                         "new_decision_count": decisions,
                         "new_hypothesis_count": hypotheses,
                         "new_support_ticket_count": support_tickets,
@@ -225,9 +245,9 @@ async def execute(input: WhatChangedInput, ctx: Context) -> WhatChangedOutput:
 
         log.info(
             "what_changed_detector.task_completed workspace=%s "
-            "ingest=%d public_new=%d public_updated=%d decisions=%d "
-            "hypotheses=%d support=%d total_audits=%d",
-            workspace_str, ingest, new_public, updated_public,
+            "ingest=%d public_new=%d public_updated=%d claims=%d "
+            "decisions=%d hypotheses=%d support=%d total_audits=%d",
+            workspace_str, ingest, new_public, updated_public, claims,
             decisions, hypotheses, support_tickets, total_audits,
         )
 
@@ -269,7 +289,7 @@ async def execute(input: WhatChangedInput, ctx: Context) -> WhatChangedOutput:
             new_ingestion_count=ingest,
             new_public_record_count=new_public,
             updated_public_record_count=updated_public,
-            new_claim_count=0,  # silver.claim_ledger table not present yet
+            new_claim_count=claims,
             target_score_shift_count=0,  # awaits §18 scoring delta detection
             new_decision_count=decisions,
             new_hypothesis_count=hypotheses,
