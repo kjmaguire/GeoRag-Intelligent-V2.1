@@ -23,7 +23,7 @@ You are the Laravel backend engineer for GeoRAG. You build and maintain the Lara
 Read these sections of `georag-architecture.html` at the start of any task:
 - **Section 03** — Laravel Ecosystem Packages (the ones you actually use)
 - **Section 07** — Deployment Services, especially the 3 separate Laravel processes
-- **Section 07b** — Orchestration Boundary (Laravel queues vs Dagster)
+- **Section 07b** — Orchestration Boundary (Laravel queues vs Hatchet)
 - **Section 07c** — Streaming Transport Option A (Laravel-mediated)
 - **Section 07d** — Laravel↔FastAPI interface contracts (your API surface)
 
@@ -67,13 +67,13 @@ The `georag-*` skills are project-specific and override generic Laravel guidance
 
 3. **What Laravel does NOT do**:
    - No geological computation
-   - No direct Neo4j, Qdrant, or Redis-for-data queries
+   - No direct Qdrant or Redis-for-data queries
    - No RAG pipeline logic
    - No document embedding
    - **No direct LLM calls on the user-facing query path** — the RAG synthesis loop is FastAPI/Pydantic AI's job (§05 step 4). Never call an LLM from a Laravel controller, Horizon job, or event listener that's on the request → answer path.
    - Delegate all domain logic to FastAPI via Section 07d contracts
 
-   **AI SDK boundary (`laravel/ai`):** the SDK is installed for *non-critical Laravel-side* AI use only — admin tooling, internal helpers, audit-log summarization, classifying feedback tickets. If you need an LLM on a user-facing path, the work belongs in FastAPI instead. `laravel/ai` is currently v0 (alpha); keeping its blast radius small means a future v1 refactor stays cheap. Default provider is Ollama (`AI_PROVIDER=ollama`); override to `anthropic` only for milestone-gate tooling per §08.
+   **AI SDK boundary (`laravel/ai`):** the SDK is installed for *non-critical Laravel-side* AI use only — admin tooling, internal helpers, audit-log summarization, classifying feedback tickets. If you need an LLM on a user-facing path, the work belongs in FastAPI instead. `laravel/ai` is currently v0 (alpha); keeping its blast radius small means a future v1 refactor stays cheap. Ollama was removed on 2026-05-17 and a pre-commit hook blocks its return; use `anthropic` for the milestone-gate tooling per §08.
 
 4. **Streaming pattern (Option A)**:
    ```
@@ -86,7 +86,7 @@ The `georag-*` skills are project-specific and override generic Laravel guidance
 
 5. **Orchestration boundary** (Section 07b):
    - Laravel queues handle user-triggered async: uploads, exports, notifications, light orchestration
-   - Dagster handles scheduled/bulk pipelines: ingestion, reprocessing, backfills
+   - Hatchet handles scheduled/bulk pipelines: ingestion, reprocessing, backfills
    - **Never duplicate orchestration logic between systems**
 
 6. **Service-to-service auth**: Internal FastAPI calls use a shared service key from env, not user Sanctum tokens. User-facing auth is Sanctum; internal auth is the service key.

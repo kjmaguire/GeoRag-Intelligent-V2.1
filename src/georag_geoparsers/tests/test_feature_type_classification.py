@@ -12,9 +12,10 @@ WHY THIS TEST EXISTS
 
     The fix introduced FEATURE_TYPES and _TYPE_RULES. Nothing tested it.
     That is the gap this file closes, and it is the one place where the
-    live parser has genuinely diverged from the frozen src/dagster copy
-    the ported tests came from -- so it is exactly where the ported tests
-    have nothing to say.
+    live parser had genuinely diverged from the frozen src/dagster copy
+    the ported tests came from -- so it is exactly where those ported
+    tests had nothing to say. That copy was deleted on 2026-08-28; this
+    file remains the only coverage of the classifier.
 
     None of this needs geopandas: spatial_parser imports the geospatial
     stack lazily, inside the read functions.

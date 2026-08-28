@@ -252,7 +252,6 @@ The `LLM_BACKEND` env var picks the inference path; `MAX_VALIDATION_RETRIES` bou
 
 | Scenario | `LLM_BACKEND` | `MAX_VALIDATION_RETRIES` |
 |---|---|---|
-| Dev / single-workstation | `ollama` | 2 (default) |
 | Air-gapped on-prem | `vllm` | 2 (default) |
 | Premium / milestone-gate | `anthropic` (Opus 4.7) | **1** — Opus self-corrects in the first call; second retry is wasted spend |
 

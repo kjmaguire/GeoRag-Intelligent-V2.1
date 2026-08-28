@@ -63,7 +63,7 @@ Laravel code can rely on the following invariants holding when it receives a `qu
 | Guard | Invariant Laravel can assume after `query.validated` |
 |---|---|
 | Numeric grounding | Every number (grade, depth, tonnage, coords) is supported within tolerance by attached citations |
-| Entity grounding | Every named entity (project, hole, formation, QP, operator) resolves to a Neo4j node ID present in the bound evidence set |
+| Entity grounding | Every named entity (project, hole, formation, QP, operator) resolves to a grounding record present in the bound evidence set |
 | Citation completeness | Every paragraph in the answer carries ≥1 resolved citation span (or is explicitly marked uncited per §10r partial-failure rules) |
 | Refusal path | If grounding failed after retries, FastAPI emits `query.refusal`, **not** `query.validated`. Never both. |
 

@@ -831,7 +831,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Config (all optional — defaults target the in-network vllm service):
     #   PDF_VL_MODEL_ID    — model identifier (default: "Qwen/Qwen2.5-VL-7B-Instruct")
     #   PDF_VL_BACKEND     — "vllm" | "anthropic" (default: "vllm")
-    #   PDF_VL_BACKEND_URL — full base URL (default: "http://vllm:8000/v1")
+    #   PDF_VL_BACKEND_URL — full base URL (no default; the local vLLM
+    #                        service was removed 2026-07-30)
     #   PDF_VL_TIMEOUT_S   — inference timeout in seconds (default: 120)
     #   PDF_VL_MAX_PAGES   — max pages per request (default: 4)
     #

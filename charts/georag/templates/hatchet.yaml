@@ -100,8 +100,6 @@ spec:
               value: {{ .Release.Name }}-redis
             - name: QDRANT_HOST
               value: {{ .Release.Name }}-qdrant
-            - name: NEO4J_HOST
-              value: {{ .Release.Name }}-neo4j
           resources: {{- toYaml .Values.hatchet.workers.ai.resources | nindent 12 }}
 {{- end }}
 {{- if .Values.hatchet.workers.ingestion.enabled }}

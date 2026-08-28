@@ -271,7 +271,15 @@ class Settings(BaseSettings):
     # Legacy OpenAI-compatible target, retained for the "vllm" backend value
     # and as the last-resort default in `effective_llm_url`/`effective_llm_model`
     # if LLM_BACKEND is set to something unrecognized.
-    LLM_PRIMARY_URL: str = "http://vllm:8000/v1"
+    #
+    # Empty by default since 2026-08-28. It used to default to
+    # `http://vllm:8000/v1`, an in-cluster hostname that stopped resolving when
+    # the `vllm` compose service was deleted on 2026-07-30 — so a deployment
+    # that reached this path got a DNS failure naming a service that no longer
+    # exists, which reads as a broken network rather than as missing config.
+    # `_validate_vllm_url` below turns the one case that matters
+    # (LLM_BACKEND=vllm) into a startup error instead.
+    LLM_PRIMARY_URL: str = ""
     LLM_PRIMARY_MODEL: str = "Qwen/Qwen3-14B-AWQ"
 
     # vLLM — used when LLM_BACKEND=vllm.
@@ -307,7 +315,10 @@ class Settings(BaseSettings):
     # VRAM that the GPU compositor won't release to a non-display
     # application. Headless A4500 hardware can push to 0.95+. Lower
     # further (0.85-0.90) if embeddings or reranker share the device.
-    VLLM_URL: str = "http://vllm:8000/v1"
+    # No default: see LLM_PRIMARY_URL above. An operator choosing
+    # LLM_BACKEND=vllm is pointing at an endpoint they run themselves, so
+    # there is no sensible in-cluster default left to guess.
+    VLLM_URL: str = ""
     VLLM_MODEL: str = "Qwen/Qwen3-14B-AWQ"
     VLLM_QUANTIZATION: str = "awq_marlin"
     VLLM_MAX_MODEL_LEN: int = 8192
@@ -851,6 +862,27 @@ class Settings(BaseSettings):
                 "MULTI_TENANT_ENFORCEMENT_ENABLED=False requires SINGLE_TENANT_MODE=True. "
                 "Set SINGLE_TENANT_MODE=True explicitly if this is a solo deployment, "
                 "or leave MULTI_TENANT_ENFORCEMENT_ENABLED=True for multi-tenant."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_vllm_url(self) -> Settings:
+        """LLM_BACKEND=vllm needs somewhere to send the request.
+
+        The `vllm` compose service was removed on 2026-07-30 (Azure AI Foundry
+        cutover). The backend value stayed supported for operators running
+        their own OpenAI-compatible endpoint, but the default URL kept naming
+        the deleted in-cluster service. Selecting the backend without
+        supplying a URL is a configuration error, and it is much cheaper to
+        say so at startup than to have every query fail on a DNS lookup for a
+        host that was intentionally deleted.
+        """
+        if self.LLM_BACKEND == "vllm" and not self.VLLM_URL.strip():
+            raise ValueError(
+                "LLM_BACKEND=vllm requires VLLM_URL to point at an "
+                "OpenAI-compatible endpoint you operate. The bundled `vllm` "
+                "service was removed on 2026-07-30, so there is no default "
+                "to fall back to. Set VLLM_URL, or use LLM_BACKEND=azure."
             )
         return self
 

@@ -12,11 +12,11 @@ You are the FastAPI domain service engineer for GeoRAG. You build the Python dom
 
 - FastAPI 0.135.x on Python 3.13
 - **Pydantic AI** as the agent framework (not LangChain, not CrewAI — Pydantic AI specifically)
-- asyncpg (PostgreSQL via PgBouncer), aioredis (Redis), async Qdrant client, Neo4j async driver
+- asyncpg (PostgreSQL via PgBouncer), aioredis (Redis), async Qdrant client
 - sentence-transformers for embeddings (specific model TBD via Milestone 2 benchmarking)
 - Cross-encoder reranker (specific model TBD via Milestone 2 benchmarking)
-- DeepSeek via Ollama (dev) / vLLM (prod) via OpenAI-compatible API
-- LLM fallback chain (you own this): primary DeepSeek → optional Claude API → optional GPT-4, controlled by config. Implement as a provider abstraction behind the OpenAI-compatible API interface so the Pydantic AI agent doesn't know which backend is active. Config fields: `LLM_PRIMARY_URL`, `LLM_FALLBACK_URL`, `LLM_FALLBACK_ENABLED`. Fallback triggers on: connection error, timeout, or 5xx response from primary.
+- Azure AI Foundry serving Cohere Command A+ over the unified OpenAI v1 API (`LLM_BACKEND=azure`, the default since 2026-07-30)
+- LLM backend selection (you own this): `LLM_BACKEND` is `azure` | `vllm` | `anthropic`. `vllm` is retained for operators pointing at their own OpenAI-compatible endpoint — the compose service was removed, the backend value was not. Anthropic is the optional cross-vendor fallback. Keep the provider abstraction behind the OpenAI-compatible interface so the agent does not know which backend is active. See `app/config.py` for the exact wire contract.
 
 ## Required reading before work
 
@@ -58,7 +58,6 @@ Your responsibility: implement the SSE streaming endpoint on FastAPI. Use `Strea
    spatial, semantic, graph = await asyncio.gather(
        query_spatial(params),
        search_qdrant(params),
-       traverse_neo4j(params),
    )
    ```
    Sequential tool calls defeat the whole point of async.
@@ -67,11 +66,11 @@ Your responsibility: implement the SSE streaming endpoint on FastAPI. Use `Strea
    - Layer 1: Retrieval quality gate (minimum relevance threshold after reranking)
    - Layer 2: Typed output validation (Pydantic enforces source_chunk_id)
    - Layer 3: Numerical claim verification (call verify_numerical_claim tool)
-   - Layer 4: Entity resolution (validate entity names against Neo4j/PG)
+   - Layer 4: Entity resolution (validate entity names against PG grounding data; the graph half is permanently fail-open since Neo4j was removed)
    - Layer 5: Chunk provenance (claim vs cited chunk similarity check)
    - Layer 6: Geological constraint rules (SME-defined domain validation)
 
-6. **Cross-database timeouts** (Section 06e): PostGIS 5s, Neo4j 3s, Qdrant 2s, Redis 500ms, overall asyncio.gather deadline 8s. Partial results are better than no response.
+6. **Cross-database timeouts** (Section 06e): PostGIS 5s, Qdrant 6s (raised from 2s after Azure ingress TLS made every retrieval silently time out), Redis 500ms. The outer gather deadline must be LARGER than every timeout nested inside it — a startup validator fails the service otherwise. Partial results are better than no response.
 
 7. **Embedding model warm-loaded via FastAPI lifespan hook**. Never reload per request:
    ```python
@@ -118,7 +117,7 @@ class Citation(BaseModel):
     """A single citation linking a claim to its source chunk."""
     citation_id: str          # display label: [NI43-1], [PUB-3], [DATA-7]
     citation_type: Literal["NI43", "PUB", "DATA"]  # report, publication, or data query
-    source_chunk_id: str      # RAGFlow / Qdrant chunk ID for provenance
+    source_chunk_id: str      # Qdrant chunk ID for provenance
     document_title: str       # human-readable source title
     section: str | None = None  # section heading or table name within document
     page: int | None = None   # page number for PDF sources

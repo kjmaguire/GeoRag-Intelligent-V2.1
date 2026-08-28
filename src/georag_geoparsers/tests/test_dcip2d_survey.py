@@ -53,18 +53,21 @@ needs_export = pytest.mark.skipif(
     reason=f"RedStar DCIP2D delivery not present under {REDSTAR}",
 )
 
-#: The Laravel/Dagster trees, resolved relative to this file. Skipped rather
-#: than failed when absent, because georag_geoparsers is installable alone.
+#: The migration tree, resolved relative to this file. Skipped rather than
+#: failed when absent, because georag_geoparsers is installable alone.
 REPO_ROOT = Path(__file__).resolve().parents[3]
-WRITER = REPO_ROOT / "src" / "dagster" / "georag_dagster" / "assets" / "silver_geophysics.py"
 MIGRATION = (
     REPO_ROOT / "database" / "migrations"
     / "2026_05_21_030000_create_silver_geophysics_surveys.php"
 )
 
-#: Supplied by the Dagster asset itself (from its Config and a uuid4), never by
-#: the payload, so they are excluded when the two sides are compared.
-WRITER_SUPPLIED_PARAMS = frozenset({"survey_id", "workspace_id", "project_id"})
+# The writer-contract test that lived here compared this module's payload
+# against the `%(name)s` parameters bound by the Dagster asset
+# `silver_geophysics.py`. That asset was deleted with the dormant tree on
+# 2026-08-28, so the test had no counterpart left to compare against and
+# would have skipped forever. `silver.geophysics_surveys` currently has NO
+# writer; restore an equivalent contract test alongside whichever workflow
+# takes the insert over.
 
 
 # ---------------------------------------------------------------------------
@@ -366,23 +369,6 @@ class TestGeophysicsSurveyPayload:
 
 class TestWriterContract:
     """The payload against the SQL and the CHECK that will actually receive it."""
-
-    @pytest.mark.skipif(not WRITER.is_file(), reason=f"{WRITER} not present")
-    def test_payload_matches_the_writers_sql_parameters(self, tmp_path):
-        """Every ``%(name)s`` the writer binds must be a key this module emits.
-
-        Neither module imports the other, so a rename on either side is
-        invisible until a column lands NULL in production. Both directions are
-        checked: a key the writer does not bind is dead weight, and a parameter
-        the payload does not supply is a KeyError at insert time.
-        """
-        bound = set(re.findall(r"%\((\w+)\)s", WRITER.read_text(encoding="utf-8")))
-        assert bound, "found no bound parameters in the writer's SQL"
-
-        export = _minimal_export(tmp_path)
-        payload = read_dcip2d_survey(export).to_geophysics_survey_payload("synthetic")
-
-        assert bound - WRITER_SUPPLIED_PARAMS == set(payload)
 
     @pytest.mark.skipif(not MIGRATION.is_file(), reason=f"{MIGRATION} not present")
     def test_survey_type_passes_the_check_constraint(self):

@@ -43,7 +43,6 @@ global:
 secrets:
   postgresPassword: ""           # CHANGEME
   pgAppPassword: ""              # for the georag_app role (RLS user)
-  neo4jPassword: ""              # CHANGEME
   redisPassword: ""              # CHANGEME
   qdrantApiKey: ""               # optional; empty disables auth
   fastapiServiceKey: ""          # 32+ char shared HMAC for /internal/*
@@ -87,28 +86,6 @@ pgbouncer:
   resources:
     requests: { cpu: "200m", memory: "128Mi" }
     limits:   { cpu: "500m", memory: "256Mi" }
-
-# ─────────────────────────────────────────────────────────────────────
-# Neo4j Community Edition (per CLAUDE.md hard rule: NOT Enterprise).
-# StatefulSet with a single replica + 20Gi PVC.
-# ─────────────────────────────────────────────────────────────────────
-neo4j:
-  enabled: true
-  image:
-    repository: neo4j
-    tag: "2026.03-community"
-  service:
-    boltPort: 7687
-    httpPort: 7474
-  persistence:
-    enabled: true
-    size: 20Gi
-  heapInitialSize: 1G
-  heapMaxSize: 2G
-  pagecacheSize: 1G
-  resources:
-    requests: { cpu: "500m", memory: "2Gi" }
-    limits:   { cpu: "2",    memory: "4Gi" }
 
 # ─────────────────────────────────────────────────────────────────────
 # Qdrant v1.17 — vector store. StatefulSet, 30Gi PVC.
@@ -283,65 +260,6 @@ martin:
   resources:
     requests: { cpu: "200m", memory: "256Mi" }
     limits:   { cpu: "1",    memory: "1Gi" }
-
-# ─────────────────────────────────────────────────────────────────────
-# Dagster — scheduled batch ingestion pipelines.
-# ─────────────────────────────────────────────────────────────────────
-dagster:
-  enabled: true
-  webserver:
-    image:
-      repository: ghcr.io/anthropics/georag/dagster
-      tag: "v1.0.0"
-    service:
-      port: 3000
-    replicas: 1
-    resources:
-      requests: { cpu: "250m", memory: "512Mi" }
-      limits:   { cpu: "1",    memory: "1Gi" }
-  daemon:
-    replicas: 1
-    resources:
-      requests: { cpu: "250m", memory: "512Mi" }
-      limits:   { cpu: "1",    memory: "1Gi" }
-  persistence:
-    enabled: true
-    size: 10Gi
-
-# ─────────────────────────────────────────────────────────────────────
-# vLLM — Qwen/Qwen3-14B-AWQ inference. REQUIRES GPU.
-# Deployment with nodeSelector + toleration for nvidia.com/gpu.
-# ─────────────────────────────────────────────────────────────────────
-vllm:
-  enabled: true
-  image:
-    repository: vllm/vllm-openai
-    tag: "v0.6.6"
-  service:
-    port: 8000
-  model:
-    name: "Qwen/Qwen3-14B-AWQ"
-    maxModelLen: 32768
-    # If true, the model weights ship as a separate PVC mounted at /models
-    # and `--model` is the local path. Use for air-gapped installs.
-    useLocalPvc: false
-    localPvcSize: 60Gi
-  replicas: 1
-  resources:
-    requests:
-      cpu: "4"
-      memory: "32Gi"
-      nvidia.com/gpu: "1"
-    limits:
-      cpu: "8"
-      memory: "64Gi"
-      nvidia.com/gpu: "1"
-  nodeSelector:
-    nvidia.com/gpu.product: ""    # set to e.g. "NVIDIA-A100-SXM4-40GB"
-  tolerations:
-    - key: "nvidia.com/gpu"
-      operator: "Exists"
-      effect: "NoSchedule"
 
 # ─────────────────────────────────────────────────────────────────────
 # Ingress — Traefik on K3s, nginx on vanilla. Defaults to TLS-disabled;

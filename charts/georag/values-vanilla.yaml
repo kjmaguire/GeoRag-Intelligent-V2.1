@@ -24,18 +24,3 @@ postgresql:
   resources:
     requests: { cpu: "2", memory: "4Gi" }
     limits:   { cpu: "8", memory: "16Gi" }
-
-neo4j:
-  heapInitialSize: 2G
-  heapMaxSize: 4G
-  pagecacheSize: 2G
-  resources:
-    requests: { cpu: "1", memory: "4Gi" }
-    limits:   { cpu: "4", memory: "8Gi" }
-
-vllm:
-  # Vanilla customers typically have GPU operators installed.
-  # Set nodeSelector to your cluster's GPU label.
-  enabled: true
-  nodeSelector:
-    nvidia.com/gpu.product: "NVIDIA-A100-SXM4-40GB"

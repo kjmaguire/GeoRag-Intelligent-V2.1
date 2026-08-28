@@ -2,10 +2,13 @@ apiVersion: v2
 name: georag
 description: |
   GeoRAG — geological intelligence platform. Single-chart deploy for the
-  whole stack (PostgreSQL+PostGIS, Neo4j Community, Qdrant, Redis,
-  SeaweedFS/MinIO, FastAPI, Laravel Octane, Hatchet, Martin, Dagster,
-  vLLM). K3s-tuned by default; works on vanilla Kubernetes via
-  values-vanilla.yaml.
+  whole stack (PostgreSQL+PostGIS, Qdrant, Redis, SeaweedFS/MinIO,
+  FastAPI, Laravel Octane, Hatchet, Martin). K3s-tuned by default;
+  works on vanilla Kubernetes via values-vanilla.yaml.
+
+  LLM inference is not deployed by this chart. Set the Azure AI Foundry
+  variables on the FastAPI deployment, or point LLM_BACKEND=vllm at an
+  OpenAI-compatible endpoint you run yourself.
 
 type: application
 version: 0.1.0
@@ -22,7 +25,6 @@ keywords:
   - rag
   - llm
   - postgis
-  - neo4j
   - qdrant
 
 maintainers:

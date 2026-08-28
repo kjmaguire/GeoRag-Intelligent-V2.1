@@ -187,22 +187,10 @@ class TestBandStatisticsReachTheDatabase:
         assert row["min"] == 12.5
         assert row["max"] == 980.25
 
-    def test_the_keys_match_the_frozen_dagster_writer(self) -> None:
-        """Two writers, one column. They disagreed on the key names, so a
-        reader could not have handled both."""
-        from pathlib import Path
-
-        dagster = Path(__file__).resolve().parents[2] / (
-            "dagster/georag_dagster/assets/silver_raster.py"
-        )
-        if not dagster.exists():  # pragma: no cover — tree may be pruned
-            pytest.skip("dagster tree not present")
-        block = dagster.read_text(encoding="utf-8").split(
-            "band_stats_list = [", 1,
-        )[1].split("]", 1)[0]
-        for key in ("band_index", "dtype", "nodata", "min", "max", "mean",
-                    "description"):
-            assert f'"{key}"' in block
+    # The companion test comparing these keys against the frozen Dagster
+    # writer (`silver_raster.py`) was removed on 2026-08-28 with that tree.
+    # It had guarded a two-writer disagreement that no longer exists: this
+    # is now the only writer of the column.
 
 
 class _FakeStore:

@@ -26,7 +26,7 @@ is dormant by explicit decision and is not to be modified. Two modules are
 left behind rather than copied:
 
   * ``pdf_report`` — already deleted; the PDF path lives in the FastAPI §04p
-    stack now. Note that ``georag_dagster/parsers/__init__.py`` still imports
+    stack now. (The ``georag_dagster`` fork was deleted 2026-08-28.) It imported
     it, so that package does not import at all today.
   * ``docx_parser`` and ``segy_parser`` — the first depends on ``pdf_report``,
     the second on ``segyio``, which is not in the FastAPI image.
