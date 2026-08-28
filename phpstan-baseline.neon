@@ -800,12 +800,6 @@ parameters:
 			path: app/Services/Azure/ManagedIdentityTokenProvider.php
 
 		-
-			message: '#^Called ''env'' outside of the config directory which returns null when the config is cached, use ''config''\.$#'
-			identifier: larastan.noEnvCallsOutsideOfConfig
-			count: 1
-			path: app/Services/Dagster/DagsterGraphQLClient.php
-
-		-
 			message: '#^Method App\\Services\\Exports\\CsaBundleExporter\:\:export\(\) has parameter \$filters with no value type specified in iterable type array\.$#'
 			identifier: missingType.iterableValue
 			count: 1
