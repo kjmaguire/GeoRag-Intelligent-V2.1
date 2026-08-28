@@ -369,12 +369,9 @@ final class OperationalCoreSchemaParityTest extends TestCase
             $this->assertSame(
                 1,
                 $written,
-                "store_reconciliation.py writes drift_type='cross_store_drift' whenever the
-"
-                ."Postgres and Qdrant passage counts diverge past its threshold. If the CHECK
-"
-                ."rejects it, that INSERT raises inside `except Exception` and the finding is
-"
+                "store_reconciliation.py writes drift_type='cross_store_drift' whenever the\n"
+                ."Postgres and Qdrant passage counts diverge past its threshold. If the CHECK\n"
+                ."rejects it, that INSERT raises inside `except Exception` and the finding is\n"
                 .'lost with nothing but a warning in the logs.',
             );
         } finally {

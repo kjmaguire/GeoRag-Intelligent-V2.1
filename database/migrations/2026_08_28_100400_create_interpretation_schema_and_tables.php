@@ -333,18 +333,16 @@ return new class extends Migration
 
         if ($missing !== []) {
             throw new \RuntimeException(
-                "interpretation.* is split across owners: ".implode(', ', $foreign)
-                ." already exist under another role while ".implode(', ', $missing)
-                ." are missing. No supported path produces this. Reassign ownership of the
-"
-                ."existing tables to the migration role, or drop them and re-run.",
+                'interpretation.* is split across owners: '.implode(', ', $foreign)
+                .' already exist under another role while '.implode(', ', $missing)
+                ." are missing. No supported path produces this. Reassign ownership of\n"
+                .'the existing tables to the migration role, or drop them and re-run.',
             );
         }
 
         // All four present, none of them ours. Nothing here is grantable —
         // CREATE INDEX, ALTER TABLE and CREATE POLICY all require ownership.
-        DB::statement(
-            <<<'SQL'
+        DB::statement(<<<'SQL'
             DO $$
             DECLARE
                 owner_name text;
@@ -362,8 +360,7 @@ return new class extends Migration
                     'SECURITY. Re-run this migration as the owning role, or reassign '
                     'ownership to the migration role, to pick those up.', owner_name;
             END $$;
-            SQL
-        );
+        SQL);
 
         return true;
     }
