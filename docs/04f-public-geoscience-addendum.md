@@ -28,9 +28,14 @@ the source of the §04f drift class this very addendum was written to close.
 
 ## Outstanding action items (not closed by the merge)
 
-1. **Maintenance-window task:** re-run
-   `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher` to canonicalise
-   any `:Drillhole` nodes the regression created since 2026-04-27.
+1. ~~**Maintenance-window task:** re-run the drillhole-rename Cypher to
+   canonicalise any `:Drillhole` nodes the regression created since
+   2026-04-27.~~ **Obsolete 2026-08-28.** Neo4j was removed from the stack
+   on 2026-07-28 (CLAUDE.md hard rule 9) and the migration script was
+   deleted with the rest of the graph remnants. There are no `:Drillhole`
+   nodes to canonicalise because there is no graph. The naming contract
+   itself is still enforced by
+   `src/fastapi/tests/test_no_legacy_drillhole_label.py`.
 2. **SME review:** Kyle to answer the 4 open questions in §04f-pg.
 3. After (2): edit §04f-pg to remove the "Pending SME review" paragraph and
    replace with the resolved decisions.

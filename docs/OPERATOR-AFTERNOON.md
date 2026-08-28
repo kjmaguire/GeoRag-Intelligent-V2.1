@@ -208,9 +208,10 @@ auto-flip to ✅ on the next CI run that includes this commit.
 
 ## What this does NOT cover
 
-- **D2 Drillhole rename (V-05):** schedule maintenance window, run
-  `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher` per
-  `ops/runbooks/_archived/drillhole-label-rename.md`.
+- ~~**D2 Drillhole rename (V-05):** schedule maintenance window, run the
+  drillhole-rename Cypher per `ops/runbooks/_archived/drillhole-label-rename.md`.~~
+  **Obsolete 2026-08-28** — Neo4j was removed 2026-07-28; there is no graph
+  to migrate and the script has been deleted. No maintenance window needed.
 - **Self-hosted runner for e2e (V-03):** separate provisioning task; not
   required for first deploy.
 - **arm64 build merge (V-01):** fires automatically on next merge to main.

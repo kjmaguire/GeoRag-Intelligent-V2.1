@@ -72,7 +72,12 @@ EXEMPT: dict[str, str] = {
     ),
     "app/services/dispatchers/pagerduty.py": (
         "documented NOT WIRED; the escalation that exists is the log-marker "
-        "route through georag-alerts-ag. Deleting it also deletes its tests"
+        "route through georag-alerts-ag. Deleting it also deletes its tests. "
+        "Re-confirmed 2026-08-28: the ONLY importer is its own package "
+        "re-export in dispatchers/__init__.py -- no application code calls "
+        "create_pagerduty_incident, PAGERDUTY_INTEGRATION_KEY is empty and "
+        "set on no container app. The stale-exemption check below discounts "
+        "that self-re-export so this entry does not read as resolved"
     ),
     "app/services/target_recommendation/sme_content/athabasca_uranium.py": (
         "NOT dead -- a dynamic-import target. sme_content/seed_runner.py "
@@ -252,6 +257,33 @@ def main() -> int:
         print("Nothing orphaned.")
 
     # Stale exemptions: an entry that now HAS an importer.
+    #
+    # A package re-export does not count. `dispatchers/__init__.py` carries
+    # `from app.services.dispatchers.pagerduty import create_pagerduty_incident`
+    # purely to widen the package surface; that made this check report the
+    # pagerduty exemption stale while the module still had no caller -- the
+    # exact orphan the report exists to surface, marked resolved by the fact
+    # that it sits next to an `__init__.py`. Only importers OUTSIDE the
+    # module's own package are evidence of use.
+    #
+    # This narrower rule is applied here and NOT to the orphan scan above,
+    # where a package `__init__` that imports its siblings is often the real
+    # registry (`agents/phase0/`), and discounting it would report a large
+    # number of live modules as dead.
+    def imported_from_outside_own_package(path: Path, name: str) -> bool:
+        own_init = path.parent / "__init__.py"
+        for root in APP_ROOTS:
+            if not root.exists():
+                continue
+            for source in root.rglob("*.py"):
+                if "__pycache__" in source.parts or source == own_init:
+                    continue
+                if source == path:
+                    continue
+                if reachable_in(name, imported_names(source)):
+                    return True
+        return False
+
     stale = []
     for relative in EXEMPT:
         path = REPO / "src" / "fastapi" / relative
@@ -259,7 +291,7 @@ def main() -> int:
             stale.append(f"{relative} (file gone)")
             continue
         name = module_name(path)
-        if reachable_in(name, all_imports):
+        if imported_from_outside_own_package(path, name):
             stale.append(f"{relative} (now imported by app/)")
 
     if stale:

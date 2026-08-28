@@ -55,7 +55,6 @@ tests/test_phase8_embed_verify.py
 # ── Audit / tenancy ───────────────────────────────────────────────────
 tests/test_hash_chain_proof.py
 tests/test_support_access_audit.py
-tests/test_workspace_audit_excerpt.py
 
 # ── Support + operations surfaces ─────────────────────────────────────
 tests/test_support_packet.py

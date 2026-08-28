@@ -87,7 +87,7 @@ from app.services.reranker import RERANKER_BACKEND
 _ALLOWED_GRAPH_LABELS: frozenset[str] = frozenset({
     # Internal project graph. Canonical drill-hole label is `DrillHole`
     # (PascalCase, §04f Global Invariant 4). The 2026-04-27 migration
-    # (`ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher`) renamed
+    # (script deleted 2026-08-28 with the rest of the Neo4j remnants) renamed
     # all live nodes from the legacy `:Drillhole` (lowercase h) form.
     "Project",
     "DrillHole",

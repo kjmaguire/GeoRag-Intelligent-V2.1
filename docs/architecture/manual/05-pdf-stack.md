@@ -30,11 +30,11 @@ body_bytes
    │
    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 1 — PREFLIGHT      pdf_preflight.py                               │
-│   qpdf --check          (structure)                                     │
-│   pypdfium2 page count                                                  │
-│   sha256 + size cap                                                     │
-│   magic-byte sniff                                                      │
+│ Stage 1 — PREFLIGHT      NOT IMPLEMENTED (removed 2026-08-28)           │
+│   The standalone preflight module never had a caller and was deleted.   │
+│   Structure validation, encrypted-PDF rejection, structural repair and  │
+│   the >500-page split plan are NOT capabilities the shipped pipeline    │
+│   has. The live path opens pikepdf directly in ingest/pdf_report.py.    │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -88,7 +88,7 @@ body_bytes
 
 | Stage | File | Key functions |
 |---|---|---|
-| Preflight | [src/fastapi/app/services/pdf_preflight.py](../../../src/fastapi/app/services/pdf_preflight.py) | `preflight()`, `_qpdf_check()`, `_page_count()` |
+| Preflight | _(none — removed 2026-08-28, never had a caller)_ | — |
 | Native text | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) | `extract_native_text_pages()` (PyMuPDF primary; pdfminer fallback) |
 | Tables | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) + [pdf_layout.py](../../../src/fastapi/app/services/pdf_layout.py) | `extract_tables_diverse()` — pdfplumber + camelot strategies |
 | OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [document_intelligence_client.py](../../../src/fastapi/app/services/ingest/document_intelligence_client.py) | Azure Document Intelligence primary, tiled oversized-page reconstruction, Tesseract fallback |
