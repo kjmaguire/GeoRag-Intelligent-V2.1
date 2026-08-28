@@ -33,7 +33,7 @@ final class GuardErrorRendererTest extends TestCase
         $this->assertStringContainsString(
             "I couldn't find anything",
             $rendered,
-            'Expected the canonical first-person template from lang/en/guard_errors.json',
+            'Expected the canonical first-person template from lang/en/guard_errors.php',
         );
     }
 
