@@ -32,13 +32,21 @@ SERVICE_KEY = "test-only-service-key-not-a-secret-000000000000"
 def _settings(**overrides: str) -> Settings:
     """Build Settings from explicit kwargs only.
 
+    Keyword names must match the FIELD names, which this model declares in
+    UPPERCASE. `case_sensitive=False` in its `model_config` governs how
+    environment variables are matched, NOT `__init__` kwargs — and
+    pydantic-settings defaults to `extra="forbid"`, so a lowercase kwarg is
+    rejected as an unknown field rather than folded onto the field it
+    resembles. (pydantic-settings 2.15 happens to fold them; the version this
+    project locks, 2.13.1, does not. Passing uppercase is correct on both.)
+
     `_env_file=None` keeps a developer's local `.env` from supplying a
     `VLLM_URL` and making the negative case pass for the wrong reason.
     """
     return Settings(
         _env_file=None,
-        fastapi_service_key=SERVICE_KEY,
-        postgres_password="test-only-not-a-secret",
+        FASTAPI_SERVICE_KEY=SERVICE_KEY,
+        POSTGRES_PASSWORD="test-only-not-a-secret",
         **overrides,
     )
 
@@ -46,22 +54,22 @@ def _settings(**overrides: str) -> Settings:
 class TestVllmUrlValidator:
     def test_vllm_backend_without_a_url_is_a_startup_error(self):
         with pytest.raises(pydantic.ValidationError) as exc:
-            _settings(llm_backend="vllm", vllm_url="")
+            _settings(LLM_BACKEND="vllm", VLLM_URL="")
         assert "VLLM_URL" in str(exc.value)
 
     def test_whitespace_is_not_a_url(self):
         """`VLLM_URL="   "` is the shape a half-filled .env produces."""
         with pytest.raises(pydantic.ValidationError):
-            _settings(llm_backend="vllm", vllm_url="   ")
+            _settings(LLM_BACKEND="vllm", VLLM_URL="   ")
 
     def test_vllm_backend_with_a_url_is_accepted_and_used(self):
-        s = _settings(llm_backend="vllm", vllm_url="http://inference.internal:8000/v1")
+        s = _settings(LLM_BACKEND="vllm", VLLM_URL="http://inference.internal:8000/v1")
         assert s.effective_llm_url == "http://inference.internal:8000/v1"
 
     def test_the_default_azure_backend_needs_no_vllm_url(self):
         """The regression that matters most: the validator must not make the
         default backend harder to configure."""
-        s = _settings(azure_foundry_endpoint="https://example.services.ai.azure.com")
+        s = _settings(AZURE_FOUNDRY_ENDPOINT="https://example.services.ai.azure.com")
         assert s.LLM_BACKEND == "azure"
         assert s.VLLM_URL == ""
 
