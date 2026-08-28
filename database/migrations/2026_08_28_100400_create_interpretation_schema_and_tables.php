@@ -71,11 +71,15 @@ use Illuminate\Support\Facades\DB;
  * `(workspace_id, project_id)`. That is a gap rather than a decision: every
  * read of the table is filtered by `workspace_id` through
  * `interp_ws_isolation`, so without an index each policy evaluation is a
- * sequential scan. The Tenant Isolation Auditor also fails a table that has a
- * `workspace_id` column and no covering index, and this table is not on its
- * exempt list — so porting the raw file verbatim would have created a table
- * that immediately fails a CI gate. `idx_interp_comments_workspace` is added
- * here in the siblings' shape.
+ * sequential scan of the whole comment table.
+ * `idx_interp_comments_workspace` is added here in the siblings' shape.
+ *
+ * (Correction to an earlier draft of this docblock: the §11.5 index gate in
+ * `routers/audit_findings.py` would NOT have flagged it. That check scans
+ * `silver`/`gold`/`audit`/`ops`/`workflow`/`targeting` only — `interpretation`
+ * is not among its `_TENANT_SCHEMAS`, so the table is outside its reach
+ * entirely. The index is justified by the sequential scan alone, which is
+ * reason enough; the gate was not going to catch it.)
  *
  * Idempotent: `CREATE SCHEMA/TABLE/INDEX IF NOT EXISTS`, `DROP POLICY IF
  * EXISTS` before each `CREATE POLICY`.

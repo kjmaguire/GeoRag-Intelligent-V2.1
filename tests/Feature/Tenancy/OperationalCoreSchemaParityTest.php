@@ -9,10 +9,10 @@ use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
- * Pins the nineteen objects ported out of `database/raw/` and into the
+ * Pins the twenty-two objects ported out of `database/raw/` and into the
  * migration chain on 2026-08-28 — the operational core (outbox, the Layer-E
- * workspace tables, the tool gateway, feature flags) plus the §19.3
- * interpretation schema.
+ * workspace tables, the tool gateway, feature flags), the §19.3 interpretation
+ * schema, and the Layer-G silver findings tables.
  *
  * ## Why a test rather than trusting the migration
  *
@@ -39,9 +39,20 @@ use Tests\TestCase;
  *    RLS", so their absence from the RLS set is deliberate and worth pinning
  *    against a well-meaning future sweep.
  * 4. Every workspace-scoped interpretation table has an index covering
- *    workspace_id. `interpretation_comments` did not in the raw DDL, which
- *    would have failed the Tenant Isolation Auditor the moment it existed.
+ *    workspace_id. `interpretation_comments` did not in the raw DDL, so every
+ *    evaluation of its RLS policy would have been a sequential scan.
  * 5. The `feature_flags_audit` trigger fires and skips no-op updates.
+ * 6. `silver.store_reconciliation_findings.drift_type` admits
+ *    `cross_store_drift`. The raw DDL's CHECK does not, while
+ *    `agents/phase0/store_reconciliation.py` writes exactly that value inside
+ *    an `except Exception` — so the constraint silently discarded the finding
+ *    rather than failing loudly. Trimming the value back out of the CHECK
+ *    would restore that silent loss, and nothing else would notice.
+ * 7. `silver.corpus_health_findings.workspace_id` is NULLABLE. The raw DDL
+ *    says NOT NULL and `2026_08_19_070000` drops it, but that migration is
+ *    guarded on the table existing and has already run and skipped — so it
+ *    will never fire again. This port is the only thing carrying its intent,
+ *    and the only thing that will catch a regression.
  *
  * `test_every_rls_enabled_table_is_forced` in `WorkspaceRlsCoverageTest`
  * already covers FORCE globally, so it is not duplicated here.
@@ -52,7 +63,7 @@ use Tests\TestCase;
  */
 final class OperationalCoreSchemaParityTest extends TestCase
 {
-    /** Every object the 2026_08_28_1000xx–1004xx migrations create. */
+    /** Every object the 2026_08_28_1000xx–1005xx migrations create. */
     private const PORTED_TABLES = [
         'outbox.pending_propagations',
         'outbox.propagation_attempts',
@@ -72,19 +83,33 @@ final class OperationalCoreSchemaParityTest extends TestCase
         'interpretation.interpretation_section_lines',
         'interpretation.interpretation_target_zones',
         'interpretation.interpretation_comments',
+        'silver.store_reconciliation_findings',
+        'silver.corpus_health_findings',
+        'silver.storage_tier_policy',
     ];
 
     /**
      * Tables whose RLS policy filters on workspace_id and which therefore need
-     * an index covering it. The Tenant Isolation Auditor fails on a
-     * workspace_id column with no covering index; interpretation_comments had
-     * exactly that gap in the raw DDL and is the reason this check exists.
+     * an index covering it — without one, every policy evaluation is a
+     * sequential scan. interpretation_comments had exactly that gap in the raw
+     * DDL and is the reason this check exists.
+     *
+     * Note the §11.5 index gate in routers/audit_findings.py does NOT cover
+     * these: it scans silver/gold/audit/ops/workflow/targeting only, and
+     * `interpretation` is not in that set. Nothing else asserts this, which is
+     * precisely why it is asserted here.
      */
     private const NEEDS_WORKSPACE_INDEX = [
         'interpretation.interpretation_notes',
         'interpretation.interpretation_section_lines',
         'interpretation.interpretation_target_zones',
         'interpretation.interpretation_comments',
+        // The §11.5 index gate DOES reach these three (silver is in its
+        // _TENANT_SCHEMAS and none is exempt), so a missing index here would
+        // surface as a live tenant-isolation finding as well as a seq scan.
+        'silver.store_reconciliation_findings',
+        'silver.corpus_health_findings',
+        'silver.storage_tier_policy',
     ];
 
     /**
@@ -148,7 +173,7 @@ final class OperationalCoreSchemaParityTest extends TestCase
             [],
             $missing,
             "Ported operational-core objects are missing. These are created by the\n"
-            .'2026_08_28_1000xx–1004xx migrations; if one is absent the migration chain '
+            .'2026_08_28_1000xx–1005xx migrations; if one is absent the migration chain '
             ."did not run to completion.\nMissing:\n  ".implode("\n  ", $missing),
         );
     }
@@ -299,6 +324,100 @@ final class OperationalCoreSchemaParityTest extends TestCase
                 (int) $history[1]->actor_id,
                 'actor_id is read from the app.actor_id GUC at trigger fire time.',
             );
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    /**
+     * The Store Reconciliation Agent's cross-store comparison writes
+     * `drift_type = 'cross_store_drift'`, which the raw DDL's five-value CHECK
+     * rejects — and the INSERT sits inside `except Exception`, so the finding
+     * is dropped with a log line instead of raising. Asserted behaviourally
+     * rather than by reading pg_constraint: what matters is that the row lands.
+     */
+    #[Test]
+    public function store_reconciliation_findings_accepts_the_agents_cross_store_drift_type(): void
+    {
+        DB::beginTransaction();
+
+        try {
+            $workspaceId = DB::selectOne(
+                'SELECT workspace_id FROM silver.workspaces LIMIT 1',
+            )?->workspace_id;
+
+            if ($workspaceId === null) {
+                $workspaceId = '5c2d0a11-0000-4000-8000-0000000005c2';
+                DB::insert(
+                    'INSERT INTO silver.workspaces (workspace_id, name, slug)
+                     VALUES (?::uuid, ?, ?)',
+                    [$workspaceId, 'Drift probe', 'zz-drift-probe'],
+                );
+            }
+
+            $written = DB::affectingStatement(
+                <<<'SQL'
+                INSERT INTO silver.store_reconciliation_findings
+                    (workspace_id, drift_type, severity, source_store, target_store,
+                     source_id, details, discovered_by)
+                VALUES (?::uuid, 'cross_store_drift', 'high', 'postgres', 'qdrant_georag_chunks',
+                        'qdrant_georag_chunks', '{}'::jsonb, 'Store Reconciliation Agent')
+                SQL,
+                [$workspaceId],
+            );
+
+            $this->assertSame(
+                1,
+                $written,
+                "store_reconciliation.py writes drift_type='cross_store_drift' whenever the
+"
+                ."Postgres and Qdrant passage counts diverge past its threshold. If the CHECK
+"
+                ."rejects it, that INSERT raises inside `except Exception` and the finding is
+"
+                .'lost with nothing but a warning in the logs.',
+            );
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    /**
+     * 2026_08_19_070000 dropped this NOT NULL so the index-health agent could
+     * persist its cluster-scoped probes (pg_stat_statements et al. have no
+     * tenant). That migration is guarded on the table existing and has already
+     * run and skipped, so it will never fire again — this port is the only
+     * thing carrying its intent forward.
+     */
+    #[Test]
+    public function corpus_health_findings_accepts_a_system_scoped_row(): void
+    {
+        $isNullable = DB::selectOne(
+            "SELECT is_nullable FROM information_schema.columns
+              WHERE table_schema = 'silver' AND table_name = 'corpus_health_findings'
+                AND column_name = 'workspace_id'",
+        )?->is_nullable;
+
+        $this->assertSame(
+            'YES',
+            $isNullable,
+            'silver.corpus_health_findings.workspace_id is NOT NULL again — every '
+            .'system-wide run of index_health.py will fail to persist a single finding, '
+            .'silently, exactly as it did before 2026_08_19_070000.',
+        );
+
+        DB::beginTransaction();
+
+        try {
+            $written = DB::affectingStatement(
+                <<<'SQL'
+                INSERT INTO silver.corpus_health_findings
+                    (workspace_id, finding_type, severity, target_id, payload, status)
+                VALUES (NULL, 'slow_query', 'medium', '4242', '{}'::jsonb, 'open')
+                SQL,
+            );
+
+            $this->assertSame(1, $written, 'A system-scoped finding must be insertable.');
         } finally {
             DB::rollBack();
         }

@@ -7,12 +7,32 @@
 # silver.store_reconciliation_findings; app/agent/egress_gate.py reads
 # silver.workspace_settings).
 #
-# 2026-08-28: 15 entries closed — the operational core (outbox.*, the six
-# Layer-E workspace tables, the four tool-gateway tables, and feature_flags +
-# its history table and audit trigger) was ported into the migration chain by
-# 2026_08_28_100000..100300. The `outbox` SCHEMA went with them: it was created
-# only by docker/postgresql/init/10-phase0-extensions-and-schemas.sql, a Docker
-# image init script that Azure's managed Postgres never runs.
+# 2026-08-28: 22 entries closed by 2026_08_28_100000..100500 —
+#   100000..100300  the operational core: outbox.*, the six Layer-E workspace
+#                   tables, the four tool-gateway tables, feature_flags + its
+#                   history table and audit trigger. The `outbox` SCHEMA went
+#                   with them: it was created only by
+#                   docker/postgresql/init/10-phase0-extensions-and-schemas.sql,
+#                   a Docker image init script Azure's managed Postgres never runs.
+#   100400          the four §19.3 interpretation.* tables (and that schema).
+#   100500          the three Layer-G silver findings tables.
+#
+# None of these ports is a transcription. Each batch turned up at least one
+# place where copying the raw DDL verbatim would have shipped something wrong,
+# because later migrations had already reconciled the table and are guarded on
+# it existing — so they ran, skipped, and will never fire again:
+#   - the four tables in the 2026_08_14_030000 fail-closed subset had to be
+#     created CLOSED, not in the raw file's fail-open shape;
+#   - every table created after the one-shot 2026_08_24_010000 sweep needs an
+#     explicit FORCE ROW LEVEL SECURITY, which the raw files mostly omit;
+#   - interpretation_comments needed a workspace_id index its siblings have;
+#   - corpus_health_findings.workspace_id had to be created NULLABLE
+#     (2026_08_19_070000);
+#   - storage_tier_policy needed the canonical single policy and the
+#     NULLS NOT DISTINCT constraint (2026_08_25_200000);
+#   - store_reconciliation_findings.drift_type had to admit 'cross_store_drift',
+#     which its writer emits and the raw CHECK rejects.
+# Read the reconciliations before porting the remaining 11.
 #
 # This file is a to-do list, not a permission slip. The gate
 # (scripts/check-raw-migration-parity.php) fails on anything NEW, and also
@@ -43,10 +63,7 @@ table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
 table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql
 table silver.claim_ledger  # raw/phase0/110-section7-4-claim-ledger.sql
-table silver.corpus_health_findings  # raw/phase0/70-layer-g-findings.sql
 table silver.shadow_runs  # raw/phase1/20-shadow-runs-and-feature-flags.sql
-table silver.storage_tier_policy  # raw/phase0/70-layer-g-findings.sql
-table silver.store_reconciliation_findings  # raw/phase0/70-layer-g-findings.sql
 table silver.structure_measurements  # raw/phase5/30-structure-measurements-visual.sql
 table silver.workspace_settings  # raw/phase0/101-phase-h4-ui-tables.sql
 table workflow.activepieces_channels  # raw/phase0/101-phase-h4-ui-tables.sql
