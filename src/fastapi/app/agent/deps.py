@@ -33,7 +33,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
-from neo4j import AsyncDriver
 from qdrant_client import AsyncQdrantClient
 
 logger = logging.getLogger(__name__)
@@ -50,9 +49,11 @@ class AgentDeps:
     qdrant_client:
         Async Qdrant client for vector similarity search.
     neo4j_driver:
-        Async Neo4j driver for knowledge-graph traversal, or None — Neo4j
-        was removed from the stack (B1, 2026-07-28). Every consumer already
-        fails open when this is None.
+        Always None. Neo4j was removed from the stack (B1, 2026-07-28) and
+        the driver package was dropped from the image on 2026-08-28. The
+        field is retained because every consumer already branches on it and
+        fails open; removing it would be a wider refactor than removing the
+        dependency. Nothing assigns it a driver.
     project_id:
         UUID string of the project scoping this query.  Every tool filters
         results to this project so the LLM never sees data from other projects.
@@ -87,7 +88,7 @@ class AgentDeps:
     # graph data being briefly unavailable was always a real possibility,
     # so this formalizes that path as the permanent one rather than
     # introducing a new failure mode.
-    neo4j_driver: AsyncDriver | None = None
+    neo4j_driver: Any = None  # always None; the neo4j package is no longer installed
     embedding_model: Any = None  # SentenceTransformer (BAAI/bge-small-en-v1.5)
     reranker: Any = None  # CrossEncoder (Qwen/Qwen3-Reranker-0.6B; logit delta ~[-15,+15])
     # B2 — pooled clients; Any-typed so missing imports (non-anthropic deploys)

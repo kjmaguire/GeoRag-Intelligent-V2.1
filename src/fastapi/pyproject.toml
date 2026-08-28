@@ -54,7 +54,6 @@ dependencies = [
     # (including CI) has been unable to import it since.
     "slowapi>=0.1.9",
     "qdrant-client>=1.17",
-    "neo4j>=6.0",
     # 2026-08-06 re-audit: dropped the `[onnx]` extra. Grepped every
     # SentenceTransformer(...) call site in src/fastapi/app/ (4 total) —
     # none pass backend="onnx" or reference onnx in any way; the extra
