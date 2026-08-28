@@ -96,11 +96,32 @@
 #     CREATE succeeds and only invocation fails - which is why nobody has hit
 #     it. The function is incomplete even on a cluster that HAS h3.
 #
-#   silver.assays + silver.assay_samples
-#     App change, not DDL. assays_v2 is the canonical table; the legacy names
-#     are queried by CsvAssaysExporter.php and part of visualizations.py, both
-#     already broken on production. The fix is repointing those at assays_v2
-#     with a column remap, then archiving raw/phase0/109.
+#   [CLOSED 2026-08-28, batch 6] silver.assays + silver.assay_samples were
+#     archived, not ported, and their five consumers repointed at
+#     silver.assays_v2. The deciding evidence was georag-architecture.html,
+#     the stated source of truth: it names silver.assays_v2 and silver.samples
+#     and never mentions silver.assays or silver.assay_samples at all.
+#     Consumers fixed: CsvAssaysExporter.php (was also joining silver.samples,
+#     which assays_v2 makes unnecessary - it carries collar_id/from_depth/
+#     to_depth itself) and four charts in routers/visualizations.py (harker,
+#     spider, ree_pattern, grade_tonnage). All four were serving FABRICATED
+#     demo data on Azure, because the 42P01 was swallowed by the blanket
+#     `except Exception` that falls back to placeholders - the exact thing the
+#     target_heatmap gate refuses to do, but for a permanent cause.
+#     Two things a mechanical remap would have got wrong, both measured:
+#       - assays_v2 has no rock_type, so Harker takes it from the
+#         silver.lithology interval containing the sample's from_depth
+#         (LEFT JOIN, so unmatched samples still fall through to "unknown").
+#       - the legacy qc_flag/below_detection columns were NOT NULL, so
+#         `!= 'rejected'` and `= false` were safe. Their assays_v2 equivalents
+#         are nullable, where those predicates are NULL and drop the row.
+#         Measured on a fixture: 3 rows vs 5, and 4 vs 6. Both filters now use
+#         IS DISTINCT FROM.
+#     STILL STALE, deliberately not touched: eval_seeders/numeric_grounding.py
+#     and schema_mapping.py carry "silver.assays" as declarative source_table /
+#     canonical_table metadata in golden-query expectations. It is inert (never
+#     executed as SQL), and golden query sets are a milestone gate owned by
+#     test-engineer, so retargeting them is an SME call, not a rename.
 #
 #   [CLOSED 2026-08-28, batch 6] workflow.activepieces_channels and
 #     silver.shadow_runs were both archived rather than ported. Their whole
@@ -139,5 +160,3 @@
 
 function silver.density_choropleth_h3  # raw/phase0/105-section6-density-mvt-function.sql
 table gold.h3_density_mineral  # raw/phase0/104-section6-h3-density-table.sql
-table silver.assay_samples  # raw/phase0/109-section17-3-assays-schema.sql
-table silver.assays  # raw/phase0/109-section17-3-assays-schema.sql
