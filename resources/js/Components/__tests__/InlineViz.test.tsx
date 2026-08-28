@@ -201,8 +201,10 @@ describe('InlineViz — chart_type → card dispatch', () => {
 
     it('KNOWN_VIZ_CHART_TYPES export matches the dispatch cases above', () => {
         // Belt-and-braces: when a new chart_type lands in the dispatcher,
-        // it has to be added to KNOWN_VIZ_CHART_TYPES too (for the sentry
-        // tag drift check) — this test pins both sides in sync.
+        // it has to be added to KNOWN_VIZ_CHART_TYPES too — this test
+        // pins both sides in sync. (It originally guarded a Sentry tag
+        // drift check; Sentry was removed 2026-08-28, the sync is still
+        // worth pinning.)
         expect(new Set(KNOWN_VIZ_CHART_TYPES)).toEqual(new Set([
             'downhole_strip', 'assay_histogram', 'cross_section',
             'drill_trace_3d', 'technique_timeline',
@@ -258,8 +260,9 @@ describe('InlineViz — empty meta falls through cleanly', () => {
     it('unknown chart_type renders nothing (drift safety)', () => {
         // A new chart_type added to the backend dispatcher without a
         // matching frontend branch — should silently degrade rather
-        // than crash. This is the canary path for the §6b P6 sentry
-        // card.type='unknown' tag.
+        // than crash. This was the canary path for the §6b P6 Sentry
+        // card.type='unknown' tag; the degrade-don't-crash behaviour it
+        // asserts outlived the telemetry.
         const payload: VizPayload = {
             chart_type: 'future_card_type' as unknown as VizPayload['chart_type'],
             plotly_layout: { meta: { rows: [{}] } },

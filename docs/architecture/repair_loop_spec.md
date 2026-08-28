@@ -245,7 +245,7 @@ attempt 3: ASK_FOR_DISAMBIGUATION (terminal)
 true, the trace UI shows a red badge and the retrieval-inspector page
 surfaces the death-loop reason banner.
 
-Sentry tagging (deferred to wire):
+Sentry tagging (never wired; void — Sentry removed from the stack 2026-08-28):
 
 ```python
 sentry_sdk.set_tag("repair.terminal_reason", plan.reason or "")

@@ -83,34 +83,6 @@ class Settings(BaseSettings):
     # field makes the env-var override actually work.
     LOG_LEVEL: str = "INFO"
 
-    # -------------------------------------------------------------------------
-    # Sentry — error tracking, traces, profiling, logs
-    # -------------------------------------------------------------------------
-    # Same Sentry project as the Laravel side ("georag"). Leave blank to
-    # disable the SDK entirely (sentry_sdk.init is gated on this in main.py).
-    # Sample rates are 1.0 in dev for full visibility; drop to ~0.1 in prod.
-    SENTRY_DSN: str = ""
-    #: 0.1, not 1.0. Tracing and profiling every request costs uvicorn
-    #: hot-path overhead continuously; 10% is enough to characterise
-    #: latency and is the rate to raise deliberately when someone is
-    #: actually reading the data.
-    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
-    SENTRY_PROFILES_SAMPLE_RATE: float = 0.1
-    SENTRY_ENABLE_LOGS: bool = True
-    SENTRY_RELEASE: str = ""
-    #: "production", not "development".
-    #:
-    #: SENTRY_ENVIRONMENT is not set on any container app, so the default
-    #: is what every deployment gets. Defaulting to "development" meant
-    #: production events would arrive tagged as dev — unfilterable from
-    #: dev noise, and invisible to any alert rule scoped to production.
-    #:
-    #: A wrong default is worse here than a missing one: it looks
-    #: configured. Anything that is genuinely a dev environment sets this
-    #: explicitly, and a dev event mislabelled as production is a much
-    #: cheaper mistake than the reverse.
-    SENTRY_ENVIRONMENT: str = "production"
-
     # Which deployment this process is. Until 2026-08-21 nothing told the
     # application, so it could not tell a laptop from the production
     # cluster — and every security control defaults to OFF for the laptop's

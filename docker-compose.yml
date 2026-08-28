@@ -996,14 +996,6 @@ services:
       # (PaddleOCR/paddlex, the original trigger for this pin, was
       # removed 2026-07-29 — orphaned /pdf/ocr_region endpoint.)
       HOME: /tmp
-      # Sentry observability — same project as Laravel side. Blank DSN
-      # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
-      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
-      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
-      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
-      SENTRY_ENABLE_LOGS: ${SENTRY_ENABLE_LOGS:-true}
       # Langfuse observability — same self-hosted instance as the langfuse-mcp.
       # Empty PUBLIC/SECRET key disables the SDK at app boot. Host uses the
       # in-network service name (langfuse-web:3000), not the host-port 3001.

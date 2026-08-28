@@ -310,7 +310,7 @@ class RepairAttempt:
             attempts each returned ≤ 1 result with the same tool +
             filters.
         attempted_at_monotonic: ``time.monotonic()`` at the start of
-            this attempt — only used for logging / Sentry tagging.
+            this attempt — only used for logging.
     """
 
     tool_name: str
@@ -333,8 +333,8 @@ def detect_death_loop(repair_attempts: list[RepairAttempt]) -> bool:
     plan §4b) checks this after each attempt and short-circuits the
     loop into a refusal-with-diagnostic when True.
 
-    Pure function: no I/O, no logging. Caller is responsible for the
-    Sentry event + the user-facing refusal text (lang/en/guard_errors
+    Pure function: no I/O, no logging. Caller is responsible for
+    reporting it and for the user-facing refusal text (lang/en/guard_errors
     `DEATH_LOOP` key, rendered by GuardErrorRenderer).
     """
     if len(repair_attempts) < 2:

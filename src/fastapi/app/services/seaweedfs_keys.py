@@ -42,8 +42,8 @@ class WorkspaceKeyMissingPrefix(ValueError):
 
     The fail-loud-on-write contract: any production code path that
     constructs an object key without the prefix is a tenant-leak bug.
-    Callers should not catch this — let it propagate to surface as a
-    Sentry 5xx so the bug is visible.
+    Callers should not catch this — let it propagate and surface as a
+    5xx so the bug is visible.
     """
 
 

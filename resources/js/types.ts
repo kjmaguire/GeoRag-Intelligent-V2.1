@@ -154,10 +154,12 @@ export interface MapPayload {
 
 /**
  * Known chart_type values dispatched by `InlineViz.tsx`. §6b P5
- * (2026-05-29) — centralised here as the canonical TS-side enum to
- * pair with the `_KNOWN_CARD_TYPES` frozenset in
- * `src/fastapi/app/agent/sentry_tags.py`. A drift between the two
- * surfaces as `card.type = "unknown"` in the Sentry dashboard.
+ * (2026-05-29) — centralised here as the canonical TS-side enum. It
+ * used to be paired with a `_KNOWN_CARD_TYPES` frozenset in
+ * `src/fastapi/app/agent/sentry_tags.py`, which existed to tag the
+ * card type on Sentry events; Sentry was removed from the stack on
+ * 2026-08-28 and that module with it, so this list is now the single
+ * definition rather than one half of a mirror.
  *
  * The trailing `(string & {})` lets the wire's free-form
  * `chart_type` string land without a type assertion while still
@@ -177,9 +179,9 @@ export type VizChartType =
 
 /**
  * Set of chart_type values the React InlineViz dispatcher recognises.
- * Mirror of `_KNOWN_CARD_TYPES` in `src/fastapi/app/agent/sentry_tags.py`.
  * Used by the §6b P3 frontend dispatcher tests to assert every value
- * routes to a card.
+ * routes to a card. Formerly mirrored a Python frozenset; see the note
+ * on `VizChartType` above.
  */
 export const KNOWN_VIZ_CHART_TYPES = [
     'downhole_strip',

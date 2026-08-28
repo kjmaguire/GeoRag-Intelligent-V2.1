@@ -139,16 +139,6 @@ async def run_agentic_retrieval(
     # persist_node can stamp silver.answer_runs.latency_ms.
     import time as _time_for_latency  # noqa: PLC0415
 
-    # Plan §I — workspace.id Sentry tag applies to every transaction
-    # the agent emits. Best-effort: stamper no-ops when the SDK isn't
-    # installed and swallows its own errors. Called at the entry so
-    # spans from every downstream node carry the tag.
-    try:
-        from app.agent.sentry_tags import stamp_workspace_tag  # noqa: PLC0415
-        stamp_workspace_tag(getattr(deps, "workspace_id", None))
-    except Exception:  # pragma: no cover — defensive
-        pass
-
     initial = AgenticRetrievalState(
         query=query,
         deps=deps,

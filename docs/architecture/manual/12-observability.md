@@ -217,16 +217,26 @@ Verification:
 - Alerting on `verification_runs.status=failed` (Grafana panel +
   Alertmanager rule).
 
-## 7. Sentry (currently OFF)
+## 7. Sentry (removed 2026-08-28)
 
-[project_sentry_removed_2026_05_21](../notes/INDEX.md#project_sentry_removed_2026_05_21):
-`sentry/sentry-laravel` is **not** installed. `.env` wiring is commented
-out. Re-enabling requires `composer require` + worker restarts, not just
-flipping the env vars.
+Sentry is no longer part of the stack. The Laravel side had already been
+disabled since 2026-05-21
+([project_sentry_removed_2026_05_21](../notes/INDEX.md#project_sentry_removed_2026_05_21)),
+though `sentry/sentry-laravel` remained declared in `composer.json` with no
+config, no service-provider registration and no call site — a dependency
+that was carried but never wired.
 
-FastAPI side: `SENTRY_DSN` env is wired but the SDK is gated on a
-non-empty DSN ([docker-compose.yml:1013-1020](../../../docker-compose.yml)) —
-empty DSN → SDK no-ops at boot.
+On 2026-08-28 both sides were removed outright: the composer package (and
+its `sentry/sentry`, `nyholm/psr7`, `symfony/options-resolver` transitives),
+the `sentry-sdk[fastapi]` Python dependency, the `sentry_sdk.init()` block
+in `app/main.py`, the six `SENTRY_*` settings in `app/config.py`, their
+`docker-compose.yml` env wiring, and `app/agent/sentry_tags.py` with its
+five stampers and 474-line test.
+
+There is now **no error-tracking or APM product in the stack**. What
+remains is Azure Monitor and Log Analytics (§1-§6 above) plus structured
+JSON logs. That is a real gap rather than a swap, and it is stated here so
+nobody plans against a Sentry that isn't there.
 
 ## 8. Dagster metrics
 
