@@ -83,6 +83,37 @@ use Illuminate\Support\Facades\DB;
  *
  * Idempotent: `CREATE SCHEMA/TABLE/INDEX IF NOT EXISTS`, `DROP POLICY IF
  * EXISTS` before each `CREATE POLICY`.
+ *
+ * ## Split ownership: the one case where this migration stands down
+ *
+ * `interpretation` is one of only three schemas that `database/raw/phase0/`
+ * creates for itself (with `backups` and `gold`), so it is the one case where
+ * an operator who has run `php artisan db:apply-raw` already has the schema
+ * AND all four tables — owned by whatever role ran that, which is not
+ * necessarily the role that runs migrations. The `Migrations under production
+ * privileges` CI job reproduces exactly this: `bootstrap` applies
+ * `database/raw/phase0/*.sql`, then `georag_ci` — deliberately not a member of
+ * `bootstrap` and deliberately not a superuser — runs `php artisan migrate`.
+ * Against that cluster `CREATE TABLE IF NOT EXISTS` does not quietly skip; it
+ * fails with `permission denied for schema interpretation`, because Postgres
+ * resolves the creation namespace (and checks CREATE on it) before it ever
+ * reaches the IF NOT EXISTS test.
+ *
+ * Azure is not that cluster — the schema does not exist there at all, so the
+ * normal path creates everything under the migration role and every ALTER
+ * below is an ALTER of a table this role owns. But a compose or on-prem box
+ * where raw was applied by hand IS that cluster, and there is genuinely
+ * nothing this migration can do there: `CREATE INDEX`, `ALTER TABLE ... FORCE
+ * ROW LEVEL SECURITY` and `CREATE POLICY` all require ownership, not a grant.
+ * So it stands down with a `RAISE WARNING` naming the remedy, in the same
+ * shape as the sweep in `2026_08_24_010000`, which skips foreign-owned tables
+ * with `pg_has_role(current_user, c.relowner, 'USAGE')` and warns. Standing
+ * down loses only the reconciliations — the tables themselves are already
+ * there, in the raw file's shape.
+ *
+ * Partial ownership is NOT tolerated: some tables present and foreign-owned
+ * while others are missing means the cluster is in a state no supported path
+ * produces, and the migration throws rather than leaving half a schema behind.
  */
 return new class extends Migration
 {
@@ -100,6 +131,10 @@ return new class extends Migration
         }
 
         DB::statement('CREATE SCHEMA IF NOT EXISTS interpretation');
+
+        if ($this->standDownForForeignOwnership()) {
+            return;
+        }
 
         DB::statement(<<<'SQL'
             CREATE TABLE IF NOT EXISTS interpretation.interpretation_notes (
@@ -254,23 +289,128 @@ return new class extends Migration
         SQL);
     }
 
+    /**
+     * True when every table already exists under an owner this role is not a
+     * member of — the `db:apply-raw`-then-migrate cluster described in the
+     * class docblock. Emits a WARNING naming the remedy and lets up() return.
+     *
+     * Throws instead when ownership is split part-way, which no supported
+     * path produces and which would leave the schema half-built.
+     */
+    private function standDownForForeignOwnership(): bool
+    {
+        $missing = [];
+        $foreign = [];
+
+        foreach (self::TABLES as $table) {
+            $qualified = "interpretation.{$table}";
+
+            // Looked up through pg_class/pg_namespace by NAME rather than
+            // to_regclass(): resolving a qualified name needs USAGE on the
+            // schema, which is precisely what this role does not have on a
+            // bootstrap-owned `interpretation`. Reading the catalogs does not.
+            $row = DB::selectOne(
+                <<<'SQL'
+                SELECT pg_has_role(current_user, c.relowner, 'USAGE') AS mine,
+                       pg_get_userbyid(c.relowner)                    AS owner
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'interpretation' AND c.relname = ?
+                SQL,
+                [$table],
+            );
+
+            if ($row === null) {
+                $missing[] = $qualified;
+            } elseif (! $row->mine) {
+                $foreign[] = "{$qualified} (owned by {$row->owner})";
+            }
+        }
+
+        if ($foreign === []) {
+            return false;
+        }
+
+        if ($missing !== []) {
+            throw new \RuntimeException(
+                "interpretation.* is split across owners: ".implode(', ', $foreign)
+                ." already exist under another role while ".implode(', ', $missing)
+                ." are missing. No supported path produces this. Reassign ownership of the
+"
+                ."existing tables to the migration role, or drop them and re-run.",
+            );
+        }
+
+        // All four present, none of them ours. Nothing here is grantable —
+        // CREATE INDEX, ALTER TABLE and CREATE POLICY all require ownership.
+        DB::statement(
+            <<<'SQL'
+            DO $$
+            DECLARE
+                owner_name text;
+            BEGIN
+                SELECT pg_get_userbyid(c.relowner) INTO owner_name
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'interpretation'
+                   AND c.relname = 'interpretation_notes';
+
+                RAISE WARNING 'interpretation.* already exists under another role (%) — '
+                    'skipping. This cluster applied database/raw/phase0/107 before '
+                    'migrating, so the four tables are present in the raw file''s shape '
+                    'but WITHOUT idx_interp_comments_workspace and WITHOUT FORCE ROW LEVEL '
+                    'SECURITY. Re-run this migration as the owning role, or reassign '
+                    'ownership to the migration role, to pick those up.', owner_name;
+            END $$;
+            SQL
+        );
+
+        return true;
+    }
+
     public function down(): void
     {
         if (DB::connection()->getDriverName() !== 'pgsql') {
             return;
         }
 
+        // Only drop what this role owns. On the split-ownership cluster the
+        // class docblock describes, up() stood down without creating anything,
+        // so there is nothing here to reverse — and DROP TABLE would fail with
+        // `must be owner` rather than no-op.
         foreach ([
             'interpretation.interpretation_comments',
             'interpretation.interpretation_target_zones',
             'interpretation.interpretation_section_lines',
             'interpretation.interpretation_notes',
         ] as $qualified) {
+            $mine = DB::selectOne(
+                "SELECT pg_has_role(current_user, c.relowner, 'USAGE') AS mine
+                   FROM pg_class c
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = 'interpretation' AND c.relname = ?",
+                [substr($qualified, strlen('interpretation.'))],
+            );
+
+            if ($mine !== null && ! $mine->mine) {
+                continue;
+            }
+
             DB::statement("DROP TABLE IF EXISTS {$qualified}");
         }
 
         // The schema is created by this migration, so it is dropped here —
-        // but only if empty, in case a later migration added a table to it.
-        DB::statement('DROP SCHEMA IF EXISTS interpretation RESTRICT');
+        // but only if empty, in case a later migration added a table to it,
+        // and only if this role owns it. On the split-ownership cluster the
+        // class docblock describes, `bootstrap` owns the schema and DROP
+        // SCHEMA fails with `must be owner` rather than no-op.
+        $ownsSchema = DB::selectOne(
+            "SELECT pg_has_role(current_user, n.nspowner, 'USAGE') AS mine
+               FROM pg_namespace n WHERE n.nspname = 'interpretation'",
+        );
+
+        if ($ownsSchema === null || $ownsSchema->mine) {
+            DB::statement('DROP SCHEMA IF EXISTS interpretation RESTRICT');
+        }
     }
 };
