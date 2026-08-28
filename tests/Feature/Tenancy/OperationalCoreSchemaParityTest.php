@@ -9,10 +9,11 @@ use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
- * Pins the twenty-two objects ported out of `database/raw/` and into the
+ * Pins the twenty-four objects ported out of `database/raw/` and into the
  * migration chain on 2026-08-28 — the operational core (outbox, the Layer-E
  * workspace tables, the tool gateway, feature flags), the §19.3 interpretation
- * schema, and the Layer-G silver findings tables.
+ * schema, the Layer-G silver findings tables, and the §7.4 claim ledger plus
+ * Phase-H4 workspace settings.
  *
  * ## Why a test rather than trusting the migration
  *
@@ -53,6 +54,11 @@ use Tests\TestCase;
  *    guarded on the table existing and has already run and skipped — so it
  *    will never fire again. This port is the only thing carrying its intent,
  *    and the only thing that will catch a regression.
+ * 8. `silver.workspace_settings` is FAIL-CLOSED on both arms.
+ *    `src/fastapi/tests/test_workspace_settings_rls_integration.py` pins the
+ *    same contract, but it is an integration test against a live cluster and
+ *    does not run in this suite — so a port that quietly adopted the
+ *    fail-open house shape would sail through PR CI. Asserted here too.
  *
  * `test_every_rls_enabled_table_is_forced` in `WorkspaceRlsCoverageTest`
  * already covers FORCE globally, so it is not duplicated here.
@@ -63,7 +69,7 @@ use Tests\TestCase;
  */
 final class OperationalCoreSchemaParityTest extends TestCase
 {
-    /** Every object the 2026_08_28_1000xx–1005xx migrations create. */
+    /** Every object the 2026_08_28_1000xx–1006xx migrations create. */
     private const PORTED_TABLES = [
         'outbox.pending_propagations',
         'outbox.propagation_attempts',
@@ -86,6 +92,8 @@ final class OperationalCoreSchemaParityTest extends TestCase
         'silver.store_reconciliation_findings',
         'silver.corpus_health_findings',
         'silver.storage_tier_policy',
+        'silver.claim_ledger',
+        'silver.workspace_settings',
     ];
 
     /**
@@ -110,6 +118,8 @@ final class OperationalCoreSchemaParityTest extends TestCase
         'silver.store_reconciliation_findings',
         'silver.corpus_health_findings',
         'silver.storage_tier_policy',
+        'silver.claim_ledger',
+        'silver.workspace_settings',
     ];
 
     /**
@@ -173,7 +183,7 @@ final class OperationalCoreSchemaParityTest extends TestCase
             [],
             $missing,
             "Ported operational-core objects are missing. These are created by the\n"
-            .'2026_08_28_1000xx–1005xx migrations; if one is absent the migration chain '
+            .'2026_08_28_1000xx–1006xx migrations; if one is absent the migration chain '
             ."did not run to completion.\nMissing:\n  ".implode("\n  ", $missing),
         );
     }
@@ -418,5 +428,81 @@ final class OperationalCoreSchemaParityTest extends TestCase
         } finally {
             DB::rollBack();
         }
+    }
+
+    /**
+     * silver.workspace_settings must stay fail-closed on BOTH arms: an unset
+     * GUC sees nothing, and a write naming another workspace is refused.
+     *
+     * The same contract is pinned by
+     * src/fastapi/tests/test_workspace_settings_rls_integration.py, but that
+     * is an integration test against a live cluster and is not part of the
+     * PR-time suite. Without this, a future edit relaxing the policy to the
+     * fail-open shape used elsewhere in silver would pass CI — while silently
+     * making every workspace's allow_external_llm egress flag readable by any
+     * unbound session.
+     */
+    #[Test]
+    public function workspace_settings_stays_fail_closed_on_both_arms(): void
+    {
+        $row = DB::selectOne(
+            'SELECT qual, with_check FROM pg_policies
+              WHERE schemaname = ? AND tablename = ? AND policyname = ?',
+            ['silver', 'workspace_settings', 'workspace_settings_workspace_isolation'],
+        );
+
+        $this->assertNotNull(
+            $row,
+            'Policy workspace_settings_workspace_isolation is gone. The table carries the '
+            .'allow_external_llm egress flag read by app/agent/egress_gate.py.',
+        );
+
+        foreach (['qual' => $row->qual, 'with_check' => $row->with_check] as $clause => $sql) {
+            $this->assertNotNull($sql, "{$clause} must be present, not defaulted.");
+            $this->assertStringNotContainsString(
+                'IS NULL',
+                (string) $sql,
+                "workspace_settings {$clause} gained a fail-open branch: {$sql}",
+            );
+        }
+    }
+
+    /**
+     * silver.claim_ledger is deliberately MIXED — fail-open read, strict
+     * write. Both halves are asserted because each could regress on its own:
+     * widening WITH CHECK would let an unbound writer attribute claims to any
+     * workspace, and every call site in services/claim_ledger.py binds the
+     * scope first precisely because that arm is strict.
+     */
+    #[Test]
+    public function claim_ledger_keeps_its_strict_write_arm(): void
+    {
+        $row = DB::selectOne(
+            'SELECT qual, with_check FROM pg_policies
+              WHERE schemaname = ? AND tablename = ? AND policyname = ?',
+            ['silver', 'claim_ledger', 'claim_ledger_ws_isolation'],
+        );
+
+        $this->assertNotNull($row, 'Policy claim_ledger_ws_isolation is gone.');
+
+        $this->assertStringNotContainsString(
+            'IS NULL',
+            (string) $row->with_check,
+            'claim_ledger WITH CHECK gained a fail-open branch, so a session with no '
+            .'app.workspace_id could now write a claim attributed to any workspace: '
+            .$row->with_check,
+        );
+
+        // The read arm IS fail-open today, matching the raw file and the rest
+        // of silver. Asserted so that tightening it is a deliberate edit here
+        // rather than an unnoticed behaviour change — see
+        // docs/architecture/fail-open-rls-posture-2026-08-21.md.
+        $this->assertStringContainsString(
+            'IS NULL',
+            (string) $row->qual,
+            'claim_ledger USING is no longer fail-open. That is very likely an '
+            .'improvement, but it changes what an unbound reader sees — update this '
+            .'assertion deliberately rather than deleting it.',
+        );
     }
 }

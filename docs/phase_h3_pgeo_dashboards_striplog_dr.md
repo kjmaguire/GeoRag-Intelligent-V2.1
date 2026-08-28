@@ -52,6 +52,17 @@ pattern).
   gold table schema with RLS + per-collar-depth + per-project +
   partial-mineralised indexes. Materialised by a future Dagster
   asset; the SQL is ready for the operator to apply.
+
+  > **Superseded — do NOT apply.** This design record is kept as written.
+  > What actually shipped is the migration
+  > `2026_05_13_080000_create_gold_drillhole_intervals_visual.php`, whose
+  > table shape differs from the SQL described above; both use
+  > `CREATE TABLE IF NOT EXISTS`, so applying this file first on a fresh
+  > cluster would win the race and break every live consumer of the
+  > migration shape. The file was marked ARCHIVED on 2026-07-03 and moved to
+  > `database/raw/_archive/phase5-10-drillhole-intervals-visual.sql` on
+  > 2026-08-28 to take it out of the rollup glob. Dagster was retired
+  > 2026-07-28, so the "future Dagster asset" above is not coming either.
 * `app/services/visualizations/strip_log.py` — pure-function
   renderer with TWO output paths:
   - `render_strip_log_plotly_figure()` — JSON dict for react-plotly.js
@@ -125,7 +136,8 @@ support cockpit + dispatcher work for monitoring + alerting.
 
 ## Files
 
-* New: 1 SQL substrate (`database/raw/phase5/10-drillhole-intervals-visual.sql`)
+* New: 1 SQL substrate (`database/raw/phase5/10-drillhole-intervals-visual.sql`
+  — since archived to `database/raw/_archive/`; see the note above)
 * New: 2 visualization modules
   (`app/services/visualizations/__init__.py` +
   `strip_log.py`)
