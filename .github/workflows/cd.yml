@@ -192,7 +192,7 @@ jobs:
         run: az acr login --name "$ACR_NAME"
 
       - name: Build + push fastapi image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: src
           file: docker/fastapi.Dockerfile
@@ -251,7 +251,7 @@ jobs:
         # `az acr build` had to go. This one is 11 min and runs in parallel, so
         # it was never the critical path, but composer + npm install are just
         # as re-runnable and there is no reason to pay for them twice.
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/laravel.Dockerfile
@@ -307,7 +307,7 @@ jobs:
         run: az acr login --name "$ACR_NAME"
 
       - name: Build + push martin image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           # `docker/` — the Dockerfile COPYs martin/martin.yaml relative to it.
           context: docker
