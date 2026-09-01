@@ -41,7 +41,7 @@
 # To bump: change TESSERACT_VERSION below + rebuild + run
 # ops/validation/ocr_cpu_smoke.py against a golden NI 43-101 crop to
 # confirm no confidence-distribution regression.
-FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a AS tesseract-builder
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS tesseract-builder
 
 ARG TESSERACT_VERSION=5.5.2
 
@@ -90,7 +90,7 @@ RUN mkdir -p /opt/tesseract/share/tessdata \
 # Re-pin via the same after a Python patch release (3.13.x bumps the
 # slim base periodically). Both builder + runtime stages MUST use the
 # same digest so site-packages copied across stages have matching ABI.
-FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a AS builder
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS builder
 
 # ---------------------------------------------------------------------------
 # Build-time system dependencies
@@ -363,7 +363,7 @@ RUN python3 scripts/bake_splade_cache.py
 # Stage 2 — runtime
 # Lean image: runtime shared libraries only, no compiler toolchain.
 # =============================================================================
-FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a AS runtime
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG FastAPI"
 LABEL org.opencontainers.image.description="FastAPI 0.135.x domain service on Python 3.13"
