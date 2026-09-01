@@ -13,8 +13,7 @@ georag-agents/
 ├── senior-reviewer.md           # Opus — milestone gate reviews (read-only)
 ├── backend-laravel.md           # Sonnet — Laravel + Octane + Horizon + Reverb
 ├── backend-fastapi.md           # Sonnet — FastAPI + Pydantic AI + RAG
-├── data-engineer.md             # Sonnet — Dagster + ingestion + PostGIS + formats
-├── graph-engineer.md            # Sonnet — Neo4j Community + Cypher
+├── data-engineer.md             # Sonnet — Hatchet ingestion + PostGIS + formats
 ├── frontend-engineer.md         # Sonnet — React + Inertia + shadcn/ui + viz
 ├── devops-engineer.md           # Sonnet — Docker Compose + deployment + tuning
 ├── test-engineer.md             # Sonnet — all testing + golden queries

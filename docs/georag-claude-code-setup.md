@@ -44,7 +44,7 @@ These were configured in the Claude.ai workspace per the system prompt. They're 
 
 | Connector | URL | Use for GeoRAG |
 |---|---|---|
-| **Sentry** | mcp.sentry.dev | Error tracking and root cause investigation. Already in scope per project memory. Critical for Phase 0 onward — every agent emits errors here. |
+| **Sentry** | mcp.sentry.dev | ~~Error tracking and root cause investigation.~~ **No longer applicable** — Sentry was removed from the GeoRAG stack on 2026-08-28 (see [Ch 12 §7](architecture/manual/12-observability.md)). Nothing in the application emits to Sentry, so the connector has no project data to read. |
 | **Google Drive** | drivemcp.googleapis.com | Document storage. Useful for sharing architecture docs, ADRs, meeting notes. |
 | **Gmail** | gmailmcp.googleapis.com | Search project-related email threads. Marginal but free. |
 | **Google Calendar** | calendarmcp.googleapis.com | Scheduling. Marginal for implementation work. |

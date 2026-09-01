@@ -132,8 +132,8 @@ async def safe_hybrid_query(
     except Exception as exc:  # noqa: BLE001
         if not _is_qdrant_unavailability(exc):
             # Programming error — let it propagate so the test suite
-            # and Sentry catch it. We only fall back on infrastructure
-            # failure, not on bugs.
+            # catches it. We only fall back on infrastructure failure,
+            # not on bugs.
             raise
 
         logger.warning(

@@ -27,7 +27,6 @@ Suite markers
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -100,65 +99,6 @@ _AUTH_HEADERS = AUTH_HEADERS
 # Fixtures
 # ---------------------------------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
-# Phase H — neo4j_driver fixture for the @pytest.mark.integration tests
-# in tests/test_neo4j_drillhole_label.py (and any future graph-side
-# integration tests). Connects against NEO4J_HOST + NEO4J_USER +
-# NEO4J_PASSWORD env vars. When those aren't set OR the connection
-# fails, the fixture calls pytest.skip() so the green-suite signal
-# stays honest — these tests demand a live Neo4j with seeded data.
-# ---------------------------------------------------------------------------
-
-
-@pytest_asyncio.fixture
-async def neo4j_driver():
-    """Yield an `AsyncGraphDatabase` driver connected to the configured Neo4j.
-
-    Skips the test when NEO4J_* env vars are unset OR the driver can't
-    handshake. Keeps the integration suite functional inside Docker
-    Compose (where the env vars + the live container exist) while
-    not polluting CI / dev runs that don't have Neo4j up.
-    """
-    import os as _os
-
-    import pytest as _pytest  # noqa: PLC0415
-
-    try:
-        from neo4j import AsyncGraphDatabase  # noqa: PLC0415
-    except ImportError:
-        _pytest.skip("neo4j driver package not installed")
-        return
-
-    host = _os.environ.get("NEO4J_HOST")
-    user = _os.environ.get("NEO4J_USER")
-    password = _os.environ.get("NEO4J_PASSWORD")
-    if not (host and user and password):
-        _pytest.skip(
-            "neo4j_driver fixture: NEO4J_HOST / NEO4J_USER / NEO4J_PASSWORD "
-            "env vars not set — integration test requires live Neo4j"
-        )
-        return
-
-    driver = AsyncGraphDatabase.driver(
-        f"bolt://{host}:7687",
-        auth=(user, password),
-    )
-    try:
-        # Handshake — if Neo4j is unreachable, skip rather than ERROR.
-        try:
-            await driver.verify_connectivity()
-        except Exception as exc:  # noqa: BLE001
-            await driver.close()
-            _pytest.skip(
-                f"neo4j_driver fixture: Neo4j unreachable at bolt://{host}:7687"
-                f" — {type(exc).__name__}: {exc}"
-            )
-            return
-        yield driver
-    finally:
-        with contextlib.suppress(Exception):
-            await driver.close()
 
 
 @pytest_asyncio.fixture

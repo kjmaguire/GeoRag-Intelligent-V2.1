@@ -899,7 +899,7 @@ services:
       # Azure AI Foundry is the default primary backend post Phase-C
       # cutover (2026-07-30), replacing self-hosted vLLM.
       LLM_BACKEND: ${LLM_BACKEND:-azure}
-      LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-http://vllm:8000/v1}
+      LLM_PRIMARY_URL: ${LLM_PRIMARY_URL:-}
       LLM_PRIMARY_MODEL: ${LLM_PRIMARY_MODEL:-Qwen/Qwen3-14B-AWQ}
       LLM_FALLBACK_URL: ${LLM_FALLBACK_URL:-}
       LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
@@ -917,7 +917,10 @@ services:
       # vLLM — retained only for operators who point LLM_BACKEND=vllm at an
       # external OpenAI-compatible endpoint; the local `vllm` compose
       # service was removed 2026-07-30 along with its GPU reservation.
-      VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
+      # No default: `http://vllm:8000/v1` named that deleted service, so
+      # choosing the backend without a URL produced a DNS error instead of a
+      # config error. app/config.py now refuses to start on that combination.
+      VLLM_URL: ${VLLM_URL:-}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen3-14B-AWQ}
       VLLM_QUANTIZATION: ${VLLM_QUANTIZATION:-awq_marlin}
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-8192}
@@ -927,7 +930,7 @@ services:
       # only requires standing up an endpoint here, no code change.
       PDF_VL_MODEL_VERSION: ${PDF_VL_MODEL_VERSION:-2}
       PDF_VL_MODEL_ID_V3: ${PDF_VL_MODEL_ID_V3:-cyankiwi/Qwen3-VL-4B-Instruct-AWQ-8bit}
-      PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-http://vllm:8000/v1}
+      PDF_VL_BACKEND_URL: ${PDF_VL_BACKEND_URL:-}
       # Anthropic — set ANTHROPIC_API_KEY in .env + flip LLM_BACKEND
       # to "anthropic" to activate. See docs/RUNBOOK.md "LLM backend
       # selection" for the full flip procedure.
@@ -993,14 +996,6 @@ services:
       # (PaddleOCR/paddlex, the original trigger for this pin, was
       # removed 2026-07-29 — orphaned /pdf/ocr_region endpoint.)
       HOME: /tmp
-      # Sentry observability — same project as Laravel side. Blank DSN
-      # disables the SDK (sentry_sdk.init is gated on it in app/main.py).
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
-      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
-      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
-      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
-      SENTRY_ENABLE_LOGS: ${SENTRY_ENABLE_LOGS:-true}
       # Langfuse observability — same self-hosted instance as the langfuse-mcp.
       # Empty PUBLIC/SECRET key disables the SDK at app boot. Host uses the
       # in-network service name (langfuse-web:3000), not the host-port 3001.

@@ -14,10 +14,11 @@ Kubernetes cluster with no internet access.
 | `chart/`              | Packaged Helm chart (`georag-X.Y.Z.tgz`)            |
 | `images/`             | Saved Docker images (`docker save` format), one per service |
 
-Typical bundle size: **25–35 GB** (15–20 GB images + the Helm chart).
-The vLLM model weights (~17 GB) are NOT bundled by default; ship
-them separately as a PVC mount and set
-`vllm.model.useLocalPvc=true`.
+Typical bundle size: **15–20 GB** (images + the Helm chart). No model
+weights are bundled: the chart deploys no inference server. LLM calls
+go to Azure AI Foundry, or to an OpenAI-compatible endpoint you run
+yourself (`LLM_BACKEND=vllm` with `VLLM_URL` pointing at it) — which
+in an air-gapped install means one you host inside the enclave.
 
 ## Pre-requisites on the target node
 
@@ -34,14 +35,13 @@ them separately as a PVC mount and set
 
 3. **Sufficient disk** for the images:
    - Images load into containerd: ~20 GB
-   - PVCs (postgres + neo4j + qdrant + redis + seaweedfs): ~210 GB
-   - **Total minimum free**: 250 GB
+   - PVCs (postgres + qdrant + redis + seaweedfs): ~190 GB
+   - **Total minimum free**: 220 GB
 
 4. **(Optional) Private container registry** if you have multiple
    nodes. For single-node K3s you can skip this — the install loads
    images directly into containerd via `ctr image import`.
 
-5. **(For vLLM only) NVIDIA GPU + the device-plugin DaemonSet**.
 
 ## Install
 
@@ -54,7 +54,6 @@ cd _stage_v1.0.0
 cat > secrets.env <<EOF
 POSTGRES_PASSWORD=$(openssl rand -base64 32)
 PG_APP_PASSWORD=$(openssl rand -base64 32)
-NEO4J_PASSWORD=neo4j/$(openssl rand -base64 24 | tr -d '/+=')
 REDIS_PASSWORD=$(openssl rand -base64 32)
 FASTAPI_SERVICE_KEY=$(openssl rand -base64 48)
 LARAVEL_APP_KEY=base64:$(openssl rand -base64 32)

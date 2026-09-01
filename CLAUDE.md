@@ -31,8 +31,8 @@ doc for the reading order.
    in external examples, translate it to our stack.
 
 2. **Async-native drivers only in FastAPI.** `asyncpg` for PostgreSQL,
-   `redis.asyncio` (aioredis) for Redis, async Qdrant client, async Neo4j
-   driver. Synchronous drivers in async handlers are a blocker-level bug.
+   `redis.asyncio` (aioredis) for Redis, async Qdrant client. Synchronous
+   drivers in async handlers are a blocker-level bug.
 
 3. **Octane-safe Laravel code.** The Laravel app boots once and stays in
    memory. No static state leaks between requests. No singletons holding
@@ -50,22 +50,27 @@ doc for the reading order.
 6. **Schemas in Section 04e are contracts.** Don't invent fields. Don't skip
    constraints. Don't change enumeration values without SME approval.
 
-7. **Don't duplicate orchestration.** Laravel queues handle user-triggered
-   async work. Dagster handles scheduled/bulk data pipelines. Never overlap.
+7. **Don't duplicate orchestration.** Laravel queues handle short
+   user-triggered async work. Hatchet handles ingestion, scheduled crons and
+   anything needing durable retries. Never overlap. There is no Laravel
+   scheduler — `routes/console.php` registers no scheduled tasks, so every
+   recurrence is a Hatchet cron, a GitHub Actions cron, or an Azure
+   Container Apps Job.
 
 8. **MapLibre GL, not Mapbox GL.** Licensing matters for on-prem deployments.
 
-9. **Neo4j Community Edition only.** No Enterprise features (clustering,
-   active page cache warmup, database-level RBAC). Use manual warmup scripts
-   and application-level permissions instead.
+9. **No knowledge graph.** Neo4j was removed on 2026-07-28 and the sync
+   workflow deleted with it. The graph half of hallucination Layer 4 is
+   permanently fail-open. Don't add a graph store, a driver, or a Cypher
+   query without an ADR that supersedes this.
 
 ## Technology snapshot
 
 - **Frontend**: React + Inertia.js, shadcn/ui + Tailwind, MapLibre GL, React Flow, Plotly
 - **Application**: Laravel 13 on Octane (Swoole/RoadRunner), Horizon, Reverb, Sanctum, Pulse
 - **Domain Service**: FastAPI 0.135.x on Python 3.13, Pydantic AI, asyncpg, aioredis
-- **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (with PgBouncer edoburu 1.25), Neo4j Community 2026.03, Qdrant v1.17, Redis 8.6, SeaweedFS (S3-compatible, replaces MinIO per ADR-0001)
-- **Ingestion**: Dagster, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002)
+- **Data Stores**: PostgreSQL 18.3 + PostGIS 3.6.3 (with PgBouncer edoburu 1.25), Qdrant v1.17, Redis 8.6, SeaweedFS in compose / Azure Blob in production (S3-compatible, replaces MinIO per ADR-0001)
+- **Ingestion**: Hatchet workflows, Polars, DuckDB, GDAL/GeoPandas, lasio/segyio/obspy, in-process PDF stack (§04p — replaces RAGFlow per ADR-0002). Dagster was retired 2026-07-28 and its tree deleted 2026-08-28.
 - **LLM**: Azure AI Foundry, Cohere Command A+ (`Cohere-command-a-plus-05-2026`, Preview; dev + prod — vLLM cutover complete 2026-07-30; legacy vLLM compose service removed, `LLM_BACKEND=vllm` still supported for operators running their own OpenAI-compatible endpoint). Served via the unified **OpenAI v1 API** (`{endpoint}/openai/v1/chat/completions`) — empirically confirmed 2026-07-30 against a live deployment, including JSON `response_format` support, a separate `reasoning_content` field, and Cohere's `<|START_TEXT|>`/`<|END_TEXT|>` sentinel-token wrapping on JSON output — see `app/config.py` `AZURE_FOUNDRY_*` for the exact wire contract. Anthropic Claude is wired as optional fallback. Embedding/reranker default to self-hosted (Qwen3-Embedding-0.6B / Qwen3-Reranker-0.6B / SPLADE++ on hatchet-worker-ai) but support an Azure AI Foundry backend (`EMBEDDING_BACKEND=foundry` → Cohere Embed v4, `RERANKER_BACKEND=foundry` → Cohere Rerank v4) — both empirically verified 2026-07-30 against live deployments (`{endpoint}/providers/cohere/v2/embed` and `/v2/rerank`, distinct from the LLM's chat-completions surface). SPLADE++ sparse retrieval has no Foundry equivalent and stays self-hosted either way. Embed v4 requests 1024-dim output to match the existing `georag_chunks` schema — no Qdrant migration, but a full re-embed is still mandatory when switching (`scripts/reset_embeddings_for_reencode.py`).
 
 ## Agent delegation
@@ -77,7 +82,6 @@ them for focused work — each has its own context window and domain expertise:
 - **`backend-laravel`** (Sonnet) — all Laravel work
 - **`backend-fastapi`** (Sonnet) — all FastAPI + Pydantic AI work
 - **`data-engineer`** (Sonnet) — ingestion pipeline, PostGIS schemas, format parsers
-- **`graph-engineer`** (Sonnet) — Neo4j + Cypher
 - **`frontend-engineer`** (Sonnet) — React + Inertia + shadcn/ui + visualizations
 - **`devops-engineer`** (Sonnet) — Docker Compose, deployment, database tuning
 - **`test-engineer`** (Sonnet) — all test writing, golden query sets, snapshot tests
@@ -149,7 +153,6 @@ This application is a Laravel application and its main Laravel ecosystems packag
 
 - php - 8.5
 - inertiajs/inertia-laravel (INERTIA_LARAVEL) - v3
-- laravel/ai (AI) - v0
 - laravel/framework (LARAVEL) - v13
 - laravel/horizon (HORIZON) - v5
 - laravel/octane (OCTANE) - v2

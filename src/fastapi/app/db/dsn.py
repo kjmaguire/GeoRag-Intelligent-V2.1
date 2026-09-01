@@ -219,7 +219,7 @@ def redact_dsn(dsn: str) -> str:
         # function whose job is to keep a DSN out of a traceback was the
         # thing that put it in one: main.py redacts during lifespan, so the
         # process died at startup with the raw credential in the log, and
-        # in the frame locals Sentry ships with the event.
+        # in the frame locals of any traceback shipped with it.
         return "*****"
 
     if not parts.scheme or password is None:

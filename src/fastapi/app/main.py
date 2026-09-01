@@ -41,7 +41,6 @@ from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
-import sentry_sdk
 from fastapi import FastAPI, HTTPException
 from qdrant_client import AsyncQdrantClient
 from starlette.responses import Response  # for /metrics return-type resolution
@@ -49,56 +48,6 @@ from starlette.responses import Response  # for /metrics return-type resolution
 from app.config import settings
 from app.db.dsn import build_dsn, redact_dsn
 from app.logging_config import configure_json_logging
-from app.services.qdrant_conn import qdrant_client_kwargs
-
-# Sentry — initialised at import time so import-side errors are captured.
-# The FastAPI / Starlette / asyncpg / redis / httpx integrations are
-# auto-detected from installed packages; no explicit registration needed.
-# Gated on SENTRY_DSN being non-empty so a blank DSN safely disables the SDK.
-if settings.SENTRY_DSN:
-    # Explicit integration list — Sentry auto-enables most of these via
-    # `auto_enabling_integrations` but we name the high-leverage ones so a
-    # future SDK bump can't quietly drop coverage on the agent path. Each
-    # one auto-instruments its package when imported.
-    from sentry_sdk.integrations.anthropic import AnthropicIntegration
-    from sentry_sdk.integrations.pydantic_ai import PydanticAIIntegration
-
-    sentry_sdk.init(
-        dsn=settings.SENTRY_DSN,
-        environment=settings.SENTRY_ENVIRONMENT,
-        release=settings.SENTRY_RELEASE or None,
-        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
-        profiles_sample_rate=settings.SENTRY_PROFILES_SAMPLE_RATE,
-        # False, and it must stay False. With PII on, the Starlette
-        # integration attaches the request body to every event — and the
-        # body on /internal/queries is the customer's exploration
-        # question, naming a property and often a drillhole. That is the
-        # exact content `app/agent/log_safe.py` exists to keep out of our
-        # own logs; shipping it to a third-party SaaS instead is not an
-        # improvement.
-        #
-        # The question stays recoverable for debugging without it: the
-        # audit row is keyed by `log_safe.query_hash`, so an event's
-        # correlation id leads to the encrypted row.
-        #
-        # Both LLM integrations below already pass include_prompts=False.
-        # The request body was the remaining copy of the same text.
-        send_default_pii=False,
-        # Forward Python `logging` records into Sentry's Logs product.
-        # Pairs with the Laravel side's sentry_logs Monolog channel.
-        _experiments={"enable_logs": settings.SENTRY_ENABLE_LOGS},
-        integrations=[
-            # Anthropic streaming spans — captures messages.create and
-            # messages.stream calls including token usage, model id,
-            # service tier, and tool-use blocks.
-            AnthropicIntegration(include_prompts=False),
-            # pydantic-ai agent + tool spans — every @agent.tool invocation,
-            # output_validator pass, and run_stream is wrapped as a span,
-            # giving us a full trace of orchestrator.py's agentic path
-            # without manual breadcrumbs.
-            PydanticAIIntegration(include_prompts=False),
-        ],
-    )
 from app.routers import admin_tier1_misc as tier1_misc_router  # Phase H4 Tier 1 — source-trust + export-gate + k6
 from app.routers import (
     admin_tier234 as tier234_router,  # Phase H4 §11.1/§11.10 backups/cold-tier ops (trimmed 2026-07-28, task #31)
@@ -126,6 +75,7 @@ from app.routers import shadow_trigger as shadow_trigger_router
 from app.routers import smdi as smdi_router  # SMDI ingestion plan v1.1 Phase 6 — features endpoint
 from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import what_changed as what_changed_router  # Phase H4 §9.9 UI
+from app.services.qdrant_conn import qdrant_client_kwargs
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
 # the app emits a structured payload Promtail can ingest with a single
@@ -831,7 +781,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Config (all optional — defaults target the in-network vllm service):
     #   PDF_VL_MODEL_ID    — model identifier (default: "Qwen/Qwen2.5-VL-7B-Instruct")
     #   PDF_VL_BACKEND     — "vllm" | "anthropic" (default: "vllm")
-    #   PDF_VL_BACKEND_URL — full base URL (default: "http://vllm:8000/v1")
+    #   PDF_VL_BACKEND_URL — full base URL (no default; the local vLLM
+    #                        service was removed 2026-07-30)
     #   PDF_VL_TIMEOUT_S   — inference timeout in seconds (default: 120)
     #   PDF_VL_MAX_PAGES   — max pages per request (default: 4)
     #

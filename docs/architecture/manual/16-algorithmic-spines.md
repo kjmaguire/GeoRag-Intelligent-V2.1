@@ -58,10 +58,13 @@ strategy + guard code + evidence kind to `silver.query_traces`.
   - Sizing input for Stage 2 (terminal enable) and Stage 3 (low-cost
     loop enable) per [repair_loop_spec.md §8](../repair_loop_spec.md).
 
-### Sentry tags
+### Sentry tags (removed)
 
-Shadow telemetry also flows to Sentry per
-[shadow_telemetry_sentry_tags.md](../shadow_telemetry_sentry_tags.md) —
+Shadow telemetry used to flow to Sentry per
+[shadow_telemetry_sentry_tags.md](../../_archived/shadow_telemetry_sentry_tags.md).
+Sentry was removed from the stack on 2026-08-28 and the stampers deleted,
+so none of the tags below are emitted; the section is kept because it
+documents which shadow signals were considered worth surfacing —
 each repair candidate is tagged with `guard_code`, `repair_strategy`,
 `evidence_kind` so production refusal spikes can be sliced quickly.
 

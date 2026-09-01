@@ -36,6 +36,7 @@
       "note": "audit / ops / workflow / targeting, including per-partition ENABLE+FORCE which RLS does not inherit.",
       "requires": [
         "audit.audit_ledger",
+        "audit.integration_credentials_audit",
         "workflow.workflow_runs",
         "targeting.target_scores",
         "ops.support_tickets"

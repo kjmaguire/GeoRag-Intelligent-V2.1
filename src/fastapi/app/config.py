@@ -83,34 +83,6 @@ class Settings(BaseSettings):
     # field makes the env-var override actually work.
     LOG_LEVEL: str = "INFO"
 
-    # -------------------------------------------------------------------------
-    # Sentry — error tracking, traces, profiling, logs
-    # -------------------------------------------------------------------------
-    # Same Sentry project as the Laravel side ("georag"). Leave blank to
-    # disable the SDK entirely (sentry_sdk.init is gated on this in main.py).
-    # Sample rates are 1.0 in dev for full visibility; drop to ~0.1 in prod.
-    SENTRY_DSN: str = ""
-    #: 0.1, not 1.0. Tracing and profiling every request costs uvicorn
-    #: hot-path overhead continuously; 10% is enough to characterise
-    #: latency and is the rate to raise deliberately when someone is
-    #: actually reading the data.
-    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
-    SENTRY_PROFILES_SAMPLE_RATE: float = 0.1
-    SENTRY_ENABLE_LOGS: bool = True
-    SENTRY_RELEASE: str = ""
-    #: "production", not "development".
-    #:
-    #: SENTRY_ENVIRONMENT is not set on any container app, so the default
-    #: is what every deployment gets. Defaulting to "development" meant
-    #: production events would arrive tagged as dev — unfilterable from
-    #: dev noise, and invisible to any alert rule scoped to production.
-    #:
-    #: A wrong default is worse here than a missing one: it looks
-    #: configured. Anything that is genuinely a dev environment sets this
-    #: explicitly, and a dev event mislabelled as production is a much
-    #: cheaper mistake than the reverse.
-    SENTRY_ENVIRONMENT: str = "production"
-
     # Which deployment this process is. Until 2026-08-21 nothing told the
     # application, so it could not tell a laptop from the production
     # cluster — and every security control defaults to OFF for the laptop's
@@ -271,7 +243,15 @@ class Settings(BaseSettings):
     # Legacy OpenAI-compatible target, retained for the "vllm" backend value
     # and as the last-resort default in `effective_llm_url`/`effective_llm_model`
     # if LLM_BACKEND is set to something unrecognized.
-    LLM_PRIMARY_URL: str = "http://vllm:8000/v1"
+    #
+    # Empty by default since 2026-08-28. It used to default to
+    # `http://vllm:8000/v1`, an in-cluster hostname that stopped resolving when
+    # the `vllm` compose service was deleted on 2026-07-30 — so a deployment
+    # that reached this path got a DNS failure naming a service that no longer
+    # exists, which reads as a broken network rather than as missing config.
+    # `_validate_vllm_url` below turns the one case that matters
+    # (LLM_BACKEND=vllm) into a startup error instead.
+    LLM_PRIMARY_URL: str = ""
     LLM_PRIMARY_MODEL: str = "Qwen/Qwen3-14B-AWQ"
 
     # vLLM — used when LLM_BACKEND=vllm.
@@ -307,7 +287,10 @@ class Settings(BaseSettings):
     # VRAM that the GPU compositor won't release to a non-display
     # application. Headless A4500 hardware can push to 0.95+. Lower
     # further (0.85-0.90) if embeddings or reranker share the device.
-    VLLM_URL: str = "http://vllm:8000/v1"
+    # No default: see LLM_PRIMARY_URL above. An operator choosing
+    # LLM_BACKEND=vllm is pointing at an endpoint they run themselves, so
+    # there is no sensible in-cluster default left to guess.
+    VLLM_URL: str = ""
     VLLM_MODEL: str = "Qwen/Qwen3-14B-AWQ"
     VLLM_QUANTIZATION: str = "awq_marlin"
     VLLM_MAX_MODEL_LEN: int = 8192
@@ -811,19 +794,6 @@ class Settings(BaseSettings):
     # this is the broader ceiling.
     REPAIR_LOOP_MAX_ATTEMPTS: int = 2
 
-    # PagerDuty Events API v2 for escalation_routing. When the integration
-    # key is empty, the agent returns its advisory recommendation only
-    # (no outbound page). When set, the agent POSTs an Events v2 trigger
-    # event keyed on the ticket_id (dedup_key) so re-routing the same ticket
-    # updates the existing incident rather than creating duplicates.
-    #
-    # Integration key is the per-service routing key from PagerDuty's
-    # service settings (Settings → Services → <service> → Integrations).
-    # The default API URL points at PagerDuty's global Events v2 endpoint.
-    PAGERDUTY_INTEGRATION_KEY: str = ""
-    PAGERDUTY_API_URL: str = "https://events.pagerduty.com/v2/enqueue"
-    PAGERDUTY_HTTP_TIMEOUT_S: float = 5.0
-
     # Retrieval cache — Phase H finally lit it up properly.
     #
     # History:
@@ -851,6 +821,27 @@ class Settings(BaseSettings):
                 "MULTI_TENANT_ENFORCEMENT_ENABLED=False requires SINGLE_TENANT_MODE=True. "
                 "Set SINGLE_TENANT_MODE=True explicitly if this is a solo deployment, "
                 "or leave MULTI_TENANT_ENFORCEMENT_ENABLED=True for multi-tenant."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_vllm_url(self) -> Settings:
+        """LLM_BACKEND=vllm needs somewhere to send the request.
+
+        The `vllm` compose service was removed on 2026-07-30 (Azure AI Foundry
+        cutover). The backend value stayed supported for operators running
+        their own OpenAI-compatible endpoint, but the default URL kept naming
+        the deleted in-cluster service. Selecting the backend without
+        supplying a URL is a configuration error, and it is much cheaper to
+        say so at startup than to have every query fail on a DNS lookup for a
+        host that was intentionally deleted.
+        """
+        if self.LLM_BACKEND == "vllm" and not self.VLLM_URL.strip():
+            raise ValueError(
+                "LLM_BACKEND=vllm requires VLLM_URL to point at an "
+                "OpenAI-compatible endpoint you operate. The bundled `vllm` "
+                "service was removed on 2026-07-30, so there is no default "
+                "to fall back to. Set VLLM_URL, or use LLM_BACKEND=azure."
             )
         return self
 
@@ -1194,11 +1185,13 @@ class Settings(BaseSettings):
     # different scale ([0,1] calibrated probability vs. the cross-encoder
     # backends' unbounded logit). 0.2 is a "clearly irrelevant" floor per
     # Cohere's documented score semantics — looser than the 0.5-0.6
-    # min_relevance gates applied further downstream in decomposer.py /
-    # plan_executor.py (§04i Layer 1), which are a second, stricter
-    # per-sub-query gate operating on the SAME post-transform [0,1] scale;
-    # this threshold only needs to reject the obviously-irrelevant tail at
-    # the search_documents stage, not duplicate that later gate. Re-tune
+    # min_relevance gates in the §04i Layer 1 planner path. Read that
+    # comparison with care: it described a second, stricter per-sub-query
+    # gate on the SAME post-transform [0,1] scale, but that gate does not
+    # exist: decomposer.py and plan_executor.py were both deleted
+    # 2026-08-28, neither having had a production caller. This threshold is
+    # therefore the ONLY retrieval-quality gate applied today, not a loose
+    # first pass backed by a stricter one downstream. Re-tune
     # against golden_queries (scripts/run_eval_120.py) before changing.
     RERANKER_SCORE_THRESHOLD_FOUNDRY: float = 0.2
 

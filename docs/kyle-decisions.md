@@ -168,6 +168,11 @@ HTML doc grows it past the point where it serves as a quick reference.
   `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher`, runbook
   at `ops/runbooks/_archived/drillhole-label-rename.md`. Operator applies the
   migration during next maintenance window per the runbook.
+  **Superseded 2026-08-28:** the migration was never applied and never will
+  be — Neo4j was removed from the stack on 2026-07-28 and the Cypher script
+  was deleted. The decision itself (`:DrillHole` is the canonical spelling)
+  still stands and is enforced in the relational code by
+  `src/fastapi/tests/test_no_legacy_drillhole_label.py`.
 
 ---
 

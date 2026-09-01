@@ -23,7 +23,7 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          # Internal FastAPI routes — for ops / Hatchet / Dagster integrations.
+          # Internal FastAPI routes — for ops / Hatchet integrations.
           # NOT exposed by default; the Laravel front door is what users hit.
           - path: /internal
             pathType: Prefix

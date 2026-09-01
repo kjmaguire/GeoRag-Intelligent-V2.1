@@ -5,14 +5,18 @@
 #
 # Responsibilities:
 #   - RAG pipeline execution (retrieval, reranking, LLM orchestration)
-#   - Geo-spatial query processing (PostGIS, Qdrant vector search, Neo4j graph)
+#   - Geo-spatial query processing (PostGIS, Qdrant vector search)
 #   - Pydantic AI typed output with mandatory citations
-#   - Async-native throughout: asyncpg, aioredis, async Qdrant/Neo4j clients
+#   - Async-native throughout: asyncpg, aioredis, async Qdrant client
 #
 # IMPORTANT async rule (from CLAUDE.md hard rules):
-#   asyncpg for PostgreSQL, redis.asyncio for Redis, async Qdrant client,
-#   async Neo4j driver. Synchronous drivers in async handlers are a
-#   blocker-level bug.
+#   asyncpg for PostgreSQL, redis.asyncio for Redis, async Qdrant client.
+#   Synchronous drivers in async handlers are a blocker-level bug.
+#
+# No graph store: Neo4j was removed from the stack 2026-07-28 (CLAUDE.md
+# hard rule 9) and the `neo4j` driver package was dropped from this image
+# on 2026-08-28 -- it was still being installed, held by a single type
+# annotation on a field that is None at every construction site.
 #
 # Architecture reference: Section 07 (Deployment Services)
 #

@@ -14,7 +14,6 @@ helm install georag charts/georag/ \
   --create-namespace --namespace georag \
   --set secrets.postgresPassword="$(openssl rand -base64 32)" \
   --set secrets.pgAppPassword="$(openssl rand -base64 32)" \
-  --set secrets.neo4jPassword="$(openssl rand -base64 32)" \
   --set secrets.redisPassword="$(openssl rand -base64 32)" \
   --set secrets.fastapiServiceKey="$(openssl rand -base64 48)" \
   --set secrets.laravelAppKey="base64:$(openssl rand -base64 32)"
@@ -32,7 +31,6 @@ helm install georag charts/georag/ \
   --set ingress.host=georag.your-domain.com \
   --set secrets.postgresPassword="$(openssl rand -base64 32)" \
   --set secrets.pgAppPassword="$(openssl rand -base64 32)" \
-  --set secrets.neo4jPassword="$(openssl rand -base64 32)" \
   --set secrets.redisPassword="$(openssl rand -base64 32)" \
   --set secrets.fastapiServiceKey="$(openssl rand -base64 48)" \
   --set secrets.laravelAppKey="base64:$(openssl rand -base64 32)"
@@ -44,7 +42,6 @@ helm install georag charts/georag/ \
 |---------------|-------------------|-------|-------|
 | postgresql    | StatefulSet × 1   | 50Gi  | PG 18.3 + PostGIS 3.6 + h3 |
 | pgbouncer     | Deployment × 2    | —     | transaction-mode pool |
-| neo4j         | StatefulSet × 1   | 20Gi  | Community Edition (no Enterprise) |
 | qdrant        | StatefulSet × 1   | 30Gi  | vector store |
 | redis         | StatefulSet × 1   | 5Gi   | AOF persistence |
 | seaweedfs     | StatefulSet × 1   | 100Gi | S3-compatible object store |
@@ -54,8 +51,6 @@ helm install georag charts/georag/ \
 | laravel-reverb  | Deployment × 1  | —     | WebSocket server |
 | hatchet       | StatefulSet × 1 + 2 worker pools | 5Gi | workflow engine |
 | martin        | Deployment × 2    | —     | MVT tile server |
-| dagster       | webserver + daemon | 10Gi | scheduled batch ingestion |
-| vllm          | Deployment × 1 (GPU) | —  | Qwen/Qwen3-14B-AWQ |
 | pg-init Job   | post-install hook | —     | idempotent SQL migrations |
 | audit-verify  | CronJob nightly   | —     | hash-chain integrity verifier |
 
@@ -110,15 +105,14 @@ service's `resources` block. The included tiers:
 | medium | Production (≤200 users)| ~16 cores     | ~32 Gi        |
 | large  | Multi-tenant (defer)   | (§11-v3)      | (§11-v3)      |
 
-vLLM is separate: 1× NVIDIA A100 (40GB) or equivalent.
+No GPU node is required: this chart deploys no inference server. The
+embedding, reranker and sparse sidecars run on CPU by default, and LLM
+calls go to Azure AI Foundry (or an OpenAI-compatible endpoint you run).
 
 ## Troubleshooting
 
 - `pg-init` Job failing? Check the Pod logs — usually a permission
   issue on the bundled SQL files or a stale schema constraint.
-- vLLM stuck pending? Confirm the GPU device plugin is installed
-  (`kubectl get nodes -L nvidia.com/gpu.product`) and matches
-  `vllm.nodeSelector`.
 - Pods can't reach each other? K3s uses `local-path` PVCs which
   are node-pinned; ensure all stateful services schedule onto the
   same node, or migrate to a multi-node `StorageClass`.

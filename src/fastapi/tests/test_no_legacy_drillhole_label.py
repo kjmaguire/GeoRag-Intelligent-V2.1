@@ -29,8 +29,12 @@ migration shipped without a CI guard. Five lines had drifted to the legacy
 form across one file (constraint, two indexes, count cypher, docstring).
 
 Architecture reference: §04f Global Invariant 4, docs/kyle-decisions.md D2,
-ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher,
 docs/04f-public-geoscience-addendum.md (D2-followup section).
+
+The D2 migration script (ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher)
+was deleted 2026-08-28 with the rest of the Neo4j remnants — the graph store was
+removed 2026-07-28. This guard is unaffected: it greps the relational codebase for
+the legacy spelling and never depended on the graph.
 """
 
 from __future__ import annotations
@@ -49,9 +53,6 @@ _LEGACY_LABEL_RE = re.compile(r":Drillhole\b")
 # production code path here.
 _EXEMPT_PATHS: frozenset[str] = frozenset(
     {
-        # The migration itself flips :Drillhole → :DrillHole and includes
-        # rollback / pre-flight queries against the legacy form.
-        "ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher",
         # Asserts that the legacy form returns 0 rows post-migration and that
         # the allowlist rejects it.
         "src/fastapi/tests/test_neo4j_drillhole_label.py",

@@ -661,22 +661,48 @@ async def _fetch_harker_samples(
     *, pg_pool, workspace_id: str, project_id: UUID,
     y_oxide: str = "Al2O3",
 ) -> dict[str, Any]:
-    """Pull SiO2 + y_oxide per sample for Harker diagram."""
+    """Pull SiO2 + y_oxide per sample for Harker diagram.
+
+    Reads ``silver.assays_v2``, the canonical assay table. This used to query
+    ``silver.assay_samples`` JOIN ``silver.assays``, a pair declared only in
+    ``database/raw/phase0/109`` that CD never applied and that the
+    architecture doc does not name at all — so on Azure the query raised
+    ``42P01`` and the caller's blanket ``except Exception`` quietly swapped in
+    demo data. A Harker diagram of fabricated geochemistry is exactly what the
+    target_heatmap capability gate refuses to ship, so the fix is to read the
+    table that is actually deployed.
+
+    Two shape differences from the retired pair:
+
+    * ``assays_v2`` has no ``project_id`` — it is scoped by ``collar_id``, so
+      the project filter goes through ``silver.collars``.
+    * ``assays_v2`` has no ``rock_type``. The nearest deployed source is the
+      logged lithology at the sample's depth, so ``silver.lithology`` is
+      joined on the interval containing ``from_depth``. That containing-interval
+      rule is the conventional reading and is only ever a display grouping
+      here — the LEFT JOIN keeps unmatched samples, which fall through to
+      "unknown" exactly as a NULL ``rock_type`` did before. Worth an SME
+      confirmation if Harker grouping ever becomes load-bearing.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_harker_samples"
     ) as conn:
         rows = await conn.fetch(
             """
-            SELECT s.rock_type,
-                   max(CASE WHEN a.assay_element = 'SiO2' THEN a.assay_value END) AS sio2,
-                   max(CASE WHEN a.assay_element = $2 THEN a.assay_value END) AS y_val
-              FROM silver.assay_samples s
-              JOIN silver.assays a ON a.sample_id = s.sample_id
-             WHERE s.project_id = $1::uuid
-               AND a.assay_element IN ('SiO2', $2)
-             GROUP BY s.sample_id, s.rock_type
-            HAVING max(CASE WHEN a.assay_element = 'SiO2' THEN a.assay_value END) IS NOT NULL
-               AND max(CASE WHEN a.assay_element = $2 THEN a.assay_value END) IS NOT NULL
+            SELECT max(l.rock_name) AS rock_type,
+                   max(CASE WHEN a.element = 'SiO2' THEN a.value END) AS sio2,
+                   max(CASE WHEN a.element = $2 THEN a.value END) AS y_val
+              FROM silver.assays_v2 a
+              JOIN silver.collars c ON c.collar_id = a.collar_id
+              LEFT JOIN silver.lithology l
+                     ON l.collar_id = a.collar_id
+                    AND a.from_depth >= l.from_depth
+                    AND a.from_depth <  l.to_depth
+             WHERE c.project_id = $1::uuid
+               AND a.element IN ('SiO2', $2)
+             GROUP BY a.collar_id, a.sample_id
+            HAVING max(CASE WHEN a.element = 'SiO2' THEN a.value END) IS NOT NULL
+               AND max(CASE WHEN a.element = $2 THEN a.value END) IS NOT NULL
              LIMIT 200
             """,
             project_id, y_oxide,
@@ -695,33 +721,42 @@ async def _fetch_geochem_samples_by_element(
     *, pg_pool, workspace_id: str, project_id: UUID,
     elements: list[str], limit_samples: int = 5,
 ) -> list[dict[str, Any]]:
-    """Pull samples × element matrix (for spider / REE)."""
+    """Pull samples × element matrix (for spider / REE).
+
+    Reads ``silver.assays_v2`` — see ``_fetch_harker_samples`` for why the
+    retired ``silver.assays`` / ``silver.assay_samples`` pair is gone. Here
+    ``assays_v2.sample_id`` (text) plays the part the old ``sample_code``
+    did, and the project filter goes through ``silver.collars``.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_geochem_samples_by_element"
     ) as conn:
         rows = await conn.fetch(
             """
-            SELECT s.sample_code, a.assay_element, a.assay_value
-              FROM silver.assay_samples s
-              JOIN silver.assays a ON a.sample_id = s.sample_id
-             WHERE s.project_id = $1::uuid
-               AND a.assay_element = ANY($2::text[])
-               AND a.assay_value IS NOT NULL
-               AND s.sample_id IN (
-                   SELECT sample_id FROM silver.assay_samples
-                    WHERE project_id = $1::uuid
-                    ORDER BY sample_code LIMIT $3
+            SELECT a.sample_id, a.element, a.value
+              FROM silver.assays_v2 a
+              JOIN silver.collars c ON c.collar_id = a.collar_id
+             WHERE c.project_id = $1::uuid
+               AND a.element = ANY($2::text[])
+               AND a.value IS NOT NULL
+               AND a.sample_id IN (
+                   SELECT v.sample_id
+                     FROM silver.assays_v2 v
+                     JOIN silver.collars vc ON vc.collar_id = v.collar_id
+                    WHERE vc.project_id = $1::uuid
+                    GROUP BY v.sample_id
+                    ORDER BY v.sample_id LIMIT $3
                )
-             ORDER BY s.sample_code, a.assay_element
+             ORDER BY a.sample_id, a.element
             """,
             project_id, elements, limit_samples,
         )
     by_sample: dict[str, dict[str, Any]] = {}
     for r in rows:
-        sid = r["sample_code"]
+        sid = r["sample_id"]
         if sid not in by_sample:
             by_sample[sid] = {"sample_id": sid}
-        by_sample[sid][r["assay_element"]] = float(r["assay_value"])
+        by_sample[sid][r["element"]] = float(r["value"])
     return list(by_sample.values())
 
 
@@ -730,18 +765,22 @@ async def _fetch_grade_tonnage_samples(
     element: str = "Au",
     tonnes_per_sample: float = 1000.0,
 ) -> dict[str, Any]:
-    """Pull (grade, tonnes) tuples for grade-tonnage curve."""
+    """Pull (grade, tonnes) tuples for grade-tonnage curve.
+
+    Reads ``silver.assays_v2`` — see ``_fetch_harker_samples`` for why the
+    retired ``silver.assays`` / ``silver.assay_samples`` pair is gone.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_grade_tonnage_samples"
     ) as conn:
         rows = await conn.fetch(
             """
-            SELECT a.assay_value AS grade
-              FROM silver.assays a
-              JOIN silver.assay_samples s ON s.sample_id = a.sample_id
-             WHERE s.project_id = $1::uuid
-               AND a.assay_element = $2
-               AND a.assay_value IS NOT NULL
+            SELECT a.value AS grade
+              FROM silver.assays_v2 a
+              JOIN silver.collars c ON c.collar_id = a.collar_id
+             WHERE c.project_id = $1::uuid
+               AND a.element = $2
+               AND a.value IS NOT NULL
              ORDER BY grade DESC
              LIMIT 500
             """,
@@ -759,10 +798,16 @@ async def _fetch_grade_tonnage_samples(
 async def _fetch_anomaly_map_samples(
     *, pg_pool, workspace_id: str, project_id: UUID,
 ) -> dict[str, Any]:
-    """Use silver.collars total_depth as the "anomaly value" for demo —
-    a real wiring would use silver.assays once that table lands. This
-    is honest fallback behaviour the chart can demonstrate against
-    actual project data."""
+    """Use silver.collars total_depth as the "anomaly value" for demo.
+
+    This is honest fallback behaviour the chart can demonstrate against
+    actual project data. The previous note here said a real wiring would use
+    ``silver.assays`` "once that table lands" — it never will; that table was
+    raw-only, is absent from the architecture doc, and was archived on
+    2026-08-28. The canonical source for a real wiring is
+    ``silver.assays_v2``, which IS deployed; doing that rewiring is a chart
+    behaviour change and deliberately not bundled with the table repointing.
+    """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_anomaly_map_samples"
     ) as conn:

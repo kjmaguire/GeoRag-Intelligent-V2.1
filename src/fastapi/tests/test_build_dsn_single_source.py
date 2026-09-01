@@ -249,7 +249,7 @@ class TestRedactDsn:
         # so `.port` -- not the split -- is what raises on ":abc". This
         # function is called from main.py's lifespan: raising here killed
         # startup with the unredacted DSN in the traceback, and in the
-        # frame locals Sentry attaches to the event.
+        # frame locals attached to it.
         assert redact_dsn("postgresql://georag:s3cret@pg:abc/georag") == "*****"
 
     def test_the_real_dsn_this_deployment_builds_carries_no_password(self) -> None:

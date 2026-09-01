@@ -16,7 +16,7 @@ The integration:
 Section mapping:
   - period       → window metadata + total audit count
   - data_changes → silver delta counts (decisions, hypotheses, tickets)
-  - claim_changes → claim_ledger delta (still synthetic; awaits §9.5 schema)
+  - claim_changes → claim_ledger delta (live since 2026-08-28)
   - target_changes → target zone delta (still synthetic; awaits §18 wiring)
 """
 from __future__ import annotations
@@ -187,29 +187,34 @@ async def gather_evidence_what_changed(
         )
     )
 
-    # claim_changes section — silver.claim_ledger doesn't exist yet (§9.5 pending).
+    # claim_changes section — real since silver.claim_ledger landed in the
+    # migration chain (2026_08_28_100600). This section previously emitted a
+    # fixed "schema lands with §9.5" notice and a validated=False placeholder
+    # claim; the schema has landed, the detector counts it, and the section
+    # now reads the same detector_result field every sibling section reads.
     drafts.append(
         SectionDraft(
             section_id="claim_changes",
             body_markdown=(
                 "## Claim Ledger Changes\n\n"
-                "_No claim-ledger delta available — the "
-                "`silver.claim_ledger` schema lands with §9.5._\n"
+                f"{detector_result.new_claim_count} claims were recorded in "
+                "the window.\n"
             ),
             claims=[
                 Claim(
-                    claim_id="claim_changes.claim_pending",
+                    claim_id="claim_changes.claim_new_claims",
                     section_id="claim_changes",
                     text=(
-                        "Claim-ledger delta detection pending §9.5 schema."
+                        f"{detector_result.new_claim_count} §7.4 claim-ledger "
+                        f"rows persisted in the window."
                     ),
                     evidence=[
                         EvidenceItem(
-                            source_chunk_id="what_changed.claim_ledger_pending",
+                            source_chunk_id="what_changed.claim_ledger",
                             data_visibility="workspace",
                         ),
                     ],
-                    validated=False,  # not real evidence — annotated as pending
+                    validated=True,
                 )
             ],
         )

@@ -107,12 +107,7 @@ ALLOWED_NON_PYPROJECT: set[str] = {
     "starlette",     # via fastapi
     "logfire",       # via pydantic-ai 1.x (auto-instrumentation)
     "prometheus_client",  # via prometheus-fastapi-instrumentator
-    "pydantic",      # universal; fastapi declares explicitly, dagster gets it via dagster
-    # Cross-package soft-dep — fastapi optionally calls into the Dagster
-    # sibling package via lazy/try-imports (see worker.py + ingest_pdf.py).
-    # Pattern is intentional per ADR-0002.
-    "georag_dagster",
-    # Doc-phase 126 — Dagster-side additions:
+    "pydantic",      # universal; fastapi declares it explicitly
     # Transitives guaranteed by parent deps:
     "shapely",           # via geopandas
     "pyogrio",           # via geopandas (replaces fiona)

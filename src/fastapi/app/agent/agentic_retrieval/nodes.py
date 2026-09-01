@@ -84,13 +84,18 @@ async def resolve_node(state: AgenticRetrievalState) -> dict[str, Any]:
 
         resolved = resolve_multi_turn(state.query, list(state.history))
 
-        # Plan §I — multi_turn.* Sentry tags. Mutate state in place
-        # with the resolved values BEFORE stamping so the stamper reads
-        # the post-resolve view. State is a Pydantic v2 BaseModel (not
-        # frozen) so attribute set is allowed. The LangGraph merge of
-        # the returned update dict happens after this; the in-place
-        # mutation is what the spec wants ("immediately after
-        # resolve_multi_turn returns").
+        # Mutate state in place with the resolved values. State is a
+        # Pydantic v2 BaseModel (not frozen) so attribute set is allowed.
+        # The LangGraph merge of the returned update dict happens after
+        # this; the in-place mutation is what the spec wants
+        # ("immediately after resolve_multi_turn returns").
+        #
+        # The guard below predates the Sentry removal (2026-08-28), where
+        # it wrapped the tag stamper as well as this mutation. It is kept
+        # as-is rather than unwound, so dropping Sentry does not silently
+        # change the error semantics of the resolver; it now swallows only
+        # a malformed resolution_trace, which is worth tightening on its
+        # own terms rather than as a side effect here.
         try:
             state.resolution_trace = [
                 {
@@ -103,10 +108,11 @@ async def resolve_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 for s in resolved.resolution_trace
             ]
             state.resolution_confidence = resolved.overall_confidence
-            from app.agent.sentry_tags import stamp_multi_turn_tags  # noqa: PLC0415
-            stamp_multi_turn_tags(state)
         except Exception:  # pragma: no cover — defensive
-            logger.debug("multi_turn sentry stamp failed (non-fatal)", exc_info=True)
+            logger.debug(
+                "multi_turn resolution_trace mutation failed (non-fatal)",
+                exc_info=True,
+            )
 
         if not resolved.made_changes:
             # Stamp the confidence even when no substitution happened —
@@ -1162,7 +1168,6 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # Best-effort: any failure inside the prep pipeline logs but does
     # NOT block the answer path — we fall back to the legacy path so
     # the user still gets an answer (degraded, but not broken).
-    prep_audit_for_state: Any = None
     if (
         _settings.CONTEXT_PREP_ENABLED
         and state.evidence_packet is not None
@@ -1185,7 +1190,6 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 ),
             )
             state.evidence_packet = prepared.packet
-            prep_audit_for_state = prepared
             # Plan §3 — stash the audit payload on state so persist_node
             # writes it to silver.query_traces.context_prep_audit JSONB.
             try:
@@ -1219,16 +1223,6 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 "agentic_retrieval.assemble: context_prep failed — "
                 "falling back to legacy tool_results context"
             )
-
-    # Plan §I — context_prep.* Sentry tags. Stamped UNCONDITIONALLY
-    # (not just when CONTEXT_PREP_ENABLED is on) so the dashboard's
-    # `context_prep.enabled` filter always shows a value. The stamper
-    # picks safe defaults when prep_audit_for_state is None.
-    try:
-        from app.agent.sentry_tags import stamp_context_prep_tags  # noqa: PLC0415
-        stamp_context_prep_tags(state, prep_audit_for_state)
-    except Exception:  # pragma: no cover — defensive
-        logger.debug("context_prep sentry stamp failed (non-fatal)", exc_info=True)
 
     # Build the LLM context block. Two paths:
     #   1. CONTEXT_PREP_ENABLED + non-empty prepared packet → render
@@ -2219,18 +2213,9 @@ async def repair_shadow_node(state: AgenticRetrievalState) -> dict[str, Any]:
                     "answer path untouched)"
                 )
 
-        # Plan §I — repair.* Sentry tags. Stamped after any loop driver
-        # has run so `repair.attempts` reflects the final count. Read
-        # from state directly (the loop driver mutates state in place
-        # before returning its update dict, so the counts are live).
-        try:
-            from app.agent.sentry_tags import stamp_repair_tags  # noqa: PLC0415
-            # Mutate state with the freshly-derived codes so the stamper
-            # sees them — LangGraph hasn't merged update_dict yet.
-            state.repair_codes_observed = codes_str
-            stamp_repair_tags(state, plan)
-        except Exception:  # pragma: no cover — defensive
-            logger.debug("repair sentry stamp failed (non-fatal)", exc_info=True)
+        # Mutate state with the freshly-derived codes — LangGraph hasn't
+        # merged update_dict yet, and later reads expect the live value.
+        state.repair_codes_observed = codes_str
 
         # The repair loop re-issues the LLM (`_reissue_llm_only`), and
         # those retries are billed like any other call.
@@ -3123,31 +3108,6 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                             "guard_error_codes on response",
                             exc_info=True,
                         )
-
-                # Plan §I — evidence.* + guards.* + card.* Sentry tags.
-                # persist_node is the latest point with both the prepared
-                # packet AND the classifier output in hand; per the spec
-                # doc this is where the §6b stampers live. The card.*
-                # tag (added §6b P6, 2026-05-29) tracks which inline
-                # visualisation (if any) the response shipped.
-                try:
-                    from app.agent.sentry_tags import (  # noqa: PLC0415
-                        stamp_card_type_tag,
-                        stamp_evidence_tags,
-                        stamp_guards_tags,
-                    )
-                    stamp_evidence_tags(state.evidence_packet)
-                    stamp_guards_tags(list(_guard_failure_codes))
-                    stamp_card_type_tag(
-                        getattr(state.response, "viz_payload", None)
-                        if state.response is not None
-                        else None,
-                    )
-                except Exception:  # pragma: no cover — defensive
-                    logger.debug(
-                        "evidence/guards/card sentry stamp failed (non-fatal)",
-                        exc_info=True,
-                    )
 
                 # Plan §3a/§3b — stamp the typed evidence packet onto the
                 # response in `.model_dump()` form so the Laravel SSE

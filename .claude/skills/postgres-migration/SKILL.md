@@ -5,8 +5,7 @@ metadata:
   origin: GeoRAG project — derived from the 76 migrations under database/migrations/ and the silver-schema MVT function suite added 2026-04-22.
   authoritative-sources:
     - georag-architecture.html §04e (Core Data Schemas — 9 PostGIS schemas)
-    - georag-architecture.html §04f (Knowledge Graph Entity Model — Neo4j label canonicalisation rules)
-    - CLAUDE.md hard rules #2 (async-native drivers in FastAPI), #6 (schemas are contracts), #9 (Neo4j Community only)
+    - CLAUDE.md hard rules #2 (async-native drivers in FastAPI), #6 (schemas are contracts), #9 (no knowledge graph)
     - docker/postgresql/init/Z_activate_threadripper_tuning.sql (cluster-level tuning baseline)
     - docs/RUNBOOK.md "PostgreSQL access control" section (when present)
   scope: Laravel-side migrations. PostGIS extension features (geometry, geography). Raw SQL files for PG-specific features Eloquent's Schema builder can't express cleanly.
@@ -28,7 +27,7 @@ Activate when:
 - Introducing a partitioned table (pg_partman parent + child template)
 - Adding/changing an RLS policy (`CREATE POLICY ... USING (workspace_id = current_setting('app.workspace_id')::uuid)`)
 - Adding an MVT function in the `silver` schema for Martin
-- Granting role privileges (`martin_ro`, `dagster_rw`, etc.)
+- Granting role privileges (`georag_app`, `martin_readonly`, etc.)
 - Renaming or dropping a §04e/§04f domain table — **don't** without checking `georag-schema-contracts` and SME approval first
 
 ## File layout
@@ -118,7 +117,7 @@ CREATE POLICY <table>_workspace_isolation ON <table>
     USING      (workspace_id = current_setting('app.workspace_id', true)::uuid)
     WITH CHECK (workspace_id = current_setting('app.workspace_id', true)::uuid);
 
--- Bypass policy for admin / Dagster (set the GUC before bulk ingest):
+-- Bypass policy for admin / bulk ingest (set the GUC first):
 --   SET LOCAL app.workspace_id = '<uuid>';
 ```
 
@@ -230,9 +229,8 @@ Match Martin's `config.yaml` `pg.functions` map verbatim — function name, sche
 GeoRAG uses three Postgres roles:
 - `georag` — application role; owns DDL via Laravel migrations.
 - `martin_ro` — read-only for Martin tile server. SELECT + EXECUTE on silver functions only.
-- `dagster_rw` — Dagster ingestion role; SELECT on bronze, INSERT/UPDATE on silver via stored procedures.
 
-When you add a new silver-schema table or function: **also add the explicit GRANT** for `martin_ro` and/or `dagster_rw`. Forgetting this surfaces as Martin restart-looping with "schema not found" errors after deploys.
+When you add a new silver-schema table or function: **also add the explicit GRANT** for `georag_app`, and for `martin_readonly` if Martin serves it. Forgetting this surfaces as Martin restart-looping with "schema not found" errors after deploys.
 
 ## Common mistakes
 

@@ -36,9 +36,18 @@ Two new SQL files. Both are idempotent and additive; rolling back means
 dropping the tables/indexes manually (Phase H4 does not generate any
 data the older code reads).
 
+> **Step 101 is obsolete as of 2026-08-28 — do not run it.** All three of its
+> tables are now in the migration chain, so `php artisan migrate` covers them:
+> `silver.qp_credentials` (2026_05_14_140200), `silver.workspace_settings`
+> (2026_08_28_100600), and `workflow.activepieces_channels`, which
+> 2026_05_17_120000 drops rather than creates. The file was archived to
+> `database/raw/_archive/phase0-101-phase-h4-ui-tables.sql`, so the command
+> below would now fail on a missing path — it is kept only so the historical
+> checklist still reads in order.
+
 ```bash
-# Migration 101: three new tables for cross-workspace admin registries.
-psql "$DATABASE_URL" < database/raw/phase0/101-phase-h4-ui-tables.sql
+# Migration 101: OBSOLETE — see the note above. Superseded by the migration chain.
+# psql "$DATABASE_URL" < database/raw/phase0/101-phase-h4-ui-tables.sql
 
 # Migration 102: two partial indexes on audit_ledger. Production
 # deploys with an existing populated audit_ledger MUST use

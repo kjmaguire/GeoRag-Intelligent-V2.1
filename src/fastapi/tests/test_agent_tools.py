@@ -547,8 +547,10 @@ class TestSearchDocuments:
         [0,1] relevance_score, unlike cross_encoder/qwen3_causal's raw
         logits. Sigmoiding it a second time compresses every foundry score
         into ~[0.5, 0.73], silently corrupting the min_relevance gates that
-        assume real [0,1] calibration (plan_executor.py, decomposer.py) —
-        caught in a live review session. With RERANKER_BACKEND="foundry",
+        assume real [0,1] calibration (the planner modules plan_executor.py
+        and decomposer.py, both deleted 2026-08-28 as unreachable; the
+        invariant this test pins is what keeps the corruption from returning
+        if such a gate is reintroduced) — caught in a live review session. With RERANKER_BACKEND="foundry",
         the stored relevance_score must equal the raw score exactly, not
         sigmoid(raw score)."""
         import numpy as np
@@ -909,8 +911,8 @@ class TestSearchDocuments:
             "chunk-uuid-002",
         ]
         # The caller has to be able to tell that these scores are not
-        # comparable to a reranked run's — plan_executor keys its
-        # min_relevance gate off exactly this.
+        # comparable to a reranked run's — the since-deleted plan_executor
+        # keyed its min_relevance gate off exactly this.
         assert result.rerank_degraded is True
         assert "reranked" not in result.data_source
         assert "rerank unavailable" in result.data_source

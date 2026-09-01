@@ -11,8 +11,10 @@ Public geoscience is a synced mirror of what provincial and federal surveys
 publish. Two previous owners of that refresh are gone:
 
   * ``bc_minfile_pull`` (§6.2) and ``nrcan_geo_pull`` (§6.3) were retired on
-    2026-05-25 in favour of a Dagster Bronze→Silver pipeline.
-  * That Dagster pipeline has been dormant since 2026-07-28.
+    2026-05-25 in favour of a Dagster Bronze→Silver pipeline. Both modules
+    were deleted 2026-08-28, along with the seven ``services/publicgeo``
+    stub adapters they predated.
+  * That Dagster pipeline was dormant from 2026-07-28 and deleted 2026-08-28.
 
 Between them the tables had no writer at all, which is why the local copy sat
 three weeks stale and Azure never received a single row. Nothing was broken in

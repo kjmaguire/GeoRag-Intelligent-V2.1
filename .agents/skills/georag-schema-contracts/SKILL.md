@@ -1,6 +1,6 @@
 ---
 name: georag-schema-contracts
-description: GeoRAG §04e/§04f schema enforcement for Eloquent models, migrations, API resources, and Form Requests. Use when creating or editing Laravel models for project, collar, drillhole, lithology, alteration, structure, sampling, assay, geochemistry, or NI 43-101 entities, or when writing migrations that touch the geological domain schema. Triggers on tasks involving §04e schemas, JSONB shapes (assay results, resource_estimate, major_oxides, trace_elements), composite primary keys, geom columns, crs_epsg, workspace_id tenancy, or Neo4j label canonicalisation (DrillHole vs Drillhole).
+description: GeoRAG §04e/§04f schema enforcement for Eloquent models, migrations, API resources, and Form Requests. Use when creating or editing Laravel models for project, collar, drillhole, lithology, alteration, structure, sampling, assay, geochemistry, or NI 43-101 entities, or when writing migrations that touch the geological domain schema. Triggers on tasks involving §04e schemas, JSONB shapes (assay results, resource_estimate, major_oxides, trace_elements), composite primary keys, geom columns, crs_epsg, workspace_id tenancy.
 metadata:
   origin: GeoRAG project (CLAUDE.md hard rule #6 + Section 04e/04f)
   authoritative-sources:
@@ -25,7 +25,6 @@ Reference this skill when working on:
 - Validating user input against domain schemas (Form Requests)
 - Persisting FastAPI response payloads (assay arrays, resource estimates, citation graphs)
 - Anything mentioning `project_id`, `hole_id`, `crs_epsg`, `workspace_id`, `geom`, `from_m/to_m`, JSONB results
-- Cypher producers / Neo4j model alignment (DrillHole label discipline)
 
 ## §04e — the 9 schemas (canonical reference)
 
@@ -45,7 +44,7 @@ Reference this skill when working on:
 
 ## Tenancy is cross-cutting — every table needs `workspace_id`
 
-Per §04i: "`workspace_id` population across PostgreSQL, Qdrant, and Neo4j is the joint responsibility of Module 3 ingestion (writes) and Module 9 RBAC enforcement". Every Laravel-managed table in the geological domain schema must include `workspace_id` and have a payload index for filtering.
+Per §04i: "`workspace_id` population across PostgreSQL and Qdrant is the joint responsibility of Module 3 ingestion (writes) and Module 9 RBAC enforcement" (the section also named Neo4j, which was removed 2026-07-28). Every Laravel-managed table in the geological domain schema must include `workspace_id` and have a payload index for filtering.
 
 ## Eloquent ↔ §04e mapping rules
 
@@ -174,14 +173,13 @@ public function rules(): array
 
 **Per §04e key-note:** Feature engineering rules (grade thresholds, net pay, Mg# computation) and controlled vocabularies (mineral names, alteration types) are **SME-provided configuration loaded at runtime — never hardcoded.** Pull from a dedicated config service (`App\Services\SmeConfig`), not from constant arrays in PHP files.
 
-## §04f — Neo4j label canonicalisation (D2, resolved 2026-04-27)
+## §04f — knowledge graph: removed
 
-| ✅ Canonical label | ❌ Forbidden |
-|---|---|
-| `:DrillHole` | `:Drillhole` |
-| `:Project`, `:Formation`, `:Report`, `:MineralOccurrence`, `:GeophysicalSurvey`, `:Publication` | (CamelCase per Global Invariant 4) |
-
-When Laravel produces Cypher (rare — usually `graph-engineer` agent territory), use `:DrillHole`. The Cypher allowlist in `tools.py` rejects the lowercase form. Migration script for legacy data: `ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher`.
+The §04f entity model and its `:DrillHole` label discipline described a Neo4j
+store that was removed on 2026-07-28. Laravel produces no Cypher. The label
+allowlist still exists in `tools.py` and is still unit-tested, because the
+graph tool remains in the tree failing open — but there is nothing to write to.
+Do not add graph columns, Cypher, or a driver without an ADR.
 
 ## Migration discipline
 
@@ -292,7 +290,6 @@ final class StoreCollarRequest extends FormRequest
 - **JSONB shape ambiguous?** §04e's example payloads are illustrative — for a closed schema, ask SME.
 - **Tempted to add a column not in §04e?** Stop. Ask Kyle. The schema is a contract.
 - **Vocabulary question (mineral names, alteration types)?** Pull from `SmeConfig`, never hardcode.
-- **Cross-cutting (touches Neo4j too)?** Hand off to `graph-engineer` agent for the Cypher side.
 
 ## Cross-references
 

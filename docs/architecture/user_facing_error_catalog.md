@@ -114,7 +114,7 @@ Each row: `internal code → user template → UI surface → suggested user act
 
 > "Internal error: a source from outside your workspace was almost included in the results. This was blocked and reported. **Your data is safe.** No information leaked."
 
-- **UI surface:** critical banner with a "Report incident" button. Sentry event already fired automatically.
+- **UI surface:** critical banner with a "Report incident" button. (An automatic Sentry event used to accompany this; Sentry was removed 2026-08-28, so the button is now the only report path.)
 - **Follow-up:** the answer is suppressed; user re-issues the query.
 - **Note:** this code firing in production is a P0 incident — plan §5c lists it as CRITICAL.
 
@@ -144,7 +144,7 @@ Each row: `internal code → user template → UI surface → suggested user act
 
 > "I was unable to find evidence to answer this question. The following filters returned no results: {filters}. You may want to verify **{entity}** exists in the current project."
 
-- **UI surface:** info banner; sentry alert already fired.
+- **UI surface:** info banner. (Previously paired with an automatic Sentry alert; Sentry was removed 2026-08-28.)
 - **Follow-up:** "Search workspace inventory" + "Reword question" actions.
 
 ## Partial answer format

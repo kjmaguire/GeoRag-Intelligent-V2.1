@@ -92,7 +92,6 @@ These are imported into `agentic_retrieval/nodes.py`:
 | [evidence_converter.py](../../../src/fastapi/app/agent/evidence_converter.py) | Converts between evidence shapes (silver row ↔ Pydantic ↔ payload) |
 | [lineage.py](../../../src/fastapi/app/agent/lineage.py) | Answer lineage tracking → `silver.answer_runs` lineage cols |
 | [pricing.py](../../../src/fastapi/app/agent/pricing.py) | LLM cost computation per call (token × per-model rate) |
-| [sentry_tags.py](../../../src/fastapi/app/agent/sentry_tags.py) | Sentry tag setter (Spine B telemetry) |
 | [log_safe.py](../../../src/fastapi/app/agent/log_safe.py) | Strips secrets/PII from log payloads |
 | [errors.py](../../../src/fastapi/app/agent/errors.py) | Internal error types (distinct from `guards.py` codes) |
 | [deps.py](../../../src/fastapi/app/agent/deps.py) | Agent dependency injection (DB pool, redis, LLM client) |

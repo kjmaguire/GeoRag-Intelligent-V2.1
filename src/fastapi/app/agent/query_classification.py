@@ -378,15 +378,18 @@ def _classify_query(query: str) -> dict[str, Any]:
 
     NOTE: This function produces internal routing buckets
     (spatial, documents, assay, downhole, graph, targeting, public_geo).
-    It is NOT the same as the spec-class classifier in
-    app.services.query_classifier.classify_query(), which maps to the five
-    spec classes (factual, spatial, document, computation, viz, unknown).
-    The spec-class classifier is called separately by run_deterministic_rag()
-    for the answer_runs.query_class column and cache-key inclusion.
+    It used to be contrasted here with a separate spec-class classifier in
+    app.services.query_classifier.classify_query(), described as "called
+    separately by run_deterministic_rag() for the answer_runs.query_class
+    column and cache-key inclusion". Both halves of that were untrue and the
+    module was deleted 2026-08-28: nothing in app/ ever called
+    classify_query(), and the only writer of answer_runs.query_class was
+    services/answer_run_store.py, which has no production caller either (the
+    live INSERT is inline in agent/agentic_retrieval/nodes.py). This
+    function -- _classify_query, a different function despite the near-
+    identical name -- is the only query classifier that runs.
 
-    # DEPRECATED routing bucket names — internal only. External callers wanting
-    # the spec class should use classify_query() from query_classifier.py.
-    # The routing dict produced here remains the dispatch authority for tool
+    # The routing dict produced here is the dispatch authority for tool
     # selection and must not be replaced without a full orchestrator refactor.
     """
     lower = query.lower()

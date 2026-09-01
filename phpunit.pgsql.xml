@@ -156,6 +156,11 @@
                  raw SQL ran — but must be registered here so the manifest
                  test sees it and raw-SQL-provisioned clusters exercise it. -->
             <file>tests/Feature/Tenancy/StorageTierPolicyPlatformDefaultsTest.php</file>
+            <!-- 2026-08-28: the fifteen operational-core objects ported out of
+                 database/raw/ into the migration chain. Unlike the file above,
+                 this one asserts against tables the MIGRATIONS create, so it
+                 runs everywhere the pgsql suite runs. -->
+            <file>tests/Feature/Tenancy/OperationalCoreSchemaParityTest.php</file>
             <file>tests/Feature/Foundry/WorkspaceLithologyQueryCountTest.php</file>
             <!-- 2026-08-17 CI-gap audit: these RequiresPostgres files existed
                  but were never added here — grep -rl "RequiresPostgres\|

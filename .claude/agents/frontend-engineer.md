@@ -83,7 +83,7 @@ Build GeoRAG-specific composite components on top of shadcn/ui:
 - `<DrillHoleBrowser>` — filterable table of drill holes
 - `<ProjectSelector>` — dropdown with workspace switching
 - `<MapView>` — MapLibre GL wrapper with click-to-query integration
-- `<KnowledgeGraph>` — React Flow view of Neo4j entities
+- `<KnowledgeGraph>` — React Flow view of entity relationships. NOT BUILT: Neo4j was removed 2026-07-28 and React Flow currently has zero imports.
 
 ## Tailwind conventions
 

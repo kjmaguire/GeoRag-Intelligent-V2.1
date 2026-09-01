@@ -107,7 +107,6 @@ if [ -n "$SECRETS_FILE" ] && [ -f "$SECRETS_FILE" ]; then
         case "$k" in
             POSTGRES_PASSWORD)   HELM_ARGS+=(--set "secrets.postgresPassword=$v") ;;
             PG_APP_PASSWORD)     HELM_ARGS+=(--set "secrets.pgAppPassword=$v") ;;
-            NEO4J_PASSWORD)      HELM_ARGS+=(--set "secrets.neo4jPassword=$v") ;;
             REDIS_PASSWORD)      HELM_ARGS+=(--set "secrets.redisPassword=$v") ;;
             FASTAPI_SERVICE_KEY) HELM_ARGS+=(--set "secrets.fastapiServiceKey=$v") ;;
             LARAVEL_APP_KEY)     HELM_ARGS+=(--set "secrets.laravelAppKey=$v") ;;
@@ -118,7 +117,6 @@ else
     HELM_ARGS+=(
         --set "secrets.postgresPassword=$(openssl rand -base64 32)"
         --set "secrets.pgAppPassword=$(openssl rand -base64 32)"
-        --set "secrets.neo4jPassword=neo4j/$(openssl rand -base64 24 | tr -d '/+=')"
         --set "secrets.redisPassword=$(openssl rand -base64 32)"
         --set "secrets.fastapiServiceKey=$(openssl rand -base64 48)"
         --set "secrets.laravelAppKey=base64:$(openssl rand -base64 32)"

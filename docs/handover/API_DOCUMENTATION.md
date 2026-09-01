@@ -154,14 +154,29 @@ All under `/api/v1/public-geoscience/`:
 | GET | `entities/{canonical_type}/{pg_id}/references` | `canonical_type` ∈ `mine\|mineral_occurrence\|drillhole_collar\|resource_potential_zone\|rock_sample\|assessment_survey\|mineral_disposition`. |
 | GET | `documents/{report_id}/references` | Cross-corpus linker drill-in (plan §07d). |
 
-### 3.8 Dashboard (§3–§4)
+### 3.8 Dashboard (§3–§4) — NOT IMPLEMENTED
 
-All under `/api/v1/dashboard/`:
+**No route in this repository is registered under `/api/v1/dashboard/`.**
+Verified 2026-08-28: no controller, no route entry, and no handler for any
+of the paths this section previously listed as live —
 
 - `GET platform-readiness`
 - `GET portfolio/{kpis,projects,query-activity,ingestion-health,feedback,activity}`
 - `GET projects/{slug}/{header,kpis,aoi,kg-counts,recent-queries,feedback,documents,drill-summary,analytics}`
 - `GET projects/by-id/{projectId}/context` — D6 banner aggregator.
+
+What exists of the dashboard is scaffolding with nothing behind it:
+`app/Policies/DashboardPolicy.php` (its `viewPortfolio` / `viewProject` gates
+are defined in `AppServiceProvider` and checked by nothing),
+`resources/js/Layouts/DashboardLayout.tsx` (imported only by its own test),
+and `resources/js/Types/Dashboard.ts` (imported only by that layout). The
+static JSON fixtures that once backed these endpoints
+(`database/fixtures/dashboard/`, 14 files) and the config that gated them
+(`config/dashboard.php`, `DASHBOARD_USE_FIXTURES`) were removed on the
+2026-08-28 dead-code sweep, having had no reader.
+
+Whether the dashboard is still planned is a product decision, so the
+remaining scaffolding was left in place rather than deleted.
 
 ### 3.9 Citation feedback
 
@@ -383,7 +398,7 @@ Full inventory in `HANDOVER_MANIFEST.md` §1. Grouped by URL family below.
 | `GlobalTimeoutMiddleware` | Returns 504 over `REQUEST_TIMEOUT_S` (30s default) |
 | `StructuredAccessLogMiddleware` | JSON access log + W3C traceparent |
 
-Per-resource timeout budgets (`app/config.py`): `TIMEOUT_POSTGIS_S=5`, `TIMEOUT_NEO4J_S=3`, `TIMEOUT_QDRANT_S=2`, `TIMEOUT_RERANKER_S=8`, `TIMEOUT_REDIS_S=0.5`, `TIMEOUT_GATHER_S=8`, `AGENTIC_TIMEOUT_S=10`, `KESTRA_HTTP_TIMEOUT_S=5`, `PAGERDUTY_HTTP_TIMEOUT_S=5`.
+Per-resource timeout budgets (`app/config.py`): `TIMEOUT_POSTGIS_S=5`, `TIMEOUT_NEO4J_S=3`, `TIMEOUT_QDRANT_S=2`, `TIMEOUT_RERANKER_S=8`, `TIMEOUT_REDIS_S=0.5`, `TIMEOUT_GATHER_S=8`, `AGENTIC_TIMEOUT_S=10`.
 
 ### 5.5 FastAPI slowapi rate limits
 

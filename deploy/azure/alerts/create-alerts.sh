@@ -315,7 +315,7 @@ run az monitor scheduled-query create   -g "$RG" -n answer-quality-regression   
 # broadcast -- which reaches nobody unless somebody is already logged into
 # the admin UI looking at the alerts inbox.
 #
-# services/dispatchers/pagerduty.py looks like a second, real escalation
+# services/dispatchers/pagerduty.py used to look like a second, real escalation
 # path: a complete Events v2 client with dedup keys and a severity map. It
 # has never had a caller, PAGERDUTY_INTEGRATION_KEY is empty, and there is
 # no PagerDuty account. This rule is the escalation that exists.

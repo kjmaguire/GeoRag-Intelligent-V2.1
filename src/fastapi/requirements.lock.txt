@@ -95,7 +95,6 @@ certifi==2026.2.25
     #   pyproj
     #   rasterio
     #   requests
-    #   sentry-sdk
 cffi==2.0.0
     # via
     #   brotlicffi
@@ -151,9 +150,7 @@ et-xmlfile==2.0.0
 ezdxf==1.4.4
     # via georag-geoparsers
 fastapi==0.141.1
-    # via
-    #   georag-fastapi
-    #   sentry-sdk
+    # via georag-fastapi
 filelock==3.25.2
     # via
     #   huggingface-hub
@@ -338,8 +335,6 @@ multidict==6.7.1
     #   aiobotocore
     #   aiohttp
     #   yarl
-neo4j==6.1.0
-    # via georag-fastapi
 networkx==3.6.1
     # via torch
 numba==0.66.0
@@ -539,8 +534,6 @@ python-dotenv==1.2.2
     #   uvicorn
 python-multipart==0.0.32
     # via georag-fastapi
-pytz==2026.1.post1
-    # via neo4j
 pywin32==311 ; sys_platform == 'win32'
     # via portalocker
 pyyaml==6.0.3
@@ -594,8 +587,6 @@ scipy==1.17.1
     #   xgboost
     #   xgboost-cpu
 sentence-transformers==5.7.0
-    # via georag-fastapi
-sentry-sdk==2.68.0
     # via georag-fastapi
 setuptools==81.0.0
     # via
@@ -710,7 +701,6 @@ urllib3==2.7.0
     #   hatchet-sdk
     #   qdrant-client
     #   requests
-    #   sentry-sdk
 uuid-utils==0.17.0
     # via
     #   langchain-core

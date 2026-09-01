@@ -77,10 +77,12 @@ from app.hatchet_workflows.verbalize_page_images import verbalize_page_images_wf
 from app.hatchet_workflows.what_changed_detector import what_changed_detector  # doc-phase 94
 from app.hatchet_workflows.what_changed_weekly import what_changed_weekly  # doc-phase 182 (§12 polish)
 
-# §6.2 (bc_minfile_pull) + §6.3 (nrcan_geo_pull) workflows retired on
-# 2026-05-25 — superseded by the Dagster Bronze→Silver pipeline
-# (silver_pg_ca_bc_minfile / silver_pg_ca_*_bedrock_geology etc.).
-# See docs/smdi_ingestion_2026_05_25.md.
+# §6.2 (bc_minfile_pull) + §6.3 (nrcan_geo_pull) were retired on 2026-05-25
+# in favour of a Dagster Bronze→Silver pipeline, which then went dormant on
+# 2026-07-28 and was deleted 2026-08-28. Both workflow modules were deleted
+# the same day, having never been registered in any pool here since their
+# retirement. public_geo_sync (below) is the live owner of that refresh.
+# See docs/smdi_ingestion_2026_05_25.md for the original retirement.
 from app.hatchet_workflows.workspace_export import workspace_export  # §11.3
 from app.logging_config import configure_json_logging
 
@@ -247,9 +249,9 @@ POOLS = {
         # per-workspace threshold. Cron every 5 min; idempotent within
         # the window so operators see one alert per breach, not 12.
         cost_burn_watcher,
-        # bc_minfile_pull (§6.2) + nrcan_geo_pull (§6.3) retired 2026-05-25 —
-        # superseded by Dagster Bronze→Silver pipeline. Stale cron entries on
-        # the Hatchet engine side were cleared via the de-registration sweep
+        # bc_minfile_pull (§6.2) + nrcan_geo_pull (§6.3) retired 2026-05-25
+        # and their modules deleted 2026-08-28. Stale cron entries on the
+        # Hatchet engine side were cleared via the de-registration sweep
         # documented in docs/smdi_ingestion_2026_05_25.md.
         #
         # That Dagster pipeline then went dormant on 2026-07-28, leaving

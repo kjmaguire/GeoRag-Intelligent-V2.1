@@ -14,7 +14,7 @@ How to register and structure Hatchet workflows per the conventions in master pl
 
 ## Hatchet posture in GeoRAG (what's known so far)
 
-- Hatchet is one of the orchestration paths alongside Dagster
+- Hatchet is the orchestration path for ingestion, crons and durable retries (Dagster was retired 2026-07-28)
 - CLAUDE.md hard rule #7: **don't duplicate orchestration.** Laravel queues = user-triggered async. Dagster = scheduled/bulk pipelines. Hatchet's role within that split needs to be explicit when §6 lands.
 - Audit-ledger emit at workflow start + end is the pattern (see `audit-emit` NOTES.md)
 
@@ -30,7 +30,7 @@ Body should cover:
 3. **Audit-ledger emit at workflow start + end** — defer to `audit-emit` for the payload shape
 4. **Outbox write pattern** — when a workflow updates secondary stores (Postgres + Qdrant + Neo4j), the outbox decouples the writes for consistency
 5. **Verification commands** — `hatchet workflow list`, `hatchet workflow run`, etc.
-6. **Boundary with Dagster + Laravel queues** — when to use Hatchet vs. each alternative (per §6 + CLAUDE.md hard rule #7)
+6. **Boundary with Laravel queues** — when to use Hatchet vs. each alternative (per §6 + CLAUDE.md hard rule #7)
 
 ## Frontmatter to use when authoring SKILL.md
 
@@ -44,7 +44,7 @@ metadata:
     - <master-plan-path> §6
     - <kickoff-doc-path> Step 4
     - https://docs.hatchet.run (live via context7 MCP)
-  scope: Hatchet-side workflow + step authoring. Does not cover Dagster (separate path) or Laravel queues (CLAUDE.md hard rule #7 boundary).
+  scope: Hatchet-side workflow + step authoring. Does not cover Laravel queues (separate path) or Laravel queues (CLAUDE.md hard rule #7 boundary).
   see-also:
     - audit-emit (workflow start/end ledger pattern)
     - agent-wrapper (when steps invoke agents)

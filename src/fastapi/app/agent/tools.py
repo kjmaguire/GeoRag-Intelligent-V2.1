@@ -87,7 +87,7 @@ from app.services.reranker import RERANKER_BACKEND
 _ALLOWED_GRAPH_LABELS: frozenset[str] = frozenset({
     # Internal project graph. Canonical drill-hole label is `DrillHole`
     # (PascalCase, §04f Global Invariant 4). The 2026-04-27 migration
-    # (`ops/migrations/neo4j/2026-04-27-drillhole-rename.cypher`) renamed
+    # (script deleted 2026-08-28 with the rest of the Neo4j remnants) renamed
     # all live nodes from the legacy `:Drillhole` (lowercase h) form.
     "Project",
     "DrillHole",
@@ -1934,12 +1934,13 @@ async def search_documents(
         # similarity -- 1/(k+rank), an order of magnitude smaller than the
         # cosine numbers a caller would reach for. The only score on a real
         # [0,1] scale appears after the reranker (Layer 1), which is where
-        # plan_executor applies its min_relevance gate.
+        # the planner applied its min_relevance gate until plan_executor.py
+        # was deleted 2026-08-28; no gate consumes it there now.
         #
         # A `score_threshold` parameter was accepted here until 2026-08-22.
         # Nothing ever read it. Removed rather than re-documented, because
         # a parameter documented as ignored still invites callers to pass
-        # one -- plan_executor did, for months.
+        # one -- the since-deleted plan_executor did, for months.
         points = await hybrid_query(
             client=ctx.deps.qdrant_client,
             collection=_doc_collection,
@@ -2093,9 +2094,14 @@ async def search_documents(
             # calibrated [0, 1] probability — sigmoiding an already-[0,1]
             # value a second time compresses every foundry score into
             # roughly [0.5, 0.73], silently corrupting every downstream
-            # min_relevance gate (plan_executor.py, decomposer.py — a §04i
-            # Layer-1 retrieval-quality check) since those thresholds
-            # (0.5-0.6) assume a real [0,1] calibration. Caught in a live
+            # min_relevance gate (the §04i Layer-1 retrieval-quality check)
+            # since those thresholds (0.5-0.6) assume a real [0,1]
+            # calibration. Both modules that applied those gates --
+            # plan_executor.py and decomposer.py -- were deleted 2026-08-28
+            # as unreachable, so the corruption described here is latent:
+            # real for any caller that reaches such a gate, and today none
+            # does. Keep the reasoning; it applies again the moment a
+            # per-sub-query gate is reintroduced. Caught in a live
             # review session; only sort order was unaffected (sorting
             # happens on the pre-transform score either way).
             import math
@@ -2514,9 +2520,9 @@ async def verify_numerical_claim(
 
     Tenancy scoping (2026-08-15 audit): this tool used to be scoped ONLY by
     primary key, with zero tenant check — a real gap given the query
-    planner (``plan_executor._dispatch_factual_lookup``) uses it as a
-    general-purpose value-retrieval oracle, not just post-hoc verification
-    of the LLM's own claims. Every allowlisted table is now scoped by
+    planner (``plan_executor._dispatch_factual_lookup``, deleted 2026-08-28)
+    used it as a general-purpose value-retrieval oracle, not just post-hoc
+    verification of the LLM's own claims. Every allowlisted table is now scoped by
     ``ctx.deps.workspace_id`` / ``ctx.deps.project_id`` (bound whenever
     present — lenient/absent otherwise, matching ``acquire_scoped()``'s own
     GUC-bind fallback for single-tenant / no-workspace call paths). Six
@@ -2700,9 +2706,9 @@ async def verify_numerical_claim(
         # push Layer 3 past NUMERIC_RETRY_THRESHOLD and retry correct
         # answers.
         #
-        # But it IS worth saying out loud. This tool returns VALUES —
-        # plan_executor uses it as a general-purpose retrieval oracle, not
-        # only to check the model's arithmetic — so a fence that has
+        # But it IS worth saying out loud. This tool returns VALUES — the
+        # since-deleted plan_executor used it as a general-purpose retrieval
+        # oracle, not only to check the model's arithmetic — so a fence that has
         # narrowed from workspace+project to project-only is returning a
         # value from a wider set than the caller believes.
         logger.warning(

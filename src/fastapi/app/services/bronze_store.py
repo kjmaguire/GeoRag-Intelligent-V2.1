@@ -2,15 +2,20 @@
 
 Architecture reference: §04p — Bronze tier (SeaweedFS) holds:
   - Original PDF  (key: pdfs/<pdf_id>_original.pdf)
-  - Normalised PDF after Stage 1 preflight (key: pdfs/<pdf_id>.pdf)
-  - PreflightReport JSON (key: pdfs/<pdf_id>_preflight.json)
+  - Normalised PDF (key: pdfs/<pdf_id>.pdf)
 
 Contract
 --------
 The HTTP endpoints (routers/pdf.py) accept a ``pdf_id`` in the request body
 and expect the normalised PDF at the key ``pdfs/{pdf_id}.pdf``.  Callers are
-responsible for running preflight and storing the normalised bytes before
-submitting render requests.  If the key is absent, the endpoint returns 404.
+responsible for storing the normalised bytes before submitting render
+requests.  If the key is absent, the endpoint returns 404.
+
+There is no standalone preflight stage in this repository — the module that
+wrote the normalised bytes and a PreflightReport JSON was removed 2026-08-28
+having never had a caller.  The live ingestion path
+(services/ingest/pdf_report.py) opens pikepdf directly and does not populate
+this store.
 
 Lifespan integration
 --------------------

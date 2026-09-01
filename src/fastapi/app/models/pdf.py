@@ -1,7 +1,6 @@
 """Pydantic models for the §04p PDF Ingestion Subsystem — Phase 1.A + 1.B + 1.D + 2.A.
 
 This module owns the data contracts shared across:
-  - app/services/pdf_preflight.py    (Stage 1 — qpdf via pikepdf)
   - app/services/pdf_render.py       (Stage 2 — pypdfium2)
   - app/services/pdf_extract.py      (Stage 3 — pdfminer.six + pdfplumber)
   - app/services/pdf_vl.py           (Stage 6 — Qwen-VL vision-language reasoning)
@@ -13,6 +12,14 @@ Phase 1.B additions (text+layout):
   - PdfTable             — one table with rows × cols matrix + cell bboxes
   - ExtractTextResponse  — list[PdfTextBlock] + cache_hit flag
   - FindTablesResponse   — list[PdfTable] + cache_hit flag
+
+NOTE: Stage 1 (standalone preflight — pdf_preflight.py, PreflightReport) was
+removed 2026-08-28, having never had a caller. Preflight itself still
+happens, in hatchet_workflows/ingest_pdf.py: sha256, %PDF- magic bytes,
+pikepdf open, page count, and rejection of genuinely password-protected
+files. What went with the deleted module is structural repair,
+linearization, the >500-page split plan, and the PreflightReport artifact —
+the shipped pipeline does none of those.
 
 NOTE: Stage 4 (Docling layout detection — LayoutRegionType, PdfLayoutRegion,
 FindLegendsResponse, GET /pdf/find_legends) was removed 2026-07-29. Docling
@@ -37,7 +44,6 @@ Phase 2.A additions (deterministic coordinate extraction):
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -90,35 +96,6 @@ class PdfProvenance(BaseModel):
 # ---------------------------------------------------------------------------
 # Stage 1 — Preflight report
 # ---------------------------------------------------------------------------
-
-
-class PreflightReport(BaseModel):
-    """Output of Stage 1 (qpdf via pikepdf) preflight.
-
-    Stored alongside the normalised PDF in the Bronze tier (SeaweedFS).
-    The split_into_chunks field lists page-range tuples when the source PDF
-    exceeded 500 pages.  Phase 1.A only reports these ranges; chunked storage
-    into separate Bronze objects is a follow-up task (Phase 1.B or later).
-    """
-
-    pdf_id: str = Field(..., description="SHA-256 hex of the ORIGINAL (pre-normalisation) bytes")
-    original_bytes_hash: str = Field(..., description="Alias for pdf_id; separate field for clarity in reports")
-    page_count: int = Field(..., ge=1)
-    was_repaired: bool = Field(..., description="True if pikepdf detected and repaired structural damage")
-    was_linearized: bool = Field(..., description="True — linearization is always applied by preflight")
-    was_encrypted: bool = Field(
-        ...,
-        description="Always False on success (encrypted PDFs raise PdfEncryptedError before repair)",
-    )
-    split_into_chunks: list[tuple[int, int]] = Field(
-        default_factory=list,
-        description=(
-            "Non-empty when page_count > 500.  Each tuple is (first_page, last_page), 1-indexed. "
-            "Example: [(1, 500), (501, 600)] for a 600-page PDF."
-        ),
-    )
-    qpdf_version: str = Field(..., description="pikepdf version string (wraps libqpdf internally)")
-    preflight_timestamp: datetime = Field(..., description="UTC timestamp of the preflight run")
 
 
 # ---------------------------------------------------------------------------

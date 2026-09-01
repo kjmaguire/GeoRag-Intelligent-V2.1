@@ -176,5 +176,8 @@ IngestionRuns 500 fixes.
 <a id="project_sentry_removed_2026_05_21"></a>
 ### project_sentry_removed_2026_05_21
 `sentry/sentry-laravel` is NOT installed. `.env` wiring is commented out.
+Superseded 2026-08-28: Sentry was removed from the stack entirely — the
+composer package, the FastAPI `sentry-sdk` dependency and all wiring on
+both sides. See Ch 12 §7.
 Re-enabling requires `composer require` + worker restarts, not just env
 flips.
