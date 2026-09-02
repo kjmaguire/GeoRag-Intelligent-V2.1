@@ -1995,7 +1995,7 @@ def _parse_with_fitz(
         # (still one document per subprocess — see _run_parser_subprocess
         # in hatchet_workflows/ingest_pdf.py). _ocr_single_page's shared
         # mutable state (the cached pikepdf.Pdf object + the DI page
-        # budget) is guarded by _PIKEPDF_LOCK — see _get_cached_pikepdf's
+        # budget) is guarded by _OCR_STATE_LOCK — see _get_cached_pikepdf's
         # docstring. Only the OCR calls themselves run concurrently; the
         # per-page bookkeeping below (pages_text, per_page_text,
         # per_page_method, warnings, ...) is applied sequentially, in
@@ -2227,7 +2227,7 @@ def _parse_with_fitz(
 _PIKEPDF_CACHE: dict[str, Any] = {}
 
 # Perf audit 2026-08-15 (item 3) — guards _PIKEPDF_CACHE here AND
-# _DI_PAGES_USED / _DI_CAP_LOGGED further below. Both were written assuming
+# _OCR_PAGES_USED / _OCR_CAP_LOGGED further below. Both were written assuming
 # a single-threaded, one-document-per-subprocess caller, which was true
 # before this change. The per-page OCR loop in _parse_with_fitz now fans
 # pages out across a small in-process ThreadPoolExecutor (still just one
@@ -2242,7 +2242,7 @@ _PIKEPDF_CACHE: dict[str, Any] = {}
 # One lock covers all three: they're all fast, non-blocking, in-memory
 # operations (dict ops + a single-page PDF slice), so serializing them
 # costs nothing next to the network/OCR work that runs outside the lock.
-_PIKEPDF_LOCK = threading.Lock()
+_OCR_STATE_LOCK = threading.Lock()
 
 
 def _get_cached_pikepdf(pdf_path: str):
@@ -2263,7 +2263,7 @@ def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
     """Extract one page into its own in-memory PDF, for DI single-page upload.
 
     Perf audit 2026-08-15: the whole cache-get + slice + save sequence runs
-    under _PIKEPDF_LOCK because _get_cached_pikepdf hands back a SHARED
+    under _OCR_STATE_LOCK because _get_cached_pikepdf hands back a SHARED
     pikepdf.Pdf object that every concurrent OCR-page thread would otherwise
     read from at once — see the lock's docstring above for why that's
     unsafe. This used to be inlined directly in _ocr_single_page, where it
@@ -2274,7 +2274,7 @@ def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
 
     import pikepdf as _pikepdf
 
-    with _PIKEPDF_LOCK:
+    with _OCR_STATE_LOCK:
         _src = _get_cached_pikepdf(pdf_path)
         _single = _pikepdf.Pdf.new()
         _single.pages.append(_src.pages[page_num - 1])
@@ -2293,7 +2293,7 @@ def _slice_page_selection_pdf_bytes(
     keeps the original per-page argument intact — a 40 MB report
     re-uploaded once per block would still push O(size x blocks) bytes —
     while cutting the number of uploads by the block size. Same
-    `_PIKEPDF_LOCK` discipline as `_slice_single_page_pdf_bytes`: the
+    `_OCR_STATE_LOCK` discipline as `_slice_single_page_pdf_bytes`: the
     cached ``pikepdf.Pdf`` is shared across the OCR threads.
 
     Selection, not range, is what makes this one function serve both
@@ -2308,7 +2308,7 @@ def _slice_page_selection_pdf_bytes(
 
     import pikepdf as _pikepdf
 
-    with _PIKEPDF_LOCK:
+    with _OCR_STATE_LOCK:
         _src = _get_cached_pikepdf(pdf_path)
         _block = _pikepdf.Pdf.new()
         for _page_num in page_numbers:
@@ -2326,11 +2326,16 @@ def _slice_page_selection_pdf_bytes(
 # fallback. Beyond the budget, remaining pages route straight to
 # tesseract with one WARNING per document. Keyed per path with
 # evict-on-new-document, mirroring _PIKEPDF_CACHE (one document per parse
-# subprocess). The cross-run Prometheus counter (DI_OCR_PAGES_TOTAL)
-# lives in the DI client itself.
-_DI_PAGE_BUDGET_ENV = "AZURE_DI_MAX_PAGES_PER_DOC"
-_DI_PAGES_USED: dict[str, int] = {}
-_DI_CAP_LOGGED: set[str] = set()
+# subprocess). The cross-run Prometheus counter (OCR_PAGES_TOTAL, one
+# label per engine) lives in the engine adapter itself.
+_OCR_PAGE_BUDGET_ENV = "OCR_MAX_PAGES_PER_DOC"
+#: Pre-2026-09-02 name. Read as a fallback with a one-time warning so a live
+#: worker env that still carries it keeps its cap instead of silently
+#: reverting to the default; dropped once the DI adapter is removed.
+_LEGACY_PAGE_BUDGET_ENV = "AZURE_DI_MAX_PAGES_PER_DOC"
+_LEGACY_BUDGET_ENV_WARNED = False
+_OCR_PAGES_USED: dict[str, int] = {}
+_OCR_CAP_LOGGED: set[str] = set()
 
 #: Documents whose DI budget ran out, so the parse result can say so.
 #:
@@ -2342,37 +2347,48 @@ _DI_CAP_LOGGED: set[str] = set()
 #: every assay and resource table it contained, and the only trace was a
 #: single WARNING line in a log with no alert rule attached to it.
 #:
-#: `_di_budget_warning` turns that into a warning on the parse result, which
+#: `_ocr_budget_warning` turns that into a warning on the parse result, which
 #: travels the same channel as every other page warning: counted into
 #: `warnings_count`, and enough on its own to land the ingestion run in
 #: `partial` rather than `completed`, where the UI shows it.
-_DI_CAP_EXHAUSTED: dict[str, dict[str, int]] = {}
+_OCR_CAP_EXHAUSTED: dict[str, dict[str, int]] = {}
 
 #: How many documents' budgets stay resident. See the eviction note in
-#: _di_budget_take.
-_DI_BUDGET_REGISTRY_MAX = 32
+#: _ocr_budget_take.
+_OCR_BUDGET_REGISTRY_MAX = 32
 
 
-def _di_max_pages_per_doc() -> int:
+def _ocr_max_pages_per_doc() -> int:
+    global _LEGACY_BUDGET_ENV_WARNED
+    raw = os.environ.get(_OCR_PAGE_BUDGET_ENV)
+    if raw is None and os.environ.get(_LEGACY_PAGE_BUDGET_ENV) is not None:
+        raw = os.environ.get(_LEGACY_PAGE_BUDGET_ENV)
+        if not _LEGACY_BUDGET_ENV_WARNED:
+            _LEGACY_BUDGET_ENV_WARNED = True
+            logger.warning(
+                "pdf_report: %s is the old name for %s — rename it in the "
+                "worker environment",
+                _LEGACY_PAGE_BUDGET_ENV, _OCR_PAGE_BUDGET_ENV,
+            )
     try:
-        return int(os.environ.get(_DI_PAGE_BUDGET_ENV, "300"))
+        return int(raw if raw is not None else "300")
     except ValueError:
         return 300
 
 
-def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
+def _ocr_budget_take(pdf_path: str, pages: int = 1) -> bool:
     """Consume ``pages`` from the document's DI budget; False when exhausted.
 
-    Perf audit 2026-08-15: guarded by _PIKEPDF_LOCK (shared with the pikepdf
+    Perf audit 2026-08-15: guarded by _OCR_STATE_LOCK (shared with the pikepdf
     cache above — see its docstring) now that the per-page OCR loop calls
     this from multiple concurrent threads. The check-and-increment must be
     atomic: without the lock, two threads could both read
-    _DI_PAGES_USED[pdf_path] before either writes it back, letting the
+    _OCR_PAGES_USED[pdf_path] before either writes it back, letting the
     budget overrun by up to (concurrency - 1) pages, and both could race on
-    the "log once" _DI_CAP_LOGGED set.
+    the "log once" _OCR_CAP_LOGGED set.
     """
-    with _PIKEPDF_LOCK:
-        if pdf_path not in _DI_PAGES_USED:
+    with _OCR_STATE_LOCK:
+        if pdf_path not in _OCR_PAGES_USED:
             # Bounded FIFO, not "clear everything the moment a new document
             # appears". A Hatchet worker runs several ingest_pdf tasks in one
             # process, and the old eviction meant document B's first page
@@ -2382,36 +2398,36 @@ def _di_budget_take(pdf_path: str, pages: int = 1) -> bool:
             # gone before its own parse could report it. Thirty-two entries
             # is thirty-two ints; the memory this was guarding was never the
             # constraint.
-            while len(_DI_PAGES_USED) >= _DI_BUDGET_REGISTRY_MAX:
-                _stale = next(iter(_DI_PAGES_USED))
-                _DI_PAGES_USED.pop(_stale, None)
-                _DI_CAP_LOGGED.discard(_stale)
-                _DI_CAP_EXHAUSTED.pop(_stale, None)
-            _DI_PAGES_USED[pdf_path] = 0
-        cap = _di_max_pages_per_doc()
-        if _DI_PAGES_USED[pdf_path] + pages > cap:
-            if pdf_path not in _DI_CAP_LOGGED:
-                _DI_CAP_LOGGED.add(pdf_path)
-                _DI_CAP_EXHAUSTED[pdf_path] = {
-                    "used": _DI_PAGES_USED[pdf_path],
+            while len(_OCR_PAGES_USED) >= _OCR_BUDGET_REGISTRY_MAX:
+                _stale = next(iter(_OCR_PAGES_USED))
+                _OCR_PAGES_USED.pop(_stale, None)
+                _OCR_CAP_LOGGED.discard(_stale)
+                _OCR_CAP_EXHAUSTED.pop(_stale, None)
+            _OCR_PAGES_USED[pdf_path] = 0
+        cap = _ocr_max_pages_per_doc()
+        if _OCR_PAGES_USED[pdf_path] + pages > cap:
+            if pdf_path not in _OCR_CAP_LOGGED:
+                _OCR_CAP_LOGGED.add(pdf_path)
+                _OCR_CAP_EXHAUSTED[pdf_path] = {
+                    "used": _OCR_PAGES_USED[pdf_path],
                     "cap": cap,
                 }
                 logger.warning(
                     "pdf_report: document_intelligence page budget exhausted for "
                     "'%s' (used=%d, cap=%d via %s) — remaining short pages fall "
                     "back to tesseract",
-                    pdf_path, _DI_PAGES_USED[pdf_path], cap, _DI_PAGE_BUDGET_ENV,
+                    pdf_path, _OCR_PAGES_USED[pdf_path], cap, _OCR_PAGE_BUDGET_ENV,
                 )
             return False
-        _DI_PAGES_USED[pdf_path] += pages
+        _OCR_PAGES_USED[pdf_path] += pages
         return True
 
 
-def _di_budget_refund(pdf_path: str, pages: int) -> None:
+def _ocr_budget_refund(pdf_path: str, pages: int) -> None:
     """Return pages to the budget that were charged but never sent.
 
     A block is charged up front, because the check and the increment have
-    to be atomic (see `_di_budget_take`). When the block then answers for
+    to be atomic (see `_ocr_budget_take`). When the block then answers for
     fewer pages than it charged for -- the slice failed, the request
     failed, DI returned a short mapping -- those pages are re-driven
     individually and charged a SECOND time. One failed slice therefore
@@ -2420,36 +2436,36 @@ def _di_budget_refund(pdf_path: str, pages: int) -> None:
     fraction of the cap.
 
     Refunding only what was not sent keeps the counter meaning what
-    `_di_budget_warning` says it means: pages Document Intelligence
+    `_ocr_budget_warning` says it means: pages Document Intelligence
     actually read.
     """
     if pages <= 0:
         return
-    with _PIKEPDF_LOCK:
-        used = _DI_PAGES_USED.get(pdf_path)
+    with _OCR_STATE_LOCK:
+        used = _OCR_PAGES_USED.get(pdf_path)
         if used is None:
             return
-        _DI_PAGES_USED[pdf_path] = max(0, used - pages)
+        _OCR_PAGES_USED[pdf_path] = max(0, used - pages)
 
 
-def _di_budget_warning(pdf_path: str) -> dict[str, Any] | None:
+def _ocr_budget_warning(pdf_path: str) -> dict[str, Any] | None:
     """A parse-result warning when this document exhausted its DI budget.
 
     Returns None when the budget was never hit, which is the usual case —
     the default cap is 300 pages and most reports are shorter.
     """
-    with _PIKEPDF_LOCK:
-        record = _DI_CAP_EXHAUSTED.get(pdf_path)
+    with _OCR_STATE_LOCK:
+        record = _OCR_CAP_EXHAUSTED.get(pdf_path)
     if not record:
         return None
 
     return {
-        "code": "document_intelligence_page_budget_exhausted",
+        "code": "ocr_page_budget_exhausted",
         "cap": record["cap"],
-        "env": _DI_PAGE_BUDGET_ENV,
+        "env": _OCR_PAGE_BUDGET_ENV,
         "message": (
             f"Document Intelligence was capped at {record['cap']} page(s) for "
-            f"this document ({_DI_PAGE_BUDGET_ENV}). Pages past the cap were "
+            f"this document ({_OCR_PAGE_BUDGET_ENV}). Pages past the cap were "
             f"read by tesseract, which extracts no table structure — any "
             f"assay, resource or drill table in them was lost. Raise the cap "
             f"for this document or split it, then re-ingest."
@@ -2543,7 +2559,7 @@ def _di_single_page_request(_di, pdf_path: str, page_num: int):
     return _di.ocr_page_sync(pdf_bytes, 1)
 
 
-def _di_block_plan(total_pages: int, block_size: int) -> list[tuple[int, int]]:
+def _ocr_block_plan(total_pages: int, block_size: int) -> list[tuple[int, int]]:
     """Split a page count into ``(first_page, page_count)`` blocks."""
     return [
         (first, min(block_size, total_pages - first + 1))
@@ -2586,7 +2602,7 @@ def _ocr_page_selection_di(
     ordered = sorted(set(page_numbers))
     if not ordered:
         return {}
-    if not _di_budget_take(pdf_path, len(ordered)):
+    if not _ocr_budget_take(pdf_path, len(ordered)):
         return {}
     try:
         pdf_bytes = _slice_page_selection_pdf_bytes(pdf_path, ordered)
@@ -2598,7 +2614,7 @@ def _ocr_page_selection_di(
         )
         # Nothing was uploaded, so nothing was billed. Without the refund
         # these pages are charged here and again on the per-page path.
-        _di_budget_refund(pdf_path, len(ordered))
+        _ocr_budget_refund(pdf_path, len(ordered))
         return {}
     block = _di.ocr_page_block_sync(pdf_bytes, len(ordered))
     mapped = {
@@ -2610,7 +2626,7 @@ def _ocr_page_selection_di(
     # where each pays the budget again. `ocr_page_block_sync` degrades to
     # {} on a failed or timed-out analysis — an analysis Azure does not
     # bill for either.
-    _di_budget_refund(pdf_path, len(ordered) - len(mapped))
+    _ocr_budget_refund(pdf_path, len(ordered) - len(mapped))
     return mapped
 
 
@@ -2653,10 +2669,10 @@ def _ocr_single_page(
     from . import document_intelligence_client as _di
 
     di_selected = _di.is_engine_selected()
-    # 2026-08-14 — per-document DI page budget (AZURE_DI_MAX_PAGES_PER_DOC,
+    # 2026-08-14 — per-document remote-OCR page budget (OCR_MAX_PAGES_PER_DOC,
     # default 300). Beyond it, this page skips DI and goes straight to the
     # tesseract fallback below.
-    if di_selected and not skip_di_page_request and not _di_budget_take(pdf_path):
+    if di_selected and not skip_di_page_request and not _ocr_budget_take(pdf_path):
         di_selected = False
     if di_selected:
         try:
@@ -2951,7 +2967,7 @@ def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
     # per-document budget. When it can't cover the whole tile set, raise so
     # the caller's except falls through to tesseract (a partial tile pass
     # would be rejected anyway — see the partial-failure guard below).
-    if not _di_budget_take(pdf_path, pages=len(tiles)):
+    if not _ocr_budget_take(pdf_path, pages=len(tiles)):
         raise RuntimeError(
             "document_intelligence per-document page budget exhausted "
             "before tiled OCR"
@@ -3664,7 +3680,7 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     # (PDF_OCR_PAGE_CONCURRENCY), same safety argument: `_ocr_single_page`
     # blocks on network or on a tesseract subprocess, both of which release
     # the GIL, and its shared mutable state (the cached pikepdf handle and
-    # the per-document DI page budget) is already guarded by _PIKEPDF_LOCK
+    # the per-document DI page budget) is already guarded by _OCR_STATE_LOCK
     # precisely because the other path calls it from several threads.
     #
     # Only the OCR calls run concurrently. All bookkeeping below stays
@@ -3686,7 +3702,7 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     _block_size = _di_mod.pages_per_batch()
     _batched: dict[int, Any] = {}
     if _block_size > 1:
-        _plan = _di_block_plan(total_pages, _block_size)
+        _plan = _ocr_block_plan(total_pages, _block_size)
         logger.info(
             "pdf_report: document_intelligence batching %d pages into %d "
             "block(s) of up to %d",
@@ -4275,7 +4291,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
 
     if not full_text.strip():
         logger.warning("pdf_report: extracted text is empty for '%s'", path)
-        _budget_warning = _di_budget_warning(path)
+        _budget_warning = _ocr_budget_warning(path)
         if _budget_warning is not None:
             extraction_warnings.append(_budget_warning)
         return ReportParseResult(
@@ -4503,7 +4519,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # The DI page budget is cost control, not a failure — but a document
     # whose tail was read by a weaker engine has to say so on the way out,
     # or the two halves are indistinguishable downstream.
-    _budget_warning = _di_budget_warning(path)
+    _budget_warning = _ocr_budget_warning(path)
     if _budget_warning is not None:
         extraction_warnings.append(_budget_warning)
 

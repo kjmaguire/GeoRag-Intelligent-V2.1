@@ -21,7 +21,6 @@ import os
 import re
 import threading
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("georag.ingest.document_intelligence")
@@ -111,32 +110,7 @@ def is_configured() -> bool:
     return bool(os.environ.get(ENDPOINT_ENV)) and bool(os.environ.get(KEY_ENV))
 
 
-@dataclass(frozen=True, slots=True)
-class OcrWord:
-    """One Document Intelligence word with page-local pixel coordinates."""
-
-    text: str
-    confidence: float
-    polygon: tuple[float, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class PageOcrResult:
-    """Same (text, mean_confidence) shape as pdf_report._ocr_single_page
-    with return_confidence=True, so a future caller can select an engine
-    without changing its own downstream handling.
-    """
-
-    text: str
-    mean_confidence: float  # 0.0-1.0, averaged over word-level confidences
-    words: tuple[OcrWord, ...] = ()
-    detected_region_count: int = 0
-    request_succeeded: bool = True
-    error: str | None = None
-    # Row-major text grids from prebuilt-layout: tables[t][row][col].
-    # Always [] under prebuilt-read (no `tables` collection in the result)
-    # and on the failure sentinels.
-    tables: list[list[list[str]]] = field(default_factory=list)
+from .ocr_types import OcrWord, PageOcrResult  # noqa: E402 — re-exported
 
 
 # F12 — one cached client (one HTTP session) per (endpoint, key) instead
@@ -392,8 +366,8 @@ def _meter_pages(count: int) -> None:
     page, so the increment is now the page count.
     """
     with contextlib.suppress(Exception):
-        from app.metrics import DI_OCR_PAGES_TOTAL  # noqa: PLC0415
-        DI_OCR_PAGES_TOTAL.inc(max(0, count))
+        from app.metrics import OCR_PAGES_TOTAL  # noqa: PLC0415
+        OCR_PAGES_TOTAL.labels(engine="document_intelligence").inc(max(0, count))
 
 
 def _result_content(result: Any) -> str | None:

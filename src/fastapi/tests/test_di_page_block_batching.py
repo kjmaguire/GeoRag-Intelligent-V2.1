@@ -86,18 +86,18 @@ def _sdk_table(page_number: int, rows: list[list[str]]):
 
 class TestBlockPlan:
     def test_exact_multiple(self) -> None:
-        assert pdf_report._di_block_plan(50, 25) == [(1, 25), (26, 25)]
+        assert pdf_report._ocr_block_plan(50, 25) == [(1, 25), (26, 25)]
 
     def test_trailing_partial_block(self) -> None:
-        assert pdf_report._di_block_plan(7, 3) == [(1, 3), (4, 3), (7, 1)]
+        assert pdf_report._ocr_block_plan(7, 3) == [(1, 3), (4, 3), (7, 1)]
 
     def test_block_larger_than_document(self) -> None:
-        assert pdf_report._di_block_plan(4, 25) == [(1, 4)]
+        assert pdf_report._ocr_block_plan(4, 25) == [(1, 4)]
 
     def test_every_page_covered_exactly_once(self) -> None:
         covered = [
             page
-            for first, count in pdf_report._di_block_plan(203, 25)
+            for first, count in pdf_report._ocr_block_plan(203, 25)
             for page in range(first, first + count)
         ]
         assert covered == list(range(1, 204))
@@ -246,7 +246,7 @@ class TestSkipDiPageRequest:
 
         with patch.object(pdf_report, "_di_single_page_request") as single, \
              patch.object(pdf_report, "_ocr_tiled_pdf_page", side_effect=RuntimeError("no tiles")), \
-             patch.object(pdf_report, "_di_budget_take") as budget:
+             patch.object(pdf_report, "_ocr_budget_take") as budget:
             pdf_report._ocr_single_page(
                 "/nonexistent.pdf", 4, skip_di_page_request=True,
             )
@@ -264,7 +264,7 @@ class TestSkipDiPageRequest:
         with patch.object(
             pdf_report, "_di_single_page_request",
             return_value=di.PageOcrResult("", 0.0, request_succeeded=False, error="x"),
-        ) as single, patch.object(pdf_report, "_di_budget_take", return_value=True):
+        ) as single, patch.object(pdf_report, "_ocr_budget_take", return_value=True):
             pdf_report._ocr_single_page("/nonexistent.pdf", 4)
 
         single.assert_called_once()
@@ -422,7 +422,7 @@ class TestBlockBudget:
         taken: list[int] = []
 
         with patch.object(
-            pdf_report, "_di_budget_take",
+            pdf_report, "_ocr_budget_take",
             side_effect=lambda _p, pages: taken.append(pages) or True,
         ), patch.object(
             pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF-1.4",
@@ -436,13 +436,13 @@ class TestBlockBudget:
     def test_exhausted_budget_yields_an_empty_mapping(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        with patch.object(pdf_report, "_di_budget_take", return_value=False), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=False), \
              patch.object(pdf_report, "_slice_page_selection_pdf_bytes") as slicer:
             assert pdf_report._ocr_page_block_di("/scan.pdf", 1, 25) == {}
         slicer.assert_not_called()
 
     def test_local_page_numbers_are_rebased_onto_the_document(self) -> None:
-        with patch.object(pdf_report, "_di_budget_take", return_value=True), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True), \
              patch.object(
                  pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF-1.4",
              ), patch.object(
@@ -461,7 +461,7 @@ class TestBlockBudget:
         assert mapping[52].text == "b"
 
     def test_slice_failure_yields_an_empty_mapping(self) -> None:
-        with patch.object(pdf_report, "_di_budget_take", return_value=True), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True), \
              patch.object(
                  pdf_report, "_slice_page_selection_pdf_bytes",
                  side_effect=RuntimeError("corrupt xref"),

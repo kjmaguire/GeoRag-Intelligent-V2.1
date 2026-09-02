@@ -49,7 +49,7 @@ class TestTheRemapIsPositional:
             3: di.PageOcrResult("PAGE-40", 0.9),
         }
 
-        with patch.object(pdf_report, "_di_budget_take", return_value=True), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True), \
              patch.object(pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF"), \
              patch.object(di, "ocr_page_block_sync", return_value=block):
             out = pdf_report._ocr_page_selection_di("/tmp/x.pdf", selected)
@@ -62,7 +62,7 @@ class TestTheRemapIsPositional:
         assert out[40].text == "PAGE-40"
 
     def test_the_selection_is_deduplicated_and_ordered(self) -> None:
-        with patch.object(pdf_report, "_di_budget_take", return_value=True) as budget, \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True) as budget, \
              patch.object(pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF") as slicer, \
              patch.object(di, "ocr_page_block_sync", return_value={}):
             pdf_report._ocr_page_selection_di("/tmp/x.pdf", [9, 3, 9, 40])
@@ -76,7 +76,7 @@ class TestTheRemapIsPositional:
 
 class TestFailureModes:
     def test_an_exhausted_budget_sends_nothing(self) -> None:
-        with patch.object(pdf_report, "_di_budget_take", return_value=False), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=False), \
              patch.object(di, "ocr_page_block_sync") as sync:
             out = pdf_report._ocr_page_selection_di("/tmp/x.pdf", [3, 9])
 
@@ -86,7 +86,7 @@ class TestFailureModes:
     def test_a_failed_slice_degrades_to_an_empty_mapping(self) -> None:
         # The caller reads {} as "drive these pages individually", so a
         # slice failure must not raise into the parse.
-        with patch.object(pdf_report, "_di_budget_take", return_value=True), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True), \
              patch.object(
                  pdf_report,
                  "_slice_page_selection_pdf_bytes",
@@ -99,7 +99,7 @@ class TestFailureModes:
         sync.assert_not_called()
 
     def test_an_empty_selection_costs_nothing(self) -> None:
-        with patch.object(pdf_report, "_di_budget_take") as budget:
+        with patch.object(pdf_report, "_ocr_budget_take") as budget:
             assert pdf_report._ocr_page_selection_di("/tmp/x.pdf", []) == {}
         budget.assert_not_called()
 
@@ -108,7 +108,7 @@ class TestFailureModes:
         # own DI request. Present-but-empty means "DI looked and found
         # nothing" -> skip the second billed request. Conflating them
         # either doubles the bill or skips a page that was never tried.
-        with patch.object(pdf_report, "_di_budget_take", return_value=True), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True), \
              patch.object(pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF"), \
              patch.object(
                  di, "ocr_page_block_sync",
@@ -122,7 +122,7 @@ class TestFailureModes:
     def test_a_result_index_outside_the_selection_is_dropped(self) -> None:
         # Defensive: DI returning a page number the upload does not have
         # would otherwise IndexError inside the parse.
-        with patch.object(pdf_report, "_di_budget_take", return_value=True), \
+        with patch.object(pdf_report, "_ocr_budget_take", return_value=True), \
              patch.object(pdf_report, "_slice_page_selection_pdf_bytes", return_value=b"%PDF"), \
              patch.object(
                  di, "ocr_page_block_sync",
@@ -148,16 +148,16 @@ class TestTheBudgetIsRefundedForPagesNeverSent:
     @pytest.fixture(autouse=True)
     def _clean_budget(self):
         for registry in (
-            pdf_report._DI_PAGES_USED,
-            pdf_report._DI_CAP_LOGGED,
-            pdf_report._DI_CAP_EXHAUSTED,
+            pdf_report._OCR_PAGES_USED,
+            pdf_report._OCR_CAP_LOGGED,
+            pdf_report._OCR_CAP_EXHAUSTED,
         ):
             registry.clear()
         yield
         for registry in (
-            pdf_report._DI_PAGES_USED,
-            pdf_report._DI_CAP_LOGGED,
-            pdf_report._DI_CAP_EXHAUSTED,
+            pdf_report._OCR_PAGES_USED,
+            pdf_report._OCR_CAP_LOGGED,
+            pdf_report._OCR_CAP_EXHAUSTED,
         ):
             registry.clear()
 
@@ -170,7 +170,7 @@ class TestTheBudgetIsRefundedForPagesNeverSent:
             assert pdf_report._ocr_page_selection_di("/x.pdf", [3, 9, 40]) == {}
 
         sync.assert_not_called()
-        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 0
+        assert pdf_report._OCR_PAGES_USED["/x.pdf"] == 0
 
     def test_a_failed_request_costs_nothing(self) -> None:
         # ocr_page_block_sync degrades to {} on a failed or timed-out
@@ -180,7 +180,7 @@ class TestTheBudgetIsRefundedForPagesNeverSent:
         ), patch.object(di, "ocr_page_block_sync", return_value={}):
             assert pdf_report._ocr_page_selection_di("/x.pdf", [3, 9]) == {}
 
-        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 0
+        assert pdf_report._OCR_PAGES_USED["/x.pdf"] == 0
 
     def test_only_the_pages_it_answered_for_stay_charged(self) -> None:
         with patch.object(
@@ -192,7 +192,7 @@ class TestTheBudgetIsRefundedForPagesNeverSent:
 
         assert sorted(out) == [3]
         # Pages 9 and 40 are re-driven individually and pay there.
-        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 1
+        assert pdf_report._OCR_PAGES_USED["/x.pdf"] == 1
 
     def test_a_fully_answered_block_keeps_its_whole_charge(self) -> None:
         answered = {
@@ -203,4 +203,4 @@ class TestTheBudgetIsRefundedForPagesNeverSent:
         ), patch.object(di, "ocr_page_block_sync", return_value=answered):
             pdf_report._ocr_page_selection_di("/x.pdf", [3, 9, 40])
 
-        assert pdf_report._DI_PAGES_USED["/x.pdf"] == 3
+        assert pdf_report._OCR_PAGES_USED["/x.pdf"] == 3

@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import io
 import re
-import threading
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from .trusted_image import (  # re-exported for existing callers
+    MAX_TRUSTED_IMAGE_PIXELS,
+    open_trusted_image,
+    trusted_pillow_image_limit,
+)
 
 if TYPE_CHECKING:
     from PIL.Image import Image
@@ -26,9 +30,6 @@ if TYPE_CHECKING:
 AZURE_MAX_SIDE_PX = 10_000
 DEFAULT_TILE_SIDE_PX = 9_000
 DEFAULT_TILE_OVERLAP_PX = 180
-MAX_TRUSTED_IMAGE_PIXELS = 1_000_000_000
-
-_pillow_limit_lock = threading.RLock()
 _NORMALIZE_WORD_RE = re.compile(r"\W+", re.UNICODE)
 
 
@@ -117,44 +118,6 @@ class ReconstructionResult:
             lines.append(" ".join(current))
 
         return "\n".join(line for line in lines if line.strip()).strip()
-
-
-@contextmanager
-def trusted_pillow_image_limit(
-    max_pixels: int = MAX_TRUSTED_IMAGE_PIXELS,
-) -> Iterator[None]:
-    """Temporarily raise Pillow's pixel limit for trusted internal scans."""
-
-    if max_pixels <= 0:
-        raise ValueError("max_pixels must be positive")
-
-    from PIL import Image
-
-    with _pillow_limit_lock:
-        previous_limit = Image.MAX_IMAGE_PIXELS
-        Image.MAX_IMAGE_PIXELS = max_pixels
-        try:
-            yield
-        finally:
-            Image.MAX_IMAGE_PIXELS = previous_limit
-
-
-def open_trusted_image(
-    source_bytes: bytes,
-    *,
-    max_pixels: int = MAX_TRUSTED_IMAGE_PIXELS,
-) -> Image:
-    """Open and fully decode a trusted image with an explicit pixel ceiling."""
-
-    if not source_bytes:
-        raise ValueError("source_bytes must not be empty")
-
-    from PIL import Image
-
-    with trusted_pillow_image_limit(max_pixels):
-        image = Image.open(io.BytesIO(source_bytes))
-        image.load()
-        return image
 
 
 def split_image(
