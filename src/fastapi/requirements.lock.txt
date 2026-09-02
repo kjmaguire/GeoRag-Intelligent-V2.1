@@ -478,7 +478,7 @@ pydantic-core==2.46.4
     # via pydantic
 pydantic-graph==2.31.0
     # via pydantic-ai-slim
-pydantic-settings==2.13.1
+pydantic-settings==2.14.2
     # via
     #   georag-fastapi
     #   hatchet-sdk
