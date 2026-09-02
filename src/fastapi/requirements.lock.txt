@@ -582,7 +582,7 @@ scipy==1.17.1
     #   xgboost-cpu
 sentence-transformers==5.7.0
     # via georag-fastapi
-setuptools==81.0.0
+setuptools==84.0.0
     # via
     #   grpcio-tools
     #   torch
