@@ -1,0 +1,20 @@
+{
+  "_note": "SYNTHETIC — expected `output_format=blocks` shape from the published Parse API description. Replace with a scrubbed live response from ops/validation/cohere_parse_probe.py once the deployment has been probed.",
+  "pages": [
+    {
+      "page_number": 1,
+      "blocks": [
+        {"type": "text", "text": "# 14 MINERAL RESOURCE ESTIMATES\n\nThe resource estimate for the Madison deposit is summarised below.", "bbox": [0.08, 0.05, 0.92, 0.18]},
+        {
+          "type": "table",
+          "html": "<table><thead><tr><th rowspan=\"2\">Category</th><th rowspan=\"2\">Tonnes (Mt)</th><th colspan=\"2\">Grade</th></tr><tr><th>Au (g/t)</th><th>Ag (g/t)</th></tr></thead><tbody><tr><td>Measured</td><td>1.2</td><td>2.4</td><td>12.1</td></tr><tr><td>Indicated</td><td>3.4</td><td>1.9</td><td>9.8</td></tr><tr><td>Inferred</td><td>0.8</td><td>1.1</td><td>7.5</td></tr></tbody></table>",
+          "bbox": [0.08, 0.2, 0.92, 0.45],
+          "description": "Mineral resource estimate by category with tonnes and gold and silver grades."
+        },
+        {"type": "image", "description": "Plan view map of the Madison deposit showing drill collars.", "bbox": [0.1, 0.5, 0.9, 0.9]},
+        {"type": "text", "text": "Notes: Mineral resources are not mineral reserves.", "bbox": [0.08, 0.92, 0.92, 0.96]}
+      ]
+    }
+  ],
+  "usage": {"billed_pages": 1}
+}

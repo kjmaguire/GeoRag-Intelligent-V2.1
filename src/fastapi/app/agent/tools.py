@@ -328,13 +328,14 @@ class DocumentChunk:
     document_type: str           # "NI43", "PUB", or "DATA"
     report_id: str               # bronze.reports FK — enables cross-referencing
     relevance_score: float       # raw Qdrant score before cross-encoder reranking
-    # Phase 3 (2026-05-22) — OCR provenance per chunk. NULL means the
-    # passage was extracted from the PDF text layer (no OCR involved).
-    # 0.0–1.0 = mean OCR engine confidence. ocr_method records which
-    # engine produced the text: fitz_native | pdfplumber_native |
-    # tesseract | document_intelligence. Phase 3 exposes these in
-    # search_documents results WITHOUT filtering or weighting — the
-    # Phase 6 OCR Quality Agent will set thresholds.
+    # Phase 3 (2026-05-22) — OCR provenance per chunk. NULL means no engine
+    # confidence exists: the passage came from the PDF text layer, or from
+    # Cohere Parse, which reports none (ADR-0019). 0.0–1.0 = mean
+    # confidence from an engine that measures it (tesseract). ocr_method is
+    # the discriminator: fitz_native | pdfplumber_native | tesseract |
+    # cohere_parse | document_intelligence (historical rows). Phase 3
+    # exposes these in search_documents results WITHOUT filtering or
+    # weighting — the Phase 6 OCR Quality Agent will set thresholds.
     ocr_confidence: float | None = None
     ocr_method: str | None = None
     #: Verdict the ingest-side quality router reached for this page:

@@ -283,17 +283,17 @@ def test_parse_with_fitz_tags_recovered_pages_with_tesseract(parser_module, monk
         return_assessment=False,
         return_tables=False,
         *,
-        skip_di_page_request=False,
+        skip_engine_page_request=False,
     ):
         assert return_confidence is True
         assert return_assessment is True
-        # The mixed-document path batches Document Intelligence requests
-        # since 2026-08-23 and tells this function when a page was already
-        # covered by a batch that found nothing. No DI is configured in
-        # this test, so no batch ran and there is nothing to skip -- a True
-        # here would mean the batch pass fired without a configured
-        # backend and silently suppressed the per-page request.
-        assert skip_di_page_request is False
+        # The mixed-document path groups remote OCR requests since
+        # 2026-08-23 and tells this function when a page was already
+        # covered by a group that found nothing. No engine is selected in
+        # this test, so no group ran and there is nothing to skip -- a True
+        # here would mean the group pass fired without a selected engine
+        # and silently suppressed the per-page request.
+        assert skip_engine_page_request is False
         assessment = {
             "tier": "mandatory_review",
             "routing_decision": "review_required",
@@ -354,7 +354,7 @@ def test_assign_ocr_metadata_first_page_method_wins(parser_module):
             page_last=3,
         ),
     ]
-    per_page_method = {1: "fitz_native", 2: "tesseract", 3: "document_intelligence"}
+    per_page_method = {1: "fitz_native", 2: "tesseract", 3: "cohere_parse"}
     per_page_confidence = {1: None, 2: 0.70, 3: 0.90}
 
     parser_module._assign_ocr_metadata(sections, per_page_method, per_page_confidence)
@@ -556,121 +556,6 @@ def test_ocr_single_page_clamps_confidence(parser_module, monkeypatch):
     assert conf == 1.0
 
 
-def test_tiled_document_intelligence_reconstructs_oversized_page(
-    parser_module,
-    monkeypatch,
-):
-    from PIL import Image
-
-    from app.services.ingest import document_intelligence_client as di
-
-    fake_pdf2image = types.ModuleType("pdf2image")
-    fake_pdf2image.convert_from_path = MagicMock(return_value=[Image.new("L", (100, 9_500))])
-    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-
-    results = iter(
-        [
-            di.PageOcrResult(
-                text="Top Seam",
-                mean_confidence=0.90,
-                words=(
-                    di.OcrWord("Top", 0.90, (5, 5, 25, 5, 25, 20, 5, 20)),
-                    di.OcrWord(
-                        "Seam",
-                        0.80,
-                        (5, 8_950, 35, 8_950, 35, 8_970, 5, 8_970),
-                    ),
-                ),
-                detected_region_count=2,
-            ),
-            di.PageOcrResult(
-                text="Seam Bottom",
-                mean_confidence=0.95,
-                words=(
-                    di.OcrWord("Seam", 0.95, (5, 130, 35, 130, 35, 150, 5, 150)),
-                    di.OcrWord("Bottom", 0.95, (5, 500, 45, 500, 45, 520, 5, 520)),
-                ),
-                detected_region_count=2,
-            ),
-        ]
-    )
-    monkeypatch.setattr(di, "ocr_image_sync", lambda _body: next(results))
-
-    result, assessment = parser_module._ocr_tiled_pdf_page("/tmp/fake.pdf", 1)
-
-    # Changed 2026-08-21. This used to be " ".join(...) over the tiles,
-    # which collapsed a tiled page into ONE line -- exactly the bug fixed
-    # for the tesseract tiling path on 2026-05-22 and then reintroduced on
-    # the Document Intelligence path. The window chunker is line-oriented,
-    # so a single-line page cannot be split on a line boundary and a table
-    # row loses its row structure. Tiles are stacked vertically; a newline
-    # is what separates them.
-    assert result.text == "Top\nSeam\nBottom"
-    assert len(result.words) == 3
-    assert next(word for word in result.words if word.text == "Seam").confidence == 0.95
-    assert assessment["signals"]["seam_duplicate_ratio"] == 0.25
-
-
-def test_tiled_document_intelligence_rejects_partial_tile_failure(
-    parser_module,
-    monkeypatch,
-):
-    from PIL import Image
-
-    from app.services.ingest import document_intelligence_client as di
-
-    fake_pdf2image = types.ModuleType("pdf2image")
-    fake_pdf2image.convert_from_path = MagicMock(return_value=[Image.new("L", (100, 9_500))])
-    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-
-    results = iter(
-        [
-            di.PageOcrResult(
-                text="Top",
-                mean_confidence=0.9,
-                words=(di.OcrWord("Top", 0.9, (5, 5, 25, 5, 25, 20, 5, 20)),),
-                detected_region_count=1,
-            ),
-            di.PageOcrResult(
-                "",
-                0.0,
-                request_succeeded=False,
-                error="service unavailable",
-            ),
-        ]
-    )
-    monkeypatch.setattr(di, "ocr_image_sync", lambda _body: next(results))
-
-    with pytest.raises(RuntimeError, match="tile r0001-c0000 failed"):
-        parser_module._ocr_tiled_pdf_page("/tmp/fake.pdf", 1)
-
-
-def test_tiled_document_intelligence_rejects_unmappable_words(
-    parser_module,
-    monkeypatch,
-):
-    from PIL import Image
-
-    from app.services.ingest import document_intelligence_client as di
-
-    fake_pdf2image = types.ModuleType("pdf2image")
-    fake_pdf2image.convert_from_path = MagicMock(return_value=[Image.new("L", (100, 100))])
-    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-    monkeypatch.setattr(
-        di,
-        "ocr_image_sync",
-        lambda _body: di.PageOcrResult(
-            text="Unmapped",
-            mean_confidence=0.9,
-            words=(di.OcrWord("Unmapped", 0.9, ()),),
-            detected_region_count=1,
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="without complete word polygons"):
-        parser_module._ocr_tiled_pdf_page("/tmp/fake.pdf", 1)
-
-
 def test_full_document_ocr_reports_actual_mixed_engine_provenance(
     parser_module,
     monkeypatch,
@@ -679,20 +564,20 @@ def test_full_document_ocr_reports_actual_mixed_engine_provenance(
     fake_pdf2image.pdfinfo_from_path = MagicMock(return_value={"Pages": 2})
     monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
 
-    # 4-tuples: _attempt_ocr_document_intelligence passes return_tables=True
+    # 4-tuples: _attempt_ocr_cohere_parse passes return_tables=True
     # (scanned-table support, 2026-08-11).
     page_results = iter(
         [
             (
-                "Azure page",
-                0.9,
+                "Parse page",
+                0.0,
                 {
                     "tier": "mandatory_review",
                     "routing_decision": "review_required",
                     "reasons": ["routing_thresholds_not_calibrated"],
                     "thresholds_calibrated": False,
-                    "signals": {"mean_confidence": 0.9},
-                    "ocr_method": "document_intelligence",
+                    "signals": {"mean_confidence": 0.0, "confidence_reported": False},
+                    "ocr_method": "cohere_parse",
                 },
                 [],
             ),
@@ -718,8 +603,91 @@ def test_full_document_ocr_reports_actual_mixed_engine_provenance(
     )
     monkeypatch.setattr(parser_module, "_postprocess_ocr_text", lambda text: text)
 
-    result = parser_module._attempt_ocr_document_intelligence("/tmp/fake.pdf")
+    result = parser_module._attempt_ocr_cohere_parse("/tmp/fake.pdf")
 
     assert result.parser_used == "ocr_mixed"
-    assert result.text == "Azure page\n\nTesseract fallback page"
+    assert result.text == "Parse page\n\nTesseract fallback page"
     assert [page.page_number for page in result.pages] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# 9. Cohere Parse pages persist NULL confidence (ADR-0019)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_with_fitz_persists_null_confidence_for_cohere_parse_pages(parser_module, monkeypatch):
+    """Parse reports no confidence: the page map must carry None, not 0.0."""
+    _page1_text = (
+        "The Madsen gold deposit lies within the Red Lake greenstone belt "
+        "and hosts quartz vein mineralization across the Austin and McVeigh "
+        "zones with grades near seven grams per tonne. " * 2
+    )
+    _install_fake_pypdfium2(monkeypatch, [_page1_text, ""])
+
+    def _fake_parse(path, page_num, return_confidence=False, return_assessment=False, return_tables=False, **_kw):
+        assessment = {
+            "tier": "auto_accept",
+            "routing_decision": "auto_pass",
+            "reasons": [],
+            "thresholds_calibrated": True,
+            "signals": {"mean_confidence": 0.0, "confidence_reported": False},
+            "ocr_method": "cohere_parse",
+        }
+        out = ("R" * 200, 0.0, assessment)
+        return (*out, [[["Au", "1.2"]]]) if return_tables else out
+
+    monkeypatch.setattr(parser_module, "_ocr_single_page", _fake_parse)
+
+    out = parser_module._parse_with_fitz("/tmp/fake.pdf", apply_ocr_fallback=True)
+    warnings = out[3]
+    *_, image_pages, method, conf, ocr_tables = out
+
+    assert method[1] == "fitz_native"
+    assert conf[1] is None
+    assert method[2] == "cohere_parse"
+    assert conf[2] is None
+    assert ocr_tables[2] == [[["Au", "1.2"]]]
+    recovered = next(w for w in warnings if w.get("code") == "page_ocr_recovered_fitz")
+    assert recovered["ocr_confidence"] is None
+
+
+def test_assign_ocr_metadata_keeps_null_confidence_for_a_parse_led_section(parser_module):
+    """ocr_method is the discriminator: a cohere_parse section never carries
+    another engine's confidence, even when a tesseract page sits in its span."""
+    sections = [
+        parser_module.ReportSection(
+            section_number="1",
+            section_title="Summary",
+            text="x",
+            page_first=1,
+            page_last=2,
+        )
+    ]
+    parser_module._assign_ocr_metadata(
+        sections,
+        {1: "cohere_parse", 2: "tesseract"},
+        {1: None, 2: 0.7},
+    )
+
+    assert sections[0].ocr_method == "cohere_parse"
+    assert sections[0].ocr_confidence is None
+
+
+def test_assign_ocr_metadata_tesseract_led_section_keeps_its_confidence(parser_module):
+    sections = [
+        parser_module.ReportSection(
+            section_number="1",
+            section_title="Summary",
+            text="x",
+            page_first=1,
+            page_last=2,
+        )
+    ]
+    parser_module._assign_ocr_metadata(
+        sections,
+        {1: "tesseract", 2: "cohere_parse"},
+        {1: 0.7, 2: None},
+    )
+
+    assert sections[0].ocr_method == "tesseract"
+    assert sections[0].ocr_confidence == 0.7

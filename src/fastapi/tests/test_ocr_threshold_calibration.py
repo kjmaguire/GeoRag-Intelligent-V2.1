@@ -395,3 +395,56 @@ class TestTheEngineIsPassedInNotStampedAfterwards:
             "a call site is setting ocr_method after the call again -- pass "
             "it in, or the threshold loader cannot see it"
         )
+
+
+class TestAnEngineWithoutConfidenceGetsAContentOnlyBand:
+    """Cohere Parse (ADR-0019) reports no confidence.
+
+    Its per-engine block therefore states only content-signal keys, and
+    the confidence keys inherited from the shared set are never consulted
+    for it — a page with no confidence must not be reviewed FOR having no
+    confidence.
+    """
+
+    def test_a_cohere_parse_block_routes_on_content_signals_only(self, monkeypatch) -> None:
+        from app.services.ingest.pdf_report import _assess_ocr_result
+
+        set_env(monkeypatch, {
+            **asdict(thresholds(calibrated_from="ops/baselines/x.json")),
+            "by_ocr_method": {
+                # Keep every Parse page in spot-check until calibrated.
+                "cohere_parse": {"floor_tier": "spot_check"},
+            },
+        })
+        text = (
+            "The Athabasca Basin hosts unconformity related uranium deposits "
+            "within Paleoproterozoic metasedimentary rocks of the Wollaston "
+            "Domain along the eastern margin"
+        )
+
+        parse = _assess_ocr_result(text, None, detected_region_count=0, ocr_method="cohere_parse")
+        tess = _assess_ocr_result(text, [0.9] * 20, detected_region_count=20, ocr_method="tesseract")
+
+        assert parse["signals"]["confidence_reported"] is False
+        assert "mean_confidence" not in parse["reasons"]
+        assert "low_confidence_word_ratio" not in parse["reasons"]
+        assert parse["tier"] == "spot_check"
+        assert parse["reasons"] == ["floor_tier"]
+        assert tess["tier"] == "auto_accept"
+
+    def test_a_floor_never_lifts_a_page_and_rejects_unknown_values(self, monkeypatch) -> None:
+        from app.services.ingest.ocr_quality import OcrRoutingThresholds
+        from app.services.ingest.pdf_report import _assess_ocr_result
+
+        set_env(monkeypatch, {
+            **asdict(thresholds(calibrated_from="ops/baselines/x.json")),
+            "by_ocr_method": {"cohere_parse": {"floor_tier": "mandatory_review"}},
+        })
+        smeared = _assess_ocr_result(
+            "aaaaaa bbbbbb cccccc dddddd", None, detected_region_count=0, ocr_method="cohere_parse",
+        )
+        assert smeared["tier"] == "mandatory_review"
+        assert "repeated_character_ratio" in smeared["reasons"]
+
+        with pytest.raises(ValueError):
+            OcrRoutingThresholds(**{**asdict(thresholds()), "floor_tier": "auto_accept"})

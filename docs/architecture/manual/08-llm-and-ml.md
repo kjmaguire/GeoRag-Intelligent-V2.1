@@ -283,4 +283,4 @@ Agents in use:
 | bge-reranker-base | `fastapi` | `/tmp/hf_cache` (fastapi_hf_cache) | ~280 MB |
 | SPLADE++ | `hatchet-worker-ai` | `/tmp/hf_cache` | ~440 MB |
 | Tesseract | both workers | system path | ~30 MB lang data |
-| Azure Document Intelligence | external managed service | n/a | n/a |
+| Cohere Parse v5 (OCR) | Azure AI Foundry, external managed service | n/a | n/a |

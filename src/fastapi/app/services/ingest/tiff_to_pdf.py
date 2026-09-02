@@ -94,7 +94,7 @@ def tiff_to_pdf(source_bytes: bytes) -> TiffNormalizeResult:
     except ImportError as exc:  # pragma: no cover — PIL is in fastapi image
         raise TiffNormalizeError(f"Pillow not available: {exc}") from exc
 
-    from .image_tiling import trusted_pillow_image_limit
+    from .trusted_image import trusted_pillow_image_limit
 
     # WSGS / NI 43-101 scans routinely exceed Pillow's default threshold.
     # Raise it to a finite, explicit ceiling only while decoding this trusted

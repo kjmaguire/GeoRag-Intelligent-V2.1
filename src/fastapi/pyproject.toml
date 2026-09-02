@@ -231,25 +231,21 @@ dependencies = [
     # dispatch in pdf_report.py — none of it ever ran in production
     # (PDF_PARSER_DOCLING_ENABLED was false in every live deployment;
     # 1,173 real silver.reports rows show parser_used as fitz or
-    # pdfplumber, never docling). Azure Document Intelligence
-    # (azure-ai-documentintelligence below) is the OCR path going
-    # forward alongside tesseract.
+    # pdfplumber, never docling).
     #
     # paddlepaddle/paddleocr (region-targeted `POST /pdf/ocr_region`) removed
     # the same day — the endpoint, app/ocr/, and services/pdf_ocr.py had zero
     # callers anywhere in Laravel/frontend code (same orphan pattern as
     # /pdf/find_legends). Task #17/A3 had already deleted most of §04p but
     # missed this leg.
-    # #28 (2026-07-28) — Azure Document Intelligence OCR adapter (MIT).
-    # Gated OFF by default (OCR_ENGINE=tesseract). When selected, the live
-    # per-page and whole-document OCR paths use Azure first, tile oversized
-    # rasters below the 10,000px service limit, and retain Tesseract as the
-    # last-resort fallback.
-    "azure-ai-documentintelligence>=1.0.2,<2.0",
-    # azure-core: MIT — directly imported for AzureKeyCredential, not just a
-    #   transitive dep of azure-ai-documentintelligence. Undeclared until
-    #   this pin (2026-07-29).
-    "azure-core>=1.41",
+    #
+    # azure-ai-documentintelligence + azure-core (the #28 Azure Document
+    # Intelligence OCR adapter, 2026-07-28) removed 2026-09-02 per ADR-0019:
+    # the OCR engine is Cohere Parse v5 on Azure AI Foundry, called with the
+    # httpx client already used for Embed/Rerank — no vendor SDK. azure-core
+    # still arrives transitively through georag-object-storage's
+    # azure-storage-blob for the Blob backend; nothing in this service
+    # imports it directly any more.
     # §04p Phase 1.D — Qwen-VL vision-language reasoning (Stage 6)
     # NO NEW PYTHON DEPS REQUIRED.  httpx, asyncpg, and pydantic (all already
     # listed above) are sufficient to call the Ollama / vLLM backend via the
@@ -629,7 +625,6 @@ module = [
     "app.services.ingest.cluster_runner",
     "app.services.ingest.context_enricher",
     "app.services.ingest.csv_collar_ingester",
-    "app.services.ingest.document_intelligence_client",
     "app.services.ingest.las_ingester",
     "app.services.ingest.page_image",
     "app.services.ingest.passage_embedder",

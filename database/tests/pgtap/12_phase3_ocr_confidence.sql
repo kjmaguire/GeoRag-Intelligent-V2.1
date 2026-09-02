@@ -37,7 +37,7 @@ SELECT col_type_is(
 -- ── 3. ocr_confidence is nullable ────────────────────────────────────────────
 SELECT col_is_null(
     'silver', 'document_passages', 'ocr_confidence',
-    'ocr_confidence is nullable (NULL = text-layer extraction)'
+    'ocr_confidence is nullable (NULL = no engine confidence: text layer, or cohere_parse)'
 );
 
 -- ── 4. ocr_method column exists ──────────────────────────────────────────────
@@ -148,6 +148,7 @@ DECLARE
         'pdfplumber_native',
         'tesseract',
         'document_intelligence',
+        'cohere_parse',
         'unavailable'
     ];
     m text;
@@ -171,7 +172,7 @@ BEGIN
     END LOOP;
 END $$;
 
-SELECT pass('All five valid ocr_method values accepted (fitz_native, pdfplumber_native, tesseract, document_intelligence, unavailable)');
+SELECT pass('All six valid ocr_method values accepted (fitz_native, pdfplumber_native, tesseract, document_intelligence, cohere_parse, unavailable)');
 
 SELECT * FROM finish();
 

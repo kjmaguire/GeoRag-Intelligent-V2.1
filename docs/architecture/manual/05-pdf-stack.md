@@ -6,11 +6,14 @@ Everything runs inside the `hatchet-worker-ingestion` (and occasionally the
 
 > All file paths in this chapter are relative to the repo root.
 >
-> **OCR stack updated 2026-07-29.** Azure Document Intelligence is the
-> primary scanned-page OCR service, with Tesseract retained as the
-> last-resort fallback. Docling, RapidOCR, and PaddleOCR were removed.
-> Oversized pages use lossless tiling, coordinate reconstruction, seam
-> deduplication, and multi-signal quality routing.
+> **OCR stack updated 2026-09-02 (ADR-0019).** Cohere Parse v5 on Azure AI
+> Foundry is the primary scanned-page OCR engine, with Tesseract retained as
+> the last-resort fallback. Azure Document Intelligence (2026-07-29 →
+> 2026-09-02) is gone, and with it the lossless tiling / polygon
+> reconstruction of oversized pages — Parse returns no word polygons, so
+> oversized pages are downscaled to a pixel cap instead. Parse also returns
+> no per-word confidence: its pages persist `ocr_confidence = NULL` and the
+> multi-signal quality router scores them on content signals only.
 
 ## 1. Entry point
 
@@ -61,8 +64,8 @@ body_bytes
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Stage 4 — OCR    services/ingest/pdf_report.py                          │
 │   image-only pages, OR low-content fitz pages                           │
-│   Azure Document Intelligence primary; Tesseract last-resort fallback   │
-│   oversized pages → lossless tiles → polygon remap + seam dedupe        │
+│   Cohere Parse v5 (Foundry) primary; Tesseract last-resort fallback     │
+│   pages rendered under COHERE_PARSE_MAX_PIXELS (downscaled, not tiled)  │
 │   multi-signal quality routing → silver.review_queue                    │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
@@ -97,7 +100,7 @@ body_bytes
 | Preflight | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `preflight()` — sha256, magic bytes, pikepdf open, page count, password-protected rejection |
 | Native text | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) | `extract_native_text_pages()` (PyMuPDF primary; pdfminer fallback) |
 | Tables | [src/fastapi/app/services/pdf_extract.py](../../../src/fastapi/app/services/pdf_extract.py) + [pdf_layout.py](../../../src/fastapi/app/services/pdf_layout.py) | `extract_tables_diverse()` — pdfplumber + camelot strategies |
-| OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [document_intelligence_client.py](../../../src/fastapi/app/services/ingest/document_intelligence_client.py) | Azure Document Intelligence primary, tiled oversized-page reconstruction, Tesseract fallback |
+| OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [cohere_parse_client.py](../../../src/fastapi/app/services/ingest/cohere_parse_client.py) + [html_table.py](../../../src/fastapi/app/services/ingest/html_table.py) | Cohere Parse v5 primary (one page image per request, HTML tables → grids), Tesseract fallback |
 | Coordinates | [src/fastapi/app/services/pdf_coordinates.py](../../../src/fastapi/app/services/pdf_coordinates.py) | Maps OCR text → page-relative bboxes for citation span resolver |
 | Rendering | [src/fastapi/app/services/pdf_render.py](../../../src/fastapi/app/services/pdf_render.py) | `render_page_png()` → uploads to SeaweedFS `bronze-raster` bucket |
 | VL pass | [src/fastapi/app/services/pdf_vl.py](../../../src/fastapi/app/services/pdf_vl.py) | `describe_figure_vl()` — calls Qwen2.5-VL on the vllm endpoint |
@@ -126,7 +129,7 @@ Result: 3-5× speedup on text-heavy NI 43-101 PDFs.
 - Tesseract bumped from default psm to `psm=3` (auto page seg with OSD).
 - Tables now read all pages, not just the first hit page.
 - `§04p` re-enabled after the Phase 1 freeze.
-- Azure Document Intelligence is the primary scanned-page OCR service.
+- Azure Document Intelligence was the primary scanned-page OCR service (replaced by Cohere Parse v5 on 2026-09-02, ADR-0019).
 - Figure→caption linking v1 with MinIO uploads.
 
 ## 6. PDF coverage overhaul (six gaps closed 2026-05-22)
@@ -171,10 +174,14 @@ From [docker-compose.yml:2039-2065](../../../docker-compose.yml):
 
 | Env var | Default | Effect |
 |---|---|---|
-| `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | unset | Enables Azure Document Intelligence OCR |
-| `AZURE_DOCUMENT_INTELLIGENCE_KEY` | unset | Azure OCR credential |
-| `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Azure is unavailable or empty |
-| `OCR_ROUTING_THRESHOLDS_JSON` | unset | Tier thresholds; unset routes uncertain OCR to review. The shipped values are hand-picked, **not** calibrated — the assessment reports `thresholds_calibrated` only when the JSON carries a `calibrated_from` key naming an artefact. Supports per-engine bands via `by_ocr_method`, because DI (0.95–0.99) and Tesseract (0.70–0.85) confidences are not comparable. |
+| `OCR_ENGINE` | tesseract (compose: `cohere_parse`) | Selects the remote OCR engine. The retired `azure_document_intelligence` value logs CRITICAL and runs Tesseract. |
+| `AZURE_FOUNDRY_PARSE_DEPLOYMENT` | unset | Foundry deployment name for Cohere Parse v5 (`Cohere-parse-v5`); endpoint and key are the shared `AZURE_FOUNDRY_ENDPOINT` / `AZURE_FOUNDRY_API_KEY` |
+| `COHERE_PARSE_MAX_PIXELS` | 4000000 | Pixel cap for the rendered page image; oversized sheets are downscaled (no tiling) |
+| `COHERE_PARSE_TIMEOUT_S` / `_OUTPUT_FORMAT` / `_INCLUDE_IMAGE_DESCRIPTIONS` | 120 / blocks / 0 | Per-request timeout, response shape, and whether Parse's figure descriptions enter the retrievable text |
+| `OCR_PAGES_PER_BATCH` | 8 | Pages rendered together and posted concurrently as one group (in-flight requests capped by `PDF_OCR_PAGE_CONCURRENCY`) |
+| `OCR_MAX_PAGES_PER_DOC` | 300 | Per-document cap on pages sent to the remote engine; the rest go to Tesseract and the parse carries an `ocr_page_budget_exhausted` warning |
+| `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Parse is unavailable or empty |
+| `OCR_ROUTING_THRESHOLDS_JSON` | unset | Tier thresholds; unset routes uncertain OCR to review. The shipped values are hand-picked, **not** calibrated — the assessment reports `thresholds_calibrated` only when the JSON carries a `calibrated_from` key naming an artefact. Supports per-engine bands via `by_ocr_method`; Cohere Parse reports no confidence, so its block uses `"floor_tier": "spot_check"` to stay out of auto-accept until calibrated. |
 | `PDF_PARSE_PAGE_WORKERS` | 4 | Page-level parallelism within a parse |
 | `PARSE_SUBPROCESS_MAX_WORKERS` | (auto) | Parallel parses per worker; empty → `min(cpu_count(), 4)` |
 | `BRONZE_LOCAL_DIR` | `/tmp/georag/bronze` | Body-bytes cache |

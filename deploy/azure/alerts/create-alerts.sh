@@ -49,7 +49,6 @@ ACTION_GROUP="/subscriptions/${SUB}/resourceGroups/${RG}/providers/microsoft.ins
 WS_ID="/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.OperationalInsights/workspaces/${WS_NAME}"
 CA_ID="/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.App/containerApps"
 FOUNDRY_ID="/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.CognitiveServices/accounts/georag-foundry-cc"
-DOCINTEL_ID="/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.CognitiveServices/accounts/georag-document-intel-cc"
 PG_ID="/subscriptions/${SUB}/resourceGroups/${RG}/providers/Microsoft.DBforPostgreSQL/flexibleServers/georag-pg-cc"
 LOCATION="${ALERT_LOCATION:-canadacentral}"
 
@@ -221,30 +220,19 @@ run az monitor metrics alert create \
   --condition "total ClientErrors > 50" \
   --action "$ACTION_GROUP"
 
-# --- 5a. Document Intelligence is refusing or dropping calls ----------
-# georag-document-intel-cc had NO alerting of any kind: an internet-facing
-# Cognitive Services account, key-authenticated, carrying the OCR path for
-# every scanned report, and nothing watching it. Foundry got an alert on
-# 2026-08-21 and this account was not given the same treatment.
+# --- 5a. (retired 2026-09-02) Document Intelligence alerts ------------
+# georag-document-intel-cc is no longer called: Cohere Parse v5 on the
+# Foundry resource replaced it (ADR-0019), so its three rules
+# (georag-document-intel-cc-client-errors / -server-errors / -throttled)
+# would only ever fire on nothing. The Foundry ClientErrors (5.) and
+# ServerErrors (5c.) rules above and below now cover OCR as well as the
+# answer path — Parse adds per-page volume to the same account, so a
+# throttling regression on a large scanned ingest surfaces there.
 #
-# Three conditions, because DI fails in three different ways and only one
-# of them looks like an outage:
-#
-#   ClientErrors   auth, quota, or a malformed request. The key rotating
-#                  out from under the ingest tier lands here.
-#   ServerErrors   Azure-side. Ingestion retries and eventually gives up,
-#                  and the only symptom is documents that never finish.
-#   Ratelimit      429s. This is also the batching canary: the mixed-
-#                  document path still issues one request per page, so a
-#                  regression that stops batching the fully-scanned path
-#                  shows up as throttling before it shows up as cost.
-run az monitor metrics alert create   -g "$RG" -n georag-document-intel-cc-client-errors   --scopes "$DOCINTEL_ID"   --description "Document Intelligence is rejecting calls (auth, quota, or malformed request)."   --severity 2   --evaluation-frequency 5m --window-size 15m   --condition "total ClientErrors > 20"   --action "$ACTION_GROUP"
-
-run az monitor metrics alert create   -g "$RG" -n georag-document-intel-cc-server-errors   --scopes "$DOCINTEL_ID"   --description "Document Intelligence is failing server-side; OCR for scanned reports is degrading."   --severity 2   --evaluation-frequency 5m --window-size 15m   --condition "total ServerErrors > 5"   --action "$ACTION_GROUP"
-
-# Threshold 0, not a rate: any throttling at this traffic level means the
-# call pattern changed, and that is worth one look rather than a trend.
-run az monitor metrics alert create   -g "$RG" -n georag-document-intel-cc-throttled   --scopes "$DOCINTEL_ID"   --description "Document Intelligence is throttling. At this volume that means the per-page call pattern regressed, not that we grew."   --severity 3   --evaluation-frequency 15m --window-size 1h   --condition "total Ratelimit > 0"   --action "$ACTION_GROUP"
+# Retire the live rules once, by hand, when the account is decommissioned:
+#   az monitor metrics alert delete -g georag -n georag-document-intel-cc-client-errors
+#   az monitor metrics alert delete -g georag -n georag-document-intel-cc-server-errors
+#   az monitor metrics alert delete -g georag -n georag-document-intel-cc-throttled
 
 # --- 5c. Foundry is failing server-side -------------------------------
 # The 2026-08-21 pass added ClientErrors and stopped there. ServerErrors

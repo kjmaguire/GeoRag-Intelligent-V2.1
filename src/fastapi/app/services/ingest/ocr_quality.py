@@ -34,6 +34,14 @@ class OcrQualitySignals:
     repeated_character_ratio: float
     word_count: int
     detected_region_count: int
+    #: False when the engine reports no per-word confidence (Cohere Parse,
+    #: ADR-0019). The confidence-based bands are then skipped and the page
+    #: is judged on its content signals; the fail-closed default is unchanged.
+    confidence_reported: bool = True
+
+
+_FLOOR_TIERS: frozenset[str] = frozenset({OcrRoutingTier.SpotCheck.value, OcrRoutingTier.MandatoryReview.value})
+_NON_THRESHOLD_FIELDS: frozenset[str] = frozenset({"calibrated_from", "floor_tier"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +86,17 @@ class OcrRoutingThresholds:
     #: threshold, so it is skipped by the range check below.
     calibrated_from: str | None = None
 
+    #: Worst tier a page may auto-route to under this set: ``"spot_check"``
+    #: or ``"mandatory_review"``. Added 2026-09-02 for engines that report
+    #: no confidence (Cohere Parse, ADR-0019): with the confidence bands
+    #: skipped, a clean page auto-accepts on content signals alone, and
+    #: there is no threshold value that can express "never auto-accept
+    #: this engine until it is calibrated" — every rule is a strict
+    #: inequality a clean page satisfies. This is that switch, per engine
+    #: via ``by_ocr_method``. Not a threshold, so it too skips the range
+    #: check.
+    floor_tier: str | None = None
+
     @property
     def is_calibrated(self) -> bool:
         """True only when an artefact was named.
@@ -88,9 +107,11 @@ class OcrRoutingThresholds:
         return bool((self.calibrated_from or "").strip())
 
     def __post_init__(self) -> None:
+        if self.floor_tier is not None and self.floor_tier not in _FLOOR_TIERS:
+            raise ValueError(f"floor_tier must be one of {sorted(_FLOOR_TIERS)} or null")
         for field in fields(self):
             name = field.name
-            if name == "calibrated_from":
+            if name in _NON_THRESHOLD_FIELDS:
                 continue
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
@@ -153,36 +174,63 @@ class OcrQualityAssessment:
 
     @property
     def review_queue_routing_decision(self) -> str:
-        """Map internal bands onto the existing Postgres enum."""
+        """Map internal bands onto the persisted routing decision.
+
+        ``auto_pass``: nothing to do. ``review_required``: the page is
+        queued for review AND its passages persist ``ocr_status =
+        'low_confidence'``, which retrieval demotes and annotates.
+        ``spot_check`` (2026-09-02): the page is queued for a human sample
+        but its passages stay ``accepted`` — the tier means "probably fine,
+        look at some", and demoting every spot-check page below every
+        born-digital page pushed scanned assay and resource tables out of
+        the context window once an engine with no confidence (Cohere
+        Parse, ADR-0019) put its whole output in this band via
+        ``floor_tier``.
+        """
 
         if self.tier is OcrRoutingTier.AutoAccept:
             return "auto_pass"
+        if self.tier is OcrRoutingTier.SpotCheck:
+            return "spot_check"
         return "review_required"
 
 
 def calculate_ocr_quality(
     text: str,
-    word_confidences: Sequence[float],
+    word_confidences: Sequence[float] | None,
     *,
     detected_region_count: int,
     seam_duplicate_count: int = 0,
     low_confidence_word_threshold: float = 0.5,
 ) -> OcrQualitySignals:
-    """Calculate independent OCR confidence and text-quality signals."""
+    """Calculate independent OCR confidence and text-quality signals.
+
+    ``word_confidences=None`` means the engine reports no confidence at all
+    (as opposed to an empty sequence, which means it reported confidence
+    and found no words). The confidence signals are then recorded as
+    neutral values — ``0.0`` means and a ``0.0`` low-confidence ratio, NOT
+    ``1.0``, so a rule that forgets to check ``confidence_reported`` cannot
+    trip the mandatory band by accident — and ``confidence_reported`` is
+    False so `assess_ocr_quality` skips those bands.
+    """
 
     if not 0.0 <= low_confidence_word_threshold <= 1.0:
         raise ValueError("low_confidence_word_threshold must be in [0, 1]")
 
-    confidences = tuple(max(0.0, min(1.0, float(confidence))) for confidence in word_confidences)
+    confidence_reported = word_confidences is not None
+    confidences = tuple(max(0.0, min(1.0, float(confidence))) for confidence in (word_confidences or ()))
     words = _WORD_RE.findall(text)
     word_count = len(words)
     mean_confidence = statistics.fmean(confidences) if confidences else 0.0
     median_confidence = statistics.median(confidences) if confidences else 0.0
-    low_confidence_word_ratio = (
-        sum(confidence < low_confidence_word_threshold for confidence in confidences) / len(confidences)
-        if confidences
-        else 1.0
-    )
+    if not confidence_reported:
+        low_confidence_word_ratio = 0.0
+    elif confidences:
+        low_confidence_word_ratio = (
+            sum(confidence < low_confidence_word_threshold for confidence in confidences) / len(confidences)
+        )
+    else:
+        low_confidence_word_ratio = 1.0
     output_coverage_ratio = (
         min(1.0, word_count / detected_region_count) if detected_region_count > 0 else (1.0 if word_count > 0 else 0.0)
     )
@@ -207,6 +255,7 @@ def calculate_ocr_quality(
         repeated_character_ratio=repeated_character_ratio,
         word_count=word_count,
         detected_region_count=max(0, detected_region_count),
+        confidence_reported=confidence_reported,
     )
 
 
@@ -235,7 +284,7 @@ def assess_ocr_quality(
         )
 
     catastrophic_reasons: list[str] = []
-    if signals.mean_confidence <= thresholds.catastrophic_max_mean_confidence:
+    if signals.confidence_reported and signals.mean_confidence <= thresholds.catastrophic_max_mean_confidence:
         catastrophic_reasons.append("catastrophic_mean_confidence")
     if signals.output_coverage_ratio <= thresholds.catastrophic_max_coverage_ratio:
         catastrophic_reasons.append("catastrophic_output_coverage")
@@ -275,11 +324,18 @@ def assess_ocr_quality(
         max_repeated=thresholds.spot_check_max_repeated_character_ratio,
         max_duplicates=thresholds.spot_check_max_seam_duplicate_ratio,
     )
-    if spot_check_reasons:
+    if thresholds.floor_tier == OcrRoutingTier.MandatoryReview.value:
+        return OcrQualityAssessment(
+            signals,
+            OcrRoutingTier.MandatoryReview,
+            (*spot_check_reasons, "floor_tier"),
+            calibrated,
+        )
+    if spot_check_reasons or thresholds.floor_tier == OcrRoutingTier.SpotCheck.value:
         return OcrQualityAssessment(
             signals,
             OcrRoutingTier.SpotCheck,
-            spot_check_reasons,
+            spot_check_reasons or ("floor_tier",),
             calibrated,
         )
 
@@ -312,8 +368,8 @@ def load_routing_thresholds_from_env(
           "calibrated_from": "ops/baselines/ocr-calibration-2026-09-01.json",
           "catastrophic_max_mean_confidence": 0.30, ...,
           "by_ocr_method": {
-            "tesseract":             {"spot_check_min_mean_confidence": 0.72, ...},
-            "document_intelligence": {"spot_check_min_mean_confidence": 0.97, ...}
+            "tesseract":    {"spot_check_min_mean_confidence": 0.72, ...},
+            "cohere_parse": {"floor_tier": "spot_check"}
           }
         }
 
@@ -322,13 +378,15 @@ def load_routing_thresholds_from_env(
     set, which is also what an unknown or absent ``ocr_method`` gets.
 
     WHY PER-ENGINE AT ALL
-        Document Intelligence and Tesseract do not report confidence on a
-        comparable scale. DI sits at 0.95-0.99 even when it is confidently
-        wrong; Tesseract sits at 0.70-0.85 when it is doing fine. A single
-        ``spot_check_min_mean_confidence`` of 0.90 therefore auto-accepts
-        almost every DI page and sends almost every Tesseract page to
-        review -- which inverts the intent and is a large part of why the
-        review queue fills with pages that are probably fine.
+        Engines do not report confidence on a comparable scale — or at all.
+        Tesseract sits at 0.70-0.85 when it is doing fine; the retired
+        Document Intelligence sat at 0.95-0.99 even when confidently wrong;
+        Cohere Parse (ADR-0019) reports none, so its pages carry
+        ``confidence_reported=False`` and the confidence keys in its block
+        are simply never consulted. A ``cohere_parse`` block therefore
+        states only content-signal keys — and, until a calibration artefact
+        exists, ``"floor_tier": "spot_check"`` keeps every Parse page out
+        of auto-accept regardless of how clean its text looks.
 
         The shape is available; the numbers still have to be measured.
         Nothing here invents them.
@@ -382,12 +440,13 @@ def _threshold_reasons(
     max_duplicates: float,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    if signals.mean_confidence < min_mean:
-        reasons.append("mean_confidence")
-    if signals.median_confidence < min_median:
-        reasons.append("median_confidence")
-    if signals.low_confidence_word_ratio > max_low_ratio:
-        reasons.append("low_confidence_word_ratio")
+    if signals.confidence_reported:
+        if signals.mean_confidence < min_mean:
+            reasons.append("mean_confidence")
+        if signals.median_confidence < min_median:
+            reasons.append("median_confidence")
+        if signals.low_confidence_word_ratio > max_low_ratio:
+            reasons.append("low_confidence_word_ratio")
     if signals.output_coverage_ratio < min_coverage:
         reasons.append("output_coverage_ratio")
     if signals.gibberish_word_ratio > max_gibberish:
@@ -431,7 +490,7 @@ def _is_numeric_token(word: str) -> bool:
     ``NATIVE_TEXT_MAX_GIBBERISH_RATIO = 0.4``. At 0.714 a **born-digital**
     assay or collar page failed that screen, so its perfect embedded text
     was discarded and the page was routed to OCR — substituting a billed
-    Document Intelligence read of a rendered image for text that was already
+    remote OCR read of a rendered image for text that was already
     correct. Verified end to end: the same page now returns
     ``_native_text_screen_reason(...) is None``.
 

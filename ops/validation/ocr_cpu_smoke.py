@@ -39,7 +39,7 @@ import traceback
 from pathlib import Path
 
 REPORT_PATH = Path(f"/tmp/ocr_cpu_smoke_{int(time.time())}.json")
-NATIVE_PDF_DEFAULT = "/app/src/dagster/tests/fixtures/reports/PLS-2024-Technical-Report.pdf"
+NATIVE_PDF_DEFAULT = "/app/tests/fixtures/ocr/PLS-2024-Technical-Report.pdf"
 SCANNED_PAGES = 5
 MIXED_PAGES = 5
 

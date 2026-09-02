@@ -7,9 +7,9 @@ mirror the v1.49 contract:
     1. preflight    — S3 GET, magic bytes, sha256, page count, size cap
     2. parse        — calls app.services.ingest.pdf_report.parse_pdf_report()
                       which is the canonical v1.49 entry point — runs the
-                      full pipeline (fitz → Tesseract/Azure Document
-                      Intelligence OCR routing, OCR if scanned, metadata,
-                      sections, resource tables)
+                      full pipeline (fitz → Cohere Parse/Tesseract OCR
+                      routing, OCR if scanned, metadata, sections,
+                      resource tables)
     3. persist      — writes silver.reports + silver.shadow_runs + audit
 
 Step 4A originally decomposed parse into 5 sub-steps; that was unnecessary
@@ -727,8 +727,8 @@ ingest_pdf = hatchet.workflow(
     # cancelled at exactly the 5-min mark. schedule_timeout="2h" gives
     # space for ~80 sequential parses before the tail starts expiring.
     # 2026-08-07 — raised 1 → 2. The original OOM driver (docling/Paddle
-    # models resident per parse) is gone: OCR is remote (Azure Document
-    # Intelligence) and embedding is remote (Foundry). Two in-flight runs
+    # models resident per parse) is gone: OCR is remote (Cohere Parse on
+    # Foundry) and embedding is remote (Foundry). Two in-flight runs
     # let doc B parse while doc A persists/embeds, roughly halving batch
     # wall-clock; PARSE_SUBPROCESS_MAX_WORKERS and the memory guard still
     # bound actual parse concurrency on small containers.
@@ -914,7 +914,7 @@ async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
 async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     """Call the canonical v1.49 ``parse_pdf_report`` end to end.
 
-    The parser owns: fitz-first → Tesseract/Azure Document Intelligence OCR routing → pdfplumber
+    The parser owns: fitz-first → Cohere Parse/Tesseract OCR routing → pdfplumber
     fallback → OCR (if scanned) → metadata extraction → section split → resource table extract.
     Returns a ReportParseResult; we serialise it into ParseOut.
     """
@@ -1249,6 +1249,10 @@ ON CONFLICT (queue_id) DO NOTHING
 """
 
 
+#: Routing decisions that produce a silver.review_queue row.
+_QUEUED_ROUTING_DECISIONS = frozenset({"review_required", "spot_check"})
+
+
 def _build_ocr_review_rows(
     parsed: dict,
     *,
@@ -1263,7 +1267,12 @@ def _build_ocr_review_rows(
     for warning in parsed.get("warnings") or []:
         if warning.get("code") != "ocr_quality_assessment":
             continue
-        if warning.get("routing_decision") != "review_required":
+        # spot_check pages are queued for a human sample too; only
+        # review_required pages also demote their passages (see
+        # _ocr_review_pages). The queue row's routing_decision column is
+        # the enum value 'review_required' either way — the tier travels in
+        # payload.ocr_quality_tier.
+        if warning.get("routing_decision") not in _QUEUED_ROUTING_DECISIONS:
             continue
 
         try:
@@ -1329,7 +1338,11 @@ def _build_ocr_review_rows(
 
 
 def _ocr_review_pages(parsed: dict) -> set[int]:
-    """Return pages whose OCR assessment requires human review."""
+    """Pages whose passages persist ``ocr_status='low_confidence'``.
+
+    Only ``review_required`` pages. ``spot_check`` pages get a review-queue
+    row (see `_build_ocr_review_rows`) but stay ``accepted`` in retrieval.
+    """
 
     pages: set[int] = set()
     for warning in parsed.get("warnings") or []:

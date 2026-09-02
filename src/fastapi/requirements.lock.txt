@@ -57,14 +57,10 @@ attrs==26.1.0
     #   rasterio
 authlib==1.7.2
     # via georag-fastapi
-azure-ai-documentintelligence==1.0.2
-    # via georag-fastapi
 azure-core==1.41.0
     # via
-    #   azure-ai-documentintelligence
     #   azure-identity
     #   azure-storage-blob
-    #   georag-fastapi
 azure-identity==1.25.3
     # via georag-object-storage
 azure-storage-blob==12.30.0
@@ -241,9 +237,7 @@ idna==3.11
 importlib-metadata==8.7.1
     # via opentelemetry-api
 isodate==0.7.2
-    # via
-    #   azure-ai-documentintelligence
-    #   azure-storage-blob
+    # via azure-storage-blob
 jinja2==3.1.6
     # via torch
 jiter==0.13.0
@@ -660,7 +654,6 @@ typer==0.27.1
 typing-extensions==4.15.0
     # via
     #   anthropic
-    #   azure-ai-documentintelligence
     #   azure-core
     #   azure-identity
     #   azure-storage-blob

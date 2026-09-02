@@ -19,7 +19,7 @@ You are the data engineer for GeoRAG. You build the ingestion pipeline that conv
 - **lasio** (LAS 2.0), **segyio** (SEG-Y), **obspy** (geophysical), custom parsers for Geosoft GDB and legacy drill log databases
 - **PostgreSQL 17.9 + PostGIS 3.6.2** as the target structured store
 - **Object storage** (S3-compatible SeaweedFS in compose, Azure Blob in production) for the immutable Bronze layer
-- **The in-process PDF stack** for document parsing (ADR-0002): pypdfium2 → Azure Document Intelligence → Tesseract
+- **The in-process PDF stack** for document parsing (ADR-0002): pypdfium2 → Cohere Parse v5 on Azure AI Foundry (ADR-0019) → Tesseract
 
 ## Required reading before work
 

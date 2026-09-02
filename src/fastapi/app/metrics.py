@@ -525,19 +525,19 @@ SOURCE_TRUST_BOOST_RANK_DELTA = Histogram(
 )
 
 # ---------------------------------------------------------------------------
-# Azure Document Intelligence metering (2026-08-14).
+# Remote OCR page metering (2026-08-14; engine label added 2026-09-02).
 #
-# One increment per successful DI analyze request — a single-page PDF slice
-# or one raster tile — which is exactly what Azure bills as a "page". Watch
-# this against the tier quota (F0: 500 pages/month; on exhaustion Azure
-# returns 403, which the client logs at ERROR and falls back to tesseract).
-# The per-document budget lives in pdf_report (AZURE_DI_MAX_PAGES_PER_DOC).
+# Incremented by the PAGE COUNT of each successful remote OCR request, which
+# is what the vendor bills: one label value per engine so a cutover shows up
+# as one series draining while the other fills. The per-document budget
+# lives in pdf_report (OCR_MAX_PAGES_PER_DOC). Quota exhaustion on the
+# vendor side (403) is logged at ERROR by the adapter and the page falls
+# back to tesseract.
 # ---------------------------------------------------------------------------
 
-DI_OCR_PAGES_TOTAL = Counter(
-    "georag_di_ocr_pages_total",
-    "Azure Document Intelligence pages analyzed, matching Azure billing. "
-    "Incremented by the PAGE COUNT of each analyze request, not once per "
-    "request: a block submission covers many pages and is billed per page. "
-    "Tiles of an oversized raster count individually.",
+OCR_PAGES_TOTAL = Counter(
+    "georag_ocr_pages_total",
+    "Pages sent to a remote OCR engine, matching vendor billing. "
+    "Incremented by the page count of each request, not once per request.",
+    ["engine"],
 )

@@ -156,6 +156,25 @@ worker is not consuming. Restart it (section 1's restart snippet).
 Azure AI Foundry emits `ClientErrors` as a free platform metric. On
 2026-08-17 it blocked 1,421 of 2,524 calls and nothing noticed.
 
+Since 2026-09-02 (ADR-0019) the same resource also serves **Cohere Parse
+v5**, the scanned-page OCR engine, so a `ClientErrors` spike during a large
+ingest can be OCR rather than the answer path. Tell them apart with the
+ingest worker's logs (`cohere_parse:` prefix) and the
+`georag_ocr_pages_total{engine="cohere_parse"}` counter. A Parse failure
+never stops ingestion: every failed page falls back to tesseract, which
+extracts no table structure, so the symptom is passages with
+`ocr_method='tesseract'` where `cohere_parse` was expected. A worker whose
+env still says `OCR_ENGINE=azure_document_intelligence` logs one CRITICAL
+line and runs tesseract for every page — the `docintel-endpoint` /
+`docintel-key` secret refs on `hatchet-worker` are dead and
+`AZURE_FOUNDRY_PARSE_DEPLOYMENT` must be set instead.
+
+Known false-positive source: the `ClientErrors > 50 / 15m` threshold was
+tuned for the answer path. A large scanned ingest sends one Parse request
+per page, and a 429 storm that the adapter retries and recovers from still
+counts toward it. Check `georag_ocr_pages_total{engine="cohere_parse"}` is
+still rising before treating it as an outage.
+
 ```bash
 az monitor metrics list --resource georag-foundry-cc --resource-group georag \
   --resource-type Microsoft.CognitiveServices/accounts \

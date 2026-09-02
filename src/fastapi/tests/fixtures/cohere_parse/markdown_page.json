@@ -1,0 +1,13 @@
+{
+  "_note": "SYNTHETIC — expected `output_format=markdown` shape. Replace with a scrubbed live response once probed.",
+  "pages": [
+    {
+      "page_number": 1,
+      "markdown": {
+        "content": "# 14 MINERAL RESOURCE ESTIMATES\n\nThe resource estimate for the Madison deposit is summarised below.\n\n<table><tr><th>Category</th><th>Tonnes (Mt)</th><th>Au (g/t)</th></tr><tr><td>Measured</td><td>1.2</td><td>2.4</td></tr><tr><td>Indicated</td><td>3.4</td><td>1.9</td></tr></table>\n\n![Plan view map of the Madison deposit showing drill collars.](img_1)\n\nNotes: Mineral resources are not mineral reserves.",
+        "images": [{"id": "img_1", "description": "Plan view map of the Madison deposit showing drill collars.", "bbox": [0.1, 0.5, 0.9, 0.9]}]
+      }
+    }
+  ],
+  "usage": {"billed_pages": 1}
+}

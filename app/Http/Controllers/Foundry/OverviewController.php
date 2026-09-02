@@ -207,6 +207,7 @@ class OverviewController extends Controller
             'pdfplumber_native' => 'Text layer (pdfplumber)',
             'tesseract' => 'Tesseract OCR',
             'document_intelligence' => 'Document Intelligence',
+            'cohere_parse' => 'Cohere Parse (Foundry)',
             'unavailable' => 'No engine available',
             'unknown' => 'Not recorded',
         ];

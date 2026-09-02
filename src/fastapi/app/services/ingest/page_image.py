@@ -77,11 +77,19 @@ class PageImageTooLarge(RuntimeError):
     """
 
 
-def dpi_for_page(width_points: float, height_points: float) -> float:
+def dpi_for_page(
+    width_points: float,
+    height_points: float,
+    *,
+    max_pixels: int = EMBED_V4_MAX_PIXELS,
+) -> float:
     """Return the highest DPI that keeps this page under the pixel cap.
 
     Derived from the page's own geometry, so an A0 plan sheet and a US Letter
     page both land just under the cap instead of one of them being rejected.
+
+    ``max_pixels`` defaults to Embed v4's cap; the Cohere Parse OCR adapter
+    passes its own (larger) cap so the same arithmetic serves both callers.
     """
     if width_points <= 0 or height_points <= 0:
         # Degenerate page box — fall back to the letter-safe DPI rather than
@@ -91,12 +99,17 @@ def dpi_for_page(width_points: float, height_points: float) -> float:
     area_sq_inches = (width_points / _PDF_POINTS_PER_INCH) * (
         height_points / _PDF_POINTS_PER_INCH
     )
-    budget = EMBED_V4_MAX_PIXELS * _PIXEL_SAFETY_MARGIN
+    budget = max_pixels * _PIXEL_SAFETY_MARGIN
     return min(_MAX_DPI, math.sqrt(budget / area_sq_inches))
 
 
-def render_page_png(pdf_bytes: bytes, page_number: int) -> tuple[bytes, int, int, float]:
-    """Render ONE page to PNG sized to fit Embed v4's pixel cap.
+def render_page_png(
+    pdf_bytes: bytes,
+    page_number: int,
+    *,
+    max_pixels: int = EMBED_V4_MAX_PIXELS,
+) -> tuple[bytes, int, int, float]:
+    """Render ONE page to PNG sized to fit a pixel cap (Embed v4's by default).
 
     Parameters
     ----------
@@ -127,12 +140,12 @@ def render_page_png(pdf_bytes: bytes, page_number: int) -> tuple[bytes, int, int
     finally:
         pdf.close()
 
-    dpi = dpi_for_page(width_points, height_points)
+    dpi = dpi_for_page(width_points, height_points, max_pixels=max_pixels)
     if dpi < _MIN_USEFUL_DPI:
         logger.warning(
             "page_image: page %d is %.0fx%.0f pt — capping at %.0f DPI to fit "
-            "the %d px embed limit; the render may be too coarse to be useful",
-            page_number, width_points, height_points, dpi, EMBED_V4_MAX_PIXELS,
+            "the %d px limit; the render may be too coarse to be useful",
+            page_number, width_points, height_points, dpi, max_pixels,
         )
 
     png = _render_full_page_worker(pdf_bytes, page_number - 1, int(dpi))
@@ -144,11 +157,11 @@ def render_page_png(pdf_bytes: bytes, page_number: int) -> tuple[bytes, int, int
     with Image.open(io.BytesIO(png)) as img:
         width_px, height_px = img.size
 
-    if width_px * height_px > EMBED_V4_MAX_PIXELS:
+    if width_px * height_px > max_pixels:
         raise PageImageTooLarge(
             f"page {page_number} rendered to {width_px}x{height_px} "
             f"({width_px * height_px} px) at {dpi:.0f} DPI, over the "
-            f"{EMBED_V4_MAX_PIXELS} px Embed v4 cap"
+            f"{max_pixels} px cap"
         )
 
     return png, width_px, height_px, dpi
@@ -201,7 +214,7 @@ def text_pages_from_sections(sections: list[dict]) -> set[int]:
     """Page numbers the parser read from a real text layer.
 
     Used only by scope="figures". A page counts as text if ANY section
-    spanning it came from a native extractor — `document_intelligence` and
+    spanning it came from a native extractor — `cohere_parse` and
     `tesseract` deliberately do NOT count, because a page that needed OCR is
     exactly the kind of page (map, plate, scanned insert) whose picture
     carries meaning the text does not.
@@ -284,7 +297,7 @@ def stage_page_images(
         n for n in range(1, total_pages + 1) if should_embed_page(n, text_pages)
     ]
 
-    # Cap mirrors AZURE_DI_MAX_PAGES_PER_DOC's rationale: one pathological
+    # Cap mirrors OCR_MAX_PAGES_PER_DOC's rationale: one pathological
     # document must not be able to issue unbounded renders + embed calls. The
     # drop is logged rather than silent — a truncated manifest that looked
     # like full coverage is how "we indexed everything" becomes false.
