@@ -257,6 +257,7 @@ final class OverviewControllerTest extends TestCase
             'fitz_native' => 4,
             'tesseract' => 3,
             'document_intelligence' => 2,
+            'cohere_parse' => 2,
         ]);
 
         $response = $this->actingAs($this->user)->get('/projects/'.$project->slug);
@@ -264,10 +265,14 @@ final class OverviewControllerTest extends TestCase
         $response->assertStatus(200);
         $response->assertInertia(function (AssertableInertia $page) {
             $c = $this->coverage($page);
-            $this->assertSame(9, $c['total']);
-            $this->assertSame(5, $c['ocr_total'], 'tesseract + document_intelligence');
+            $this->assertSame(11, $c['total']);
+            $this->assertSame(7, $c['ocr_total'], 'tesseract + document_intelligence + cohere_parse');
             $this->assertSame(4, $c['native_total'], 'fitz_native reads a text layer');
             $this->assertSame(0, $c['unknown_total']);
+
+            $byMethod = collect($c['by_method'])->keyBy('method');
+            $this->assertSame('Cohere Parse (Foundry)', $byMethod['cohere_parse']['label']);
+            $this->assertTrue($byMethod['cohere_parse']['is_ocr'], 'cohere_parse ran OCR, not a text layer');
         });
     }
 
