@@ -29,6 +29,7 @@ Execution timeout is 4 h to accommodate large archives on slow storage.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -45,6 +46,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
+from app.hatchet_workflows import _progress as ingest_progress
 from app.hatchet_workflows import hatchet
 from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
 from app.hatchet_workflows.ingest_spatial import (
@@ -98,6 +100,25 @@ _RASTER_EXTS = frozenset({"tif", "tiff", "rrd", "jpg", "jpeg"})
 #: table that ingest_tabular reads directly. Being in the sidecar bucket meant
 #: they were counted as handled and then nothing opened them.
 _DBASE_EXTS = frozenset({"dbf", "dat"})
+
+#: The ``counts`` buckets that mean "this member was handed to an ingester".
+#: Their sum is what the archive's own silver.ingest_progress row reports as
+#: ``rows_written`` — for an archive the unit of work is a member file, and
+#: the rows those members produce are reported by the child runs.
+_DISPATCHED_COUNT_KEYS: tuple[str, ...] = (
+    "las", "log", "csv", "xlsx", "tif", "pdf", "spatial", "tabular",
+)
+
+#: Every bucket ``_ingest_one`` and the fan-out loop increment. The loop's
+#: ``counts`` dict is built from this so a branch cannot bump a key the dict
+#: never had: ``counts["tabular"] += 1`` on a dict without ``"tabular"`` is a
+#: KeyError, and the per-file try/except turned that into ``errors += 1`` —
+#: so every standalone .dbf/.dat in a ZIP was dispatched correctly and then
+#: reported as a failed member, closing the archive as ``partial`` with
+#: "1 of N files failed" for a file that had in fact landed.
+_COUNT_KEYS: tuple[str, ...] = (
+    *_DISPATCHED_COUNT_KEYS, "sidecar", "skipped", "errors", "unknown",
+)
 
 #: Shapefile companions. pyogrio reads these THROUGH the .shp, so opening one
 #: directly is wrong — but they are not "unknown" either: the .shp branch
@@ -231,14 +252,41 @@ async def run_zip_ingest(
 
     store = get_storage_client()
 
-    async with _archive_progress.archive_lifecycle(
+    # The archive's OWN silver.ingest_progress row. The trigger endpoint
+    # inserts it at dispatch time (status 'queued', step 0 of 5) under the
+    # run_id Laravel minted, so a ZIP that Hatchet cancels before this body
+    # runs is still visible on the Ingestion Runs page. Until 2026-09-02
+    # nothing here ever touched that row again: the workflow tracked itself
+    # in silver.archive_ingest_runs only, so every ZIP upload left a queued
+    # ingest_progress row behind, and 15 minutes later the stale sweep
+    # closed it as ``timed_out`` / ``stale_heartbeat`` — a red "Failed
+    # (step 0 of 5)" beside a child run that had completed. start_run is an
+    # upsert, so this is also the creation path for a dispatch that skipped
+    # the trigger endpoint.
+    progress_run_id = await ingest_progress.start_run(
         workspace_id=input.workspace_id,
         project_id=input.project_id,
         minio_key=input.minio_key,
-        run_id=input.run_id,
         triggered_by="upload",
         workflow_run_id=getattr(ctx, "workflow_run_id", None),
-    ) as archive_run_id:
+        run_id=input.run_id,
+    )
+
+    async with (
+        _archive_progress.archive_lifecycle(
+            workspace_id=input.workspace_id,
+            project_id=input.project_id,
+            minio_key=input.minio_key,
+            run_id=input.run_id,
+            triggered_by="upload",
+            workflow_run_id=getattr(ctx, "workflow_run_id", None),
+        ) as archive_run_id,
+        _progress_row_lifecycle(progress_run_id),
+        # A multi-GB archive downloads and extracts for longer than the
+        # sweep's 15-minute window with no stage transition in between;
+        # the ticker is what keeps the row's heartbeat fresh meanwhile.
+        ingest_progress.heartbeat_loop(run_id=progress_run_id),
+    ):
         # ── 1. Download ZIP to a temp directory ──────────────────────────────
         with tempfile.TemporaryDirectory(prefix="georag_zip_") as tmpdir:
             zip_path = Path(tmpdir) / "archive.zip"
@@ -246,12 +294,20 @@ async def run_zip_ingest(
             log.info("ingest_zip_archive: downloading %s", input.minio_key)
             if archive_run_id:
                 await _archive_progress.mark_extracting(archive_run_id=archive_run_id)
+            if progress_run_id:
+                await ingest_progress.mark_stage_started(
+                    run_id=progress_run_id, stage="preflight",
+                )
             # Hard rule 2 — boto3 is sync; keep it off the asyncio event loop.
             await asyncio.to_thread(store.get_file, Bucket.BRONZE, input.minio_key, str(zip_path))
 
             # ── 2. Extract all entries ────────────────────────────────────────
             extract_dir = Path(tmpdir) / "extracted"
             extract_dir.mkdir()
+            if progress_run_id:
+                await ingest_progress.mark_stage_started(
+                    run_id=progress_run_id, stage="parse",
+                )
 
             # Audit 2026-06-28: safe extraction. A bare zf.extractall() is
             # vulnerable to (a) zip-bombs (unbounded decompressed size / entry
@@ -311,6 +367,10 @@ async def run_zip_ingest(
                 await _archive_progress.mark_fanning_out(
                     archive_run_id=archive_run_id, file_count=total,
                 )
+            if progress_run_id:
+                await ingest_progress.mark_stage_started(
+                    run_id=progress_run_id, stage="persist",
+                )
 
             # ── 3. Open a single asyncpg connection for SQL ingesters ─────────
             # NOTE: inside the tempfile context — extracted files are still on
@@ -343,12 +403,9 @@ async def run_zip_ingest(
                 )
 
                 # ── 4. Fan-out by extension ───────────────────────────────────
-                counts: dict[str, int] = {
-                    "las": 0, "log": 0, "csv": 0, "tif": 0, "xlsx": 0, "pdf": 0,
-                    "spatial": 0, "sidecar": 0,
-                    "skipped": 0, "errors": 0, "unknown": 0,
-                }
+                counts: dict[str, int] = dict.fromkeys(_COUNT_KEYS, 0)
                 errors: list[dict[str, str]] = []
+                unhandled: list[str] = []
 
                 for idx, file_path in enumerate(all_files, start=1):
                     ext = file_path.suffix.lower().lstrip(".")
@@ -388,6 +445,9 @@ async def run_zip_ingest(
                         # failure: the .shp branch already carried it.
                         was_sidecar = counts["sidecar"] != before_sidecar
 
+                        if counts["unknown"] != before_unknown:
+                            unhandled.append(file_path.name)
+
                         if archive_run_id and handled and not was_sidecar:
                             await _archive_progress.increment_counts(
                                 archive_run_id=archive_run_id, succeeded=1,
@@ -409,7 +469,7 @@ async def run_zip_ingest(
                                 archive_run_id=archive_run_id, failed=1,
                             )
 
-                    if idx % 10 == 0:
+                    if idx % 10 == 0 or idx == total:
                         log.info(
                             "ingest_zip_archive: progress %d/%d run_id=%s counts=%s",
                             idx,
@@ -417,6 +477,17 @@ async def run_zip_ingest(
                             input.run_id,
                             counts,
                         )
+                        if progress_run_id:
+                            # Doubles as a heartbeat; the bar on the
+                            # Ingestion Runs page moves with the fan-out.
+                            await ingest_progress.mark_stage_progress(
+                                run_id=progress_run_id,
+                                stage_pct=idx / total,
+                                stage_detail=(
+                                    f"{idx}/{total} member files handed to "
+                                    "their ingesters"
+                                ),
+                            )
 
             finally:
                 await conn.close()
@@ -436,6 +507,20 @@ async def run_zip_ingest(
                 archive_run_id=archive_run_id,
                 status=terminal_status,
                 error_text=terminal_error,
+            )
+
+        # The archive's ingest_progress row closes with the same accounting.
+        # Not broadcast: each member the archive handed off is its own run,
+        # and those runs already notify the UI and bump data_version when
+        # they land; a second toast for the wrapper would only say the
+        # same thing again. The Ingestion Runs poll reads the row directly.
+        if progress_run_id:
+            await ingest_progress.mark_completed_by_run(
+                run_id=progress_run_id,
+                rows_written=sum(counts[k] for k in _DISPATCHED_COUNT_KEYS),
+                warnings=_archive_warnings(
+                    total=total, counts=counts, errors=errors, unhandled=unhandled,
+                ),
             )
 
     # ── 5. Derive lithology / interval strip logs from the LAS curves ──────
@@ -495,6 +580,80 @@ async def run_zip_ingest(
     }
     log.info("ingest_zip_archive.complete run_id=%s summary=%s", input.run_id, counts)
     return summary
+
+
+@contextlib.asynccontextmanager
+async def _progress_row_lifecycle(progress_run_id: str | None):
+    """Close the archive's ingest_progress row when the body raises.
+
+    ``archive_lifecycle`` does the same for silver.archive_ingest_runs. The
+    error text is the real exception; ``stage`` is left None so the
+    conditional update keeps whatever stage ``mark_stage_started`` last
+    wrote, which is where the failure happened. The on_failure hook is the
+    backstop for the paths that never reach this body at all.
+    """
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001 — explicitly broad, re-raised
+        if progress_run_id:
+            await ingest_progress.mark_failed_by_run(
+                run_id=progress_run_id,
+                error=f"{type(exc).__name__}: {exc}"[:1000],
+            )
+        raise
+
+
+def _names(items: list[str], limit: int = 5) -> str:
+    shown = ", ".join(items[:limit])
+    return f"{shown} (+{len(items) - limit} more)" if len(items) > limit else shown
+
+
+def _archive_warnings(
+    *,
+    total: int,
+    counts: dict[str, int],
+    errors: list[dict[str, str]],
+    unhandled: list[str],
+) -> list[dict[str, str]]:
+    """The archive row's warnings — what did NOT reach an ingester, and why.
+
+    A member with no handler or one whose ingester declined it used to leave
+    no trace outside the worker log: ``unknown`` and ``skipped`` never
+    affected the archive's terminal status, so a ZIP of nothing but notes
+    closed ``completed`` having ingested nothing. Each is a warning here, so
+    the row reads "Finished with warnings" and says which files it means.
+    """
+    warnings: list[dict[str, str]] = []
+    if errors:
+        warnings.append({
+            "code": "archive_member_failed",
+            "detail": (
+                f"{len(errors)} of {total} member file(s) could not be handed "
+                f"to an ingester: {_names([e['file'] for e in errors])}. The "
+                "rest of the archive was processed; each member that was "
+                "dispatched appears as its own run."
+            ),
+        })
+    if unhandled:
+        warnings.append({
+            "code": "archive_member_unhandled",
+            "detail": (
+                f"{len(unhandled)} member file(s) had no ingester and were "
+                f"left out: {_names(unhandled)}. Upload them on their own "
+                "under the matching category if they hold data."
+            ),
+        })
+    if counts.get("skipped"):
+        warnings.append({
+            "code": "archive_member_skipped",
+            "detail": (
+                f"{counts['skipped']} member file(s) were opened by their "
+                "ingester and declined — an unreadable LAS, a workbook with "
+                "no data sheet, a .log without a collar header. The worker "
+                "log names each one."
+            ),
+        })
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -774,6 +933,19 @@ async def on_failure(input: IngestZipArchiveInput, ctx: Context) -> dict[str, An
     """
     from app.hatchet_workflows import _archive_progress  # noqa: PLC0415
 
+    # The archive's ingest_progress row first — it exists from dispatch time
+    # (the trigger endpoint inserts it), so a cancellation that fired before
+    # the body ran still has a row to close. Conditional update: a no-op
+    # when the body's own lifecycle already marked it.
+    progress_close = await ingest_progress.close_run_after_workflow_failure(
+        workflow_name="ingest_zip_archive",
+        workspace_id=input.workspace_id,
+        project_id=input.project_id,
+        minio_key=input.minio_key,
+        run_id=input.run_id,
+        ctx=ctx,
+    )
+
     archive_run_id = await _archive_progress.lookup_archive_run_id_by_run_id(input.run_id)
     if archive_run_id is None:
         log.warning(
@@ -782,7 +954,11 @@ async def on_failure(input: IngestZipArchiveInput, ctx: Context) -> dict[str, An
             "workflow dispatch.",
             input.run_id,
         )
-        return {"updated": False, "reason": "no_archive_run"}
+        return {
+            "updated": False,
+            "reason": "no_archive_run",
+            "progress_row": progress_close,
+        }
 
     # 2026-08-16 — capture the real upstream exception via Hatchet's
     # task_run_errors (populated for on_failure hooks, engine >= v0.53.10;
@@ -807,6 +983,7 @@ async def on_failure(input: IngestZipArchiveInput, ctx: Context) -> dict[str, An
         "updated": transitioned,
         "archive_run_id": archive_run_id,
         "run_id": input.run_id,
+        "progress_row": progress_close,
     }
 
 

@@ -197,10 +197,15 @@ def recoverable_bronze_prefixes() -> frozenset[str]:
 
 
 class StaleRunDetectorInput(BaseModel):
-    stale_minutes: int = Field(
-        default=15, ge=1, le=240,
+    # None, not 15: the cron fires with the model's default, and a literal
+    # default here meant `input.stale_minutes or _stale_after_minutes()` was
+    # always 15 — STALE_RUN_DETECTOR_MINUTES was documented, read, and never
+    # applied. None falls through to the env-driven default.
+    stale_minutes: int | None = Field(
+        default=None, ge=1, le=240,
         description="Mark a 'started' run timed_out if last_heartbeat is "
-                    "older than this many minutes.",
+                    "older than this many minutes. Defaults to "
+                    "STALE_RUN_DETECTOR_MINUTES (15).",
     )
 
 
@@ -208,6 +213,9 @@ class StaleRunDetectorOutput(BaseModel):
     runs_scanned: int
     runs_marked_completed: int = 0
     runs_marked_timed_out: int
+    #: Rows old enough to sweep whose Hatchet run is still QUEUED/RUNNING —
+    #: left alone this tick. See ``_workflow_run_is_alive``.
+    runs_skipped_alive: int = 0
     recovery_runs_dispatched: int = 0
     broadcasts_emitted: int
     sampled_at: datetime
@@ -218,6 +226,57 @@ stale_run_detector = hatchet.workflow(
     on_crons=["*/15 * * * *"],
     input_validator=StaleRunDetectorInput,
 )
+
+
+#: Hatchet run statuses under which the workflow has not finished: the
+#: engine still owns the run, so its progress row is not a carcass.
+_LIVE_RUN_STATUSES: frozenset[str] = frozenset({"QUEUED", "RUNNING"})
+
+
+async def _hatchet_run_status(workflow_run_id: str) -> str | None:
+    """The engine's status for a workflow run, upper-cased, or None.
+
+    None means the API could not answer — unreachable engine, a run older
+    than Hatchet's retention, a malformed id. The caller treats None as
+    "unknown" and falls back to the heartbeat clock, which is the behaviour
+    the sweep had before this check existed. Isolated so tests can replace
+    it without a live engine.
+    """
+    try:
+        status = await hatchet.runs.aio_get_status(workflow_run_id)
+    except Exception as exc:  # noqa: BLE001 — any API failure means "unknown"
+        log.warning(
+            "stale_run_detector: could not read Hatchet status for "
+            "workflow_run_id=%s: %s", workflow_run_id, exc,
+        )
+        return None
+    raw = getattr(status, "value", status)
+    return str(raw).upper() if raw is not None else None
+
+
+async def _workflow_run_is_alive(workflow_run_id: str | None) -> bool:
+    """Whether Hatchet still has this run queued or executing.
+
+    The progress row is inserted at DISPATCH time, so ``started_at`` is when
+    the run entered Hatchet's queue, not when a worker picked it up, and a
+    queued row has no heartbeat at all. A bulk upload — fifty files in three
+    minutes against a worker with a fixed slot count and per-workspace
+    concurrency caps — leaves runs waiting in that queue well past the
+    15-minute sweep window while their ``schedule_timeout`` (30 minutes to
+    2 hours) says that wait is legitimate. The sweep used to read those rows
+    as dead: ``timed_out`` / ``stale_heartbeat`` at step 0 of 5, no retry
+    (``queued`` is outside RETRY_STAGES), and when the worker finally ran the
+    workflow every terminal write no-op'd against the closed row, so a
+    successful ingest stayed red on the Ingestion Runs page. Asking the
+    engine first is the difference between "waiting" and "lost".
+
+    A row without a ``workflow_run_id`` (pre-2026-06 rows) or one the API
+    cannot describe keeps the heartbeat-clock behaviour.
+    """
+    if not workflow_run_id:
+        return False
+    status = await _hatchet_run_status(workflow_run_id)
+    return status in _LIVE_RUN_STATUSES
 
 
 # F3 (2026-08-11) — keep in lockstep with the eligibility predicate in
@@ -474,6 +533,7 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     pool = await ingest_progress.get_pool()
     runs_marked_completed = 0
     runs_marked_timed_out = 0
+    runs_skipped_alive = 0
     recovery_runs_dispatched = 0
     broadcasts_emitted = 0
 
@@ -486,6 +546,10 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     # reached preflight (worker down, Hatchet queue drop) previously left the
     # row queued forever with no heartbeat to age out. Age-test falls back to
     # started_at because queued rows never receive a heartbeat.
+    # 2026-09-02: a candidate is only a carcass if the engine agrees — see
+    # `_workflow_run_is_alive` in the loop below. This SELECT is the coarse
+    # filter; the per-row status lookup is what distinguishes a run waiting
+    # its turn from one that was lost.
     # F2b (2026-08-11): embedding/embed_verify rows get the longer window —
     # embeds serialize per workspace, so a 15-min clock timed out healthy
     # bulk-import rows.
@@ -494,6 +558,7 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                workspace_id::text    AS workspace_id,
                project_id::text      AS project_id,
                report_id::text       AS report_id,
+               workflow_run_id,
                minio_key,
                filename,
                current_stage,
@@ -531,6 +596,18 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     for row in rows:
         run_id = row["run_id"]
         current_step = row["current_step"] or "unknown"
+
+        # Resolution 0 — not stale at all. The engine still has the run
+        # queued or executing; the heartbeat clock is measuring queue
+        # wait, not a dead worker. Leave the row for a later tick.
+        if await _workflow_run_is_alive(row["workflow_run_id"]):
+            runs_skipped_alive += 1
+            log.info(
+                "stale_run_detector: run=%s step=%s is still live in Hatchet "
+                "(workflow_run_id=%s) — not timing out",
+                run_id, current_step, row["workflow_run_id"],
+            )
+            continue
 
         # Resolution 1 — race recovery. The embed completion sweep didn't
         # win the race against this 15-min tick, but the embeddings are
@@ -613,6 +690,7 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
         runs_scanned=len(rows),
         runs_marked_completed=runs_marked_completed,
         runs_marked_timed_out=runs_marked_timed_out,
+        runs_skipped_alive=runs_skipped_alive,
         recovery_runs_dispatched=recovery_runs_dispatched,
         broadcasts_emitted=broadcasts_emitted,
         sampled_at=datetime.utcnow(),

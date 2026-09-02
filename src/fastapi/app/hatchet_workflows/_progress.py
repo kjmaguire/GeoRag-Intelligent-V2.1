@@ -524,15 +524,18 @@ import contextlib  # noqa: E402
 @contextlib.asynccontextmanager
 async def heartbeat_loop(
     *,
-    workspace_id: str,
-    minio_key: str,
+    workspace_id: str | None = None,
+    minio_key: str | None = None,
+    run_id: str | None = None,
     interval_seconds: float = 30.0,
 ):
     """Async context manager that runs a background heartbeat ticker.
 
     Resolves the active run_id from (workspace_id, minio_key) once at
-    entry, then bumps last_heartbeat_at every ``interval_seconds`` until
-    the with-block exits. Used in long-running ingest_pdf tasks so the
+    entry — or takes ``run_id`` directly when the caller already holds it,
+    which is every workflow whose input carries the id Laravel minted —
+    then bumps last_heartbeat_at every ``interval_seconds`` until the
+    with-block exits. Used in long-running ingest tasks so the
     stale_run_detector cron knows the worker is still alive.
 
     Usage::
@@ -545,7 +548,10 @@ async def heartbeat_loop(
     Best-effort: if the run_id can't be resolved, the loop becomes a
     no-op. The surrounding task keeps running.
     """
-    run_id = await lookup_active_run_id(workspace_id=workspace_id, minio_key=minio_key)
+    if run_id is None and workspace_id and minio_key:
+        run_id = await lookup_active_run_id(
+            workspace_id=workspace_id, minio_key=minio_key,
+        )
     task: asyncio.Task | None = None
     if run_id is not None:
 
