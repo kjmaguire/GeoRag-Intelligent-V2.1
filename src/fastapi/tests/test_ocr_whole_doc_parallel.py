@@ -1,6 +1,6 @@
-"""Whole-document Document Intelligence OCR runs pages concurrently (2026-08-18).
+"""Whole-document remote OCR runs pages concurrently (2026-08-18).
 
-`_attempt_ocr_document_intelligence` is the path a fully scanned report takes,
+`_attempt_ocr_cohere_parse` (Document Intelligence until ADR-0019) is the path a fully scanned report takes,
 and it was strictly serial: one network round-trip per page, awaited, then the
 next. A 300-page scan meant 300 sequential round-trips — the slowest thing in
 the ingest pipeline.
@@ -61,7 +61,7 @@ def _fake_page_result(page_num: int):
     )
 
 
-class TestWholeDocumentDiParallelism:
+class TestWholeDocumentParallelism:
     def test_pages_are_assembled_in_page_order_not_completion_order(self, stub_page_count) -> None:
         """The corruption risk: jittered latency must not reorder the document."""
         pages = 24
@@ -74,7 +74,7 @@ class TestWholeDocumentDiParallelism:
 
         with patch.object(pdf_report, "_ocr_single_page", side_effect=jittered), \
              patch.object(pdf_report, "_postprocess_ocr_text", side_effect=lambda t: t):
-            result = pdf_report._attempt_ocr_document_intelligence("/nonexistent.pdf")
+            result = pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
 
         assert [p.page_number for p in result.pages] == list(range(1, pages + 1))
 
@@ -98,7 +98,7 @@ class TestWholeDocumentDiParallelism:
              patch.object(pdf_report, "_postprocess_ocr_text", side_effect=lambda t: t), \
              patch.dict("os.environ", {"PDF_OCR_PAGE_CONCURRENCY": "8"}):
             started = time.monotonic()
-            pdf_report._attempt_ocr_document_intelligence("/nonexistent.pdf")
+            pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
             elapsed = time.monotonic() - started
 
         serial_floor = pages * delay
@@ -116,12 +116,12 @@ class TestWholeDocumentDiParallelism:
 
         def flaky(path, page_num, **_kw):
             if page_num == 5:
-                raise RuntimeError("transient DI failure")
+                raise RuntimeError("transient engine failure")
             return _fake_page_result(page_num)
 
         with patch.object(pdf_report, "_ocr_single_page", side_effect=flaky), \
              patch.object(pdf_report, "_postprocess_ocr_text", side_effect=lambda t: t):
-            result = pdf_report._attempt_ocr_document_intelligence("/nonexistent.pdf")
+            result = pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
 
         # Every page still has a row, in order; the failed one is just empty.
         assert [p.page_number for p in result.pages] == list(range(1, pages + 1))
@@ -134,11 +134,11 @@ class TestWholeDocumentDiParallelism:
         stub_page_count(4)
 
         def always_fails(path, page_num, **_kw):
-            raise RuntimeError("azure down")
+            raise RuntimeError("foundry down")
 
         with patch.object(pdf_report, "_ocr_single_page", side_effect=always_fails):
             try:
-                pdf_report._attempt_ocr_document_intelligence("/nonexistent.pdf")
+                pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
             except RuntimeError as exc:
                 assert "no text" in str(exc)
             else:
@@ -156,6 +156,6 @@ class TestWholeDocumentDiParallelism:
 
         with patch.object(pdf_report, "_ocr_single_page", side_effect=jittered), \
              patch.object(pdf_report, "_postprocess_ocr_text", side_effect=lambda t: t):
-            result = pdf_report._attempt_ocr_document_intelligence("/nonexistent.pdf")
+            result = pdf_report._attempt_ocr_cohere_parse("/nonexistent.pdf")
 
         assert [p.page_number for p in result.pages] == list(range(1, pages + 1))

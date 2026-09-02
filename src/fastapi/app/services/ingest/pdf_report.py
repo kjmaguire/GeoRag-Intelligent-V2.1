@@ -1,7 +1,6 @@
 """
 PDF parser — pypdfium2-first dispatch with pdfplumber as the structural
-fallback and Tesseract / Azure Document Intelligence OCR for scanned or
-image-only pages. (The primary native-text path is historically called
+fallback and Cohere Parse / Tesseract OCR for scanned or image-only pages. (The primary native-text path is historically called
 "fitz"; it was PyMuPDF until that was removed for its AGPL license and is
 now backed by pypdfium2 — see _parse_with_fitz.)
 
@@ -10,15 +9,14 @@ PDF parser for NI 43-101 technical reports — it is not a fallback for
 anything. RAGFlow was replaced by this in-process stack per ADR-0002; there
 is no other parser in front of it. Extraction order: pypdfium2 (fitz) native
 text first, pdfplumber as the structural fallback when native text is
-insufficient, and per-page OCR (Tesseract by default, or Azure Document
-Intelligence when `OCR_ENGINE=azure_document_intelligence`) for scanned/image
-pages. See `_attempt_ocr`, `_attempt_ocr_document_intelligence`, and
-`document_intelligence_client` for the OCR dispatch.
+insufficient, and per-page OCR (Tesseract by default, or Cohere Parse v5 on
+Azure AI Foundry when `OCR_ENGINE=cohere_parse` — ADR-0019) for scanned/image
+pages. See `_attempt_ocr`, `_attempt_ocr_cohere_parse`, and
+`cohere_parse_client` for the OCR dispatch.
 
-NOTE ON THE ENV VALUE: the selector is the exact string
-`azure_document_intelligence` — see `document_intelligence_client.is_engine_selected`.
-These docstrings previously said `document_intelligence`, which is NOT
-matched and silently leaves the engine on the Tesseract default.
+NOTE ON THE ENV VALUE: the selector is the exact string `cohere_parse` — see
+`ocr_engine.selected_engine`. The retired `azure_document_intelligence` value
+is logged at CRITICAL and runs Tesseract; it never silently selects anything.
 
 ---
 
@@ -30,8 +28,8 @@ contents structure (up to 27 sections; 17 is the typical baseline) which this
 parser exploits for high-confidence section boundary detection.
 
 Primary extraction engine: pypdfium2 (PDFium) for native text + per-page OCR
-routing to Tesseract (default) or Azure Document Intelligence (when
-`OCR_ENGINE=azure_document_intelligence`) for image pages. Fallback engine:
+routing to Tesseract (default) or Cohere Parse (when `OCR_ENGINE=cohere_parse`)
+for image pages. Fallback engine:
 pdfplumber, used when the primary can't extract sufficient structure.
 
 Parse quality is reported as a float 0.0–1.0 representing the fraction of the
@@ -83,7 +81,7 @@ logger = logging.getLogger(__name__)
 # Typical NI 43-101 report has 17 numbered sections (some have up to 27).
 # Quality is expressed relative to this baseline so a score ≥ 1.0 is possible
 # for unusually detailed reports — that is intentional and acceptable.
-PARSER_VERSION = "2.0.0"
+PARSER_VERSION = "2.1.0"  # 2.1.0: Cohere Parse replaces Document Intelligence (ADR-0019)
 
 # Tracer shared by every stage of parse_pdf_report. get_tracer returns a
 # no-op tracer if the OTel SDK isn't installed, so this module remains
@@ -236,12 +234,15 @@ class ReportSection:
     page_first: int | None = None  # First 1-indexed page this section spans.
     page_last: int | None = None   # Last 1-indexed page this section spans.
     # Phase 3 (2026-05-22) — OCR confidence + method per chunk. NULL
-    # means the chunk came from the PDF text layer (no OCR). 0.0–1.0
-    # means an OCR engine produced the text. ocr_method records which
-    # engine: fitz_native, pdfplumber_native, tesseract, document_intelligence.
+    # means no engine confidence exists: the chunk came from the PDF text
+    # layer, OR from Cohere Parse, which reports none (ADR-0019). 0.0–1.0
+    # means an engine that measures confidence produced the text.
+    # ocr_method is the discriminator and records which engine:
+    # fitz_native, pdfplumber_native, tesseract, cohere_parse,
+    # document_intelligence (historical rows only), unavailable.
     # When a chunk spans multiple pages with mixed methods, the minimum
-    # confidence is recorded and the first-page method wins (kickoff
-    # min-confidence-per-chunk semantics).
+    # non-NULL confidence is recorded and the first-page method wins
+    # (kickoff min-confidence-per-chunk semantics).
     ocr_confidence: float | None = None
     ocr_method: str | None = None
 
@@ -1634,24 +1635,27 @@ def _extract_all_tables_as_sections(
     return out
 
 
-def _di_tables_to_sections(
+def _ocr_tables_to_sections(
     tables: list[list[list[str]]],
     page_num: int,
     mean_confidence: float | None = None,
+    *,
+    ocr_method: str,
 ) -> list[ReportSection]:
-    """Render Document Intelligence table grids into ReportSections.
+    """Render remote-OCR table grids into ReportSections.
 
     Scanned-table support (2026-08-11): pages with no text layer never
     yield pdfplumber tables, so `_extract_all_tables_as_sections` is blind
-    to them. When the DI prebuilt-layout model OCRs such a page, its
-    `tables` grids (``tables[t][row][col]``, see PageOcrResult.tables) are
-    the only structured capture — render each to the same ' | '-joined
-    row-per-line markdown shape `_table_to_markdown` produces, split
-    oversize tables on row boundaries via the F13 splitter (header
-    repeated per part), and mirror `_extract_all_tables_as_sections`'
-    ReportSection construction. ocr_method is always
-    'document_intelligence'; ocr_confidence carries the page's mean OCR
-    confidence when available.
+    to them. When the remote engine (Cohere Parse since ADR-0019; Document
+    Intelligence before it) reads such a page, its `tables` grids
+    (``tables[t][row][col]``, see PageOcrResult.tables) are the only
+    structured capture — render each to the same markdown shape
+    `_table_to_markdown` produces, split oversize tables on row boundaries
+    via the F13 splitter (header repeated per part), and mirror
+    `_extract_all_tables_as_sections`' ReportSection construction.
+    ``ocr_method`` names the engine that produced the grid;
+    ``ocr_confidence`` carries the page's mean confidence when the engine
+    reports one (None for Cohere Parse).
     """
     out: list[ReportSection] = []
     for idx, grid in enumerate(tables):
@@ -1675,7 +1679,7 @@ def _di_tables_to_sections(
                     page_first=page_num,
                     page_last=page_num,
                     ocr_confidence=mean_confidence,
-                    ocr_method="document_intelligence",
+                    ocr_method=ocr_method,
                 )
             )
     return out
@@ -1864,7 +1868,7 @@ def _parse_with_fitz(
              per_page_confidence, per_page_tables).
 
     Scanned-table support (2026-08-11) — `per_page_tables` maps 1-indexed
-    page number → the Document Intelligence table grids that page's OCR
+    page number → the remote-engine table grids that page's OCR
     returned (``tables[t][row][col]``; only ever populated when OCR_ENGINE
     routes `_ocr_single_page` to DI prebuilt-layout). The caller renders
     them into table ReportSections via `_di_tables_to_sections`.
@@ -1987,16 +1991,15 @@ def _parse_with_fitz(
 
         # Perf audit 2026-08-15 (item 3) — this used to be a fully serial
         # for-loop: one _ocr_single_page call, fully awaited, then the
-        # next. Each call is either a network round-trip to Azure Document
-        # Intelligence or a tesseract subprocess invocation (pytesseract
+        # next. Each call is either a network round-trip to Cohere Parse
+        # or a tesseract subprocess invocation (pytesseract
         # shells out to the `tesseract` binary) — both release the GIL
         # while blocked, so a small bounded thread pool lets several
         # pages' OCR genuinely overlap within this one parse subprocess
         # (still one document per subprocess — see _run_parser_subprocess
         # in hatchet_workflows/ingest_pdf.py). _ocr_single_page's shared
-        # mutable state (the cached pikepdf.Pdf object + the DI page
-        # budget) is guarded by _OCR_STATE_LOCK — see _get_cached_pikepdf's
-        # docstring. Only the OCR calls themselves run concurrently; the
+        # mutable state (the per-document page budget) is guarded by
+        # _OCR_STATE_LOCK. Only the OCR calls themselves run concurrently; the
         # per-page bookkeeping below (pages_text, per_page_text,
         # per_page_method, warnings, ...) is applied sequentially, in
         # short_page_nums order (asyncio.gather preserves input order
@@ -2008,41 +2011,44 @@ def _parse_with_fitz(
             1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4"))
         )
 
-        # Batching for the MIXED path (2026-08-23). The fully-scanned path
-        # has batched since 2026-08-20; this one -- a text-native report
-        # with an appendix of plates, or scattered scanned inserts -- kept
-        # issuing one Document Intelligence request per page, and it is the
-        # commoner shape in this corpus. A report with 40 image pages was
-        # 40 submissions plus polling.
+        # Grouping for the MIXED path (2026-08-23; re-based on Cohere Parse
+        # 2026-09-02). This shape -- a text-native report with an appendix
+        # of plates, or scattered scanned inserts -- is the commoner one in
+        # this corpus. Parse takes one page image per request, so a group
+        # is rendered together and its requests posted concurrently; the
+        # selection (not a contiguous run) is what gets grouped, because
+        # grouping scattered pages into runs sweeps in pages that already
+        # had text.
         #
-        # Batching a SPARSE set needs the selection slicer rather than the
-        # contiguous one: grouping scattered pages into runs either yields
-        # runs of length one, or sweeps in pages that already had text and
-        # are billed anyway.
-        #
-        # AZURE_DI_PAGES_PER_BATCH=1 restores per-page exactly. The guard on
-        # is_configured() is not just an optimisation: without DI every page
-        # here goes to tesseract, and the slice/budget work would be spent
-        # producing empty mappings.
-        from . import document_intelligence_client as _di_batch_mod
+        # OCR_PAGES_PER_BATCH=1 restores strict per-page handling. The
+        # guard on the engine being selected AND configured is not just an
+        # optimisation: the Foundry credentials are shared with the
+        # embedder, so "configured" alone would run Parse on a deployment
+        # that asked for tesseract.
+        from . import cohere_parse_client as _engine
 
         _short_batched: dict[int, Any] = {}
-        _short_block_size = _di_batch_mod.pages_per_batch()
-        if _short_block_size > 1 and len(short_page_nums) > 1 and _di_batch_mod.is_configured():
+        _short_block_size = _engine.pages_per_batch()
+        if (
+            _short_block_size > 1
+            and len(short_page_nums) > 1
+            and _engine.is_engine_selected()
+            and _engine.is_configured()
+        ):
             _short_plan = [
                 short_page_nums[i:i + _short_block_size]
                 for i in range(0, len(short_page_nums), _short_block_size)
             ]
             logger.info(
-                "pdf_report: document_intelligence batching %d short page(s) "
-                "into %d request(s) of up to %d",
+                "pdf_report: cohere_parse grouping %d short page(s) "
+                "into %d group(s) of up to %d",
                 len(short_page_nums), len(_short_plan), _short_block_size,
             )
             with ThreadPoolExecutor(
                 max_workers=max(1, min(_OCR_PAGE_CONCURRENCY, len(_short_plan)))
             ) as _short_executor:
                 for _mapping in _short_executor.map(
-                    lambda pages: _ocr_page_selection_di(path, pages), _short_plan
+                    lambda pages: _ocr_page_selection(path, pages), _short_plan
                 ):
                     _short_batched.update(_mapping)
             _short_hits = sum(1 for _r in _short_batched.values() if _r.text.strip())
@@ -2060,18 +2066,18 @@ def _parse_with_fitz(
                 if _usable is not None:
                     return n, _usable, None
                 # Phase 3 — capture mean_conf from tesseract per-word data.
-                # return_tables — DI prebuilt-layout table grids (always []
-                # on the tesseract path).
+                # return_tables — remote-engine table grids (always [] on
+                # the tesseract path).
                 return n, _ocr_single_page(
                     path,
                     n,
                     return_confidence=True,
                     return_assessment=True,
                     return_tables=True,
-                    # The batch already asked DI about this page and got
-                    # nothing back; skip the duplicate billed request and
-                    # start at the raster-tile escalation instead.
-                    skip_di_page_request=n in _short_batched,
+                    # The group already asked the engine about this page
+                    # and got nothing back; skip the duplicate billed
+                    # request and go straight to tesseract.
+                    skip_engine_page_request=n in _short_batched,
                 ), None
             except Exception as _ocr_exc:  # noqa: BLE001
                 return n, None, _ocr_exc
@@ -2129,22 +2135,24 @@ def _parse_with_fitz(
                 ocr_recovered += 1
                 pages_text.append(ocr_text)
                 per_page_text.append((n, ocr_text))
-                # 2026-08-14 — _ocr_single_page may have routed to Azure
-                # Document Intelligence; the assessment carries the true
-                # engine. Hard-coding "tesseract" mislabeled DI pages in
+                # 2026-08-14 — _ocr_single_page may have routed to the
+                # remote engine; the assessment carries the true engine.
+                # Hard-coding "tesseract" mislabeled remote pages in
                 # silver.document_passages.ocr_method and the Qdrant
-                # confidence weighting.
+                # confidence weighting. 2026-09-02 — an engine that reports
+                # no confidence (Cohere Parse) persists None, not 0.0.
                 per_page_method[n] = str(assessment.get("ocr_method") or "tesseract")
-                per_page_confidence[n] = mean_conf
+                per_page_confidence[n] = _reported_confidence(assessment, mean_conf)
                 # Note: not sorting pages_text — order matters for
                 # downstream section detection, but OCR'd image pages
                 # are usually self-contained (figures, drill logs) so
                 # appending at the end is fine. per_page_text is
                 # re-sorted below for char-offset → page index.
+                _reported = _reported_confidence(assessment, mean_conf)
                 warnings.append({
                     "code": "page_ocr_recovered_fitz",
                     "page": n,
-                    "ocr_confidence": round(mean_conf, 4),
+                    "ocr_confidence": None if _reported is None else round(_reported, 4),
                 })
             else:
                 # Neither native text nor OCR cleared PER_PAGE_MIN_CHARS.
@@ -2165,7 +2173,7 @@ def _parse_with_fitz(
                         per_page_method[n] = str(
                             assessment.get("ocr_method") or "tesseract"
                         )
-                        per_page_confidence[n] = mean_conf
+                        per_page_confidence[n] = _reported_confidence(assessment, mean_conf)
                     warnings.append({
                         "code": "page_short_text_salvaged",
                         "page": n,
@@ -2218,115 +2226,25 @@ def _parse_with_fitz(
 # Fallback parser: pdfplumber
 # ---------------------------------------------------------------------------
 
-# F11 (2026-08-11) — cache the opened pikepdf document per path.
-# _ocr_single_page runs once per short page; re-opening (a full reparse
-# of) a large PDF for every page is O(pages) reparses. Parsing runs in a
-# single-process subprocess handling one document at a time, so a simple
-# dict with evict-on-different-path is enough — no locking, and memory
-# doesn't accumulate across documents.
-_PIKEPDF_CACHE: dict[str, Any] = {}
-
-# Perf audit 2026-08-15 (item 3) — guards _PIKEPDF_CACHE here AND
-# _OCR_PAGES_USED / _OCR_CAP_LOGGED further below. Both were written assuming
-# a single-threaded, one-document-per-subprocess caller, which was true
-# before this change. The per-page OCR loop in _parse_with_fitz now fans
-# pages out across a small in-process ThreadPoolExecutor (still just one
-# document per parse subprocess — see _run_parser_subprocess in
-# hatchet_workflows/ingest_pdf.py), so concurrent threads can now race on:
-#  (a) the cache dict itself,
-#  (b) the shared pikepdf.Pdf object it hands out — pikepdf (a qpdf
-#      binding) is not documented as safe for concurrent reads from
-#      multiple threads, so this is real shared mutable state, not just a
-#      dict-keyed-by-page-number result, and
-#  (c) the DI budget's check-and-increment.
-# One lock covers all three: they're all fast, non-blocking, in-memory
-# operations (dict ops + a single-page PDF slice), so serializing them
-# costs nothing next to the network/OCR work that runs outside the lock.
+# Perf audit 2026-08-15 — guards the per-document page budget below
+# (_OCR_PAGES_USED / _OCR_CAP_LOGGED / _OCR_CAP_EXHAUSTED). The per-page OCR
+# loop in _parse_with_fitz fans pages out across a small in-process
+# ThreadPoolExecutor (still just one document per parse subprocess — see
+# _run_parser_subprocess in hatchet_workflows/ingest_pdf.py), so the
+# budget's check-and-increment races without it. It used to also guard a
+# shared pikepdf.Pdf handle used to slice pages for upload; Cohere Parse
+# renders pages locally (ADR-0019), so the slicing — and pikepdf — left
+# this module on 2026-09-02.
 _OCR_STATE_LOCK = threading.Lock()
 
 
-def _get_cached_pikepdf(pdf_path: str):
-    import pikepdf as _pikepdf
-
-    cached = _PIKEPDF_CACHE.get(pdf_path)
-    if cached is not None:
-        return cached
-    for _stale_path in list(_PIKEPDF_CACHE):
-        with contextlib.suppress(Exception):
-            _PIKEPDF_CACHE.pop(_stale_path).close()
-    pdf = _pikepdf.open(pdf_path)
-    _PIKEPDF_CACHE[pdf_path] = pdf
-    return pdf
-
-
-def _slice_single_page_pdf_bytes(pdf_path: str, page_num: int) -> bytes:
-    """Extract one page into its own in-memory PDF, for DI single-page upload.
-
-    Perf audit 2026-08-15: the whole cache-get + slice + save sequence runs
-    under _OCR_STATE_LOCK because _get_cached_pikepdf hands back a SHARED
-    pikepdf.Pdf object that every concurrent OCR-page thread would otherwise
-    read from at once — see the lock's docstring above for why that's
-    unsafe. This used to be inlined directly in _ocr_single_page, where it
-    ran with no concurrency at all; pulling it into its own function just
-    gives the lock a single, obvious acquisition point.
-    """
-    import io as _io
-
-    import pikepdf as _pikepdf
-
-    with _OCR_STATE_LOCK:
-        _src = _get_cached_pikepdf(pdf_path)
-        _single = _pikepdf.Pdf.new()
-        _single.pages.append(_src.pages[page_num - 1])
-        _buf = _io.BytesIO()
-        _single.save(_buf)
-        return _buf.getvalue()
-
-
-def _slice_page_selection_pdf_bytes(
-    pdf_path: str, page_numbers: Sequence[int]
-) -> bytes:
-    """Extract an arbitrary set of pages into one in-memory PDF.
-
-    Batching 2026-08-20: the batched Document Intelligence path uploads
-    groups of pages, not pages. Slicing rather than sending the whole file
-    keeps the original per-page argument intact — a 40 MB report
-    re-uploaded once per block would still push O(size x blocks) bytes —
-    while cutting the number of uploads by the block size. Same
-    `_OCR_STATE_LOCK` discipline as `_slice_single_page_pdf_bytes`: the
-    cached ``pikepdf.Pdf`` is shared across the OCR threads.
-
-    Selection, not range, is what makes this one function serve both
-    callers. The fully-scanned path wants contiguous blocks and passes a
-    ``range``; the MIXED path -- a text-native report with an appendix of
-    plates, or scattered scanned inserts, the commoner shape in this
-    corpus -- has a sparse set, where forming contiguous runs either gives
-    runs of length one (no saving) or sweeps in pages that already had
-    text and are billed per page anyway.
-    """
-    import io as _io
-
-    import pikepdf as _pikepdf
-
-    with _OCR_STATE_LOCK:
-        _src = _get_cached_pikepdf(pdf_path)
-        _block = _pikepdf.Pdf.new()
-        for _page_num in page_numbers:
-            _block.pages.append(_src.pages[_page_num - 1])
-        _buf = _io.BytesIO()
-        _block.save(_buf)
-        return _buf.getvalue()
-
-
-# 2026-08-14 — per-document Azure DI page budget. `_ocr_single_page` fires
-# one DI request per short page (plus one per tile on the tiled-escalation
-# path), unmetered until now: a pathological scan (thousands of image
-# pages) could silently burn the subscription quota — and on exhaustion
-# Azure 403s (not retryable), which used to disappear into the tesseract
-# fallback. Beyond the budget, remaining pages route straight to
-# tesseract with one WARNING per document. Keyed per path with
-# evict-on-new-document, mirroring _PIKEPDF_CACHE (one document per parse
-# subprocess). The cross-run Prometheus counter (OCR_PAGES_TOTAL, one
+# 2026-08-14 — per-document remote-OCR page budget. `_ocr_single_page`
+# fires one billed request per short page, unmetered until then: a
+# pathological scan (thousands of image pages) could silently burn the
+# subscription quota — and on exhaustion the vendor 403s (not retryable),
+# which used to disappear into the tesseract fallback. Beyond the budget,
+# remaining pages route straight to tesseract with one WARNING per
+# document. Keyed per path, bounded FIFO of documents. The cross-run Prometheus counter (OCR_PAGES_TOTAL, one
 # label per engine) lives in the engine adapter itself.
 _OCR_PAGE_BUDGET_ENV = "OCR_MAX_PAGES_PER_DOC"
 #: Pre-2026-09-02 name. Read as a fallback with a one-time warning so a live
@@ -2413,7 +2331,7 @@ def _ocr_budget_take(pdf_path: str, pages: int = 1) -> bool:
                     "cap": cap,
                 }
                 logger.warning(
-                    "pdf_report: document_intelligence page budget exhausted for "
+                    "pdf_report: remote OCR page budget exhausted for "
                     "'%s' (used=%d, cap=%d via %s) — remaining short pages fall "
                     "back to tesseract",
                     pdf_path, _OCR_PAGES_USED[pdf_path], cap, _OCR_PAGE_BUDGET_ENV,
@@ -2436,8 +2354,8 @@ def _ocr_budget_refund(pdf_path: str, pages: int) -> None:
     fraction of the cap.
 
     Refunding only what was not sent keeps the counter meaning what
-    `_ocr_budget_warning` says it means: pages Document Intelligence
-    actually read.
+    `_ocr_budget_warning` says it means: pages the remote engine actually
+    read.
     """
     if pages <= 0:
         return
@@ -2449,7 +2367,7 @@ def _ocr_budget_refund(pdf_path: str, pages: int) -> None:
 
 
 def _ocr_budget_warning(pdf_path: str) -> dict[str, Any] | None:
-    """A parse-result warning when this document exhausted its DI budget.
+    """A parse-result warning when this document exhausted its page budget.
 
     Returns None when the budget was never hit, which is the usual case —
     the default cap is 300 pages and most reports are shorter.
@@ -2464,7 +2382,7 @@ def _ocr_budget_warning(pdf_path: str) -> dict[str, Any] | None:
         "cap": record["cap"],
         "env": _OCR_PAGE_BUDGET_ENV,
         "message": (
-            f"Document Intelligence was capped at {record['cap']} page(s) for "
+            f"Remote OCR (Cohere Parse) was capped at {record['cap']} page(s) for "
             f"this document ({_OCR_PAGE_BUDGET_ENV}). Pages past the cap were "
             f"read by tesseract, which extracts no table structure — any "
             f"assay, resource or drill table in them was lost. Raise the cap "
@@ -2525,38 +2443,30 @@ def _tesseract_data_to_words_and_text(data: dict) -> tuple[list[tuple[str, int]]
     return words, "\n".join(line_texts)
 
 
-def _di_single_page_request(_di, pdf_path: str, page_num: int):
-    """One page, one Document Intelligence request.
+def _reported_confidence(assessment: dict[str, Any] | None, mean_conf: float) -> float | None:
+    """The confidence to persist for a page: None when the engine reports none.
 
-    Slices the target page into its own PDF before upload. Two reasons
-    this is not an optimisation but a correctness fix:
-      (1) Document Intelligence F0 rejects ``pages=N`` for N > 2
-          ("InvalidRequest") — a 1-page document sidesteps the free
-          tier's first-two-pages analysis window entirely;
-      (2) sending the full file per page uploads O(size x pages) bytes —
-          a 40 MB / 200-page report would push ~8 GB.
-    F11: the source doc is opened once per path (cached), and a slice
-    failure does NOT fall back to a whole-file upload — one structural
-    defect must not turn a 300-page doc into 300 full-file uploads. It
-    returns a failed PageOcrResult instead, so the caller falls through
-    to tesseract for this page.
+    Cohere Parse (ADR-0019) returns no per-word confidence. Its pages must
+    store ``ocr_confidence`` as NULL — the same value a text-layer page
+    carries, with ``ocr_method`` as the discriminator — rather than a
+    fabricated 0.0 that retrieval would read as "the engine was sure this
+    is wrong".
     """
-    try:
-        pdf_bytes = _slice_single_page_pdf_bytes(pdf_path, page_num)
-    except Exception as slice_exc:  # noqa: BLE001
-        logger.warning(
-            "pdf_report: single-page slice failed for page %d of '%s' "
-            "(%s) — skipping document_intelligence, falling back to "
-            "tesseract",
-            page_num, pdf_path, slice_exc,
-        )
-        return _di.PageOcrResult(
-            "",
-            0.0,
-            request_succeeded=False,
-            error=f"single_page_slice_failed: {slice_exc}",
-        )
-    return _di.ocr_page_sync(pdf_bytes, 1)
+    signals = (assessment or {}).get("signals") or {}
+    if signals.get("confidence_reported", True) is False:
+        return None
+    return mean_conf
+
+
+def _engine_single_page_request(engine, pdf_path: str, page_num: int):
+    """One page, one remote OCR request.
+
+    The engine renders the page itself from ``pdf_path`` (pypdfium2, under
+    a pixel cap) — no page slicing, no upload of the surrounding document.
+    Fails soft with ``request_succeeded=False``; the only exception that
+    escapes is the engine's NotConfigured, which the caller surfaces.
+    """
+    return engine.ocr_page_sync(pdf_path, page_num)
 
 
 def _ocr_block_plan(total_pages: int, block_size: int) -> list[tuple[int, int]]:
@@ -2567,65 +2477,56 @@ def _ocr_block_plan(total_pages: int, block_size: int) -> list[tuple[int, int]]:
     ]
 
 
-def _ocr_page_block_di(pdf_path: str, first_page: int, page_count: int) -> dict[int, Any]:
-    """OCR one contiguous block of pages in a single DI request.
+def _ocr_page_block(pdf_path: str, first_page: int, page_count: int) -> dict[int, Any]:
+    """OCR one contiguous block of pages as a group.
 
     A contiguous block is a selection whose pages happen to run
     consecutively, so this is the selection path with a ``range``. They
     were two near-identical functions until 2026-08-23, which is how the
     same missing quality check came to exist twice — once per copy.
     """
-    return _ocr_page_selection_di(
+    return _ocr_page_selection(
         pdf_path, range(first_page, first_page + page_count)
     )
 
 
-def _ocr_page_selection_di(
+def _ocr_page_selection(
     pdf_path: str, page_numbers: Sequence[int]
 ) -> dict[int, Any]:
-    """OCR an arbitrary set of pages in a single DI request.
+    """OCR an arbitrary set of pages as one group (rendered together,
+    requests posted concurrently by the engine).
 
     Returns ``{absolute_page_number: PageOcrResult}`` for the pages the
-    request answered. An empty mapping means the caller must drive those
-    pages individually -- budget exhausted, slice failed, or the request
-    failed. A page the request *did* answer for but with no text is
+    engine answered. An empty mapping means the caller must drive those
+    pages individually -- budget exhausted, file unreadable, or every
+    request failed. A page the engine *did* answer for but with no text is
     present with empty text, which is a different (and cheaper to recover
     from) situation.
 
-    The page-number remap is by POSITION, not by arithmetic: DI numbers
-    the pages of the uploaded document 1..N, and the uploaded document is
-    `page_numbers` sorted. `first_page + local - 1` is right only while
-    the selection is contiguous, and wrong for every page after a gap.
+    The engine keys its mapping by absolute page number (it renders from
+    the original file), so there is no positional remap here any more —
+    the positional bug the Document Intelligence upload path had to guard
+    against cannot occur.
     """
-    from . import document_intelligence_client as _di
+    from . import cohere_parse_client as _engine
 
     ordered = sorted(set(page_numbers))
     if not ordered:
         return {}
+    # Selected AND configured: the Foundry credentials are shared with the
+    # embedder, so "configured" alone is not consent to run Parse. An
+    # unconfigured engine is reported once, loudly, by the per-page path
+    # (CohereParseNotConfigured → CRITICAL), not here.
+    if not (_engine.is_engine_selected() and _engine.is_configured()):
+        return {}
     if not _ocr_budget_take(pdf_path, len(ordered)):
         return {}
-    try:
-        pdf_bytes = _slice_page_selection_pdf_bytes(pdf_path, ordered)
-    except Exception as slice_exc:  # noqa: BLE001
-        logger.warning(
-            "pdf_report: page-selection slice failed for %d page(s) of '%s' "
-            "(%s) — falling back to per-page document_intelligence",
-            len(ordered), pdf_path, slice_exc,
-        )
-        # Nothing was uploaded, so nothing was billed. Without the refund
-        # these pages are charged here and again on the per-page path.
-        _ocr_budget_refund(pdf_path, len(ordered))
-        return {}
-    block = _di.ocr_page_block_sync(pdf_bytes, len(ordered))
-    mapped = {
-        ordered[local - 1]: result
-        for local, result in block.items()
-        if 1 <= local <= len(ordered)
-    }
-    # Pages the request never answered for go back to the per-page path,
-    # where each pays the budget again. `ocr_page_block_sync` degrades to
-    # {} on a failed or timed-out analysis — an analysis Azure does not
-    # bill for either.
+    wanted = set(ordered)
+    group = _engine.ocr_page_block_sync(pdf_path, ordered)
+    mapped = {page: result for page, result in group.items() if page in wanted}
+    # Pages the group never answered for go back to the per-page path,
+    # where each pays the budget again; the engine did not bill for them
+    # either (a failed request is not a billed page).
     _ocr_budget_refund(pdf_path, len(ordered) - len(mapped))
     return mapped
 
@@ -2637,9 +2538,9 @@ def _ocr_single_page(
     return_assessment: bool = False,
     return_tables: bool = False,
     *,
-    skip_di_page_request: bool = False,
+    skip_engine_page_request: bool = False,
 ):
-    """Render one PDF page and run Tesseract on it.
+    """OCR one PDF page: the remote engine first, Tesseract as the floor.
 
     Phase 3 (2026-05-22): when `return_confidence=True`, returns
     ``(text, mean_confidence)`` where mean_confidence is the average
@@ -2652,191 +2553,121 @@ def _ocr_single_page(
     multi-signal quality assessment used by review routing.
 
     Scanned-table support (2026-08-11): when ``return_tables=True``, one
-    extra trailing element carries the Document Intelligence table grids
+    extra trailing element carries the remote engine's table grids
     (``tables[t][row][col]``, see PageOcrResult.tables) — always ``[]``
-    on the tesseract/tiled/failure paths, which extract no tables.
+    on the tesseract/failure paths, which extract no tables.
 
-    Batching 2026-08-20: ``skip_di_page_request=True`` means a batched
-    block already asked Document Intelligence about this page and got
-    nothing back. Re-asking page-at-a-time would burn a second billed
-    page to get the same empty answer, so the DI branch below starts at
-    the escalation it would have reached anyway (bounded raster tiles,
-    then tesseract). The block already paid this page's budget, so it is
+    Grouping 2026-08-20: ``skip_engine_page_request=True`` means a page
+    group already asked the engine about this page and got nothing back.
+    Re-asking page-at-a-time would burn a second billed page to get the
+    same empty answer, so the engine branch below goes straight to the
+    tesseract floor. The group already paid this page's budget, so it is
     not charged again either.
+
+    The ladder has two rungs since ADR-0019 (Cohere Parse): the remote
+    engine, then tesseract. The Document Intelligence era had a third —
+    bounded raster tiles reconstructed from word polygons — which Parse
+    cannot support (it returns no polygons); oversized pages are
+    downscaled by the engine instead.
 
     Returns ``""`` (or the corresponding empty tuple) on any failure.
     """
-    from . import document_intelligence_client as _di
+    from . import cohere_parse_client as _engine
 
-    di_selected = _di.is_engine_selected()
+    engine_selected = _engine.is_engine_selected()
     # 2026-08-14 — per-document remote-OCR page budget (OCR_MAX_PAGES_PER_DOC,
-    # default 300). Beyond it, this page skips DI and goes straight to the
-    # tesseract fallback below.
-    if di_selected and not skip_di_page_request and not _ocr_budget_take(pdf_path):
-        di_selected = False
-    if di_selected:
+    # default 300). Beyond it, this page skips the engine and goes straight
+    # to the tesseract fallback below.
+    if engine_selected and not skip_engine_page_request and not _ocr_budget_take(pdf_path):
+        engine_selected = False
+    if engine_selected:
         try:
-            if skip_di_page_request:
-                # Succeeded-but-empty is exactly what the batched block
-                # reported, so reuse that sentinel and let the branch
-                # below escalate to tiles without a second DI request.
-                result = _di.PageOcrResult("", 0.0)
+            if skip_engine_page_request:
+                # Succeeded-but-empty is exactly what the group reported,
+                # so reuse that sentinel and let the branch below fall
+                # through to tesseract without a second request.
+                result = _engine.PageOcrResult("", 0.0, confidence_reported=False)
             else:
-                result = _di_single_page_request(_di, pdf_path, page_num)
-        except _di.DocumentIntelligenceNotConfigured as exc:
+                result = _engine_single_page_request(_engine, pdf_path, page_num)
+        except _engine.CohereParseNotConfigured as exc:
             # A configuration error, not a page that would not OCR. Its own
             # docstring calls it "a startup/config error a caller should
             # surface loudly rather than swallow", and both call sites
             # swallowed it into a generic except and fell through to
-            # tesseract — so a rotated docintel-key silently downgraded the
+            # tesseract — so a rotated Foundry key silently downgraded the
             # ENTIRE corpus to the fallback engine, losing every table, and
             # nothing said so. CRITICAL because CRITICAL now pages
             # (georag-fastapi-critical, added 2026-08-21).
             logger.critical(
-                "pdf_report: OCR_ENGINE selects Document Intelligence but it "
-                "is not configured (%s). EVERY page from now on falls back to "
-                "tesseract, which extracts no tables. Check the docintel-key "
-                "secret reference on the worker.",
+                "pdf_report: OCR_ENGINE selects Cohere Parse but it is not "
+                "configured (%s). EVERY page from now on falls back to "
+                "tesseract, which extracts no tables. Check the "
+                "AZURE_FOUNDRY_PARSE_DEPLOYMENT / foundry-key secret "
+                "references on the worker.",
                 exc,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "pdf_report: document_intelligence OCR failed on page %d of "
-                "'%s': %s — falling back to tesseract",
+                "pdf_report: cohere_parse OCR failed on page %d of '%s': %s "
+                "— falling back to tesseract",
                 page_num, pdf_path, exc,
             )
         else:
             if not result.request_succeeded:
-                # Transport/throttle failure (NOT merely empty text): the
-                # tiled escalation below would fire 4+ more doomed DI calls
-                # against the same broken endpoint — go straight to the
-                # tesseract fallback instead.
+                # Transport/throttle/vendor-4xx failure (NOT merely empty
+                # text): go to the tesseract fallback.
                 logger.warning(
-                    "pdf_report: di_request_failed on page %d of '%s': %s — "
-                    "skipping tiled escalation, falling back to tesseract",
+                    "pdf_report: cohere_parse_request_failed on page %d of '%s': "
+                    "%s — falling back to tesseract",
                     page_num, pdf_path, result.error or "unknown error",
                 )
-            else:
-                # `ocr_page`/`ocr_page_sync` fail soft internally (e.g. Azure's
-                # InvalidContentDimensions on an out-of-range scan resolution —
-                # confirmed against a real 1940s-era TIFF in the corpus 2026-07-29)
-                # and return an empty PageOcrResult rather than raising. Without
-                # this check, that soft failure would look identical to "page is
-                # genuinely blank" and skip tesseract entirely, silently losing
-                # a page tesseract might actually be able to read.
-                #
-                # 2026-08-21 — escalation used to key on `result.text.strip()`
-                # alone, so it fired on an EMPTY page and never on an UNUSABLE
-                # one. The assessment was computed on the line above and then
-                # only attached to the return value: a page that came back as
-                # fragmented tokens at catastrophic confidence — the ordinary
-                # outcome for a skewed 1970s plan sheet — was accepted, stored,
-                # embedded and cited, while the escalation that exists for
-                # exactly that page sat one branch away. The router already has
-                # a word for it, `catastrophic_failure`; this now reads it.
-                di_assessment: dict[str, Any] | None = None
-                if result.text.strip():
-                    di_assessment = _assess_ocr_result(
-                        result.text,
-                        [word.confidence for word in result.words]
-                        or [result.mean_confidence],
-                        detected_region_count=result.detected_region_count,
-                        ocr_method="document_intelligence",
-                    )
-                    if not _is_catastrophic_assessment(di_assessment):
-                        return _format_ocr_page_return(
-                            result.text,
-                            result.mean_confidence,
-                            di_assessment,
-                            return_confidence=return_confidence,
-                            return_assessment=return_assessment,
-                            return_tables=return_tables,
-                            tables=result.tables,
-                        )
-                    logger.info(
-                        "pdf_report: document_intelligence returned "
-                        "catastrophic-tier text for page %d of '%s' (%s) — "
-                        "trying bounded raster tiles",
-                        page_num, pdf_path,
-                        ", ".join(di_assessment.get("reasons") or ()) or "no reason",
-                    )
-                else:
-                    logger.info(
-                        "pdf_report: document_intelligence returned empty text for "
-                        "page %d of '%s' — trying bounded raster tiles",
-                        page_num, pdf_path,
-                    )
-
-                tiled_result = None
-                tiled_assessment: dict[str, Any] | None = None
-                try:
-                    tiled_result, tiled_assessment = _ocr_tiled_pdf_page(
-                        pdf_path,
-                        page_num,
-                    )
-                except Exception as tiled_exc:  # noqa: BLE001
-                    logger.warning(
-                        "pdf_report: tiled document_intelligence OCR failed on "
-                        "page %d of '%s': %s — falling back to tesseract",
-                        page_num,
-                        pdf_path,
-                        tiled_exc,
-                    )
-
-                if tiled_result is not None and tiled_result.text.strip():
-                    # When DI came back EMPTY, any tiled text is an
-                    # improvement and is taken unconditionally — that is the
-                    # pre-existing contract and it stays. When DI came back
-                    # unusable, tiles have to actually beat it to displace it.
-                    if di_assessment is None or not _is_catastrophic_assessment(
-                        tiled_assessment
-                    ):
-                        # Tiled reconstruction is word-level only — no
-                        # table grids survive tiling, so tables stays [].
-                        return _format_ocr_page_return(
-                            tiled_result.text,
-                            tiled_result.mean_confidence,
-                            tiled_assessment,
-                            return_confidence=return_confidence,
-                            return_assessment=return_assessment,
-                            return_tables=return_tables,
-                        )
-
-                if di_assessment is not None:
-                    # Tiles did no better. Keep Document Intelligence's own
-                    # read rather than falling through to tesseract: it is
-                    # poor, but it is the stronger engine's answer for this
-                    # page and it is the only one of the two that carries
-                    # table structure. It travels with its catastrophic tier,
-                    # so the quality router still routes it to review and
-                    # retrieval still demotes it.
-                    logger.warning(
-                        "pdf_report: page %d of '%s' stays at catastrophic OCR "
-                        "quality after tiled escalation — keeping the "
-                        "document_intelligence result and routing it to review",
-                        page_num, pdf_path,
-                    )
+            elif result.text.strip():
+                # Parse reports no word confidence, so the assessment is
+                # content-only (gibberish, repeated characters, coverage)
+                # and the catastrophic tier is reachable only through
+                # empty output — which this branch has already excluded.
+                # The check stays as a guard in case a future engine on
+                # this seam reports confidence.
+                assessment = _assess_ocr_result(
+                    result.text,
+                    [word.confidence for word in result.words] if result.confidence_reported else None,
+                    detected_region_count=result.detected_region_count,
+                    ocr_method=_engine.OCR_METHOD,
+                )
+                if not _is_catastrophic_assessment(assessment):
                     return _format_ocr_page_return(
                         result.text,
                         result.mean_confidence,
-                        di_assessment,
+                        assessment,
                         return_confidence=return_confidence,
                         return_assessment=return_assessment,
                         return_tables=return_tables,
                         tables=result.tables,
                     )
+                logger.info(
+                    "pdf_report: cohere_parse returned catastrophic-tier text "
+                    "for page %d of '%s' (%s) — falling back to tesseract",
+                    page_num, pdf_path,
+                    ", ".join(assessment.get("reasons") or ()) or "no reason",
+                )
+            else:
+                logger.info(
+                    "pdf_report: cohere_parse returned empty text for page %d "
+                    "of '%s' — falling back to tesseract",
+                    page_num, pdf_path,
+                )
 
     try:
         import pytesseract
         from pdf2image import convert_from_path
     except ImportError:
-        # Truthful provenance: when the DI branch already ran and came back
-        # empty, this empty page is a DI result; otherwise tesseract simply
-        # is not installed.
+        # Truthful provenance: when the engine branch already ran and came
+        # back empty, this empty page is an engine result; otherwise
+        # tesseract simply is not installed.
         return _empty_ocr_page_return(
             return_confidence,
             return_assessment,
-            method="document_intelligence" if di_selected else "unavailable",
+            method=_engine.OCR_METHOD if engine_selected else "unavailable",
             return_tables=return_tables,
         )
     try:
@@ -2935,114 +2766,6 @@ def _ocr_single_page(
         )
 
 
-def _ocr_tiled_pdf_page(pdf_path: str, page_num: int):
-    """Render one PDF page and OCR it as bounded, overlapping image tiles."""
-
-    from pdf2image import convert_from_path
-
-    from . import document_intelligence_client as _di
-    from .image_tiling import (
-        TileWord,
-        encode_tile_png,
-        reconstruct_words,
-        split_image,
-    )
-
-    images = convert_from_path(
-        pdf_path,
-        dpi=250,
-        first_page=page_num,
-        last_page=page_num,
-        thread_count=1,
-    )
-    if not images:
-        return _di.PageOcrResult("", 0.0), _assess_ocr_result(
-            "",
-            [],
-            detected_region_count=0,
-        )
-
-    tiles = split_image(images[0])
-    # 2026-08-14 — each tile is one billed DI page; charge them against the
-    # per-document budget. When it can't cover the whole tile set, raise so
-    # the caller's except falls through to tesseract (a partial tile pass
-    # would be rejected anyway — see the partial-failure guard below).
-    if not _ocr_budget_take(pdf_path, pages=len(tiles)):
-        raise RuntimeError(
-            "document_intelligence per-document page budget exhausted "
-            "before tiled OCR"
-        )
-    tile_words: list[TileWord] = []
-    detected_region_count = 0
-    fallback_tile_texts: list[str] = []
-
-    for tile in tiles:
-        result = _di.ocr_image_sync(encode_tile_png(tile))
-        if not result.request_succeeded:
-            raise RuntimeError(
-                f"document_intelligence tile {tile.tile_id} failed: "
-                f"{result.error or 'unknown error'}"
-            )
-        if result.text.strip() and (
-            not result.words or any(not word.polygon for word in result.words)
-        ):
-            raise RuntimeError(
-                f"document_intelligence tile {tile.tile_id} returned text "
-                "without complete word polygons"
-            )
-        detected_region_count += result.detected_region_count
-        if result.text.strip():
-            fallback_tile_texts.append(result.text.strip())
-        tile_words.extend(
-            TileWord(
-                text=word.text,
-                confidence=word.confidence,
-                polygon=word.polygon,
-                tile_id=tile.tile_id,
-            )
-            for word in result.words
-            if word.polygon
-        )
-
-    reconstruction = reconstruct_words(tiles, tile_words)
-    text = reconstruction.text or " ".join(fallback_tile_texts).strip()
-    confidences = [word.confidence for word in reconstruction.words]
-    mean_confidence = (
-        statistics.fmean(confidences)
-        if confidences
-        else 0.0
-    )
-    assessment = _assess_ocr_result(
-        text,
-        confidences,
-        detected_region_count=detected_region_count,
-        seam_duplicate_count=reconstruction.seam_duplicate_count,
-        ocr_method="document_intelligence",
-    )
-    words = tuple(
-        _di.OcrWord(word.text, word.confidence, word.polygon)
-        for word in reconstruction.words
-    )
-    logger.info(
-        "pdf_report: tiled document_intelligence page=%d tiles=%d words=%d "
-        "seam_duplicates=%d quality_tier=%s",
-        page_num,
-        len(tiles),
-        len(words),
-        reconstruction.seam_duplicate_count,
-        assessment["tier"],
-    )
-    return (
-        _di.PageOcrResult(
-            text=text,
-            mean_confidence=mean_confidence,
-            words=words,
-            detected_region_count=detected_region_count,
-        ),
-        assessment,
-    )
-
-
 def _assess_ocr_result(
     text: str,
     word_confidences: list[float] | None,
@@ -3055,11 +2778,10 @@ def _assess_ocr_result(
 
     ``ocr_method`` names the engine that produced ``text``. It does two
     things, and the first is new as of 2026-08-21: it selects the engine's
-    threshold set, if OCR_ROUTING_THRESHOLDS_JSON supplies one. Document
-    Intelligence and Tesseract do not report confidence on a comparable
-    scale -- DI sits at 0.95-0.99 even when confidently wrong, Tesseract at
-    0.70-0.85 when it is fine -- so one shared cut-off auto-accepts nearly
-    every DI page and reviews nearly every Tesseract page.
+    threshold set, if OCR_ROUTING_THRESHOLDS_JSON supplies one. Engines do
+    not report confidence on a comparable scale — or at all:
+    ``word_confidences=None`` means the engine reports none (Cohere Parse,
+    ADR-0019), and the router then judges the page on content signals only.
 
     Second, it lands in the returned dict, which every caller used to do
     itself on the following line. Doing it here means a caller cannot
@@ -3113,14 +2835,14 @@ def _is_catastrophic_assessment(assessment: dict[str, Any] | None) -> bool:
     below `catastrophic_max_mean_confidence`, or output coverage at or
     below `catastrophic_max_coverage_ratio`. The latter two are only
     evaluated when routing thresholds are calibrated
-    (OCR_ROUTING_THRESHOLDS_JSON), so on an uncalibrated deployment this
-    reduces to "empty" and the escalation ladder behaves exactly as it did
-    before 2026-08-21.
+    (OCR_ROUTING_THRESHOLDS_JSON) and, for the confidence rule, only when
+    the engine reports confidence at all — so for Cohere Parse this reduces
+    to "empty" and the ladder falls through to tesseract on that alone.
 
     Deliberately NOT `MandatoryReview`: an uncalibrated deployment routes
     every page there by design ("defaulting safely to review"), and
-    escalating on it would fire the tiled path -- four or more billed
-    Document Intelligence requests -- on every page of every document.
+    escalating on it would re-drive every page of every document through
+    the fallback engine.
     """
     if not assessment:
         return False
@@ -3148,23 +2870,28 @@ def _usable_batched_page(
     to the return value.
 
     Returning None sends the page to `_ocr_single_page`, where
-    ``skip_di_page_request=True`` (it IS in the batch mapping) starts it at
-    the bounded raster tiles without paying for a second DI request.
+    ``skip_engine_page_request=True`` (it IS in the group mapping) goes
+    straight to tesseract without paying for a second remote request.
     """
     if batched is None or not batched.text.strip():
         return None
 
+    from . import cohere_parse_client as _engine
+
     assessment = _assess_ocr_result(
         batched.text,
-        [word.confidence for word in batched.words] or [batched.mean_confidence],
+        (
+            ([word.confidence for word in batched.words] or [batched.mean_confidence])
+            if getattr(batched, "confidence_reported", True)
+            else None
+        ),
         detected_region_count=batched.detected_region_count,
-        ocr_method="document_intelligence",
+        ocr_method=_engine.OCR_METHOD,
     )
     if _is_catastrophic_assessment(assessment):
         logger.info(
-            "pdf_report: batched document_intelligence returned "
-            "catastrophic-tier text for page %d of '%s' (%s) — trying "
-            "bounded raster tiles",
+            "pdf_report: grouped cohere_parse returned catastrophic-tier text "
+            "for page %d of '%s' (%s) — re-driving through tesseract",
             page_num, pdf_path,
             ", ".join(assessment.get("reasons") or ()) or "no reason",
         )
@@ -3635,14 +3362,14 @@ def _postprocess_ocr_text(text: str) -> str:
     return text.strip()
 
 
-def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
-    """Full-document OCR via Azure Document Intelligence, one call per page.
+def _attempt_ocr_cohere_parse(path: str) -> OcrAttemptResult:
+    """Full-document OCR via Cohere Parse, one request per page.
 
     Mirrors `_attempt_ocr`'s page-count discovery, no-page-cap policy, and
     progress/low-confidence logging so callers see the same log shape
-    regardless of which engine produced the text — the only difference is
-    no local rasterisation (no `convert_from_path`): Document Intelligence
-    takes the raw PDF bytes directly per page.
+    regardless of which engine produced the text — the engine renders each
+    page itself (pypdfium2 under a pixel cap) rather than pdf2image at
+    250 DPI.
     """
     from pdf2image import pdfinfo_from_path
 
@@ -3655,12 +3382,12 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     if total_pages == 0:
         logger.warning(
             "pdf_report: could not determine page count for "
-            "document_intelligence OCR; aborting to tesseract fallback"
+            "cohere_parse OCR; aborting to tesseract fallback"
         )
         raise RuntimeError("page count unavailable")
 
     logger.info(
-        "pdf_report: starting document_intelligence OCR on %d pages "
+        "pdf_report: starting cohere_parse OCR on %d pages "
         "(concurrency=%s)",
         total_pages, os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4"),
     )
@@ -3671,7 +3398,7 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     page_attempts: list[OcrPageAttempt] = []
 
     # Perf 2026-08-18 — this loop used to be strictly serial: one page's
-    # full network round-trip to Document Intelligence, awaited, then the
+    # full network round-trip to the remote engine, awaited, then the
     # next. On a fully scanned report (the ONLY case that reaches this
     # function) that made it the slowest path in the pipeline — a 300-page
     # document did 300 sequential round-trips at ~1-3 s each.
@@ -3680,9 +3407,9 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     # path simply never got the same treatment. Same fix, same knob
     # (PDF_OCR_PAGE_CONCURRENCY), same safety argument: `_ocr_single_page`
     # blocks on network or on a tesseract subprocess, both of which release
-    # the GIL, and its shared mutable state (the cached pikepdf handle and
-    # the per-document DI page budget) is already guarded by _OCR_STATE_LOCK
-    # precisely because the other path calls it from several threads.
+    # the GIL, and its shared mutable state (the per-document page budget)
+    # is already guarded by _OCR_STATE_LOCK precisely because the other
+    # path calls it from several threads.
     #
     # Only the OCR calls run concurrently. All bookkeeping below stays
     # sequential and in page order — executor.map yields results in INPUT
@@ -3691,34 +3418,31 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
     # the serial version.
     _ocr_concurrency = max(1, int(os.environ.get("PDF_OCR_PAGE_CONCURRENCY", "4")))
 
-    # Batching 2026-08-20 — concurrency alone only hid the round-trip cost;
-    # it didn't remove it. Document Intelligence analyzes a multi-page PDF
-    # in one request (the one-page-per-request shape is a leftover from the
-    # F0 tier's 2-page limit), so this pass asks for blocks first and only
-    # falls back to per-page work for pages a block couldn't answer. On a
-    # 200-page scan at the default block size that is 8 submissions instead
-    # of 200. AZURE_DI_PAGES_PER_BATCH=1 disables it.
-    from . import document_intelligence_client as _di_mod
+    # Grouping 2026-08-20 (re-based on Cohere Parse 2026-09-02) — pages are
+    # rendered together and their requests posted concurrently by the
+    # engine, and only the pages a group could not answer fall back to
+    # per-page work. OCR_PAGES_PER_BATCH=1 disables it.
+    from . import cohere_parse_client as _engine_mod
 
-    _block_size = _di_mod.pages_per_batch()
+    _block_size = _engine_mod.pages_per_batch()
     _batched: dict[int, Any] = {}
     if _block_size > 1:
         _plan = _ocr_block_plan(total_pages, _block_size)
         logger.info(
-            "pdf_report: document_intelligence batching %d pages into %d "
-            "block(s) of up to %d",
+            "pdf_report: cohere_parse grouping %d pages into %d "
+            "group(s) of up to %d",
             total_pages, len(_plan), _block_size,
         )
         with ThreadPoolExecutor(
             max_workers=max(1, min(_ocr_concurrency, len(_plan)))
         ) as _block_executor:
             for _mapping in _block_executor.map(
-                lambda block: _ocr_page_block_di(path, block[0], block[1]), _plan
+                lambda block: _ocr_page_block(path, block[0], block[1]), _plan
             ):
                 _batched.update(_mapping)
         _batched_hits = sum(1 for _r in _batched.values() if _r.text.strip())
         logger.info(
-            "pdf_report: document_intelligence batch pass resolved %d/%d "
+            "pdf_report: cohere_parse group pass resolved %d/%d "
             "pages; %d page(s) need individual handling",
             _batched_hits, total_pages, total_pages - _batched_hits,
         )
@@ -3736,10 +3460,10 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
                 return_confidence=True,
                 return_assessment=True,
                 return_tables=True,
-                # The block already asked DI about this page and got
-                # nothing; skip the duplicate billed request and start at
-                # the raster-tile escalation instead.
-                skip_di_page_request=page_num in _batched,
+                # The group already asked the engine about this page and
+                # got nothing; skip the duplicate billed request and go
+                # straight to tesseract.
+                skip_engine_page_request=page_num in _batched,
             ), None
         except Exception as exc:  # noqa: BLE001
             # Fail soft per page, matching ocr_page_sync's own contract: one
@@ -3756,21 +3480,21 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
         if _outcome is None:
             # Second of the two call sites that swallowed a configuration
             # error as though it were a page-level OCR failure. See the
-            # handler in _ocr_page_di for the reasoning.
-            from app.services.ingest.document_intelligence_client import (  # noqa: PLC0415
-                DocumentIntelligenceNotConfigured,
+            # handler in _ocr_single_page for the reasoning.
+            from app.services.ingest.cohere_parse_client import (  # noqa: PLC0415
+                CohereParseNotConfigured,
             )
 
-            if isinstance(_exc, DocumentIntelligenceNotConfigured):
+            if isinstance(_exc, CohereParseNotConfigured):
                 logger.critical(
-                    "pdf_report: OCR_ENGINE selects Document Intelligence but "
+                    "pdf_report: OCR_ENGINE selects Cohere Parse but "
                     "it is not configured (%s). EVERY page falls back to "
                     "tesseract, which extracts no tables.",
                     _exc,
                 )
             else:
                 logger.warning(
-                    "pdf_report: document_intelligence OCR failed on page %d of "
+                    "pdf_report: cohere_parse OCR failed on page %d of "
                     "'%s': %s", page_num, path, _exc,
                 )
             page_text, mean_confidence, assessment, page_tables = (
@@ -3806,29 +3530,27 @@ def _attempt_ocr_document_intelligence(path: str) -> OcrAttemptResult:
         sum(page_confidences) / len(page_confidences) if page_confidences else 0.0
     )
     logger.info(
-        "pdf_report: document_intelligence OCR complete — %d pages, %d chars, "
+        "pdf_report: cohere_parse OCR complete — %d pages, %d chars, "
         "avg confidence %.0f%%, %d low-confidence pages",
         total_pages, len(result_text), avg_confidence * 100,
         len(low_confidence_pages),
     )
     if not result_text.strip():
-        # Every page came back empty — e.g. Azure's InvalidContentDimensions
-        # on an out-of-range scan resolution (confirmed against a real
-        # 1940s-era TIFF in the corpus 2026-07-29), or a full-document
-        # outage. `ocr_page_sync` fails soft per page, so this loop never
-        # raises on its own; raising here is what lets the caller's
-        # try/except fall through to the tesseract path instead of
-        # silently returning an empty document.
+        # Every page came back empty — e.g. a full-document outage, or a
+        # vendor 4xx on every render. `ocr_page_sync` fails soft per page,
+        # so this loop never raises on its own; raising here is what lets
+        # the caller's try/except fall through to the tesseract path
+        # instead of silently returning an empty document.
         raise RuntimeError(
-            f"document_intelligence produced no text across {total_pages} pages"
+            f"cohere_parse produced no text across {total_pages} pages"
         )
     output_methods = {
         str(page.assessment.get("ocr_method") or "unknown")
         for page in page_attempts
         if page.text.strip()
     }
-    if output_methods == {"document_intelligence"}:
-        parser_used = "ocr_document_intelligence"
+    if output_methods == {"cohere_parse"}:
+        parser_used = "ocr_cohere_parse"
     elif output_methods == {"tesseract"}:
         parser_used = "ocr_tesseract"
     else:
@@ -3851,14 +3573,14 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
 
     Returns extracted text, truthful engine provenance, and per-page quality.
     """
-    from . import document_intelligence_client as _di
+    from . import cohere_parse_client as _engine
 
-    if _di.is_engine_selected():
+    if _engine.is_engine_selected():
         try:
-            return _attempt_ocr_document_intelligence(path)
+            return _attempt_ocr_cohere_parse(path)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "pdf_report: document_intelligence full-document OCR failed "
+                "pdf_report: cohere_parse full-document OCR failed "
                 "on '%s': %s — falling back to tesseract",
                 path, exc,
             )
@@ -4072,7 +3794,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         text + table extraction as a defensive last resort
       Whole-document OCR (when extraction is still below the minimum
       char threshold) routes through `_attempt_ocr`, which dispatches to
-      tesseract or Azure Document Intelligence per `OCR_ENGINE`.
+      tesseract or Cohere Parse per `OCR_ENGINE`.
     The ``parser_used`` field on the result records which engine ran.
     """
     with _tracer.start_as_current_span("pdf_report.preflight") as _span:
@@ -4167,7 +3889,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                 # page whose text came from an OCR engine was an image
                 # page pre-recovery — OR those in. (per_page_method holds
                 # 'fitz_native' only for true text-layer pages; recovered
-                # pages carry 'tesseract'/'document_intelligence'/etc.)
+                # pages carry 'tesseract'/'cohere_parse'/etc.)
                 is_scanned = is_scanned or bool(image_page_nums) or any(
                     m not in ("fitz_native", "pdfplumber_native")
                     for m in per_page_method.values()
@@ -4265,11 +3987,11 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
                     if page.text.strip()
                 }
                 per_page_confidence = {
-                    page.page_number: page.mean_confidence
+                    page.page_number: _reported_confidence(page.assessment, page.mean_confidence)
                     for page in ocr_result.pages
                     if page.text.strip()
                 }
-                # Whole-doc OCR re-analyzed every page — its per-page DI
+                # Whole-doc OCR re-analyzed every page — its per-page
                 # table grids supersede anything the fitz loop collected.
                 per_page_tables = {
                     page.page_number: list(page.tables)
@@ -4487,37 +4209,40 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
     # using the per-page maps the dispatch tree accumulated.
     _assign_ocr_metadata(sections, per_page_method, per_page_confidence)
 
-    # --- Scanned-table sections from Document Intelligence (2026-08-11) ---
-    # Table grids the DI prebuilt-layout model returned for OCR'd pages,
+    # --- Scanned-table sections from the remote OCR engine (2026-08-11) ---
+    # Table grids the engine (Cohere Parse) returned for OCR'd pages,
     # appended after the narrative + pdfplumber table sections. Two notes:
     #   - No dedupe against _extract_all_tables_as_sections is needed:
     #     that pass runs pdfplumber against the original PDF, and pages
-    #     that produced DI tables have no usable text layer (that is why
-    #     they were OCR'd) — pdfplumber's lines/text strategies find
+    #     that produced engine tables have no usable text layer (that is
+    #     why they were OCR'd) — pdfplumber's lines/text strategies find
     #     nothing there, so double-extraction cannot occur.
     #   - Appended AFTER _assign_ocr_metadata on purpose: these sections
-    #     carry their own truthful provenance (ocr_method =
-    #     'document_intelligence' + the page's mean confidence) and must
-    #     not be overwritten by the first-page-wins backfill.
+    #     carry their own truthful provenance (the page's ocr_method + its
+    #     mean confidence, None for Parse) and must not be overwritten by
+    #     the first-page-wins backfill.
     if per_page_tables:
-        di_table_sections: list[ReportSection] = []
+        from .cohere_parse_client import OCR_METHOD as _REMOTE_OCR_METHOD  # noqa: PLC0415
+
+        ocr_table_sections: list[ReportSection] = []
         for _tbl_page in sorted(per_page_tables):
-            di_table_sections.extend(
-                _di_tables_to_sections(
+            ocr_table_sections.extend(
+                _ocr_tables_to_sections(
                     per_page_tables[_tbl_page],
                     _tbl_page,
                     mean_confidence=per_page_confidence.get(_tbl_page),
+                    ocr_method=per_page_method.get(_tbl_page) or _REMOTE_OCR_METHOD,
                 )
             )
-        if di_table_sections:
+        if ocr_table_sections:
             logger.info(
-                "pdf_report: document_intelligence added %d table section(s) "
+                "pdf_report: remote OCR added %d table section(s) "
                 "across %d OCR'd page(s) in '%s'",
-                len(di_table_sections), len(per_page_tables), Path(path).name,
+                len(ocr_table_sections), len(per_page_tables), Path(path).name,
             )
-            sections.extend(di_table_sections)
+            sections.extend(ocr_table_sections)
 
-    # The DI page budget is cost control, not a failure — but a document
+    # The page budget is cost control, not a failure — but a document
     # whose tail was read by a weaker engine has to say so on the way out,
     # or the two halves are indistinguishable downstream.
     _budget_warning = _ocr_budget_warning(path)

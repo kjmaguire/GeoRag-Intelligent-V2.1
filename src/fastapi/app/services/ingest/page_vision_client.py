@@ -44,11 +44,14 @@ pipeline anything.
 
 Hallucination posture
 ---------------------
-A VLM returns fluent text with no per-token confidence — the opposite of
-Document Intelligence, which this does NOT replace and must never be used to
-replace. PROMPT therefore asks for a DESCRIPTION of what the page depicts and
-explicitly forbids transcribing numeric values out of tables. If a number
-matters, it must come from the OCR path that can attach a confidence to it.
+A VLM returns fluent text with no per-token confidence. So does the OCR
+engine since ADR-0019 — Cohere Parse is itself a vision-language model —
+but the two jobs stay separate: Parse TRANSCRIBES a page and its output is
+scored by the quality router on content signals and routed to review;
+this client DESCRIBES a page for image retrieval. PROMPT therefore asks
+for a DESCRIPTION of what the page depicts and explicitly forbids
+transcribing numeric values out of tables. If a number matters, it must
+come from the OCR path, where it is a citable passage with provenance.
 """
 
 from __future__ import annotations
@@ -161,7 +164,7 @@ PROMPT = build_prompt("low")
 
 @dataclass(frozen=True, slots=True)
 class VerbalizationResult:
-    """Same fail-soft shape as document_intelligence_client.PageOcrResult."""
+    """Same fail-soft shape as ocr_types.PageOcrResult."""
 
     text: str
     ok: bool = True
@@ -171,7 +174,7 @@ class VerbalizationResult:
 def is_enabled() -> bool:
     """Strict opt-in — unset behaves as off.
 
-    Mirrors document_intelligence_client.is_engine_selected: importing this
+    Mirrors cohere_parse_client.is_engine_selected: importing this
     module is always safe, and no live behaviour changes until an operator
     flips the flag.
     """

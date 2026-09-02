@@ -40,6 +40,10 @@ class OcrQualitySignals:
     confidence_reported: bool = True
 
 
+_FLOOR_TIERS: frozenset[str] = frozenset({OcrRoutingTier.SpotCheck.value, OcrRoutingTier.MandatoryReview.value})
+_NON_THRESHOLD_FIELDS: frozenset[str] = frozenset({"calibrated_from", "floor_tier"})
+
+
 @dataclass(frozen=True, slots=True)
 class OcrRoutingThresholds:
     """Routing thresholds, and a statement of where they came from.
@@ -82,6 +86,17 @@ class OcrRoutingThresholds:
     #: threshold, so it is skipped by the range check below.
     calibrated_from: str | None = None
 
+    #: Worst tier a page may auto-route to under this set: ``"spot_check"``
+    #: or ``"mandatory_review"``. Added 2026-09-02 for engines that report
+    #: no confidence (Cohere Parse, ADR-0019): with the confidence bands
+    #: skipped, a clean page auto-accepts on content signals alone, and
+    #: there is no threshold value that can express "never auto-accept
+    #: this engine until it is calibrated" — every rule is a strict
+    #: inequality a clean page satisfies. This is that switch, per engine
+    #: via ``by_ocr_method``. Not a threshold, so it too skips the range
+    #: check.
+    floor_tier: str | None = None
+
     @property
     def is_calibrated(self) -> bool:
         """True only when an artefact was named.
@@ -92,9 +107,11 @@ class OcrRoutingThresholds:
         return bool((self.calibrated_from or "").strip())
 
     def __post_init__(self) -> None:
+        if self.floor_tier is not None and self.floor_tier not in _FLOOR_TIERS:
+            raise ValueError(f"floor_tier must be one of {sorted(_FLOOR_TIERS)} or null")
         for field in fields(self):
             name = field.name
-            if name == "calibrated_from":
+            if name in _NON_THRESHOLD_FIELDS:
                 continue
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
@@ -293,11 +310,18 @@ def assess_ocr_quality(
         max_repeated=thresholds.spot_check_max_repeated_character_ratio,
         max_duplicates=thresholds.spot_check_max_seam_duplicate_ratio,
     )
-    if spot_check_reasons:
+    if thresholds.floor_tier == OcrRoutingTier.MandatoryReview.value:
+        return OcrQualityAssessment(
+            signals,
+            OcrRoutingTier.MandatoryReview,
+            (*spot_check_reasons, "floor_tier"),
+            calibrated,
+        )
+    if spot_check_reasons or thresholds.floor_tier == OcrRoutingTier.SpotCheck.value:
         return OcrQualityAssessment(
             signals,
             OcrRoutingTier.SpotCheck,
-            spot_check_reasons,
+            spot_check_reasons or ("floor_tier",),
             calibrated,
         )
 
@@ -331,7 +355,7 @@ def load_routing_thresholds_from_env(
           "catastrophic_max_mean_confidence": 0.30, ...,
           "by_ocr_method": {
             "tesseract":    {"spot_check_min_mean_confidence": 0.72, ...},
-            "cohere_parse": {"spot_check_max_gibberish_word_ratio": 0.0, ...}
+            "cohere_parse": {"floor_tier": "spot_check"}
           }
         }
 
@@ -346,9 +370,9 @@ def load_routing_thresholds_from_env(
         Cohere Parse (ADR-0019) reports none, so its pages carry
         ``confidence_reported=False`` and the confidence keys in its block
         are simply never consulted. A ``cohere_parse`` block therefore
-        states only content-signal keys — e.g. a
-        ``spot_check_max_gibberish_word_ratio`` of 0.0 keeps every Parse
-        page in spot-check until a calibration artefact exists.
+        states only content-signal keys — and, until a calibration artefact
+        exists, ``"floor_tier": "spot_check"`` keeps every Parse page out
+        of auto-accept regardless of how clean its text looks.
 
         The shape is available; the numbers still have to be measured.
         Nothing here invents them.

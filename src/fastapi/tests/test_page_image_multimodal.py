@@ -102,12 +102,12 @@ class TestTextPageDetection:
     def test_ocr_pages_are_not_counted_as_text_pages(self) -> None:
         """A page that needed OCR is exactly the page worth embedding.
 
-        document_intelligence / tesseract pages are maps, plates and scanned
+        cohere_parse / tesseract pages are maps, plates and scanned
         inserts — the picture carries what the text does not.
         """
         sections = [
             {"page_first": 1, "page_last": 2, "ocr_method": "fitz_native"},
-            {"page_first": 3, "page_last": 3, "ocr_method": "document_intelligence"},
+            {"page_first": 3, "page_last": 3, "ocr_method": "cohere_parse"},
             {"page_first": 4, "page_last": 4, "ocr_method": "tesseract"},
             {"page_first": 5, "page_last": 5, "ocr_method": "pdfplumber_native"},
         ]

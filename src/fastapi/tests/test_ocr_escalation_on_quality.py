@@ -1,21 +1,29 @@
-"""The OCR escalation ladder fired on an empty page, never on an unusable one.
+"""The OCR ladder falls through on an unusable page, never accepts it silently.
 
-`_ocr_single_page` computed a full quality assessment for whatever Document
-Intelligence returned and then branched on `result.text.strip()` alone. So a
-page that came back as fragmented tokens at catastrophic confidence -- the
-ordinary outcome for a skewed 1970s plan sheet, and precisely the page the
-tiled escalation exists for -- was accepted, stored, embedded and cited,
-while the escalation sat one branch away. The assessment was attached to the
-return value and read by nobody at that point.
+`_ocr_single_page` computes a full quality assessment for whatever the
+remote engine returned and reads its tier before accepting the page. The
+router's word for unusable is `catastrophic_failure`: reached by empty
+output, by mean confidence at or below `catastrophic_max_mean_confidence`,
+or by output coverage at or below `catastrophic_max_coverage_ratio` — and
+the latter two only when routing thresholds are calibrated, and the
+confidence one only when the engine reports confidence at all.
 
-The router already had a word for this: `catastrophic_failure`. It is
-reached by empty output, by mean confidence at or below
-`catastrophic_max_mean_confidence`, or by output coverage at or below
-`catastrophic_max_coverage_ratio` -- and the latter two only when routing
-thresholds are calibrated. That is what makes reading the tier safe rather
-than expensive: on an uncalibrated deployment every page routes to
-`mandatory_review` by design, so escalating on THAT would fire four or more
-billed DI requests per page of every document.
+Since ADR-0019 the engine is Cohere Parse, which reports NO confidence.
+That collapses the catastrophic tier for Parse pages to "empty output", and
+it is what lets the ladder lose its former middle rung (bounded raster
+tiles reconstructed from word polygons, which Parse cannot supply): a Parse
+page is either non-empty — accepted, with its assessment attached so the
+router can still route it to review on content signals — or empty/failed,
+in which case tesseract is the floor.
+
+What is pinned here:
+
+  1. The trigger: catastrophic is a trigger, mandatory_review is not (the
+     cost guard: an uncalibrated deployment routes EVERY page to review).
+  2. The ladder has exactly two rungs: engine, then tesseract.
+  3. The grouped short-circuit (`_usable_batched_page`) makes the same
+     decision as the per-page path, and a page it declines is re-driven
+     WITHOUT a second billed request.
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ from app.services.ingest.ocr_quality import (
     calculate_ocr_quality,
     load_routing_thresholds_from_env,
 )
+from app.services.ingest.ocr_types import PageOcrResult
 from app.services.ingest.pdf_report import _is_catastrophic_assessment
 
 CALIBRATED = {
@@ -53,11 +62,15 @@ CALIBRATED = {
 # What a 3-degree skew does to a page of text under `--psm 3`.
 SHREDDED = "Th e re su lt s of th e dr il li ng pr og ra m me"
 CLEAN = "The results of the drilling programme are summarised in Table 14-1."
+# Repeated-character smear: trips the content rules without any confidence.
+SMEARED = "aaaaaa bbbbbb cccccc dddddd eeeeee ffffff"
 
 
-def _assess(text: str, confidence: float, thresholds) -> dict:
+def _assess(text: str, confidence: float | None, thresholds) -> dict:
     signals = calculate_ocr_quality(
-        text, [confidence] * 12, detected_region_count=12
+        text,
+        None if confidence is None else [confidence] * 12,
+        detected_region_count=0 if confidence is None else 12,
     )
     return {"tier": assess_ocr_quality(signals, thresholds).tier.value}
 
@@ -69,7 +82,8 @@ def calibrated(monkeypatch):
 
 
 class TestTheEscalationTrigger:
-    def test_a_shredded_page_now_escalates(self, calibrated) -> None:
+    def test_a_shredded_page_with_confidence_escalates(self, calibrated) -> None:
+        """Tesseract still reports confidence; the old trigger still fires for it."""
         assert _is_catastrophic_assessment(_assess(SHREDDED, 0.18, calibrated))
 
     def test_a_clean_page_does_not(self, calibrated) -> None:
@@ -77,13 +91,24 @@ class TestTheEscalationTrigger:
 
     def test_an_empty_page_still_does(self, calibrated) -> None:
         assert _is_catastrophic_assessment(_assess("", 0.0, calibrated))
+        assert _is_catastrophic_assessment(_assess("", None, calibrated))
+
+    def test_without_confidence_only_empty_output_is_catastrophic(self, calibrated) -> None:
+        """Parse pages have no confidence to be catastrophic ON.
+
+        A smeared read is still routed to review — by the content rules —
+        but it is kept, because the only engine below it is tesseract and
+        that read carries no table structure.
+        """
+        assert not _is_catastrophic_assessment(_assess(SMEARED, None, calibrated))
+        assert _assess(SMEARED, None, calibrated)["tier"] == "mandatory_review"
 
     def test_mandatory_review_is_deliberately_not_a_trigger(self) -> None:
         """The cost guard.
 
         With no calibration every page routes to mandatory_review, so
-        treating that as an escalation signal would tile every page of
-        every document -- four or more billed DI requests each.
+        treating that as an escalation signal would re-drive every page of
+        every document through the fallback engine.
         """
         uncalibrated = _assess(SHREDDED, 0.18, None)
 
@@ -95,8 +120,8 @@ class TestTheEscalationTrigger:
         assert not _is_catastrophic_assessment({})
 
 
-class TestTheLadderKeepsItsFloor:
-    """Escalating must never lose the read it started from."""
+class TestTheLadderHasTwoRungs:
+    """Structure, not prose: engine → tesseract, nothing in between."""
 
     @staticmethod
     def _ladder_source() -> str:
@@ -106,108 +131,106 @@ class TestTheLadderKeepsItsFloor:
 
         return " ".join(inspect.getsource(_ocr_single_page).split())
 
-    def test_a_catastrophic_di_read_is_kept_when_tiles_do_no_better(self) -> None:
-        """DI is the only one of the two that carries table structure.
-
-        Falling through to tesseract here would trade a poor read that has
-        tables for a poor read that has none.
-        """
+    def test_a_failed_request_falls_through_to_tesseract(self) -> None:
         src = self._ladder_source()
 
-        # Structure, not prose: after the tiled attempt the DI read is
-        # returned rather than falling through to the tesseract block.
-        assert "if di_assessment is not None:" in src
-        assert "routing it to review" in src
+        assert "if not result.request_succeeded:" in src
+        assert "falling back to tesseract" in src
 
-    def test_an_empty_di_read_still_takes_any_tiled_text(self) -> None:
-        """The pre-existing contract for the empty case is unchanged.
+    def test_the_tiled_rung_is_gone(self) -> None:
+        """Parse returns no word polygons, so tiles cannot be reconstructed."""
+        import app.services.ingest.pdf_report as pdf_report
 
-        Requiring tiles to clear the quality bar when DI returned nothing
-        would be a regression: any text beats no text.
-        """
-        src = self._ladder_source()
+        assert not hasattr(pdf_report, "_ocr_tiled_pdf_page")
+        assert "tiled" not in self._ladder_source().replace("The Document Intelligence era had a third", "")
 
-        assert "di_assessment is None or not _is_catastrophic_assessment(" in src
+    def test_a_skipped_page_is_the_empty_sentinel_not_a_request(self, monkeypatch) -> None:
+        """A group already paid for this page and got nothing back."""
+        from unittest.mock import patch
+
+        from app.services.ingest import pdf_report
+
+        monkeypatch.setenv("OCR_ENGINE", "cohere_parse")
+
+        with patch.object(pdf_report, "_engine_single_page_request") as single, \
+             patch.object(pdf_report, "_ocr_budget_take") as budget, \
+             patch.dict("sys.modules", {"pytesseract": None, "pdf2image": None}):
+            out = pdf_report._ocr_single_page(
+                "/nonexistent.pdf", 4,
+                return_confidence=True, return_assessment=True,
+                skip_engine_page_request=True,
+            )
+
+        single.assert_not_called()
+        budget.assert_not_called()
+        # Tesseract is absent too, so the page comes back empty with the
+        # engine's provenance — it DID run, inside the group.
+        assert out[0] == ""
+        assert out[2]["ocr_method"] == "cohere_parse"
 
 
-class TestTheBatchedShortCircuitUsesTheSameTrigger:
-    """The batched paths had the bug this module fixed, one level up.
-
-    Batching (2026-08-20 for whole scans, 2026-08-23 for mixed documents)
-    added two more places where a Document Intelligence read is accepted,
-    and both accepted it on `text.strip()` alone -- computing the very
-    assessment `_ocr_single_page` reads and then only attaching it to the
-    return value. So the fix above held for a page DI was asked about
-    individually and not for the same page inside a block, which on a
-    scanned report is every page.
-
-    `_usable_batched_page` is now the single decision both callers make.
-    """
+class TestTheGroupedShortCircuitUsesTheSameTrigger:
+    """`_usable_batched_page` is the single decision both callers make."""
 
     @staticmethod
-    def _page(text: str, confidence: float):
-        from app.services.ingest.document_intelligence_client import PageOcrResult
-
+    def _page(text: str, confidence: float | None):
         return PageOcrResult(
             text,
-            confidence,
-            detected_region_count=12,
+            0.0 if confidence is None else confidence,
+            detected_region_count=0 if confidence is None else 12,
             tables=[[["Au g/t", "1.2"]]],
+            confidence_reported=confidence is not None,
         )
 
-    def _usable(self, text: str, confidence: float):
+    def _usable(self, text: str, confidence: float | None):
         from app.services.ingest.pdf_report import _usable_batched_page
 
         return _usable_batched_page(
             self._page(text, confidence), page_num=7, pdf_path="/scan.pdf"
         )
 
-    def test_a_shredded_batched_page_is_not_accepted(self, calibrated) -> None:
-        # None means "drive this page individually", which is where the
-        # bounded raster tiles are. Before this, the shredded read was
-        # returned and stored.
-        assert self._usable(SHREDDED, 0.18) is None
+    def test_a_smeared_parse_page_is_accepted_and_routed_to_review(self, calibrated) -> None:
+        """No confidence to escalate on; the content rules do the routing."""
+        usable = self._usable(SMEARED, None)
 
-    def test_a_clean_batched_page_is_accepted_with_its_tables(
-        self, calibrated
-    ) -> None:
-        usable = self._usable(CLEAN, 0.96)
+        assert usable is not None
+        _text, _confidence, assessment, _tables = usable
+        assert assessment["tier"] == "mandatory_review"
+        assert "repeated_character_ratio" in assessment["reasons"]
+        assert assessment["signals"]["confidence_reported"] is False
+
+    def test_a_clean_page_is_accepted_with_its_tables(self, calibrated) -> None:
+        usable = self._usable(CLEAN, None)
 
         assert usable is not None
         text, confidence, assessment, tables = usable
         assert text == CLEAN
-        assert confidence == 0.96
-        # The tables are the reason the DI read is worth keeping at all --
-        # the tesseract fallback carries none.
+        assert confidence == 0.0
+        # The tables are the reason the engine read is worth keeping at all
+        # -- the tesseract fallback carries none.
         assert tables == [[["Au g/t", "1.2"]]]
-        assert assessment["ocr_method"] == "document_intelligence"
+        assert assessment["ocr_method"] == "cohere_parse"
+        assert assessment["tier"] == "auto_accept"
 
-    def test_an_empty_batched_page_is_not_accepted(self, calibrated) -> None:
-        assert self._usable("", 0.0) is None
+    def test_an_empty_page_is_not_accepted(self, calibrated) -> None:
+        assert self._usable("", None) is None
 
-    def test_a_page_the_batch_never_answered_is_not_accepted(self) -> None:
+    def test_a_page_the_group_never_answered_is_not_accepted(self) -> None:
         from app.services.ingest.pdf_report import _usable_batched_page
 
         assert _usable_batched_page(None, page_num=7, pdf_path="/scan.pdf") is None
 
-    def test_an_uncalibrated_deployment_still_accepts_a_poor_read(self) -> None:
-        """The cost guard, restated on this path.
+    def test_a_confidence_reporting_engine_on_this_seam_still_escalates(self, calibrated) -> None:
+        """Guard for a future engine that does report confidence."""
+        assert self._usable(SHREDDED, 0.18) is None
 
-        With no thresholds every page routes to mandatory_review. If that
-        counted as unusable, batching would fall through to per-page tiles
-        for every page of every document -- the opposite of what batching
-        is for.
-        """
-        assert self._usable(SHREDDED, 0.18) is not None
+    def test_an_uncalibrated_deployment_still_accepts_a_poor_read(self) -> None:
+        assert self._usable(SMEARED, None) is not None
 
 
 @pytest.fixture
 def stub_page_count():
-    """pdf2image.pdfinfo_from_path without requiring pdf2image.
-
-    The function under test imports it lazily and the poppler wrapper is
-    absent from some images.
-    """
+    """pdf2image.pdfinfo_from_path without requiring pdf2image."""
     import sys
     import types
 
@@ -224,51 +247,47 @@ def stub_page_count():
         sys.modules.pop("pdf2image", None)
 
 
-class TestABatchedPageReachesTheLadder:
-    """End to end: the block's answer, the trigger, and the escalation.
+class TestAGroupedPageReachesTheLadder:
+    """End to end: the group's answer, the trigger, and the fall-through.
 
-    The unit test above proves `_usable_batched_page` says no. This proves
-    the caller then does the thing saying no is FOR -- re-drives the page
-    through `_ocr_single_page`, which starts at the bounded raster tiles --
-    and that it does not do so for the clean page beside it, which would
-    turn one billed request per block back into one per page.
+    An empty page in a good group is re-driven through `_ocr_single_page`
+    with the skip flag (no second billed request); the non-empty page
+    beside it is not re-driven at all.
     """
 
-    def test_a_shredded_block_page_is_re_driven_and_a_clean_one_is_not(
+    def test_an_empty_group_page_is_re_driven_and_a_clean_one_is_not(
         self, calibrated, stub_page_count, monkeypatch
     ) -> None:
         from unittest.mock import patch
 
         from app.services.ingest import pdf_report
-        from app.services.ingest.document_intelligence_client import PageOcrResult
 
         stub_page_count(2)
         block = {
-            1: PageOcrResult(SHREDDED, 0.18, detected_region_count=12),
-            2: PageOcrResult(CLEAN, 0.96, detected_region_count=12),
+            1: PageOcrResult("", 0.0, confidence_reported=False),
+            2: PageOcrResult(CLEAN, 0.0, confidence_reported=False),
         }
         rescued: list[tuple[int, bool]] = []
 
         def fake_single(_path, page_num, **kwargs):
-            rescued.append((page_num, kwargs.get("skip_di_page_request", False)))
+            rescued.append((page_num, kwargs.get("skip_engine_page_request", False)))
             return (
-                f"TILED-{page_num}",
-                0.91,
+                f"TESS-{page_num}",
+                0.71,
                 pdf_report._assess_ocr_result(
-                    CLEAN, [0.91] * 12,
+                    CLEAN, [0.71] * 12,
                     detected_region_count=12,
-                    ocr_method="document_intelligence",
+                    ocr_method="tesseract",
                 ),
                 [],
             )
 
-        with patch.object(pdf_report, "_ocr_page_block_di", return_value=block), \
+        with patch.object(pdf_report, "_ocr_page_block", return_value=block), \
              patch.object(pdf_report, "_ocr_single_page", side_effect=fake_single), \
              patch.object(pdf_report, "_postprocess_ocr_text", side_effect=lambda t: t):
-            result = pdf_report._attempt_ocr_document_intelligence("/scan.pdf")
+            result = pdf_report._attempt_ocr_cohere_parse("/scan.pdf")
 
-        # Page 1 only, and without a second billed DI page request: the
-        # block already paid for it.
         assert rescued == [(1, True)]
-        assert result.pages[0].text == "TILED-1"
+        assert result.pages[0].text == "TESS-1"
         assert result.pages[1].text == CLEAN
+        assert result.parser_used == "ocr_mixed"

@@ -369,7 +369,7 @@ class TestParserUsedStillMatchesTheParser:
         assert "'pdfminer.six'" in src
         assert "pdfminer.high_level" in src
         for other in ("pypdfium2", "pdfplumber", "import fitz", "tesseract",
-                      "document_intelligence"):
+                      "document_intelligence", "cohere_parse"):
             assert other not in src, (
                 other + " appeared in pdf_ingester — parser_used='pdfminer.six'"
                 " is now a guess and must become a parameter"

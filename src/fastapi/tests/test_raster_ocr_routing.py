@@ -3,7 +3,7 @@
 ADR-0005's reasoning is sound for a scanned map sheet: it is a picture of
 a page with text on it, so wrap it and let the §04p stack read it. It is
 wrong for a DEM, an airborne magnetics grid or a multispectral scene.
-Those have no text, so Document Intelligence bills for reading a
+Those have no text, so the remote OCR engine bills for reading a
 continuous-tone surface, and whatever character noise comes back is
 chunked, embedded and indexed as retrievable passages that then compete in
 the recall set of every future query — with a citation attached.
@@ -93,7 +93,7 @@ class TestWhatCountsAsMeasurementData:
 
     def test_an_unreadable_band_list_keeps_ocr(self) -> None:
         """Conservative in the ambiguous direction: a false skip loses a
-        real map, a false OCR only wastes a Document Intelligence call."""
+        real map, a false OCR only wastes a Cohere Parse call."""
         assert _is_measurement_raster(_Raster("EPSG:4326", [])) is False
 
     def test_one_eight_bit_band_is_enough_to_keep_ocr(self) -> None:
