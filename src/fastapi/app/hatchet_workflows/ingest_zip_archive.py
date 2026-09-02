@@ -509,19 +509,35 @@ async def run_zip_ingest(
                 error_text=terminal_error,
             )
 
-        # The archive's ingest_progress row closes with the same accounting.
-        # Not broadcast: each member the archive handed off is its own run,
-        # and those runs already notify the UI and bump data_version when
-        # they land; a second toast for the wrapper would only say the
-        # same thing again. The Ingestion Runs poll reads the row directly.
+        # The archive's ingest_progress row closes with the same accounting,
+        # and Laravel is told — the same duty every other workflow discharges
+        # (tests/test_ingest_completion_reaches_the_ui.py). The members the
+        # archive handed off are their own runs and announce their own rows;
+        # this broadcast is what flips the archive's line on the Ingestion
+        # Runs page and carries its warnings to the toast.
         if progress_run_id:
-            await ingest_progress.mark_completed_by_run(
-                run_id=progress_run_id,
-                rows_written=sum(counts[k] for k in _DISPATCHED_COUNT_KEYS),
-                warnings=_archive_warnings(
-                    total=total, counts=counts, errors=errors, unhandled=unhandled,
-                ),
+            dispatched = sum(counts[k] for k in _DISPATCHED_COUNT_KEYS)
+            archive_warnings = _archive_warnings(
+                total=total, counts=counts, errors=errors, unhandled=unhandled,
             )
+            transitioned = await ingest_progress.mark_completed_by_run(
+                run_id=progress_run_id,
+                rows_written=dispatched,
+                warnings=archive_warnings,
+            )
+            if transitioned:
+                await ingest_progress.broadcast_terminal(
+                    workspace_id=input.workspace_id,
+                    project_id=input.project_id,
+                    run_id=progress_run_id,
+                    stage="persist",
+                    status=ingest_progress.terminal_status(
+                        rows_written=dispatched, warnings=archive_warnings,
+                    ),
+                    message=_archive_message(
+                        dispatched=dispatched, total=total, warnings=archive_warnings,
+                    ),
+                )
 
     # ── 5. Derive lithology / interval strip logs from the LAS curves ──────
     # gold.drillhole_intervals_visual — the lithology strip logs, ore-band
@@ -606,6 +622,30 @@ async def _progress_row_lifecycle(progress_run_id: str | None):
 def _names(items: list[str], limit: int = 5) -> str:
     shown = ", ".join(items[:limit])
     return f"{shown} (+{len(items) - limit} more)" if len(items) > limit else shown
+
+
+def _archive_message(
+    *, dispatched: int, total: int, warnings: list[dict[str, str]],
+) -> str:
+    """The completion toast for an archive, in the archive's own unit.
+
+    ``_progress.terminal_message`` says "N rows written"; an archive writes
+    no rows of its own — it hands member files to their ingesters, and each
+    of those reports its rows on its own run. Capped at 500 characters, the
+    Laravel endpoint's validation limit on ``message``.
+    """
+    if total == 0:
+        head = "The archive held no files"
+    else:
+        head = (
+            f"{dispatched} of {total} member file(s) handed to their "
+            "ingesters; each appears as its own run"
+        )
+    if not warnings:
+        return head[:500]
+    first = str(warnings[0].get("detail") or warnings[0].get("code") or "").strip()
+    more = f" (+{len(warnings) - 1} more)" if len(warnings) > 1 else ""
+    return f"{head} — {first}{more}"[:500]
 
 
 def _archive_warnings(

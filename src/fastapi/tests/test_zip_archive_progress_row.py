@@ -114,6 +114,29 @@ def test_workflow_closes_the_row_with_the_archive_accounting() -> None:
         "ingester — the sum over _DISPATCHED_COUNT_KEYS"
     )
     assert "_archive_warnings(" in body
+    assert "ingest_progress.broadcast_terminal(" in body, (
+        "a completion that is not broadcast is terminal in Postgres and "
+        "nowhere else — see test_ingest_completion_reaches_the_ui.py"
+    )
+
+
+def test_archive_message_speaks_in_member_files() -> None:
+    assert (
+        module._archive_message(dispatched=3, total=4, warnings=[])
+        == "3 of 4 member file(s) handed to their ingesters; each appears as its own run"
+    )
+    assert module._archive_message(dispatched=0, total=0, warnings=[]).startswith(
+        "The archive held no files"
+    )
+    with_warning = module._archive_message(
+        dispatched=1,
+        total=2,
+        warnings=[{"code": "x", "detail": "one was left out"}, {"code": "y"}],
+    )
+    assert with_warning.endswith("— one was left out (+1 more)")
+    assert len(module._archive_message(
+        dispatched=1, total=1, warnings=[{"code": "z", "detail": "d" * 900}],
+    )) <= 500
 
 
 def test_failure_hook_closes_the_row_before_the_archive_run() -> None:
