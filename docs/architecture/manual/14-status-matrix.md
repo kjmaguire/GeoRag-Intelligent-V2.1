@@ -212,9 +212,9 @@ the rest of the manual mentions.
 |---|---|---|
 | `AGENTIC_RETRIEVAL_V2_ENABLED` | false (dev: true) | Use §04j LangGraph instead of legacy linear RAG |
 | `GEO_ANSWER_OIUR_ENABLED` | false (dev: true) | Wrap answers in OIUR envelope |
-| `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` | unset | Enables Azure Document Intelligence as primary scanned-page OCR |
-| `AZURE_DOCUMENT_INTELLIGENCE_KEY` | unset | Credential for Azure Document Intelligence |
-| `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Azure is unavailable or empty |
+| `OCR_ENGINE` | tesseract (compose: cohere_parse) | Selects Cohere Parse v5 on Azure AI Foundry as primary scanned-page OCR (ADR-0019) |
+| `AZURE_FOUNDRY_PARSE_DEPLOYMENT` | unset | Foundry deployment name for Parse; endpoint/key are the shared `AZURE_FOUNDRY_*` |
+| `PDF_PARSER_TESSERACT_FALLBACK_ENABLED` | true | Fall back to Tesseract when Parse is unavailable or empty |
 | `OCR_ROUTING_THRESHOLDS_JSON` | unset | Calibrated multi-signal routing bands; unset fails closed to review |
 | `P04P_DUAL_WRITE_ENABLED` | false | Run legacy parser in parallel for A/B |
 | `CITATION_SPAN_RESOLVER_ENABLED` | false | Enable inline citation span resolver |

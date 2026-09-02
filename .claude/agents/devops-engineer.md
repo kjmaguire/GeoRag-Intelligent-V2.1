@@ -40,7 +40,7 @@ and do not write compose services, Helm templates, or runbook steps for them:
 | Dagster daemon + webserver | 2026-07-28 | Hatchet workflows |
 | Kestra, Caddy | 2026-07-28 | nothing |
 | Prometheus, Alertmanager, Grafana, Loki, Promtail, Tempo, OTel collector, exporters | 2026-07-28 | Azure Monitor + Log Analytics |
-| RAGFlow, then Docling/PaddleOCR | ADR-0002, 2026-07-29 | in-process PDF stack + Azure Document Intelligence + Tesseract |
+| RAGFlow, then Docling/PaddleOCR | ADR-0002, 2026-07-29 | in-process PDF stack + Cohere Parse v5 (Foundry, ADR-0019; replaced Azure Document Intelligence 2026-09-02) + Tesseract |
 | Ollama | 2026-05-17 | — |
 | self-hosted vLLM service | 2026-07-30 | Azure AI Foundry (Cohere Command A+) |
 | Ofelia + the backup agent | 2026-08-19/23 | Azure PITR for Postgres; see the gap note below |

@@ -126,7 +126,7 @@ Every container in the stack, grouped by tier. All line references point into
   ([docker-compose.yml:1918-1923](../../../docker-compose.yml)).
 - **Direct DB** Uses `POSTGRES_DIRECT_HOST=postgresql` not pgbouncer — needed
   for transactions and `SET LOCAL` GUCs to work cleanly.
-- **OCR / PDF env** Azure Document Intelligence endpoint/key,
+- **OCR / PDF env** `OCR_ENGINE=cohere_parse` + `AZURE_FOUNDRY_PARSE_DEPLOYMENT` (Foundry endpoint/key shared with the embedder),
   `PDF_PARSER_TESSERACT_FALLBACK_ENABLED=true`,
   `OCR_ROUTING_THRESHOLDS_JSON`, `PDF_PARSE_PAGE_WORKERS=4`, and
   `PARSE_SUBPROCESS_MAX_WORKERS` (empty default → `min(os.cpu_count(), 4)`).

@@ -251,17 +251,17 @@ GRANT EXECUTE ON FUNCTION silver.collars_by_project, silver.traces_by_project,
 <tr><td>pypdfium2 (called <code>fitz</code> in the code)</td><td class="responsibilities">Primary text + page-bbox extractor (5&ndash;10&times; faster than pdfplumber for text). <em>This row said PyMuPDF until 2026-08-22; PyMuPDF was removed on 2026-05-27 over its AGPL-3.0 licence and the <code>fitz</code> name survives only as the internal label &mdash; see <code>_parse_with_fitz</code> and the note in <code>src/fastapi/pyproject.toml</code>.</em></td></tr>
 <tr><td>pdfplumber</td><td class="responsibilities">Parallel multiprocessing pool (4 workers default). Column-aware text extraction, dual-pass table probe (lines + text strategies, every page, SHA1-deduped).</td></tr>
 <tr><td>pypdfium2</td><td class="responsibilities">Page rendering for figure extraction + OCR rasterisation.</td></tr>
-<tr><td>Azure Document Intelligence</td><td class="responsibilities">Primary OCR for scanned pages. Oversized rasters are losslessly tiled below Azure's 10,000 px dimension cap; polygons are remapped and seam duplicates removed.</td></tr>
-<tr><td>Tesseract (last-resort OCR)</td><td class="responsibilities"><code>psm=3</code> multi-column fallback when Azure is unavailable or yields empty output. Word-level confidence and page provenance are retained.</td></tr>
-<tr><td>OCR quality routing</td><td class="responsibilities">Mean/median confidence, low-confidence word ratio, coverage, empty output, seam duplicates, gibberish, and repeated characters route pages into catastrophic, mandatory-review, spot-check, or auto-accept tiers. Review-required pages enter <code>silver.review_queue</code>.</td></tr>
+<tr><td>Cohere Parse v5 (Azure AI Foundry, <code>Cohere-parse-v5</code>)</td><td class="responsibilities">Primary OCR for scanned pages since 2026-09-02 (ADR-0019; replaced Azure Document Intelligence). A vision-language document parser on the same Foundry resource and key as the LLM/embedder: one rendered page image per request under <code>COHERE_PARSE_MAX_PIXELS</code>, reading-order text back, tables as HTML (converted to grids and to <code>Table (OCR, page N, #k)</code> sections). Returns <strong>no word confidence and no polygons</strong>: pages persist <code>ocr_confidence = NULL</code> with <code>ocr_method = 'cohere_parse'</code>, and oversized plan sheets are downscaled rather than tiled. Preview SKU on Foundry — retirement listed 2026-12-15.</td></tr>
+<tr><td>Tesseract (last-resort OCR)</td><td class="responsibilities"><code>psm=3</code> multi-column fallback when Parse is unavailable, unconfigured, over budget, or yields empty output. Word-level confidence and page provenance are retained.</td></tr>
+<tr><td>OCR quality routing</td><td class="responsibilities">Mean/median confidence, low-confidence word ratio, coverage, empty output, seam duplicates, gibberish, and repeated characters route pages into catastrophic, mandatory-review, spot-check, or auto-accept tiers. Engines that report no confidence (<code>confidence_reported=false</code>) are judged on the content signals only, with an optional per-engine <code>floor_tier</code> that keeps them out of auto-accept until calibrated. Review-required pages enter <code>silver.review_queue</code>.</td></tr>
 </tbody></table>
 
 <p style="font-size:13px;font-weight:600;margin:14px 0 6px">Dispatch order inside <code>parse_pdf_report</code></p>
 <pre>parse_pdf_report(path)
-&#9500;&#9472; PyMuPDF / fitz (default primary)
-&#9474;    &rarr; per-page Azure OCR on pages &lt; 80 chars
-&#9474;    &rarr; oversized raster &rarr; lossless tiles &rarr; polygon remap + seam dedupe
-&#9474;    &rarr; Azure unavailable/empty &rarr; Tesseract psm=3 fallback
+&#9500;&#9472; pypdfium2 / fitz (default primary)
+&#9474;    &rarr; per-page Cohere Parse OCR on pages &lt; 80 chars (grouped, OCR_PAGES_PER_BATCH)
+&#9474;    &rarr; oversized raster &rarr; downscaled to COHERE_PARSE_MAX_PIXELS (no tiling)
+&#9474;    &rarr; Parse unavailable/failed/empty &rarr; Tesseract psm=3 fallback
 &#9474;    &rarr; &lt;200 chars total or exception &rarr; fall through
 &#9500;&#9472; pdfplumber (parallel pool, 4 workers)
 &#9474;    &rarr; shared per-page OCR path on short pages

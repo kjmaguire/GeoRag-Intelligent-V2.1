@@ -1744,14 +1744,20 @@ services:
       HOME: /tmp
       # Ingest parser and OCR configuration.
       PDF_PARSER_TESSERACT_FALLBACK_ENABLED: ${PDF_PARSER_TESSERACT_FALLBACK_ENABLED:-true}
-      # OCR engine parity with the live Azure Container Apps env — Azure
-      # Document Intelligence is the primary engine there; tesseract stays
-      # the in-container fallback. Endpoint/key default empty so the DI
-      # adapter raises its NotConfigured error loudly instead of the
-      # engine silently no-oping.
-      OCR_ENGINE: ${OCR_ENGINE:-azure_document_intelligence}
-      AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: ${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT:-}
-      AZURE_DOCUMENT_INTELLIGENCE_KEY: ${AZURE_DOCUMENT_INTELLIGENCE_KEY:-}
+      # OCR engine parity with the live Azure Container Apps env — Cohere
+      # Parse v5 on Azure AI Foundry is the primary engine (ADR-0019);
+      # tesseract stays the in-container fallback. The deployment name
+      # defaults empty so the adapter raises its NotConfigured error
+      # loudly (CRITICAL) instead of the engine silently no-oping. The
+      # Foundry endpoint/key are injected below with the embed block.
+      OCR_ENGINE: ${OCR_ENGINE:-cohere_parse}
+      AZURE_FOUNDRY_PARSE_DEPLOYMENT: ${AZURE_FOUNDRY_PARSE_DEPLOYMENT:-}
+      COHERE_PARSE_TIMEOUT_S: ${COHERE_PARSE_TIMEOUT_S:-120}
+      COHERE_PARSE_MAX_PIXELS: ${COHERE_PARSE_MAX_PIXELS:-4000000}
+      COHERE_PARSE_OUTPUT_FORMAT: ${COHERE_PARSE_OUTPUT_FORMAT:-blocks}
+      COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS: ${COHERE_PARSE_INCLUDE_IMAGE_DESCRIPTIONS:-0}
+      OCR_PAGES_PER_BATCH: ${OCR_PAGES_PER_BATCH:-8}
+      OCR_MAX_PAGES_PER_DOC: ${OCR_MAX_PAGES_PER_DOC:-300}
       # OCR routing thresholds (ocr_quality.OcrRoutingThresholds schema).
       # Without this var every OCR page fail-closes to review_required
       # ("routing_thresholds_not_calibrated") — pure noise.
@@ -1762,10 +1768,15 @@ services:
       # NOT CALIBRATED, despite what this comment said until 2026-08-21.
       # These are round numbers chosen by hand with no artefact behind them.
       # Add "calibrated_from": "<path>" once real ones exist; see the long
-      # note on OCR_ROUTING_THRESHOLDS_JSON in .env.example for why the
-      # single 0.90 cut-off is wrong for BOTH engines at once and how to
-      # express per-engine bands.
-      OCR_ROUTING_THRESHOLDS_JSON: '${OCR_ROUTING_THRESHOLDS_JSON:-{"catastrophic_max_mean_confidence":0.30,"catastrophic_max_coverage_ratio":0.20,"mandatory_min_mean_confidence":0.60,"mandatory_min_median_confidence":0.60,"mandatory_max_low_confidence_word_ratio":0.40,"mandatory_min_coverage_ratio":0.50,"mandatory_max_gibberish_word_ratio":0.30,"mandatory_max_repeated_character_ratio":0.20,"mandatory_max_seam_duplicate_ratio":0.20,"spot_check_min_mean_confidence":0.90,"spot_check_min_median_confidence":0.90,"spot_check_max_low_confidence_word_ratio":0.10,"spot_check_min_coverage_ratio":0.80,"spot_check_max_gibberish_word_ratio":0.10,"spot_check_max_repeated_character_ratio":0.05,"spot_check_max_seam_duplicate_ratio":0.05}}'
+      # note on OCR_ROUTING_THRESHOLDS_JSON in .env.example for why one
+      # cut-off cannot serve engines that report confidence differently
+      # (or not at all) and how to express per-engine bands.
+      #
+      # Cohere Parse (ADR-0019) reports no confidence, so its confidence
+      # bands are skipped and a clean page would auto-accept on content
+      # signals alone. "floor_tier": "spot_check" keeps every Parse page
+      # out of auto-accept until a Parse calibration artefact exists.
+      OCR_ROUTING_THRESHOLDS_JSON: '${OCR_ROUTING_THRESHOLDS_JSON:-{"catastrophic_max_mean_confidence":0.30,"catastrophic_max_coverage_ratio":0.20,"mandatory_min_mean_confidence":0.60,"mandatory_min_median_confidence":0.60,"mandatory_max_low_confidence_word_ratio":0.40,"mandatory_min_coverage_ratio":0.50,"mandatory_max_gibberish_word_ratio":0.30,"mandatory_max_repeated_character_ratio":0.20,"mandatory_max_seam_duplicate_ratio":0.20,"spot_check_min_mean_confidence":0.90,"spot_check_min_median_confidence":0.90,"spot_check_max_low_confidence_word_ratio":0.10,"spot_check_min_coverage_ratio":0.80,"spot_check_max_gibberish_word_ratio":0.10,"spot_check_max_repeated_character_ratio":0.05,"spot_check_max_seam_duplicate_ratio":0.05,"by_ocr_method":{"cohere_parse":{"floor_tier":"spot_check"}}}}'
       PARENT_CHUNKING_ENABLED: ${PARENT_CHUNKING_ENABLED:-false}
       PARENT_CHUNKING_GROUP_SIZE: ${PARENT_CHUNKING_GROUP_SIZE:-3}
       PDF_PARSE_PAGE_WORKERS: ${PDF_PARSE_PAGE_WORKERS:-4}

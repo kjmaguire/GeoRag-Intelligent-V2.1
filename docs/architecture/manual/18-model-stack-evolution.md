@@ -102,9 +102,10 @@ Two OOM fixes landed as optional sidecar services:
 ## 3. §04p OCR/VL upgrades (ADR-0015/0016/0017)
 
 > **Historical record:** the OCR choices in §3.1 were superseded on
-> 2026-07-29. Docling and PaddleOCR were removed; the current pipeline is
-> Azure Document Intelligence with tiled oversized-page reconstruction and
-> Tesseract as the last-resort fallback. See [Ch 05](05-pdf-stack.md).
+> 2026-07-29 and again on 2026-09-02. Docling and PaddleOCR were removed,
+> then Azure Document Intelligence was replaced by Cohere Parse v5 on Azure
+> AI Foundry (ADR-0019); Tesseract remains the last-resort fallback. See
+> [Ch 05](05-pdf-stack.md).
 
 ### 3.1 PaddleOCR 2.10 → 3.7 (ADR-0016, Accepted Phase 1)
 
