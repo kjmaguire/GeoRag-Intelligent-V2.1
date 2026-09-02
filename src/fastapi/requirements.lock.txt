@@ -191,7 +191,7 @@ h11==0.16.0
     #   httpcore
     #   httpcore2
     #   uvicorn
-h2==4.3.0
+h2==4.4.1
     # via httpx
 hatchet-sdk==1.37.2
     # via georag-fastapi
