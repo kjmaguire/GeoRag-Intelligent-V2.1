@@ -1,0 +1,92 @@
+name: ACR orphan sweep
+
+# =============================================================================
+# Reclaim ACR storage that the registry's own `purge-old-images` task cannot.
+#
+# `acr purge --untagged` only deletes legacy docker-v2 manifests. Since CD
+# moved to buildx (2026-08-20) every image is pushed as an OCI index plus
+# untagged children, and every build orphans the previous ~4 GB `buildcache`
+# generation — none of which that task will ever touch. Left alone the Basic
+# registry grew to 59 GB against a 10 GB included quota.
+#
+# scripts/ci/acr_orphan_sweep.py deletes a manifest only when it is untagged
+# AND not referenced by any surviving index, so the untagged children of live
+# tags — including whatever is running in production right now — are never
+# candidates. See that file's docstring for the full reasoning.
+#
+# OBSERVATION PERIOD — scheduled runs are dry runs. The script deletes only
+# when passed --delete, and this workflow passes it only on a manual dispatch
+# with the `delete` box ticked. Until then the 08:30 UTC run publishes the
+# plan it *would* execute; compare a plan against the digests production
+# actually runs (az containerapp show ... template.containers[0].image for
+# each app) before dispatching a real run. To graduate the schedule to
+# deleting unattended, change the Sweep step to pass --delete on schedule —
+# deliberately, in a reviewed PR, after at least one verified real run.
+#
+# Runs after the daily 08:00 UTC `purge-old-images` task, so tags it retires
+# are already gone and their newly-orphaned children get swept the same day.
+# =============================================================================
+
+on:
+  schedule:
+    # 08:30 UTC daily — 30 min after the ACR purge task's timer trigger.
+    - cron: '30 8 * * *'
+  workflow_dispatch:
+    inputs:
+      delete:
+        description: 'Actually delete (leave unchecked to only print the plan)'
+        type: boolean
+        default: false
+
+# Never overlap the deploy pipeline: cd.yml's builds rewrite `buildcache` and
+# can retag digests while a sweep is deciding what is an orphan. Sharing
+# cd.yml's group means a sweep queues until an in-flight deploy finishes, and
+# a deploy that starts mid-sweep cancels the sweep (cd.yml sets
+# cancel-in-progress: true), which is the priority we want — each per-manifest
+# delete is atomic, so cancelling between them is safe. The script's
+# last-moment tag re-check covers the remaining window.
+concurrency:
+  group: deploy-georag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sweep:
+    name: Sweep unreachable manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Same OIDC identity CD uses (georag-github-cd). Its federated credential
+      # trusts refs/heads/main, which is the ref a scheduled run executes as.
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Registry size before
+        run: |
+          az acr show-usage -n georagacrcc \
+            --query "value[?name=='Size'].currentValue" -o tsv \
+            | awk '{printf "before: %.2f GB\n", $1/1024/1024/1024}'
+
+      # On a schedule event the `inputs` context is empty, so the expression
+      # renders no flag and the script's own default — a dry run — applies.
+      # Only a human dispatch with `delete` ticked produces --delete; any bug
+      # in this expression fails safe to a plan-only run.
+      - name: Sweep
+        run: |
+          python3 scripts/ci/acr_orphan_sweep.py \
+            ${{ github.event_name == 'workflow_dispatch' && inputs.delete && '--delete' || '' }}
+
+      - name: Registry size after
+        if: always()
+        run: |
+          az acr show-usage -n georagacrcc \
+            --query "value[?name=='Size'].currentValue" -o tsv \
+            | awk '{printf "after: %.2f GB\n", $1/1024/1024/1024}'

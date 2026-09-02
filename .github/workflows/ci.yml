@@ -550,6 +550,28 @@ jobs:
       - name: Inline-args parity and cron/guard agreement
         run: python scripts/check_scheduler_job_parity.py
 
+  # ─── ACR orphan sweep guard ─────────────────────────────────────────
+  # scripts/ci/acr_orphan_sweep.py deletes manifests, irreversibly, from
+  # the registry production pulls from. The 2026-08-24 audit found five
+  # ways it could delete the wrong thing; these stdlib-only tests pin the
+  # fixes: deletion is opt-in via --delete (a scheduled run that passes no
+  # flag can never delete), an index declaring zero children aborts the
+  # sweep, unknown media types are never deleted or unprotected, a null
+  # createdTime cannot crash mid-loop, and a manifest retagged between
+  # listing and delete (the buildcache race) is kept.
+  acr-orphan-sweep:
+    name: ACR orphan sweep guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sweeper safety behaviour
+        run: python scripts/ci/tests/test_acr_orphan_sweep.py
+
   # ─── Deployment manifest invariants ───────────────────────────────────
   # Redis is deployed five different ways (Container Apps, Helm, and three
   # kubernetes/manifests variants) and every one of them was wrong in a
