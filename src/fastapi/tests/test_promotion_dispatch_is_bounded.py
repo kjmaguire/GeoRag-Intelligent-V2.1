@@ -229,15 +229,31 @@ class TestOneBadWorkspaceDoesNotStopTheSweep:
         src = self._tier3_source()
         assert 'report.extras["promotions_failed"]' in src
 
-    def test_the_loop_does_not_reimplement_the_dispatch(self):
-        """Both call sites must go through dispatch_promotion.
+    def test_no_module_reimplements_the_dispatch(self):
+        """NO workflow module may reach past dispatch_promotion.
 
-        A call site that reaches past it to ``aio_run_no_wait`` gets the
+        A call site that goes straight to ``aio_run_no_wait`` gets the
         unbounded await back, which is the bug this file is about.
+
+        This sweeps every module in the package rather than naming the two
+        that exist today. Naming them is what lets the guard rot: a new
+        workflow that copies the pre-#190 shape — still visible in git
+        history — would be dispatching unbounded with every test green,
+        because the guard was never told to look at it.
+
+        ``promote_silver_to_gold.py`` is the one legitimate exception: it
+        owns ``dispatch_promotion``, and the single bounded call to
+        ``aio_run_no_wait`` lives inside it. That is the call every other
+        module is required to route through.
         """
-        for name in ("nightly_ingestion_integrity.py", "ingest_tabular.py"):
-            src = (WORKFLOWS / name).read_text(encoding="utf-8")
-            tree = ast.parse(src)
+        owner = "promote_silver_to_gold.py"
+        checked = 0
+
+        for path in sorted(WORKFLOWS.glob("*.py")):
+            if path.name == owner:
+                continue
+            checked += 1
+            tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Attribute):
                     continue
@@ -247,7 +263,14 @@ class TestOneBadWorkspaceDoesNotStopTheSweep:
                     node.value, "attr", None,
                 )
                 assert target != "promote_silver_to_gold", (
-                    f"{name} dispatches promote_silver_to_gold directly "
-                    f"instead of via dispatch_promotion, so it does not get "
-                    f"the timeout"
+                    f"{path.name}:{node.lineno} dispatches "
+                    f"promote_silver_to_gold directly instead of via "
+                    f"dispatch_promotion, so it does not get the timeout"
                 )
+
+        # Guard the guard: a bad glob or a moved package would silently
+        # check nothing and still pass.
+        assert checked > 10, (
+            f"only {checked} workflow modules scanned — the package moved "
+            f"or the glob broke, so this assertion proves nothing"
+        )
